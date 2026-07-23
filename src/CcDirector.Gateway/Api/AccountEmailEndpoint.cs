@@ -11,7 +11,7 @@ namespace CcDirector.Gateway.Api;
 /// The Gateway relay for "DevThrottle emails me" (issue #1318 consumer). A session or scheduled run on any
 /// Director calls <c>POST /account/email</c> with a subject + body (+ optional attachments); the Gateway
 /// injects the account access token it already holds (<see cref="DevThrottleAccountService.GetAccessTokenForForwarding"/>,
-/// the SAME egress credential it uses for credits/telemetry) and forwards to the cloud primitive
+/// the SAME egress credential it uses for other account operations) and forwards to the cloud primitive
 /// (<c>POST /api/v1/account/notify-owner</c>, devthrottle_internal #338) via <see cref="AccountNotifyClient"/>.
 ///
 /// The Gateway holds NO Resend key and runs NO email code - the send happens entirely in the cloud, which

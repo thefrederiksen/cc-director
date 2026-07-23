@@ -6,8 +6,8 @@ namespace CcDirector.Core.Account;
 
 /// <summary>
 /// Builds the <see cref="DevThrottleAccountService"/> the startup gate (issue #580) consumes, wiring
-/// it to the operating-system credential store (issue #583), the local token validator, the
-/// authentication-event log, and the token refresher. It keeps the "where does the signing secret
+/// it to the operating-system credential store (issue #583), the local token validator, and the
+/// token refresher. It keeps the "where does the signing secret
 /// come from" concern out of the application startup code.
 ///
 /// A cached access token's signature is verified locally: an ES256 token against the backend's
@@ -45,37 +45,20 @@ public static class DevThrottleAccountFactory
 
     /// <summary>
     /// Creates the credential service over an explicit store. Used by tests and by non-Windows
-    /// startup paths that supply their own <see cref="IProtectedTokenStore"/> implementation. The
-    /// authentication-event log is written to the Director path
-    /// (<see cref="CcStorage.DevThrottleAuthEventsLog"/>).
+    /// startup paths that supply their own <see cref="IProtectedTokenStore"/> implementation.
     /// </summary>
     public static DevThrottleAccountService Build(IProtectedTokenStore store)
     {
-        return Build(store, CcStorage.DevThrottleAuthEventsLog());
-    }
-
-    /// <summary>
-    /// Creates the credential service over an explicit store AND an explicit authentication-event log
-    /// path. Used when the credential must be written to a store outside the Director's own location
-    /// (for example the Gateway credential store the installer targets, issue #906) so the "logged-in"
-    /// event lands in that store's own authentication-event log rather than the Director's. The tokens
-    /// themselves are never written to the log.
-    /// </summary>
-    public static DevThrottleAccountService Build(IProtectedTokenStore store, string authEventsLogPath)
-    {
         if (store is null)
             throw new ArgumentNullException(nameof(store));
-        if (string.IsNullOrWhiteSpace(authEventsLogPath))
-            throw new ArgumentException("Authentication-event log path is required", nameof(authEventsLogPath));
 
         var validator = new JwtAccessTokenValidator(
             ResolveSigningSecret(),
             publicKeySetJson: DevThrottleSigningKeys.ResolvePublicKeySet());
-        var eventLog = new AuthEventLog(authEventsLogPath);
         var refresher = new BackendUnavailableTokenRefresher();
 
         FileLog.Write("[DevThrottleAccountFactory] Build: credential service constructed");
-        return new DevThrottleAccountService(store, validator, eventLog, refresher);
+        return new DevThrottleAccountService(store, validator, refresher);
     }
 
     /// <summary>

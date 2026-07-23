@@ -242,7 +242,11 @@ public partial class MainWindow : Window
         _sessionManager.OnSessionRemoved += OnExternalSessionRemoved;
 
         // Wire source control view file event
-        GitChangesView.ViewFileRequested += OnGitViewFileRequested;
+        SourceControlView.ViewFileRequested += OnGitViewFileRequested;
+        SourceControlView.OrphanedCountChanged += OnOrphanedWorktreeCountChanged;
+        // Feed the Worktrees page the live sessions on this machine (fleet-wide across Director
+        // slots) so a session-occupied worktree is shown as "in use" and never reaped.
+        SourceControlView.LiveSessionsProvider = GetLiveSessionsOnThisMachineAsync;
 
         // Wire prompt input text changes for slash command autocomplete
         PromptInput.TextChanged += PromptInput_TextChanged;
@@ -289,18 +293,6 @@ public partial class MainWindow : Window
             foreach (var vm in _sessions) vm.Session.RefreshReceivingDictation();
         };
         _dictationLockTimer.Start();
-
-        // Scheduler-leader indicator: show "LEADER" pill on the sidebar and
-        // append " -- Leader" to the window title while this Director holds
-        // the scheduler mutex. Polled at 5s; the underlying flag is updated
-        // by the election thread so the read is just a volatile bool check.
-        _schedulerLeaderTimer = new global::Avalonia.Threading.DispatcherTimer
-        {
-            Interval = TimeSpan.FromSeconds(5),
-        };
-        _schedulerLeaderTimer.Tick += (_, _) => RefreshSchedulerLeaderIndicator();
-        _schedulerLeaderTimer.Start();
-        RefreshSchedulerLeaderIndicator();
 
         WireGatewayStatusBox();
         InitDirectorInfo();
@@ -936,13 +928,13 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// True when any full-content in-window overlay (Tools / Comms / Connections / Scheduler)
+    /// True when any full-content in-window overlay (Tools / Comms / Connections)
     /// is open. The Home page must not paint over an open overlay, so UpdateHomeVisibility
     /// consults this (issue #447).
     /// </summary>
     private bool IsContentOverlayOpen()
         => CommsOverlay.IsVisible
-           || ConnectionsOverlay.IsVisible || SchedulerOverlay.IsVisible;
+           || ConnectionsOverlay.IsVisible;
 
     /// <summary>
     /// Show the full-screen home page exactly when this Director has zero sessions - it is
@@ -1449,19 +1441,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private global::Avalonia.Threading.DispatcherTimer? _schedulerLeaderTimer;
-    private bool _lastLeaderState;
-
-    private void RefreshSchedulerLeaderIndicator()
-    {
-        var scheduler = (global::Avalonia.Application.Current as App)?.Scheduler;
-        var isLeader = scheduler?.IsLeader == true;
-        if (isLeader == _lastLeaderState) return;
-
-        _lastLeaderState = isLeader;
-        Title = isLeader ? "Director -- Leader" : "Director";
-    }
-
     private void SetBuildInfo()
     {
         try
@@ -1628,7 +1607,7 @@ public partial class MainWindow : Window
                     vm.Session.OnActivityStateChanged -= OnActiveSessionActivityChanged;
                     vm.Session.OnPendingPromptTextChanged -= OnActiveSessionPendingPromptTextChanged;
                     TerminalHost.Detach();
-                    GitChangesView.Detach();
+                    SourceControlView.Detach();
                     _activeSession = null;
 
                     SetSessionHeaderVisible(false);
@@ -1795,7 +1774,7 @@ public partial class MainWindow : Window
             _activeSession.Session.OnPendingPromptTextChanged -= OnActiveSessionPendingPromptTextChanged;
             _activeSession.Session.OnIsTranscribingChanged -= OnActiveSessionTranscribingChanged;
             TerminalHost.Detach();
-            GitChangesView.Detach();
+            SourceControlView.Detach();
         }
 
         _activeSession = vm;
@@ -1812,7 +1791,7 @@ public partial class MainWindow : Window
             PromptBarBorder.IsVisible = false;
             TabBarRefreshButton.IsVisible = false;
             TabBarCaptureButton.IsVisible = false;
-            GitChangesView.Detach();
+            SourceControlView.Detach();
             return;
         }
 
@@ -1839,7 +1818,7 @@ public partial class MainWindow : Window
         UpdateScrollBar();
 
         // Attach source control (hide tab if no .git)
-        GitChangesView.Attach(vm.Session.RepoPath);
+        SourceControlView.Attach(vm.Session.RepoPath);
         UpdateSourceControlTabVisibility(vm.Session.RepoPath);
 
         // Show prompt bar
@@ -1971,7 +1950,7 @@ public partial class MainWindow : Window
             _activeSession.Session.OnPendingPromptTextChanged -= OnActiveSessionPendingPromptTextChanged;
         }
         TerminalHost.Detach();
-        GitChangesView.Detach();
+        SourceControlView.Detach();
         _activeSession = null;
 
         var snapshots = _sessions.ToList();
@@ -2464,7 +2443,7 @@ public partial class MainWindow : Window
             vm.Session.OnActivityStateChanged -= OnActiveSessionActivityChanged;
             vm.Session.OnPendingPromptTextChanged -= OnActiveSessionPendingPromptTextChanged;
             TerminalHost.Detach();
-            GitChangesView.Detach();
+            SourceControlView.Detach();
             _activeSession = null;
 
             SetSessionHeaderVisible(false);
@@ -3748,16 +3727,15 @@ public partial class MainWindow : Window
         if (alpha)
         {
             var tools = new NativeMenuItem("Tools") { Menu = new NativeMenu() };
-            // Communications, Connections (Browser Connections), and Scheduler are the three
-            // v1-excluded overlays (issue 570, part of the #357 MVP cutdown). They are gated
-            // behind the alpha flag explicitly here so they stay hidden in a default install
-            // even if the broader Tools menu is later un-gated for v1. They open the
-            // CommsOverlay / ConnectionsOverlay / SchedulerOverlay respectively.
+            // Communications and Connections (Browser Connections) are v1-excluded overlays
+            // (issue 570, part of the #357 MVP cutdown). They are gated behind the alpha flag
+            // explicitly here so they stay hidden in a default install even if the broader Tools
+            // menu is later un-gated for v1. They open the CommsOverlay / ConnectionsOverlay
+            // respectively.
             if (alpha)
             {
                 tools.Menu.Items.Add(Item("Communications", () => BtnComms_Click(this, new RoutedEventArgs())));
                 tools.Menu.Items.Add(Item("Connections", () => BtnConnections_Click(this, new RoutedEventArgs())));
-                tools.Menu.Items.Add(Item("Scheduler", () => BtnScheduler_Click(this, new RoutedEventArgs())));
                 tools.Menu.Items.Add(new NativeMenuItemSeparator());
             }
             tools.Menu.Items.Add(Item("Claude View...", () => BtnClaudeView_Click(this, new RoutedEventArgs())));
@@ -4020,12 +3998,6 @@ public partial class MainWindow : Window
             if (_connectionsInitialized)
                 ConnectionsView.StopPolling();
         }
-        if (SchedulerOverlay.IsVisible)
-        {
-            SchedulerOverlay.IsVisible = false;
-            if (_schedulerInitialized)
-                SchedulerView.StopPolling();
-        }
 
         CommsOverlay.IsVisible = true;
         UpdateHomeVisibility(); // hide Home so the overlay is not buried behind it (#447)
@@ -4048,7 +4020,6 @@ public partial class MainWindow : Window
     }
 
     private bool _connectionsInitialized;
-    private bool _schedulerInitialized;
     private void BtnConnections_Click(object? sender, RoutedEventArgs e)
     {
         FileLog.Write("[MainWindow] BtnConnections_Click: opening Connections overlay");
@@ -4059,12 +4030,6 @@ public partial class MainWindow : Window
             CommsOverlay.IsVisible = false;
             if (_commsInitialized)
                 CommManagerView.StopPolling();
-        }
-        if (SchedulerOverlay.IsVisible)
-        {
-            SchedulerOverlay.IsVisible = false;
-            if (_schedulerInitialized)
-                SchedulerView.StopPolling();
         }
 
         ConnectionsOverlay.IsVisible = true;
@@ -4079,38 +4044,6 @@ public partial class MainWindow : Window
         ConnectionsOverlay.IsVisible = false;
         if (_connectionsInitialized)
             ConnectionsView.StopPolling();
-        UpdateHomeVisibility(); // restore Home if still at zero sessions (#447)
-    }
-
-    private void BtnScheduler_Click(object? sender, RoutedEventArgs e)
-    {
-        FileLog.Write("[MainWindow] BtnScheduler_Click: opening Scheduler overlay");
-
-        if (CommsOverlay.IsVisible)
-        {
-            CommsOverlay.IsVisible = false;
-            if (_commsInitialized)
-                CommManagerView.StopPolling();
-        }
-        if (ConnectionsOverlay.IsVisible)
-        {
-            ConnectionsOverlay.IsVisible = false;
-            if (_connectionsInitialized)
-                ConnectionsView.StopPolling();
-        }
-
-        SchedulerOverlay.IsVisible = true;
-        _schedulerInitialized = true;
-        SchedulerView.StartPolling();
-        UpdateHomeVisibility(); // hide Home so the overlay is not buried behind it (#447)
-    }
-
-    private void BtnSchedulerClose_Click(object? sender, RoutedEventArgs e)
-    {
-        FileLog.Write("[MainWindow] BtnSchedulerClose_Click: closing Scheduler overlay");
-        SchedulerOverlay.IsVisible = false;
-        if (_schedulerInitialized)
-            SchedulerView.StopPolling();
         UpdateHomeVisibility(); // restore Home if still at zero sessions (#447)
     }
 
@@ -4179,6 +4112,67 @@ public partial class MainWindow : Window
             SwitchLeftTab("Terminal");
 
         FileLog.Write($"[MainWindow] UpdateSourceControlTabVisibility: hasGit={hasGit}");
+    }
+
+    /// <summary>Mirror the worktree safe-to-reap count onto the Source Control tab as a red badge.</summary>
+    private void OnOrphanedWorktreeCountChanged(int count)
+    {
+        SourceControlOrphanBadgeText.Text = count.ToString();
+        SourceControlOrphanBadge.IsVisible = count > 0;
+    }
+
+    /// <summary>
+    /// The live sessions on THIS machine and their working directories, used so the Worktrees page
+    /// can flag a worktree a session is running in. Prefers the Gateway's fleet list (which spans
+    /// every Director slot on the machine, closing the cross-slot gap); falls back to this Director's
+    /// own sessions when no Gateway is connected. Best-effort - never throws.
+    /// </summary>
+    private async Task<IReadOnlyList<Core.Git.LiveSessionRef>> GetLiveSessionsOnThisMachineAsync(CancellationToken ct)
+    {
+        var machine = Environment.MachineName;
+        try
+        {
+            var app = global::Avalonia.Application.Current as App;
+            var fleetTask = app?.ControlApiHost?.ListFleetSessionsAsync(ct);
+            if (fleetTask != null)
+            {
+                var fleet = await fleetTask;
+                var refs = fleet
+                    .Where(s => IsSessionAlive(s)
+                                && string.Equals(s.MachineName, machine, StringComparison.OrdinalIgnoreCase)
+                                && !string.IsNullOrWhiteSpace(s.RepoPath))
+                    .Select(s => new Core.Git.LiveSessionRef { RepoPath = s.RepoPath, Label = FleetSessionLabel(s) })
+                    .ToList();
+                return refs;
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] GetLiveSessionsOnThisMachineAsync fleet query failed, using local sessions: {ex.Message}");
+        }
+
+        // No Gateway (or the fleet call failed): fall back to this Director's own sessions.
+        return _sessions
+            .Where(vm => !string.IsNullOrWhiteSpace(vm.Session.RepoPath))
+            .Select(vm => new Core.Git.LiveSessionRef
+            {
+                RepoPath = vm.Session.RepoPath,
+                Label = vm.Session.Number is int n ? $"{vm.DisplayName} (#{n})" : vm.DisplayName,
+            })
+            .ToList();
+    }
+
+    /// <summary>A session is genuinely alive when it has not exited/failed and did not crash.</summary>
+    private static bool IsSessionAlive(Gateway.Contracts.SessionDto s) =>
+        !string.Equals(s.Status, "Exited", StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(s.Status, "Failed", StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(s.ActivityState, "Exited", StringComparison.OrdinalIgnoreCase)
+        && !s.Crashed;
+
+    private static string FleetSessionLabel(Gateway.Contracts.SessionDto s)
+    {
+        var name = string.IsNullOrWhiteSpace(s.Name) ? "session" : s.Name;
+        return s.Number is int n ? $"{name} (#{n})" : name;
     }
 
     private void BtnSend_Click(object? sender, RoutedEventArgs e)
@@ -5452,7 +5446,7 @@ public partial class MainWindow : Window
 
         // Detach terminal and source control
         TerminalHost.Detach();
-        GitChangesView.Detach();
+        SourceControlView.Detach();
         _activeSession = null;
 
         // Stop git status polling

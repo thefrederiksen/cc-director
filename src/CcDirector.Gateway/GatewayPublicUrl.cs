@@ -73,6 +73,21 @@ public static class GatewayPublicUrl
     public static string? ResolveMobile() => Resolve(MobilePath);
 
     /// <summary>
+    /// The public BASE address of this Gateway (no surface path appended), or null in self-host when
+    /// Tailscale is down. This is the read-only "address" the About page shows now that manual network
+    /// addressing is retired (issue #2022) - the same one derivation as every surface URL, with the surface
+    /// path stripped so it reads as a host address rather than a page link.
+    /// </summary>
+    public static string? ResolveBase()
+    {
+        var cockpit = ResolveCockpit();
+        if (cockpit is null) return null;
+        return cockpit.EndsWith(CockpitPath, StringComparison.Ordinal)
+            ? cockpit[..^CockpitPath.Length]
+            : cockpit;
+    }
+
+    /// <summary>
     /// Resolve the full public URL for a surface PATH against the live environment: the configured public
     /// base in hosted mode, the tailnet front door otherwise. Fails loud when hosted and the base is unset.
     /// Shells the tailscale CLI only on the self-host branch (never in hosted mode).

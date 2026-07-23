@@ -35,7 +35,7 @@ internal static class TranscriptionBatchEndpoint
     public static void Map(
         IEndpointRouteBuilder app,
         KeyVault vault,
-        TranscriptionTelemetryLog? telemetry = null,
+        TranscriptionHistoryLog? history = null,
         TranscriptionAudioArchive? audioArchive = null)
     {
         app.MapPost("/transcription", async (HttpContext ctx) =>
@@ -56,7 +56,7 @@ internal static class TranscriptionBatchEndpoint
 
             FileLog.Write($"[TranscriptionBatchEndpoint] POST /transcription: bytes={audio.Length}, contentType={contentType}, correct={correct}");
 
-            var service = new GatewayTranscriptionService(vault, telemetry: telemetry, audioArchive: audioArchive);
+            var service = new GatewayTranscriptionService(vault, history: history, audioArchive: audioArchive);
             var result = await service.TranscribeAsync(audio, fileName, contentType, correct, ctx.RequestAborted);
 
             return result.Outcome switch

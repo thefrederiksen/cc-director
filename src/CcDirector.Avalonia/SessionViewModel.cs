@@ -190,7 +190,7 @@ public class SessionViewModel : INotifyPropertyChanged
     /// unrecognised stamp value still falls through to the magenta sentinel in <see cref="StatusColorBrush"/>,
     /// which is the real fail-loud. (docs/new_architecture/session-state.html.)
     /// </summary>
-    private string EffectiveColor => RailColor(IsGatewayOffline, FoldInput.EffectiveColor, Session.ActivityState, IsGatewaySettled);
+    private string EffectiveColor => RailColor(IsGatewayOffline, FoldInput.EffectiveColor, Session.ActivityState, IsGatewaySettled, Session.OnHold);
 
     /// <summary>
     /// The rail dot's colour name. Pure so it is tested without an Avalonia app - the getter above binds the
@@ -215,10 +215,24 @@ public class SessionViewModel : INotifyPropertyChanged
     /// the neutral placeholder when offline because, unlike the Director, they do not host the session and
     /// cannot know what it is doing. (docs/new_architecture/session-state.html.)
     /// </summary>
-    internal static string RailColor(bool gatewayOffline, string? gatewayStamp, ActivityState localActivity, bool gatewaySettled)
+    internal static string RailColor(bool gatewayOffline, string? gatewayStamp, ActivityState localActivity, bool gatewaySettled, bool isHeld = false)
     {
         if (gatewayOffline)
-            return localActivity is ActivityState.Working or ActivityState.Starting ? "blue" : "red";
+        {
+            if (localActivity is ActivityState.Working or ActivityState.Starting)
+                return "blue";
+
+            // A snooze is an explicit, durable hold the USER set, cached on the Director as a Gateway-owned
+            // fact (Session.OnHold, stamped down from SessionDto.OnHold) - a locally-known truth, NOT a
+            // Gateway-only fold input like VoiceAudioReady. So the floor CAN honour it without running the
+            // fold: keep a snoozed idle session snoozed (the grey the Gateway last stamped) instead of
+            // flattening it to red. Without this, a snoozed session reverts to "Needs you" red on every
+            // tunnel reconnect - and when the tunnel flaps, snooze appears to "not stick" at all.
+            if (isHeld)
+                return gatewayStamp ?? "grey";
+
+            return "red";
+        }
 
         if (gatewayStamp is not null)
             return gatewayStamp;

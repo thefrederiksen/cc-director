@@ -24,7 +24,7 @@ public sealed class WingmanAction
     /// <summary>One short sentence explaining the choice (for the audit log / UI).</summary>
     public string Reason { get; set; } = "";
 
-    /// <summary>"low" | "medium" | "high". Telemetry only in this slice; not a gate.</summary>
+    /// <summary>"low" | "medium" | "high". Diagnostic context only in this slice; not a gate.</summary>
     public string Confidence { get; set; } = "low";
 
     public const string ActNone = "none";

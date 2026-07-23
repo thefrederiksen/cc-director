@@ -1008,6 +1008,12 @@ export interface NetworkDiag {
   peers: NetDiagPeer[];
   notes: string[];
   collectedAt: string;
+  /** The Gateway's finished status-pill ruling. Clients render every field verbatim. */
+  connectionVerdict: {
+    level: "green" | "amber" | "red" | "grey";
+    label: string;
+    detail: string;
+  };
 }
 
 // Keep-warm heartbeat (Network Diagnostics mission, P2): a lightweight GET /diag/ping that keeps the
@@ -1023,9 +1029,8 @@ export async function keepWarmPing(signal?: AbortSignal): Promise<void> {
   }
 }
 
-// GET /diag/network - the server-side Tailscale check. Slower than the other reads (it shells the CLI and
-// pings peers), so give it a longer timeout. Lets a client show the AUTHORITATIVE direct-vs-relay state
-// for its own connection instead of guessing from the speed numbers.
+// GET /diag/network - the Gateway's finished connection verdict. On self-hosted Gateways the response also
+// carries the server-side Tailscale check and can therefore take longer; on hosted it performs no shell work.
 export async function getNetworkDiag(signal?: AbortSignal): Promise<NetworkDiag> {
   const res = await gatewayFetch("/diag/network", {
     method: "GET",

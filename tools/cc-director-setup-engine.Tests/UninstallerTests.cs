@@ -306,4 +306,33 @@ public class UninstallerTests : IDisposable
     {
         Assert.Equal(expected, InstallFinalizer.ComputePathWith(input, dir));
     }
+
+    [Fact]
+    public void Plan_OnMacOS_TargetsTheAppBundle_ItsPreRenameAlias_AndTheLaunchAgent()
+    {
+        if (OperatingSystem.IsWindows()) return; // macOS-shaped plan rows exist only off Windows.
+
+        var plan = new Uninstaller(_layout).Plan(InstallRole.Workstation);
+        var dirs = plan.Where(t => t.Kind == UninstallKind.Directory).Select(t => t.Path).ToList();
+
+        // The Director on macOS is the .app bundle in ~/Applications, not the Windows AppDir -
+        // without these rows an uninstall would leave the actual application behind.
+        Assert.Contains(_layout.PathFor(ComponentRegistry.Director), dirs);
+        foreach (var alias in _layout.LegacyAliasesFor(ComponentRegistry.Director))
+            Assert.Contains(alias, dirs);
+
+        if (OperatingSystem.IsMacOS())
+            Assert.Contains(plan, t => t.Kind == UninstallKind.Autostart
+                && t.Path == LauncherLaunchdAutostart.PlistPath);
+    }
+
+    [Fact]
+    public void Plan_OnWindows_DoesNotListMacBundleRows()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        var plan = new Uninstaller(_layout).Plan(InstallRole.Workstation);
+        var dirs = plan.Where(t => t.Kind == UninstallKind.Directory).Select(t => t.Path).ToList();
+        Assert.DoesNotContain(dirs, d => d.EndsWith(".app", StringComparison.Ordinal));
+    }
 }

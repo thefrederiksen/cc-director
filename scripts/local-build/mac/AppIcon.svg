@@ -23,13 +23,13 @@
   <rect x="112" y="112" width="800" height="800" rx="180" ry="180"
         fill="none" stroke="#FFFFFF" stroke-opacity="0.06" stroke-width="3"/>
 
-  <!-- CC monogram -->
+  <!-- "D" monogram: the app is named "Director" (issue #1821 rename) -->
   <text x="512" y="470" text-anchor="middle" dominant-baseline="central"
         font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
-        font-weight="700" font-size="360" letter-spacing="-18"
-        fill="url(#mono)">CC</text>
+        font-weight="700" font-size="400"
+        fill="url(#mono)">D</text>
 
   <!-- terminal cursor accent: blue prompt underline + blinking block -->
-  <rect x="320" y="650" width="300" height="26" rx="13" fill="#007ACC"/>
-  <rect x="636" y="640" width="68" height="46" rx="10" fill="#007ACC"/>
+  <rect x="330" y="650" width="280" height="26" rx="13" fill="#007ACC"/>
+  <rect x="626" y="640" width="68" height="46" rx="10" fill="#007ACC"/>
 </svg>

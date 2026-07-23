@@ -248,7 +248,11 @@ export function NetworkDiagnosticsView() {
         ) : diag === null ? (
           <div className="netdiag-muted">Loading...</div>
         ) : !diag.tailscaleAvailable ? (
-          <div className="netdiag-muted">Tailscale is not installed on the Gateway machine.</div>
+          <>
+            {diag.notes.map((note, index) => (
+              <div key={index} className="netdiag-muted">{note}</div>
+            ))}
+          </>
         ) : (
           <>
             <div className="netdiag-summary">

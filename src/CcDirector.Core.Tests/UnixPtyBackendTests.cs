@@ -71,6 +71,54 @@ public class UnixPtyBackendTests
         }
     }
 
+    /// <summary>
+    /// Regression for the macOS garbled-terminal bug: the spawned child must ACQUIRE the
+    /// pseudo-terminal as its controlling terminal. On macOS that requires the ccd-ptyshim
+    /// (an explicit TIOCSCTTY ioctl in the child); on Linux the kernel grants it on open.
+    /// Without a controlling terminal the terminal has no foreground process group, resizes
+    /// deliver the window-change signal to nobody, and the agent paints at its spawn width
+    /// forever - which every terminal view renders as overlapping garbage.
+    /// </summary>
+    [Fact]
+    public async Task Start_ChildAcquiresControllingTerminal()
+    {
+        if (!OnUnix) return; // PTY backend only runs on macOS/Linux.
+
+        using var backend = new UnixPtyBackend();
+        // `ps -o tty= -p $$` prints the controlling terminal ("ttys012" on macOS, "pts/0"
+        // on Linux) or question marks when there is none.
+        backend.Start("/bin/sh", "-c \"echo CTTY=$(ps -o tty= -p $$)\"", Path.GetTempPath(), 120, 30);
+
+        var output = await WaitForOutputAsync(backend, "CTTY=", TimeSpan.FromSeconds(5));
+
+        Assert.Matches("CTTY=(ttys|pts)", output);
+        Assert.DoesNotContain("CTTY=?", output);
+    }
+
+    /// <summary>
+    /// The end-to-end consequence of the controlling terminal: a PTY resize must reach the
+    /// child as the window-change signal, so the agent repaints at the new geometry. This is
+    /// what Windows ConPty does natively and what the macOS backend silently dropped.
+    /// </summary>
+    [Fact]
+    public async Task Resize_DeliversWindowChangeSignalToChild()
+    {
+        if (!OnUnix) return; // PTY backend only runs on macOS/Linux.
+
+        using var backend = new UnixPtyBackend();
+        backend.Start("/bin/sh",
+            "-c \"trap 'echo GOT_WINCH' WINCH; echo TRAP_READY; while :; do sleep 0.1; done\"",
+            Path.GetTempPath(), 120, 30);
+
+        var ready = await WaitForOutputAsync(backend, "TRAP_READY", TimeSpan.FromSeconds(5));
+        Assert.Contains("TRAP_READY", ready);
+
+        backend.Resize(100, 40);
+
+        var output = await WaitForOutputAsync(backend, "GOT_WINCH", TimeSpan.FromSeconds(5));
+        Assert.Contains("GOT_WINCH", output);
+    }
+
     private static async Task<string> WaitForOutputAsync(UnixPtyBackend backend, string marker, TimeSpan timeout)
     {
         var deadline = DateTime.UtcNow + timeout;

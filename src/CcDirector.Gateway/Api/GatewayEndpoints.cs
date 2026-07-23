@@ -110,12 +110,12 @@ internal static class GatewayEndpoints
         // created mission's DTO carries the additive workflowRunId. Null (old callers, tests) leaves
         // mission creation byte-identical to before.
         Workflows.WorkflowRunStore? workflowRuns = null,
-        // Store injection points: the host owns a single key vault, transcription telemetry log, and audio
+        // Store injection points: the host owns a single key vault, transcription history, and audio
         // archive and passes them here so the phone-recorder ingest transcriber (RecordingEndpoints) uses
         // the host's instances rather than newing its own. Null (old callers, tests) leaves RecordingEndpoints
         // to build its own defaults, byte-identical to before.
         Core.KeyVault? recordingKeyVault = null,
-        Transcription.TranscriptionTelemetryLog? transcriptionTelemetry = null,
+        Transcription.TranscriptionHistoryLog? transcriptionHistory = null,
         Transcription.TranscriptionAudioArchive? transcriptionAudioArchive = null,
         // Round 4 finding 1: the reliable display-state channel, so the hold endpoint can TRIGGER a prompt
         // push of the folded HoldState after a snooze / unsnooze instead of sending its own second hold
@@ -133,7 +133,20 @@ internal static class GatewayEndpoints
         // Process.GetProcessById(pid).Kill(entireProcessTree:true). A test injects a recorder that observes
         // the kill WITHOUT actually killing anything - so "did the force-kill reach the process by that pid"
         // is a DIRECT assertion, exactly as OnShutdownRequested lets the shutdown proof observe the handler.
-        Func<int, bool>? forceKillDirectorTree = null)
+        Func<int, bool>? forceKillDirectorTree = null,
+        Func<TailscaleDiagnostics.NetworkDiag>? collectNetworkDiagnostic = null,
+        // Issue #2017: the per-tenant settings resolver. This branch owns the snooze-default consumer at
+        // POST /sessions/{sid}/hold - when non-null it reads the CALLER's tenant default via
+        // SnoozeDefaultMinutes(tenant) instead of the process-global config. Null (older callers, tests that
+        // do not exercise the default) keeps the global read, matching every other optional store here.
+        Settings.TenantSettingsResolver? tenantSettings = null,
+        // Issue #2022: the live process diagnostics the About page now shows read-only on both surfaces, after
+        // the machine settings left the Cockpit Settings page. Supplied by the host as its own StartedAtUtc,
+        // Port, and run-mode label. The mode is a delegate (resolved per request) because SettingsHooks is set
+        // on the host AFTER Map runs. Null/zero (older callers, bare test hosts) means "not started"/unknown.
+        DateTime? gatewayStartedAtUtc = null,
+        int gatewayPort = 0,
+        Func<string>? gatewayModeLabel = null)
     {
         // The old issue #1188 "session lock" (423 Locked on human input while a PENDING dictation record
         // existed) was removed deliberately (issue #1308). This is a single-operator tool: a collision
@@ -322,7 +335,7 @@ internal static class GatewayEndpoints
         var logoutVisibility = authEnabled ? "" : "style=\"display:none\"";
 
         // Phone recorder ingest (offline-recorded audio -> transcription -> vault).
-        RecordingEndpoints.Map(app, recordingKeyVault, transcriptionTelemetry, transcriptionAudioArchive);
+        RecordingEndpoints.Map(app, recordingKeyVault, transcriptionHistory, transcriptionAudioArchive);
 
         // Read-only view of the Communication Manager approval queue (see the phone's
         // pending drafts remotely). Step 1 of centralizing the comm queue on the Gateway.
@@ -372,7 +385,8 @@ internal static class GatewayEndpoints
                 });
             }
 
-            var directors = registry.ListDirectors();
+            // Self-host status only (this branch is not reached on hosted): the single tenant is Local.
+            var directors = registry.ListDirectors(TenantId.Local);
             // Post-cut: the roster lives ONLY in the push store, so count from there. A Director with no
             // fresh pushed snapshot is not connected to the tunnel and contributes zero.
             int totalSessions = directors.Sum(d =>
@@ -438,15 +452,20 @@ internal static class GatewayEndpoints
             return Results.Json(new { received });
         });
 
-        // GET /diag/network: the SERVER-SIDE diagnostic an agent runs with no phone and no app open. Runs
-        // tailscale status/ping/netcheck and reports, per connected device, direct-vs-DERP-relay + latency,
-        // plus UDP/NAT health - the one signal the phone speed test cannot see (it cannot tell "warming up
-        // on the relay" apart from "genuinely broken"). Ran off the request thread so the CLI shell-outs do
-        // not block the Kestrel I/O thread.
-        app.MapGet("/diag/network", async () =>
+        // GET /diag/network: the Gateway-owned finished connection verdict plus the underlying self-hosted
+        // Tailscale diagnostic. Hosted browsers reach this shared Gateway over the public internet, so a
+        // tailnet diagnostic is neither relevant nor tenant-safe there: answer Connected from the successful
+        // request itself without invoking Tailscale or returning the host's shared peer inventory. Self-hosted
+        // mode keeps the direct-versus-relay diagnostic and folds it here, before the response reaches a client.
+        var connectionVerdicts = new NetworkConnectionVerdictFold();
+        app.MapGet("/diag/network", async (HttpContext ctx) =>
         {
-            var diag = await Task.Run(TailscaleDiagnostics.Collect);
-            return Results.Json(diag);
+            if (GatewayHostedMode.IsHosted)
+                return Results.Json(TailscaleDiagnostics.HostedConnection());
+
+            var collector = collectNetworkDiagnostic ?? TailscaleDiagnostics.Collect;
+            var diag = await Task.Run(collector);
+            return Results.Json(connectionVerdicts.Fold(diag, ctx.Connection.RemoteIpAddress));
         });
 
         // GET /diag/ping: the featherweight latency endpoint the client's latency loop hits. Unlike
@@ -527,17 +546,37 @@ internal static class GatewayEndpoints
         // CockpitUrl comes from GatewayPublicUrl.ResolveCockpit(): {base}/cockpit, where base is the
         // configured public URL in hosted mode and the tailnet front door (null when Tailscale is down)
         // self-hosted. One derivation rule, both modes (owner ruling 2026-07-20).
-        app.MapGet("/gateway/about", () => Results.Json(new AboutDto
+        app.MapGet("/gateway/about", (HttpContext ctx) =>
         {
-            Product = AboutInfo.ProductName,
-            Version = AboutInfo.VersionFull,
-            BuildDate = AboutInfo.BuildDate()?.ToString("yyyy-MM-dd HH:mm:ss"),
-            MachineName = Environment.MachineName,
-            InstallRoot = AboutInfo.InstallRoot,
-            CockpitUrl = GatewayPublicUrl.ResolveCockpit(),
-            InstalledComponents = new Dictionary<string, string>(AboutInfo.InstalledComponents()),
-            ServerTime = DateTime.UtcNow,
-        }));
+            // Issue #1847: the director list is tenant-scoped (the fleet-wide list was an enumeration
+            // surface), so the diagnostic COUNT here is counted for THIS request's tenant - Local on
+            // self-host. A request with no bound tenant has no attributable directors, so the count is 0;
+            // the rest of the About diagnostics are machine facts and still serve.
+            var aboutTenant = ResolveReadTenant(ctx, tenantBoundary);
+            return Results.Json(new AboutDto
+            {
+                Product = AboutInfo.ProductName,
+                Version = AboutInfo.VersionFull,
+                BuildDate = AboutInfo.BuildDate()?.ToString("yyyy-MM-dd HH:mm:ss"),
+                MachineName = Environment.MachineName,
+                InstallRoot = AboutInfo.InstallRoot,
+                CockpitUrl = GatewayPublicUrl.ResolveCockpit(),
+                InstalledComponents = new Dictionary<string, string>(AboutInfo.InstalledComponents()),
+                // Issue #2017: the always-available public hosted/self-host signal the Settings page reads to
+                // choose its tab set, so tab selection is Gateway-owned rather than guessed from a failed fetch.
+                Hosted = GatewayHostedMode.IsHosted,
+                // Issue #2022: the live process diagnostics relocated here from the retired "This machine" tab -
+                // read-only, both surfaces. State is "Running" whenever this endpoint answers; the address is the
+                // auto-resolved public base (manual addressing was dropped).
+                State = "Running",
+                Port = gatewayPort,
+                UptimeSeconds = gatewayStartedAtUtc is { } startedAt ? (long)(DateTime.UtcNow - startedAt).TotalSeconds : 0,
+                Directors = aboutTenant is { } t ? registry.ListDirectors(t).Count : 0,
+                Mode = gatewayModeLabel?.Invoke() ?? "unknown",
+                Address = GatewayPublicUrl.ResolveBase(),
+                ServerTime = DateTime.UtcNow,
+            });
+        });
 
         // Where is this machine's Cockpit? Url is resolved on the Gateway by GatewayPublicUrl from the ONE
         // public base: Url = {base}/cockpit. In hosted mode (CC_GATEWAY_HOSTED=1) the base is the configured
@@ -1528,10 +1567,29 @@ internal static class GatewayEndpoints
             var decided = HoldStates.None;
             if (holdReq.OnHold)
             {
-                // Issue #1500: honour a per-call snooze length when the caller passed one (already
-                // validated above); otherwise the per-user default (snooze_default_minutes), read now so a
-                // Settings change applies to the next snooze.
-                var minutes = holdReq.SnoozeMinutes ?? Core.Configuration.SnoozeDefaultConfig.Get();
+                // Issue #1500: honour a per-call snooze length when the caller passed one (already validated
+                // above); otherwise the per-user default, read now so a Settings change applies to the next
+                // snooze. Issue #2017: that default is now PER TENANT - resolved for THIS request's tenant
+                // (never the global config) when the resolver is wired. On hosted an unresolved tenant fails
+                // closed (403), never Local; self-host resolves to Local. Without the resolver (older callers)
+                // it stays the process-global read, byte-identical to before.
+                int minutes;
+                if (holdReq.SnoozeMinutes is int perCall)
+                {
+                    minutes = perCall;
+                }
+                else if (tenantSettings is not null)
+                {
+                    var holdTenant = ResolveReadTenant(ctx, tenantBoundary);
+                    if (holdTenant is null)
+                        return Results.Json(new { error = "a tenant could not be resolved for this request" },
+                            statusCode: StatusCodes.Status403Forbidden);
+                    minutes = tenantSettings.SnoozeDefaultMinutes(holdTenant.Value);
+                }
+                else
+                {
+                    minutes = Core.Configuration.SnoozeDefaultConfig.Get();
+                }
 
                 // Working -> DEFER. THE RULING (owner, 14 July 2026): the clock starts when the work ENDS,
                 // so a deferral records its LENGTH and no deadline, and SnoozeLandingObserver starts the
@@ -2734,6 +2792,17 @@ internal static class GatewayEndpoints
 
         app.MapGet("/events", async (HttpContext ctx) =>
         {
+            var requestTenant = ResolveReadTenant(ctx, tenantBoundary);
+            if (requestTenant is null)
+            {
+                ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+                await ctx.Response.WriteAsJsonAsync(
+                    new { error = "no tenant is bound to this request" },
+                    cancellationToken: ctx.RequestAborted);
+                return;
+            }
+            var resolvedTenant = requestTenant.Value;
+
             ctx.Response.Headers["Content-Type"] = "text/event-stream";
             ctx.Response.Headers["Cache-Control"] = "no-cache";
             ctx.Response.Headers["Connection"] = "keep-alive";
@@ -2741,11 +2810,17 @@ internal static class GatewayEndpoints
             var ct = ctx.RequestAborted;
             var queue = System.Threading.Channels.Channel.CreateUnbounded<GatewayEvent>();
 
-            void OnAdded(DirectorDto d) => queue.Writer.TryWrite(new GatewayEvent("director.added", d.DirectorId));
-            // The removal carries its tenant now, but this stream has no tenant of its own to filter against
-            // (it is the fleet-global event feed), so it still announces every removal to every listener. It
-            // is on the existing list of not-yet-tenant-aware routes and is converted with them, not here.
-            void OnRemoved(DirectorRemoval removal) => queue.Writer.TryWrite(new GatewayEvent("director.removed", removal.DirectorId));
+            void OnAdded(DirectorArrival arrival)
+            {
+                if (arrival.Tenant.Equals(resolvedTenant))
+                    queue.Writer.TryWrite(new GatewayEvent("director.added", arrival.Director.DirectorId));
+            }
+
+            void OnRemoved(DirectorRemoval removal)
+            {
+                if (removal.Tenant.Equals(resolvedTenant))
+                    queue.Writer.TryWrite(new GatewayEvent("director.removed", removal.DirectorId));
+            }
 
             registry.OnDirectorAdded += OnAdded;
             registry.OnDirectorRemoved += OnRemoved;
@@ -2802,7 +2877,9 @@ internal static class GatewayEndpoints
             if (exePath is null)
                 return Results.Problem("cc-director.exe not found on PATH or in standard install location", statusCode: 500);
 
-            var beforeIds = registry.ListDirectors().Select(d => d.DirectorId).ToHashSet();
+            // The spawned cc-director.exe runs on the Gateway's OWN machine, so it registers as a Local-tenant
+            // entry; scope the before/after diff to Local (this route is refused on hosted).
+            var beforeIds = registry.ListDirectors(TenantId.Local).Select(d => d.DirectorId).ToHashSet();
 
             try
             {
@@ -2827,7 +2904,7 @@ internal static class GatewayEndpoints
             while (DateTime.UtcNow < deadline)
             {
                 await Task.Delay(500);
-                var newId = registry.ListDirectors().Select(d => d.DirectorId).FirstOrDefault(id => !beforeIds.Contains(id));
+                var newId = registry.ListDirectors(TenantId.Local).Select(d => d.DirectorId).FirstOrDefault(id => !beforeIds.Contains(id));
                 if (newId is not null)
                 {
                     // MTR-01: this route ShellExecutes a cc-director.exe on the GATEWAY's own machine, so the

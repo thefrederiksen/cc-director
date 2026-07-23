@@ -1,0 +1,192 @@
+using System.Net;
+using System.Text;
+using System.Text.Json;
+using CcDirector.AgentBrain;
+using CcDirector.Core;
+using CcDirector.Core.Configuration;
+using CcDirector.Core.Tenancy;
+using CcDirector.Gateway.CarMode;
+using CcDirector.Gateway.Settings;
+using CcDirector.Gateway.Tests.Data;
+using CcDirector.Gateway.Wingman;
+using Xunit;
+
+namespace CcDirector.Gateway.Tests;
+
+/// <summary>
+/// Hostile two-tenant runtime proofs for issue #2017. These drive the production selection and synthesis
+/// seams, not the resolver in isolation: tenant A and tenant B deliberately choose different values and the
+/// outbound model or speech request must carry only the value belonging to the tenant on that call.
+/// </summary>
+[Collection("GatewayHostedMode")]
+public sealed class TenantSettingsRuntimeThreadingTests : IAsyncLifetime
+{
+    private static readonly TenantId TenantA = new("aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa");
+    private static readonly TenantId TenantB = new("bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb");
+    private static readonly DateTime Now = new(2026, 7, 22, 12, 0, 0, DateTimeKind.Utc);
+
+    private readonly string _root = Path.Combine(
+        Path.GetTempPath(), "cc-runtime-settings-" + Guid.NewGuid().ToString("N"));
+    private readonly string _instances = Path.Combine(
+        Path.GetTempPath(), "cc-runtime-settings-instances-" + Guid.NewGuid().ToString("N"));
+    private readonly string? _priorRoot;
+    private GatewayHost _gateway = null!;
+
+    public TenantSettingsRuntimeThreadingTests()
+    {
+        _priorRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _root);
+    }
+
+    public Task InitializeAsync()
+    {
+        _gateway = new GatewayHost(
+            port: AllocateFreePort(),
+            token: "runtime-settings-test-token",
+            authEnabled: false,
+            instancesDirectory: _instances,
+            workListsPath: Path.Combine(_root, "worklists.json"));
+        return Task.CompletedTask;
+    }
+
+    public async Task DisposeAsync()
+    {
+        await _gateway.DisposeAsync();
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _priorRoot);
+        try { if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true); } catch { }
+        try { if (Directory.Exists(_instances)) Directory.Delete(_instances, recursive: true); } catch { }
+    }
+
+    [Fact]
+    public void WingmanModel_TwoTenantsAndBothRoles_SelectOnlyTheirOwnRuntimeValues()
+    {
+        _gateway.TenantSettingsResolver.SetWingmanModel(TenantA, WingmanModelRole.Thinking, "tenant-a-thinking", Now);
+        _gateway.TenantSettingsResolver.SetWingmanModel(TenantA, WingmanModelRole.Fast, "tenant-a-fast", Now);
+        _gateway.TenantSettingsResolver.SetWingmanModel(TenantB, WingmanModelRole.Thinking, "tenant-b-thinking", Now);
+        _gateway.TenantSettingsResolver.SetWingmanModel(TenantB, WingmanModelRole.Fast, "tenant-b-fast", Now);
+
+        Assert.Equal("tenant-a-thinking", _gateway.ResolveWingmanModel(TenantA, WingmanModelRole.Thinking));
+        Assert.Equal("tenant-a-fast", _gateway.ResolveWingmanModel(TenantA, WingmanModelRole.Fast));
+        Assert.Equal("tenant-b-thinking", _gateway.ResolveWingmanModel(TenantB, WingmanModelRole.Thinking));
+        Assert.Equal("tenant-b-fast", _gateway.ResolveWingmanModel(TenantB, WingmanModelRole.Fast));
+        Assert.Throws<ArgumentException>(() => _gateway.ResolveWingmanModel(default, WingmanModelRole.Thinking));
+    }
+
+    [Fact]
+    public async Task NarrationSynthesis_TwoTenants_SendDistinctVoiceAndModelValues()
+    {
+        using var data = new GatewayDbTestHarness();
+        var settings = new TenantSettingsResolver(new TenantSettingsStore(data.Open()));
+        settings.SetTtsVoice(TenantA, "voice-a", Now);
+        settings.SetTtsModel(TenantA, "speech-a", Now);
+        settings.SetTtsVoice(TenantB, "voice-b", Now);
+        settings.SetTtsModel(TenantB, "speech-b", Now);
+
+        var handler = new RecordingSpeechHandler();
+        var vault = new KeyVault(Path.Combine(_root, "narration.vault"));
+        vault.Set("OPENAI_API_KEY", "test-key");
+        vault.Set("DEVTHROTTLE_API_KEY", "test-key");
+        Func<TenantId, WingmanModelRole, CancellationToken, Task<IAgentBrain>> unusedBrain =
+            (_, _, _) => throw new InvalidOperationException("StoreSpokenAsync must not call the model.");
+        var service = new WingmanVoiceService(
+            unusedBrain,
+            vault,
+            settings,
+            Path.Combine(_root, "voice-sessions.json"),
+            ttsHttpClient: new HttpClient(handler));
+
+        await service.StoreSpokenAsync(TenantA, "session-a", "spoken A", "reply A");
+        await service.StoreSpokenAsync(TenantB, "session-b", "spoken B", "reply B");
+
+        Assert.Collection(handler.Requests,
+            request => AssertSpeechRequest(request, "speech-a", "voice-a", "spoken A"),
+            request => AssertSpeechRequest(request, "speech-b", "voice-b", "spoken B"));
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            service.StoreSpokenAsync(default, "unresolved", "must not synthesize", "reply"));
+    }
+
+    [Fact]
+    public async Task CarModeChat_TwoTenants_SendDistinctModelValues()
+    {
+        using var data = new GatewayDbTestHarness();
+        var settings = new TenantSettingsResolver(new TenantSettingsStore(data.Open()));
+        settings.SetCarModeModel(TenantA, "car-a", Now);
+        settings.SetCarModeModel(TenantB, "car-b", Now);
+
+        var handler = new RecordingCarModeHandler();
+        var chat = new HostedCarModeChat(
+            HostedCarModeChat.DefaultResolver(_ => "test-key", settings),
+            new HttpClient(handler),
+            _ => { });
+
+        await chat.CompleteAsync(TenantA, "[]", "[]", CancellationToken.None);
+        await chat.CompleteAsync(TenantB, "[]", "[]", CancellationToken.None);
+
+        Assert.Collection(handler.Requests,
+            request => Assert.Equal("car-a", JsonDocument.Parse(request).RootElement.GetProperty("model").GetString()),
+            request => Assert.Equal("car-b", JsonDocument.Parse(request).RootElement.GetProperty("model").GetString()));
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            chat.CompleteAsync(default, "[]", "[]", CancellationToken.None));
+    }
+
+    [Fact]
+    public void SelfHostedRuntimeSelectors_UseExplicitLocalAndKeepGlobalDefaults()
+    {
+        var mode = TranscriptionModeConfig.Get();
+
+        Assert.Equal(
+            WingmanModelConfig.Resolve(mode, WingmanModelRole.Thinking),
+            _gateway.ResolveWingmanModel(TenantId.Local, WingmanModelRole.Thinking));
+        Assert.Equal(
+            WingmanModelConfig.Resolve(mode, WingmanModelRole.Fast),
+            _gateway.ResolveWingmanModel(TenantId.Local, WingmanModelRole.Fast));
+    }
+
+    private static void AssertSpeechRequest(string body, string model, string voice, string input)
+    {
+        using var json = JsonDocument.Parse(body);
+        Assert.Equal(model, json.RootElement.GetProperty("model").GetString());
+        Assert.Equal(voice, json.RootElement.GetProperty("voice").GetString());
+        Assert.Equal(input, json.RootElement.GetProperty("input").GetString());
+    }
+
+    private static int AllocateFreePort()
+    {
+        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+        return port;
+    }
+
+    private sealed class RecordingSpeechHandler : HttpMessageHandler
+    {
+        public List<string> Requests { get; } = new();
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Requests.Add(await request.Content!.ReadAsStringAsync(ct));
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(new byte[] { 1, 2, 3 }),
+            };
+        }
+    }
+
+    private sealed class RecordingCarModeHandler : HttpMessageHandler
+    {
+        public List<string> Requests { get; } = new();
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Requests.Add(await request.Content!.ReadAsStringAsync(ct));
+            const string response = """
+                {"choices":[{"message":{"content":null,"tool_calls":[{"id":"speak","function":{"name":"speak_answer","arguments":"{\"text\":\"okay\"}"}}]}}]}
+                """;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(response, Encoding.UTF8, "application/json"),
+            };
+        }
+    }
+}

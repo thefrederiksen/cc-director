@@ -19,7 +19,7 @@ public sealed class LauncherCommandRouterTests
     public async Task TrySendAsync_NullDelegate_ReturnsNull_ForRestFallback()
     {
         // Arrange + Act - stream mode off: the host passes a null send delegate.
-        var result = await LauncherCommandRouter.TrySendAsync(null, "machine-A", StartCommand(), CancellationToken.None);
+        var result = await LauncherCommandRouter.TrySendAsync(null, CcDirector.Core.Tenancy.TenantId.Local, "machine-A", StartCommand(), CancellationToken.None);
 
         // Assert - null tells the caller to use the existing HTTP relay.
         Assert.Null(result);
@@ -30,10 +30,10 @@ public sealed class LauncherCommandRouterTests
     {
         // Arrange - the launcher is online: the delegate returns an authoritative result.
         var expected = LauncherCommandResult.Ok();
-        LauncherCommandRouter.SendLauncherCommandAsync del = (_, _, _) => Task.FromResult<LauncherCommandResult?>(expected);
+        LauncherCommandRouter.SendLauncherCommandAsync del = (_, _, _, _) => Task.FromResult<LauncherCommandResult?>(expected);
 
         // Act
-        var result = await LauncherCommandRouter.TrySendAsync(del, "machine-A", StartCommand(), CancellationToken.None);
+        var result = await LauncherCommandRouter.TrySendAsync(del, CcDirector.Core.Tenancy.TenantId.Local, "machine-A", StartCommand(), CancellationToken.None);
 
         // Assert - the stream result is returned unchanged; the caller must NOT also relay over HTTP.
         Assert.Same(expected, result);
@@ -43,10 +43,10 @@ public sealed class LauncherCommandRouterTests
     public async Task TrySendAsync_DelegateReturnsNull_ReturnsNull_ForRestFallback()
     {
         // Arrange - stream mode on but the launcher has no active connection: the delegate returns null.
-        LauncherCommandRouter.SendLauncherCommandAsync del = (_, _, _) => Task.FromResult<LauncherCommandResult?>(null);
+        LauncherCommandRouter.SendLauncherCommandAsync del = (_, _, _, _) => Task.FromResult<LauncherCommandResult?>(null);
 
         // Act
-        var result = await LauncherCommandRouter.TrySendAsync(del, "machine-A", StartCommand(), CancellationToken.None);
+        var result = await LauncherCommandRouter.TrySendAsync(del, CcDirector.Core.Tenancy.TenantId.Local, "machine-A", StartCommand(), CancellationToken.None);
 
         // Assert - still the HTTP-relay fall-back signal.
         Assert.Null(result);
@@ -58,7 +58,7 @@ public sealed class LauncherCommandRouterTests
         // Arrange
         string? seenMachine = null;
         string? seenVerb = null;
-        LauncherCommandRouter.SendLauncherCommandAsync del = (machine, cmd, _) =>
+        LauncherCommandRouter.SendLauncherCommandAsync del = (_, machine, cmd, _) =>
         {
             seenMachine = machine;
             seenVerb = cmd.Verb;
@@ -66,7 +66,7 @@ public sealed class LauncherCommandRouterTests
         };
 
         // Act
-        await LauncherCommandRouter.TrySendAsync(del, "machine-Z", new LauncherCommand { Verb = "director/restart" }, CancellationToken.None);
+        await LauncherCommandRouter.TrySendAsync(del, CcDirector.Core.Tenancy.TenantId.Local, "machine-Z", new LauncherCommand { Verb = "director/restart" }, CancellationToken.None);
 
         // Assert - the router forwards the routing key and command verbatim.
         Assert.Equal("machine-Z", seenMachine);
@@ -78,10 +78,10 @@ public sealed class LauncherCommandRouterTests
     {
         // Arrange - the launcher rejected the command; a typed failure is authoritative, not a fall-back.
         var failure = LauncherCommandResult.Fail(LauncherCommandStatus.BadRequest, "unknown verb: bogus");
-        LauncherCommandRouter.SendLauncherCommandAsync del = (_, _, _) => Task.FromResult<LauncherCommandResult?>(failure);
+        LauncherCommandRouter.SendLauncherCommandAsync del = (_, _, _, _) => Task.FromResult<LauncherCommandResult?>(failure);
 
         // Act
-        var result = await LauncherCommandRouter.TrySendAsync(del, "machine-A", new LauncherCommand { Verb = "bogus" }, CancellationToken.None);
+        var result = await LauncherCommandRouter.TrySendAsync(del, CcDirector.Core.Tenancy.TenantId.Local, "machine-A", new LauncherCommand { Verb = "bogus" }, CancellationToken.None);
 
         // Assert - a non-null failure is returned as-is (the caller must NOT relay over HTTP).
         Assert.Same(failure, result);

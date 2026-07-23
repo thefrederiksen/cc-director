@@ -110,6 +110,39 @@ def test_no_legacy_hard_coded_tool_lists_remain():
     assert not hasattr(setup_ops, "DOTNET_TOOLS")
 
 
+def test_run_autostart_rejects_unknown_verb():
+    # The one home per OS lives behind the setup CLI (issue #2022); this passthrough only accepts the
+    # three real verbs and fails loud on anything else rather than shelling a nonsense command.
+    import typer
+
+    with pytest.raises(typer.Exit) as exc:
+        setup_ops.run_autostart("bogus")
+    assert exc.value.exit_code == 2
+
+
+def test_run_autostart_shells_to_setup_cli_autostart(monkeypatch):
+    # Proves the passthrough shape: `devthrottle-setup-cli autostart <verb> [--json]`, where the real
+    # per-OS mechanism lives. No OS-specific logic is reimplemented in Python.
+    monkeypatch.setattr(setup_ops, "_locate_setup_cli", lambda: "/path/devthrottle-setup-cli")
+
+    captured = {}
+
+    class _Result:
+        returncode = 0
+
+    def _fake_run(args, check=False):
+        captured["args"] = args
+        return _Result()
+
+    monkeypatch.setattr(setup_ops.subprocess, "run", _fake_run)
+
+    setup_ops.run_autostart("on", json_output=True)
+    assert captured["args"] == ["/path/devthrottle-setup-cli", "autostart", "on", "--json"]
+
+    setup_ops.run_autostart("status", json_output=False)
+    assert captured["args"] == ["/path/devthrottle-setup-cli", "autostart", "status"]
+
+
 def test_legacy_alias_names_cover_all_retired_fleet_commands():
     # The retired per-tool fleet commands consolidated into cc-devthrottle (issue #823). Kept in sync
     # with the installer engine's PythonToolsInstaller.LegacyAliasShimNames so the same names the

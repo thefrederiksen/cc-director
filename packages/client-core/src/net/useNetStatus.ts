@@ -1,19 +1,16 @@
-import { useEffect, useRef, useState } from "react";
-import { getNetworkDiag, getNetDiagEcho } from "../api/client";
-import { evaluateNetStatus, isRelayObservation, type NetStatus } from "./netStatus";
+import { useEffect, useState } from "react";
+import { getNetworkDiag } from "../api/client";
+import type { NetStatus } from "./netStatus";
 
 // Auto-run-on-open network status for the header pill (Network Diagnostics mission, Phase 1), shared by the
-// phone and the Cockpit so the two pills can never drift. Per the Architect's guardrail B this is LIGHT: it
-// reads GET /diag/echo (to learn which device the Gateway sees us as) + GET /diag/network (the authoritative
-// direct-vs-relay), and NEVER runs the heavy download/upload throughput test. It re-polls on a slow cadence
-// so the pill stays current, and threads a consecutive-relay counter so the cold-start window shows AMBER,
-// not RED.
+// phone and the Cockpit so the two pills can never drift. The Gateway owns the finished ruling returned by
+// GET /diag/network; this hook renders that object verbatim and never derives a label from diagnostic fields.
+// It re-polls on a slow cadence and never runs the heavy download or upload throughput test.
 
 const POLL_MS = 30000;
 
 export function useNetStatus(): NetStatus {
   const [status, setStatus] = useState<NetStatus>({ level: "grey", label: "Checking", detail: "Checking your connection..." });
-  const relayCount = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -21,12 +18,12 @@ export function useNetStatus(): NetStatus {
 
     async function poll() {
       try {
-        const [echo, network] = await Promise.all([getNetDiagEcho(), getNetworkDiag()]);
+        const network = await getNetworkDiag();
         if (cancelled) return;
-        relayCount.current = isRelayObservation(network, echo) ? relayCount.current + 1 : 0;
-        setStatus(evaluateNetStatus(network, echo, relayCount.current));
+        setStatus(network.connectionVerdict);
       } catch {
-        if (!cancelled) setStatus({ level: "grey", label: "Offline", detail: "Cannot reach the Gateway right now." });
+        // A failed quality diagnostic supplies no new Gateway ruling. Keep the prior Gateway verdict, or the
+        // initial Checking state, rather than inventing an Offline claim while roster traffic may be healthy.
       } finally {
         if (!cancelled) timer = setTimeout(poll, POLL_MS);
       }

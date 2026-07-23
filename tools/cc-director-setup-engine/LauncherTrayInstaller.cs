@@ -75,11 +75,21 @@ public sealed class LauncherTrayInstaller
             return Fail(steps, $"Failed to start the Launcher tray app: {ex.Message}");
         }
 
-        // 3. Wait for health.
-        var up = await WaitForHttpAsync($"http://127.0.0.1:{LauncherDefaultPort}/healthz", TimeSpan.FromSeconds(20), ct);
-        steps.Add($"launcher healthz on {LauncherDefaultPort}: {(up ? "OK" : "no response")}");
+        // 3. Wait for health - identity-verified (issue #2042): the answer must come from the
+        // launcher version just placed, not from whatever process happens to hold the port.
+        var expectedVersion = new InstalledStateReader(_layout).Read(ComponentRegistry.Launcher).Version;
+        var health = await LauncherHealthProbe.WaitForHealthyAsync(
+            _http, $"http://127.0.0.1:{LauncherDefaultPort}/healthz", expectedVersion, TimeSpan.FromSeconds(20), ct);
+        var up = LauncherHealthProbe.Certifies(health, expectedVersion);
+        steps.Add(health is null
+            ? $"launcher healthz on {LauncherDefaultPort}: no response"
+            : up
+                ? $"launcher healthz on {LauncherDefaultPort}: OK (version {health.Version ?? "unversioned"}, process id {health.Pid})"
+                : $"launcher healthz on {LauncherDefaultPort}: answered by version {health.Version ?? "unknown"} (process id {health.Pid}), not the freshly installed {expectedVersion}");
         if (!up)
-            return Fail(steps, $"Launcher tray app started but did not answer on {LauncherDefaultPort}. Check {_layout.LogsDir}.");
+            return Fail(steps, health is null
+                ? $"Launcher tray app started but did not answer on {LauncherDefaultPort}. Check {_layout.LogsDir}."
+                : $"A launcher is answering on port {LauncherDefaultPort}, but it reports version {health.Version ?? "unknown"}, not the freshly installed {expectedVersion} - refusing to certify this install. Another launcher instance likely holds the port; check {_layout.LogsDir}.");
 
         // 4. Verify the autostart Run key (written by the app on startup).
         var registered = LauncherAutostart.IsRegistered();

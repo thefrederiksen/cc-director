@@ -10,7 +10,7 @@ slots** you build on demand while developing (run several at once to compare ver
 ## TL;DR
 
 ```bash
-# One-time: install the apps + pin "CC Director" to the Dock
+# One-time: install the apps + pin "Director Dev" to the Dock
 scripts/mac-setup.sh
 
 # Day to day, from the repo root:
@@ -20,7 +20,7 @@ scripts/mac-rebuild.sh all      # rebuild main + all 4 slots
 ```
 
 After setup, launch from the **Dock** (the bar at the bottom), **Spotlight**
-(`Cmd+Space`, type "CC Director 2"), or **Launchpad** — never the terminal.
+(`Cmd+Space`, type "Director Dev 2"), or **Launchpad** — never the terminal.
 
 ---
 
@@ -42,23 +42,31 @@ Then run the one-time setup:
 scripts/mac-setup.sh
 ```
 
-This creates five apps in `/Applications`, builds the **main** binary, and pins
-**"CC Director"** to your Dock. Re-running it is safe.
+This creates the apps in `~/Applications/DevThrottle Dev`, builds the **main**
+binary, and pins **"Director Dev"** to your Dock. Re-running it is safe — and it
+migrates: old `CC Director*` wrappers this setup used to place in `/Applications`
+are removed (wrappers only; a real installed `Director.app` is never touched).
+
+Dev bundles deliberately live **outside** `/Applications` and `~/Applications`
+top level, under names the real installer's stale-bundle purge can never match:
+the installer removes stale `Director*`/`CC Director*` product bundles from
+those two directories on every fresh install (see `MacBundlePurger` in the
+setup engine), and the dev slots must be out of its reach.
 
 ---
 
 ## The apps
 
-| App (in `/Applications`) | Binary | Purpose |
-|--------------------------|--------|---------|
-| **CC Director**          | `cc-director-mac-main` | Your stable everyday copy. Pinned to the Dock. |
-| **CC Director 1–4**      | `cc-director-mac1`…`4` | Independent dev test slots. Build on demand; run several at once. |
+| App (in `~/Applications/DevThrottle Dev`) | Binary | Purpose |
+|-------------------------------------------|--------|---------|
+| **Director Dev**          | `cc-director-mac-main` | Your stable everyday copy. Pinned to the Dock. |
+| **Director Dev 1–4**      | `cc-director-mac1`…`4` | Independent dev test slots. Build on demand; run several at once. |
 
 Each app is a distinct macOS bundle (own Dock tile, own Spotlight/Launchpad entry,
 own bundle id), so they don't interfere with each other.
 
-A slot you haven't built yet still has an icon in `/Applications`; clicking it just
-pops a dialog telling you the build command.
+A slot you haven't built yet still has an icon in `~/Applications/DevThrottle Dev`;
+clicking it just pops a dialog telling you the build command.
 
 ---
 
@@ -69,11 +77,11 @@ pops a dialog telling you the build command.
 | `scripts/mac-setup.sh` | One-time bootstrap: create all 5 app icons, build main, pin main to the Dock. |
 | `scripts/mac-rebuild.sh <main\|1\|2\|3\|4\|all\|apps>` | The everyday command. Builds a target and refreshes its `.app`. `main` also re-pins the Dock; `apps` (re)creates the bundles without building. |
 | `scripts/local-build-mac.sh` | The underlying build (clean → build Core → single-file publish → copy here). Called by the above; use directly for flags like `--self-contained`, `--rid osx-x64`, `--configuration Debug`. |
-| `scripts/local-build/mac/make-app-bundle.sh --target <main\|1\|2\|3\|4>` | Wraps a built binary in a `.app` bundle installed to `/Applications`. Called by `mac-rebuild.sh`. |
+| `scripts/local-build/mac/make-app-bundle.sh --target <main\|1\|2\|3\|4>` | Wraps a built binary in a `.app` bundle installed to `~/Applications/DevThrottle Dev`. Called by `mac-rebuild.sh`. |
 | `scripts/local-build/mac/run.sh [--slot N]` | Launch a built binary straight from the terminal (sets `DOTNET_ROOT`). For quick checks; prefer the Dock/`.app` for real use (see below). |
 
-`APPS_DIR` env var overrides the install location (default `/Applications`), e.g.
-`APPS_DIR=~/Applications scripts/mac-rebuild.sh main`.
+`APPS_DIR` env var overrides the install location (default
+`~/Applications/DevThrottle Dev`), e.g. `APPS_DIR=/tmp/dev-apps scripts/mac-rebuild.sh main`.
 
 ---
 
@@ -85,7 +93,7 @@ pops a dialog telling you the build command.
 | `AppIcon.svg` | yes | Editable vector **source** for the app icon. Edit this to change the icon. |
 | `README.md` | yes | This file. |
 | `cc-director-mac-main`, `cc-director-mac1`…`4` | no | Built binaries (gitignored). |
-| `CC Director*.app` | no | Built bundles live in `/Applications`, not here. |
+| `Director Dev*.app` | no | Built bundles live in `~/Applications/DevThrottle Dev`, not here. |
 | `AppIcon.icns` | no | Generated from `AppIcon.svg` (gitignored). |
 
 ---
@@ -113,8 +121,10 @@ ad-hoc-signed, **arm64-only** `CC Director.app` (no .NET runtime needed).
 
 **First install (one time):**
 
-1. Download `cc-director-mac-arm64.zip` from the release, unzip it, and drag
-   **`CC Director.app`** into `/Applications`.
+1. Download **`devthrottle-mac-arm64.dmg`** from the release, open it, and drag
+   **`Director.app`** onto the **Applications** shortcut inside. (The
+   `cc-director-mac-arm64.zip` asset holds the same bundle - it is what the
+   auto-updater consumes.)
 2. Because the app is **not notarized** (we use no paid Apple Developer
    certificate), macOS quarantines a freshly downloaded app. **Right-click the
    app → Open** once, then confirm. This is needed only for the very first launch.

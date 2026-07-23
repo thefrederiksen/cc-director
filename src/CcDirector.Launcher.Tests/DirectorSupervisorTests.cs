@@ -38,7 +38,7 @@ public sealed class DirectorSupervisorTests
         else
         {
             // macOS: the installed Director is the application bundle in ~/Applications.
-            Assert.EndsWith("CC Director.app", supervisor.DirectorExePath, StringComparison.Ordinal);
+            Assert.EndsWith("Director.app", supervisor.DirectorExePath, StringComparison.Ordinal);
         }
     }
 
@@ -46,7 +46,7 @@ public sealed class DirectorSupervisorTests
     public void DirectorExeExists_ReturnsFalse_WhenPathDoesNotExist()
     {
         // Windows-only premise: on macOS PathFor(Director) is the machine-global
-        // ~/Applications/CC Director.app, independent of the injected root - the macOS
+        // ~/Applications/Director.app, independent of the injected root - the macOS
         // presence semantics are covered by DirectorExeExists_MacBundleDirectory_CountsAsInstalled.
         if (!OperatingSystem.IsWindows()) return;
 
@@ -89,7 +89,7 @@ public sealed class DirectorSupervisorTests
         if (OperatingSystem.IsWindows()) return; // macOS/Unix semantics only
 
         // Point the layout at a scratch root, then create the bundle DIRECTORY where
-        // InstallLayout would place it. PathFor(Director) on macOS is ~/Applications/CC Director.app
+        // InstallLayout would place it. PathFor(Director) on macOS is ~/Applications/Director.app
         // regardless of the root, so simulate through a real temp bundle only when it does
         // not already exist - never touch a real installed bundle.
         var supervisor = new DirectorSupervisor();

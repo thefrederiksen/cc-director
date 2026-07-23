@@ -38,7 +38,7 @@ public sealed class GatewayTranscriptionService
     private readonly Func<TranscriptionMode> _modeProvider;
     private readonly HttpClient? _http;
     private readonly string _cleanupModel;
-    private readonly TranscriptionTelemetryLog _telemetry;
+    private readonly TranscriptionHistoryLog _history;
     private readonly TranscriptionAudioArchive _audioArchive;
 
     /// <param name="vault">The Gateway key vault - the single store for the transcription key.</param>
@@ -52,7 +52,7 @@ public sealed class GatewayTranscriptionService
     /// dictionary-corrector POST (tests inject a stub). The pipeline creates and owns one when null.</param>
     /// <param name="cleanupModel">Cleanup identity used only for logging (the corrector is deterministic,
     /// not a model). Defaults to the dictation default when blank.</param>
-    /// <param name="telemetry">Local transcription telemetry sink. In production the host owns one
+    /// <param name="history">Local, bounded transcription history. In production the host owns one
     /// instance and passes it here; when omitted it defaults to a fresh instance over the per-user
     /// location, and tests inject their own.</param>
     /// <param name="audioArchive">Rolling archive of the audio behind each turn. In production the host
@@ -64,7 +64,7 @@ public sealed class GatewayTranscriptionService
         Func<TranscriptionMode>? modeProvider = null,
         HttpClient? http = null,
         string? cleanupModel = null,
-        TranscriptionTelemetryLog? telemetry = null,
+        TranscriptionHistoryLog? history = null,
         TranscriptionAudioArchive? audioArchive = null)
     {
         _vault = vault ?? throw new ArgumentNullException(nameof(vault));
@@ -72,7 +72,7 @@ public sealed class GatewayTranscriptionService
         _modeProvider = modeProvider ?? TranscriptionModeConfig.Get;
         _http = http;
         _cleanupModel = string.IsNullOrWhiteSpace(cleanupModel) ? CleanupOrchestrator.DefaultModel : cleanupModel;
-        _telemetry = telemetry ?? new TranscriptionTelemetryLog();
+        _history = history ?? new TranscriptionHistoryLog();
         _audioArchive = audioArchive ?? new TranscriptionAudioArchive();
     }
 
@@ -119,7 +119,7 @@ public sealed class GatewayTranscriptionService
 
         var turnId = Guid.NewGuid().ToString("N");
 
-        // Archive the clip BEFORE transcribing, keyed by the same turn id the telemetry log records.
+        // Archive the clip BEFORE transcribing, keyed by the same turn id the local history records.
         // Before, so a crash or a hang cannot lose it; and kept afterwards WHATEVER the outcome, because
         // the failure this exists for is a transcription that succeeds and silently drops half the
         // speech. Only the audio can tell "the provider lost it" from "the microphone went quiet", and a
@@ -144,8 +144,8 @@ public sealed class GatewayTranscriptionService
             // credits" - never a raw error, never a lost clip.
             swTranscribe.Stop();
             FileLog.Write($"[GatewayTranscriptionService] TranscribeAsync OUT OF CREDITS: mode={mode}, code={ex.Code}");
-            RecordTelemetry(turnId, "out_of_credits", mode, routing, audio.Length,
-                swTranscribe.ElapsedMilliseconds, 0, applyCorrection, raw: null, cleanup: null, error: ex.Message);
+            RecordHistory(turnId, "out_of_credits",
+                swTranscribe.ElapsedMilliseconds, 0, applyCorrection, raw: null, cleanup: null);
             return GatewayTranscriptionResult.OutOfCredits(mode, routing.Endpoint.Model, ex.Code, ex.Message);
         }
         catch (TranscriptionPermanentException ex)
@@ -156,8 +156,8 @@ public sealed class GatewayTranscriptionService
             // resending a doomed clip, rather than looping like a transient provider outage.
             swTranscribe.Stop();
             FileLog.Write($"[GatewayTranscriptionService] TranscribeAsync PERMANENT: mode={mode}, code={ex.Code}, {ex.Message}");
-            RecordTelemetry(turnId, "permanent_error", mode, routing, audio.Length,
-                swTranscribe.ElapsedMilliseconds, 0, applyCorrection, raw: null, cleanup: null, error: ex.Message);
+            RecordHistory(turnId, "permanent_error",
+                swTranscribe.ElapsedMilliseconds, 0, applyCorrection, raw: null, cleanup: null);
             return GatewayTranscriptionResult.PermanentError(mode, routing.Endpoint.Model, ex.Code, ex.Message);
         }
         catch (Exception ex)
@@ -167,8 +167,8 @@ public sealed class GatewayTranscriptionService
             // single endpoint maps it to 502, rather than throwing the same shape from N call sites.
             swTranscribe.Stop();
             FileLog.Write($"[GatewayTranscriptionService] TranscribeAsync provider FAILED: mode={mode}, {ex.Message}");
-            RecordTelemetry(turnId, "provider_error", mode, routing, audio.Length,
-                swTranscribe.ElapsedMilliseconds, 0, applyCorrection, raw: null, cleanup: null, error: ex.Message);
+            RecordHistory(turnId, "provider_error",
+                swTranscribe.ElapsedMilliseconds, 0, applyCorrection, raw: null, cleanup: null);
             return GatewayTranscriptionResult.ProviderError(mode, routing.Endpoint.Model, ex.Message);
         }
 
@@ -181,52 +181,44 @@ public sealed class GatewayTranscriptionService
 
         FileLog.Write($"[GatewayTranscriptionService] TranscribeAsync OK: mode={mode}, corrected={applyCorrection}, "
                       + $"transcribeMs={swTranscribe.ElapsedMilliseconds}, cleanupMs={(applyCorrection ? swCleanup.ElapsedMilliseconds : 0)}, chars={text.Length}");
-        RecordTelemetry(turnId, "ok", mode, routing, audio.Length, swTranscribe.ElapsedMilliseconds,
-            applyCorrection ? swCleanup.ElapsedMilliseconds : 0, applyCorrection, raw, cleanup, error: null);
+        RecordHistory(turnId, "ok", swTranscribe.ElapsedMilliseconds,
+            applyCorrection ? swCleanup.ElapsedMilliseconds : 0, applyCorrection, raw, cleanup);
         return GatewayTranscriptionResult.Ok(text, mode, routing.Endpoint.Model);
     }
 
-    /// <summary>Append one turn to the local transcription telemetry log. Never throws (the sink itself
-    /// swallows and logs errors), so instrumentation can never fail a transcription.</summary>
-    private void RecordTelemetry(
-        string turnId, string outcome, string mode, GatewayTranscriptionRouting routing, long audioBytes,
-        long transcribeMs, long cleanupMs, bool corrected, string? raw, CleanupOutcome? cleanup, string? error)
+    /// <summary>Append one minimized turn to local Transcription Health history.</summary>
+    private void RecordHistory(
+        string turnId, string outcome, long transcribeMs, long cleanupMs, bool corrected,
+        string? raw, CleanupOutcome? cleanup)
     {
         // HOSTED WRITE GATE (deny-by-default, defense in depth for the transcription-analysis read deny
-        // #1897). The shared telemetry log has no tenant in its path, file name, or records, and its ONLY
+        // #1897). The shared history has no tenant in its path, file name, or records, and its ONLY
         // reader is the now-denied analysis group (verified: nothing billing / usage-metering / quota
-        // consumes it, so gating undercounts nothing). Continuing to append every account's raw + cleaned
-        // speech to one shared file on hosted would keep accumulating cross-tenant data at rest that nothing
-        // on hosted can even read - so stop the write. Self-host is single-tenant and unchanged.
+        // consumes it, so gating undercounts nothing). Continuing to append every account's local history
+        // to one shared file on hosted would accumulate cross-tenant data at rest that nothing on hosted can
+        // even read - so stop the write. Self-host is single-tenant and unchanged.
         if (GatewayHostedMode.IsHosted)
         {
-            FileLog.Write("[GatewayTranscriptionService] telemetry write SKIPPED on hosted: the shared transcription telemetry log has no tenant and its only reader is denied on hosted (issue #1897 defense in depth)");
+            FileLog.Write("[GatewayTranscriptionService] transcription history write SKIPPED on hosted: the shared local history has no tenant and its only reader is denied");
             return;
         }
 
         var finalText = cleanup?.Text ?? raw;
-        _telemetry.Record(new TranscriptionTelemetryRecord
+        _history.Record(new TranscriptionHistoryRecord
         {
             TimestampUtc = DateTime.UtcNow,
             TurnId = turnId,
             Outcome = outcome,
-            Mode = mode,
-            TranscriptionModel = routing.Endpoint.Model,
-            CleanupModel = corrected ? _cleanupModel : null,
-            AudioBytes = audioBytes,
             TranscriptionMs = transcribeMs,
             CleanupMs = cleanupMs,
             Corrected = corrected,
             CleanupApplied = cleanup?.Applied ?? false,
             ChangedWordCount = cleanup?.ChangedWords.Count ?? 0,
             Changes = cleanup is { ChangedWords.Count: > 0 }
-                ? cleanup.ChangedWords.Select(TelemetryEdit.From).ToList()
+                ? cleanup.ChangedWords.Select(TranscriptionHistoryEdit.From).ToList()
                 : null,
             CharCount = finalText?.Length ?? 0,
             WordCount = CountWords(finalText),
-            Error = error,
-            RawText = raw,
-            CleanedText = cleanup is { Applied: true } ? cleanup.Text : null,
         });
     }
 

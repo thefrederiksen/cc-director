@@ -8,37 +8,38 @@ Status legend: DONE (built + deployed), NEXT (planned, ready to build), RESEARCH
 
 ---
 
-## 1. Local telemetry logging - DONE
+## 1. Local history - DONE
 
-`TranscriptionTelemetryLog` (`src/CcDirector.Gateway/Transcription/`) writes one JSON line per turn to
-`%LOCALAPPDATA%\cc-director\transcription-log\transcription-YYYYMMDD.jsonl`. Wired into
-`GatewayTranscriptionService.TranscribeAsync` (the single owner) with added Stopwatch timing. Records:
-timestamp, turn id, outcome, mode, models, audio bytes, transcriptionMs, cleanupMs, cleanup applied +
-the exact find->replace changes, char/word counts, and the raw + cleaned text. Fail-safe; `TextEnabled`
-can omit text.
+`TranscriptionHistoryLog` (`src/CcDirector.Gateway/Transcription/`) writes one minimized JSON line per turn to
+`%LOCALAPPDATA%\cc-director\transcription-history\transcription-YYYYMMDD.jsonl`. Wired into
+`GatewayTranscriptionService.TranscribeAsync` (the single owner) with Stopwatch timing. Records:
+timestamp, turn id, outcome, transcription and cleanup duration, cleanup-applied status, exact
+find-to-replace correction terms, and aggregate character/word counts. It never records raw or cleaned
+transcript text, model names, audio sizes/content, or provider error bodies. Files older than 30 days are
+removed. Associated troubleshooting audio has a 24-hour/500-clip ceiling, and the owner can clear both
+the history and audio through one control.
 
 ## 2. Local analysis API - DONE
 
-`TranscriptionAnalysisEndpoint` exposes read-only queries over the log so any agent can ask the Gateway
+`TranscriptionAnalysisEndpoint` exposes owner queries over the history so any agent can ask the Gateway
 how fast and how good transcription is:
 
 - `GET /transcription/stats [?days=N|?since=ISO]` - counts by outcome, latency percentiles
-  (transcription + cleanup), cleanup-applied rate, word/char/byte totals.
-- `GET /transcription/turns [?days|since] [?limit=N]` - raw recorded turns, newest first.
+  (transcription + cleanup), cleanup-applied rate, and word/character totals.
+- `GET /transcription/turns [?days|since] [?limit=N]` - minimized turn records, newest first.
 - `GET /transcription/terms [?days|since] [?top=N]` - most frequent find->replace corrections.
-- `GET /transcription/words [?days|since] [?top=N]` - most frequent spoken words.
+- `DELETE /transcription/history` - clears the locally retained history and troubleshooting audio.
 
 First live numbers already proved the deterministic cleanup: cleanupMs p50 = 3 ms (vs the old o4-mini
 ~5000 ms), transcription p50 ~4.2 s (third-party). This is the data source for everything below.
 
-## 3. Cockpit transcription status - NEXT
+## 3. Cockpit transcription status - DONE
 
 A small Cockpit screen (`apps/cockpit`, React) that reads the analysis API and shows: recent latency
 (transcription vs cleanup), success/failure mix (surfacing e.g. out-of-credits), turns/day, top
 corrected terms, and a plain-language "your transcription is healthy / slow / failing" summary. It also
-tells the user they can point an agent at `/transcription/*` to ask their own questions ("how much do I
-swear", "which term do I mis-say most"). Purely a consumer of section 2; no new backend needed. Ship
-behind the existing Cockpit nav.
+provides a Clear local history control and tells the user they can point an agent at `/transcription/*`
+to ask timing and correction questions. It is purely a consumer of section 2.
 
 ## 4. Scientific multilingual eval harness - NEXT (design finalized from research)
 
@@ -115,6 +116,6 @@ Findings (full report saved separately). Our approach is the standard one; we ar
   overfit the synthetic fixture tiers.
 - The best-scoring gated version is what gets built from the working tree and deployed to the live Gateway
   (the same working-tree publish + graceful-swap flow we use now).
-- The local telemetry (sections 1-2) is the field feedback loop: real-world latency and correction rates
-  tell us where the harness is missing cases; those become new fixtures. Harness (lab) + telemetry
-  (field) together drive the iteration.
+- The bounded local history (sections 1-2) is an owner-controlled feedback loop: real-world latency and
+  correction rates can reveal where the harness is missing cases; those can become new fixtures only
+  through an explicit user-directed workflow. The history is never uploaded automatically.

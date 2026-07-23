@@ -16,9 +16,7 @@ namespace CcDirector.Gateway.Account;
 /// <see cref="LoopbackLoginListener"/> - the exact same mechanism the Director used, not a copy. This
 /// service adds the Gateway-side concerns: a single-flight guard so an auto-prompt at launch and a
 /// tray "Sign in" click never run two browser hand-offs at once, and the "is the Gateway signed in?"
-/// query the tray reads to decide whether to prompt. Login-telemetry forwarding is out of scope for
-/// this issue (it is the Gateway's own relay, issues #628 / #630), so a no-op login reporter is
-/// injected here rather than having the Gateway report a login to itself.
+/// query the tray reads to decide whether to prompt.
 ///
 /// The access and refresh tokens are never written to the log on any path (security rule DT-05,
 /// carried over from #636) - only the outcome (signed in / failed-with-user-safe-reason) is logged.
@@ -61,13 +59,10 @@ public sealed class GatewaySignInService
     {
         _account = account ?? throw new ArgumentNullException(nameof(account));
         _onSignedIn = onSignedIn;
-        // The login telemetry report is the Gateway's OWN relay (issues #628/#630), not this flow's
-        // job, so inject a no-op reporter rather than have the Gateway POST a login to itself.
         _coordinator = new FirstRunLoginCoordinator(
             account,
             openBrowser,
-            listenerFactory,
-            loginReporter: new NoOpLoginTelemetryReporter());
+            listenerFactory);
     }
 
     /// <summary>
@@ -185,13 +180,4 @@ public sealed class GatewaySignInService
         }, ct);
     }
 
-    /// <summary>
-    /// A login-telemetry reporter that does nothing. On the Gateway the login event egress is the
-    /// Gateway's own login-telemetry relay (issues #628 / #630), not this sign-in flow, so the
-    /// coordinator's best-effort report is a deliberate no-op here.
-    /// </summary>
-    private sealed class NoOpLoginTelemetryReporter : ILoginTelemetryReporter
-    {
-        public Task ReportLoginAsync(string accessToken, CancellationToken ct = default) => Task.CompletedTask;
-    }
 }

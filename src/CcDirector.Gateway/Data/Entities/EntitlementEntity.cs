@@ -39,6 +39,18 @@ public sealed class EntitlementEntity
     /// <summary>The payment provider's subscription reference. Read-only here, and never logged.</summary>
     public string? StripeSubscriptionId { get; set; }
 
+    /// <summary>
+    /// Which paid plan this entitlement grants: <c>hosted</c> or <c>pro</c>. Written by the payment side and
+    /// read-only here. NULLABLE on purpose: rows written before this column existed (or by a webhook that has
+    /// not been updated) arrive null, and a null tier is not an error - it is an older row.
+    ///
+    /// The tier does NOT gate hosted ENROLLMENT: any live, paid entitlement of EITHER tier lets an account
+    /// enroll a device, because enrolling is "may this account reach a hosted tenant at all", which both plans
+    /// grant. The tier decides a CAPABILITY inside the tenant (the wingman), which is a separate concern read
+    /// off this same value - so the reader exposes it, and the enrollment gate ignores it.
+    /// </summary>
+    public string? Tier { get; set; }
+
     /// <summary>When the payment side last wrote this row (UTC).</summary>
     public DateTime? UpdatedAt { get; set; }
 

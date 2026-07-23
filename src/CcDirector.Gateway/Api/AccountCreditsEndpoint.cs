@@ -13,7 +13,7 @@ namespace CcDirector.Gateway.Api;
 /// Cockpit must NEVER hold the account token or call the cloud directly - the token lives on the
 /// Gateway. So the Gateway proxies: it reads its own stored account token
 /// (<see cref="DevThrottleAccountService.GetAccessTokenForForwarding"/>, the SAME egress credential it
-/// already uses for telemetry/devices), calls the cloud credits endpoint
+/// already uses for account and device operations), calls the cloud credits endpoint
 /// (<see cref="AccountCreditsClient"/>, JWT-authed), and returns a local, token-free DTO.
 ///
 /// Behaviour at the edges (no fabricated data):

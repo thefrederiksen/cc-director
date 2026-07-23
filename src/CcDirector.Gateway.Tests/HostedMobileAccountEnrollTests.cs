@@ -101,7 +101,7 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
             "CREATE TABLE IF NOT EXISTS entitlements (" +
             "subject TEXT NOT NULL PRIMARY KEY, status TEXT NOT NULL, " +
             "current_period_end TEXT NULL, stripe_subscription_id TEXT NULL, updated_at TEXT NULL, " +
-            "livemode INTEGER NULL)");
+            "livemode INTEGER NULL, tier TEXT NULL)");
         if (entitled)
         {
             ctx.Database.ExecuteSqlRaw(

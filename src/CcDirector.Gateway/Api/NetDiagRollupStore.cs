@@ -253,7 +253,7 @@ public sealed class NetDiagRollupStore
     /// mixture. Renaming it aside would keep it in the live store indefinitely for no benefit, because
     /// nothing will ever be able to attribute it.
     ///
-    /// WHY THE COST IS NOTHING REAL. This is ephemeral operational telemetry with no durability contract -
+    /// WHY THE COST IS NOTHING REAL. This is ephemeral operational diagnostics with no durability contract -
     /// a self-pruning quality trend, not a record anything is owed. Delete, and partition forward.
     /// </summary>
     private void DeletePrePartitionFile()

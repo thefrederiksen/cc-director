@@ -38,7 +38,7 @@ public sealed class FanoutAndEventsTests : IAsyncLifetime
         var deadline = DateTime.UtcNow.AddSeconds(5);
         while (DateTime.UtcNow < deadline)
         {
-            if (_gateway.Registry.ListDirectors().Count >= 1) break;
+            if (_gateway.Registry.ListDirectors(CcDirector.Gateway.Tenancy.SystemScope.Grant()).Count >= 1) break;
             await Task.Delay(100);
         }
     }

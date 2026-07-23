@@ -227,7 +227,7 @@ public sealed class NetDiagResultStoreTenantPartitionTests : IDisposable
         // attribution recorded anywhere in it. Migrating it would INVENT an attribution that was never
         // recorded - the forbidden half-partition - and would hand one tenant another tenant's data.
         // Quarantining it would merely park a live liability on disk that nothing will ever be able to
-        // attribute. Diagnostics are ephemeral operational telemetry with no durability contract, so the
+        // attribute. Diagnostics are ephemeral operational data with no durability contract, so the
         // purge costs nothing real.
         Directory.CreateDirectory(_dir);
         File.WriteAllText(Path_, """

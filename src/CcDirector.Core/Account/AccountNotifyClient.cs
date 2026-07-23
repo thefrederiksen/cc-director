@@ -32,7 +32,7 @@ public sealed record CloudNotifyResult(bool Sent, string? ProviderId, string? Er
 /// construction, matching the endpoint.
 ///
 /// The base URL resolves the same way the rest of the account egress does
-/// (<see cref="AccountTelemetryClient.ApiBaseUrlEnvVar"/> override, else the production default), so this
+/// (<see cref="DevThrottleApi.BaseUrlEnvVar"/> override, else the production default), so this
 /// client introduces no new hard-coded host. The access token is sent only as the Authorization header and
 /// is NEVER written to the log (DT-05); the subject/body/attachment content is never logged either. The
 /// <see cref="HttpClient"/> is injectable so tests drive it against an in-process stub.
@@ -50,17 +50,7 @@ public sealed class AccountNotifyClient
     public AccountNotifyClient(HttpClient? client = null, string? baseUrl = null)
     {
         _client = client ?? new HttpClient(GatewayHttp.Handler()) { Timeout = TimeSpan.FromSeconds(30) };
-        _baseUrl = ResolveBaseUrl(baseUrl);
-    }
-
-    private static string ResolveBaseUrl(string? baseUrl)
-    {
-        if (!string.IsNullOrWhiteSpace(baseUrl))
-            return baseUrl.Trim().TrimEnd('/');
-        var fromEnv = Environment.GetEnvironmentVariable(AccountTelemetryClient.ApiBaseUrlEnvVar);
-        if (!string.IsNullOrWhiteSpace(fromEnv))
-            return fromEnv.Trim().TrimEnd('/');
-        return AccountTelemetryClient.DefaultApiBaseUrl;
+        _baseUrl = DevThrottleApi.ResolveBaseUrl(baseUrl);
     }
 
     /// <summary>

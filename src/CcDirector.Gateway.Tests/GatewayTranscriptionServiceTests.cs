@@ -92,25 +92,25 @@ public sealed class GatewayTranscriptionServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task TranscribeAsync_ArchivedClipIsNamedForTheTelemetryTurnId()
+    public async Task TranscribeAsync_ArchivedClipIsNamedForTheHistoryTurnId()
     {
-        // The clip is only useful if a suspicious transcript line leads to it. Both the telemetry record
+        // The clip is only useful if a suspicious history line leads to it. Both the history record
         // and the file are keyed by the same turn id, so the log IS the index.
         TranscriptionModeConfig.Set(TranscriptionMode.DevThrottle);
         new KeyVault(_vaultPath).Set(TranscriptionEndpointResolver.DevThrottleKeyName, "dt_live_abc");
 
         var archiveDir = Path.Combine(_root, "archive");
-        var telemetryDir = Path.Combine(_root, "telemetry");
+        var historyDir = Path.Combine(_root, "history");
         var service = new GatewayTranscriptionService(
             new KeyVault(_vaultPath),
             http: new HttpClient(new StatusHandler(HttpStatusCode.OK, "{\"text\":\"hello\"}")),
-            telemetry: new TranscriptionTelemetryLog(telemetryDir),
+            history: new TranscriptionHistoryLog(historyDir),
             audioArchive: new TranscriptionAudioArchive(archiveDir));
 
         await service.TranscribeAsync(
             Enumerable.Repeat((byte)0x42, 512).ToArray(), "clip.wav", "audio/wav", applyCorrection: false, default);
 
-        var line = Assert.Single(File.ReadAllLines(Directory.GetFiles(telemetryDir, "*.jsonl").Single()));
+        var line = Assert.Single(File.ReadAllLines(Directory.GetFiles(historyDir, "*.jsonl").Single()));
         using var doc = System.Text.Json.JsonDocument.Parse(line);
         var loggedTurnId = doc.RootElement.GetProperty("turnId").GetString();
         Assert.NotNull(loggedTurnId);

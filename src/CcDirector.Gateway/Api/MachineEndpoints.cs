@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
@@ -206,20 +207,33 @@ internal static class MachineEndpoints
         // spawn with no explicit run auto-seats onto the mission's run. After a successful spawn the new
         // session is recorded as a run PARTICIPANT - the persisted run-to-session membership governance
         // reads. Null (old callers, tests) seats nothing and changes nothing.
-        Workflows.WorkflowRunStore? workflowRuns = null)
+        Workflows.WorkflowRunStore? workflowRuns = null,
+        // The tenant boundary. Every launcher-registry read/write is now scoped to the CALLING tenant,
+        // resolved from the authenticated device key (never the machine name in the path/body). Null on
+        // self-host, where the single tenant is Local. The launcher/machine families stay denied on hosted
+        // for now; this makes the registries tenant-correct by construction so a future un-deny is safe.
+        HostedTenantBoundary? boundary = null)
     {
         if (spawner is null) throw new ArgumentNullException(nameof(spawner));
 
         FileLog.Write($"[MachineEndpoints] mapping {LauncherPrefix} + {MachinePrefix}; hosted={GatewayHostedMode.IsHosted} - on hosted EVERY route in both groups is refused via the shared refusal primitive (issue #1917)");
 
         var launcherGroup = HostedRouteDeny.ExclusiveGroup(outer, LauncherPrefix, LauncherDenial());
-        MapLauncherRoutes(launcherGroup, launchers);
+        MapLauncherRoutes(launcherGroup, launchers, boundary);
 
         var machineGroup = HostedRouteDeny.ExclusiveGroup(outer, MachinePrefix, MachineDenial());
-        MapMachineRoutes(machineGroup, launchers, spawner, sendLauncherCommand, missions, workflowRuns);
+        MapMachineRoutes(machineGroup, launchers, spawner, sendLauncherCommand, missions, workflowRuns, boundary);
 
         return (launcherGroup, machineGroup);
     }
+
+    /// <summary>The calling tenant, resolved from the authenticated device key. Null means no tenant is
+    /// bound (hosted with an unbound key) - the caller must refuse with 403.</summary>
+    private static TenantId? ReqTenant(HttpContext ctx, HostedTenantBoundary? boundary)
+        => GatewayEndpoints.ResolveReadTenant(ctx, boundary);
+
+    private static IResult NoTenant() =>
+        Results.Json(new { error = "no tenant is bound to this request" }, statusCode: 403);
 
     /// <summary>
     /// The four launcher self-registration routes, mapped relative to <see cref="LauncherPrefix"/> so the full
@@ -229,12 +243,14 @@ internal static class MachineEndpoints
     /// (register), Heartbeat, Remove (unregister) - live here, ON-ROUTE, so every one of them closes with the
     /// group; there is no off-route launcher-registry writer to host-gate separately.
     /// </summary>
-    private static void MapLauncherRoutes(HostedDenyGroup app, LauncherRegistry launchers)
+    private static void MapLauncherRoutes(HostedDenyGroup app, LauncherRegistry launchers, HostedTenantBoundary? boundary)
     {
         // ===== Launcher self-registration surface =====
+        // The launcher's own machine name is client-supplied; the OWNING TENANT is not - it is resolved from
+        // the launcher's authenticated device key, so a launcher registers only into its own tenant partition.
 
         // POST /launchers/register - the launcher POSTs this on startup and after reconnects.
-        app.MapPost("/register", (LauncherRegistrationRequest req) =>
+        app.MapPost("/register", (LauncherRegistrationRequest req, HttpContext ctx) =>
         {
             if (req is null || string.IsNullOrWhiteSpace(req.MachineName))
                 return Results.BadRequest(new { error = "machineName is required" });
@@ -242,16 +258,18 @@ internal static class MachineEndpoints
                 return Results.BadRequest(new { error = "port must be > 0" });
             if (string.IsNullOrWhiteSpace(req.Token))
                 return Results.BadRequest(new { error = "token is required" });
+            if (ReqTenant(ctx, boundary) is not { } tenant) return NoTenant();
 
-            FileLog.Write($"[MachineEndpoints] POST /launchers/register: machine={req.MachineName}, port={req.Port}, pid={req.Pid}, version={req.Version}");
-            var dto = launchers.Upsert(req);
+            FileLog.Write($"[MachineEndpoints] POST /launchers/register: tenant={tenant.Value}, machine={req.MachineName}, port={req.Port}, pid={req.Pid}, version={req.Version}");
+            var dto = launchers.Upsert(tenant, req);
             return Results.Json(dto, statusCode: 201);
         });
 
         // POST /launchers/{machine}/heartbeat - keep-alive from the launcher every 30 s.
-        app.MapPost("/{machine}/heartbeat", (string machine) =>
+        app.MapPost("/{machine}/heartbeat", (string machine, HttpContext ctx) =>
         {
-            var ok = launchers.Heartbeat(machine);
+            if (ReqTenant(ctx, boundary) is not { } tenant) return NoTenant();
+            var ok = launchers.Heartbeat(tenant, machine);
             if (!ok)
             {
                 FileLog.Write($"[MachineEndpoints] POST /launchers/{machine}/heartbeat: unknown -> 410");
@@ -262,18 +280,20 @@ internal static class MachineEndpoints
         });
 
         // DELETE /launchers/{machine} - graceful unregister on launcher shutdown.
-        app.MapDelete("/{machine}", (string machine) =>
+        app.MapDelete("/{machine}", (string machine, HttpContext ctx) =>
         {
-            launchers.Remove(machine);
+            if (ReqTenant(ctx, boundary) is not { } tenant) return NoTenant();
+            launchers.Remove(tenant, machine);
             FileLog.Write($"[MachineEndpoints] DELETE /launchers/{machine}: removed");
             return Results.Json(new { ok = true });
         });
 
-        // GET /launchers - list all registered launchers (machine name, port, last-seen).
-        app.MapGet("", () =>
+        // GET /launchers - list the CALLING TENANT's registered launchers (never another tenant's).
+        app.MapGet("", (HttpContext ctx) =>
         {
-            var list = launchers.ListLaunchers();
-            FileLog.Write($"[MachineEndpoints] GET /launchers: count={list.Count}");
+            if (ReqTenant(ctx, boundary) is not { } tenant) return NoTenant();
+            var list = launchers.ListLaunchers(tenant);
+            FileLog.Write($"[MachineEndpoints] GET /launchers: tenant={tenant.Value}, count={list.Count}");
             return Results.Json(list);
         });
     }
@@ -287,22 +307,26 @@ internal static class MachineEndpoints
         MachineSessionSpawner spawner,
         LauncherCommandRouter.SendLauncherCommandAsync? sendLauncherCommand,
         Core.Sessions.MissionStore? missions,
-        Workflows.WorkflowRunStore? workflowRuns)
+        Workflows.WorkflowRunStore? workflowRuns,
+        HostedTenantBoundary? boundary)
     {
         // ===== Machine relay surface =====
+        // The target machine name is in the path; the caller's TENANT comes from the authenticated key, and
+        // the launcher/connection is resolved as (callerTenant, machine) - so a caller can only ever reach a
+        // launcher its OWN tenant registered, never another tenant's machine of the same bare name.
 
         // POST /machines/{machine}/director/restart
         app.MapPost("/{machine}/director/restart", async (string machine, HttpContext ctx, CancellationToken ct) =>
         {
             FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/director/restart: caller={ctx.Connection.RemoteIpAddress}");
-            return await RelayDirectorLifecycleAsync(machine, "restart", ctx, launchers, sendLauncherCommand, ct);
+            return await RelayDirectorLifecycleAsync(machine, "restart", ctx, launchers, sendLauncherCommand, boundary, ct);
         });
 
         // POST /machines/{machine}/director/start
         app.MapPost("/{machine}/director/start", async (string machine, HttpContext ctx, CancellationToken ct) =>
         {
             FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/director/start: caller={ctx.Connection.RemoteIpAddress}");
-            return await RelayDirectorLifecycleAsync(machine, "start", ctx, launchers, sendLauncherCommand, ct);
+            return await RelayDirectorLifecycleAsync(machine, "start", ctx, launchers, sendLauncherCommand, boundary, ct);
         });
 
         // POST /machines/{machine}/sessions - "start a session on another computer". Resolve the machine
@@ -429,13 +453,14 @@ internal static class MachineEndpoints
         app.MapPost("/{machine}/director/stop", async (string machine, HttpContext ctx, CancellationToken ct) =>
         {
             FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/director/stop: caller={ctx.Connection.RemoteIpAddress}");
-            return await RelayDirectorLifecycleAsync(machine, "stop", ctx, launchers, sendLauncherCommand, ct);
+            return await RelayDirectorLifecycleAsync(machine, "stop", ctx, launchers, sendLauncherCommand, boundary, ct);
         });
 
         // POST /machines/{machine}/launch - relay a generic launch request to the launcher.
         app.MapPost("/{machine}/launch", async (string machine, HttpContext ctx, CancellationToken ct) =>
         {
             FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/launch: caller={ctx.Connection.RemoteIpAddress}");
+            if (ReqTenant(ctx, boundary) is not { } tenant) return NoTenant();
 
             // Forward the original request body verbatim to the launcher.
             LaunchRelayBody? body = null;
@@ -453,11 +478,11 @@ internal static class MachineEndpoints
                 Cwd = body?.Cwd,
                 Headless = body?.Headless ?? false,
             };
-            var launchStreamResult = await LauncherCommandRouter.TrySendAsync(sendLauncherCommand, machine, launchStreamCmd, ct);
+            var launchStreamResult = await LauncherCommandRouter.TrySendAsync(sendLauncherCommand, tenant, machine, launchStreamCmd, ct);
             if (launchStreamResult is not null)
                 return MapLauncherStreamResult(machine, "launch", launchStreamResult);
 
-            var (launcher, token, networkAddress, err) = ResolveLauncher(machine, launchers);
+            var (launcher, token, networkAddress, err) = ResolveLauncher(tenant, machine, launchers);
             if (err is not null)
             {
                 FileLog.Write($"[MachineEndpoints] /machines/{machine}/launch: {err.Value.log}");
@@ -498,8 +523,10 @@ internal static class MachineEndpoints
     /// </summary>
     private static async Task<IResult> RelayDirectorLifecycleAsync(
         string machine, string verb, HttpContext ctx, LauncherRegistry launchers,
-        LauncherCommandRouter.SendLauncherCommandAsync? sendLauncherCommand, CancellationToken ct)
+        LauncherCommandRouter.SendLauncherCommandAsync? sendLauncherCommand, HostedTenantBoundary? boundary, CancellationToken ct)
     {
+        if (ReqTenant(ctx, boundary) is not { } tenant) return NoTenant();
+
         // Parse optional body for confirmProtected flag and target exe path.
         // Use JsonDocument to avoid internal-class reflection issues with System.Text.Json.
         // Do NOT gate on ContentLength - transfer-encoded bodies may have no explicit length.
@@ -550,11 +577,11 @@ internal static class MachineEndpoints
             Path = exePathFromBody,
             ConfirmProtected = confirmProtectedFromBody == true,
         };
-        var streamResult = await LauncherCommandRouter.TrySendAsync(sendLauncherCommand, machine, streamCmd, ct);
+        var streamResult = await LauncherCommandRouter.TrySendAsync(sendLauncherCommand, tenant, machine, streamCmd, ct);
         if (streamResult is not null)
             return MapLauncherStreamResult(machine, verb, streamResult);
 
-        var (launcher, token, networkAddress, err) = ResolveLauncher(machine, launchers);
+        var (launcher, token, networkAddress, err) = ResolveLauncher(tenant, machine, launchers);
         if (err is not null)
         {
             FileLog.Write($"[MachineEndpoints] /machines/{machine}/director/{verb}: {err.Value.log}");
@@ -592,23 +619,23 @@ internal static class MachineEndpoints
     /// success or (null, null, null, (log, result)) on failure.
     /// </summary>
     private static (LauncherDto? launcher, string? token, string? networkAddress, (string log, IResult result)? err)
-        ResolveLauncher(string machine, LauncherRegistry launchers)
+        ResolveLauncher(TenantId tenant, string machine, LauncherRegistry launchers)
     {
-        var launcher = launchers.Get(machine);
+        var launcher = launchers.Get(tenant, machine);
         if (launcher is null)
         {
-            return (null, null, null, ($"launcher not registered for machine={machine}",
+            return (null, null, null, ($"launcher not registered for tenant={tenant.Value}, machine={machine}",
                 Results.Json(new { error = $"no launcher registered for machine '{machine}'", machine }, statusCode: 404)));
         }
 
-        var token = launchers.GetToken(machine);
+        var token = launchers.GetToken(tenant, machine);
         if (string.IsNullOrEmpty(token))
         {
-            return (null, null, null, ($"launcher token missing for machine={machine}",
+            return (null, null, null, ($"launcher token missing for tenant={tenant.Value}, machine={machine}",
                 Results.Json(new { error = "launcher token not available" }, statusCode: 500)));
         }
 
-        var networkAddress = launchers.GetNetworkAddress(machine) ?? "";
+        var networkAddress = launchers.GetNetworkAddress(tenant, machine) ?? "";
         return (launcher, token, networkAddress, null);
     }
 

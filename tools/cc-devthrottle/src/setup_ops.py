@@ -333,6 +333,33 @@ def run_setup_cli(command: str, role: str, dry_run: bool = False, json_output: b
         raise typer.Exit(completed.returncode)
 
 
+def run_autostart(verb: str, json_output: bool = False) -> None:
+    """Start-at-login control (issue #2022). Thin passthrough to `devthrottle-setup-cli autostart <verb>`,
+    where the one per-OS mechanism lives (Windows Run key / macOS launch agent / Linux systemd --user). The
+    CLI + config-file is the universal home a headless Linux server needs, so this is where autostart lives
+    now that it left the web Settings page."""
+    verb = (verb or "status").lower()
+    if verb not in {"on", "off", "status"}:
+        console.print("[red]ERROR:[/red] autostart verb must be on, off, or status")
+        raise typer.Exit(2)
+
+    setup_cli = _locate_setup_cli()
+    if not setup_cli:
+        console.print("Setup CLI not found locally; downloading the latest release setup CLI...")
+        setup_cli = _download_setup_cli()
+    if not setup_cli:
+        console.print("[red]ERROR:[/red] Could not find or download devthrottle-setup-cli.")
+        console.print("Download and run devthrottle-setup-win-x64.exe from the latest GitHub release.")
+        raise typer.Exit(1)
+
+    args = [setup_cli, "autostart", verb]
+    if json_output:
+        args.append("--json")
+    completed = subprocess.run(args, check=False)
+    if completed.returncode != 0:
+        raise typer.Exit(completed.returncode)
+
+
 def status(json_output: bool) -> None:
     data = doctor_data()
     if json_output:

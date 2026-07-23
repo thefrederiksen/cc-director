@@ -33,14 +33,12 @@ public sealed class GatewayTokenRefreshTests : IDisposable
 {
     private readonly string _tempDir;
     private readonly string _blobPath;
-    private readonly string _authEventsPath;
 
     public GatewayTokenRefreshTests()
     {
         _tempDir = Path.Combine(Path.GetTempPath(), "cc-gw-refresh-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_tempDir);
         _blobPath = Path.Combine(_tempDir, "devthrottle-credential.bin");
-        _authEventsPath = Path.Combine(_tempDir, "devthrottle-auth-events.jsonl");
     }
 
     public void Dispose()
@@ -64,8 +62,7 @@ public sealed class GatewayTokenRefreshTests : IDisposable
         {
             var store = new WindowsProtectedTokenStore(_blobPath);
             var validator = new JwtAccessTokenValidator(GatewayTestJwt.SigningSecret);
-            var eventLog = new AuthEventLog(_authEventsPath);
-            return new DevThrottleAccountService(store, validator, eventLog, refresher);
+            return new DevThrottleAccountService(store, validator, refresher);
         }
         finally
         {

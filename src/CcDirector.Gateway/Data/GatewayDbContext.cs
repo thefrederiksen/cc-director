@@ -95,6 +95,12 @@ public sealed class GatewayDbContext : DbContext
     /// intervention and permission/sandbox decisions, never inferred from transcripts (issue #1771).</summary>
     public DbSet<GovernanceAuditEventEntity> GovernanceAuditEvents => Set<GovernanceAuditEventEntity>();
 
+    /// <summary>Per-tenant setting overrides (<c>tenant_settings</c>, issue #2017) - the per-tenant home the
+    /// AI / voice / car-mode / notification settings needed before they could be served on the hosted Gateway.
+    /// Tenant-scoped: an absent row means "no override" and the typed resolver returns the operator global
+    /// default, never another tenant's value.</summary>
+    public DbSet<TenantSettingEntity> TenantSettings => Set<TenantSettingEntity>();
+
     /// <summary>The account-to-tenant mapping (<c>tenants</c>), keyed by the verified Supabase subject. This
     /// is the GLOBAL mapping table (Hosted Multi-Tenancy increment 1) - deliberately NOT tenant-scoped, so it
     /// has no <c>tenant_id</c> column and no query filter; it is the table the filter's tenant values come
@@ -324,6 +330,16 @@ public sealed class GatewayDbContext : DbContext
             b.HasKey(e => new { e.TenantId, e.Key });
         });
 
+        modelBuilder.Entity<TenantSettingEntity>(b =>
+        {
+            b.ToTable("tenant_settings");
+            // COMPOSITE primary key (tenant_id, Key) - issue #2017, mirroring mission_notes. The setting Key is
+            // namespaced per tenant, so with Key ALONE two tenants overriding the same setting would collide at
+            // the database. Scoping the key by tenant lets each tenant own its own value for a given key. Key is
+            // a fixed identifier from TenantSettingKeys, compared ordinally (SQLite BINARY / Postgres "C").
+            b.HasKey(e => new { e.TenantId, e.Key });
+        });
+
         modelBuilder.Entity<GovernanceAuditEventEntity>(b =>
         {
             b.ToTable("governance_audit_events");
@@ -365,6 +381,11 @@ public sealed class GatewayDbContext : DbContext
             b.Property(e => e.StripeSubscriptionId).HasColumnName("stripe_subscription_id");
             b.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             b.Property(e => e.Livemode).HasColumnName("livemode");
+            // The two-tier plan column (hosted|pro), nullable. A plain text column on BOTH providers - no
+            // value converter and no uuid concern, unlike Subject - so it is mapped here in the provider-agnostic
+            // block, not in the Postgres-only section below. Read and exposed by EntitlementRegistry; never
+            // gates enrollment (either tier enrolls).
+            b.Property(e => e.Tier).HasColumnName("tier");
         });
 
         modelBuilder.Entity<TenantEntity>(b =>
@@ -423,6 +444,7 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<AccountHostedAiSpendEntity>(modelBuilder);
         ApplyTenantScope<MissionNoteEntity>(modelBuilder);
         ApplyTenantScope<GovernanceAuditEventEntity>(modelBuilder);
+        ApplyTenantScope<TenantSettingEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
 
@@ -453,6 +475,9 @@ public sealed class GatewayDbContext : DbContext
             modelBuilder.Entity<PushSubscriptionEntity>().Property(e => e.Endpoint).UseCollation("C");
             modelBuilder.Entity<SessionSpendEntity>().Property(e => e.SessionId).UseCollation("C");
             modelBuilder.Entity<MissionNoteEntity>().Property(e => e.Key).UseCollation("C");
+            // tenant_settings.Key is a fixed ordinally-compared identifier (issue #2017), same byte-ordinal
+            // equality requirement as mission_notes.Key - pin it to "C" so both providers agree exactly.
+            modelBuilder.Entity<TenantSettingEntity>().Property(e => e.Key).UseCollation("C");
             // The tenants mapping table's natural-key string columns (the tenant id primary key and the
             // account_subject unique index) rely on byte-ordinal equality/uniqueness, same as the keys above,
             // so pin them to "C" too - the account subject in particular must match EXACTLY on both providers.

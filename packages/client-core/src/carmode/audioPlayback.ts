@@ -15,10 +15,10 @@
  *  interrupt, or End Car Mode). Both are normal outcomes the turn machine branches on. */
 export type PlayOutcome = "ended" | "stopped";
 
-/** The lifecycle stamps a caller wants for telemetry, fired as the one clip walks its life. Times are
+/** The lifecycle stamps a caller wants for diagnostics, fired as the one clip walks its life. Times are
  *  left to the caller (performance.now()); the hooks only mark the transitions, never text. */
 export interface PlayClipHooks {
-  /** Fired the instant play() has been requested for this clip (the "play-started" telemetry mark). */
+  /** Fired the instant play() has been requested for this clip (the "play-started" diagnostics mark). */
   onPlayStarted?: () => void;
   /** Fired once when the clip is done, with how it ended, so the caller can record completed-vs-cutoff. */
   onPlayEnded?: (outcome: PlayOutcome) => void;
@@ -39,7 +39,7 @@ export interface PlayClipHooks {
  * @param audio the media element to play on (its src is set here)
  * @param url the object URL of the clip's audio blob
  * @param registerStop called with a function that, when invoked, stops this clip early
- * @param hooks optional lifecycle marks for telemetry
+ * @param hooks optional lifecycle marks for diagnostics
  */
 export function playClip(
   audio: HTMLAudioElement,
@@ -66,7 +66,7 @@ export function playClip(
     audio.src = url;
     hooks?.onPlayStarted?.();
     // A play() rejection is the mobile autoplay block (NotAllowedError when the play is not tied to a live
-    // user gesture): log the specific reason and mark it so the turn telemetry can show the reply never
+    // user gesture): log the specific reason and mark it so turn diagnostics can show the reply never
     // sounded, then treat it as a stop so the turn loop unwinds and the microphone returns (no silent
     // stall). The unlock-on-Start-gesture (useCarMode) is what prevents this from happening.
     void audio.play().catch((error: unknown) => {

@@ -1,44 +1,20 @@
-// The Gateway "machine / connection" settings surface (issue #1025, epic #967): the typed, same-origin
-// client the React Cockpit's Settings page reads and drives for everything that is NOT the AI tab (that
-// tab reuses ../api/ai). It is the shared-library port of the pieces of the retired Blazor
-// wwwroot/pages/settings.html "This machine" tab.
+// The Gateway per-account settings surface (issue #1025, epic #967): the typed, same-origin client the
+// React Cockpit's Settings page reads and drives for everything that is NOT the AI tab (that tab reuses
+// ../api/ai).
+//
+// Issue #2022 - the machine settings LEFT this surface. The "This machine" tab was retired: process
+// diagnostics + the auto-resolved address + version are now read-only on the About page (aboutClient),
+// start-at-login is the installer plus the `cc-devthrottle autostart` command, network addressing is
+// dropped, and brain restart/config is gone. So this client no longer has an addressing-mode or autostart
+// setter, and GET /gateway/settings now carries only the per-account settings the collapsed page renders.
 //
 // Every request is root-relative to the Gateway front door (never a Director address) and carries the
 // same Bearer via authHeaders(). A user action throws GatewayError carrying the Gateway's own message on
 // a non-2xx (the no-fallback rule).
 import { authHeaders, GatewayError } from "../api/client";
 
-/** The fleet network addressing mode: Tailscale front door (default) or the machine's real LAN IP. */
-export type AddressingMode = "tailscale" | "lan";
-
-/** The Gateway process + Cockpit block of GET /gateway/settings. */
-export interface GatewayCockpit {
-  port: number;
-  up: boolean;
-  url: string | null;
-}
-
-/** The per-user autostart Run-key state. `supported` is false on a host with no tray hook. */
-export interface AutostartState {
-  supported: boolean;
-  /** The effective state when supported; null when the host cannot report it. */
-  enabled: boolean | null;
-}
-
-/** The GET /gateway/settings snapshot the "This machine" tab renders. Read-only diagnostics plus the
- *  current values of the mutable machine settings (addressing mode, autostart, training capture). */
+/** The GET /gateway/settings snapshot the collapsed per-account Settings page renders (issue #2022). */
 export interface GatewaySettings {
-  version: string;
-  state: string;
-  port: number;
-  uptimeSeconds: number;
-  directors: number;
-  mode: string;
-  addressingMode: AddressingMode;
-  cockpit: GatewayCockpit;
-  autostart: AutostartState;
-  wingmanTrainingCapture: boolean;
-  telemetryConsent: boolean;
   // Snooze Length mission: the per-user default snooze length in minutes (one value across every device,
   // because they all talk to this one Gateway). Default 60. Always one of snoozePresets.
   snoozeDefaultMinutes: number;
@@ -93,33 +69,15 @@ async function putJson<T>(path: string, label: string, body: unknown, signal?: A
   return (await res.json()) as T;
 }
 
-// GET /gateway/settings - the whole "This machine" snapshot. Throws on transport failure so the page
-// shows an error banner rather than a fabricated empty state.
+// GET /gateway/settings - the per-account snapshot the collapsed page renders (issue #2022). Throws on
+// transport failure so the page shows an error banner rather than a fabricated empty state.
 export async function getGatewaySettings(signal?: AbortSignal): Promise<GatewaySettings> {
-  const body = (await getJson<Partial<GatewaySettings> & { cockpit?: Partial<GatewayCockpit>; autostart?: Partial<AutostartState> }>(
+  const body = (await getJson<Partial<GatewaySettings>>(
     "/gateway/settings",
     "GET /gateway/settings",
     signal,
   )) ?? {};
   return {
-    version: body.version ?? "",
-    state: body.state ?? "",
-    port: Number(body.port ?? 0),
-    uptimeSeconds: Number(body.uptimeSeconds ?? 0),
-    directors: Number(body.directors ?? 0),
-    mode: body.mode ?? "unknown",
-    addressingMode: body.addressingMode === "lan" ? "lan" : "tailscale",
-    cockpit: {
-      port: Number(body.cockpit?.port ?? 0),
-      up: Boolean(body.cockpit?.up),
-      url: body.cockpit?.url ?? null,
-    },
-    autostart: {
-      supported: Boolean(body.autostart?.supported),
-      enabled: body.autostart?.enabled ?? null,
-    },
-    wingmanTrainingCapture: Boolean(body.wingmanTrainingCapture),
-    telemetryConsent: Boolean(body.telemetryConsent),
     snoozeDefaultMinutes: Number(body.snoozeDefaultMinutes ?? 60),
     snoozePresets: Array.isArray(body.snoozePresets)
       ? body.snoozePresets.map(Number)
@@ -179,23 +137,7 @@ export async function setSnoozePresets(
   };
 }
 
-// PUT /gateway/addressing-mode { mode } - set the fleet network addressing mode. Applies to this host's
-// own Directors on their next restart (a per-machine, read-at-start setting). Returns the applied mode.
-export async function setAddressingMode(mode: AddressingMode, signal?: AbortSignal): Promise<AddressingMode> {
-  const body = await putJson<{ mode?: string }>("/gateway/addressing-mode", "PUT /gateway/addressing-mode", { mode }, signal);
-  return body.mode === "lan" ? "lan" : "tailscale";
-}
-
-// PUT /gateway/autostart { enabled } - toggle the per-user autostart Run-key. A host with no tray hook
-// answers { supported: false }; the caller keeps the checkbox disabled in that case.
-export async function setAutostart(enabled: boolean, signal?: AbortSignal): Promise<AutostartState> {
-  const body = await putJson<Partial<AutostartState>>("/gateway/autostart", "PUT /gateway/autostart", { enabled }, signal);
-  return { supported: Boolean(body.supported), enabled: body.enabled ?? null };
-}
-
-// PUT /gateway/wingman/training-capture { enabled } - capture wingman training data. Takes effect
-// immediately (read at capture time), no restart. Returns the applied state.
-export async function setTrainingCapture(enabled: boolean, signal?: AbortSignal): Promise<boolean> {
-  const body = await putJson<{ enabled?: boolean }>("/gateway/wingman/training-capture", "PUT /gateway/wingman/training-capture", { enabled }, signal);
-  return Boolean(body.enabled);
-}
+// Issue #2022: the machine-scoped setters that once lived here - setAddressingMode (network addressing was
+// dropped, auto-resolved), setAutostart (start-at-login moved to the installer + the `cc-devthrottle
+// autostart` command), and setTrainingCapture - are gone with the "This machine" tab. What remains is the
+// per-account time zone + snooze setters above.

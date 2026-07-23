@@ -13,6 +13,7 @@ using CcDirector.Core.Voice.Services;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.HostedAi;
+using CcDirector.Gateway.Settings;
 using CcDirector.Gateway.Tenancy;
 using CcDirector.Gateway.Voice;
 using CcDirector.Gateway.Wingman;
@@ -120,9 +121,10 @@ internal static class GatewayWingmanVoiceEndpoint
     public static void Map(
         IEndpointRouteBuilder app,
         DirectorRegistry registry,
-        Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider,
+        Func<TenantId, WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider,
         KeyVault vault,
         WingmanVoiceService voice,
+        TenantSettingsResolver tenantSettings,
         Streaming.PushedSessionStore? pushedSessions = null,
         DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = null,
         SessionOwnerCache? owners = null,
@@ -130,7 +132,7 @@ internal static class GatewayWingmanVoiceEndpoint
         Func<string>? instructionsProvider = null,
         HttpClient? ttsHttpClient = null,
         Voice.VoiceUploadStore? uploadStore = null,
-        Transcription.TranscriptionTelemetryLog? telemetry = null,
+        Transcription.TranscriptionHistoryLog? history = null,
         Transcription.TranscriptionAudioArchive? audioArchive = null,
         Tenancy.HostedTenantBoundary? tenantBoundary = null)
     {
@@ -163,7 +165,7 @@ internal static class GatewayWingmanVoiceEndpoint
         // (the resumable /wingman/utterance/complete and the one-shot /wingman/transcribe) go through
         // it, so they resolve the mode + key and pick the hosted endpoint exactly the same way every
         // other batch caller does - no second resolver.
-        var transcription = new Transcription.GatewayTranscriptionService(vault, telemetry: telemetry, audioArchive: audioArchive);
+        var transcription = new Transcription.GatewayTranscriptionService(vault, history: history, audioArchive: audioArchive);
 
         // Which voice sessions have a ready, playable spoken summary right now (the phone's list
         // shows a play button on these and can play without entering).
@@ -355,6 +357,9 @@ internal static class GatewayWingmanVoiceEndpoint
         // request Voice overrides it. The credential comes from the gateway key vault.
         app.MapPost("/wingman/tts", async (WingmanTtsRequest? req, HttpContext ctx, CancellationToken ct) =>
         {
+            var reqTenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" }, statusCode: StatusCodes.Status403Forbidden);
             if (req is null || string.IsNullOrWhiteSpace(req.Text))
                 return Results.Json(new { error = "text is required" }, statusCode: StatusCodes.Status400BadRequest);
 
@@ -373,8 +378,8 @@ internal static class GatewayWingmanVoiceEndpoint
             if (wasCut)
                 FileLog.Write($"[GatewayWingmanVoice] tts text EXCEEDED {Wingman.NarrationText.MaxChars} chars " +
                               $"({req.Text.Length}) - spoken text cut and the listener told");
-            var voice = string.IsNullOrWhiteSpace(req.Voice) ? TtsVoiceConfig.Resolve(mode) : req.Voice.Trim();
-            var model = string.IsNullOrWhiteSpace(req.Model) ? TtsModelConfig.Resolve(mode) : req.Model.Trim();
+            var voice = string.IsNullOrWhiteSpace(req.Voice) ? tenantSettings.TtsVoice(reqTenant.Value, mode) : req.Voice.Trim();
+            var model = string.IsNullOrWhiteSpace(req.Model) ? tenantSettings.TtsModel(reqTenant.Value, mode) : req.Model.Trim();
             var url = tts.BaseUrl.TrimEnd('/') + "/audio/speech";
             // Time the read-aloud call (request -> done) so its speed is in the log, matching the
             // narration path (WingmanVoiceService) and transcription's transcribeMs.
@@ -539,11 +544,9 @@ internal static class GatewayWingmanVoiceEndpoint
                 var recentContext = string.IsNullOrWhiteSpace(priorContext)
                     ? "You: " + req.Text.Trim()
                     : priorContext + "\n\nYou: " + req.Text.Trim();
-                var t = await translator.TranslateAsync(recentContext, reply, SessionTitle(reqTenant.Value, sid), CancellationToken.None);
+                var t = await translator.TranslateAsync(reqTenant.Value, recentContext, reply, SessionTitle(reqTenant.Value, sid), CancellationToken.None);
                 await voice.StoreSpokenAsync(reqTenant.Value, sid, t.Spoken, reply, CancellationToken.None);   // make it a voice session + cache audio
                 FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: replyLen={reply.Length}, spokenLen={t.Spoken.Length}");
-                // Training capture (no-op unless the setting is on); fire-and-forget so it adds no latency.
-                _ = voice.CaptureTrainingAsync(route, sid, "voice-turn", reply, recentContext, t.Spoken, t.ReplySeconds, CancellationToken.None);
                 return Results.Json(new { reply, spoken = t.Spoken, replySeconds = t.ReplySeconds });
             }
             catch (Exception ex)
@@ -656,11 +659,9 @@ internal static class GatewayWingmanVoiceEndpoint
             voice.BeginGenerating(reqTenant.Value, sid);
             try
             {
-                var t = await translator.TranslateAsync(recentContext, lastReply, SessionTitle(reqTenant.Value, sid), CancellationToken.None);
+                var t = await translator.TranslateAsync(reqTenant.Value, recentContext, lastReply, SessionTitle(reqTenant.Value, sid), CancellationToken.None);
                 await voice.StoreSpokenAsync(reqTenant.Value, sid, t.Spoken, lastReply, CancellationToken.None);   // cache spoken + audio, ready to play
                 FileLog.Write($"[GatewayWingmanVoice] explain sid={sid}: replyLen={lastReply.Length}, spokenLen={t.Spoken.Length}");
-                // Training capture (no-op unless the setting is on); fire-and-forget so it adds no latency.
-                _ = voice.CaptureTrainingAsync(route, sid, "explain", lastReply, recentContext, t.Spoken, t.ReplySeconds, CancellationToken.None);
                 return Results.Json(new { reply = lastReply, spoken = t.Spoken, replySeconds = t.ReplySeconds });
             }
             catch (Exception ex) when (ex is TimeoutException or HttpRequestException)
@@ -690,14 +691,17 @@ internal static class GatewayWingmanVoiceEndpoint
             finally { voice.EndGenerating(reqTenant.Value, sid); }
         });
 
-        app.MapPost("/wingman/ask-direct", async (WingmanVoiceTurnRequest? req, CancellationToken ct) =>
+        app.MapPost("/wingman/ask-direct", async (WingmanVoiceTurnRequest? req, HttpContext ctx, CancellationToken ct) =>
         {
             FileLog.Write($"[GatewayWingmanVoice] ask-direct textLen={req?.Text?.Length ?? 0}");
+            var reqTenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" }, statusCode: StatusCodes.Status403Forbidden);
             if (req is null || string.IsNullOrWhiteSpace(req.Text))
                 return Results.Json(new { error = "text is required" }, statusCode: StatusCodes.Status400BadRequest);
             try
             {
-                var t = await translator.AskDirectAsync(req.Text, ct);
+                var t = await translator.AskDirectAsync(reqTenant.Value, req.Text, ct);
                 return Results.Json(new { spoken = t.Spoken, replySeconds = t.ReplySeconds });
             }
             catch (Exception ex)
@@ -711,14 +715,17 @@ internal static class GatewayWingmanVoiceEndpoint
         // free-text question ABOUT THE PRODUCT here and the warm brain answers it, grounded in a
         // DevThrottle system prompt. The Cockpit talks only to the Gateway, never a Director - this
         // is that Gateway endpoint. Same warm brain as ask-direct, different grounding.
-        app.MapPost("/wingman/ask-devthrottle", async (WingmanVoiceTurnRequest? req, CancellationToken ct) =>
+        app.MapPost("/wingman/ask-devthrottle", async (WingmanVoiceTurnRequest? req, HttpContext ctx, CancellationToken ct) =>
         {
             FileLog.Write($"[GatewayWingmanVoice] ask-devthrottle textLen={req?.Text?.Length ?? 0}");
+            var reqTenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" }, statusCode: StatusCodes.Status403Forbidden);
             if (req is null || string.IsNullOrWhiteSpace(req.Text))
                 return Results.Json(new { error = "text is required" }, statusCode: StatusCodes.Status400BadRequest);
             try
             {
-                var t = await translator.AskAboutDevThrottleAsync(req.Text, ct);
+                var t = await translator.AskAboutDevThrottleAsync(reqTenant.Value, req.Text, ct);
                 FileLog.Write($"[GatewayWingmanVoice] ask-devthrottle OK: answerLen={t.Spoken.Length}, replySeconds={t.ReplySeconds:F1}");
                 return Results.Json(new { spoken = t.Spoken, replySeconds = t.ReplySeconds });
             }
@@ -743,7 +750,7 @@ internal static class GatewayWingmanVoiceEndpoint
             var route = await ResolveRouteAsync(reqTenant.Value, sid);
             if (route is null)
                 return Results.Json(new { error = "session not found on any director" }, statusCode: StatusCodes.Status404NotFound);
-            var menu = await DetectMenuAtAsync(route, translator, sid, ct);
+            var menu = await DetectMenuAtAsync(reqTenant.Value, route, translator, sid, ct);
             return Results.Json(MenuJson(menu));
         });
 
@@ -941,7 +948,7 @@ internal static class GatewayWingmanVoiceEndpoint
     /// is not fed here at all.
     /// </summary>
     private static async Task<WaitingScreen> DetectWaitingScreenAtAsync(
-        SessionVerbClient route, WingmanTranslator translator, string sid, CancellationToken ct)
+        TenantId tenant, SessionVerbClient route, WingmanTranslator translator, string sid, CancellationToken ct)
     {
         // The LIVE screen grid is the ONLY read that decides the verdict (rows + cursor + alternate-screen
         // flag come from one atomic Director snapshot).
@@ -980,7 +987,7 @@ internal static class GatewayWingmanVoiceEndpoint
         var liveRows = grid.Rows ?? new List<string>();
         var liveText = string.Join("\n", liveRows);
         WingmanMenu menu;
-        try { menu = await translator.DetectMenuAsync(liveText, ct); }
+        try { menu = await translator.DetectMenuAsync(tenant, liveText, ct); }
         catch (Exception ex)
         {
             // Looks like a menu but the brain could not read it (unreachable / no key / error). Fail closed.
@@ -1009,9 +1016,9 @@ internal static class GatewayWingmanVoiceEndpoint
     /// send path (voice-turn) uses the pure <see cref="ClassifyLiveScreenAtAsync"/> instead and only ever
     /// types on a plain-text composer.</summary>
     private static async Task<WingmanMenu> DetectMenuAtAsync(
-        SessionVerbClient route, WingmanTranslator translator, string sid, CancellationToken ct)
+        TenantId tenant, SessionVerbClient route, WingmanTranslator translator, string sid, CancellationToken ct)
     {
-        var screen = await DetectWaitingScreenAtAsync(route, translator, sid, ct);
+        var screen = await DetectWaitingScreenAtAsync(tenant, route, translator, sid, ct);
         return screen.Kind == WaitingKind.Menu ? screen.Menu : new WingmanMenu { IsMenu = false };
     }
 

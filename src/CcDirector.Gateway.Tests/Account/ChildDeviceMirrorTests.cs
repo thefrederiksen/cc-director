@@ -168,8 +168,7 @@ public sealed class ChildDeviceMirrorTests
         Environment.SetEnvironmentVariable(GatewayAccountFactory.SigningSecretEnvVar, GatewayTestJwt.SigningSecret);
         try
         {
-            var authEventsLog = Path.Combine(Path.GetTempPath(), "cc-gw-child-mirror-" + Guid.NewGuid().ToString("N") + ".jsonl");
-            var service = GatewayAccountFactory.Build(new InMemoryTokenStore(), authEventsLog);
+            var service = GatewayAccountFactory.Build(new InMemoryTokenStore());
             if (signedIn)
                 service.StoreTokens(new DevThrottleTokens(GatewayTestJwt.Create(DateTime.UtcNow.AddHours(1)), "refresh-875"));
             return service;
@@ -448,14 +447,12 @@ public sealed class ChildDeviceMirrorTests
     /// </summary>
     private static DevThrottleAccountService MakePersistentRefreshFailingAccount()
     {
-        var authEventsLog = Path.Combine(Path.GetTempPath(), "cc-gw-child-mirror-refreshfail-" + Guid.NewGuid().ToString("N") + ".jsonl");
         var store = new InMemoryTokenStore();
         var validator = new JwtAccessTokenValidator(GatewayTestJwt.SigningSecret);
-        var eventLog = new AuthEventLog(authEventsLog);
         // A resolvable endpoint but a null anon key -> the exchange is persistently misconfigured (issue #911)
         // and short-circuits before sending any request.
         var refresher = new GatewayHttpTokenRefresher(new HttpClient(), () => "http://127.0.0.1:9/refresh", () => null);
-        var service = new DevThrottleAccountService(store, validator, eventLog, refresher);
+        var service = new DevThrottleAccountService(store, validator, refresher);
         service.StoreTokens(new DevThrottleTokens(GatewayTestJwt.Create(DateTime.UtcNow.AddHours(-1)), "seed-refresh"));
         return service;
     }

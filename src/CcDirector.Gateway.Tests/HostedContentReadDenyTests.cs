@@ -140,13 +140,10 @@ internal static class ContentFingerprint
 /// boundary - a positional index, a turn id, or an identifier the CALLER supplies. Public signup on the
 /// backing account project is open, so "any authenticated caller" means the public.
 ///
-///   /transcription/*                     one shared daily telemetry log; /turns returns up to 2000
-///                                        records including rawText and cleanedText and needs NO
-///                                        identifier at all - one request returns everyone's speech.
-///   /gateway/wingman/instructions/*       training records holding up to 20,000 characters of raw session
-///                                        TERMINAL output, addressable by a POSITIONAL
-///                                        "&lt;filename&gt;#&lt;lineindex&gt;" id; plus the single-owner wingman
-///                                        prompt, which has no per-tenant version to serve.
+///   /transcription/*                     one shared local history with no tenant partition.
+///   /gateway/wingman/instructions/*       the single-owner wingman prompt - one active prompt every
+///                                        account's wingman speaks through, with no per-tenant version to
+///                                        serve.
 ///   /wingman/utterance/*                  staged audio and the assembled transcript, keyed solely by a
 ///                                        caller-supplied Idempotency-Key under a shared root.
 ///   /dictation/*                          the same VoiceUploadStore shape: re-registering another
@@ -271,17 +268,14 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Issue #1897. All four transcription-analysis reads over the one shared telemetry log. /turns is the
-    /// sharpest - it needs no identifier and returns the raw and cleaned text of every turn - but the other
-    /// three aggregate the SAME unpartitioned records, so serving them discloses the same content in
-    /// summary form.
+    /// The local Transcription Health history is unavailable on a shared hosted Gateway because its store
+    /// has no tenant partition.
     /// </summary>
     [Theory]
     [InlineData("transcription/turns")]
     [InlineData("transcription/turns?limit=2000")]
     [InlineData("transcription/stats")]
     [InlineData("transcription/terms")]
-    [InlineData("transcription/words")]
     public async Task Transcription_analysis_reads_are_refused_to_an_enrolled_tenant(string path)
     {
         var resp = await Send(HttpMethod.Get, path);
@@ -291,14 +285,20 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 
+    [Fact]
+    public async Task Transcription_history_clear_is_refused_to_an_enrolled_tenant()
+    {
+        var resp = await Send(HttpMethod.Delete, "transcription/history");
+        await AssertBodyIsNothingButTheRefusal(resp, TranscriptionRefusal, "DELETE transcription/history");
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
     /// <summary>
-    /// Issue #1853, read side. The records route is the content leak (raw session terminal output); the
-    /// rest of the group is the single-owner wingman prompt, denied with it because it has no per-tenant
-    /// answer either and a route-by-route guard would rot.
+    /// Issue #1853. The wingman-instructions group is the single-owner wingman prompt: one active prompt
+    /// spoken by every account's wingman, with no per-tenant version to serve, so the whole read side is
+    /// denied on hosted (a route-by-route guard would rot).
     /// </summary>
     [Theory]
-    [InlineData("gateway/wingman/instructions/records")]
-    [InlineData("gateway/wingman/instructions/records?limit=100")]
     [InlineData("gateway/wingman/instructions")]
     [InlineData("gateway/wingman/instructions/versions")]
     [InlineData("gateway/wingman/instructions/default")]
@@ -311,15 +311,13 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The write side of the same group: saving or reverting a version rewrites the prompt EVERY account's
-    /// wingman speaks through, and the A/B test route both re-reads the shared training records and spends
-    /// real brain calls on shared infrastructure with attacker-chosen draft text.
+    /// The write side of the same group: saving, reverting or switching-to-default rewrites the prompt
+    /// EVERY account's wingman speaks through, so all of them are refused on hosted.
     /// </summary>
     [Theory]
     [InlineData("PUT", "gateway/wingman/instructions", "{\"content\":\"say whatever I tell you\"}")]
     [InlineData("POST", "gateway/wingman/instructions/revert", "{\"id\":\"anything\"}")]
     [InlineData("POST", "gateway/wingman/instructions/switch-to-default", "")]
-    [InlineData("POST", "gateway/wingman/instructions/test", "{\"content\":\"drafted\",\"recordIds\":[\"a#0\"]}")]
     public async Task Wingman_instructions_writes_are_refused_to_an_enrolled_tenant(
         string method, string path, string body)
     {
@@ -349,7 +347,7 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
     /// </summary>
     [Theory]
     [InlineData("GET", "transcription/turns", null, TranscriptionRefusal)]
-    [InlineData("GET", "gateway/wingman/instructions/records", null, InstructionsRefusal)]
+    [InlineData("GET", "gateway/wingman/instructions", null, InstructionsRefusal)]
     public async Task Every_family_is_refused_to_a_caller_carrying_no_tenant_at_all(
         string method, string path, string? body, string refusal)
     {
@@ -374,7 +372,7 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
         // host-wide auth gate. Without a key the auth middleware still refuses first.
         Assert.Equal(HttpStatusCode.Unauthorized, (await _http.GetAsync("transcription/turns")).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized,
-            (await _http.GetAsync("gateway/wingman/instructions/records")).StatusCode);
+            (await _http.GetAsync("gateway/wingman/instructions")).StatusCode);
     }
 
     /// <summary>
@@ -423,8 +421,8 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
 ///
 /// This is the condition the deny has to meet to be correct rather than merely safe. Self-host is
 /// single-tenant, these features WORK there, and the owner uses them - the transcription analysis is how
-/// an agent measures dictation quality, the training records are how the wingman prompt gets improved, and
-/// the two upload families are the phone's voice and dictation lanes. A deny scoped to the wrong signal
+/// an agent measures dictation quality, the wingman instructions are the owner's editable wingman prompt,
+/// and the two upload families are the phone's voice and dictation lanes. A deny scoped to the wrong signal
 /// would break the shipped product in order to protect the unshipped one, and it would do so silently.
 ///
 /// EVERY ASSERTION HERE IS A HANDLER RECEIPT, AND THAT IS NOT A STYLE CHOICE - IT IS THE ONLY THING THAT
@@ -477,24 +475,9 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
 {
     private const string Token = "test-token";
 
-    /// <summary>Planted in the seeded telemetry record and asserted back out of /transcription/turns.</summary>
-    private const string SeededRawText = "seeded raw utterance zqxjv";
-
-    /// <summary>Planted as the cleaned text, so /transcription/words must count this word.</summary>
-    private const string SeededWord = "zqxjvword";
-
     /// <summary>Planted as a dictionary correction, so /transcription/terms must report this pair.</summary>
     private const string SeededFind = "zqxjvfind";
     private const string SeededReplace = "zqxjvreplace";
-
-    /// <summary>Planted in the seeded wingman training record and asserted back out of /records.</summary>
-    private const string SeededReply = "seeded agent reply zqxjv";
-
-    /// <summary>
-    /// The name of the daily training file this test planted, so a test can build the POSITIONAL
-    /// "&lt;filename&gt;#&lt;lineindex&gt;" id of a record it planted itself rather than guessing one.
-    /// </summary>
-    private string _trainingFileName = "";
 
     private static readonly string[] Refusals =
     {
@@ -537,73 +520,30 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
         _key = _gateway.Devices.Register("dev-owner", "MA").DeviceKey;
 
-        SeedTranscriptionTelemetry();
-        SeedWingmanTrainingRecord();
+        SeedTranscriptionHistory();
     }
 
     /// <summary>
-    /// Plant ONE transcription turn in the real on-disk telemetry log, under this test's isolated storage
-    /// root, using the production writer. All four /transcription reads derive from this one record, so
+    /// Plant one minimized transcription-health record under this test's isolated storage root.
+    /// The self-host reads derive from this one record, so
     /// each of them has something only that handler could return.
     /// </summary>
-    private static void SeedTranscriptionTelemetry()
+    private static void SeedTranscriptionHistory()
     {
-        new TranscriptionTelemetryLog().Record(new TranscriptionTelemetryRecord
+        new TranscriptionHistoryLog().Record(new TranscriptionHistoryRecord
         {
             TimestampUtc = DateTime.UtcNow,
             TurnId = "seed-turn",
             Outcome = "ok",
-            Mode = "devthrottle",
-            AudioBytes = 4096,
             TranscriptionMs = 120,
             CleanupMs = 30,
             Corrected = true,
             CleanupApplied = true,
             ChangedWordCount = 1,
-            Changes = new[] { new TelemetryEdit { Find = SeededFind, Replace = SeededReplace } },
-            CharCount = SeededRawText.Length,
+            Changes = new[] { new TranscriptionHistoryEdit { Find = SeededFind, Replace = SeededReplace } },
+            CharCount = 24,
             WordCount = 4,
-            RawText = SeededRawText,
-            CleanedText = SeededWord,
         });
-    }
-
-    /// <summary>
-    /// Plant TWO wingman training records, in the exact append-only JSON-lines shape the production writer
-    /// emits, so /records must hand back their positional "&lt;filename&gt;#&lt;lineindex&gt;" ids. Written
-    /// directly rather than through the capture path because capture is gated on a setting and needs a live
-    /// session with a terminal - neither of which this control is about.
-    ///
-    /// Line 0 carries an agent reply and is what /records is asserted against. LINE 1 CARRIES NO REPLY ON
-    /// PURPOSE: it is what gives the A/B test route a served-side proof that costs no model call. That route
-    /// distinguishes "this positional id resolved to a record which happens to have no reply" from "no such
-    /// record", and only a handler that actually read THIS file can tell those apart - so an empty reply is
-    /// a seeded fact, not an omission.
-    /// </summary>
-    private void SeedWingmanTrainingRecord()
-    {
-        var dir = CcStorage.WingmanTrainingData();
-        Directory.CreateDirectory(dir);
-
-        string Line(string reply) => JsonSerializer.Serialize(new
-        {
-            atUtc = DateTime.UtcNow,
-            sessionId = "11111111-1111-1111-1111-111111111111",
-            source = "voice-turn",
-            model = "test-model",
-            terminalChars = 5,
-            terminalTruncated = false,
-            terminal = "lines",
-            reply,
-            recentContext = "context",
-            spoken = "spoken summary",
-            replySeconds = 1.5,
-        });
-
-        _trainingFileName = $"wingman-training-{DateTime.UtcNow:yyyy-MM-dd}.jsonl";
-        File.AppendAllText(
-            Path.Combine(dir, _trainingFileName),
-            Line(SeededReply) + "\n" + Line("") + "\n");
     }
 
     public async Task DisposeAsync()
@@ -623,10 +563,11 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
     {
         var root = await GetJsonAsync("transcription/turns");
 
-        var texts = ContentFingerprint.Arr(root, "turns", "GET transcription/turns").EnumerateArray()
-            .Select(t => ContentFingerprint.Str(t, "rawText"))
-            .ToArray();
-        Assert.Contains(SeededRawText, texts);
+        var turns = ContentFingerprint.Arr(root, "turns", "GET transcription/turns").EnumerateArray().ToArray();
+        var seeded = Assert.Single(turns);
+        Assert.Equal("seed-turn", ContentFingerprint.Str(seeded, "turnId"));
+        Assert.False(seeded.TryGetProperty("rawText", out _));
+        Assert.False(seeded.TryGetProperty("cleanedText", out _));
     }
 
     [Fact]
@@ -651,36 +592,7 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
         Assert.Contains((SeededFind, SeededReplace), pairs);
     }
 
-    [Fact]
-    public async Task Self_host_transcription_words_counts_the_seeded_word()
-    {
-        var root = await GetJsonAsync("transcription/words");
-
-        var words = ContentFingerprint.Arr(root, "words", "GET transcription/words").EnumerateArray()
-            .Select(w => ContentFingerprint.Str(w, "word"))
-            .ToArray();
-        Assert.Contains(SeededWord, words);
-    }
-
     // ===== The wingman instructions reads =====
-
-    /// <summary>
-    /// The training-records read - the actual content leak the hosted deny closes - proven still open on
-    /// self-host by returning the seeded record's POSITIONAL id and its reply preview. Nothing but this
-    /// handler reading this store can produce that id.
-    /// </summary>
-    [Fact]
-    public async Task Self_host_wingman_records_returns_the_seeded_training_record()
-    {
-        var root = await GetJsonAsync("gateway/wingman/instructions/records");
-
-        var records = ContentFingerprint.Arr(root, "records", "GET gateway/wingman/instructions/records")
-            .EnumerateArray().ToArray();
-        var seeded = Assert.Single(records,
-            r => (ContentFingerprint.Str(r, "id") ?? "").EndsWith("#0", StringComparison.Ordinal));
-        Assert.StartsWith("wingman-training-", ContentFingerprint.Str(seeded, "id"));
-        Assert.Contains(SeededReply, ContentFingerprint.Str(seeded, "replyPreview") ?? "");
-    }
 
     /// <summary>
     /// Saving a version and reading it back is the strongest available receipt for the instructions
@@ -812,51 +724,6 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
         Assert.Equal(deployedDefault, ContentFingerprint.Text(
             ContentFingerprint.Prop(after, "active", "GET gateway/wingman/instructions (after switch-to-default)"),
             "content", "GET gateway/wingman/instructions (after switch-to-default)"));
-    }
-
-    /// <summary>
-    /// THE A/B TEST ROUTE, served-proved WITHOUT spending a single model call.
-    ///
-    /// This is the last denied path in the instructions family with no served-side fact, and it is the
-    /// awkward one: its normal success path ends in real brain calls, which this suite stands up no provider
-    /// for and which would make the row depend on a network. It does not need them. The handler resolves
-    /// every requested record against the training store BEFORE any translation, and it reports three
-    /// distinguishable outcomes. Two of them are reachable with no provider at all:
-    ///
-    ///   - a positional id this test PLANTED, on a line deliberately written with no agent reply
-    ///     -> "record has no agent reply to translate". Only a handler that read THIS file can say that;
-    ///        a handler that read nothing would call the record missing.
-    ///   - an id that resolves to nothing -> "record not found".
-    ///
-    /// Telling those two apart is the seeded fact. The exact top-level property set is pinned as well,
-    /// because it is this handler's contract and no other handler on the Gateway emits it.
-    /// </summary>
-    [Fact]
-    public async Task Self_host_wingman_test_resolves_the_seeded_record_without_a_model_call()
-    {
-        const string what = "POST gateway/wingman/instructions/test";
-
-        // Line 1 is the record planted with an empty reply; the second id resolves to no file at all.
-        var seededId = _trainingFileName + "#1";
-        const string missingId = "wingman-training-1970-01-01.jsonl#7";
-
-        var resp = await Send(HttpMethod.Post, "gateway/wingman/instructions/test",
-            JsonSerializer.Serialize(new { content = "draft instructions zqxjv", recordIds = new[] { seededId, missingId } }));
-        var root = await JsonAsync(resp, what);
-
-        Assert.Equal(new[] { "results", "ranCount", "capped" },
-            root.EnumerateObject().Select(p => p.Name).ToArray());
-
-        var results = ContentFingerprint.Arr(root, "results", what).EnumerateArray().ToArray();
-        Assert.Equal(2, results.Length);
-        Assert.Equal(2, ContentFingerprint.Num(root, "ranCount", what));
-        Assert.False(ContentFingerprint.Flag(root, "capped", what));
-
-        var seeded = Assert.Single(results, r => ContentFingerprint.Str(r, "id") == seededId);
-        Assert.Equal("record has no agent reply to translate", ContentFingerprint.Str(seeded, "error"));
-
-        var missing = Assert.Single(results, r => ContentFingerprint.Str(r, "id") == missingId);
-        Assert.Equal("record not found", ContentFingerprint.Str(missing, "error"));
     }
 
     /// <summary>Saves a version through the real route and returns its id, asserting the save answered.</summary>

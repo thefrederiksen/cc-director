@@ -267,6 +267,10 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                         .HasColumnType("text")
                         .HasColumnName("stripe_subscription_id");
 
+                    b.Property<string>("Tier")
+                        .HasColumnType("text")
+                        .HasColumnName("tier");
+
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at");
@@ -540,6 +544,30 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                         .IsUnique();
 
                     b.ToTable("tenants", "gateway");
+                });
+
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.TenantSettingEntity", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("Key")
+                        .HasColumnType("text")
+                        .UseCollation("C");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Value")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("TenantId", "Key");
+
+                    b.HasIndex("TenantId");
+
+                    b.ToTable("tenant_settings", "gateway");
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.WingmanInstructionEntity", b =>

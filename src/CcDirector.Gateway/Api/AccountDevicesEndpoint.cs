@@ -13,7 +13,7 @@ namespace CcDirector.Gateway.Api;
 /// last-seen and a per-device revoke, but the Cockpit must NEVER hold the account token or call the cloud
 /// directly - the token lives on the Gateway. So the Gateway proxies: it reads its own stored account
 /// token (<see cref="DevThrottleAccountService.GetAccessTokenForForwarding"/>, the SAME egress credential
-/// it already uses to forward telemetry/login to the cloud), calls the cloud device registry
+/// it already uses for account operations), calls the cloud device registry
 /// (<see cref="DeviceRegistryClient"/>, the cloud device registry), and returns a local,
 /// token-free DTO.
 ///

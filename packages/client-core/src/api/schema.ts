@@ -3929,7 +3929,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/carmode/telemetry": {
+    "/carmode/diagnostics": {
         parameters: {
             query?: never;
             header?: never;
@@ -3947,7 +3947,7 @@ export interface paths {
             };
             requestBody?: {
                 content: {
-                    "application/json": null | components["schemas"]["CarModeTelemetryPost"];
+                    "application/json": null | components["schemas"]["CarModeDiagnosticsPost"];
                 };
             };
             responses: {
@@ -3960,13 +3960,30 @@ export interface paths {
                 };
             };
         };
-        delete?: never;
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/carmode/telemetry/data": {
+    "/carmode/diagnostics/data": {
         parameters: {
             query?: never;
             header?: never;
@@ -4815,72 +4832,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/telemetry/login": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description OK */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/telemetry/director-startup": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description OK */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/account/status": {
         parameters: {
             query?: never;
@@ -5350,14 +5301,17 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/transcription/words": {
+    "/transcription/history": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: {
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: {
             parameters: {
                 query?: never;
                 header?: never;
@@ -5375,9 +5329,6 @@ export interface paths {
                 };
             };
         };
-        put?: never;
-        post?: never;
-        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -6378,56 +6329,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/gateway/telemetry-consent": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description OK */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
-        put: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description OK */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/gateway/addressing-mode": {
         parameters: {
             query?: never;
@@ -7301,7 +7202,7 @@ export interface components {
             bodyHtml?: null | string;
             attachments?: null | components["schemas"]["AccountEmailAttachment"][];
         };
-        CarModeTelemetryPost: {
+        CarModeDiagnosticsPost: {
             turnId?: string;
             /** Format: double */
             pauseToTranscribeMs?: number | string;

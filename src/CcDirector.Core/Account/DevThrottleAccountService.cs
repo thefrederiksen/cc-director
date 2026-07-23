@@ -20,13 +20,12 @@ public sealed class DevThrottleAccountService
     /// <summary>
     /// How much life must remain on the access token before the background refresh renews it (issue
     /// #876). Renewing PROACTIVELY - inside this margin, not only after expiry - means outbound calls
-    /// (device heartbeat, telemetry forwarding) never present an already-expired token.
+    /// device and hosted-service calls never present an already-expired token.
     /// </summary>
     public static readonly TimeSpan RenewalMargin = TimeSpan.FromMinutes(10);
 
     private readonly IProtectedTokenStore _store;
     private readonly JwtAccessTokenValidator _validator;
-    private readonly AuthEventLog _eventLog;
     private readonly ITokenRefresher _refresher;
     private readonly TimeProvider _timeProvider;
     private readonly object _gate = new();
@@ -46,27 +45,23 @@ public sealed class DevThrottleAccountService
     /// </summary>
     /// <param name="store">The operating system credential store binding (encrypted at rest).</param>
     /// <param name="validator">The local signature-and-expiry validator (no network).</param>
-    /// <param name="eventLog">The authentication-floor event recorder.</param>
     /// <param name="refresher">The backend refresh-token exchange (the one network-touching seam).</param>
     /// <param name="timeProvider">Time source for the proactive-renewal margin; defaults to the system clock. Injected so tests control "now".</param>
     public DevThrottleAccountService(
         IProtectedTokenStore store,
         JwtAccessTokenValidator validator,
-        AuthEventLog eventLog,
         ITokenRefresher refresher,
         TimeProvider? timeProvider = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _validator = validator ?? throw new ArgumentNullException(nameof(validator));
-        _eventLog = eventLog ?? throw new ArgumentNullException(nameof(eventLog));
         _refresher = refresher ?? throw new ArgumentNullException(nameof(refresher));
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     /// <summary>
     /// Stores the token pair handed back by the login-completion flow in the operating system
-    /// credential store. Records a "logged-in" event the first time a credential is stored on this
-    /// install (a re-store of an already logged-in install does not re-record).
+    /// credential store.
     /// </summary>
     public void StoreTokens(DevThrottleTokens tokens)
     {
@@ -76,10 +71,7 @@ public sealed class DevThrottleAccountService
         FileLog.Write("[DevThrottleAccountService] StoreTokens: storing token pair in credential store");
         lock (_gate)
         {
-            var wasLoggedInBefore = _store.HasTokens;
             _store.Save(tokens);
-            if (!wasLoggedInBefore)
-                _eventLog.RecordLoggedIn();
         }
         FileLog.Write("[DevThrottleAccountService] StoreTokens: stored");
     }
@@ -219,12 +211,9 @@ public sealed class DevThrottleAccountService
                 FileLog.Write("[DevThrottleAccountService] RefreshIfNeededAsync: backend definitively rejected the refresh token (session revoked or rotated away) -> clearing the dead credential; a new sign-in is required");
                 lock (_gate)
                 {
-                    var wasLoggedIn = _store.HasTokens;
                     _store.Clear();
                     // The credential is gone; there is nothing left to renew, so reset the signal.
                     _refreshPersistentlyFailing = false;
-                    if (wasLoggedIn)
-                        _eventLog.RecordLoggedOut();
                 }
                 return false;
             }
@@ -314,7 +303,7 @@ public sealed class DevThrottleAccountService
 
     /// <summary>
     /// Returns the stored access token to attach when this install acts as the single egress to the
-    /// cloud (the Gateway forwarding telemetry on the Director's behalf, issue #639), or null when the
+    /// cloud (the Gateway performing an authenticated account operation), or null when the
     /// install is not signed in. "Signed in" here is the same local check <see cref="IsLoggedIn"/>
     /// applies - a stored token whose signature verifies and is valid-or-renewable - so a tampered or
     /// absent credential yields null and the caller must NOT forward. The returned token value is for
@@ -342,7 +331,7 @@ public sealed class DevThrottleAccountService
     }
 
     /// <summary>
-    /// Clears the stored credential and records a "logout" event. After this the next
+    /// Clears the stored credential. After this the next
     /// <see cref="IsLoggedIn"/> returns false.
     /// </summary>
     public void Logout()
@@ -350,10 +339,7 @@ public sealed class DevThrottleAccountService
         FileLog.Write("[DevThrottleAccountService] Logout: clearing credential store");
         lock (_gate)
         {
-            var wasLoggedIn = _store.HasTokens;
             _store.Clear();
-            if (wasLoggedIn)
-                _eventLog.RecordLoggedOut();
         }
         FileLog.Write("[DevThrottleAccountService] Logout: cleared");
     }

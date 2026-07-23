@@ -92,8 +92,7 @@ public sealed class BrowserDeviceEnrollmentTests
         Environment.SetEnvironmentVariable(GatewayAccountFactory.SigningSecretEnvVar, GatewayTestJwt.SigningSecret);
         try
         {
-            var authEventsLog = Path.Combine(Path.GetTempPath(), "cc-gw-browser-enroll-" + Guid.NewGuid().ToString("N") + ".jsonl");
-            var service = GatewayAccountFactory.Build(new InMemoryTokenStore(), authEventsLog);
+            var service = GatewayAccountFactory.Build(new InMemoryTokenStore());
             service.StoreTokens(new DevThrottleTokens(GatewayTestJwt.Create(DateTime.UtcNow.AddHours(1)), "refresh-1088"));
             return service;
         }

@@ -2,6 +2,7 @@ using System.Text;
 using CcDirector.AgentBrain;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Drivers;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Wingman;
 using Xunit;
 using Xunit.Abstractions;
@@ -63,7 +64,7 @@ public sealed class WingmanTranslatorTests
     }
 
     private static WingmanTranslator BuildTranslator(FakeBrain brain)
-        => new((_, _) => Task.FromResult<IAgentBrain>(brain), log: _ => { });
+        => new((_, _, _) => Task.FromResult<IAgentBrain>(brain), log: _ => { });
 
     [Fact]
     public async Task TranslateAsync_ReturnsTheSpokenTranslation_FromBetweenTheMarkers()
@@ -72,6 +73,7 @@ public sealed class WingmanTranslatorTests
         var translator = BuildTranslator(brain);
 
         var result = await translator.TranslateAsync(
+            TenantId.Local,
             "Did the login fix work?",
             "I patched the auth flow in `LoginService.cs` and the suite is green: 73/73.",
             sessionTitle: null);
@@ -85,15 +87,15 @@ public sealed class WingmanTranslatorTests
         var brain = new FakeBrain(_ => "ok");
         var roles = new List<WingmanModelRole>();
         var translator = new WingmanTranslator(
-            (role, _) =>
+            (_, role, _) =>
             {
                 roles.Add(role);
                 return Task.FromResult<IAgentBrain>(brain);
             },
             log: _ => { });
 
-        await translator.TranslateAsync("recent context", "the agent reply to translate", sessionTitle: null);
-        await translator.AskDirectAsync("hey wingman, what is going on?");
+        await translator.TranslateAsync(TenantId.Local, "recent context", "the agent reply to translate", sessionTitle: null);
+        await translator.AskDirectAsync(TenantId.Local, "hey wingman, what is going on?");
 
         Assert.Equal(new[] { WingmanModelRole.Fast, WingmanModelRole.Thinking }, roles);
     }
@@ -104,8 +106,8 @@ public sealed class WingmanTranslatorTests
         var brain = new FakeBrain(_ => "Done.");
         var translator = BuildTranslator(brain);
 
-        await translator.TranslateAsync("q1", "reply one", sessionTitle: null);
-        await translator.TranslateAsync("q2", "reply two", sessionTitle: null);
+        await translator.TranslateAsync(TenantId.Local, "q1", "reply one", sessionTitle: null);
+        await translator.TranslateAsync(TenantId.Local, "q2", "reply two", sessionTitle: null);
 
         // Keep alive, but clear between uses (issue #531): one clear per translation.
         Assert.Equal(2, brain.ClearCount);
@@ -115,10 +117,10 @@ public sealed class WingmanTranslatorTests
     public async Task TranslateAsync_ClearsTheContext_EvenWhenTheAskThrows()
     {
         var brain = new ThrowingBrain();
-        var translator = new WingmanTranslator((_, _) => Task.FromResult<IAgentBrain>(brain), log: _ => { });
+        var translator = new WingmanTranslator((_, _, _) => Task.FromResult<IAgentBrain>(brain), log: _ => { });
 
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => translator.TranslateAsync("q", "some reply", sessionTitle: null));
+            () => translator.TranslateAsync(TenantId.Local, "q", "some reply", sessionTitle: null));
 
         Assert.Equal(1, brain.ClearCount);
     }
@@ -142,7 +144,7 @@ public sealed class WingmanTranslatorTests
         var brain = new FakeBrain(_ => "spoken");
         var translator = BuildTranslator(brain);
 
-        await translator.TranslateAsync("q", "a reply", sessionTitle: "devthrottle - mobile");
+        await translator.TranslateAsync(TenantId.Local, "q", "a reply", sessionTitle: "devthrottle - mobile");
 
         var prompt = Assert.Single(brain.Asks);
         Assert.Contains("devthrottle - mobile", prompt);
@@ -158,7 +160,7 @@ public sealed class WingmanTranslatorTests
         var brain = new FakeBrain(_ => "spoken");
         var translator = BuildTranslator(brain);
 
-        await translator.TranslateAsync("q", "a reply", sessionTitle: title);
+        await translator.TranslateAsync(TenantId.Local, "q", "a reply", sessionTitle: title);
 
         // Absent, not blank. Handing the model an empty title block invites it to voice something
         // for it ("untitled session"); omitting the block lets the rule's own escape clause fire
@@ -206,7 +208,7 @@ public sealed class WingmanTranslatorTests
         var translator = BuildTranslator(brain);
         const string reply = "I changed the timeout to 30 seconds and re-ran the failing case.";
 
-        await translator.TranslateAsync("what did you change?", reply, sessionTitle: null);
+        await translator.TranslateAsync(TenantId.Local, "what did you change?", reply, sessionTitle: null);
 
         var prompt = Assert.Single(brain.Asks);
         Assert.Contains(reply, prompt);
@@ -233,7 +235,7 @@ public sealed class WingmanTranslatorTests
         var brain = new FakeBrain(_ => "ok");
         var translator = BuildTranslator(brain);
 
-        await translator.TranslateAsync("q", "I edited file:///D:/repo/x.html", sessionTitle: null);
+        await translator.TranslateAsync(TenantId.Local, "q", "I edited file:///D:/repo/x.html", sessionTitle: null);
 
         var prompt = Assert.Single(brain.Asks);
         Assert.Contains("BE SHORT", prompt);   // v5: was "BE FOCUSED" - focus is delivery, short is length
@@ -257,7 +259,7 @@ public sealed class WingmanTranslatorTests
         var brain = new FakeBrain(_ => "ok");
         var translator = BuildTranslator(brain);
 
-        await translator.TranslateAsync("q", "session fe2ec700-458e-420e used 5,254,730 bytes", sessionTitle: null);
+        await translator.TranslateAsync(TenantId.Local, "q", "session fe2ec700-458e-420e used 5,254,730 bytes", sessionTitle: null);
 
         var prompt = Assert.Single(brain.Asks);
         Assert.Contains("NEVER VOICE AN IDENTIFIER OR A HASH", prompt);
@@ -275,7 +277,7 @@ public sealed class WingmanTranslatorTests
         var brain = new FakeBrain(_ => "ok");
         var translator = BuildTranslator(brain);
 
-        await translator.TranslateAsync("read me the file", "…", sessionTitle: null);
+        await translator.TranslateAsync(TenantId.Local, "read me the file", "…", sessionTitle: null);
 
         var prompt = Assert.Single(brain.Asks);
         Assert.Contains("READ IN FULL", prompt);
@@ -292,7 +294,7 @@ public sealed class WingmanTranslatorTests
         var brain = new FakeBrain(_ => "ok");
         var translator = BuildTranslator(brain);
 
-        await translator.TranslateAsync("q", "**BPMN Studio** is option 1. ## Root cause: the panel path.", sessionTitle: null);
+        await translator.TranslateAsync(TenantId.Local, "q", "**BPMN Studio** is option 1. ## Root cause: the panel path.", sessionTitle: null);
 
         var prompt = Assert.Single(brain.Asks);
         Assert.Contains("NO MARKDOWN", prompt);
@@ -322,7 +324,7 @@ public sealed class WingmanTranslatorTests
     public async Task TranslateAsync_EmptyReply_ThrowsBecauseThereIsNothingToTranslate()
     {
         var translator = BuildTranslator(new FakeBrain(_ => "x"));
-        await Assert.ThrowsAsync<ArgumentException>(() => translator.TranslateAsync("q", "   ", sessionTitle: null));
+        await Assert.ThrowsAsync<ArgumentException>(() => translator.TranslateAsync(TenantId.Local, "q", "   ", sessionTitle: null));
     }
 
     [Fact]
@@ -332,8 +334,8 @@ public sealed class WingmanTranslatorTests
         // reply IS the spoken answer (it was told to output only that), so we use it rather than
         // 502 - the reliability fix for the explain/voice-turn path.
         var brain = new NoMarkersBrain();   // returns "just some text with no markers at all"
-        var translator = new WingmanTranslator((_, _) => Task.FromResult<IAgentBrain>(brain), log: _ => { });
-        var result = await translator.TranslateAsync("q", "a reply", sessionTitle: null);
+        var translator = new WingmanTranslator((_, _, _) => Task.FromResult<IAgentBrain>(brain), log: _ => { });
+        var result = await translator.TranslateAsync(TenantId.Local, "q", "a reply", sessionTitle: null);
         Assert.Equal("just some text with no markers at all", result.Spoken);
     }
 
@@ -346,9 +348,9 @@ public sealed class WingmanTranslatorTests
         var raggedOpen = SessionAskRunner.AnswerBeginMarker.TrimEnd('=') + "==";      // "...BEGIN=="
         var raggedClose = "==" + SessionAskRunner.AnswerEndMarker.TrimStart('=');     // "==...END==="
         var brain = new FixedReplyBrain($"{raggedOpen}\nThe session started fine.\n{raggedClose}");
-        var translator = new WingmanTranslator((_, _) => Task.FromResult<IAgentBrain>(brain), log: _ => { });
+        var translator = new WingmanTranslator((_, _, _) => Task.FromResult<IAgentBrain>(brain), log: _ => { });
 
-        var result = await translator.TranslateAsync("q", "a reply", sessionTitle: null);
+        var result = await translator.TranslateAsync(TenantId.Local, "q", "a reply", sessionTitle: null);
 
         Assert.Equal("The session started fine.", result.Spoken);
         Assert.DoesNotContain("=", result.Spoken);
@@ -390,7 +392,7 @@ public sealed class WingmanTranslatorTests
         var brain = new FakeBrain(_ => "I cannot edit files myself, but I can explain what the test does.");
         var translator = BuildTranslator(brain);
 
-        var result = await translator.AskDirectAsync("Hey wingman, what does this test check?");
+        var result = await translator.AskDirectAsync(TenantId.Local, "Hey wingman, what does this test check?");
 
         Assert.Equal("I cannot edit files myself, but I can explain what the test does.", result.Spoken);
         Assert.Equal(1, brain.ClearCount);
@@ -407,7 +409,7 @@ public sealed class WingmanTranslatorTests
         var brain = new FakeBrain(_ => "DevThrottle runs and supervises many Claude Code sessions at once.");
         var translator = BuildTranslator(brain);
 
-        var result = await translator.AskAboutDevThrottleAsync("What is DevThrottle?");
+        var result = await translator.AskAboutDevThrottleAsync(TenantId.Local, "What is DevThrottle?");
 
         Assert.Equal("DevThrottle runs and supervises many Claude Code sessions at once.", result.Spoken);
         Assert.Equal(1, brain.ClearCount);
@@ -420,7 +422,7 @@ public sealed class WingmanTranslatorTests
     public async Task AskAboutDevThrottleAsync_EmptyQuestion_Throws()
     {
         var translator = BuildTranslator(new FakeBrain(_ => "x"));
-        await Assert.ThrowsAsync<ArgumentException>(() => translator.AskAboutDevThrottleAsync("   "));
+        await Assert.ThrowsAsync<ArgumentException>(() => translator.AskAboutDevThrottleAsync(TenantId.Local, "   "));
     }
 
     [Fact]
@@ -562,7 +564,7 @@ public sealed class WingmanTranslatorTests
         var brain = new FakeBrain(_ => "All set.");
         var translator = BuildTranslator(brain);
 
-        var result = await translator.TranslateAsync("status?", "Everything is committed and pushed.", sessionTitle: null);
+        var result = await translator.TranslateAsync(TenantId.Local, "status?", "Everything is committed and pushed.", sessionTitle: null);
 
         Assert.Equal("All set.", result.Spoken);
         Assert.Single(brain.Asks);
@@ -592,7 +594,7 @@ public sealed class WingmanTranslatorTests
         var rows = new List<WingmanQaRow>();
         foreach (var f in fixtures)
         {
-            var r = await translator.TranslateAsync(f.UserMessage, f.AgentReply, sessionTitle: null);
+            var r = await translator.TranslateAsync(TenantId.Local, f.UserMessage, f.AgentReply, sessionTitle: null);
             rows.Add(new WingmanQaRow
             {
                 Label = f.Label,

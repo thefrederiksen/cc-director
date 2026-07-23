@@ -258,6 +258,10 @@ namespace CcDirector.Gateway.Data.Migrations
                         .HasColumnType("TEXT")
                         .HasColumnName("stripe_subscription_id");
 
+                    b.Property<string>("Tier")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tier");
+
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("TEXT")
                         .HasColumnName("updated_at");
@@ -525,6 +529,29 @@ namespace CcDirector.Gateway.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("tenants", (string)null);
+                });
+
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.TenantSettingEntity", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("Key")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Value")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("TenantId", "Key");
+
+                    b.HasIndex("TenantId");
+
+                    b.ToTable("tenant_settings", (string)null);
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.WingmanInstructionEntity", b =>

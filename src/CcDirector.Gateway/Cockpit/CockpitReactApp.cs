@@ -57,7 +57,7 @@ public static class CockpitReactApp
     /// keeps the policy one rule instead of two.
     ///
     /// Every OTHER React page (<c>/fleet</c>, <c>/schedule</c>, <c>/dictionary</c>,
-    /// <c>/transcripts</c>, <c>/exes</c>, <c>/telemetry</c>, <c>/account</c>,
+    /// <c>/transcripts</c>, <c>/exes</c>, <c>/account</c>,
     /// <c>/about</c>, <c>/feedback</c>, <c>/session/{id}</c>) is deliberately absent: none has a
     /// top-level single-segment <c>MapGet</c> at its own path, so a hard navigation to it already falls
     /// through the whole REST surface to the SPA fallback (<see cref="Map"/>) and serves the shell.

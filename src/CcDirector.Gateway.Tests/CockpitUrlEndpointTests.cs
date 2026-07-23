@@ -78,28 +78,36 @@ public sealed class CockpitUrlEndpointTests
     }
 
     [Fact]
-    public async Task Hosted_settings_route_is_denied_and_carries_no_cockpit_url()
+    public async Task Hosted_settings_route_serves_per_account_and_carries_no_cockpit_url()
     {
         await WithHostedGateway(PublicBase, async (http, gateway) =>
         {
-            // /gateway/settings is part of the owner-settings group DENIED on hosted (issue #1863), so it no
-            // longer serves the cockpit.url it once did - it answers the refusal. The live public-URL surfaces
-            // are GET /cockpit and GET /gateway/about, asserted above; cockpit.url is unused by boot,
-            // navigation, or URL discovery.
+            // Issue #2022 part 2: /gateway/settings is now per-account and SERVES on hosted (the deny retired).
+            // It carries only account settings - never the cockpit.url it once did. The live public-URL surfaces
+            // are GET /cockpit and GET /gateway/about, asserted above.
             //
-            // MH-2: authenticate with a per-device key, not the shared token (rejected on hosted) - so this
-            // reaches the deny, not the auth gate.
-            var deviceKey = HostedTestEnrollment.Enroll(
-                gateway,
-                "cockpiturl-settings-subject",
-                "cockpiturl-settings@example.com",
-                "cockpiturl-settings",
-                "PHONE").DeviceKey;
-            using var req = new HttpRequestMessage(HttpMethod.Get, "gateway/settings");
-            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", deviceKey);
-            using var resp = await http.SendAsync(req);
+            // An UNBOUND device resolves to no tenant, so it is refused with 403 - never the Local partition,
+            // never a cockpit url.
+            var unboundKey = gateway.Devices.Register("cockpiturl-unbound", "PHONE").DeviceKey;
+            using (var req = new HttpRequestMessage(HttpMethod.Get, "gateway/settings"))
+            {
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", unboundKey);
+                using var resp = await http.SendAsync(req);
+                Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+            }
 
-            await OwnerSettingsRoutes.AssertIsNothingButTheRefusal(resp, OwnerSettingsRoutes.SettingsRefusal);
+            // An ENROLLED tenant is served the per-account snapshot, which carries NO cockpit block/url.
+            var boundKey = gateway.Devices.Register("cockpiturl-bound", "PHONE").DeviceKey;
+            var tenant = gateway.TenantRegistry.MintOrLookupBySubject("sub-cockpiturl", "cockpiturl@example.com");
+            gateway.Devices.SetAccountBinding("cockpiturl-bound", "sub-cockpiturl", tenant.Value);
+            using (var req = new HttpRequestMessage(HttpMethod.Get, "gateway/settings"))
+            {
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", boundKey);
+                using var resp = await http.SendAsync(req);
+                resp.EnsureSuccessStatusCode();
+                var body = await resp.Content.ReadAsStringAsync();
+                Assert.DoesNotContain("cockpit", body, StringComparison.OrdinalIgnoreCase);
+            }
         });
     }
 

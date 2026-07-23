@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  clearTranscriptionHistory,
   countFailedTurns,
   getTranscriptionStats,
   getTranscriptionTerms,
@@ -9,7 +10,7 @@ import {
 } from "@devthrottle/client-core/transcription/transcriptionAnalysisClient";
 
 // The Transcription Health page: shows how fast and how well voice dictation is working on THIS
-// machine, read from the local transcription telemetry the Gateway records for every turn (nothing
+// machine, read from the minimized local transcription history the Gateway records for every turn (nothing
 // leaves the machine). It reads GET /transcription/stats + /transcription/terms through the Gateway
 // front door (client-core). Responsive (CodingStyle.md): renders immediately with a loading state and
 // loads asynchronously; a load failure shows an explicit message, never a fabricated healthy state.
@@ -17,7 +18,7 @@ import {
 const WINDOWS: ReadonlyArray<{ label: string; days: number | undefined }> = [
   { label: "Today", days: 1 },
   { label: "7 days", days: 7 },
-  { label: "All time", days: undefined },
+  { label: "30 days", days: 30 },
 ];
 
 function seconds(ms: number): string {
@@ -44,6 +45,7 @@ export function TranscriptionHealthView() {
   const [terms, setTerms] = useState<TermFrequency[]>([]);
   const [loadError, setLoadError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [clearing, setClearing] = useState(false);
 
   const load = useCallback(async (window: number | undefined, signal?: AbortSignal) => {
     try {
@@ -77,6 +79,19 @@ export function TranscriptionHealthView() {
     }
   }, [load, days]);
 
+  const clearHistory = useCallback(async () => {
+    if (!window.confirm("Delete all local Transcription Health history and troubleshooting audio?")) return;
+    setClearing(true);
+    try {
+      await clearTranscriptionHistory();
+      await load(days);
+    } catch {
+      setLoadError(true);
+    } finally {
+      setClearing(false);
+    }
+  }, [days, load]);
+
   // The failure count comes from the same byOutcome map the outcome breakdown renders, so the
   // number, the banner, and the breakdown are one source and can never contradict each other.
   const failures = stats ? countFailedTurns(stats) : 0;
@@ -94,11 +109,20 @@ export function TranscriptionHealthView() {
         >
           {refreshing ? "Refreshing..." : "Refresh"}
         </button>
+        <button
+          type="button"
+          className="txh-refresh"
+          onClick={() => void clearHistory()}
+          disabled={clearing}
+        >
+          {clearing ? "Clearing..." : "Clear local data"}
+        </button>
       </div>
       <p className="txh-lede">
-        How fast and how well your voice dictation is working, from this machine only. Nothing here is
-        sent anywhere - it is recorded locally for every dictation so you can see the speed, spot
-        failures, and check that your custom words are being fixed.
+        How fast and how well your voice dictation is working, from your self-hosted Gateway only. Nothing
+        here is sent to DevThrottle or an analytics service. History excludes transcript text and provider
+        error bodies and is kept for 30 days.
+        Associated troubleshooting audio is kept for at most 24 hours. Clear removes both.
       </p>
 
       <div className="txh-windows" role="group" aria-label="Time window">
@@ -206,7 +230,7 @@ export function TranscriptionHealthView() {
           <p className="txh-agent-note">
             Want more? Ask any agent to dig into this - it can query the Gateway directly at
             <code> /transcription/stats</code>, <code>/transcription/turns</code>,
-            <code> /transcription/terms</code>, and <code>/transcription/words</code> - for example
+            and <code> /transcription/terms</code> - for example
             &quot;which word do I mis-say most&quot; or &quot;how has my dictation speed changed&quot;.
           </p>
         </>

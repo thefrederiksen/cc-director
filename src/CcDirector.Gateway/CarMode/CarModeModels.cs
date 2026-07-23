@@ -62,7 +62,7 @@ public sealed record CarModeTurnResponse
     /// <summary>The per-stage server timing for this turn (Car Mode performance round): every hosted-model
     ///  round trip and every fleet/roster read, plus the whole-turn wall-clock. Null only on a path that did
     ///  not measure (it always measures in production). The endpoint returns it inline so the browser merges
-    ///  it with its own client stamps into one telemetry record.</summary>
+    ///  it with its own client stamps into one local diagnostics record.</summary>
     public CarModeTurnTiming? Timing { get; init; }
 }
 

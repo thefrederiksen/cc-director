@@ -200,7 +200,7 @@ public sealed class AccountSignInRunner
 
         EngineLog.Write("[AccountSignInRunner] PersistToGatewayCredentialStore: storing captured credential for the Gateway");
         var store = new WindowsProtectedTokenStore(CcStorage.GatewayDevThrottleCredentialBlob());
-        var service = DevThrottleAccountFactory.Build(store, CcStorage.GatewayDevThrottleAuthEventsLog());
+        var service = DevThrottleAccountFactory.Build(store);
         service.StoreTokens(tokens);
     }
 }

@@ -77,7 +77,7 @@ public sealed class BrowserPageRoutesTests : IAsyncLifetime
     [InlineData("GET", "/healthz", "text/html")]               // not a dual-use path
     [InlineData("GET", "/lists", "application/json")]           // Work-List API client stays JSON
     [InlineData("GET", "/lists", null)]                        // curl / script default stays JSON
-    [InlineData("GET", "/sessions/abc/turnbriefs", "text/html")] // 3 segments = API only
+    [InlineData("GET", "/sessions/abc/wingman", "text/html")]   // 3 segments = API only
     [InlineData("GET", "/directors/abc/repos", "text/html")]     // 3 segments = API only
     // Audited NON-collisions: a React page whose OWN path has no top-level single-segment JSON
     // endpoint must NOT be a page-request root, so its nested JSON path is never shadowed for a
@@ -89,7 +89,6 @@ public sealed class BrowserPageRoutesTests : IAsyncLifetime
     [InlineData("GET", "/schedule", "text/html")]              // no same-path JSON: served by SPA fallback
     [InlineData("GET", "/dictionary", "text/html")]            // no same-path JSON: served by SPA fallback
     [InlineData("GET", "/transcripts", "text/html")]           // no same-path JSON: served by SPA fallback
-    [InlineData("GET", "/telemetry", "text/html")]             // no same-path JSON: served by SPA fallback
     [InlineData("GET", "/about", "text/html")]                 // no same-path JSON: served by SPA fallback
     public void Non_navigation_requests_are_not_page_requests(string method, string path, string? accept)
     {
@@ -146,12 +145,13 @@ public sealed class BrowserPageRoutesTests : IAsyncLifetime
     [Fact]
     public async Task Three_segment_api_subpath_is_untouched_even_for_browsers()
     {
-        using var req = new HttpRequestMessage(HttpMethod.Get, "sessions/00000000-0000-0000-0000-000000000000/turnbriefs");
+        using var req = new HttpRequestMessage(HttpMethod.Get, "sessions/00000000-0000-0000-0000-000000000000/wingman");
         req.Headers.Accept.ParseAdd("text/html");
 
         var resp = await _http.SendAsync(req);
 
-        // The turn-brief API endpoint answered (JSON), never the Cockpit interstitial.
+        // The wingman API endpoint answered (JSON: 404 for the unknown session), never the
+        // Cockpit interstitial.
         Assert.NotEqual(HttpStatusCode.ServiceUnavailable, resp.StatusCode);
         Assert.Equal("application/json", resp.Content.Headers.ContentType?.MediaType);
     }

@@ -11,7 +11,6 @@ using CcDirector.Core.Account;
 using CcDirector.Core.Agents;
 using CcDirector.Core.Claude;
 using CcDirector.Core.Configuration;
-using CcDirector.Core.Scheduler;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Settings;
 using CcDirector.Core.Storage;
@@ -46,8 +45,14 @@ public partial class App : Application
     public WorkspaceStore WorkspaceStore { get; private set; } = null!;
     public EngineHost? EngineHost { get; private set; }
     public ControlApiHost? ControlApiHost { get; private set; }
-    public SchedulerService? Scheduler { get; private set; }
     public UpdateService? Updater { get; private set; }
+
+    /// <summary>
+    /// One-shot guard so a staged update is auto-applied exactly once (issue #2047). Both the
+    /// "update staged" and "session ended" triggers can race; the first to flip this from 0 to 1
+    /// launches the relauncher and requests shutdown, the rest no-op. 0 = not started, 1 = started.
+    /// </summary>
+    private int _autoUpdateApplyStarted;
 
     public bool SandboxMode { get; private set; }
 
@@ -154,6 +159,9 @@ public partial class App : Application
         MigrateRecentSessionsToHistory();
 
         FileLog.Start();
+        var retiredFilesRemoved = LegacyPrivacyDataCleanup.Run();
+        if (retiredFilesRemoved > 0)
+            FileLog.Write($"[App] Removed {retiredFilesRemoved} retired local tracking file(s).");
 
         DetectAbnormalTermination();
 
@@ -279,9 +287,6 @@ public partial class App : Application
 
         UpdateSplashStatus(splash, "Starting control API...");
         StartControlApi(log);
-
-        UpdateSplashStatus(splash, "Starting scheduler...");
-        StartScheduler(log);
     }
 
     /// <summary>
@@ -309,11 +314,23 @@ public partial class App : Application
 
             Updater = new UpdateService(options);
             Updater.UpdateStaged += staged =>
+            {
+                // Always surface the "Restart now" banner so a person can still restart by hand
+                // (and can do so even while sessions are running). Then try to apply automatically:
+                // if this Director is idle it restarts into the new build with no human step, and if
+                // it is busy the update is simply held until the last session ends (issue #2047).
                 global::Avalonia.Threading.Dispatcher.UIThread.Post(
                     () => mainWindow.ShowUpdateReady(staged.Version));
+                TryAutoApplyStagedUpdateWhenIdle("update-staged");
+            };
             Updater.ProgressChanged += progress =>
                 global::Avalonia.Threading.Dispatcher.UIThread.Post(
                     () => mainWindow.OnUpdateProgress(progress));
+
+            // When a machine was busy at stage time, apply the held update as soon as it goes idle:
+            // OnSessionRemoved fires AFTER the session leaves tracking, so the count we read reflects
+            // the post-removal state (issue #2047). Handler is idempotent and never throws.
+            SessionManager.OnSessionRemoved += _ => TryAutoApplyStagedUpdateWhenIdle("session-ended");
 
             FileLog.Write($"[App] StartUpdateService: enabled={enabled}, current={current}, target={options.InstallTarget}");
 
@@ -364,6 +381,78 @@ public partial class App : Application
     }
 
     /// <summary>
+    /// Auto-apply a staged update, but ONLY when it is safe: a verified update must be staged and
+    /// this Director must have zero running sessions (issue #2047). When safe, it reuses the exact
+    /// startup apply path (<see cref="UpdateInstaller.TryApplyStagedUpdateAtStartup"/>) so it inherits
+    /// every existing safety check unchanged -- bounded apply attempts, pinned-bad-version, and the
+    /// post-restart health check with automatic rollback -- then requests a normal shutdown so the
+    /// relauncher can swap the build and bring the Director back up. When sessions are running the
+    /// staged update is left untouched (the "Restart now" banner stays); it is retried the next time
+    /// a session ends and on every periodic update cycle. Called from background threads (the update
+    /// loop and the session-removed event); catches and logs everything and never throws.
+    /// </summary>
+    private void TryAutoApplyStagedUpdateWhenIdle(string reason)
+    {
+        try
+        {
+            var state = UpdaterState.Load();
+            var hasStaged = !string.IsNullOrEmpty(state.StagedVersion)
+                            && !string.IsNullOrEmpty(state.StagedExecutable)
+                            && !string.IsNullOrEmpty(state.InstallTarget);
+
+            var runningSessions = SessionManager?.ListSessions().Count ?? 0;
+            if (!UpdateInstaller.ShouldAutoApplyWhenIdle(hasStaged, runningSessions))
+            {
+                if (hasStaged)
+                    FileLog.Write($"[App] Auto-update held ({reason}): {runningSessions} session(s) running; staged {state.StagedVersion} will apply when the Director is idle.");
+                return;
+            }
+
+            // One-shot: the update-staged and session-ended triggers can fire together. Only the
+            // first caller past this gate launches the relauncher; a second would spawn a second
+            // relauncher racing for the same install path.
+            if (System.Threading.Interlocked.CompareExchange(ref _autoUpdateApplyStarted, 1, 0) != 0)
+            {
+                FileLog.Write($"[App] Auto-update already in progress; ignoring duplicate trigger ({reason}).");
+                return;
+            }
+
+            FileLog.Write($"[App] Auto-update ({reason}): no sessions running; applying staged {state.StagedVersion}.");
+            if (UpdateInstaller.TryApplyStagedUpdateAtStartup(out var failureNotice))
+            {
+                // The relauncher is running and waiting for us to exit before it swaps the build.
+                RequestShutdownForUpdate();
+                return;
+            }
+
+            // Nothing was applied (e.g. the staged build was pinned as bad, or apply attempts were
+            // exhausted). Release the one-shot so a later, healthy stage can still auto-apply.
+            System.Threading.Interlocked.Exchange(ref _autoUpdateApplyStarted, 0);
+            if (!string.IsNullOrEmpty(failureNotice))
+                FileLog.Write($"[App] Auto-update did not apply ({reason}): {failureNotice}");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[App] TryAutoApplyStagedUpdateWhenIdle FAILED: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Request the normal graceful application shutdown so a launched update relauncher can swap the
+    /// build and relaunch (issue #2047). Posts to the UI thread; the classic desktop lifetime's
+    /// Shutdown runs <see cref="OnShutdown"/> (stop sessions -- none, engine, control API) and the
+    /// process exits, at which point the waiting relauncher applies the staged build.
+    /// </summary>
+    private void RequestShutdownForUpdate()
+    {
+        global::Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+        {
+            if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime lifetime)
+                lifetime.Shutdown();
+        });
+    }
+
+    /// <summary>
     /// Kick off the startup tool reconcile in the background (issue #827). Runs off the UI thread and
     /// fire-and-forget so it NEVER gates or delays boot - it follows the updater's "failures only log,
     /// never block startup" discipline. The reconcile is gated by <c>tools.autoUpdate.enabled</c> inside
@@ -385,53 +474,6 @@ public partial class App : Application
         });
     }
 
-    private void StartScheduler(Action<string> log)
-    {
-        try
-        {
-            var tickInterval = TimeSpan.FromMinutes(5);
-            var configPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
-            if (File.Exists(configPath))
-            {
-                try
-                {
-                    var json = File.ReadAllText(configPath);
-                    using var doc = JsonDocument.Parse(json);
-                    if (doc.RootElement.TryGetProperty("Scheduler", out var section)
-                        && section.TryGetProperty("TickIntervalMinutes", out var t)
-                        && t.TryGetInt32(out var mins)
-                        && mins > 0)
-                    {
-                        tickInterval = TimeSpan.FromMinutes(mins);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    log($"Scheduler: failed to read TickIntervalMinutes from appsettings.json: {ex.Message}");
-                }
-            }
-
-            var statePath = Path.Combine(CcStorage.ToolConfig("director"), "scheduler-state.json");
-            var leaderIdentityPath = Path.Combine(CcStorage.ToolConfig("director"), "scheduler-leader.json");
-            var runnersConfigPath = RunnersConfig.DefaultPath();
-            Scheduler = new SchedulerService(
-                tickInterval: tickInterval,
-                statePath: statePath,
-                leaderIdentityPath: leaderIdentityPath,
-                runnersConfigPath: runnersConfigPath);
-
-            var runners = RunnersConfig.LoadOrSeed(log: log);
-            foreach (var runner in runners) Scheduler.RegisterRunner(runner);
-
-            Scheduler.Start();
-            log($"Scheduler started (tickInterval={tickInterval}, runners={Scheduler.Queue.Runners.Count}, configPath={RunnersConfig.DefaultPath()}, statePath={statePath})");
-        }
-        catch (Exception ex)
-        {
-            log($"Scheduler failed to start: {ex.Message}");
-        }
-    }
-
     private void StartControlApi(Action<string> log)
     {
         try
@@ -448,7 +490,7 @@ public partial class App : Application
                 return Task.CompletedTask;
             };
 
-            ControlApiHost = new ControlApiHost(SessionManager, version, requestShutdown, repositoryRegistry: RepositoryRegistry, schedulerAccessor: () => Scheduler);
+            ControlApiHost = new ControlApiHost(SessionManager, version, requestShutdown, repositoryRegistry: RepositoryRegistry);
 
             _ = Task.Run(async () =>
             {
@@ -465,10 +507,6 @@ public partial class App : Application
                         Environment.MachineName, Environment.UserName, DateTimeOffset.UtcNow);
                     CrashJournal.Update(Array.Empty<DirectorCrashJournalSession>());
 
-                    // Fire the best-effort Director-startup telemetry once the Control API has a
-                    // stable DirectorId (issue #632). This already runs off the UI thread inside this
-                    // Task.Run, so it cannot delay the main window; failures are swallowed and logged.
-                    await FireDirectorStartupTelemetryAsync(ControlApiHost.DirectorId, log).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
@@ -484,27 +522,6 @@ public partial class App : Application
         catch (Exception ex)
         {
             log($"Control API setup FAILED: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Fires the single best-effort Director-startup telemetry event (issue #632). Runs off the UI
-    /// thread (its only caller is the Control API startup <c>Task.Run</c>), so a slow or failing report
-    /// never delays the main window. A failure is swallowed and logged - it must never fail startup -
-    /// and a missing Gateway URL is a logged no-op inside the reporter.
-    /// </summary>
-    private static async Task FireDirectorStartupTelemetryAsync(string directorId, Action<string> log)
-    {
-        try
-        {
-            var reporter = new DevThrottleDirectorStartupTelemetryReporter();
-            await reporter.ReportStartupAsync(directorId).ConfigureAwait(false);
-            log($"Director-startup telemetry reported (directorId={directorId})");
-        }
-        catch (Exception ex)
-        {
-            // Best-effort: a telemetry failure must never affect startup. Swallow + log only.
-            log($"Director-startup telemetry FAILED (best-effort, ignored): {ex.Message}");
         }
     }
 
@@ -621,12 +638,6 @@ public partial class App : Application
                 {
                     log($"ControlApiHost stop error: {ex.Message}");
                 }
-            }
-
-            if (Scheduler != null)
-            {
-                try { Scheduler.Stop(); Scheduler.Dispose(); }
-                catch (Exception ex) { log($"Scheduler stop error: {ex.Message}"); }
             }
 
             // Clean shutdown: delete the crash journal so this exit is NOT seen as a crash

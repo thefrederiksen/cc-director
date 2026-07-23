@@ -7,7 +7,7 @@ import { detectPhraseAtEnd } from "./controlPhrases";
 import { playClip, type PlayOutcome, type PlayClipHooks } from "./audioPlayback";
 import {
   getCarModeHelp,
-  postCarModeTelemetry,
+  postCarModeDiagnostics,
   postCarModeWarmup,
   speakCarModeText,
   transcribeCarModeAudio,
@@ -34,7 +34,7 @@ import { CreditsError, gatewayErrorMessage } from "../api/client";
 // owns the whole walkie-talkie loop so the page is a thin view (decision 6).
 //
 // WHY v3 IS THE SHAPE IT IS (data-driven): the reply audio was proven to PLAY to its natural end on the
-// phone (Completed=TRUE, PlayedTo==ClipDuration) yet the owner "heard nothing". The telemetry pinned the
+// phone (Completed=TRUE, PlayedTo==ClipDuration) yet the owner "heard nothing". The diagnostics pinned the
 // cause: re-opening the microphone (getUserMedia) for a rolling voice-"stop" watch WHILE the reply plays
 // ducks/reroutes the <audio> output on mobile so it is inaudible. So the hard rule now is: WHILE SPEAKING,
 // NOTHING touches the microphone - the capture stream is fully released and only the <audio> element plays.
@@ -61,7 +61,7 @@ import { CreditsError, gatewayErrorMessage } from "../api/client";
 // again. Two clearly distinct tones so he always knows whose turn it is without looking.
 
 /** The reply the injected brain produces for one turn: what to say, and (Phase 2+) what it did. `turnId`
- *  and `timing` are the server side of the performance-round telemetry: the browser merges them with its
+ *  and `timing` are the server side of the performance diagnostics: the browser merges them with its
  *  own client stamps into one record it posts back. They are optional so the Phase 1 stand-in responder
  *  (no server) still satisfies this shape. */
 export interface CarModeReply {
@@ -103,7 +103,7 @@ interface TurnMetrics {
   micReacquiredDuringPlayback: boolean; // v3: always false (the mic is never re-opened during playback); kept to PROVE it
   speakingPollCount: number; // v3: always 0 (no rolling-"stop" transcription runs during the reply)
   // ----- Real viewport measurements (v5: the button-cut-off diagnostic, read from HIS phone, not desktop) -----
-  viewportInnerHeight: number; // window.innerHeight at telemetry time (the layout viewport height)
+  viewportInnerHeight: number; // window.innerHeight when the diagnostics record is taken
   visualViewportHeight: number; // window.visualViewport.height (the ACTUALLY visible height, minus toolbars) or 0
   documentClientHeight: number; // document.documentElement.clientHeight (a third viewport read to cross-check)
   footerBottom: number; // the .car-foot element's getBoundingClientRect().bottom (where the buttons end, in px)
@@ -311,7 +311,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
 
   const keepWarmRef = useRef<number | null>(null); // setInterval id for the keep-warm ping while Car Mode is open
 
-  // Performance-round telemetry: the metrics for the turn in flight, filled across transcribe -> brain ->
+  // Performance diagnostics: the metrics for the turn in flight, filled across transcribe -> brain ->
   // speak and posted once first audio plays. Null between turns.
   const turnMetricsRef = useRef<TurnMetrics | null>(null);
   // Finickiness diagnostic: how many pause/forced transcribe probes have run in the current turn before it
@@ -384,10 +384,10 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
   // Post one turn's merged timing record ONCE (guards double-post). Only a real brain turn (with a server
   // turnId and server timing) is posted; the canned "I didn't catch that" replies carry no server turn.
   // Best-effort and fire-and-forget - it never blocks or disrupts the spoken reply.
-  const postTurnTelemetry = useCallback((m: TurnMetrics | null) => {
+  const postTurnDiagnostics = useCallback((m: TurnMetrics | null) => {
     if (m === null || m.posted || m.turnId.length === 0 || m.server === null) return;
     m.posted = true;
-    void postCarModeTelemetry({
+    void postCarModeDiagnostics({
       turnId: m.turnId,
       pauseToTranscribeMs: m.pauseToTranscribeMs,
       transcodeMs: m.transcodeMs,
@@ -428,7 +428,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
   // element's src EXACTLY ONCE, so a clip that is still playing can never be clobbered. The stop function
   // playClip hands back is parked in playbackStopRef so the interrupt watch and End Car Mode can end the
   // clip cleanly; playClip clears it (registers a no-op) once the clip is done. The optional lifecycle
-  // hooks feed the cut-off-reply telemetry (play-started, play-ended, completed-vs-cutoff).
+  // hooks feed the cut-off-reply diagnostics (play-started, play-ended, completed-vs-cutoff).
   const playBlob = useCallback(
     (url: string, hooks?: PlayClipHooks): Promise<PlayOutcome> => {
       const audio = audioRef.current;
@@ -609,7 +609,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
             }
             // No rolling "stop" watch runs in v3, so the microphone was never re-opened during playback:
             // these two mic-contention diagnostics read their healthy values (false / 0). They are kept so
-            // the /carmode/telemetry dashboard can PROVE the mic stayed released this turn.
+            // the /carmode/diagnostics dashboard can prove the mic stayed released this turn.
             metrics.micReacquiredDuringPlayback = false;
             metrics.speakingPollCount = 0;
             // v5: capture the REAL viewport numbers from THIS phone so the button-cut-off bug is proven from
@@ -634,11 +634,11 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
             // +1px tolerance for sub-pixel rounding. Only true when the footer's bottom edge is within view.
             metrics.footerVisible = footBottom > 0 && viewportH > 0 ? footBottom <= viewportH + 1 : false;
             // Post the merged timing record now that the clip's whole lifecycle is known - including a
-            // cut-off - so a truncated reply is VISIBLE at /carmode/telemetry (fire-and-forget).
-            postTurnTelemetry(metrics);
+            // cut-off - so a truncated reply is visible at /carmode/diagnostics (fire-and-forget).
+            postTurnDiagnostics(metrics);
           },
           onPlayRejected: () => {
-            // The reply's play() was refused (mobile autoplay block): record it so the telemetry shows the
+            // The reply's play() was refused (mobile autoplay block): record it so diagnostics show the
             // reply never sounded. onPlayEnded still fires (as "stopped") and posts the record.
             if (metrics !== null) metrics.playRejected = true;
           },
@@ -657,7 +657,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
         await enterListening();
       }
     },
-    [announceError, enterListening, playBlob, postTurnTelemetry, revokeClip, setPhaseBoth, stopThinkingCue],
+    [announceError, enterListening, playBlob, postTurnDiagnostics, revokeClip, setPhaseBoth, stopThinkingCue],
   );
 
   // ----- Offline resilience: holding, the audible states, and the background re-drive driver (Phase 4a) -
@@ -741,7 +741,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
         } catch {
           // durable update failed; harmless - the brain call below still carries the Idempotency-Key
         }
-        turnMetricsRef.current = null; // re-drives are recovery, not part of the live performance telemetry
+        turnMetricsRef.current = null; // re-drives are recovery, not part of live performance diagnostics
 
         // Pass the record id as the Idempotency-Key so a turn that already reached the brain acts at most once.
         const answer = await respond(command, controller.signal, rec.id);
@@ -882,7 +882,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
 
       try {
         if (trimmed.length === 0) {
-          // A forced turn with nothing heard: a canned nudge, no server turn, so no telemetry record. Drop
+          // A forced turn with nothing heard: a canned nudge, no server turn, so no diagnostics record. Drop
           // any durable record too - saved noise is not worth holding or retrying.
           turnMetricsRef.current = null;
           if (recordId !== null) {
@@ -912,7 +912,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
           await refreshHeldTurns();
         }
         const spoken = answer.spoken.trim();
-        // Fill the turn metrics the transcribe step started (same object via the ref), for telemetry.
+        // Fill the turn metrics the transcribe step started (same object via the ref), for diagnostics.
         const metrics = turnMetricsRef.current;
         if (metrics !== null) {
           metrics.brainMs = performance.now() - brainStart;
@@ -963,7 +963,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
   const transcribeAndTake = useCallback(async (prefetched?: { transcript: string; transcodeMs: number; pauseDetectedAt: number; clip: Blob; decodedSeconds: number }) => {
     const rec = recorderRef.current;
     if (rec === null) return;
-    // Time the command transcription from the tap so the telemetry shows how long the owner waits between
+    // Time the command transcription from the tap so diagnostics show how long the owner waits between
     // finishing and the brain starting. The voice end-phrase path already transcribed to DETECT the phrase,
     // so it passes its transcript + timings and we skip a second round trip.
     const pauseDetectedAt = prefetched ? prefetched.pauseDetectedAt : performance.now();
@@ -1259,7 +1259,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
       if (controller.signal.aborted) return;
       const spoken = helpContent.spoken;
       if (spoken.length === 0) throw new Error("Help is unavailable right now.");
-      turnMetricsRef.current = null; // help is not a brain turn - it carries no performance telemetry
+      turnMetricsRef.current = null; // help is not a brain turn - it carries no performance diagnostics
       setTranscript("Help");
       setReply(spoken);
       setActions([]);

@@ -1,7 +1,7 @@
 # Non-destructive UI test of the installer's Workstation path (skip Sign-in).
 # Launches the built cc-director-setup.exe, selects the "I already have a gateway" (Workstation) card,
-# and asserts the step rail drops the Sign-in step and that advancing past Prerequisites lands on the
-# Privacy step ("A quick, honest note"), NOT the Sign-in step ("Sign in to DevThrottle").
+# and asserts the step rail contains only the current five-step flow and that advancing past
+# Prerequisites lands on Skills, NOT the retired Sign-in step.
 # It NEVER reaches the Install step, so nothing is installed. It then closes the installer it launched.
 $ErrorActionPreference = "Stop"
 
@@ -41,7 +41,7 @@ function Shot([int]$procId, [string]$name) {
 function VisibleSteps($win) {
     # Read the rail circle numbers that are present (collapsed rows are absent from the UIA tree).
     $nums = @()
-    foreach ($n in 2..7) {
+    foreach ($n in @(2, 6, 7, 8)) {
         $el = ById $win "Step$($n)Num"
         if ($el) { $nums += $el.Current.Name }
     }
@@ -49,7 +49,7 @@ function VisibleSteps($win) {
 }
 function StepLabels($win) {
     $labels = @()
-    foreach ($n in 1..7) {
+    foreach ($n in @(1, 2, 6, 7, 8)) {
         $el = ById $win "Step$($n)Label"
         if ($el) { $labels += $el.Current.Name }
     }
@@ -89,8 +89,11 @@ $numsWs   = VisibleSteps $win
 Write-Host "Welcome (workstation) rail labels: $($labelsWs -join ' | ')"
 Write-Host "Welcome (workstation) circle numbers (steps 2..n): $($numsWs -join ' ')"
 if ($labelsWs -contains "Sign in") { $fail += "Workstation rail STILL shows the 'Sign in' step." }
-# After dropping Sign-in, the six visible steps renumber 1..6, so circles 2..7's rendered numbers are 2..6.
-if (($numsWs -join ' ') -ne "2 3 4 5 6") { $fail += "Workstation rail numbers not renumbered cleanly (got '$($numsWs -join ' ')', expected '2 3 4 5 6')." }
+# The current flow is Welcome, Prerequisites, Skills, Install, Complete.
+if (($numsWs -join ' ') -ne "2 3 4 5") { $fail += "Workstation rail numbers not renumbered cleanly (got '$($numsWs -join ' ')', expected '2 3 4 5')." }
+if (($labelsWs -join ' | ') -ne "Welcome | Prerequisites | Skills | Install | Complete") {
+    $fail += "Workstation rail does not match the five-step flow (got '$($labelsWs -join ' | ')')."
+}
 
 # --- Welcome -> Prerequisites ---
 Invoke-El (ById $win "NextButton")
@@ -99,7 +102,7 @@ Shot $procId "03-prerequisites.png"
 $onPrereq = (ByName $win "Sign in to DevThrottle") -eq $null
 if (-not $onPrereq) { $fail += "Landed on the Sign-in step right after Welcome on the Workstation path." }
 
-# --- Prerequisites -> next visible step (must be Privacy, not Sign in) ---
+# --- Prerequisites -> next visible step (must be Skills, not Sign in) ---
 $next = ById $win "NextButton"
 $prereqNextEnabled = $next.Current.IsEnabled
 Write-Host "Prerequisites Next enabled: $prereqNextEnabled"
@@ -107,11 +110,11 @@ if ($prereqNextEnabled) {
     Invoke-El $next
     Start-Sleep -Milliseconds 1200
     Shot $procId "04-after-prereq.png"
-    $onPrivacy = (ByName $win "A quick, honest note") -ne $null
+    $onSkills  = (ById $win "TitleText") -ne $null
     $onSignIn  = (ByName $win "Sign in to DevThrottle") -ne $null
-    Write-Host "After Prerequisites -> Privacy heading present: $onPrivacy ; Sign-in heading present: $onSignIn"
+    Write-Host "After Prerequisites -> Skills heading present: $onSkills ; Sign-in heading present: $onSignIn"
     if ($onSignIn) { $fail += "Workstation path showed the Sign-in step after Prerequisites." }
-    if (-not $onPrivacy) { $fail += "Workstation path did NOT land on the Privacy step after Prerequisites." }
+    if (-not $onSkills) { $fail += "Workstation path did NOT land on the Skills step after Prerequisites." }
 } else {
     Write-Host "NOTE: a required prerequisite is missing on this machine, so Next is disabled at step 2."
     Write-Host "      The rail assertions above already prove Sign-in is dropped for the Workstation role."

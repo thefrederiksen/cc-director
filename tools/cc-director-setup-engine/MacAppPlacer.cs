@@ -7,7 +7,7 @@ public sealed record MacAppResult(bool Success, string Message, string? Version)
 
 /// <summary>
 /// Places the Director on macOS. The generic UpdateRunner places single-file exes and skips archives,
-/// so the Director (shipped as cc-director-mac-arm64.zip containing "CC Director.app") needs this
+/// so the Director (shipped as cc-director-mac-arm64.zip containing "Director.app") needs this
 /// dedicated step - the analog of MobilePackage's side-car-zip handling. It downloads + SHA-256 verifies the zip,
 /// extracts the .app with ditto (preserving the bundle's symlinks + exec bits), swaps it into
 /// ~/Applications, strips the Gatekeeper quarantine, and marks the launcher executable. Mirrors
@@ -16,7 +16,11 @@ public sealed record MacAppResult(bool Success, string Message, string? Version)
 public static class MacAppPlacer
 {
     public const string DirectorAsset = "cc-director-mac-arm64.zip";
-    private const string AppName = "CC Director.app";
+    private const string AppName = "Director.app";
+
+    /// <summary>The pre-rename bundle name (issue #1821 alias). A fresh place removes any copy of this
+    /// so a host never ends up with both "CC Director.app" and "Director.app".</summary>
+    private const string LegacyAppName = "CC Director.app";
 
     [SupportedOSPlatform("macos")]
     public static async Task<MacAppResult> PlaceAsync(
@@ -49,8 +53,18 @@ public static class MacAppPlacer
             if (!Directory.Exists(stagedApp))
                 return new MacAppResult(false, $"{AppName} not found inside {DirectorAsset}.", null);
 
-            var target = layout.PathFor(ComponentRegistry.Director); // ~/Applications/CC Director.app
+            var target = layout.PathFor(ComponentRegistry.Director); // ~/Applications/Director.app
             Directory.CreateDirectory(layout.MacAppsDir);
+
+            // Collapse the pile-up (issue #1821 rename): before placing the one canonical bundle,
+            // remove every stale copy the old distribution model could have left - the legacy
+            // "CC Director.app", Finder's auto-suffixed duplicates ("CC Director 2.app", "Director 2.app"),
+            // and any copy dragged into the system /Applications instead of ~/Applications. This is what
+            // makes reinstalling upgrade-in-place instead of stacking a new icon beside the old ones.
+            // Deletion is identity-gated (MacBundlePurger): only bundles carrying the Director's own
+            // CFBundleIdentifier are removed, so developer slot wrappers and unrelated apps that happen
+            // to share the name survive.
+            MacBundlePurger.Purge([layout.MacAppsDir, "/Applications"], keep: target, Log);
 
             Log($"installing {AppName} to {layout.MacAppsDir}");
             // Build beside, then this is a fresh place: remove any existing app, then ditto in.
@@ -67,8 +81,8 @@ public static class MacAppPlacer
             im.Set(ComponentRegistry.Director.Id, asset.Version);
             im.Save(layout);
 
-            Log($"CC Director {asset.Version} installed to {target}");
-            return new MacAppResult(true, $"CC Director {asset.Version} installed to {target}.", asset.Version);
+            Log($"Director {asset.Version} installed to {target}");
+            return new MacAppResult(true, $"Director {asset.Version} installed to {target}.", asset.Version);
         }
         finally
         {

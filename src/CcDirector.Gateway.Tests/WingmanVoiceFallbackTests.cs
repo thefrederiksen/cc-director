@@ -2,6 +2,8 @@ using System.Net;
 using CcDirector.AgentBrain;
 using CcDirector.Core;
 using CcDirector.Core.HostedAi;
+using CcDirector.Gateway.Settings;
+using CcDirector.Gateway.Tests.Data;
 using CcDirector.Gateway.Wingman;
 using Xunit;
 using CcDirector.Core.Tenancy;
@@ -16,8 +18,16 @@ namespace CcDirector.Gateway.Tests;
 /// WITHOUT ever treating it as an outage (no VoiceUnavailable state). The header's presence is the whole
 /// signal; its value is never shown to a user.
 /// </summary>
-public sealed class WingmanVoiceFallbackTests
+public sealed class WingmanVoiceFallbackTests : IDisposable
 {
+    private readonly GatewayDbTestHarness _settingsData = new();
+    private TenantSettingsResolver? _settings;
+
+    private TenantSettingsResolver Settings =>
+        _settings ??= new TenantSettingsResolver(new TenantSettingsStore(_settingsData.Open()));
+
+    public void Dispose() => _settingsData.Dispose();
+
     /// <summary>A speech upstream that returns 200 + audio bytes, optionally with the fallback header.
     /// The header VALUE is configurable so a test can prove the Gateway keys on the header's presence,
     /// never on its value (the cloud proxy sends a generic "1", never the provider name).</summary>
@@ -33,15 +43,15 @@ public sealed class WingmanVoiceFallbackTests
         }
     }
 
-    private static WingmanVoiceService ServiceWith(HttpMessageHandler handler, string persistPath)
+    private WingmanVoiceService ServiceWith(HttpMessageHandler handler, string persistPath)
     {
         var vault = new KeyVault(Path.Combine(Path.GetTempPath(), "wmvfb-" + Guid.NewGuid().ToString("N") + ".vault"));
         vault.Set("OPENAI_API_KEY", "sk-test");
         vault.Set("DEVTHROTTLE_API_KEY", "dt_live_test");
         // StoreSpokenAsync takes the spoken text directly, so the brain is never reached here.
-        Func<Core.Configuration.WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
-            (_, _) => throw new InvalidOperationException("the brain must not be reached by a fallback header test");
-        return new WingmanVoiceService(brain, vault, persistPath, ttsHttpClient: new HttpClient(handler));
+        Func<TenantId, Core.Configuration.WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
+            (_, _, _) => throw new InvalidOperationException("the brain must not be reached by a fallback header test");
+        return new WingmanVoiceService(brain, vault, Settings, persistPath, ttsHttpClient: new HttpClient(handler));
     }
 
     // A unique SUBDIRECTORY per test, not a bare temp filename. The service derives its durable audio

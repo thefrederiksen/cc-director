@@ -46,7 +46,7 @@ public sealed class WingmanAskForwardingTests : IAsyncLifetime
         var deadline = DateTime.UtcNow.AddSeconds(5);
         while (DateTime.UtcNow < deadline)
         {
-            if (_gateway.Registry.ListDirectors().Any(d => d.DirectorId == _director.DirectorId)) break;
+            if (_gateway.Registry.ListDirectors(CcDirector.Gateway.Tenancy.SystemScope.Grant()).Any(d => d.DirectorId == _director.DirectorId)) break;
             await Task.Delay(100);
         }
     }

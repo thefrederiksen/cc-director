@@ -26,14 +26,6 @@ profiles, accounts, and so on) with their status, and add / connect / disconnect
 
 _Screenshot pending - open the Connections panel to capture._
 
-## Scheduler
-
-The Scheduler panel lists the registered cron runners with the current leader
-status, each runner's pending count, a Run-now button, and an expandable box
-showing the last result.
-
-_Screenshot pending - open the Scheduler panel to capture._
-
 ## Communications Manager (partial)
 
 The Communications Manager is a compose-and-preview surface for LinkedIn,

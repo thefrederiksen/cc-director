@@ -11,7 +11,7 @@ namespace CcDirector.Gateway.Account;
 /// every registration and heartbeat, so the cloud (idempotent per member + install id) keeps exactly one
 /// device record for this machine instead of creating a new one on each launch.
 ///
-/// There was no pre-existing Gateway install id to reuse: the login-telemetry reporter accepts an
+/// There was no pre-existing Gateway install id to reuse: legacy account event reporting accepted an
 /// install id parameter (issues #57/#40) but the Gateway injects a no-op reporter, so that seam is never
 /// populated on the Gateway, and the local pairing registry (issue #469) keys off client-supplied device
 /// ids, not the Gateway's own. This store therefore establishes the ONE canonical Gateway identity rather

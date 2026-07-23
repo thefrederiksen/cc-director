@@ -206,7 +206,7 @@ public sealed class NetDiagResultStore
     /// mixture. Renaming it aside would keep it in the live store indefinitely for no benefit, because
     /// nothing will ever be able to attribute it.
     ///
-    /// WHY THE COST IS NOTHING REAL. Diagnostic results are ephemeral operational telemetry with no
+    /// WHY THE COST IS NOTHING REAL. Diagnostic results are ephemeral operational data with no
     /// durability contract - a bounded recent-history ring that prunes itself continuously and that a
     /// Gateway restart was already free to lose. Delete, and partition forward.
     /// </summary>

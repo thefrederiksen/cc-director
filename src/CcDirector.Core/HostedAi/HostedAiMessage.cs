@@ -35,8 +35,8 @@ public sealed record HostedAiMessage(string Text, string CtaLabel, HostedAiCtaAc
 
 /// <summary>
 /// The DevThrottle website addresses the hosted-AI call-to-actions route to (issue #938). Resolved
-/// from the SAME base as the rest of the account egress (<see cref="AccountTelemetryClient.DefaultApiBaseUrl"/>
-/// with the <see cref="AccountTelemetryClient.ApiBaseUrlEnvVar"/> override), so a preview host is honored
+/// from the SAME base as the rest of the account egress (<see cref="DevThrottleApi.DefaultBaseUrl"/>
+/// with the <see cref="DevThrottleApi.BaseUrlEnvVar"/> override), so a preview host is honored
 /// and there is no new hard-coded domain. These are website routes (not <c>/api/v1</c> endpoints); the
 /// user opens them in a browser.
 /// </summary>
@@ -51,10 +51,7 @@ public static class HostedAiUrls
     /// <summary>The website base (env override, else the production default), without a trailing slash.</summary>
     public static string WebsiteBase()
     {
-        var fromEnv = Environment.GetEnvironmentVariable(AccountTelemetryClient.ApiBaseUrlEnvVar);
-        if (!string.IsNullOrWhiteSpace(fromEnv))
-            return fromEnv.Trim().TrimEnd('/');
-        return AccountTelemetryClient.DefaultApiBaseUrl;
+        return DevThrottleApi.ResolveBaseUrl();
     }
 
     /// <summary>The absolute Billing URL for the add-credits / raise-limit call-to-action.</summary>

@@ -22,7 +22,7 @@ public static class HostedGateway
     public const string UrlEnvironmentVariable = "DEVTHROTTLE_HOSTED_GATEWAY_URL";
 
     /// <summary>The shipped address of DevThrottle's hosted, multi-tenant Gateway.</summary>
-    public const string DefaultUrl = "https://devthrottle-gw.azurewebsites.net";
+    public const string DefaultUrl = "https://gateway.devthrottle.com";
 
     /// <summary>
     /// The hosted Gateway URL this machine should enroll against: the operator override when

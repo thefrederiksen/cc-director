@@ -88,8 +88,7 @@ public sealed class MobileEnrollRevokeRoundTripTests
         Environment.SetEnvironmentVariable(GatewayAccountFactory.SigningSecretEnvVar, GatewayTestJwt.SigningSecret);
         try
         {
-            var authEventsLog = Path.Combine(Path.GetTempPath(), "cc-gw-revoke-" + Guid.NewGuid().ToString("N") + ".jsonl");
-            var service = GatewayAccountFactory.Build(new InMemoryTokenStore(), authEventsLog);
+            var service = GatewayAccountFactory.Build(new InMemoryTokenStore());
             service.StoreTokens(new DevThrottleTokens(GatewayTestJwt.Create(DateTime.UtcNow.AddHours(1)), "refresh-908"));
             return service;
         }

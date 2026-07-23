@@ -51,6 +51,7 @@ public static class Program
                 "enroll" => await Commands.EnrollAsync(args, json),
                 "uninstall" => Commands.Uninstall(args, layout, json),
                 "rollback" => Commands.Rollback(args, layout, json),
+                "autostart" => Commands.Autostart(args, layout, json),
                 "version" or "--version" => VersionCommand(json),
                 "help" or "--help" => Help(),
                 _ => Unknown(args.Command),
@@ -139,6 +140,7 @@ public static class Program
               enroll --hosted            Join DevThrottle's hosted gateway instead of your own
               uninstall --role <r>       Remove install-owned files (preserves your data)
               rollback <component>       Restore the previous build and pin away from current
+              autostart on|off|status    Start the Gateway at login (Run key / launch agent / systemd --user)
               version                    Print this CLI's product version
 
             Options:

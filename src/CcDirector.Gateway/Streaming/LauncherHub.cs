@@ -1,5 +1,8 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Tenancy;
+using CcDirector.Gateway.Util;
 using Microsoft.AspNetCore.SignalR;
 
 namespace CcDirector.Gateway.Streaming;
@@ -25,15 +28,22 @@ namespace CcDirector.Gateway.Streaming;
 public sealed class LauncherHub : Hub
 {
     private const string MachineNameItemKey = "cc.launcherMachine";
+    private const string TenantIdItemKey = "cc.tenantId";
 
     private readonly LauncherConnectionRegistry _registry;
+    private readonly HostedTenantBoundary? _tenantBoundary;
 
-    public LauncherHub(LauncherConnectionRegistry registry)
+    public LauncherHub(LauncherConnectionRegistry registry, HostedTenantBoundary? tenantBoundary = null)
     {
         _registry = registry;
+        _tenantBoundary = tenantBoundary;
     }
 
-    /// <summary>Bind this connection to a machine's launcher. Must be the first message; aborts on a bad name.</summary>
+    /// <summary>Bind this connection to the calling tenant's machine launcher. Must be the first message;
+    /// aborts on a bad name or - on hosted - a device key that resolves to no tenant (deny by default,
+    /// exactly like <see cref="DirectorHub"/>). The machine name is client-supplied; the TENANT is not - it
+    /// comes from the authenticated device key, so one account cannot register a launcher into another's
+    /// partition.</summary>
     public void Hello(LauncherStreamHello hello)
     {
         if (hello is null || string.IsNullOrWhiteSpace(hello.MachineName))
@@ -52,9 +62,32 @@ public sealed class LauncherHub : Hub
             return;
         }
 
+        var resolved = ResolveConnectionTenant();
+        if (resolved is not { } tenant)
+        {
+            FileLog.Write($"[LauncherHub] Hello REJECTED (hosted: the authenticated device key resolves to no tenant): conn={Short(Context.ConnectionId)}");
+            Context.Abort();
+            return;
+        }
+
         Context.Items[MachineNameItemKey] = machine;
-        _registry.RegisterConnection(machine, Context.ConnectionId);
-        FileLog.Write($"[LauncherHub] Hello: machine={machine} bound to conn={Short(Context.ConnectionId)} (port={hello.Port}, version={hello.Version})");
+        Context.Items[TenantIdItemKey] = tenant;
+        _registry.RegisterConnection(tenant, machine, Context.ConnectionId);
+        FileLog.Write($"[LauncherHub] Hello: tenant={tenant.Value}, machine={machine} bound to conn={Short(Context.ConnectionId)} (port={hello.Port}, version={hello.Version})");
+    }
+
+    /// <summary>The tenant that owns this connection, from the authenticated device key (never the payload).
+    /// On self-host (no boundary) this is <see cref="TenantId.Local"/>; on hosted a key with no bound tenant
+    /// returns null and the connection is aborted.</summary>
+    private TenantId? ResolveConnectionTenant()
+    {
+        if (_tenantBoundary is null)
+            return TenantId.Local;
+
+        var key = Context.GetHttpContext()?.Items.TryGetValue(AuthMiddleware.DeviceKeyItemKey, out var value) == true
+            ? value as string
+            : null;
+        return _tenantBoundary.ResolveForDeviceKey(key);
     }
 
     public override Task OnConnectedAsync()

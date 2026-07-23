@@ -203,6 +203,27 @@ public sealed class GatewayDatabase : IDisposable
     }
 
     /// <summary>
+    /// A fresh context scoped to an EXPLICITLY-supplied tenant, never the ambient one. Issue #2017 (the
+    /// per-tenant settings resolver) and its MTR runtime-threading follow-up must scope to the caller/owner
+    /// tenant the ROUTE resolved (via <c>ResolveReadTenant</c>), not to any AsyncLocal ambient tenant - the
+    /// coordination boundary is explicit: no hidden ambient or static tenant inference, and on hosted a blank
+    /// or unresolved tenant must fail closed and never become <see cref="TenantId.Local"/>. This method makes
+    /// that explicit: it fails loud on an invalid tenant (so a <c>default(TenantId)</c> never reaches a query),
+    /// then stamps the context so the global query filter and every write scope to that exact tenant. The
+    /// caller disposes it (it returns to the pool).
+    /// </summary>
+    /// <exception cref="ArgumentException">The tenant is not valid.</exception>
+    public GatewayDbContext CreateContext(TenantId tenant)
+    {
+        if (!tenant.IsValid)
+            throw new ArgumentException("A valid TenantId is required.", nameof(tenant));
+
+        var ctx = _factory.CreateDbContext();
+        ctx.ActiveTenant = tenant.Value;
+        return ctx;
+    }
+
+    /// <summary>
     /// A fresh context that is NOT scoped to any tenant - for the GLOBAL mapping tables ONLY (the
     /// <c>tenants</c> account-subject -> tenant-id table), which carry no <c>tenant_id</c> column and no
     /// query filter. It leaves <see cref="GatewayDbContext.ActiveTenant"/> null, so any tenant-SCOPED entity

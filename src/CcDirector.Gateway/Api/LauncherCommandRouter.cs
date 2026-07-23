@@ -1,3 +1,4 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 
@@ -17,21 +18,23 @@ namespace CcDirector.Gateway.Api;
 /// </summary>
 internal static class LauncherCommandRouter
 {
-    /// <summary>The signature of the "send a command down a launcher's stream" hook, non-null only when stream mode is on.</summary>
-    public delegate Task<LauncherCommandResult?> SendLauncherCommandAsync(string machineName, LauncherCommand command, CancellationToken ct);
+    /// <summary>The signature of the "send a command down a launcher's stream" hook, non-null only when stream
+    /// mode is on. The tenant scopes the connection lookup to the caller's own launcher (tenant, machine).</summary>
+    public delegate Task<LauncherCommandResult?> SendLauncherCommandAsync(TenantId tenant, string machineName, LauncherCommand command, CancellationToken ct);
 
     /// <summary>
-    /// Try to route a command down the launcher's stream. Returns the stream result, or null to signal the
-    /// caller to fall back to its existing HTTP relay (stream mode off, or the launcher is not stream-connected).
+    /// Try to route a command down the CALLING TENANT's launcher stream. Returns the stream result, or null to
+    /// signal the caller to fall back to its existing HTTP relay (stream mode off, or the launcher is not
+    /// stream-connected for this tenant+machine).
     /// </summary>
     public static async Task<LauncherCommandResult?> TrySendAsync(
-        SendLauncherCommandAsync? sendCommand, string machineName, LauncherCommand command, CancellationToken ct)
+        SendLauncherCommandAsync? sendCommand, TenantId tenant, string machineName, LauncherCommand command, CancellationToken ct)
     {
         if (sendCommand is null)
             return null;
 
-        var result = await sendCommand(machineName, command, ct);
-        FileLog.Write($"[LauncherCommandRouter] {command.Verb} machine={machineName}: {(result is null ? "no stream -> HTTP relay fallback" : $"stream status={result.Status}")}");
+        var result = await sendCommand(tenant, machineName, command, ct);
+        FileLog.Write($"[LauncherCommandRouter] {command.Verb} tenant={tenant.Value} machine={machineName}: {(result is null ? "no stream -> HTTP relay fallback" : $"stream status={result.Status}")}");
         return result;
     }
 }

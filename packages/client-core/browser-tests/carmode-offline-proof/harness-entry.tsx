@@ -94,7 +94,7 @@ window.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Re
     return new Response(silentWav(), { status: 200, headers: { "content-type": "audio/wav" } });
   }
   if (url.includes("/carmode/warmup")) return okJson({ warmed: true });
-  if (url.includes("/carmode/telemetry")) return okJson({ recorded: true });
+  if (url.includes("/carmode/diagnostics")) return okJson({ recorded: true });
   return realFetch(input, init);
 }) as typeof window.fetch;
 

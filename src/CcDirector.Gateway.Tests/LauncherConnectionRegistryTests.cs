@@ -20,11 +20,11 @@ public sealed class LauncherConnectionRegistryTests
         var registry = NewRegistry();
 
         // Act
-        registry.RegisterConnection("machine-A", "conn-1");
+        registry.RegisterConnection(CcDirector.Core.Tenancy.TenantId.Local, "machine-A", "conn-1");
 
         // Assert
-        Assert.Equal("conn-1", registry.GetActiveConnectionId("machine-A"));
-        Assert.True(registry.IsStreamConnected("machine-A"));
+        Assert.Equal("conn-1", registry.GetActiveConnectionId(CcDirector.Core.Tenancy.TenantId.Local, "machine-A"));
+        Assert.True(registry.IsStreamConnected(CcDirector.Core.Tenancy.TenantId.Local, "machine-A"));
     }
 
     [Fact]
@@ -32,11 +32,11 @@ public sealed class LauncherConnectionRegistryTests
     {
         // Arrange
         var registry = NewRegistry();
-        registry.RegisterConnection("Machine-A", "conn-1");
+        registry.RegisterConnection(CcDirector.Core.Tenancy.TenantId.Local, "Machine-A", "conn-1");
 
         // Assert - the map is keyed case-insensitively (OrdinalIgnoreCase).
-        Assert.Equal("conn-1", registry.GetActiveConnectionId("machine-a"));
-        Assert.True(registry.IsStreamConnected("MACHINE-A"));
+        Assert.Equal("conn-1", registry.GetActiveConnectionId(CcDirector.Core.Tenancy.TenantId.Local, "machine-a"));
+        Assert.True(registry.IsStreamConnected(CcDirector.Core.Tenancy.TenantId.Local, "MACHINE-A"));
     }
 
     [Fact]
@@ -44,14 +44,14 @@ public sealed class LauncherConnectionRegistryTests
     {
         // Arrange
         var registry = NewRegistry();
-        registry.RegisterConnection("machine-A", "conn-1");
+        registry.RegisterConnection(CcDirector.Core.Tenancy.TenantId.Local, "machine-A", "conn-1");
 
         // Act
         registry.Unregister("conn-1");
 
         // Assert
-        Assert.False(registry.IsStreamConnected("machine-A"));
-        Assert.Null(registry.GetActiveConnectionId("machine-A"));
+        Assert.False(registry.IsStreamConnected(CcDirector.Core.Tenancy.TenantId.Local, "machine-A"));
+        Assert.Null(registry.GetActiveConnectionId(CcDirector.Core.Tenancy.TenantId.Local, "machine-A"));
     }
 
     [Fact]
@@ -59,13 +59,13 @@ public sealed class LauncherConnectionRegistryTests
     {
         // Arrange - a launcher restart / reconnect: a new connection for the same machine wins.
         var registry = NewRegistry();
-        registry.RegisterConnection("machine-A", "conn-1");
+        registry.RegisterConnection(CcDirector.Core.Tenancy.TenantId.Local, "machine-A", "conn-1");
 
         // Act
-        registry.RegisterConnection("machine-A", "conn-2");
+        registry.RegisterConnection(CcDirector.Core.Tenancy.TenantId.Local, "machine-A", "conn-2");
 
         // Assert
-        Assert.Equal("conn-2", registry.GetActiveConnectionId("machine-A"));
+        Assert.Equal("conn-2", registry.GetActiveConnectionId(CcDirector.Core.Tenancy.TenantId.Local, "machine-A"));
     }
 
     [Fact]
@@ -75,15 +75,15 @@ public sealed class LauncherConnectionRegistryTests
         // (the superseded old connection) disconnects late. The atomic compare-remove must ignore the stale
         // disconnect so the newer connection keeps owning the machine.
         var registry = NewRegistry();
-        registry.RegisterConnection("machine-A", "conn-1");
-        registry.RegisterConnection("machine-A", "conn-2");
+        registry.RegisterConnection(CcDirector.Core.Tenancy.TenantId.Local, "machine-A", "conn-1");
+        registry.RegisterConnection(CcDirector.Core.Tenancy.TenantId.Local, "machine-A", "conn-2");
 
         // Act
         registry.Unregister("conn-1");
 
         // Assert - the newer connection still owns the machine.
-        Assert.True(registry.IsStreamConnected("machine-A"));
-        Assert.Equal("conn-2", registry.GetActiveConnectionId("machine-A"));
+        Assert.True(registry.IsStreamConnected(CcDirector.Core.Tenancy.TenantId.Local, "machine-A"));
+        Assert.Equal("conn-2", registry.GetActiveConnectionId(CcDirector.Core.Tenancy.TenantId.Local, "machine-A"));
     }
 
     [Fact]
@@ -91,22 +91,22 @@ public sealed class LauncherConnectionRegistryTests
     {
         // Arrange
         var registry = NewRegistry();
-        registry.RegisterConnection("machine-A", "conn-1");
+        registry.RegisterConnection(CcDirector.Core.Tenancy.TenantId.Local, "machine-A", "conn-1");
 
         // Act - a connection id the registry never held.
         registry.Unregister("conn-does-not-exist");
 
         // Assert - the active connection is untouched.
-        Assert.True(registry.IsStreamConnected("machine-A"));
-        Assert.Equal("conn-1", registry.GetActiveConnectionId("machine-A"));
+        Assert.True(registry.IsStreamConnected(CcDirector.Core.Tenancy.TenantId.Local, "machine-A"));
+        Assert.Equal("conn-1", registry.GetActiveConnectionId(CcDirector.Core.Tenancy.TenantId.Local, "machine-A"));
     }
 
     [Fact]
     public void GetActiveConnectionId_ForUnknownMachine_ReturnsNull()
     {
         var registry = NewRegistry();
-        Assert.Null(registry.GetActiveConnectionId("nobody"));
-        Assert.False(registry.IsStreamConnected("nobody"));
+        Assert.Null(registry.GetActiveConnectionId(CcDirector.Core.Tenancy.TenantId.Local, "nobody"));
+        Assert.False(registry.IsStreamConnected(CcDirector.Core.Tenancy.TenantId.Local, "nobody"));
     }
 
     [Fact]
@@ -114,15 +114,15 @@ public sealed class LauncherConnectionRegistryTests
     {
         // Arrange - two machines each with their own launcher connection.
         var registry = NewRegistry();
-        registry.RegisterConnection("machine-A", "conn-A");
-        registry.RegisterConnection("machine-B", "conn-B");
+        registry.RegisterConnection(CcDirector.Core.Tenancy.TenantId.Local, "machine-A", "conn-A");
+        registry.RegisterConnection(CcDirector.Core.Tenancy.TenantId.Local, "machine-B", "conn-B");
 
         // Act - one disconnects.
         registry.Unregister("conn-A");
 
         // Assert - the other is unaffected.
-        Assert.False(registry.IsStreamConnected("machine-A"));
-        Assert.True(registry.IsStreamConnected("machine-B"));
-        Assert.Equal("conn-B", registry.GetActiveConnectionId("machine-B"));
+        Assert.False(registry.IsStreamConnected(CcDirector.Core.Tenancy.TenantId.Local, "machine-A"));
+        Assert.True(registry.IsStreamConnected(CcDirector.Core.Tenancy.TenantId.Local, "machine-B"));
+        Assert.Equal("conn-B", registry.GetActiveConnectionId(CcDirector.Core.Tenancy.TenantId.Local, "machine-B"));
     }
 }

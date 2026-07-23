@@ -3,26 +3,9 @@ using Xunit;
 
 namespace CcDirector.Core.Tests.Account;
 
-public sealed class DevThrottleAccountServiceTests : IDisposable
+public sealed class DevThrottleAccountServiceTests
 {
-    private readonly string _tempDir;
-    private readonly AuthEventLog _eventLog;
-    private readonly string _eventLogPath;
     private readonly DateTime _now = new(2026, 6, 21, 12, 0, 0, DateTimeKind.Utc);
-
-    public DevThrottleAccountServiceTests()
-    {
-        _tempDir = Path.Combine(Path.GetTempPath(), "cc-dt-acct-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(_tempDir);
-        _eventLogPath = Path.Combine(_tempDir, "auth-events.jsonl");
-        _eventLog = new AuthEventLog(_eventLogPath);
-    }
-
-    public void Dispose()
-    {
-        if (Directory.Exists(_tempDir))
-            Directory.Delete(_tempDir, recursive: true);
-    }
 
     private JwtAccessTokenValidator Validator() =>
         new(TestJwt.SigningSecret, new FixedTime(_now));
@@ -30,7 +13,7 @@ public sealed class DevThrottleAccountServiceTests : IDisposable
     private DevThrottleAccountService MakeService(
         IProtectedTokenStore store,
         ITokenRefresher? refresher = null)
-        => new(store, Validator(), _eventLog, refresher ?? new StubTokenRefresher(null), new FixedTime(_now));
+        => new(store, Validator(), refresher ?? new StubTokenRefresher(null), new FixedTime(_now));
 
     // Acceptance criterion: with no stored credential, the check returns false.
     [Fact]
@@ -228,9 +211,9 @@ public sealed class DevThrottleAccountServiceTests : IDisposable
 
     // Issue #876: when the backend DEFINITIVELY rejects the refresh token (revoked session or
     // rotated-away token), the dead credential is cleared - the install reads signed-out and a
-    // logged-out event is recorded - instead of faking "Signed in" forever.
+    // instead of faking "Signed in" forever.
     [Fact]
-    public async Task RefreshIfNeededAsync_RefreshTokenRejected_ClearsCredentialAndRecordsLogout()
+    public async Task RefreshIfNeededAsync_RefreshTokenRejected_ClearsCredential()
     {
         var store = new InMemoryTokenStore();
         var refresher = StubTokenRefresher.Rejecting();
@@ -244,7 +227,6 @@ public sealed class DevThrottleAccountServiceTests : IDisposable
         Assert.True(refresher.WasCalled);
         Assert.False(store.HasTokens);
         Assert.False(service.IsLoggedIn());
-        Assert.Contains(_eventLog.ReadAll(), e => e.Kind == AuthEventLog.LoggedOut);
     }
 
     // Issue #876: an UNAVAILABLE exchange (offline, backend error) must never clear the credential -
@@ -262,13 +244,11 @@ public sealed class DevThrottleAccountServiceTests : IDisposable
 
         Assert.True(store.HasTokens);
         Assert.True(service.IsLoggedIn());
-        Assert.DoesNotContain(_eventLog.ReadAll(), e => e.Kind == AuthEventLog.LoggedOut);
     }
 
-    // Acceptance criterion: logout clears the store, the next check returns false, and a logout event
-    // is recorded.
+    // Acceptance criterion: logout clears the store and the next check returns false.
     [Fact]
-    public void Logout_ClearsStoreNextCheckFalseAndRecordsLogoutEvent()
+    public void Logout_ClearsStoreAndNextCheckReturnsFalse()
     {
         var store = new InMemoryTokenStore();
         var service = MakeService(store);
@@ -279,23 +259,6 @@ public sealed class DevThrottleAccountServiceTests : IDisposable
 
         Assert.False(store.HasTokens);
         Assert.False(service.IsLoggedIn());
-        var events = _eventLog.ReadAll();
-        Assert.Contains(events, e => e.Kind == AuthEventLog.LoggedOut);
-    }
-
-    // Acceptance criterion (event side): a logged-in event is recorded on first store, and is not
-    // re-recorded on a re-store of an already-logged-in install.
-    [Fact]
-    public void StoreTokens_FirstStore_RecordsLoggedInEventOnce()
-    {
-        var store = new InMemoryTokenStore();
-        var service = MakeService(store);
-
-        service.StoreTokens(new DevThrottleTokens(TestJwt.Create(_now.AddHours(1)), "refresh-1"));
-        service.StoreTokens(new DevThrottleTokens(TestJwt.Create(_now.AddHours(2)), "refresh-2"));
-
-        var loggedInEvents = _eventLog.ReadAll().Count(e => e.Kind == AuthEventLog.LoggedIn);
-        Assert.Equal(1, loggedInEvents);
     }
 
     // Issue #582 AC1: the account area shows the signed-in identity (email and provider) for a stored

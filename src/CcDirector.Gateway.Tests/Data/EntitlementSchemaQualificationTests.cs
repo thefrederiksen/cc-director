@@ -152,17 +152,20 @@ public sealed class EntitlementSchemaQualificationTests
                     "CREATE TABLE gateway.entitlements (" +
                     "subject uuid NOT NULL PRIMARY KEY, status text NOT NULL, " +
                     "current_period_end timestamptz NULL, stripe_subscription_id text NULL, " +
-                    "updated_at timestamptz NULL, livemode boolean NULL);");
-                // Seed one live, active entitlement. The subject is bound as a native uuid parameter so it lands
-                // in the uuid column exactly as the payment side would write it.
+                    "updated_at timestamptz NULL, livemode boolean NULL, tier text NULL);");
+                // Seed one live, active entitlement on the hosted tier. The subject is bound as a native uuid
+                // parameter so it lands in the uuid column exactly as the payment side would write it.
                 ctx.Database.ExecuteSqlRaw(
-                    "INSERT INTO gateway.entitlements (subject, status, livemode) VALUES ({0}, 'active', true);",
+                    "INSERT INTO gateway.entitlements (subject, status, livemode, tier) VALUES ({0}, 'active', true, 'hosted');",
                     subjectGuid);
             }
 
             var registry = new EntitlementRegistry(db, requireLivemode: true);
-            var outcome = registry.LookupBySubject(subject, DateTime.UtcNow);
-            Assert.Equal(EntitlementOutcome.Entitled, outcome);
+            // The full read: the join lands on the uuid column (the 42883 trap is guarded), the outcome is
+            // Entitled, and the tier is read back off the same row.
+            var decision = registry.Evaluate(subject, DateTime.UtcNow);
+            Assert.Equal(EntitlementOutcome.Entitled, decision.Outcome);
+            Assert.Equal(EntitlementRegistry.TierHosted, decision.Tier);
         }
         finally
         {

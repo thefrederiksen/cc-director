@@ -34,20 +34,17 @@ public partial class MainWindow : Window
 
     private WelcomeStep? _welcomeStep;
     private PrerequisitesStep? _prerequisitesStep;
-    private PrivacyStep? _privacyStep;
     private SkillsStep? _skillsStep;
     private InstallStep? _installStep;
     private CompleteStep? _completeStep;
 
     private readonly record struct StepUI(Border Circle, TextBlock Label, TextBlock? Number);
 
-    // Wizard steps: 1 Welcome, 2 Prerequisites, 4 Privacy, 6 Skills, 7 Install, 8 Complete. The Privacy
-    // step (issue #659) slots in after the prerequisite checks. There is one linear path for every
+    // Wizard steps: 1 Welcome, 2 Prerequisites, 6 Skills, 7 Install, 8 Complete. There is one linear path for every
     // install and update - the installer always lays down the Director set with no account gate (issue
     // #1807). Ids 3 (the old Gateway-only Sign-in step) and 5 (the old mandatory gateway-join Connect
     // step) were removed with the account gate; the surviving ids keep their old numbers so this switch
     // and the eight-row sidebar are unchanged, and the two removed rows simply never appear.
-    private const int StepPrivacy = 4;
     private const int StepInstall = 7;
     private const int StepComplete = 8;
 
@@ -104,17 +101,6 @@ public partial class MainWindow : Window
         return step;
     }
 
-    /// <summary>Build the Privacy step (issue #659). There is no in-wizard sign-in anymore (issue
-    /// #1807), so there is no account token to pre-fill from; the step reads the server default (ON)
-    /// and always mirrors the choice to the local config.json. The Privacy step never gates Next -
-    /// the toggle is a choice.</summary>
-    private static PrivacyStep BuildPrivacyStep()
-    {
-        // No account token in a no-account install: the token provider always returns null, so the
-        // step falls back to the local telemetry mirror.
-        return new PrivacyStep(() => null);
-    }
-
     /// <summary>
     /// Show the in-wizard uninstall flow (confirm -> live progress -> completion) for the detected
     /// role - no raw MessageBox pop-ups (issue: nicer uninstall progress). The Gateway role is a
@@ -163,21 +149,19 @@ public partial class MainWindow : Window
         }
     }
 
-    // The six sidebar rows in display order. Their x:Names keep the historical step ids (1, 2, 4, 6, 7,
-    // 8) so the ShowStep switch and the WizardStepFlow ids stay unchanged; the circles are renumbered
-    // 1..6 at runtime by UpdateSidebar. This list is aligned with WizardStepFlow.VisibleSteps().
+    // The five sidebar rows in display order. Historical ids 3-5 are retired; the remaining circles
+    // are renumbered 1..5 at runtime. This list is aligned with WizardStepFlow.VisibleSteps().
     private List<StepUI> GetStepUIs() =>
     [
         new(Step1Circle, Step1Label, null),
         new(Step2Circle, Step2Label, Step2Num),
-        new(Step4Circle, Step4Label, Step4Num),
         new(Step6Circle, Step6Label, Step6Num),
         new(Step7Circle, Step7Label, Step7Num),
         new(Step8Circle, Step8Label, Step8Num),
     ];
 
-    // The five connector lines between the six rows, in order.
-    private Border[] GetLines() => [Line12, Line23, Line45, Line67, Line78];
+    // The four connector lines between the five rows, in order.
+    private Border[] GetLines() => [Line12, Line23, Line67, Line78];
 
     private void ShowStep(int step)
     {
@@ -191,7 +175,6 @@ public partial class MainWindow : Window
         {
             1 => _welcomeStep ??= BuildWelcomeStep(),
             2 => _prerequisitesStep ??= new PrerequisitesStep(OnPrerequisitesChecked, _isUpdate, _role),
-            StepPrivacy => _privacyStep ??= BuildPrivacyStep(),
             6 => _skillsStep ??= new SkillsStep(_isUpdate),
             StepInstall => _installStep ??= new InstallStep(),
             StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _directorExePath, _isUpdate, _alreadyUpToDate, _cachedPrep?.Version, _gatewayFailureReason, BuildCapabilityNotice()),
@@ -275,7 +258,7 @@ public partial class MainWindow : Window
         }
         else
         {
-            // Welcome, Privacy, and every other step: nothing to gate on. The Welcome screen makes no
+            // Welcome and every other step: nothing to gate on. The Welcome screen makes no
             // choice anymore (issue #1807), so Next is always enabled here.
             NextButton.Content = "Next";
             NextButton.IsEnabled = true;
@@ -558,13 +541,6 @@ public partial class MainWindow : Window
 
         if (_currentStep < StepComplete)
         {
-            // Leaving Privacy (issue #659): apply the telemetry choice. This writes the per-account
-            // server flag (best-effort) and always mirrors the choice to the local config.json. It must
-            // never block the wizard - the toggle is a choice, not a gate - so we fire it detached and
-            // proceed to the next step immediately regardless of the toggle value or the call outcome.
-            if (_currentStep == StepPrivacy)
-                ApplyPrivacyChoiceBestEffort();
-
             // Leaving Install: rebuild Complete with the final counts.
             if (_currentStep == StepInstall)
                 _completeStep = null;
@@ -573,31 +549,4 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>
-    /// Applies the Privacy step's telemetry choice fully detached so a slow or failed telemetry call can
-    /// never block the wizard (issue #659). <see cref="PrivacyStep.ApplyChoiceAsync"/> itself never
-    /// throws and writes the local config.json mirror either way; this only logs the completion.
-    /// </summary>
-    private void ApplyPrivacyChoiceBestEffort()
-    {
-        var step = _privacyStep;
-        if (step is null)
-            return;
-
-        // Snapshot the checkbox state and the token on the UI thread; the detached apply touches no UI.
-        var snapshot = step.SnapshotChoice();
-        SetupLog.Write($"[MainWindow] ApplyPrivacyChoiceBestEffort: applying telemetry choice (detached, non-blocking), enabled={snapshot.Enabled}");
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await step.ApplyChoiceAsync(snapshot);
-                SetupLog.Write("[MainWindow] ApplyPrivacyChoiceBestEffort: telemetry choice applied");
-            }
-            catch (Exception ex)
-            {
-                SetupLog.Write($"[MainWindow] ApplyPrivacyChoiceBestEffort: applying telemetry choice failed (ignored, best-effort): {ex.Message}");
-            }
-        });
-    }
 }

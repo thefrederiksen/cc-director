@@ -7,7 +7,7 @@ namespace CcDirector.Gateway.Tests.Transcription;
 /// The archive exists so a transcription that silently drops half the speech can be PROVEN against the
 /// audio that produced it. These tests pin the two properties that failure needs: the clip survives a
 /// successful turn (the old net deleted exactly then), and it is findable from the turn id in the
-/// telemetry log. The rest pin the bounds that keep it from filling the disk.
+/// local history. The rest pin the bounds that keep it from filling the disk.
 ///
 /// Every test writes to its own scratch directory - never the real user's archive.
 /// </summary>
@@ -41,9 +41,9 @@ public sealed class TranscriptionAudioArchiveTests : IDisposable
     }
 
     [Fact]
-    public void TrySave_FileIsFoundFromTheTelemetryTurnId()
+    public void TrySave_FileIsFoundFromTheHistoryTurnId()
     {
-        // The whole point of the key: a suspicious line in transcription-log names a turnId, and that
+        // The whole point of the key: a suspicious line in transcription-history names a turnId, and that
         // turnId must lead to the clip with no other index in between.
         var archive = NewArchive();
         const string turnId = "0b7e368634d1467fa063ec90218d71f9";
@@ -85,6 +85,18 @@ public sealed class TranscriptionAudioArchiveTests : IDisposable
     public void TrySave_BlankTurnId_SavesNothing()
     {
         Assert.Null(NewArchive().TrySave("  ", Clip(), "audio/wav"));
+    }
+
+    [Fact]
+    public void Clear_RemovesEveryRetainedClip()
+    {
+        var archive = NewArchive();
+        archive.TrySave("turn1", Clip(), "audio/wav");
+        archive.TrySave("turn2", Clip(), "audio/webm");
+
+        Assert.Equal(2, archive.Clear());
+        Assert.Empty(Directory.GetFiles(_dir, "turn-*"));
+        Assert.Equal(0, archive.Clear());
     }
 
     [Fact]

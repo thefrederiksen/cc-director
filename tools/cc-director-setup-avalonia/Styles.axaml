@@ -18,18 +18,32 @@
         </Style.Resources>
     </Style>
 
+    <!-- Every interactive state a button has (hover, pressed, disabled) must be styled on the
+         templated ContentPresenter, with BOTH Background and Foreground pinned. The Fluent base
+         theme repaints the ContentPresenter's background and foreground on :pointerover and
+         :pressed; any state left unstyled gets the base theme's colors instead of ours - which is
+         exactly how the launch button used to "vanish" on hover (issue fixed in pull request
+         2024) and how the text of these buttons flipped unreadable on hover and press. -->
+
     <!-- Default button style -->
     <Style Selector="Button.setup">
         <Setter Property="Background" Value="#3C3C3C" />
         <Setter Property="Foreground" Value="#CCCCCC" />
         <Setter Property="BorderThickness" Value="0" />
-        <Setter Property="Height" Value="32" />
+        <Setter Property="MinHeight" Value="32" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
         <Setter Property="Padding" Value="16,0" />
         <Setter Property="Cursor" Value="Hand" />
         <Setter Property="CornerRadius" Value="3" />
     </Style>
     <Style Selector="Button.setup:pointerover /template/ ContentPresenter">
         <Setter Property="Background" Value="#505050" />
+        <Setter Property="Foreground" Value="White" />
+    </Style>
+    <Style Selector="Button.setup:pressed /template/ ContentPresenter">
+        <Setter Property="Background" Value="#2A2A2A" />
+        <Setter Property="Foreground" Value="White" />
     </Style>
     <Style Selector="Button.setup:disabled">
         <Setter Property="Opacity" Value="0.5" />
@@ -40,15 +54,71 @@
         <Setter Property="Background" Value="#007ACC" />
         <Setter Property="Foreground" Value="White" />
         <Setter Property="BorderThickness" Value="0" />
-        <Setter Property="Height" Value="32" />
+        <Setter Property="MinHeight" Value="32" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
         <Setter Property="Padding" Value="20,0" />
         <Setter Property="Cursor" Value="Hand" />
         <Setter Property="CornerRadius" Value="3" />
     </Style>
     <Style Selector="Button.primary:pointerover /template/ ContentPresenter">
         <Setter Property="Background" Value="#1A8AD4" />
+        <Setter Property="Foreground" Value="White" />
+    </Style>
+    <Style Selector="Button.primary:pressed /template/ ContentPresenter">
+        <Setter Property="Background" Value="#00629F" />
+        <Setter Property="Foreground" Value="White" />
     </Style>
     <Style Selector="Button.primary:disabled">
+        <Setter Property="Opacity" Value="0.5" />
+    </Style>
+
+    <!-- Launch (success/hero) button: the green "Launch Director" call to action on the final step.
+         The hover and pressed backgrounds MUST be set on the templated ContentPresenter, otherwise
+         the base theme repaints it on :pointerover and the green (and its white text) vanish - which
+         made the button look like it "disappeared on hover" and could not be clicked. -->
+    <Style Selector="Button.launch">
+        <Setter Property="Background" Value="#22C55E" />
+        <Setter Property="Foreground" Value="White" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="CornerRadius" Value="6" />
+    </Style>
+    <Style Selector="Button.launch:pointerover /template/ ContentPresenter">
+        <Setter Property="Background" Value="#16A34A" />
+        <Setter Property="Foreground" Value="White" />
+    </Style>
+    <Style Selector="Button.launch:pressed /template/ ContentPresenter">
+        <Setter Property="Background" Value="#15803D" />
+        <Setter Property="Foreground" Value="White" />
+    </Style>
+    <Style Selector="Button.launch:disabled">
+        <Setter Property="Opacity" Value="0.5" />
+    </Style>
+
+    <!-- Danger (destructive) button: the uninstall call to action. Same full state coverage as
+         the other styles - background AND foreground pinned for hover and pressed. -->
+    <Style Selector="Button.danger">
+        <Setter Property="Background" Value="#8B2E2E" />
+        <Setter Property="Foreground" Value="White" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="MinHeight" Value="32" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="Padding" Value="16,0" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="CornerRadius" Value="3" />
+    </Style>
+    <Style Selector="Button.danger:pointerover /template/ ContentPresenter">
+        <Setter Property="Background" Value="#A63A3A" />
+        <Setter Property="Foreground" Value="White" />
+    </Style>
+    <Style Selector="Button.danger:pressed /template/ ContentPresenter">
+        <Setter Property="Background" Value="#702525" />
+        <Setter Property="Foreground" Value="White" />
+    </Style>
+    <Style Selector="Button.danger:disabled">
         <Setter Property="Opacity" Value="0.5" />
     </Style>
 

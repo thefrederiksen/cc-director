@@ -24,7 +24,7 @@ public static class UpdateInstaller
     /// <summary>
     /// The path a new build must overwrite to "become" the installed app. On
     /// Windows this is the running cc-director.exe; on macOS it is the enclosing
-    /// "CC Director.app" bundle (not the binary inside it). Falls back to the
+    /// "Director.app" bundle (not the binary inside it). Falls back to the
     /// process path when not running from a bundle (e.g. a bare dev binary).
     /// </summary>
     public static string InstallTarget()
@@ -69,6 +69,16 @@ public static class UpdateInstaller
         => !string.IsNullOrEmpty(pendingHealthVersion)
            && !string.Equals(pendingHealthVersion, runningVersion, StringComparison.Ordinal)
            && oldExists && oldLength > 0;
+
+    /// <summary>
+    /// Decide whether a staged update may be auto-applied right now WITHOUT waiting for a human
+    /// to restart (issue #2047): only when a verified update is staged AND the Director has zero
+    /// running sessions, so restarting into the new build can never interrupt live work. This is
+    /// the same principle as the Gateway shutdown gate -- a Director with any live session is never
+    /// restarted out from under it. Pure decision, unit-tested.
+    /// </summary>
+    public static bool ShouldAutoApplyWhenIdle(bool hasStagedUpdate, int runningSessionCount)
+        => hasStagedUpdate && runningSessionCount == 0;
 
     /// <summary>
     /// If a verified, newer update has been staged for THIS install path, launch the

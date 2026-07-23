@@ -1,0 +1,301 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:CcDirector.Avalonia.Controls"
+             x:Class="CcDirector.Avalonia.Controls.WorktreesView"
+             Background="#1E1E1E">
+
+    <UserControl.DataTemplates>
+        <!-- One worktree row -->
+        <DataTemplate DataType="controls:WorktreeRowItem">
+            <Border Background="#252526"
+                    BorderBrush="#3C3C3C"
+                    BorderThickness="1"
+                    CornerRadius="3"
+                    Padding="10,7"
+                    Margin="0,0,0,6">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="3" />
+                        <ColumnDefinition Width="10" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Left accent bar (green = safe, amber = needs attention) -->
+                    <Border Grid.Column="0"
+                            Background="{Binding AccentBrush}"
+                            CornerRadius="2" />
+
+                    <StackPanel Grid.Column="2" Spacing="2">
+                        <TextBlock Text="{Binding Title}"
+                                   Foreground="#CCCCCC"
+                                   FontSize="13"
+                                   FontWeight="Medium" />
+                        <TextBlock Text="{Binding Path}"
+                                   Foreground="#666666"
+                                   FontSize="10"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBlock Text="{Binding Detail}"
+                                   Foreground="#AAAAAA"
+                                   FontSize="11"
+                                   IsVisible="{Binding HasDetail}" />
+                        <TextBlock Text="{Binding Timestamp}"
+                                   Foreground="#888888"
+                                   FontSize="10"
+                                   IsVisible="{Binding HasTimestamp}" />
+                        <TextBlock Text="{Binding Reason}"
+                                   Foreground="{Binding AccentBrush}"
+                                   FontSize="10" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </DataTemplate>
+    </UserControl.DataTemplates>
+
+    <Grid RowDefinitions="Auto,Auto,*">
+
+        <!-- Header bar -->
+        <Border Grid.Row="0"
+                Background="#252526"
+                BorderBrush="#3C3C3C"
+                BorderThickness="0,0,0,1"
+                Padding="10,6">
+            <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto">
+                <TextBlock Grid.Column="0"
+                           Text="WORKTREES"
+                           Foreground="#CCCCCC"
+                           FontSize="12"
+                           FontWeight="SemiBold"
+                           VerticalAlignment="Center" />
+
+                <!-- Orphaned (safe-to-reap) count: the red dot with a count -->
+                <Border Grid.Column="1"
+                        x:Name="OrphanBadge"
+                        Background="#EF4444"
+                        CornerRadius="8"
+                        Padding="6,1"
+                        Margin="8,0,0,0"
+                        VerticalAlignment="Center"
+                        IsVisible="False">
+                    <TextBlock x:Name="OrphanBadgeText"
+                               Text="0"
+                               Foreground="White"
+                               FontSize="9"
+                               FontWeight="SemiBold" />
+                </Border>
+
+                <!-- Remove orphaned worktrees (shown only when there is at least one) -->
+                <Button Grid.Column="3"
+                        x:Name="ReapButton"
+                        Content="Remove orphaned worktrees"
+                        Background="#8B2E2E"
+                        Foreground="White"
+                        Padding="10,3"
+                        FontSize="11"
+                        Margin="0,0,6,0"
+                        IsVisible="False"
+                        Click="ReapButton_Click"
+                        ToolTip.Tip="Remove the worktrees proven safe to reap" />
+
+                <Button Grid.Column="4"
+                        x:Name="CopyReportButton"
+                        Content="Copy report"
+                        Background="#3C3C3C"
+                        Foreground="#CCCCCC"
+                        Padding="10,3"
+                        FontSize="11"
+                        Margin="0,0,6,0"
+                        Click="CopyReportButton_Click"
+                        ToolTip.Tip="Copy the full worktree listing as text" />
+
+                <Button Grid.Column="5"
+                        x:Name="RefreshButton"
+                        Content="Refresh"
+                        Background="#3C3C3C"
+                        Foreground="#CCCCCC"
+                        Padding="10,3"
+                        FontSize="11"
+                        Click="RefreshButton_Click"
+                        ToolTip.Tip="Re-scan worktrees (runs git fetch --prune)" />
+            </Grid>
+        </Border>
+
+        <!-- Result banner (leftovers / skipped after a reap) -->
+        <Border Grid.Row="1"
+                x:Name="ResultBanner"
+                Background="#3A2A1B"
+                BorderBrush="#5A4326"
+                BorderThickness="0,0,0,1"
+                Padding="12,8"
+                IsVisible="False">
+            <TextBlock x:Name="ResultBannerText"
+                       Foreground="#F59E0B"
+                       FontSize="11"
+                       TextWrapping="Wrap" />
+        </Border>
+
+        <!-- Content -->
+        <Panel Grid.Row="2">
+
+            <!-- Loading / status -->
+            <TextBlock x:Name="StatusText"
+                       Text="Loading worktrees..."
+                       Foreground="#888888"
+                       FontSize="12"
+                       FontStyle="Italic"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       IsVisible="True" />
+
+            <ScrollViewer x:Name="ContentScroller"
+                          HorizontalScrollBarVisibility="Disabled"
+                          VerticalScrollBarVisibility="Auto"
+                          IsVisible="False">
+                <StackPanel Margin="10" Spacing="10">
+
+                    <!-- Safe to reap -->
+                    <StackPanel x:Name="SafeSection" Spacing="6" IsVisible="False">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBlock Text="SAFE TO REAP"
+                                       Foreground="#CCCCCC"
+                                       FontSize="12"
+                                       FontWeight="SemiBold"
+                                       VerticalAlignment="Center" />
+                            <Border Background="#1B3A2A"
+                                    CornerRadius="8"
+                                    Padding="6,1"
+                                    VerticalAlignment="Center">
+                                <TextBlock x:Name="SafeCountText"
+                                           Text="0"
+                                           Foreground="#22C55E"
+                                           FontSize="10"
+                                           FontWeight="SemiBold" />
+                            </Border>
+                        </StackPanel>
+                        <TextBlock Text="Work already on origin/main and the tree is clean - nothing is lost by removing these."
+                                   Foreground="#888888"
+                                   FontSize="10"
+                                   TextWrapping="Wrap" />
+                        <ItemsControl x:Name="SafeList" />
+                    </StackPanel>
+
+                    <!-- In use by an open session -->
+                    <StackPanel x:Name="InUseSection" Spacing="6" IsVisible="False">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBlock Text="IN USE BY AN OPEN SESSION"
+                                       Foreground="#CCCCCC"
+                                       FontSize="12"
+                                       FontWeight="SemiBold"
+                                       VerticalAlignment="Center" />
+                            <Border Background="#1B2A3A"
+                                    CornerRadius="8"
+                                    Padding="6,1"
+                                    VerticalAlignment="Center">
+                                <TextBlock x:Name="InUseCountText"
+                                           Text="0"
+                                           Foreground="#3B82F6"
+                                           FontSize="10"
+                                           FontWeight="SemiBold" />
+                            </Border>
+                        </StackPanel>
+                        <TextBlock Text="Work is already on origin/main, but a session is still open in these - held back until you close it. Never removed while in use."
+                                   Foreground="#888888"
+                                   FontSize="10"
+                                   TextWrapping="Wrap" />
+                        <ItemsControl x:Name="InUseList" />
+                    </StackPanel>
+
+                    <!-- Needs attention -->
+                    <StackPanel x:Name="NeedsSection" Spacing="6" IsVisible="False">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBlock Text="NEEDS ATTENTION"
+                                       Foreground="#CCCCCC"
+                                       FontSize="12"
+                                       FontWeight="SemiBold"
+                                       VerticalAlignment="Center" />
+                            <Border Background="#3A2A1B"
+                                    CornerRadius="8"
+                                    Padding="6,1"
+                                    VerticalAlignment="Center">
+                                <TextBlock x:Name="NeedsCountText"
+                                           Text="0"
+                                           Foreground="#F59E0B"
+                                           FontSize="10"
+                                           FontWeight="SemiBold" />
+                            </Border>
+                        </StackPanel>
+                        <TextBlock Text="Carries unmerged commits or uncommitted content - a human or agent must decide. Never auto-removed."
+                                   Foreground="#888888"
+                                   FontSize="10"
+                                   TextWrapping="Wrap" />
+                        <ItemsControl x:Name="NeedsList" />
+                    </StackPanel>
+
+                    <!-- Empty (only the primary checkout, no linked worktrees) -->
+                    <TextBlock x:Name="EmptyText"
+                               Text="No linked worktrees for this repository."
+                               Foreground="#555555"
+                               FontSize="12"
+                               IsVisible="False" />
+                </StackPanel>
+            </ScrollViewer>
+
+            <!-- Confirmation overlay: shows exactly what will be removed before acting -->
+            <Border x:Name="ConfirmOverlay"
+                    Background="#CC1E1E1E"
+                    IsVisible="False">
+                <Border Background="#252526"
+                        BorderBrush="#3C3C3C"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Padding="18"
+                        MaxWidth="560"
+                        MaxHeight="440"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center">
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Top"
+                                   x:Name="ConfirmTitle"
+                                   Text="Remove worktrees?"
+                                   Foreground="#CCCCCC"
+                                   FontSize="14"
+                                   FontWeight="SemiBold"
+                                   Margin="0,0,0,6" />
+                        <TextBlock DockPanel.Dock="Top"
+                                   Text="This deletes these folders from your disk. Their work is already on origin/main, so nothing should be lost - but please check no one is still working in them first. This cannot be undone."
+                                   Foreground="#E0B0A0"
+                                   FontSize="11"
+                                   TextWrapping="Wrap"
+                                   Margin="0,0,0,10" />
+                        <StackPanel DockPanel.Dock="Bottom"
+                                    Orientation="Horizontal"
+                                    HorizontalAlignment="Right"
+                                    Spacing="8"
+                                    Margin="0,12,0,0">
+                            <Button x:Name="ConfirmCancelButton"
+                                    Content="Cancel"
+                                    Background="#3C3C3C"
+                                    Foreground="#CCCCCC"
+                                    Padding="14,5"
+                                    FontSize="12"
+                                    Click="ConfirmCancelButton_Click" />
+                            <Button x:Name="ConfirmRemoveButton"
+                                    Content="Remove"
+                                    Background="#8B2E2E"
+                                    Foreground="White"
+                                    Padding="14,5"
+                                    FontSize="12"
+                                    Click="ConfirmRemoveButton_Click" />
+                        </StackPanel>
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <TextBlock x:Name="ConfirmList"
+                                       Foreground="#CCCCCC"
+                                       FontFamily="Cascadia Mono, Consolas"
+                                       FontSize="11"
+                                       TextWrapping="NoWrap" />
+                        </ScrollViewer>
+                    </DockPanel>
+                </Border>
+            </Border>
+        </Panel>
+    </Grid>
+</UserControl>

@@ -57,9 +57,7 @@ public sealed class RemoteSignInLiveProof
         int statusCode;
         try
         {
-            var account = GatewayAccountFactory.Build(
-                new InMemoryTokenStore(),
-                Path.Combine(instancesDir, "auth-events.jsonl"));
+            var account = GatewayAccountFactory.Build(new InMemoryTokenStore());
 
             gateway = new GatewayHost(
                 port: FreePort(),
