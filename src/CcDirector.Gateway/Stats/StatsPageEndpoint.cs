@@ -21,29 +21,24 @@ namespace CcDirector.Gateway.Stats;
 /// Only counts and ratios are ever served - never the text of anything typed or said (mission decision 5).
 /// The page states plainly which input paths are counted and which are not-captured (no-fallback rule).
 ///
-/// DENIED IN WHOLE ON HOSTED (issue #1848). EVERY route in this group is refused on the hosted Gateway,
-/// through ONE group filter rather than a guard repeated per route - so a route added here later is refused
-/// too, without anyone remembering to defend it. This is the OWNER'S
-/// private view of HIS OWN gateway, and on shared hosted infrastructure "the owner" does not survive as a
-/// concept - so there is no correct per-tenant answer to serve here, only a disclosure to close. What the
-/// feed actually carries makes that concrete: every repository name the fleet has driven, the per-agent and
-/// per-model tallies, and the token SPEND - all fleet-global, and reachable by any tenant's device key
-/// through the host-wide gate.
+/// SERVES PER-TENANT ON HOSTED. The hosted deny (issue #1848) has been RETIRED: the aggregator behind this
+/// feed is fully tenant-partitioned (MTR-08) - every map is keyed by (tenant, ...), and every read takes a
+/// <see cref="TenantId"/> - so there IS a correct per-tenant answer to serve. The data route resolves the
+/// CALLER'S tenant from its authenticated device key and serves that tenant's totals: its own turns, repos,
+/// agents, models and token spend, and no one else's. On the single-tenant self host the caller is always
+/// <see cref="TenantId.Local"/>, so the page is byte-identical to before.
 ///
-/// It is a DENY rather than a partition because there is nothing to partition BY. These are pre-aggregated
-/// fleet totals with no tenant anywhere in the schema, so a per-tenant answer would have to be recomputed
-/// from an attribution that was never recorded - and inventing one is a half-partition, which is worse than
-/// an honest refusal. The store behind it is also the SQLite-plus-write-ahead-log-on-a-file-share hazard
-/// booked as #1861, so a per-tenant partition would either multiply that hazard per tenant or force a
-/// schema change for a dashboard nobody has asked to be multi-tenant. Per-tenant stats are booked as a
-/// deferred product decision, blocked on that.
+/// A REQUEST WITH NO RESOLVABLE TENANT IS DENIED (403), NEVER SERVED THE LOCAL PARTITION. On hosted an
+/// authenticated device key that is bound to no account carries no tenant, and serving it Local would be a
+/// wrong-tenant read; it is refused instead. The gate is <c>ResolveReadTenant</c> returning null - the same
+/// tenant-boundary seam every other served hosted route uses (issue #2017/#2022) - read directly, never a
+/// fallback: the fix that makes this feed serve is the same one that makes it fail closed.
 ///
-/// The refusal is a REFUSAL, not an empty dashboard. Serving zeroed or empty series would be a false
-/// statement rather than an absent one - the same mistake /healthz made when it zeroed its fleet counts and
-/// anything monitoring them read a permanently dead fleet. A caller is told the route is not available
-/// here; it is never shown a dashboard implying no work has been done.
+/// The store's file-share write-ahead-log hazard (#1861) is orthogonal and unchanged: the reads here are
+/// in-memory per-tenant aggregates, so serving one tenant its own totals adds no new persistence surface.
 ///
-/// Self-host is COMPLETELY unchanged, and that is the control.
+/// Self-host is COMPLETELY unchanged, and that is the control: there the sole tenant is Local and the page
+/// serves exactly as it always has.
 /// </summary>
 public static class StatsPageEndpoint
 {
@@ -58,61 +53,43 @@ public static class StatsPageEndpoint
         "Surface (phone / cockpit) for remote input is read from the signed-in device. Remote input with no device identity (a shared-token or fleet call) is not counted as an operator surface.",
     };
 
-    /// <summary>
-    /// The hosted refusal for both stats routes (issue #1848), or null on self-host where nothing changes.
-    ///
-    /// Gated on <see cref="GatewayHostedMode.IsHosted"/> - the INDEPENDENT signal - and not on a boundary
-    /// or tenant argument being passed in. A security branch that depends on an optional argument fails
-    /// OPEN when a caller forgets it, which is exactly how the hosted account-status fix nearly shipped a
-    /// hole: omit the argument and a hosted Gateway silently takes the self-host path. Asking hosted mode
-    /// directly means these routes cannot serve the fleet-global feed on hosted however this is wired.
-    ///
-    /// 404 rather than 403: on hosted this route does not exist as a concept, so "not here" is the truthful
-    /// answer. 403 would imply the right credential could reach it, and none can - there is no owner.
-    /// </summary>
-    private static IResult? DenyOnHosted()
-    {
-        if (!GatewayHostedMode.IsHosted) return null;
-
-        FileLog.Write("[StatsPageEndpoint] DENIED on hosted: the stats feed is fleet-global and has no per-tenant answer to serve");
-        return Results.Json(
-            new { error = "the stats dashboard is not available on the hosted gateway" },
-            statusCode: StatusCodes.Status404NotFound);
-    }
+    /// <summary>The 403 the data route answers when the caller's tenant cannot be resolved (issue #2017 seam).
+    /// On the hosted Gateway an authenticated request whose device key has no bound tenant is refused, NEVER
+    /// served the Local partition (that would be a wrong-tenant read). Self-host always resolves to Local, so
+    /// this never fires there.</summary>
+    private static IResult TenantRequired()
+        => Results.Json(new { error = "a tenant could not be resolved for this request" },
+            statusCode: StatusCodes.Status403Forbidden);
 
     /// <summary>
-    /// Maps the stats group and returns it, so the refusal can be proved to cover routes that do not exist
-    /// yet: a test maps a NEW probe route onto the returned group and finds it already refused on hosted,
-    /// without anyone having written a deny for it. Returning the group is the only way to state that
-    /// property from outside this file.
+    /// Maps the two stats routes. Returns the group builder they were mapped through (kept for callers that
+    /// compose onto it). The hosted deny is gone: the data route serves the caller's own tenant's totals and
+    /// answers 403 when no tenant resolves.
     /// </summary>
     public static RouteGroupBuilder Map(IEndpointRouteBuilder outer, GatewayInputStatsAggregator aggregator,
         GatewaySessionConcurrencyStats? concurrency = null,
-        // Issue #2017: the per-tenant settings resolver. This group is self-host only (refused on hosted), so
-        // the sole tenant is Local; when the resolver is wired the display time zone is read for that tenant
-        // (TimeZone(Local)) instead of the process-global config. Null (older callers, tests) keeps the global
+        // Issue #2017: the per-tenant settings resolver. The display time zone is read for the caller's tenant
+        // (TimeZone(tenant)) instead of the process-global config. Null (older callers, tests) keeps the global
         // read, byte-identical to before.
-        Settings.TenantSettingsResolver? tenantSettings = null)
+        Settings.TenantSettingsResolver? tenantSettings = null,
+        // The tenant boundary the data route resolves the CALLER's tenant through. Null (self-host, older
+        // callers, tests) means the single Local tenant; on hosted it resolves the authenticated device key's
+        // tenant and answers 403 when there is none - never falling back to Local.
+        Tenancy.HostedTenantBoundary? tenantBoundary = null)
     {
-        FileLog.Write($"[StatsPageEndpoint] mapping /stats (embedded); hosted={GatewayHostedMode.IsHosted} - on hosted EVERY route in this group is refused (issue #1848)");
+        FileLog.Write($"[StatsPageEndpoint] mapping /stats (embedded); hosted={GatewayHostedMode.IsHosted} - the data route serves the caller's own tenant totals, 403 when unresolved (issue #1848 deny retired)");
 
-        // The whole group behind ONE filter, rather than a guard line repeated in every handler.
-        // A repeated guard is a thing to forget: the route added to this file next year would be open by
-        // default and nothing would fail. A group filter runs before EVERY route mapped below, including
-        // routes that do not exist yet, so the refusal cannot rot as the group grows. The empty prefix keeps
-        // the route paths written out in full, exactly as before, so the self-host surface is unchanged.
+        // The empty prefix keeps the route paths written out in full, exactly as before.
         var app = outer.MapGroup("");
-        app.AddEndpointFilter(async (ctx, next) =>
-        {
-            if (DenyOnHosted() is { } denied) return denied;
-            return await next(ctx);
-        });
 
-        app.MapGet("/stats/data", () =>
+        app.MapGet("/stats/data", (HttpContext ctx) =>
         {
-            // MTR-08: this whole route group is refused on hosted (the filter above), so it serves ONLY the
-            // single-tenant self host. There the sole tenant is Local, so every read scopes to it explicitly.
-            var tenant = TenantId.Local;
+            // Serve the CALLER's own tenant's totals (the aggregator is tenant-partitioned, MTR-08). On the
+            // hosted Gateway the tenant comes from the authenticated device key; a request with no bound tenant
+            // is refused (403), NEVER served the Local partition. On self-host the sole tenant is Local.
+            var resolved = Api.GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (resolved is null) return TenantRequired();
+            var tenant = resolved.Value;
             var totals = aggregator.CurrentTotals(tenant);
             return Results.Json(new
             {
