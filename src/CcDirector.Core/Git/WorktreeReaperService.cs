@@ -89,7 +89,7 @@ public sealed class WorktreeReaperService
             var protectedSet = BuildProtectedSet(protectedPaths);
 
             // Re-run the safety check immediately before acting - state can change between load and click.
-            var inventory = await _inventory.GetInventoryAsync(repositoryPath, fetchPrune: true, ct);
+            var inventory = await _inventory.GetInventoryAsync(repositoryPath, fetchPrune: true, liveSessions: null, ct);
             if (!inventory.Success)
                 return ReapResult.Failure($"could not enumerate worktrees: {inventory.Error}");
 

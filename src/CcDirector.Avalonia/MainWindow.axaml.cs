@@ -244,8 +244,9 @@ public partial class MainWindow : Window
         // Wire source control view file event
         SourceControlView.ViewFileRequested += OnGitViewFileRequested;
         SourceControlView.OrphanedCountChanged += OnOrphanedWorktreeCountChanged;
-        // The reaper must never remove a worktree a live session is using: feed it their paths.
-        SourceControlView.ProtectedPathsProvider = GetLiveSessionWorkingDirectories;
+        // Feed the Worktrees page the live sessions on this machine (fleet-wide across Director
+        // slots) so a session-occupied worktree is shown as "in use" and never reaped.
+        SourceControlView.LiveSessionsProvider = GetLiveSessionsOnThisMachineAsync;
 
         // Wire prompt input text changes for slash command autocomplete
         PromptInput.TextChanged += PromptInput_TextChanged;
@@ -4121,19 +4122,57 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// The working directories of every live session - the reaper must never remove one of these,
-    /// because deleting a worktree a session is running in would pull the ground out from under it.
+    /// The live sessions on THIS machine and their working directories, used so the Worktrees page
+    /// can flag a worktree a session is running in. Prefers the Gateway's fleet list (which spans
+    /// every Director slot on the machine, closing the cross-slot gap); falls back to this Director's
+    /// own sessions when no Gateway is connected. Best-effort - never throws.
     /// </summary>
-    private IReadOnlySet<string> GetLiveSessionWorkingDirectories()
+    private async Task<IReadOnlyList<Core.Git.LiveSessionRef>> GetLiveSessionsOnThisMachineAsync(CancellationToken ct)
     {
-        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var vm in _sessions)
+        var machine = Environment.MachineName;
+        try
         {
-            var path = vm.Session.RepoPath;
-            if (!string.IsNullOrWhiteSpace(path))
-                set.Add(path);
+            var app = global::Avalonia.Application.Current as App;
+            var fleetTask = app?.ControlApiHost?.ListFleetSessionsAsync(ct);
+            if (fleetTask != null)
+            {
+                var fleet = await fleetTask;
+                var refs = fleet
+                    .Where(s => IsSessionAlive(s)
+                                && string.Equals(s.MachineName, machine, StringComparison.OrdinalIgnoreCase)
+                                && !string.IsNullOrWhiteSpace(s.RepoPath))
+                    .Select(s => new Core.Git.LiveSessionRef { RepoPath = s.RepoPath, Label = FleetSessionLabel(s) })
+                    .ToList();
+                return refs;
+            }
         }
-        return set;
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] GetLiveSessionsOnThisMachineAsync fleet query failed, using local sessions: {ex.Message}");
+        }
+
+        // No Gateway (or the fleet call failed): fall back to this Director's own sessions.
+        return _sessions
+            .Where(vm => !string.IsNullOrWhiteSpace(vm.Session.RepoPath))
+            .Select(vm => new Core.Git.LiveSessionRef
+            {
+                RepoPath = vm.Session.RepoPath,
+                Label = vm.Session.Number is int n ? $"{vm.DisplayName} (#{n})" : vm.DisplayName,
+            })
+            .ToList();
+    }
+
+    /// <summary>A session is genuinely alive when it has not exited/failed and did not crash.</summary>
+    private static bool IsSessionAlive(Gateway.Contracts.SessionDto s) =>
+        !string.Equals(s.Status, "Exited", StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(s.Status, "Failed", StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(s.ActivityState, "Exited", StringComparison.OrdinalIgnoreCase)
+        && !s.Crashed;
+
+    private static string FleetSessionLabel(Gateway.Contracts.SessionDto s)
+    {
+        var name = string.IsNullOrWhiteSpace(s.Name) ? "session" : s.Name;
+        return s.Number is int n ? $"{name} (#{n})" : name;
     }
 
     private void BtnSend_Click(object? sender, RoutedEventArgs e)

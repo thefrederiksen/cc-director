@@ -10,6 +10,12 @@ public enum WorktreeSafety
     /// <summary>Work is provably on origin/main and the tree is clean - safe to remove mechanically.</summary>
     SafeToReap,
 
+    /// <summary>
+    /// Git-safe (work on origin/main, tree clean) BUT a live session is running in it. Never offered
+    /// for reap while the session is open - deleting it would pull the ground out from under the session.
+    /// </summary>
+    InUseBySession,
+
     /// <summary>Carries unmerged commits, uncommitted content, or is the primary checkout - never auto-removed.</summary>
     NeedsAttention,
 }
@@ -33,6 +39,9 @@ public enum WorktreeSafetyReason
 
     /// <summary>Detached-HEAD case: its HEAD commit is an ancestor of origin/main.</summary>
     DetachedHeadAncestorOfMain,
+
+    /// <summary>Git-safe, but a live session is running in the worktree - held back from reaping.</summary>
+    LiveSessionOpen,
 
     // --- Needs-attention reasons (never auto-removed) ---
 
@@ -82,6 +91,22 @@ public sealed record WorktreeFacts
     /// forcing a fail-closed verdict rather than a guess.
     /// </summary>
     public bool InspectionSucceeded { get; init; } = true;
+
+    /// <summary>True when a live session's working directory is this worktree - it is held back from reaping.</summary>
+    public bool HasLiveSession { get; init; }
+}
+
+/// <summary>
+/// A live session's working directory plus a short human label, used to detect which worktrees are
+/// currently occupied by an open session. The caller supplies these (already filtered to this machine
+/// and to genuinely-alive sessions); the detector only matches paths.
+/// </summary>
+public sealed class LiveSessionRef
+{
+    public string RepoPath { get; init; } = "";
+
+    /// <summary>A short label for the UI, e.g. "ERP KB Builder (#109)".</summary>
+    public string Label { get; init; } = "";
 }
 
 /// <summary>The evaluator's decision: the safety bucket, the deciding reason, and a one-line explanation.</summary>
@@ -137,6 +162,9 @@ public sealed class WorktreeInfo
     /// </summary>
     public DateTime? LastActivityUtc { get; init; }
 
+    /// <summary>Labels of the live sessions running in this worktree (empty when none).</summary>
+    public IReadOnlyList<string> OpenSessions { get; init; } = Array.Empty<string>();
+
     public WorktreeSafety Safety { get; init; }
     public WorktreeSafetyReason Reason { get; init; }
     public string Explanation { get; init; } = "";
@@ -156,6 +184,10 @@ public sealed class WorktreeInventory
     /// <summary>The worktrees proven safe to reap right now - what the badge counts and the button removes.</summary>
     public IReadOnlyList<WorktreeInfo> SafeToReap =>
         Worktrees.Where(w => w.Safety == WorktreeSafety.SafeToReap).ToList();
+
+    /// <summary>Git-safe worktrees that a live session is currently running in - shown, but never reaped.</summary>
+    public IReadOnlyList<WorktreeInfo> InUseBySession =>
+        Worktrees.Where(w => w.Safety == WorktreeSafety.InUseBySession).ToList();
 
     /// <summary>Stranded or dirty worktrees a human or agent must decide about (excludes the primary checkout).</summary>
     public IReadOnlyList<WorktreeInfo> NeedsAttention =>

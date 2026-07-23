@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
@@ -39,6 +40,7 @@ public partial class WorktreesView : UserControl
 {
     private static readonly ISolidColorBrush SafeBrush = new SolidColorBrush(Color.Parse("#22C55E"));
     private static readonly ISolidColorBrush AttentionBrush = new SolidColorBrush(Color.Parse("#F59E0B"));
+    private static readonly ISolidColorBrush InUseBrush = new SolidColorBrush(Color.Parse("#3B82F6"));
 
     private readonly WorktreeInventoryService _service = new();
     private readonly WorktreeReaperService _reaper = new();
@@ -51,10 +53,11 @@ public partial class WorktreesView : UserControl
     public event Action<int>? OrphanedCountChanged;
 
     /// <summary>
-    /// Supplies the working directories of live sessions, which the reaper must never remove.
-    /// Set by the host (which knows the fleet); if null, only the primary checkout is protected.
+    /// Supplies the live sessions on this machine (with their working directories), so a git-safe
+    /// worktree a session is running in is shown as "in use" and never reaped. Best-effort: set by
+    /// the host, which knows the fleet; when null or it fails, the view falls back to no session data.
     /// </summary>
-    public Func<IReadOnlySet<string>>? ProtectedPathsProvider { get; set; }
+    public Func<CancellationToken, Task<IReadOnlyList<LiveSessionRef>>>? LiveSessionsProvider { get; set; }
 
     /// <summary>The number of worktrees currently safe to reap - the badge count.</summary>
     public int OrphanedCount { get; private set; }
@@ -80,8 +83,10 @@ public partial class WorktreesView : UserControl
         _lastInventory = null;
         SafeList.ItemsSource = null;
         NeedsList.ItemsSource = null;
+        InUseList.ItemsSource = null;
         SafeSection.IsVisible = false;
         NeedsSection.IsVisible = false;
+        InUseSection.IsVisible = false;
         EmptyText.IsVisible = false;
         ContentScroller.IsVisible = false;
         StatusText.Text = "Loading worktrees...";
@@ -133,7 +138,10 @@ public partial class WorktreesView : UserControl
 
         try
         {
-            var inventory = await Task.Run(() => _service.GetInventoryAsync(repoPath));
+            // Ask the host which sessions are live on this machine (best-effort) so a git-safe
+            // worktree with a session in it is shown as "in use" rather than "safe to reap".
+            var liveSessions = await FetchLiveSessionsAsync();
+            var inventory = await Task.Run(() => _service.GetInventoryAsync(repoPath, true, liveSessions));
 
             // Ignore stale results if the view was re-pointed while we were scanning.
             if (_repoPath != repoPath)
@@ -167,16 +175,20 @@ public partial class WorktreesView : UserControl
         }
 
         var safeRows = BuildSafeRows(inventory);
+        var inUseRows = BuildInUseRows(inventory);
         var needsRows = BuildNeedsRows(inventory);
 
         SafeList.ItemsSource = safeRows;
+        InUseList.ItemsSource = inUseRows;
         NeedsList.ItemsSource = needsRows;
 
         SafeCountText.Text = safeRows.Count.ToString();
+        InUseCountText.Text = inUseRows.Count.ToString();
         NeedsCountText.Text = needsRows.Count.ToString();
         SafeSection.IsVisible = safeRows.Count > 0;
+        InUseSection.IsVisible = inUseRows.Count > 0;
         NeedsSection.IsVisible = needsRows.Count > 0;
-        EmptyText.IsVisible = safeRows.Count == 0 && needsRows.Count == 0;
+        EmptyText.IsVisible = safeRows.Count == 0 && inUseRows.Count == 0 && needsRows.Count == 0;
 
         StatusText.IsVisible = false;
         ContentScroller.IsVisible = true;
@@ -200,20 +212,12 @@ public partial class WorktreesView : UserControl
     /// <summary>Show the confirmation overlay listing exactly what will be removed.</summary>
     private void ReapButton_Click(object? sender, RoutedEventArgs e)
     {
+        // Worktrees a live session is running in are already classified out of the safe set, so
+        // the safe list is exactly what the button removes.
         if (_lastInventory is not { Success: true } inventory || inventory.SafeToReapCount == 0)
             return;
 
-        var protectedPaths = GetProtectedPaths();
-        var toRemove = inventory.SafeToReap
-            .Where(w => !protectedPaths.Contains(WorktreeReaperService.NormalizePath(w.Path)))
-            .ToList();
-
-        if (toRemove.Count == 0)
-        {
-            ShowBanner("Every safe worktree is currently in use by a live session, so nothing was removed.");
-            return;
-        }
-
+        var toRemove = inventory.SafeToReap.ToList();
         ConfirmTitle.Text = $"Remove {toRemove.Count} orphaned worktree{(toRemove.Count == 1 ? "" : "s")}?";
         ConfirmList.Text = string.Join(Environment.NewLine,
             toRemove.Select(w => $"{(w.Branch ?? "(detached HEAD)")}  ->  {w.Path}"));
@@ -246,7 +250,10 @@ public partial class WorktreesView : UserControl
 
         try
         {
-            var protectedPaths = GetProtectedPaths();
+            // Re-fetch live sessions at the moment of acting so a session opened since the scan is
+            // still protected (belt-and-suspenders on top of the detector's classification).
+            var liveSessions = await FetchLiveSessionsAsync();
+            var protectedPaths = ToProtectedSet(liveSessions);
             var result = await Task.Run(() => _reaper.ReapAsync(repoPath, protectedPaths));
 
             if (_repoPath != repoPath)
@@ -301,17 +308,28 @@ public partial class WorktreesView : UserControl
         ResultBanner.IsVisible = true;
     }
 
-    private IReadOnlySet<string> GetProtectedPaths()
+    /// <summary>Fetch live sessions from the host (best-effort). Never throws - falls back to none.</summary>
+    private async Task<IReadOnlyList<LiveSessionRef>> FetchLiveSessionsAsync()
     {
         try
         {
-            return ProtectedPathsProvider?.Invoke() ?? new HashSet<string>();
+            if (LiveSessionsProvider is { } provider)
+                return await provider(CancellationToken.None) ?? Array.Empty<LiveSessionRef>();
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[WorktreesView] GetProtectedPaths FAILED: {ex.Message}");
-            return new HashSet<string>();
+            FileLog.Write($"[WorktreesView] FetchLiveSessionsAsync FAILED (proceeding without session data): {ex.Message}");
         }
+        return Array.Empty<LiveSessionRef>();
+    }
+
+    private static IReadOnlySet<string> ToProtectedSet(IReadOnlyList<LiveSessionRef> liveSessions)
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var s in liveSessions)
+            if (!string.IsNullOrWhiteSpace(s.RepoPath))
+                set.Add(WorktreeReaperService.NormalizePath(s.RepoPath));
+        return set;
     }
 
     // ----- pure builders (unit-tested without a UI) -----
@@ -327,6 +345,17 @@ public partial class WorktreesView : UserControl
             AccentBrush = SafeBrush,
         }).ToList();
 
+    internal static IReadOnlyList<WorktreeRowItem> BuildInUseRows(WorktreeInventory inventory) =>
+        inventory.InUseBySession.Select(w => new WorktreeRowItem
+        {
+            Title = TitleFor(w),
+            Path = w.Path,
+            Detail = SessionsFor(w),
+            Reason = w.Explanation,
+            Timestamp = FormatActivity(w.LastActivityUtc),
+            AccentBrush = InUseBrush,
+        }).ToList();
+
     internal static IReadOnlyList<WorktreeRowItem> BuildNeedsRows(WorktreeInventory inventory) =>
         inventory.NeedsAttention.Select(w => new WorktreeRowItem
         {
@@ -337,6 +366,12 @@ public partial class WorktreesView : UserControl
             Timestamp = FormatActivity(w.LastActivityUtc),
             AccentBrush = AttentionBrush,
         }).ToList();
+
+    /// <summary>"Open session: A, B" for the in-use group.</summary>
+    internal static string SessionsFor(WorktreeInfo w) =>
+        w.OpenSessions.Count == 0
+            ? ""
+            : $"Open session{(w.OpenSessions.Count == 1 ? "" : "s")}: {string.Join(", ", w.OpenSessions)}";
 
     private static string TitleFor(WorktreeInfo w) =>
         w.IsDetachedHead ? "(detached HEAD)" : (w.Branch ?? "(no branch)");
@@ -371,7 +406,7 @@ public partial class WorktreesView : UserControl
     {
         var sb = new StringBuilder();
         sb.AppendLine($"Worktree report for {inventory.RepositoryPath}");
-        sb.AppendLine($"Safe to reap: {inventory.SafeToReap.Count}   Needs attention: {inventory.NeedsAttention.Count}");
+        sb.AppendLine($"Safe to reap: {inventory.SafeToReap.Count}   In use by a session: {inventory.InUseBySession.Count}   Needs attention: {inventory.NeedsAttention.Count}");
         sb.AppendLine();
 
         sb.AppendLine("SAFE TO REAP");
@@ -382,6 +417,21 @@ public partial class WorktreesView : UserControl
             sb.AppendLine($"  {TitleFor(w)}");
             sb.AppendLine($"    path:   {w.Path}");
             AppendActivity(sb, w);
+            sb.AppendLine($"    reason: {w.Explanation}");
+        }
+        sb.AppendLine();
+
+        sb.AppendLine("IN USE BY AN OPEN SESSION");
+        if (inventory.InUseBySession.Count == 0)
+            sb.AppendLine("  (none)");
+        foreach (var w in inventory.InUseBySession)
+        {
+            var sessions = SessionsFor(w);
+            sb.AppendLine($"  {TitleFor(w)}");
+            sb.AppendLine($"    path:   {w.Path}");
+            AppendActivity(sb, w);
+            if (sessions.Length > 0)
+                sb.AppendLine($"    {sessions.ToLowerInvariant()}");
             sb.AppendLine($"    reason: {w.Explanation}");
         }
         sb.AppendLine();
