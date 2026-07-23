@@ -3695,7 +3695,8 @@ public partial class MainWindow : Window
         session.Menu.Items.Add(Item("Repository status...", async () =>
         {
             FileLog.Write("[MainWindow] Menu: Repository status");
-            var window = new RepositoryScreenWindow(AppRef().RootDirectoryStore, GetLiveSessionsOnThisMachineAsync);
+            var app = AppRef();
+            var window = new RepositoryScreenWindow(app.RepositoryMonitor, app.StartRepositoryRescan);
             await window.ShowDialog(this);
         }));
         if (alpha)

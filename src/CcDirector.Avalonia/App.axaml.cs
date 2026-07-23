@@ -11,6 +11,8 @@ using CcDirector.Core.Account;
 using CcDirector.Core.Agents;
 using CcDirector.Core.Claude;
 using CcDirector.Core.Configuration;
+using System.Linq;
+using CcDirector.Core.Git;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Settings;
 using CcDirector.Core.Storage;
@@ -28,6 +30,12 @@ public partial class App : Application
     public List<RepositoryConfig> Repositories { get; private set; } = new();
     public RepositoryRegistry RepositoryRegistry { get; private set; } = null!;
     public RootDirectoryStore RootDirectoryStore { get; private set; } = null!;
+
+    /// <summary>
+    /// The always-current model of the repositories under the registered roots. Owned by the app,
+    /// scanned in the background from startup; the Repository screen subscribes and renders it.
+    /// </summary>
+    public RepositoryMonitor RepositoryMonitor { get; } = new();
     public SessionStateStore SessionStateStore { get; private set; } = null!;
 
     /// <summary>
@@ -141,6 +149,19 @@ public partial class App : Application
         StartUpdateService(mainWindow);
     }
 
+    /// <summary>
+    /// Kick off a background rescan of the registered root directories into <see cref="RepositoryMonitor"/>.
+    /// Fire-and-forget; results stream into the model as each repository is computed.
+    /// </summary>
+    public void StartRepositoryRescan()
+    {
+        var roots = RootDirectoryStore.Roots
+            .Select(r => r.Path)
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .ToList();
+        _ = System.Threading.Tasks.Task.Run(() => RepositoryMonitor.RescanAsync(roots));
+    }
+
     private void InitializeServices(SplashScreen splash)
     {
         RepositoryRegistry = new RepositoryRegistry();
@@ -149,6 +170,10 @@ public partial class App : Application
 
         RootDirectoryStore = new RootDirectoryStore();
         RootDirectoryStore.Load();
+
+        // Start scanning repositories in the background right away, so the Repository screen has
+        // content the moment it is opened (issue #507, phase 1).
+        StartRepositoryRescan();
 
         SessionStateStore = new SessionStateStore();
 
