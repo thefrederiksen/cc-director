@@ -71,6 +71,16 @@ public static class UpdateInstaller
            && oldExists && oldLength > 0;
 
     /// <summary>
+    /// Decide whether a staged update may be auto-applied right now WITHOUT waiting for a human
+    /// to restart (issue #2047): only when a verified update is staged AND the Director has zero
+    /// running sessions, so restarting into the new build can never interrupt live work. This is
+    /// the same principle as the Gateway shutdown gate -- a Director with any live session is never
+    /// restarted out from under it. Pure decision, unit-tested.
+    /// </summary>
+    public static bool ShouldAutoApplyWhenIdle(bool hasStagedUpdate, int runningSessionCount)
+        => hasStagedUpdate && runningSessionCount == 0;
+
+    /// <summary>
     /// If a verified, newer update has been staged for THIS install path, launch the
     /// relauncher to apply it and return true (the caller must then exit so the swap can
     /// proceed). Called at startup, before any session exists, so applying an update never
