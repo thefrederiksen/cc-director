@@ -48,14 +48,12 @@ public static class OwnerSettingsRoutes
     /// Issue #2022 part 1 removed five machine-scoped routes (brain restart/config, addressing GET+PUT,
     /// autostart) - they do not exist any more. Issue #2022 part 2 RETIRED the deny for the per-account routes
     /// (the settings snapshot, snooze-default, snooze-presets, time-zone, ai-provider, tts-voice), which now
-    /// SERVE on hosted (proved by <see cref="HostedPerAccountSettingsServeTests"/>). What remains DENIED here
-    /// is the process-global set with no tenant dimension: injected text and transcription mode. Injected
-    /// text stays denied permanently.
+    /// SERVE on hosted (proved by <see cref="HostedPerAccountSettingsServeTests"/>). Injected text was un-denied
+    /// too and now serves per-tenant (issue #2057). What remains DENIED here is the one process-global route
+    /// with no tenant dimension: transcription mode (a single-valued provider fact).
     /// </summary>
     public static readonly Route[] Settings =
     {
-        new("GET",  "gateway/injected-text",            null, SettingsRefusal),
-        new("PUT",  "gateway/injected-text",            "{\"use_yours\":true,\"yours\":\"words from another tenant\"}", SettingsRefusal),
         new("GET",  "gateway/transcription-mode",       null, SettingsRefusal),
         new("PUT",  "gateway/transcription-mode",       "{\"mode\":\"devthrottle\"}", SettingsRefusal),
     };
@@ -72,7 +70,7 @@ public static class OwnerSettingsRoutes
         new("POST", "gateway/ai/test-chat",           "{\"model\":\"some-model\"}", ModelsRefusal),
     };
 
-    /// <summary>All 6 route-and-verb pairs that STILL refuse on hosted after the issue #2022 deny retirement.</summary>
+    /// <summary>All 4 route-and-verb pairs that STILL refuse on hosted after the issue #2022 + #2057 deny retirements.</summary>
     public static IEnumerable<Route> All => Settings.Concat(Models);
 
     /// <summary>
@@ -140,14 +138,13 @@ public static class OwnerSettingsRoutes
 /// <summary>
 /// Issue #1863: the WHOLE owner-settings group is DENIED on the hosted Gateway.
 ///
-/// THE DEFECT (as it stands after issue #2022 part 2). SIX routes across two endpoint classes read and
+/// THE DEFECT (as it stands after issues #2022 + #2057). FOUR routes across two endpoint classes read and
 /// write PROCESS-GLOBAL configuration with no tenant dimension: config.json is one file for the whole
-/// process, so a write is a FLEET-WIDE mutation performed by whichever authenticated caller sent it, and
-/// <c>GET /gateway/injected-text</c> hands back the owner's own agent-launch instruction text to any caller.
-/// The AI catalog and test-chat spend the shared deployment credential with no per-caller scoping. These
-/// STAY refused on hosted. The per-account routes (the settings snapshot, snooze, time zone, ai-provider,
-/// tts-voice, and the five model/voice setters) were UN-DENIED once their runtime consumers were tenant
-/// -threaded - they now serve on hosted, resolving the caller's tenant, and are proved by
+/// process, so a write to transcription mode is a FLEET-WIDE mutation performed by whichever authenticated
+/// caller sent it. The AI catalog and test-chat spend the shared deployment credential with no per-caller
+/// scoping. These STAY refused on hosted. The per-account routes (the settings snapshot, snooze, time zone,
+/// ai-provider, tts-voice, the five model/voice setters, and injected text) were UN-DENIED once their runtime
+/// consumers were tenant-threaded - they now serve on hosted, resolving the caller's tenant, and are proved by
 /// <see cref="HostedPerAccountSettingsServeTests"/>. (Issue #2022 part 1 also removed five machine-scoped
 /// routes - brain restart/config, network addressing, autostart - by taking them off the web page.)
 ///
@@ -256,7 +253,7 @@ public sealed class HostedOwnerSettingsDenyTests : IAsyncLifetime
     [Fact]
     public async Task The_refusal_is_not_an_empty_settings_snapshot()
     {
-        foreach (var path in new[] { "gateway/injected-text", "gateway/transcription-mode" })
+        foreach (var path in new[] { "gateway/transcription-mode" })
         {
             var response = await _http.GetAsync(path);
             var body = await response.Content.ReadAsStringAsync();
@@ -520,8 +517,8 @@ public sealed class HostedOwnerSettingsGroupFilterTests : IAsyncLifetime
     /// A VERB THE ROUTE NEVER SERVED meets the REFUSAL, not a 405 - the headline upgrade the shared refusal
     /// primitive buys over the old request-time group filter, and the reason this rework replaced the filter.
     ///
-    /// <c>gateway/injected-text</c> serves GET and PUT and stays denied on hosted (issue #2022 part 2 un-denied
-    /// the per-account routes but injected text is process-global and stays refused). Under the old
+    /// <c>gateway/transcription-mode</c> serves GET and PUT and stays denied on hosted (a single-valued
+    /// process-global provider fact with no per-tenant answer). Under the old
     /// <c>AddEndpointFilter</c> deny the route's handler was still MAPPED on hosted and the filter ran inside
     /// it, so a POST to that path would be answered by endpoint SELECTION with 405 <c>Allow: GET, PUT</c> -
     /// which discloses that a route exists on a Gateway whose refusal says it does not. The primitive maps a
@@ -542,7 +539,7 @@ public sealed class HostedOwnerSettingsGroupFilterTests : IAsyncLifetime
         try
         {
             // POST a GET/PUT-only route. NOT a 405 - the verb-less refusal answers it, uniformly across verbs.
-            var wrongVerb = await http.PostAsync("/gateway/injected-text", new StringContent(""));
+            var wrongVerb = await http.PostAsync("/gateway/transcription-mode", new StringContent(""));
             await OwnerSettingsRoutes.AssertIsNothingButTheRefusal(wrongVerb, OwnerSettingsRoutes.SettingsRefusal);
             Assert.Empty(wrongVerb.Content.Headers.Allow);
 

@@ -273,7 +273,7 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
     private string ReadBack(string key) => key switch
     {
         "snooze-default" => _gateway.TenantSettingsResolver.SnoozeDefaultMinutes(TenantId.Local).ToString(),
-        "injected-text" => InjectedTextConfig.Get().Yours ?? "",
+        "injected-text" => _gateway.TenantSettingsResolver.InjectedText(TenantId.Local).Yours ?? "",
         "snooze-presets" => string.Join(",", _gateway.TenantSettingsResolver.SnoozePresets(TenantId.Local)),
         "time-zone" => _gateway.TenantSettingsResolver.TimeZone(TenantId.Local),
         "transcription-mode" => TranscriptionModeConfig.Get().ToConfigString(),

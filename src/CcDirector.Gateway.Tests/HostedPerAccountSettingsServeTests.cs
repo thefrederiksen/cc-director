@@ -114,6 +114,8 @@ public sealed class HostedPerAccountSettingsServeTests : IAsyncLifetime
         ("PUT", "gateway/ai-provider",              "{\"provider\":\"devthrottle\"}"),
         ("GET", "gateway/tts-voice",                null),
         ("PUT", "gateway/tts-voice",                "{\"voice\":\"shimmer\"}"),
+        ("GET", "gateway/injected-text",            null),
+        ("PUT", "gateway/injected-text",            "{\"use_yours\":true,\"yours\":\"words for one account only\"}"),
         ("PUT", "gateway/ai/wingman-model",         "{\"model\":\"m-think\"}"),
         ("PUT", "gateway/ai/wingman-fast-model",    "{\"model\":\"m-fast\"}"),
         ("PUT", "gateway/ai/car-mode-model",        "{\"model\":\"m-car\"}"),
@@ -226,6 +228,30 @@ public sealed class HostedPerAccountSettingsServeTests : IAsyncLifetime
 
         Assert.Equal("alpha signing off", await ReadString(_httpA, "gateway/ai-provider", "carModeEndPhrase"));
         Assert.NotEqual("alpha signing off", await ReadString(_httpB, "gateway/ai-provider", "carModeEndPhrase"));
+    }
+
+    /// <summary>
+    /// ISOLATED - the injected agent-launch text (issue #2057). Tenant A turns on its own text; tenant B's
+    /// read is unaffected - B still sees "use ours" and never A's words. This is the launch text each account's
+    /// own Directors download from this same route, so per-tenant here is per-tenant at launch.
+    /// </summary>
+    [Fact]
+    public async Task Injected_text_written_by_one_tenant_is_invisible_to_another_on_hosted()
+    {
+        const string aWords = "alpha-only launch words zqxjv";
+        (await OwnerSettingsRoutes.SendAsync(_httpA, "PUT", "gateway/injected-text",
+            $"{{\"use_yours\":true,\"yours\":\"{aWords}\"}}")).EnsureSuccessStatusCode();
+
+        using (var a = await ReadJson(_httpA, "gateway/injected-text"))
+        {
+            Assert.True(a.RootElement.GetProperty("use_yours").GetBoolean());
+            Assert.Equal(aWords, a.RootElement.GetProperty("yours").GetString());
+        }
+        using (var b = await ReadJson(_httpB, "gateway/injected-text"))
+        {
+            Assert.False(b.RootElement.GetProperty("use_yours").GetBoolean());
+            Assert.NotEqual(aWords, b.RootElement.GetProperty("yours").GetString());
+        }
     }
 
     /// <summary>
