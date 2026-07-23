@@ -6,6 +6,7 @@ using CcDirector.Core.Dictation.Models;
 using CcDirector.Core.Network;
 using CcDirector.Core.Recording;
 using CcDirector.Core.Storage;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Tenancy;
@@ -103,64 +104,36 @@ internal static class RecordingEndpoints
     /// <summary>The exclusive prefix the recording-ingest group owns outright on hosted.</summary>
     internal const string Prefix = "/ingest";
 
-    /// <summary>The single error string the hosted refusal serves. Held here so a test can assert against the
-    /// exact string that is served rather than a copy that could drift.</summary>
-    internal const string RefusalMessage = "recordings are not available on the hosted gateway";
-
     /// <summary>
-    /// The hosted refusal payload for the whole recording-ingest group. Validated on construction, so a blank
-    /// field fails the Gateway at startup rather than serving a refusal a caller cannot act on. 404 rather
-    /// than 403: on hosted this surface does not exist as a concept, so "not here" is the truthful answer;
-    /// 403 would imply some credential could reach it, and none can.
+    /// Maps the recording-ingest routes so they SERVE per-tenant (issues #2058/#2060). Each route resolves the
+    /// caller's tenant and dispatches to that tenant's own recording store / glossary, answering 403 when no
+    /// tenant resolves - never the Local partition. Self-host resolves to the single Local tenant, unchanged.
     /// </summary>
-    private static HostedDenial Denial() => new(
-        family: "recording-ingest",
-        message: RefusalMessage,
-        reason: "recordings and the shared dictation glossary carry no tenant - the recording directory is keyed on " +
-                "a caller-supplied id alone and the glossary is one global file - and the host-wide auth gate admits " +
-                "any enrolled device key from any account, so one subscriber could list, read, overwrite, promote or " +
-                "delete every other subscriber's recorded conversations",
-        unDenyInstruction: "do NOT simply remove this deny: give recordings and the shared glossary a per-tenant " +
-                "layout (keyed by tenant, not by caller-supplied id alone), THEN quarantine, purge or migrate the " +
-                "pre-existing global recording root (material predating this deny is already on disk and this change " +
-                "never touched it), and only then restore tenant-scoped routes",
-        statusCode: StatusCodes.Status404NotFound);
-
-    /// <summary>
-    /// Maps the recording-ingest routes and RETURNS the denied group they were mapped through.
-    ///
-    /// The routes are mapped through the group HANDLE (<see cref="HostedDenyGroup"/>), never through the
-    /// ungrouped builder: the handle is obtainable only from <see cref="HostedRouteDeny.ExclusiveGroup"/>, so
-    /// a route mapped around the refusal is not expressible in <see cref="MapRoutes"/> without changing its
-    /// signature. On hosted the handle DISCARDS each handler (the exclusive catch-all already refuses the
-    /// path); off hosted it maps each handler as an unguarded builder would.
-    ///
-    /// The return value exists so the future-route property is statable from outside this file: a test can map
-    /// a brand-new route through the returned handle and show the refusal already covers routes nobody has
-    /// written yet - the one property that distinguishes an exclusive-prefix deny from a guard repeated in
-    /// each handler.
-    /// </summary>
-    public static HostedDenyGroup Map(
+    public static void Map(
         IEndpointRouteBuilder outer,
+        Tenancy.HostedTenantBoundary? tenantBoundary = null,
         KeyVault? keyVault = null,
         TranscriptionHistoryLog? history = null,
         TranscriptionAudioArchive? audioArchive = null)
     {
-        FileLog.Write($"[RecordingEndpoints] mapping {Prefix} recording + dictionary routes; hosted={GatewayHostedMode.IsHosted} - on hosted the whole group is refused via the shared refusal primitive");
+        FileLog.Write($"[RecordingEndpoints] mapping {Prefix} recording + dictionary routes PER-TENANT (issues #2058/#2060); hosted={GatewayHostedMode.IsHosted} - each route resolves the caller's tenant and answers 403 when none resolves");
 
-        var group = HostedRouteDeny.ExclusiveGroup(outer, Prefix, Denial());
-        MapRoutes(group, keyVault, history, audioArchive);
-        return group;
+        // Un-denied (issues #2058/#2060): the routes SERVE per-tenant instead of the whole /ingest prefix
+        // being refused on hosted. They map under the same prefix on the ungrouped builder; each handler
+        // resolves the caller's tenant and dispatches to that tenant's own recording store / glossary.
+        var app = outer.MapGroup(Prefix);
+        MapRoutes(app, tenantBoundary, keyVault, history, audioArchive);
     }
 
     /// <summary>
     /// Every /ingest route, mapped relative to the <see cref="Prefix"/> so the full paths are
-    /// <c>/ingest/recording</c>, <c>/ingest/dictionary</c> and so on exactly as before. Takes the denied
-    /// GROUP HANDLE and nothing else: the ungrouped route builder is deliberately out of scope here so no
-    /// route can be mapped around the hosted refusal.
+    /// <c>/ingest/recording</c>, <c>/ingest/dictionary</c> and so on exactly as before. Each route resolves
+    /// the CALLER's tenant and serves only that tenant's partition; a request with no resolvable tenant is
+    /// refused (403), never served the Local partition.
     /// </summary>
     private static void MapRoutes(
-        HostedDenyGroup app,
+        IEndpointRouteBuilder app,
+        Tenancy.HostedTenantBoundary? tenantBoundary,
         KeyVault? keyVault,
         TranscriptionHistoryLog? history,
         TranscriptionAudioArchive? audioArchive)
@@ -173,17 +146,27 @@ internal static class RecordingEndpoints
         // Lazy is never forced and the service is never built.
         // In production the host owns the key vault + local history + audio archive and passes them, so the
         // recording transcriber shares the host's single instances rather than newing its own copies.
-        var lazyService = new Lazy<RecordingIngestService>(() => BuildService(keyVault, history, audioArchive));
+        // Per-tenant recording services (issues #2058/#2060). Each tenant gets its OWN RecordingIngestService
+        // over its OWN root directory, so one account's recordings/transcripts and its glossary are physically
+        // partitioned from another's - the recording directory is now keyed by (tenant, id), not the
+        // caller-supplied id alone. Built lazily per tenant on first use; on self-host the single Local tenant
+        // maps to the existing flat root, so nothing moves there. The transcriber reads the SAME tenant's
+        // glossary, so a per-tenant glossary edit biases only that tenant's transcription.
+        var services = new System.Collections.Concurrent.ConcurrentDictionary<string, RecordingIngestService>(StringComparer.Ordinal);
+        RecordingIngestService ServiceFor(TenantId tenant)
+            => services.GetOrAdd(tenant.Value, _ => BuildService(tenant, keyVault, history, audioArchive));
 
         app.MapPost("/recording", async (HttpContext ctx) =>
         {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
             try
             {
                 var req = await JsonSerializer.DeserializeAsync<RecordingRegisterRequest>(
                     ctx.Request.Body, JsonOpts, ctx.RequestAborted);
                 if (req is null || string.IsNullOrWhiteSpace(req.RecordingId))
                     return Results.BadRequest(new { error = "RecordingId is required" });
-                var status = lazyService.Value.Register(req);
+                var status = ServiceFor(t.Value).Register(req);
                 return Results.Json(status);
             }
             catch (JsonException ex)
@@ -195,6 +178,8 @@ internal static class RecordingEndpoints
 
         app.MapPut("/recording/{id}/chunk/{index:int}", async (string id, int index, HttpContext ctx) =>
         {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
             try
             {
                 var sha = ctx.Request.Headers["X-Chunk-Sha256"].ToString();
@@ -204,7 +189,7 @@ internal static class RecordingEndpoints
                 if (bytes.Length == 0)
                     return Results.BadRequest(new { error = "empty chunk body" });
 
-                await lazyService.Value.StoreChunkAsync(id, index, bytes, sha, ctx.RequestAborted);
+                await ServiceFor(t.Value).StoreChunkAsync(id, index, bytes, sha, ctx.RequestAborted);
                 return Results.Json(new { ok = true, index, bytes = bytes.Length });
             }
             catch (InvalidOperationException ex)
@@ -216,6 +201,8 @@ internal static class RecordingEndpoints
 
         app.MapPost("/recording/{id}/complete", async (string id, HttpContext ctx) =>
         {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
             try
             {
                 var manifest = await JsonSerializer.DeserializeAsync<RecordingManifest>(
@@ -237,7 +224,7 @@ internal static class RecordingEndpoints
                 //     GET .../status to watch progress.
                 //   - empty capture (zero segments): CompleteAsync throws; surfaced
                 //     below as an explicit error, never a silent empty transcript.
-                var status = await lazyService.Value.CompleteAsync(id, manifest, ctx.RequestAborted);
+                var status = await ServiceFor(t.Value).CompleteAsync(id, manifest, ctx.RequestAborted);
                 if (status.State == "incomplete")
                     return Results.Json(status, statusCode: StatusCodes.Status409Conflict);
                 return Results.Json(status, statusCode: StatusCodes.Status202Accepted);
@@ -264,11 +251,13 @@ internal static class RecordingEndpoints
             }
         });
 
-        app.MapGet("/recording/{id}/status", (string id) =>
+        app.MapGet("/recording/{id}/status", (string id, HttpContext ctx) =>
         {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
             try
             {
-                return Results.Json(lazyService.Value.GetStatus(id));
+                return Results.Json(ServiceFor(t.Value).GetStatus(id));
             }
             catch (InvalidOperationException)
             {
@@ -285,14 +274,18 @@ internal static class RecordingEndpoints
         // transcription and desktop dictation. The page sends the whole document
         // on save (no partial merge) so the file stays the single source of truth.
 
-        app.MapGet("/dictionary", () =>
+        app.MapGet("/dictionary", (HttpContext ctx) =>
         {
-            var dict = DictionaryLoader.LoadFromDisk(DictionaryFilePath());
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
+            var dict = DictionaryLoader.LoadFromDisk(GlossaryPathFor(t.Value));
             return Results.Json(ToDto(dict));
         });
 
         app.MapPut("/dictionary", async (HttpContext ctx) =>
         {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
             try
             {
                 var dto = await JsonSerializer.DeserializeAsync<DictionaryDto>(
@@ -300,8 +293,9 @@ internal static class RecordingEndpoints
                 if (dto is null)
                     return Results.BadRequest(new { error = "dictionary body required" });
 
-                DictionaryLoader.WriteToDisk(DictionaryFilePath(), FromDto(dto));
-                var reread = DictionaryLoader.LoadFromDisk(DictionaryFilePath());
+                var path = GlossaryPathFor(t.Value);
+                DictionaryLoader.WriteToDisk(path, FromDto(dto));
+                var reread = DictionaryLoader.LoadFromDisk(path);
                 return Results.Json(ToDto(reread));
             }
             catch (JsonException ex)
@@ -316,6 +310,8 @@ internal static class RecordingEndpoints
         // whole document. Existing entries are preserved; duplicates are ignored.
         app.MapPost("/dictionary/terms", async (HttpContext ctx) =>
         {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
             try
             {
                 var add = await JsonSerializer.DeserializeAsync<DictionaryAddRequest>(
@@ -325,14 +321,14 @@ internal static class RecordingEndpoints
                 if (add is null || (!hasTerms && !hasPatterns))
                     return Results.BadRequest(new { error = "provide 'terms' and/or 'mistranscriptions'" });
 
-                var path = DictionaryFilePath();
+                var path = GlossaryPathFor(t.Value);
                 var current = ToDto(DictionaryLoader.LoadFromDisk(path));
 
                 foreach (var term in add.Terms ?? new())
                 {
-                    var t = term?.Trim();
-                    if (!string.IsNullOrWhiteSpace(t) && !current.Vocabulary.Contains(t))
-                        current.Vocabulary.Add(t);
+                    var trimmed = term?.Trim();
+                    if (!string.IsNullOrWhiteSpace(trimmed) && !current.Vocabulary.Contains(trimmed))
+                        current.Vocabulary.Add(trimmed);
                 }
 
                 foreach (var kv in add.Mistranscriptions ?? new())
@@ -363,29 +359,40 @@ internal static class RecordingEndpoints
             }
         });
 
-        app.MapGet("/recordings", () => Results.Json(lazyService.Value.ListAll()));
-
-        app.MapGet("/recording/{id}/transcript", (string id) =>
+        app.MapGet("/recordings", (HttpContext ctx) =>
         {
-            var text = lazyService.Value.GetTranscript(id);
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
+            return Results.Json(ServiceFor(t.Value).ListAll());
+        });
+
+        app.MapGet("/recording/{id}/transcript", (string id, HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
+            var text = ServiceFor(t.Value).GetTranscript(id);
             return text is null
                 ? Results.NotFound(new { error = "no transcript" })
                 : Results.Text(text, "text/plain; charset=utf-8");
         });
 
-        app.MapGet("/recording/{id}/audio/{index:int}", (string id, int index) =>
+        app.MapGet("/recording/{id}/audio/{index:int}", (string id, int index, HttpContext ctx) =>
         {
-            var audio = lazyService.Value.GetAudioFile(id, index);
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
+            var audio = ServiceFor(t.Value).GetAudioFile(id, index);
             return audio is null
                 ? Results.NotFound(new { error = "no such segment" })
                 : Results.File(audio.Value.path, audio.Value.contentType, enableRangeProcessing: true);
         });
 
-        app.MapDelete("/recording/{id}", (string id) =>
+        app.MapDelete("/recording/{id}", (string id, HttpContext ctx) =>
         {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
             try
             {
-                lazyService.Value.DeleteRecording(id);
+                ServiceFor(t.Value).DeleteRecording(id);
                 return Results.Json(new { ok = true, id });
             }
             catch (InvalidOperationException ex)
@@ -395,11 +402,13 @@ internal static class RecordingEndpoints
             }
         });
 
-        app.MapPost("/recording/{id}/promote", async (string id) =>
+        app.MapPost("/recording/{id}/promote", async (string id, HttpContext ctx) =>
         {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
             try
             {
-                var status = await lazyService.Value.PromoteToVaultAsync(id);
+                var status = await ServiceFor(t.Value).PromoteToVaultAsync(id);
                 return Results.Json(status);
             }
             catch (InvalidOperationException ex)
@@ -418,13 +427,15 @@ internal static class RecordingEndpoints
         // PATCH (partial update) and POST so simple clients can use either.
         app.MapMethods("/recording/{id}/meta", new[] { "PATCH", "POST" }, async (string id, HttpContext ctx) =>
         {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
             try
             {
                 var update = await JsonSerializer.DeserializeAsync<RecordingMetaUpdate>(
                     ctx.Request.Body, JsonOpts, ctx.RequestAborted);
                 if (update is null)
                     return Results.BadRequest(new { error = "meta body required" });
-                var item = lazyService.Value.UpdateMeta(id, update);
+                var item = ServiceFor(t.Value).UpdateMeta(id, update);
                 return Results.Json(item);
             }
             catch (JsonException ex)
@@ -526,20 +537,61 @@ internal static class RecordingEndpoints
         """;
     }
 
+    /// <summary>The 403 every /ingest route answers when the caller's tenant cannot be resolved (issues
+    /// #2058/#2060). On the hosted Gateway an authenticated request whose device key has no bound tenant is
+    /// refused, NEVER served the Local partition (that would be a wrong-tenant read of another account's
+    /// recordings or glossary). Self-host always resolves to Local, so this never fires there.</summary>
+    private static IResult TenantRequired()
+        => Results.Json(new { error = "a tenant could not be resolved for this request" },
+            statusCode: StatusCodes.Status403Forbidden);
+
+    /// <summary>A filesystem-safe folder name for a tenant partition.</summary>
+    private static string TenantFolder(TenantId tenant)
+    {
+        var chars = tenant.Value.Select(c => char.IsLetterOrDigit(c) || c is '-' or '_' ? c : '_').ToArray();
+        return new string(chars);
+    }
+
+    /// <summary>This tenant's transcripts root. The single Local tenant keeps the existing flat root (so a
+    /// self-host install's recordings do not move); every other tenant gets its own subdirectory.</summary>
+    private static string RootForTenant(TenantId tenant)
+        => tenant == TenantId.Local ? CcStorage.Transcripts()
+            : Path.Combine(CcStorage.Transcripts(), TenantFolder(tenant));
+
+    /// <summary>This tenant's vault-transcripts promotion target (per tenant on hosted, flat on self-host).</summary>
+    private static string CollectionForTenant(TenantId tenant)
+        => tenant == TenantId.Local ? CcStorage.VaultTranscripts()
+            : Path.Combine(CcStorage.VaultTranscripts(), TenantFolder(tenant));
+
+    /// <summary>This tenant's dictation glossary file. Local keeps the existing shared file; every other
+    /// tenant gets its own glossary. Read by BOTH the dictionary editor routes and this tenant's recording
+    /// transcriber, so a per-tenant edit biases only that tenant's transcription (issue #2060).</summary>
+    private static string GlossaryPathFor(TenantId tenant)
+        => tenant == TenantId.Local ? GatewayTranscriptionService.DictionaryPath()
+            : Path.Combine(Path.GetDirectoryName(GatewayTranscriptionService.DictionaryPath())!,
+                TenantFolder(tenant), "dictionary.yaml");
+
     private static RecordingIngestService BuildService(
+        TenantId tenant,
         KeyVault? keyVault,
         TranscriptionHistoryLog? history,
         TranscriptionAudioArchive? audioArchive)
     {
-        // Local transient store for transcripts (audio + markdown). Transcripts
+        // Local transient store for transcripts (audio + markdown), per tenant. Transcripts
         // are NOT auto-filed into the vault; the user promotes the keepers.
-        var root = CcStorage.Transcripts();
-        // Promotion target: the vault transcripts collection (permanent copy). Via CcStorage.Vault()
-        // so it honors CC_VAULT_PATH - the old hardcoded path would have promoted into the wrong
-        // place for anyone who relocated their vault.
-        var collectionDir = CcStorage.VaultTranscripts();
+        var root = RootForTenant(tenant);
+        // Promotion target: the vault transcripts collection (permanent copy), per tenant.
+        var collectionDir = CollectionForTenant(tenant);
+        // The glossary the transcriber reads to bias transcription - this tenant's own (issue #2060).
+        var glossaryPath = GlossaryPathFor(tenant);
+        // This tenant's transcription-health history. The single Local tenant uses the host's shared log
+        // (self-host, unchanged); every other tenant writes to its own partition so a recording's history
+        // contribution is never fleet-global. (The Transcription Health READ surface is issue #2059.)
+        var tenantHistory = tenant == TenantId.Local
+            ? history
+            : new TranscriptionHistoryLog(Path.Combine(TranscriptionHistoryLog.DefaultDirectory(), TenantFolder(tenant)));
 
-        FileLog.Write($"[RecordingEndpoints] BuildService: root={root}, collection={collectionDir}");
+        FileLog.Write($"[RecordingEndpoints] BuildService tenant={tenant.ToLogString()}: root={root}, collection={collectionDir}");
 
         var filer = new CcVaultFiler(collectionDir);
 
@@ -557,17 +609,14 @@ internal static class RecordingEndpoints
         return new RecordingIngestService(
             root,
             transcriberFactory: () => new GatewayServiceRecordingTranscriber(
-                new GatewayTranscriptionService(keyVault ?? new KeyVault(), history: history, audioArchive: audioArchive)),
+                new GatewayTranscriptionService(
+                    keyVault ?? new KeyVault(),
+                    history: tenantHistory,
+                    audioArchive: audioArchive,
+                    dictionaryProvider: () => DictionaryLoader.LoadFromDisk(glossaryPath))),
             filer,
             collectionDir);
     }
-
-    /// <summary>
-    /// The single shared dictation glossary file. Used by both the recording transcriber and the
-    /// dictionary editor endpoints. Defined once, in
-    /// <see cref="GatewayTranscriptionService.DictionaryPath"/>.
-    /// </summary>
-    private static string DictionaryFilePath() => GatewayTranscriptionService.DictionaryPath();
 
     private static DictionaryDto ToDto(DictationDictionary dict) => new(
         Vocabulary: dict.Vocabulary.ToList(),
