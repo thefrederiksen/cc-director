@@ -417,6 +417,17 @@ public sealed class GatewayHost : IAsyncDisposable
     // so a later tick must NOT start a second overlapping sweep (that could double-fire a job in the window
     // between a tenant's ListAll and MarkFired). 0 = idle, 1 = a sweep is in flight (Interlocked-owned).
     private int _cronSweepInFlight;
+
+    // MTR-15 cancellation cutoff (hosted-only): the per-tenant access lease, its device-revoker, and the 60s
+    // active-tenant sweep that re-reads entitlement and cuts off a cancelled tenant within the sweep bound.
+    private Tenancy.TenantAccessRevoker? _accessRevoker;
+    private Tenancy.HostedAccessLeaseService? _accessLeases;
+    private Tenancy.EntitlementLeaseMonitor? _leaseMonitor;
+    private System.Threading.Timer? _leaseSweepTimer;
+    private int _leaseSweepInFlight;
+    private static readonly TimeSpan LeaseSweepInterval = TimeSpan.FromSeconds(60);
+    // Tenant-indexed live Director tunnels (populated by DirectorHub); the cutoff aborts a revoked tenant's.
+    private readonly Streaming.DirectorConnectionRegistry _directorConnections = new();
     // The cron firing sweep (epic #479, #483): wakes ~every minute and fires due jobs. Created in
     // StartAsync, disposed in StopAsync.
     private System.Threading.Timer? _cronTimer;
@@ -744,6 +755,15 @@ public sealed class GatewayHost : IAsyncDisposable
         // the device) in the follow-up increment. Unused on the single-tenant local install.
         TenantRegistry = new Tenancy.TenantRegistry(_gatewayDb);
         EntitlementRegistry = new Tenancy.EntitlementRegistry(_gatewayDb);
+        // MTR-15 cancellation cutoff, hosted-only. Reuses the SAME EntitlementRegistry as the enrollment gate
+        // so the enrollment check and the ongoing check cannot drift. The revoker calls MTR-14B's tenant-wide
+        // device tombstone; the lease is the O(1) hot-path check; the monitor is the 60s sweep.
+        if (GatewayHostedMode.IsHosted)
+        {
+            _accessRevoker = new Tenancy.TenantAccessRevoker(Devices, _directorConnections);
+            _accessLeases = new Tenancy.HostedAccessLeaseService(EntitlementRegistry, TenantRegistry, _accessRevoker);
+            _leaseMonitor = new Tenancy.EntitlementLeaseMonitor(_accessLeases);
+        }
         // The auth-boundary tenant binder (Hosted Multi-Tenancy increment 1): the tunnel Hello and the
         // device-key HTTP middleware resolve a tenant from the AUTHENTICATED device key through this, and
         // enter the scope the stores read. Inert on self-host. Built over the same _tenantContext instance
@@ -1613,6 +1633,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // The auth-boundary tenant binder, so the SignalR-constructed DirectorHub resolves a tenant from the
         // authenticated device key at Hello and enters that scope on every push (Hosted Multi-Tenancy incr 1).
         builder.Services.AddSingleton(_tenantBoundary);
+        builder.Services.AddSingleton(_directorConnections);
         builder.Services.AddSingleton(SessionConcurrency);
         builder.Services.AddSingleton(Registry);
         // launcher-persistent-join: the LauncherHub (constructed per-invocation by SignalR) and
@@ -1682,7 +1703,7 @@ public sealed class GatewayHost : IAsyncDisposable
             // own unique key. The shared token still authenticates the host's own browser/cookie
             // surface, but it is no longer the path a NEW device uses to get in (that is account
             // sign-in - see SignedInEnrollmentEndpoint).
-            var requireToken = new AuthMiddleware.RequireToken { Token = Token, Devices = Devices };
+            var requireToken = new AuthMiddleware.RequireToken { Token = Token, Devices = Devices, Leases = _accessLeases, Boundary = _tenantBoundary };
             _app.Use(async (ctx, next) => await AuthMiddleware.Run(ctx, requireToken, next));
         }
 
@@ -2389,6 +2410,15 @@ public sealed class GatewayHost : IAsyncDisposable
         _cronTimer = new System.Threading.Timer(_ => SweepCron(), null, CronSweepInterval, CronSweepInterval);
         FileLog.Write($"[GatewayHost] cron sweep started: every {CronSweepInterval.TotalSeconds:0}s ({(GatewayHostedMode.IsHosted ? "hosted, per-tenant via TenantScopedSweep" : "self-host, single Local tenant")})");
 
+        // MTR-15 cancellation cutoff: the hosted active-tenant entitlement sweep. Forces a fresh entitlement
+        // read for every tenant with a live lease every ~60s and revokes any that has become NotEntitled, so a
+        // cancelled tenant loses access within roughly one sweep cycle (never past the paid period end).
+        if (GatewayHostedMode.IsHosted && _leaseMonitor is not null)
+        {
+            _leaseSweepTimer = new System.Threading.Timer(_ => SweepEntitlementLeases(), null, LeaseSweepInterval, LeaseSweepInterval);
+            FileLog.Write($"[GatewayHost] entitlement lease sweep started: every {LeaseSweepInterval.TotalSeconds:0}s (hosted cancellation cutoff)");
+        }
+
         // Scheduled-run auto-dismiss (issue #1200): close automated runs that declared themselves done, by
         // sending the kill verb DOWN the Director stream. The close has no REST fallback by design (the
         // Gateway owns session lifecycle and reaches the Director through its stream).
@@ -2625,6 +2655,32 @@ public sealed class GatewayHost : IAsyncDisposable
         }
     }
 
+    private void SweepEntitlementLeases()
+    {
+        // Skip this tick if the previous entitlement sweep is still running (many active tenants). One at a
+        // time is correct; a skipped tick simply runs on the next one.
+        if (Interlocked.CompareExchange(ref _leaseSweepInFlight, 1, 0) != 0)
+            return;
+        _ = RunEntitlementSweepAsync();
+    }
+
+    private async Task RunEntitlementSweepAsync()
+    {
+        try
+        {
+            if (_leaseMonitor is not null)
+                await _leaseMonitor.SweepOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayHost] entitlement lease sweep FAILED: {ex.Message}");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _leaseSweepInFlight, 0);
+        }
+    }
+
     /// <summary>
     /// The auto-dismiss sweep timer callback (issue #1200; a boundary - it owns the try/catch so a sweep
     /// failure never crashes the timer thread). Closes automated runs that declared themselves done, over the
@@ -2740,6 +2796,8 @@ public sealed class GatewayHost : IAsyncDisposable
 
         try { _cronTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] cron timer dispose error: {ex.Message}"); }
         _cronTimer = null;
+        try { _leaseSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] lease sweep timer dispose error: {ex.Message}"); }
+        _leaseSweepTimer = null;
         try { _autoDismissTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] auto-dismiss timer dispose error: {ex.Message}"); }
         _autoDismissTimer = null;
         try { _displayStateSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] display-state sweep timer dispose error: {ex.Message}"); }

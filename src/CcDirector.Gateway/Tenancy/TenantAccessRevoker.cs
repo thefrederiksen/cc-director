@@ -21,10 +21,12 @@ namespace CcDirector.Gateway.Tenancy;
 public sealed class TenantAccessRevoker : ITenantAccessRevoker
 {
     private readonly Pairing.DeviceRegistry _devices;
+    private readonly Streaming.DirectorConnectionRegistry? _connections;
 
-    public TenantAccessRevoker(Pairing.DeviceRegistry devices)
+    public TenantAccessRevoker(Pairing.DeviceRegistry devices, Streaming.DirectorConnectionRegistry? connections = null)
     {
         _devices = devices ?? throw new ArgumentNullException(nameof(devices));
+        _connections = connections;
     }
 
     public Task RevokeAsync(TenantId tenant, string reason, CancellationToken ct = default)
@@ -39,11 +41,12 @@ public sealed class TenantAccessRevoker : ITenantAccessRevoker
         var revoked = _devices.RevokeTenant(tenant, reason);
         FileLog.Write($"[TenantAccessRevoker] tombstoned {revoked} active device credential(s) for a tenant (reason={reason})");
 
-        // Steps 3-4 (live teardown): server-side abort of the tenant's Director connections and close of its
-        // browser terminal / file / screenshot streams. These plug in here with the tenant-indexed
-        // DirectorConnectionRegistry / GatewayStreamRegistry. Until they land, the durable tombstone above
-        // denies every NEW authentication and the 60s sweep re-checks each cycle, so a live stream ends when it
-        // next re-authenticates or the sweep tears it down - never past the published cutoff bound.
+        // Step 3 (live teardown): server-side abort of every live Director tunnel this instance holds for the
+        // tenant, so an already-connected session actually stops rather than lingering until it next
+        // re-authenticates. Per-instance and idempotent; browser terminal/file/screenshot streams ride over
+        // the aborted tunnel and end with it. Ordered AFTER the durable tombstone so a racing reconnect loses
+        // (it re-authenticates against the committed revoked status and is denied).
+        _connections?.AbortForTenant(tenant, reason);
 
         return Task.CompletedTask;
     }
