@@ -589,7 +589,7 @@ internal static class RecordingEndpoints
         // contribution is never fleet-global. (The Transcription Health READ surface is issue #2059.)
         var tenantHistory = tenant == TenantId.Local
             ? history
-            : new TranscriptionHistoryLog(Path.Combine(TranscriptionHistoryLog.DefaultDirectory(), TenantFolder(tenant)));
+            : TranscriptionHistoryLog.ForTenant(tenant);
 
         FileLog.Write($"[RecordingEndpoints] BuildService tenant={tenant.ToLogString()}: root={root}, collection={collectionDir}");
 

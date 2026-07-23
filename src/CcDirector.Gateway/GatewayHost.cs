@@ -2221,12 +2221,12 @@ public sealed class GatewayHost : IAsyncDisposable
         // through this one endpoint - it resolves the mode + key and runs the right provider (in-process
         // Whisper, or the resolved provider-compatible batch endpoint). Optional ?correct=true also runs
         // the validated dictionary correction, keeping that out of the callers too.
-        TranscriptionBatchEndpoint.Map(_app, _keyVault, _transcriptionHistory, _transcriptionAudioArchive);
+        TranscriptionBatchEndpoint.Map(_app, _keyVault, _transcriptionHistory, _transcriptionAudioArchive, _tenantBoundary);
 
         // Read-only analysis over the LOCAL minimized transcription history: latency percentiles, cleanup
         // behaviour, most-corrected terms, and word frequencies, so any agent can query the Gateway to
         // see how fast and how good transcription is - all from data on this machine, never a server.
-        Api.TranscriptionAnalysisEndpoint.Map(_app);
+        Api.TranscriptionAnalysisEndpoint.Map(_app, _tenantBoundary);
 
         // Text-in / text-out cleanup: run ONLY the deterministic dictionary correction over supplied
         // text + a supplied term list (no audio). The engine the multilingual eval harness drives, and

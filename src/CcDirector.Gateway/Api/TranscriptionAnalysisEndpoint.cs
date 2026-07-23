@@ -1,6 +1,8 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Tenancy;
 using CcDirector.Gateway.Transcription;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 
@@ -15,8 +17,11 @@ namespace CcDirector.Gateway.Api;
 ///   DELETE /transcription/history
 ///
 /// The history never includes transcript text or provider error bodies, is retained for 30 days, and
-/// can be cleared by the owner. This feature is self-host only because its file store has no tenant
-/// partition on a shared hosted Gateway.
+/// can be cleared by the owner. It SERVES PER-TENANT on hosted (issue #2059): the store is partitioned by
+/// tenant (see <see cref="TranscriptionHistoryLog.DirectoryFor"/>), so each route resolves the caller's
+/// tenant and reads only that tenant's history; a request with no resolvable tenant is refused (403), never
+/// served the Local partition. Self-host resolves to the single Local tenant and reads the existing flat
+/// store, unchanged.
 /// </summary>
 internal static class TranscriptionAnalysisEndpoint
 {
@@ -25,53 +30,72 @@ internal static class TranscriptionAnalysisEndpoint
     private const int DefaultTermTop = 25;
 
     internal const string Prefix = "/transcription";
-    internal const string RefusalMessage = "transcription analysis is not available on the hosted gateway";
 
-    private static HostedDenial Denial() => new(
-        family: "transcription-analysis",
-        message: RefusalMessage,
-        reason: "the local transcription history is process-global and has no tenant partition",
-        unDenyInstruction: "tenant-partition the history writer and reader before enabling this feature on hosted",
-        statusCode: StatusCodes.Status404NotFound);
+    /// <summary>The 403 a route answers when the caller's tenant cannot be resolved (issue #2059). On the
+    /// hosted Gateway an authenticated request whose device key has no bound tenant is refused, NEVER served
+    /// the Local partition. Self-host always resolves to Local, so this never fires there.</summary>
+    private static IResult TenantRequired()
+        => Results.Json(new { error = "a tenant could not be resolved for this request" },
+            statusCode: StatusCodes.Status403Forbidden);
 
-    public static HostedDenyGroup Map(
+    public static void Map(
         IEndpointRouteBuilder outer,
+        Tenancy.HostedTenantBoundary? tenantBoundary = null,
         TranscriptionHistoryReader? reader = null,
         TranscriptionAudioArchive? audioArchive = null)
     {
-        var history = reader ?? new TranscriptionHistoryReader();
-        var audio = audioArchive ?? new TranscriptionAudioArchive();
-        FileLog.Write($"[TranscriptionAnalysisEndpoint] mapping {Prefix} history; hosted={GatewayHostedMode.IsHosted}");
-        var group = HostedRouteDeny.Group(outer, Prefix, Denial());
-        MapRoutes(group, history, audio);
-        return group;
+        FileLog.Write($"[TranscriptionAnalysisEndpoint] mapping {Prefix} history PER-TENANT (issue #2059); hosted={GatewayHostedMode.IsHosted} - each route resolves the caller's tenant, 403 when unresolved");
+        var app = outer.MapGroup(Prefix);
+        MapRoutes(app, tenantBoundary, reader, audioArchive);
     }
 
+    // The reader/audio for the CALLER's tenant. A test-supplied reader (self-host fixtures) is used verbatim;
+    // otherwise a reader/archive over the tenant's own partition is built.
+    private static TranscriptionHistoryReader ReaderFor(TenantId tenant, TranscriptionHistoryReader? overrideReader)
+        => overrideReader ?? new TranscriptionHistoryReader(TranscriptionHistoryLog.DirectoryFor(tenant));
+
+    private static TranscriptionAudioArchive AudioFor(TenantId tenant, TranscriptionAudioArchive? overrideArchive)
+        => overrideArchive ?? new TranscriptionAudioArchive(TranscriptionAudioArchive.DirectoryFor(tenant));
+
     private static void MapRoutes(
-        HostedDenyGroup app,
-        TranscriptionHistoryReader history,
-        TranscriptionAudioArchive audioArchive)
+        IEndpointRouteBuilder app,
+        Tenancy.HostedTenantBoundary? tenantBoundary,
+        TranscriptionHistoryReader? reader,
+        TranscriptionAudioArchive? audioArchive)
     {
         app.MapGet("/stats", (HttpContext ctx) =>
-            Results.Json(history.ComputeStats(ResolveSince(ctx))));
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
+            return Results.Json(ReaderFor(t.Value, reader).ComputeStats(ResolveSince(ctx)));
+        });
 
         app.MapGet("/turns", (HttpContext ctx) =>
         {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
             var limit = ClampInt(ctx.Request.Query["limit"], DefaultTurnLimit, 0, MaxTurnLimit);
-            return Results.Json(new { turns = history.Load(ResolveSince(ctx), limit) });
+            return Results.Json(new { turns = ReaderFor(t.Value, reader).Load(ResolveSince(ctx), limit) });
         });
 
         app.MapGet("/terms", (HttpContext ctx) =>
         {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
             var top = ClampInt(ctx.Request.Query["top"], DefaultTermTop, 1, 1000);
-            return Results.Json(new { terms = history.TopCorrections(top, ResolveSince(ctx)) });
+            return Results.Json(new { terms = ReaderFor(t.Value, reader).TopCorrections(top, ResolveSince(ctx)) });
         });
 
-        app.MapDelete("/history", () => Results.Json(new
+        app.MapDelete("/history", (HttpContext ctx) =>
         {
-            removedFiles = history.Clear(),
-            removedAudioClips = audioArchive.Clear(),
-        }));
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
+            return Results.Json(new
+            {
+                removedFiles = ReaderFor(t.Value, reader).Clear(),
+                removedAudioClips = AudioFor(t.Value, audioArchive).Clear(),
+            });
+        });
     }
 
     private static DateTime? ResolveSince(HttpContext ctx)
