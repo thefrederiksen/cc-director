@@ -1,4 +1,5 @@
 using System.Net;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.CarMode;
 using Xunit;
 
@@ -30,11 +31,11 @@ public sealed class CarModeWarmupTests
     {
         var handler = new RecordingHandler();
         var warmup = new CarModeWarmup(
-            () => ("https://api.test/v1", "test-model", "dt_live_key"),
-            () => ("https://api.test/v1", "af_bella", "tts-model", "dt_live_key"),
+            _ => ("https://api.test/v1", "test-model", "dt_live_key"),
+            _ => ("https://api.test/v1", "af_bella", "tts-model", "dt_live_key"),
             new HttpClient(handler), _ => { });
 
-        await warmup.WarmAsync(CancellationToken.None);
+        await warmup.WarmAsync(TenantId.Local, CancellationToken.None);
 
         Assert.Contains("/v1/chat/completions", handler.Paths);
         Assert.Contains("/v1/audio/speech", handler.Paths);
@@ -45,11 +46,11 @@ public sealed class CarModeWarmupTests
     {
         var handler = new RecordingHandler();
         var warmup = new CarModeWarmup(
-            () => ("https://api.test/v1", "test-model", ""),          // no model key
-            () => ("https://api.test/v1", "af_bella", "tts-model", "dt_live_key"),
+            _ => ("https://api.test/v1", "test-model", ""),          // no model key
+            _ => ("https://api.test/v1", "af_bella", "tts-model", "dt_live_key"),
             new HttpClient(handler), _ => { });
 
-        await warmup.WarmAsync(CancellationToken.None);
+        await warmup.WarmAsync(TenantId.Local, CancellationToken.None);
 
         Assert.DoesNotContain("/v1/chat/completions", handler.Paths);
         Assert.Contains("/v1/audio/speech", handler.Paths);
@@ -60,11 +61,11 @@ public sealed class CarModeWarmupTests
     {
         var handler = new RecordingHandler { Responder = _ => throw new HttpRequestException("upstream down") };
         var warmup = new CarModeWarmup(
-            () => ("https://api.test/v1", "m", "k"),
-            () => ("https://api.test/v1", "v", "tm", "k"),
+            _ => ("https://api.test/v1", "m", "k"),
+            _ => ("https://api.test/v1", "v", "tm", "k"),
             new HttpClient(handler), _ => { });
 
         // Best-effort: a warmup failure must be swallowed, never thrown into the caller.
-        await warmup.WarmAsync(CancellationToken.None);
+        await warmup.WarmAsync(TenantId.Local, CancellationToken.None);
     }
 }

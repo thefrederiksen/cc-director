@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Text.Json;
 using CcDirector.Gateway.Api;
 using CcDirector.Gateway.CarMode;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Pairing;
 using CcDirector.Gateway.Util;
 using Microsoft.AspNetCore.Builder;
@@ -63,8 +64,8 @@ public sealed class CarModeDiagnosticsEndpointPartitionTests : IAsyncLifetime
             new CarModeSubjectStore(_ => { }),
             _ => { });
         var warmup = new CarModeWarmup(
-            () => ("http://127.0.0.1:1", "model", "key"),
-            () => ("http://127.0.0.1:1", "voice", "model", "key"),
+            _ => ("http://127.0.0.1:1", "model", "key"),
+            _ => ("http://127.0.0.1:1", "voice", "model", "key"),
             log: _ => { });
 
         var builder = WebApplication.CreateBuilder();
@@ -77,7 +78,7 @@ public sealed class CarModeDiagnosticsEndpointPartitionTests : IAsyncLifetime
         var requireToken = new AuthMiddleware.RequireToken { Token = SharedMachineToken, Devices = devices };
         _app.Use(async (ctx, next) => await AuthMiddleware.Run(ctx, requireToken, next));
 
-        CarModeEndpoint.Map(_app, brain, new CarModeTurnCache(_ => { }), diagnostics, warmup);
+        CarModeEndpoint.Map(_app, brain, new CarModeTurnCache(_ => { }), diagnostics, warmup, null!);
         await _app.StartAsync();
         _baseAddress = $"http://127.0.0.1:{port}";
     }
@@ -382,7 +383,7 @@ public sealed class CarModeDiagnosticsEndpointPartitionTests : IAsyncLifetime
     ///  loudly rather than returning a plausible answer if that assumption ever breaks.</summary>
     private sealed class UnusedChat : ICarModeChat
     {
-        public Task<CarModeAssistantTurn> CompleteAsync(string messagesJson, string toolsJson, CancellationToken ct)
+        public Task<CarModeAssistantTurn> CompleteAsync(TenantId tenant, string messagesJson, string toolsJson, CancellationToken ct)
             => throw new InvalidOperationException("The diagnostics routes must not call the model.");
     }
 

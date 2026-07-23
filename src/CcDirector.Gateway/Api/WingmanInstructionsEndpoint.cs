@@ -1,5 +1,6 @@
 using CcDirector.AgentBrain;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Tenancy;
 using CcDirector.Gateway.Wingman;
@@ -142,7 +143,7 @@ internal static class WingmanInstructionsEndpoint
     /// has written yet.
     /// </summary>
     public static HostedDenyGroup Map(IEndpointRouteBuilder outer, WingmanInstructionsStore store,
-        WingmanTrainingStore training, Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider)
+        WingmanTrainingStore training, Func<TenantId, WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider)
     {
         var translator = new WingmanTranslator(brainProvider);
 
@@ -277,7 +278,7 @@ internal static class WingmanInstructionsEndpoint
                     // would make the wingman read out an identifier, which the same prompt forbids). The
                     // draft-vs-live diff this endpoint shows is therefore title-less on both sides, which
                     // is the honest comparison - both were produced without one.
-                    var t = await translator.TranslateWithAsync(req.Content, rec.RecentContext, rec.Reply, sessionTitle: null, ct);
+                    var t = await translator.TranslateWithAsync(TenantId.Local, req.Content, rec.RecentContext, rec.Reply, sessionTitle: null, ct);
                     results.Add(new { id, source = rec.Source, reply = rec.Reply, oldSpoken = rec.Spoken, newSpoken = t.Spoken, replySeconds = t.ReplySeconds });
                 }
                 catch (Exception ex)

@@ -335,6 +335,8 @@ public sealed class GatewayHost : IAsyncDisposable
     // and the future Mission-Control chat/API read the same WHY. Constructed here (load-on-construct
     // re-serves every WHY after a restart); exposed to the client over MissionNotesEndpoint.
     private readonly MissionNotes.MissionNoteStore _missionNotes;
+    private readonly Settings.TenantSettingsStore _tenantSettings;
+    private readonly Settings.TenantSettingsResolver _tenantSettingsResolver;
     // Hosted Gateway mission, Step 1b: the EF data layer (gateway.db). The host owns ONE instance and the
     // structured stores that have moved off hand-rolled JSON read/write through it. On the single-tenant
     // local install every row is the "local" tenant (SingleTenantContext), so behavior is unchanged.
@@ -359,6 +361,10 @@ public sealed class GatewayHost : IAsyncDisposable
     // scope, which is a DENY, never a fall back to Local.
     private readonly Tenancy.ITenantPass _tenantPass;
     private readonly Data.GatewayDatabase _gatewayDb;
+
+    /// <summary>The typed per-tenant runtime settings resolver. Every caller supplies the tenant explicitly;
+    /// an unset override returns only the operator global default.</summary>
+    internal Settings.TenantSettingsResolver TenantSettingsResolver => _tenantSettingsResolver;
 
     /// <summary>
     /// The auth-boundary tenant binder. Exposed to the test assembly so an isolation test can enter the same
@@ -899,6 +905,12 @@ public sealed class GatewayHost : IAsyncDisposable
         // a cosmetic store must not block boot) then renamed aside. Tests MUST pass an isolated path so they
         // never touch the real legacy file.
         _missionNotes = new MissionNotes.MissionNoteStore(_gatewayDb, missionNotesPath ?? Path.Combine(CcStorage.Root(), "mission-notes.json"));
+        // Per-tenant settings (issue #2017): the store + typed resolver the settings-page endpoints read and
+        // write through. No legacy file to import - an unset per-tenant override falls back to the operator
+        // global default (the existing config.json value), so an existing install's settings are unchanged
+        // until the owner explicitly overrides one.
+        _tenantSettings = new Settings.TenantSettingsStore(_gatewayDb);
+        _tenantSettingsResolver = new Settings.TenantSettingsResolver(_tenantSettings);
         // Cron-job definitions persist across a Gateway restart (epic #479, #482) in the cron_jobs table
         // (next-run times recomputed on load). The path argument is the LEGACY cronjobs.json, imported once
         // on first upgrade then renamed aside. Tests MUST pass an isolated path so they never touch the real
@@ -1267,12 +1279,11 @@ public sealed class GatewayHost : IAsyncDisposable
             ? PushedSessions.TryLocate(tenant, sessionId, staleAfter)
             : null;
 
-    private string? ResolveSessionTitle(string sessionId)
+    private string? ResolveSessionTitle(TenantId tenant, string sessionId)
     {
-        // Read within the tenant of the CURRENT unit of work (AmbientTryLocate uses _tenantPass.Current):
-        // the wingman resolves a session's spoken title while a per-tenant scope is in effect (the voice
-        // sweep pass, or a request/turn-end scope), so it never reads another tenant's session name.
-        var located = AmbientTryLocate(sessionId, _streamStaleAfter);
+        if (!tenant.IsValid)
+            throw new ArgumentException("A session title requires an explicit tenant.", nameof(tenant));
+        var located = PushedSessions.TryLocate(tenant, sessionId, _streamStaleAfter);
         var name = located?.Session.Name;
         return string.IsNullOrWhiteSpace(name) ? null : name;
     }
@@ -1384,12 +1395,15 @@ public sealed class GatewayHost : IAsyncDisposable
     /// The provider, credential, and role-specific model are read at CALL time, so a settings change is
     /// honored on the next turn without a Gateway restart.
     /// </summary>
-    private Task<CcDirector.AgentBrain.IAgentBrain> WingmanBrainAsync(Core.Configuration.WingmanModelRole role, CancellationToken ct)
+    internal string ResolveWingmanModel(TenantId tenant, Core.Configuration.WingmanModelRole role)
+        => _tenantSettingsResolver.WingmanModel(tenant, Core.Configuration.TranscriptionModeConfig.Get(), role);
+
+    private Task<CcDirector.AgentBrain.IAgentBrain> WingmanBrainAsync(TenantId tenant, Core.Configuration.WingmanModelRole role, CancellationToken ct)
     {
         var mode = Core.Configuration.TranscriptionModeConfig.Get();
         var ep = Core.Configuration.TranscriptionEndpointResolver.ResolveWingman(mode);
         var key = _keyVault.Get(ep.KeyName) ?? "";
-        var model = Core.Configuration.WingmanModelConfig.Resolve(mode, role);
+        var model = _tenantSettingsResolver.WingmanModel(tenant, mode, role);
         CcDirector.AgentBrain.IAgentBrain brain =
             new Wingman.HostedInferenceBrain(ep.BaseUrl, key, model, log: FileLog.Write);
         return Task.FromResult(brain);
@@ -1449,7 +1463,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // sessionTitleResolver: the wingman opens every narration with the session's title, so a
         // listener with the phone in a pocket knows WHICH session is talking before anything else
         // (WingmanTranslator.FidelityPrompt v5.2). Push-store read - no dial. See ResolveSessionTitle.
-        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, training: _trainingStore, instructionsProvider: () => _instructionsStore.ActiveContent, sessionTitleResolver: ResolveSessionTitle);
+        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _tenantSettingsResolver, training: _trainingStore, instructionsProvider: () => _instructionsStore.ActiveContent, sessionTitleResolver: ResolveSessionTitle);
         _turnEndWatcher = new TurnEndWatcher(
             onTurnEnd: signal =>
             {
@@ -1749,6 +1763,15 @@ public sealed class GatewayHost : IAsyncDisposable
         // network-diagnostics rollup store is threaded in as a named argument on the tunnel-only signature.
         GatewayEndpoints.Map(_app, Registry, version, Token, AuthEnabled,
             netDiagRollup: _netDiagRollup,
+            // Issue #2017: the snooze-default consumer at POST /sessions/{sid}/hold reads the caller tenant's
+            // default through the resolver instead of the process-global config.
+            tenantSettings: _tenantSettingsResolver,
+            // Issue #2022: the live process diagnostics the About page now shows read-only on both surfaces,
+            // after the machine settings left the Cockpit Settings page. The mode is a delegate resolved per
+            // request because SettingsHooks is assigned on this host after Map has run.
+            gatewayStartedAtUtc: StartedAtUtc,
+            gatewayPort: Port,
+            gatewayModeLabel: () => SettingsHooks?.Mode?.Invoke() ?? "unknown",
             // Store injection points: hand the phone-recorder ingest (RecordingEndpoints) the host's single
             // key vault + transcription history + audio archive, so it stops newing its own copies.
             recordingKeyVault: _keyVault,
@@ -2013,8 +2036,8 @@ public sealed class GatewayHost : IAsyncDisposable
         // sessionTitleResolver: the wingman opens every narration with the session's title, so a
         // listener with the phone in a pocket knows WHICH session is talking before anything else
         // (WingmanTranslator.FidelityPrompt v5.2). Push-store read - no dial. See ResolveSessionTitle.
-        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, training: _trainingStore, instructionsProvider: () => _instructionsStore.ActiveContent, sessionTitleResolver: ResolveSessionTitle);
-        GatewayWingmanVoiceEndpoint.Map(_app, Registry, WingmanBrainAsync, _keyVault, _voiceService,
+        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _tenantSettingsResolver, training: _trainingStore, instructionsProvider: () => _instructionsStore.ActiveContent, sessionTitleResolver: ResolveSessionTitle);
+        GatewayWingmanVoiceEndpoint.Map(_app, Registry, WingmanBrainAsync, _keyVault, _voiceService, _tenantSettingsResolver,
             pushedSessions: PushedSessions,
             sendCommand: SendCommandAsync,
             owners: SessionOwners,
@@ -2032,21 +2055,21 @@ public sealed class GatewayHost : IAsyncDisposable
         // Gateway's own endpoints over loopback (the same aggregated roster every client sees); the
         // conversation context is kept server-side per device. Inherits the host-wide auth gate (the
         // caller's per-device key), like every other data route.
-        var carModeChat = new CarMode.HostedCarModeChat(CarMode.HostedCarModeChat.DefaultResolver(_keyVault.Get));
+        var carModeChat = new CarMode.HostedCarModeChat(CarMode.HostedCarModeChat.DefaultResolver(_keyVault.Get, _tenantSettingsResolver));
         var carModeFleet = new CarMode.LoopbackCarModeFleet(Port, Token);
         var carModeBrain = new CarMode.CarModeBrain(carModeChat, carModeFleet, _carModeConversations, _carModePending, _carModeSubjects);
         // Keep-warm (Car Mode performance round): warm the SAME hosted model the brain uses and the SAME
         // text-to-speech target /wingman/tts uses, resolved fresh each warmup so a settings change applies.
         var carModeWarmup = new CarMode.CarModeWarmup(
-            CarMode.HostedCarModeChat.DefaultResolver(_keyVault.Get),
-            () =>
+            CarMode.HostedCarModeChat.DefaultResolver(_keyVault.Get, _tenantSettingsResolver),
+            tenant =>
             {
                 var mode = Core.Configuration.TranscriptionModeConfig.Get();
                 var tts = Core.Configuration.TranscriptionEndpointResolver.ResolveTts(mode);
                 var key = _keyVault.Get(tts.KeyName) ?? "";
-                return (tts.BaseUrl, Core.Configuration.TtsVoiceConfig.Resolve(mode), Core.Configuration.TtsModelConfig.Resolve(mode), key);
+                return (tts.BaseUrl, _tenantSettingsResolver.TtsVoice(tenant, mode), _tenantSettingsResolver.TtsModel(tenant, mode), key);
             });
-        Api.CarModeEndpoint.Map(_app, carModeBrain, _carModeTurnCache, _carModeDiagnostics, carModeWarmup);
+        Api.CarModeEndpoint.Map(_app, carModeBrain, _carModeTurnCache, _carModeDiagnostics, carModeWarmup, _tenantBoundary);
         // Editable/versioned wingman instructions settings surface (issue #537), incl. A/B test
         // over saved training sessions (reads the shared training store; uses the hosted wingman brain).
         WingmanInstructionsEndpoint.Map(_app, _instructionsStore, _trainingStore, WingmanBrainAsync);
@@ -2085,7 +2108,7 @@ public sealed class GatewayHost : IAsyncDisposable
 
         // The AI model catalog + test surface for the Settings AI tab (list the selected provider's
         // models, test a chat model, save the chosen wingman/speech model). Uses the vault credential.
-        Api.AiModelsEndpoint.Map(_app, _keyVault);
+        Api.AiModelsEndpoint.Map(_app, _keyVault, _tenantSettingsResolver, _tenantBoundary);
 
         // The workflow catalog (issue #1617; persisted by the Workflows mission): the shapes of work
         // the fleet knows how to run - Mission, Standalone, Standalone with review, plus user-defined
@@ -2304,7 +2327,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // DevThrottle Stats: the always-available private dashboard (/stats) and its JSON (/stats/data).
         // A self-contained embedded page, so it works even on a plain dev build with no React wwwroot.
         // Mapped before the mobile/cockpit catch-alls so the explicit routes win.
-        Stats.StatsPageEndpoint.Map(_app, InputStats, SessionConcurrency);
+        Stats.StatsPageEndpoint.Map(_app, InputStats, SessionConcurrency, _tenantSettingsResolver);
 
         // The prompt log (issue #1551): Directors push what they captured to POST /prompts, and anyone
         // wanting history reads GET /prompts. It lives here, not on a Director, because the Gateway is

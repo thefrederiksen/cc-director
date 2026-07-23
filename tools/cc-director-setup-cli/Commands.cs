@@ -94,6 +94,82 @@ internal static class Commands
         return Ok;
     }
 
+    // ---- autostart on|off|status (issue #2022) ----------------------------
+    //
+    // Start-at-login left the web Settings page and lives here: the CLI + the per-OS mechanism is the one
+    // home that works on every platform, INCLUDING a headless Linux server that has no tray or window. The
+    // real per-OS work (Windows Run key, macOS launch agent, Linux systemd --user unit) lives in the engine's
+    // GatewayAutostartControl; this command is a thin front-end over it. The user-facing entry point is
+    // `cc-devthrottle autostart`, which shells to this.
+    public static int Autostart(CliArgs args, InstallLayout layout, bool json)
+    {
+        var verb = (args.Positionals.Count > 0 ? args.Positionals[0] : "status").ToLowerInvariant();
+
+        if (!GatewayAutostartControl.Supported)
+        {
+            var msg = "Gateway autostart is not supported on this platform (it exists on Windows, macOS, and Linux).";
+            if (json) Program.WriteJson(new { command = "autostart", verb, supported = false, message = msg });
+            else Console.Error.WriteLine(msg);
+            return Error;
+        }
+
+        switch (verb)
+        {
+            case "on":
+            {
+                // Register the SAME entry the installer and the running Gateway do: the installed Gateway exe,
+                // run --managed. No fallback - if the Gateway is not installed, say so rather than write a
+                // Run entry that points at nothing.
+                var exe = layout.PathFor(ComponentRegistry.Gateway);
+                if (!File.Exists(exe))
+                {
+                    var msg = $"The Gateway is not installed at {exe}. Install it first, then turn autostart on.";
+                    if (json) Program.WriteJson(new { command = "autostart", verb, supported = true, enabled = false, message = msg });
+                    else Console.Error.WriteLine(msg);
+                    return Error;
+                }
+                GatewayAutostartControl.Enable(exe, GatewayTrayInstaller.InstalledArguments);
+                return ReportAutostart(json, verb, "The Gateway will start when you log in.");
+            }
+            case "off":
+                GatewayAutostartControl.Disable();
+                return ReportAutostart(json, verb, "Gateway autostart is off.");
+            case "status":
+                return ReportAutostart(json, verb,
+                    GatewayAutostartControl.IsEnabled ? "Gateway autostart is on." : "Gateway autostart is off.");
+            default:
+                var usage = $"Unknown autostart verb '{verb}'. Use: autostart on|off|status.";
+                if (json) Program.WriteJson(new { command = "autostart", verb, message = usage });
+                else Console.Error.WriteLine(usage);
+                return 2; // usage error (matches Program.ExitUsage)
+        }
+    }
+
+    private static int ReportAutostart(bool json, string verb, string message)
+    {
+        var enabled = GatewayAutostartControl.IsEnabled;
+        if (json)
+        {
+            Program.WriteJson(new
+            {
+                command = "autostart",
+                verb,
+                supported = true,
+                enabled,
+                mechanism = GatewayAutostartControl.MechanismName,
+                registeredCommand = GatewayAutostartControl.RegisteredCommand,
+                message,
+            });
+        }
+        else
+        {
+            Console.WriteLine(message);
+            Console.WriteLine($"  mechanism: {GatewayAutostartControl.MechanismName}");
+            if (enabled) Console.WriteLine($"  command:   {GatewayAutostartControl.RegisteredCommand}");
+        }
+        return Ok;
+    }
+
     public static int Prereqs(bool json)
     {
         // Tailscale is deliberately NOT checked: it is not a product requirement. The

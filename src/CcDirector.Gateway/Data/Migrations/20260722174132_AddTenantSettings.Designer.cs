@@ -3,6 +3,7 @@ using System;
 using CcDirector.Gateway.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace CcDirector.Gateway.Data.Migrations
 {
     [DbContext(typeof(GatewayDbContext))]
-    partial class GatewayDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260722174132_AddTenantSettings")]
+    partial class AddTenantSettings
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.2");
@@ -257,10 +260,6 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.Property<string>("StripeSubscriptionId")
                         .HasColumnType("TEXT")
                         .HasColumnName("stripe_subscription_id");
-
-                    b.Property<string>("Tier")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("tier");
 
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("TEXT")

@@ -1,4 +1,5 @@
 using CcDirector.Gateway.CarMode;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Contracts;
 using Xunit;
 
@@ -18,7 +19,7 @@ public sealed class CarModeBrainTests
         private readonly Queue<CarModeAssistantTurn> _turns;
         public List<string> SeenMessages { get; } = new();
         public ScriptedChat(params CarModeAssistantTurn[] turns) => _turns = new Queue<CarModeAssistantTurn>(turns);
-        public Task<CarModeAssistantTurn> CompleteAsync(string messagesJson, string toolsJson, CancellationToken ct)
+        public Task<CarModeAssistantTurn> CompleteAsync(TenantId tenant, string messagesJson, string toolsJson, CancellationToken ct)
         {
             SeenMessages.Add(messagesJson);
             if (_turns.Count == 0) throw new InvalidOperationException("script exhausted");
@@ -133,7 +134,7 @@ public sealed class CarModeBrainTests
             Speak("One session needs you: Local Files Manager, in the devthrottle repo."));
         var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
 
-        var result = await brain.RunTurnAsync("device-a", "how many need me over", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "how many need me over", CancellationToken.None);
 
         Assert.Equal(1, fleet.ListCalls);
         Assert.Contains("Local Files Manager", result.Spoken);
@@ -154,7 +155,7 @@ public sealed class CarModeBrainTests
             new CarModeAssistantTurn(null, new[] { Call("speak_answer", "{\"text\":\"One session needs you.\"}") }));
         var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
 
-        var result = await brain.RunTurnAsync("device-a", "who needs me over", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "who needs me over", CancellationToken.None);
 
         Assert.NotNull(result.Timing);
         Assert.Equal(2, result.Timing!.ModelCallCount);
@@ -174,7 +175,7 @@ public sealed class CarModeBrainTests
             new CarModeAssistantTurn(null, new[] { Call("speak_answer", "{\"text\":\"I can run your fleet by voice.\"}") }));
         var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
 
-        var result = await brain.RunTurnAsync("device-a", "what can you help me with over", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "what can you help me with over", CancellationToken.None);
 
         Assert.Equal("I can run your fleet by voice.", result.Spoken);
         Assert.Equal(0, fleet.ListCalls);
@@ -194,7 +195,7 @@ public sealed class CarModeBrainTests
         var chat = new ScriptedChat(new CarModeAssistantTurn(null, new[] { Call("get_help") }));
         var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
 
-        var result = await brain.RunTurnAsync("device-a", "what can you do over", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "what can you do over", CancellationToken.None);
 
         Assert.Equal(CarModeHelp.Script, result.Spoken);
         Assert.Empty(result.Actions);
@@ -220,7 +221,7 @@ public sealed class CarModeBrainTests
             Speak("Told the Car Mode Demo session to delete session five."));
         var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
 
-        var result = await brain.RunTurnAsync("device-a", "tell the devthrottle session to delete session five over", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "tell the devthrottle session to delete session five over", CancellationToken.None);
 
         Assert.Single(fleet.Messaged);
         Assert.Equal("demo-1", fleet.Messaged[0].SessionId);
@@ -247,7 +248,7 @@ public sealed class CarModeBrainTests
             Speak("Car Mode Manager, in the devthrottle repo, is building the fleet brain."));
         var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
 
-        var result = await brain.RunTurnAsync("device-a", "what is the car mode session doing", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "what is the car mode session doing", CancellationToken.None);
 
         Assert.Single(fleet.ActivityRefs);
         Assert.Equal("car mode", fleet.ActivityRefs[0]);
@@ -261,12 +262,12 @@ public sealed class CarModeBrainTests
         var store = new CarModeConversationStore();
         var chat1 = new ScriptedChat(Speak("Nothing needs you right now."));
         var brain1 = new CarModeBrain(chat1, fleet, store, new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
-        await brain1.RunTurnAsync("device-a", "who needs me", CancellationToken.None);
+        await brain1.RunTurnAsync(TenantId.Local, "device-a", "who needs me", CancellationToken.None);
 
         // The next turn on the SAME device must carry the prior exchange into the model's messages.
         var chat2 = new ScriptedChat(Speak("Still nothing."));
         var brain2 = new CarModeBrain(chat2, fleet, store, new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
-        await brain2.RunTurnAsync("device-a", "and now", CancellationToken.None);
+        await brain2.RunTurnAsync(TenantId.Local, "device-a", "and now", CancellationToken.None);
 
         Assert.Contains("who needs me", chat2.SeenMessages[0]);
         Assert.Contains("Nothing needs you right now.", chat2.SeenMessages[0]);
@@ -278,11 +279,11 @@ public sealed class CarModeBrainTests
         var fleet = new FakeFleet();
         var store = new CarModeConversationStore();
         var brainA = new CarModeBrain(new ScriptedChat(Speak("A reply")), fleet, store, new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
-        await brainA.RunTurnAsync("device-a", "secret A question", CancellationToken.None);
+        await brainA.RunTurnAsync(TenantId.Local, "device-a", "secret A question", CancellationToken.None);
 
         var chatB = new ScriptedChat(Speak("B reply"));
         var brainB = new CarModeBrain(chatB, fleet, store, new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
-        await brainB.RunTurnAsync("device-b", "question B", CancellationToken.None);
+        await brainB.RunTurnAsync(TenantId.Local, "device-b", "question B", CancellationToken.None);
 
         Assert.DoesNotContain("secret A question", chatB.SeenMessages[0]);
     }
@@ -291,7 +292,7 @@ public sealed class CarModeBrainTests
     public async Task RunTurn_EmptyText_Throws()
     {
         var brain = new CarModeBrain(new ScriptedChat(), new FakeFleet(), new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
-        await Assert.ThrowsAsync<ArgumentException>(() => brain.RunTurnAsync("device-a", "   ", CancellationToken.None));
+        await Assert.ThrowsAsync<ArgumentException>(() => brain.RunTurnAsync(TenantId.Local, "device-a", "   ", CancellationToken.None));
     }
 
     [Fact]
@@ -302,7 +303,7 @@ public sealed class CarModeBrainTests
         var turns = Enumerable.Range(0, 10).Select(_ => new CarModeAssistantTurn(null, new[] { Call("list_sessions") })).ToArray();
         var brain = new CarModeBrain(new ScriptedChat(turns), fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
 
-        var result = await brain.RunTurnAsync("device-a", "who needs me", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "who needs me", CancellationToken.None);
 
         Assert.Contains("trouble", result.Spoken, StringComparison.OrdinalIgnoreCase);
     }
@@ -313,7 +314,7 @@ public sealed class CarModeBrainTests
         var brain = new CarModeBrain(
             new ScriptedChat(Speak("   ")),
             new FakeFleet(), new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
-        await Assert.ThrowsAsync<InvalidOperationException>(() => brain.RunTurnAsync("device-a", "hi", CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => brain.RunTurnAsync(TenantId.Local, "device-a", "hi", CancellationToken.None));
     }
 
     [Theory]
@@ -339,7 +340,7 @@ public sealed class CarModeBrainTests
             new CarModeAssistantTurn(null, new[] { Call("speak_answer", "{\"text\":\"Nothing needs you right now.\"}") }));
         var brain = new CarModeBrain(chat, new FakeFleet(), new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
 
-        var result = await brain.RunTurnAsync("device-a", "anything for me", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "anything for me", CancellationToken.None);
 
         Assert.Equal("Nothing needs you right now.", result.Spoken);
         Assert.Empty(result.Actions);
@@ -355,7 +356,7 @@ public sealed class CarModeBrainTests
             new CarModeAssistantTurn(null, new[] { Call("speak_answer", "{\"text\":\"One session needs you: Local Files Manager.\"}") }));
         var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
 
-        var result = await brain.RunTurnAsync("device-a", "who needs me", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "who needs me", CancellationToken.None);
 
         Assert.Equal(1, fleet.ListCalls);
         Assert.Contains("Local Files Manager", result.Spoken);
@@ -371,7 +372,7 @@ public sealed class CarModeBrainTests
             new CarModeAssistantTurn(null, new[] { Call("speak_answer", "{\"text\":\"Deleting Old Worker is permanent. Say confirm to proceed.\"}") }));
         var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), pending, new CarModeSubjectStore(_ => { }), _ => { });
 
-        var result = await brain.RunTurnAsync("device-a", "delete old worker", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "delete old worker", CancellationToken.None);
 
         Assert.Empty(fleet.Deleted);          // not deleted - only armed
         Assert.True(result.PendingConfirmation);
@@ -389,7 +390,7 @@ public sealed class CarModeBrainTests
             new CarModeAssistantTurn(null, new[] { Call("speak_answer", "{\"text\":\"All set.\"}") }));
         var brain = new CarModeBrain(chat, new FakeFleet(), new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
 
-        var result = await brain.RunTurnAsync("device-a", "hi", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "hi", CancellationToken.None);
 
         Assert.Equal("All set.", result.Spoken);
     }
@@ -405,7 +406,7 @@ public sealed class CarModeBrainTests
             Speak("Started a session in the devthrottle repo."));
         var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
 
-        var result = await brain.RunTurnAsync("device-a", "start a session in devthrottle", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "start a session in devthrottle", CancellationToken.None);
 
         Assert.Single(fleet.StartedRepos);
         Assert.Equal("devthrottle", fleet.StartedRepos[0]);
@@ -422,7 +423,7 @@ public sealed class CarModeBrainTests
             Speak("Told Car Mode Worker to run the tests."));
         var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
 
-        var result = await brain.RunTurnAsync("device-a", "message the worker", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "message the worker", CancellationToken.None);
 
         Assert.Single(fleet.Messaged);
         Assert.Equal("s-42", fleet.Messaged[0].SessionId);
@@ -439,7 +440,7 @@ public sealed class CarModeBrainTests
             Speak("I couldn't find a session called ghost."));
         var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
 
-        await brain.RunTurnAsync("device-a", "message ghost", CancellationToken.None);
+        await brain.RunTurnAsync(TenantId.Local, "device-a", "message ghost", CancellationToken.None);
 
         Assert.Empty(fleet.Messaged);
     }
@@ -456,7 +457,7 @@ public sealed class CarModeBrainTests
             Speak("Deleting Old Worker is permanent. Say confirm to proceed, or cancel."));
         var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), pending, new CarModeSubjectStore(_ => { }), _ => { });
 
-        var result = await brain.RunTurnAsync("device-a", "delete the old worker", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "delete the old worker", CancellationToken.None);
 
         Assert.Empty(fleet.Deleted); // NOT deleted yet
         Assert.True(result.PendingConfirmation);
@@ -477,13 +478,13 @@ public sealed class CarModeBrainTests
                 new CarModeAssistantTurn(null, new[] { Call("delete_session", "{\"session\":\"old worker\"}") }),
                 Speak("Say confirm to delete Old Worker.")),
             fleet, store, pending, new CarModeSubjectStore(_ => { }), _ => { });
-        await brain1.RunTurnAsync("device-a", "delete old worker", CancellationToken.None);
+        await brain1.RunTurnAsync(TenantId.Local, "device-a", "delete old worker", CancellationToken.None);
         Assert.Empty(fleet.Deleted);
 
         // Turn 2: the owner confirms. The model is NOT consulted - the gate executes deterministically.
         var chat2 = new ScriptedChat(); // must not be called
         var brain2 = new CarModeBrain(chat2, fleet, store, pending, new CarModeSubjectStore(_ => { }), _ => { });
-        var result = await brain2.RunTurnAsync("device-a", "confirm", CancellationToken.None);
+        var result = await brain2.RunTurnAsync(TenantId.Local, "device-a", "confirm", CancellationToken.None);
 
         Assert.Single(fleet.Deleted);
         Assert.Equal("s-9", fleet.Deleted[0]);
@@ -502,7 +503,7 @@ public sealed class CarModeBrainTests
 
         var chat = new ScriptedChat(); // must not be called
         var brain = new CarModeBrain(chat, new FakeFleet(), new CarModeConversationStore(), pending, new CarModeSubjectStore(_ => { }), _ => { });
-        var result = await brain.RunTurnAsync("device-a", "no cancel that", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "no cancel that", CancellationToken.None);
 
         Assert.Empty(fleet.Deleted);
         Assert.Contains("Old Worker", result.Spoken);
@@ -518,7 +519,7 @@ public sealed class CarModeBrainTests
         var chat = new ScriptedChat(Speak("Nothing needs you."));
         var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), pending, new CarModeSubjectStore(_ => { }), _ => { });
 
-        var result = await brain.RunTurnAsync("device-a", "who needs me", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "who needs me", CancellationToken.None);
 
         // The armed delete is dropped (safe) and the new command is processed normally.
         Assert.Null(pending.Get("device-a"));
@@ -552,7 +553,7 @@ public sealed class CarModeBrainTests
             new CarModeAssistantTurn(null, new[] { Call("speak_answer", "{\"text\":\"Car Mode Demo needs you to pick option two.\"}") }));
         var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
 
-        var result = await brain.RunTurnAsync("device-a", "what does the car mode demo need over", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "what does the car mode demo need over", CancellationToken.None);
 
         Assert.Single(fleet.Explained);
         Assert.Equal("s-demo", fleet.Explained[0]);
@@ -570,7 +571,7 @@ public sealed class CarModeBrainTests
             Speak("Switched Car Mode Demo to voice mode."));
         var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
 
-        var result = await brain.RunTurnAsync("device-a", "put the car mode demo in voice mode over", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "put the car mode demo in voice mode over", CancellationToken.None);
 
         Assert.Single(fleet.VoiceModeSet);
         Assert.Equal(("s-demo", true), fleet.VoiceModeSet[0]);
@@ -586,7 +587,7 @@ public sealed class CarModeBrainTests
             Speak("Snoozed Car Mode Demo."));
         var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
 
-        var result = await brain.RunTurnAsync("device-a", "snooze the car mode demo over", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "snooze the car mode demo over", CancellationToken.None);
 
         Assert.Single(fleet.Snoozed);
         Assert.Equal("s-demo", fleet.Snoozed[0]);
@@ -606,7 +607,7 @@ public sealed class CarModeBrainTests
             new CarModeAssistantTurn(null, new[] { Call("speak_answer", "{\"text\":\"Longest Waiting has been waiting forty minutes.\"}") }));
         var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
 
-        var result = await brain.RunTurnAsync("device-a", "who needs me next over", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "who needs me next over", CancellationToken.None);
 
         // The model saw the longest-waiting session as the focus result.
         Assert.Contains("Longest Waiting", chat.SeenMessages[1]);
@@ -628,7 +629,7 @@ public sealed class CarModeBrainTests
                 new CarModeAssistantTurn(null, new[] { Call("focus_next_needs_me") }),
                 Speak("Car Mode Demo has been waiting twelve minutes.")),
             fleet, store, new CarModePendingStore(_ => { }), subjects, _ => { });
-        await brain1.RunTurnAsync("device-a", "read me the next one over", CancellationToken.None);
+        await brain1.RunTurnAsync(TenantId.Local, "device-a", "read me the next one over", CancellationToken.None);
 
         // Turn 2: "answer it and say yes" - message_session with NO session argument -> the current subject.
         var brain2 = new CarModeBrain(
@@ -636,7 +637,7 @@ public sealed class CarModeBrainTests
                 new CarModeAssistantTurn(null, new[] { Call("message_session", "{\"message\":\"yes\"}") }),
                 Speak("Answered Car Mode Demo.")),
             fleet, store, new CarModePendingStore(_ => { }), subjects, _ => { });
-        await brain2.RunTurnAsync("device-a", "answer it and say yes over", CancellationToken.None);
+        await brain2.RunTurnAsync(TenantId.Local, "device-a", "answer it and say yes over", CancellationToken.None);
 
         Assert.Single(fleet.Messaged);
         Assert.Equal("s-demo", fleet.Messaged[0].SessionId);
@@ -654,7 +655,7 @@ public sealed class CarModeBrainTests
             Speak("Which session should I snooze?"));
         var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
 
-        await brain.RunTurnAsync("device-a", "snooze it over", CancellationToken.None);
+        await brain.RunTurnAsync(TenantId.Local, "device-a", "snooze it over", CancellationToken.None);
 
         Assert.Empty(fleet.Snoozed);
         // The model was handed the "which one" prompt to relay.
@@ -675,7 +676,7 @@ public sealed class CarModeBrainTests
             Speak("Deleting Car Mode Demo in the devthrottle repo. Say confirm."));
         var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), pending, subjects, _ => { });
 
-        var result = await brain.RunTurnAsync("device-a", "remove it over", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "remove it over", CancellationToken.None);
 
         Assert.Empty(fleet.Deleted);
         Assert.True(result.PendingConfirmation);
@@ -700,7 +701,7 @@ public sealed class CarModeBrainTests
             Speak("Snoozed the Car Mode Demo."));
         var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), subjects, _ => { });
 
-        var result = await brain.RunTurnAsync("device-a", "snooze it", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "snooze it", CancellationToken.None);
 
         Assert.Single(fleet.Snoozed);                       // the action really happened
         Assert.Equal("s-demo", fleet.Snoozed[0]);
@@ -717,7 +718,7 @@ public sealed class CarModeBrainTests
             .Select(_ => new CarModeAssistantTurn("I did it.", Array.Empty<CarModeToolCall>())).ToArray();
         var brain = new CarModeBrain(new ScriptedChat(turns), new FakeFleet(), new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
 
-        var result = await brain.RunTurnAsync("device-a", "snooze it", CancellationToken.None);
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "snooze it", CancellationToken.None);
 
         Assert.DoesNotContain("I did it.", result.Spoken);
         Assert.Contains("trouble", result.Spoken, StringComparison.OrdinalIgnoreCase);
@@ -920,8 +921,8 @@ public sealed class CarModeBrainTests
         var brain = new CarModeBrain(chat, fleet, store, new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
         var cache = new CarModeTurnCache(_ => { });
 
-        var r1 = await cache.GetOrRunAsync("dev", "turn-1", () => brain.RunTurnAsync("dev", "start a session in devthrottle", CancellationToken.None));
-        var r2 = await cache.GetOrRunAsync("dev", "turn-1", () => brain.RunTurnAsync("dev", "start a session in devthrottle", CancellationToken.None));
+        var r1 = await cache.GetOrRunAsync("dev", "turn-1", () => brain.RunTurnAsync(TenantId.Local, "dev", "start a session in devthrottle", CancellationToken.None));
+        var r2 = await cache.GetOrRunAsync("dev", "turn-1", () => brain.RunTurnAsync(TenantId.Local, "dev", "start a session in devthrottle", CancellationToken.None));
 
         Assert.Single(fleet.StartedRepos);                 // the fleet action fired EXACTLY once
         Assert.Equal("devthrottle", fleet.StartedRepos[0]);
@@ -943,8 +944,8 @@ public sealed class CarModeBrainTests
         var brain = new CarModeBrain(chat, fleet, store, new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
         var cache = new CarModeTurnCache(_ => { });
 
-        await cache.GetOrRunAsync("dev", "key-A", () => brain.RunTurnAsync("dev", "start a session", CancellationToken.None));
-        await cache.GetOrRunAsync("dev", "key-B", () => brain.RunTurnAsync("dev", "start another", CancellationToken.None));
+        await cache.GetOrRunAsync("dev", "key-A", () => brain.RunTurnAsync(TenantId.Local, "dev", "start a session", CancellationToken.None));
+        await cache.GetOrRunAsync("dev", "key-B", () => brain.RunTurnAsync(TenantId.Local, "dev", "start another", CancellationToken.None));
 
         Assert.Equal(2, fleet.StartedRepos.Count);         // two distinct turn keys act independently
         Assert.Equal(4, store.GetHistory("dev").Count);    // two exchanges appended

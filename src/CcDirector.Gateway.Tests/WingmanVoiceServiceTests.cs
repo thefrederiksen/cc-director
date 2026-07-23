@@ -8,6 +8,8 @@ using CcDirector.Core.Drivers;
 using CcDirector.Core.HostedAi;
 using CcDirector.Gateway.HostedAi;
 using CcDirector.Gateway.Discovery;
+using CcDirector.Gateway.Settings;
+using CcDirector.Gateway.Tests.Data;
 using CcDirector.Gateway.Wingman;
 using Xunit;
 using CcDirector.Core.Tenancy;
@@ -19,8 +21,16 @@ namespace CcDirector.Gateway.Tests;
 /// session's spoken summary, <see cref="WingmanVoiceService.IsGenerating"/> is true, which the
 /// gateway folds into the existing "Briefing" yellow so the session goes red -> yellow -> red.
 /// </summary>
-public sealed class WingmanVoiceServiceTests
+public sealed class WingmanVoiceServiceTests : IDisposable
 {
+    private readonly GatewayDbTestHarness _settingsData = new();
+    private TenantSettingsResolver? _settings;
+
+    private TenantSettingsResolver Settings =>
+        _settings ??= new TenantSettingsResolver(new TenantSettingsStore(_settingsData.Open()));
+
+    public void Dispose() => _settingsData.Dispose();
+
     /// <summary>
     /// A persist path inside a DIRECTORY unique to this call - never a unique filename in the shared machine
     /// temp directory.
@@ -46,13 +56,13 @@ public sealed class WingmanVoiceServiceTests
         return Path.Combine(dir, "voice-sessions.json");
     }
 
-    private static WingmanVoiceService NewService()
+    private WingmanVoiceService NewService()
     {
         // The flag methods never touch the brain; a provider that throws proves that.
-        Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
-            (_, _) => throw new InvalidOperationException("brain must not be called for flag state");
+        Func<TenantId, WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
+            (_, _, _) => throw new InvalidOperationException("brain must not be called for flag state");
         var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
-        return new WingmanVoiceService(brain, new KeyVault(vaultPath), TempPersist());
+        return new WingmanVoiceService(brain, new KeyVault(vaultPath), Settings, TempPersist());
     }
 
     [Fact]
@@ -96,12 +106,12 @@ public sealed class WingmanVoiceServiceTests
 
     /// <summary>Build a service over a SPECIFIC persist path so a second instance can reload from
     /// the same on-disk cache (the gateway-restart case). The empty vault means TtsAsync returns null.</summary>
-    private static WingmanVoiceService ServiceAt(string persistPath)
+    private WingmanVoiceService ServiceAt(string persistPath)
     {
-        Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
-            (_, _) => throw new InvalidOperationException("brain must not be called");
+        Func<TenantId, WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
+            (_, _, _) => throw new InvalidOperationException("brain must not be called");
         var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
-        return new WingmanVoiceService(brain, new KeyVault(vaultPath), persistPath);
+        return new WingmanVoiceService(brain, new KeyVault(vaultPath), Settings, persistPath);
     }
 
     /// <summary>Remove the whole per-test directory. It deletes the DIRECTORY rather than picking out the
@@ -414,26 +424,26 @@ public sealed class WingmanVoiceServiceTests
     /// <summary>A voice service wired to a recording brain and a text-to-speech stub that returns
     /// <paramref name="audio"/>, so the full turn-end path (fetch -> translate -> synthesize -> store)
     /// runs without a live model or provider.</summary>
-    private static WingmanVoiceService ServiceWithBrainAndTts(IAgentBrain brain, byte[] audio, string persistPath)
+    private WingmanVoiceService ServiceWithBrainAndTts(IAgentBrain brain, byte[] audio, string persistPath)
     {
         var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
         var vault = new KeyVault(vaultPath);
         vault.Set("OPENAI_API_KEY", "sk-test");
         vault.Set("DEVTHROTTLE_API_KEY", "dt_live_test");
         var http = new HttpClient(new TtsStubHandler(HttpStatusCode.OK, "", audio));
-        return new WingmanVoiceService((_, _) => Task.FromResult(brain), vault, persistPath, ttsHttpClient: http);
+        return new WingmanVoiceService((_, _, _) => Task.FromResult(brain), vault, Settings, persistPath, ttsHttpClient: http);
     }
 
     /// <summary>Like <see cref="ServiceWithBrainAndTts"/> but with a caller-supplied speech transport, so a
     /// test can drive the full GenerateAsync path (model translation + speech) against a stateful handler.</summary>
-    private static WingmanVoiceService ServiceWithBrainAndHandler(IAgentBrain brain, HttpMessageHandler handler, string persistPath)
+    private WingmanVoiceService ServiceWithBrainAndHandler(IAgentBrain brain, HttpMessageHandler handler, string persistPath)
     {
         var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
         var vault = new KeyVault(vaultPath);
         vault.Set("OPENAI_API_KEY", "sk-test");
         vault.Set("DEVTHROTTLE_API_KEY", "dt_live_test");
         var http = new HttpClient(handler);
-        return new WingmanVoiceService((_, _) => Task.FromResult(brain), vault, persistPath, ttsHttpClient: http);
+        return new WingmanVoiceService((_, _, _) => Task.FromResult(brain), vault, Settings, persistPath, ttsHttpClient: http);
     }
 
     /// <summary>Gateway Cleanup mission (the cut): GenerateAsync takes a tunnel-only SessionVerbClient. This
@@ -668,10 +678,10 @@ public sealed class WingmanVoiceServiceTests
     /// <summary>A voice service whose text-to-speech goes to a stub returning <paramref name="status"/>.
     /// Both provider keys are set so the call proceeds regardless of the machine's configured mode -
     /// the stub ignores the URL, so the mapped state depends only on the response.</summary>
-    private static WingmanVoiceService ServiceWithTts(HttpStatusCode status, string body, byte[]? audio = null)
+    private WingmanVoiceService ServiceWithTts(HttpStatusCode status, string body, byte[]? audio = null)
     {
-        Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
-            (_, _) => throw new InvalidOperationException("brain must not be called for the store-spoken path");
+        Func<TenantId, WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
+            (_, _, _) => throw new InvalidOperationException("brain must not be called for the store-spoken path");
         var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
         // A fresh root per CALL. Each invocation of this helper builds an independent service, so they must
         // not share state; the restart tests get their sharing by calling TempPersist() once themselves.
@@ -680,7 +690,7 @@ public sealed class WingmanVoiceServiceTests
         vault.Set("OPENAI_API_KEY", "sk-test");
         vault.Set("DEVTHROTTLE_API_KEY", "dt_live_test");
         var http = new HttpClient(new TtsStubHandler(status, body, audio));
-        return new WingmanVoiceService(brain, vault, persistPath, ttsHttpClient: http);
+        return new WingmanVoiceService(brain, vault, Settings, persistPath, ttsHttpClient: http);
     }
 
     [Fact]
@@ -753,10 +763,10 @@ public sealed class WingmanVoiceServiceTests
         }
     }
 
-    private static WingmanVoiceService ServiceWithHandler(HttpMessageHandler handler)
+    private WingmanVoiceService ServiceWithHandler(HttpMessageHandler handler)
     {
-        Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
-            (_, _) => throw new InvalidOperationException("brain must not be called for the store-spoken path");
+        Func<TenantId, WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
+            (_, _, _) => throw new InvalidOperationException("brain must not be called for the store-spoken path");
         var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
         // A fresh root per CALL. Each invocation of this helper builds an independent service, so they must
         // not share state; the restart tests get their sharing by calling TempPersist() once themselves.
@@ -764,7 +774,7 @@ public sealed class WingmanVoiceServiceTests
         var vault = new KeyVault(vaultPath);
         vault.Set("OPENAI_API_KEY", "sk-test");
         vault.Set("DEVTHROTTLE_API_KEY", "dt_live_test");
-        return new WingmanVoiceService(brain, vault, persistPath, ttsHttpClient: new HttpClient(handler));
+        return new WingmanVoiceService(brain, vault, Settings, persistPath, ttsHttpClient: new HttpClient(handler));
     }
 
     [Fact]

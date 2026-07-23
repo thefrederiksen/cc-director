@@ -87,7 +87,12 @@ public static class StatsPageEndpoint
     /// property from outside this file.
     /// </summary>
     public static RouteGroupBuilder Map(IEndpointRouteBuilder outer, GatewayInputStatsAggregator aggregator,
-        GatewaySessionConcurrencyStats? concurrency = null)
+        GatewaySessionConcurrencyStats? concurrency = null,
+        // Issue #2017: the per-tenant settings resolver. This group is self-host only (refused on hosted), so
+        // the sole tenant is Local; when the resolver is wired the display time zone is read for that tenant
+        // (TimeZone(Local)) instead of the process-global config. Null (older callers, tests) keeps the global
+        // read, byte-identical to before.
+        Settings.TenantSettingsResolver? tenantSettings = null)
     {
         FileLog.Write($"[StatsPageEndpoint] mapping /stats (embedded); hosted={GatewayHostedMode.IsHosted} - on hosted EVERY route in this group is refused (issue #1848)");
 
@@ -112,9 +117,12 @@ public static class StatsPageEndpoint
             return Results.Json(new
             {
                 generatedAtUtc = DateTime.UtcNow,
-                // The display time zone the hourly charts render local clock hours in (IANA id).
+                // The display time zone the hourly charts render local clock hours in (IANA id), read for the
+                // (self-host) local tenant (issue #2017): the tenant override else the operator global default.
                 // Auto-defaults to this Gateway machine's own zone; the owner can override it in Settings.
-                timeZone = CcDirector.Core.Configuration.TimeZoneConfig.Get(),
+                timeZone = tenantSettings is not null
+                    ? tenantSettings.TimeZone(tenant)
+                    : CcDirector.Core.Configuration.TimeZoneConfig.Get(),
                 buckets = totals.Buckets,
                 // DevThrottle Stats: the "working day" series - turns (by modality) + characters per UTC hour.
                 hourlyTurns = aggregator.HourlyTurns(tenant),

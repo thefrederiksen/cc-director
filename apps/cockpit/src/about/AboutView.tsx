@@ -17,6 +17,20 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
+// Compact "1d 2h 3m" uptime, from seconds since the Gateway process started (issue #2022 - the diagnostic
+// relocated here from the retired "This machine" Settings tab).
+function formatUptime(totalSeconds: number): string {
+  if (totalSeconds <= 0) return "just started";
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  parts.push(`${minutes}m`);
+  return parts.join(" ");
+}
+
 // Format the Gateway's ISO server time to the compact "yyyy-MM-dd HH:mm:ss" (UTC) the Blazor page
 // showed. When the value is missing or unparseable, show it verbatim rather than fabricating a time.
 function formatServerTime(iso: string): string {
@@ -83,6 +97,19 @@ export function AboutView() {
             <Row label="Install root" value={about.installRoot} />
             <Row label="Cockpit URL" value={about.cockpitUrl ?? "(Tailscale unavailable)"} />
             <Row label="Gateway time (UTC)" value={formatServerTime(about.serverTime)} />
+          </div>
+
+          {/* The live process diagnostics relocated here from the retired "This machine" Settings tab (issue
+              #2022): read-only on both surfaces. The manual network-addressing choice is gone - the address is
+              resolved automatically and shown here. */}
+          <h2 className="abt-h2">DIAGNOSTICS</h2>
+          <div className="abt-card">
+            <Row label="State" value={about.state} />
+            <Row label="Address" value={about.address ?? "(Tailscale unavailable)"} />
+            <Row label="Port" value={String(about.port)} />
+            <Row label="Mode" value={about.mode} />
+            <Row label="Uptime" value={formatUptime(about.uptimeSeconds)} />
+            <Row label="Directors" value={String(about.directors)} />
           </div>
 
           <h2 className="abt-h2">INSTALLED COMPONENTS</h2>

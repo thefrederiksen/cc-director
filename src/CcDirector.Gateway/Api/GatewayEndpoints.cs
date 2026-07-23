@@ -134,7 +134,19 @@ internal static class GatewayEndpoints
         // the kill WITHOUT actually killing anything - so "did the force-kill reach the process by that pid"
         // is a DIRECT assertion, exactly as OnShutdownRequested lets the shutdown proof observe the handler.
         Func<int, bool>? forceKillDirectorTree = null,
-        Func<TailscaleDiagnostics.NetworkDiag>? collectNetworkDiagnostic = null)
+        Func<TailscaleDiagnostics.NetworkDiag>? collectNetworkDiagnostic = null,
+        // Issue #2017: the per-tenant settings resolver. This branch owns the snooze-default consumer at
+        // POST /sessions/{sid}/hold - when non-null it reads the CALLER's tenant default via
+        // SnoozeDefaultMinutes(tenant) instead of the process-global config. Null (older callers, tests that
+        // do not exercise the default) keeps the global read, matching every other optional store here.
+        Settings.TenantSettingsResolver? tenantSettings = null,
+        // Issue #2022: the live process diagnostics the About page now shows read-only on both surfaces, after
+        // the machine settings left the Cockpit Settings page. Supplied by the host as its own StartedAtUtc,
+        // Port, and run-mode label. The mode is a delegate (resolved per request) because SettingsHooks is set
+        // on the host AFTER Map runs. Null/zero (older callers, bare test hosts) means "not started"/unknown.
+        DateTime? gatewayStartedAtUtc = null,
+        int gatewayPort = 0,
+        Func<string>? gatewayModeLabel = null)
     {
         // The old issue #1188 "session lock" (423 Locked on human input while a PENDING dictation record
         // existed) was removed deliberately (issue #1308). This is a single-operator tool: a collision
@@ -534,17 +546,37 @@ internal static class GatewayEndpoints
         // CockpitUrl comes from GatewayPublicUrl.ResolveCockpit(): {base}/cockpit, where base is the
         // configured public URL in hosted mode and the tailnet front door (null when Tailscale is down)
         // self-hosted. One derivation rule, both modes (owner ruling 2026-07-20).
-        app.MapGet("/gateway/about", () => Results.Json(new AboutDto
+        app.MapGet("/gateway/about", (HttpContext ctx) =>
         {
-            Product = AboutInfo.ProductName,
-            Version = AboutInfo.VersionFull,
-            BuildDate = AboutInfo.BuildDate()?.ToString("yyyy-MM-dd HH:mm:ss"),
-            MachineName = Environment.MachineName,
-            InstallRoot = AboutInfo.InstallRoot,
-            CockpitUrl = GatewayPublicUrl.ResolveCockpit(),
-            InstalledComponents = new Dictionary<string, string>(AboutInfo.InstalledComponents()),
-            ServerTime = DateTime.UtcNow,
-        }));
+            // Issue #1847: the director list is tenant-scoped (the fleet-wide list was an enumeration
+            // surface), so the diagnostic COUNT here is counted for THIS request's tenant - Local on
+            // self-host. A request with no bound tenant has no attributable directors, so the count is 0;
+            // the rest of the About diagnostics are machine facts and still serve.
+            var aboutTenant = ResolveReadTenant(ctx, tenantBoundary);
+            return Results.Json(new AboutDto
+            {
+                Product = AboutInfo.ProductName,
+                Version = AboutInfo.VersionFull,
+                BuildDate = AboutInfo.BuildDate()?.ToString("yyyy-MM-dd HH:mm:ss"),
+                MachineName = Environment.MachineName,
+                InstallRoot = AboutInfo.InstallRoot,
+                CockpitUrl = GatewayPublicUrl.ResolveCockpit(),
+                InstalledComponents = new Dictionary<string, string>(AboutInfo.InstalledComponents()),
+                // Issue #2017: the always-available public hosted/self-host signal the Settings page reads to
+                // choose its tab set, so tab selection is Gateway-owned rather than guessed from a failed fetch.
+                Hosted = GatewayHostedMode.IsHosted,
+                // Issue #2022: the live process diagnostics relocated here from the retired "This machine" tab -
+                // read-only, both surfaces. State is "Running" whenever this endpoint answers; the address is the
+                // auto-resolved public base (manual addressing was dropped).
+                State = "Running",
+                Port = gatewayPort,
+                UptimeSeconds = gatewayStartedAtUtc is { } startedAt ? (long)(DateTime.UtcNow - startedAt).TotalSeconds : 0,
+                Directors = aboutTenant is { } t ? registry.ListDirectors(t).Count : 0,
+                Mode = gatewayModeLabel?.Invoke() ?? "unknown",
+                Address = GatewayPublicUrl.ResolveBase(),
+                ServerTime = DateTime.UtcNow,
+            });
+        });
 
         // Where is this machine's Cockpit? Url is resolved on the Gateway by GatewayPublicUrl from the ONE
         // public base: Url = {base}/cockpit. In hosted mode (CC_GATEWAY_HOSTED=1) the base is the configured
@@ -1535,10 +1567,29 @@ internal static class GatewayEndpoints
             var decided = HoldStates.None;
             if (holdReq.OnHold)
             {
-                // Issue #1500: honour a per-call snooze length when the caller passed one (already
-                // validated above); otherwise the per-user default (snooze_default_minutes), read now so a
-                // Settings change applies to the next snooze.
-                var minutes = holdReq.SnoozeMinutes ?? Core.Configuration.SnoozeDefaultConfig.Get();
+                // Issue #1500: honour a per-call snooze length when the caller passed one (already validated
+                // above); otherwise the per-user default, read now so a Settings change applies to the next
+                // snooze. Issue #2017: that default is now PER TENANT - resolved for THIS request's tenant
+                // (never the global config) when the resolver is wired. On hosted an unresolved tenant fails
+                // closed (403), never Local; self-host resolves to Local. Without the resolver (older callers)
+                // it stays the process-global read, byte-identical to before.
+                int minutes;
+                if (holdReq.SnoozeMinutes is int perCall)
+                {
+                    minutes = perCall;
+                }
+                else if (tenantSettings is not null)
+                {
+                    var holdTenant = ResolveReadTenant(ctx, tenantBoundary);
+                    if (holdTenant is null)
+                        return Results.Json(new { error = "a tenant could not be resolved for this request" },
+                            statusCode: StatusCodes.Status403Forbidden);
+                    minutes = tenantSettings.SnoozeDefaultMinutes(holdTenant.Value);
+                }
+                else
+                {
+                    minutes = Core.Configuration.SnoozeDefaultConfig.Get();
+                }
 
                 // Working -> DEFER. THE RULING (owner, 14 July 2026): the clock starts when the work ENDS,
                 // so a deferral records its LENGTH and no deadline, and SnoozeLandingObserver starts the

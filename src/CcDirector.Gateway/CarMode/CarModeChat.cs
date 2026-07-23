@@ -3,7 +3,9 @@ using System.Text;
 using System.Text.Json;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.HostedAi;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Settings;
 
 namespace CcDirector.Gateway.CarMode;
 
@@ -31,7 +33,7 @@ public sealed class CarModeUnavailableException : Exception
 /// </summary>
 public interface ICarModeChat
 {
-    Task<CarModeAssistantTurn> CompleteAsync(string messagesJson, string toolsJson, CancellationToken ct);
+    Task<CarModeAssistantTurn> CompleteAsync(TenantId tenant, string messagesJson, string toolsJson, CancellationToken ct);
 }
 
 /// <summary>
@@ -45,7 +47,7 @@ public sealed class HostedCarModeChat : ICarModeChat
 {
     private static readonly HttpClient SharedHttp = new() { Timeout = TimeSpan.FromMinutes(2) };
 
-    private readonly Func<(string BaseUrl, string Model, string Key)> _resolve;
+    private readonly Func<TenantId, (string BaseUrl, string Model, string Key)> _resolve;
     private readonly HttpClient _http;
     private readonly Action<string> _log;
 
@@ -53,16 +55,18 @@ public sealed class HostedCarModeChat : ICarModeChat
     ///  fresh each call.</param>
     /// <param name="http">HTTP client (tests inject a stub handler); a shared 2-minute client when null.</param>
     /// <param name="log">Log sink; <see cref="FileLog.Write"/> when null.</param>
-    public HostedCarModeChat(Func<(string BaseUrl, string Model, string Key)> resolve, HttpClient? http = null, Action<string>? log = null)
+    public HostedCarModeChat(Func<TenantId, (string BaseUrl, string Model, string Key)> resolve, HttpClient? http = null, Action<string>? log = null)
     {
         _resolve = resolve ?? throw new ArgumentNullException(nameof(resolve));
         _http = http ?? SharedHttp;
         _log = log ?? FileLog.Write;
     }
 
-    public async Task<CarModeAssistantTurn> CompleteAsync(string messagesJson, string toolsJson, CancellationToken ct)
+    public async Task<CarModeAssistantTurn> CompleteAsync(TenantId tenant, string messagesJson, string toolsJson, CancellationToken ct)
     {
-        var (baseUrl, model, key) = _resolve();
+        if (!tenant.IsValid)
+            throw new ArgumentException("Car Mode requires an explicit tenant.", nameof(tenant));
+        var (baseUrl, model, key) = _resolve(tenant);
         if (string.IsNullOrWhiteSpace(key))
             throw new CarModeUnavailableException(HostedAiState.NeedsKey,
                 "No DevThrottle account key is configured. Sign in to DevThrottle so Car Mode can reach the model.");
@@ -138,15 +142,19 @@ public sealed class HostedCarModeChat : ICarModeChat
     /// <see cref="CompleteAsync"/> and the brain's tool catalog), which is what makes a fast model choose
     /// tools reliably.
     /// </summary>
-    public static Func<(string BaseUrl, string Model, string Key)> DefaultResolver(Func<string, string?> vaultGet)
+    public static Func<TenantId, (string BaseUrl, string Model, string Key)> DefaultResolver(
+        Func<string, string?> vaultGet,
+        TenantSettingsResolver tenantSettings)
     {
-        return () =>
+        if (vaultGet is null) throw new ArgumentNullException(nameof(vaultGet));
+        if (tenantSettings is null) throw new ArgumentNullException(nameof(tenantSettings));
+        return tenant =>
         {
             var mode = TranscriptionModeConfig.Get();
             // Same base URL + vault key as the wingman endpoint; only the model differs for Car Mode.
             var ep = TranscriptionEndpointResolver.ResolveWingman(mode);
             var key = vaultGet(ep.KeyName) ?? "";
-            return (ep.BaseUrl, CarModeModelConfig.Resolve(), key);
+            return (ep.BaseUrl, tenantSettings.CarModeModel(tenant), key);
         };
     }
 }

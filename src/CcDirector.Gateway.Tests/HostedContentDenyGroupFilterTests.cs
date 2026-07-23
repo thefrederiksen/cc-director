@@ -4,6 +4,7 @@ using System.Text.Json;
 using CcDirector.AgentBrain;
 using CcDirector.Core;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Tests.Data;
 using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Discovery;
@@ -304,7 +305,7 @@ public sealed class HostedContentDenyGroupFilterTests
         private static HostedDenyGroup MapFamily(WebApplication app, string family, string root,
             ref GatewayDbTestHarness? db)
         {
-            var brain = (WingmanModelRole _, CancellationToken _) =>
+            var brain = (TenantId _, WingmanModelRole _, CancellationToken _) =>
                 Task.FromException<IAgentBrain>(
                     new InvalidOperationException("the brain must not be reached by a routing probe"));
 

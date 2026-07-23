@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using CcDirector.AgentBrain;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Network;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Tenancy;
 using Microsoft.AspNetCore.Builder;
@@ -15,32 +16,40 @@ namespace CcDirector.Gateway.Api;
 
 /// <summary>
 /// The Gateway settings surface that backs the one Cockpit Settings page
-/// (docs/architecture/gateway/SETTINGS_OWNERSHIP.md). One GET assembles the whole snapshot the
-/// page renders; two actions mutate Gateway-owned state. Inherits the host-wide token middleware,
+/// (docs/architecture/gateway/SETTINGS_OWNERSHIP.md). One GET assembles the per-account snapshot the
+/// page renders; the actions mutate Gateway-owned state. Inherits the host-wide token middleware,
 /// same as every other endpoint here.
 ///
-///   GET  /gateway/settings        -> { version, state, port, uptimeSeconds, directors, mode,
-///                                       cockpit:{port,up,url}, brain:{...}, autostart:{supported,enabled} }
-///   POST /gateway/brain/restart   -> { ok, brain:{...} } (restarts the warm brain, issue #184)
-///   PUT  /gateway/brain/config    body { "agentId": str, "model": str } -> { agentId, tool, model }
-///                                  (issue #510; legacy { "tool": str, ... } still accepted)
-///   PUT  /gateway/autostart       body { "enabled": bool } -> { supported, enabled }
-///   GET  /gateway/transcription-mode -> { mode } ("devthrottle")
-///   PUT  /gateway/transcription-mode body { "mode": "devthrottle" } -> { mode }
-///   GET  /gateway/ai-provider     -> { provider, wingmanModel, transcriptionModel, ttsVoice, voices[] }
-///   PUT  /gateway/ai-provider     body { "provider": "devthrottle" } (resets hosted model defaults)
-///   GET  /gateway/tts-voice       -> { voice, voices[] }
-///   PUT  /gateway/tts-voice       body { "voice": "nova"|... } -> { voice }
-///   GET  /gateway/injected-text   -> { use_yours, yours, ours, placeholders[] } (what agents get at launch)
-///   PUT  /gateway/injected-text   body { "use_yours": bool, "yours": string|null } -> same shape
+///   SERVE ON HOSTED (per-account, resolve the caller tenant, 403 if unresolved):
+///   GET  /gateway/settings        -> { snoozeDefaultMinutes, snoozePresets, snoozeMaxPresets,
+///                                       timeZone, timeZoneMachineDefault }
+///   GET+PUT /gateway/snooze-default, /gateway/snooze-presets, /gateway/time-zone
+///   GET  /gateway/ai-provider     -> { provider, wingmanModel, wingmanFastModel, carModeModel,
+///                                       carModeEndPhrase, transcriptionModel, ttsModel, ttsVoice, voices[],
+///                                       catalogAvailable }
+///   PUT  /gateway/ai-provider     body { "provider": "devthrottle" } (resets this tenant's model defaults)
+///   GET+PUT /gateway/tts-voice
 ///
-/// DENIED IN WHOLE ON HOSTED (issue #1863). Every route in this group is refused on a hosted Gateway.
-/// These routes operate on PROCESS-GLOBAL configuration with NO TENANT DIMENSION AT ALL: config.json is
-/// one file for the whole process, so every write here is a fleet-wide mutation performed by whichever
-/// authenticated caller happened to send it, and GET /gateway/injected-text hands back the owner's own
-/// custom agent-launch instruction text. On shared hosted infrastructure there is no correct per-tenant
-/// answer to serve here - only a leak to close. Self-host is single-tenant and these are legitimate owner
-/// function there, so on self-host nothing changes.
+///   DENIED ON HOSTED (process-global, no tenant dimension):
+///   GET+PUT /gateway/wingman/training-capture   (process-global capture toggle)
+///   GET+PUT /gateway/injected-text              (the owner's process-global agent-launch words)
+///   GET+PUT /gateway/transcription-mode         (single-valued process-global provider fact)
+///
+/// ISSUE #2022 - THE MACHINE SETTINGS LEFT THIS SURFACE, and the per-account deny was RETIRED. The "This
+/// machine" tab was retired (diagnostics + address + version to the About page; autostart to the installer +
+/// the `cc-devthrottle autostart` command; addressing dropped; brain restart/config removed). AND, with the
+/// runtime consumers now tenant-threaded (issue #2017 runtime threading), the per-account routes above no
+/// longer refuse on hosted: they SERVE, each resolving the caller's tenant and answering 403 on an unresolved
+/// identity - never the Local partition. So self-host IS the hosted Gateway with one tenant on this surface.
+///
+/// STILL DENIED ON HOSTED (issue #1863). The process-global routes have NO TENANT DIMENSION AT ALL: config.json
+/// is one file for the whole process, so a write is a fleet-wide mutation performed by whichever authenticated
+/// caller sent it, and GET /gateway/injected-text hands back the owner's own agent-launch text. On shared
+/// hosted infrastructure there is no correct per-tenant answer to serve, only a leak to close, so they refuse.
+/// Self-host is single-tenant and these are legitimate owner function there, so on self-host nothing changes.
+/// The AI model CATALOG and test-chat (AiModelsEndpoint) also stay denied on hosted - they spend the shared
+/// deployment provider credential with no per-caller scoping (see that file); the AI tab reads the Gateway-owned
+/// catalogAvailable flag on the ai-provider snapshot to disable browsing/Test on hosted rather than fail.
 ///
 /// HOW THE DENY IS EXPRESSED - THE SHARED REFUSAL PRIMITIVE, NOT A BESPOKE FILTER. This group is denied
 /// through <see cref="HostedRouteDeny.Group"/>, the ONE hosted-refusal boundary every deny family on this
@@ -67,6 +76,14 @@ namespace CcDirector.Gateway.Api;
 internal static class SettingsEndpoints
 {
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
+
+    /// <summary>The 403 a per-tenant settings route answers when the caller's tenant cannot be resolved (issue
+    /// #2017). On the hosted Gateway an authenticated request whose device key has no bound tenant is refused,
+    /// NEVER served the Local partition (that would be a wrong-tenant read). Self-host always resolves to Local,
+    /// so this never fires there.</summary>
+    private static IResult TenantRequired()
+        => Results.Json(new { error = "a tenant could not be resolved for this request" },
+            statusCode: StatusCodes.Status403Forbidden);
 
     /// <summary>The single error string the hosted refusal serves. Held here so a test can assert against the
     /// exact string that is served rather than a copy that could drift.</summary>
@@ -95,189 +112,334 @@ internal static class SettingsEndpoints
         statusCode: StatusCodes.Status404NotFound);
 
     /// <summary>
-    /// Maps the owner-settings group through the shared refusal primitive and RETURNS the denied group they
-    /// were mapped through, so the refusal can be proved to cover routes that do not exist yet: a test maps a
-    /// NEW probe route onto the returned handle and finds it already refused on hosted, with no deny written
-    /// for it anywhere. Returning the handle is the only way to state that property from outside this file.
+    /// Maps the owner-settings surface, split into two groups by issue #2022's deny retirement, and RETURNS
+    /// the still-denied group handle so the refusal can be proved to cover routes that do not exist yet: a test
+    /// maps a NEW probe route onto the returned handle and finds it already refused on hosted, with no deny
+    /// written for it anywhere.
+    ///
+    /// TWO PARTITIONS, ONE PER SAFETY PROPERTY:
+    ///  - The PER-ACCOUNT routes serve on hosted, so they are mapped onto <paramref name="outer"/> in
+    ///    <see cref="MapServedRoutes"/>. Each resolves the CALLER's tenant with <c>ResolveReadTenant</c> and
+    ///    answers 403 when none resolves - NEVER the Local partition - so they are safe on shared infrastructure
+    ///    without a deny: a request that cannot be attributed to a tenant is refused, not served a wrong one.
+    ///  - The machine/process-global routes (injected text, training capture, transcription mode) have no
+    ///    per-tenant home and STAY denied on hosted, mapped onto the group handle in <see cref="MapDeniedRoutes"/>.
+    ///    That method receives ONLY the handle - <paramref name="outer"/> is out of scope there - so a denied
+    ///    route cannot be moved onto the ungrouped builder by a one-word edit; changing its group means changing
+    ///    the method signature, which moves them all. That is the un-bypassability the deny primitive buys.
     /// </summary>
     public static HostedDenyGroup Map(IEndpointRouteBuilder outer, GatewayHost host)
     {
-        FileLog.Write($"[SettingsEndpoints] mapping the owner settings; hosted={GatewayHostedMode.IsHosted} - on hosted EVERY route in this group is refused via the shared refusal primitive (issue #1863)");
+        FileLog.Write($"[SettingsEndpoints] mapping the owner settings; hosted={GatewayHostedMode.IsHosted} - per-account routes serve; machine/global routes are refused via the shared refusal primitive (issues #1863, #2022)");
 
-        // The whole group through ONE primitive-created handle, rather than a guard line repeated in every
-        // handler. A repeated guard is a thing to forget: the route added to this file next year would be
-        // open by default on hosted and nothing would fail. Per-route Group mode maps a refusal for every
-        // route mapped through the handle below. The empty prefix keeps every route path written out in full,
-        // so the self-host surface is byte-identical to before and the diff stays readable.
         var group = HostedRouteDeny.Group(outer, "", Denial());
 
-        // THE ROUTES ARE MAPPED WHERE `outer` IS NOT IN SCOPE - deliberately, and this is the only reason
-        // MapRoutes exists as a separate method.
-        //
-        // If the routes were written here beside the group handle, each of the twenty-two could INDIVIDUALLY
-        // be mapped onto `outer` instead of onto the denied handle - a one-word edit that bypasses the
-        // refusal for that route alone while every other route stays correctly denied. That is twenty-two
-        // independently bypassable primitives, each of which would owe its own proof run. Handing the typed
-        // handle to a method that never receives the ungrouped builder makes that mistake INEXPRESSIBLE
-        // rather than merely unlikely: inside MapRoutes there is nothing to map onto except the denied handle.
-        // The bypass count is reduced by design. This is the shape the key-vault deny uses, in VaultEndpoints.
-        MapRoutes(group, host);
+        // The per-account routes serve on hosted (issue #2022). They take the ungrouped builder because they
+        // are NOT denied; their fail-closed is ResolveReadTenant (403 on an unresolved tenant), not a deny.
+        MapServedRoutes(outer, host);
+
+        // The machine/process-global routes stay denied. They take ONLY the group handle - `outer` is out of
+        // scope inside MapDeniedRoutes - so none of them can be mapped around the refusal by an individual edit.
+        MapDeniedRoutes(group, host);
         return group;
     }
 
     /// <summary>
-    /// The twenty-two owner-settings routes. Takes the denied GROUP HANDLE and nothing else - see the note at
-    /// the call site: the ungrouped route builder is deliberately out of scope here so no route can be mapped
-    /// around the hosted refusal.
+    /// The per-account owner-settings routes, which SERVE on hosted (issue #2022). Takes the ungrouped builder:
+    /// these are safe on shared infrastructure because every one resolves the caller's tenant and answers 403
+    /// when none resolves, never falling back to Local. Adding a route here that is NOT per-account is the
+    /// mistake to avoid - it would then serve a machine/global value to any tenant; such a route belongs in
+    /// <see cref="MapDeniedRoutes"/> instead.
     /// </summary>
-    private static void MapRoutes(HostedDenyGroup app, GatewayHost host)
+    private static void MapServedRoutes(IEndpointRouteBuilder app, GatewayHost host)
     {
-        app.MapGet("/gateway/settings", async () =>
+        app.MapGet("/gateway/settings", (HttpContext ctx) =>
         {
-            // The Cockpit is served in-process by the Gateway (issue #979 retired the separate Blazor
-            // Cockpit process), so its reachability is the Gateway's own and its "port" is the Gateway
-            // port - there is no distinct loopback child to probe.
-            var cockpitPort = host.Port;
-            var cockpitUp = true;
-            var up = DateTime.UtcNow - host.StartedAtUtc;
+            // Per-account settings (issue #2017/#2022): snooze and time zone are read for the CALLER's tenant,
+            // never a global value, and this route SERVES on hosted (the deny retirement landed). On self-host
+            // the tenant is Local (behaviour unchanged). A request with no resolvable tenant is refused (403),
+            // never served the Local partition.
+            //
+            // Issue #2022: the machine settings LEFT the Cockpit Settings page, so this snapshot no longer
+            // carries process diagnostics (version, state, port, uptime, directors, mode), the cockpit block,
+            // the brain block, the autostart state, or the network addressing mode. Those read-only facts now
+            // live on the About page (GET /gateway/about); the removed machine ENDPOINTS are gone. What remains
+            // here is exactly the per-account settings the collapsed page renders.
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, host.TenantBoundary);
+            if (t is null) return TenantRequired();
 
             return Results.Json(new
             {
-                version = AppVersion.Full,
-                state = "Running",
-                port = host.Port,
-                uptimeSeconds = (long)up.TotalSeconds,
-                directors = host.Registry.ListDirectors(CcDirector.Core.Tenancy.TenantId.Local).Count,
-                mode = host.SettingsHooks?.Mode?.Invoke() ?? "unknown",
-                // Issue #457: the fleet network addressing mode ("tailscale" | "lan").
-                addressingMode = Core.Configuration.AddressingModeConfig.Get().ToConfigString(),
-                cockpit = new
-                {
-                    port = cockpitPort,
-                    up = cockpitUp,
-                    // ONE derivation rule (owner ruling 2026-07-20): {base}/cockpit via GatewayPublicUrl -
-                    // the configured public base in hosted mode, the tailnet front door self-hosted (null
-                    // when Tailscale is down). The /gateway/settings cockpit block hands out the SAME URL
-                    // as GET /cockpit and /gateway/about, never the raw front-door root it used before.
-                    url = GatewayPublicUrl.ResolveCockpit(),
-                },
-                brain = await BrainBlockAsync(host),
-                autostart = new
-                {
-                    supported = host.SettingsHooks?.AutostartEnabled is not null,
-                    enabled = host.SettingsHooks?.AutostartEnabled?.Invoke(),
-                },
-                // Issue #531 follow-up: when on, every wingman summary is saved (terminal + response)
-                // as training data for improving the wingman.
-                wingmanTrainingCapture = Core.Configuration.WingmanTrainingCaptureConfig.Get(),
-                // Snooze Length mission: the per-user default snooze length in minutes (default 60),
-                // so the one Settings page can render and edit it in Phase 3.
-                snoozeDefaultMinutes = Core.Configuration.SnoozeDefaultConfig.Get(),
+                // Snooze Length mission: the per-user default snooze length in minutes (default 60), read for
+                // this tenant (issue #2017) - the tenant override else the operator global default.
+                snoozeDefaultMinutes = host.TenantSettingsResolver.SnoozeDefaultMinutes(t.Value),
                 // The lengths every Snooze menu offers beside that default, and the cap on how many
                 // there may be, so the Settings page can render the list and disable "Add" when full.
-                snoozePresets = Core.Configuration.SnoozePresetsConfig.Get(),
+                snoozePresets = host.TenantSettingsResolver.SnoozePresets(t.Value),
                 snoozeMaxPresets = Core.Configuration.SnoozePresetsConfig.MaxPresets,
                 // The display time zone (IANA id) the private dashboards' hourly charts read local hours
-                // in. Auto-defaults to this Gateway machine's own zone when unset; machineDefault lets the
-                // Settings page show what "automatic" resolves to.
-                timeZone = Core.Configuration.TimeZoneConfig.Get(),
+                // in, read for this tenant (issue #2017). Auto-defaults to this Gateway machine's own zone
+                // when unset; machineDefault (a machine fact, not per-tenant) lets the page show what
+                // "automatic" resolves to.
+                timeZone = host.TenantSettingsResolver.TimeZone(t.Value),
                 timeZoneMachineDefault = Core.Configuration.TimeZoneConfig.MachineDefault(),
             });
         });
 
-        // Restart the warm brain (issue #184): the one recovery verb, and doubles as a manual
-        // start. Mirrors the old tray-window Restart Brain button, now reachable from the Cockpit.
-        app.MapPost("/gateway/brain/restart", async (CancellationToken ct) =>
+        // The per-user default snooze length in minutes (Snooze Length mission,
+        // docs/architecture/snooze-length-mission-2026-07-11.md). One value for the whole account:
+        // because every device talks to this one Gateway, this Gateway-owned setting IS "the same
+        // snooze length across all my devices". Read at snooze time, so a change applies to the next
+        // snooze with no Gateway restart. This is the length the plain one-click Snooze uses; the other
+        // lengths a menu may offer beside it are /gateway/snooze-presets below.
+        app.MapGet("/gateway/snooze-default", (HttpContext ctx) =>
         {
-            FileLog.Write("[SettingsEndpoints] POST /gateway/brain/restart");
-            try
-            {
-                // Through the host's restart seam rather than host.Brain.RestartAsync directly. In
-                // production the seam IS host.Brain.RestartAsync - see GatewayHost.BrainRestartAction -
-                // so behaviour here is unchanged; the indirection is what lets a test drive this exact
-                // path and verb for a real receipt without starting a coding-agent process.
-                await host.BrainRestartAction(ct);
-                FileLog.Write($"[SettingsEndpoints] brain restart OK: pid={host.Brain.ProcessId}, session={host.Brain.SessionId}");
-                return Results.Json(new { ok = true, brain = await BrainBlockAsync(host) });
-            }
-            catch (Exception ex)
-            {
-                FileLog.Write($"[SettingsEndpoints] brain restart FAILED: {ex.Message}");
-                return Results.Json(new { ok = false, error = ex.Message }, statusCode: StatusCodes.Status500InternalServerError);
-            }
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, host.TenantBoundary);
+            if (t is null) return TenantRequired();
+            return Results.Json(new { minutes = host.TenantSettingsResolver.SnoozeDefaultMinutes(t.Value) });
         });
 
-        // Persist the brain tool + model choice (issue #393). Both are Gateway-level settings in
-        // config.json, the same store the existing brain_model uses, so the choice applies fleet-wide
-        // without editing any Director. The running brain is unaffected until the next Gateway restart
-        // (the supervisor's driver/options are fixed at host construction) - same as brain_model.
-        app.MapPut("/gateway/brain/config", async (HttpContext ctx) =>
+        app.MapPut("/gateway/snooze-default", async (HttpContext ctx) =>
         {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, host.TenantBoundary);
+            if (t is null) return TenantRequired();
             try
             {
-                var body = await JsonSerializer.DeserializeAsync<BrainConfigBody>(
+                var body = await JsonSerializer.DeserializeAsync<SnoozeDefaultBody>(
                     ctx.Request.Body, JsonOpts, ctx.RequestAborted);
-                if (body is null)
-                    return Results.BadRequest(new { error = "body { \"agentId\": \"<id>\", \"model\": \"<model>\" } is required" });
+                if (body?.Minutes is not int minutes)
+                    return Results.BadRequest(new { error = "body { \"minutes\": <whole minutes> } is required" });
+                if (!Core.Configuration.SnoozeDefaultConfig.IsValid(minutes))
+                    return Results.BadRequest(new { error = $"minutes must be between {Core.Configuration.SnoozeDefaultConfig.MinMinutes} and {Core.Configuration.SnoozeDefaultConfig.MaxMinutes}" });
 
-                // Issue #510: the wingman agent is chosen by its registered-agent id (the same
-                // machine list the New Session picker offers), not a hardcoded Claude-only tool
-                // name. The legacy "tool" field (an AgentKind name, issue #393) is still accepted
-                // so existing callers keep working - it is matched to the first enabled entry of
-                // that kind. Either way we resolve to a real registered entry and persist its id,
-                // its AgentKind (for the runtime), and the model.
-                var agents = LoadMachineAgents();
-                Core.Configuration.AgentEntry? entry = null;
-
-                if (!string.IsNullOrWhiteSpace(body.AgentId))
+                // Set the default for THIS tenant (issue #2017), holding the same invariant the global setter
+                // holds: the default is written together with a presets list that includes it, so the default
+                // can never be a length the Snooze menu does not offer. The resolver adds it to the tenant's
+                // presets when missing (fail loud when the tenant's menu is already full - only the user can
+                // say which length to drop).
+                var presets = host.TenantSettingsResolver.SnoozePresets(t.Value).ToList();
+                if (!presets.Contains(minutes))
                 {
-                    var id = body.AgentId.Trim();
-                    entry = agents.FirstOrDefault(a => string.Equals(a.Id, id, StringComparison.Ordinal));
-                    if (entry is null)
-                        return Results.BadRequest(new { error = "agentId must be a registered, enabled agent on this machine" });
+                    if (presets.Count >= Core.Configuration.SnoozePresetsConfig.MaxPresets)
+                        return Results.BadRequest(new { error = $"the snooze menu already has its maximum {Core.Configuration.SnoozePresetsConfig.MaxPresets} lengths; remove one before setting a new default not already on it" });
+                    presets.Add(minutes);
                 }
-                else if (!string.IsNullOrWhiteSpace(body.Tool))
-                {
-                    if (!Enum.TryParse<Core.Agents.AgentKind>(body.Tool.Trim(), ignoreCase: true, out var tool))
-                        return Results.BadRequest(new { error = "tool must be a recognised agent-kind name" });
-                    entry = agents.FirstOrDefault(a => a.Type == tool);
-                    if (entry is null)
-                        return Results.BadRequest(new { error = $"no registered, enabled agent of kind {tool} on this machine" });
-                }
-                else
-                {
-                    return Results.BadRequest(new { error = "agentId is required (a registered agent on this machine)" });
-                }
-
-                if (string.IsNullOrWhiteSpace(body.Model))
-                    return Results.BadRequest(new { error = "model is required (a model alias or id)" });
-                var model = body.Model.Trim();
-
-                Core.Configuration.CcDirectorConfigService.MergePatch(
-                    new System.Text.Json.Nodes.JsonObject
-                    {
-                        ["brain_agent_id"] = entry.Id,
-                        ["brain_tool"] = entry.Type.ToString(),
-                        ["brain_model"] = model,
-                    });
-                FileLog.Write($"[SettingsEndpoints] brain config set: agentId={entry.Id}, tool={entry.Type}, model={model}");
-                return Results.Json(new { agentId = entry.Id, tool = entry.Type.ToString(), model });
+                host.TenantSettingsResolver.SetSnoozePresets(t.Value, presets, minutes, DateTime.UtcNow);
+                FileLog.Write($"[SettingsEndpoints] snooze_default_minutes set to {minutes} for tenant={t.Value.ToLogString()}");
+                return Results.Json(new { minutes });
+            }
+            catch (ArgumentException ex)
+            {
+                FileLog.Write($"[SettingsEndpoints] PUT /gateway/snooze-default rejected: {ex.Message}");
+                return Results.BadRequest(new { error = ex.Message });
             }
             catch (JsonException ex)
             {
-                FileLog.Write($"[SettingsEndpoints] PUT /gateway/brain/config bad JSON: {ex.Message}");
+                FileLog.Write($"[SettingsEndpoints] PUT /gateway/snooze-default bad JSON: {ex.Message}");
                 return Results.BadRequest(new { error = "invalid JSON" });
             }
         });
 
+        // The per-user list of snooze lengths every Snooze menu offers, and which of them is the
+        // default. Gateway-owned like the default above, so the same lengths appear on the desktop, the
+        // phone, and in the Cockpit. The list and its default are written together in ONE call because
+        // they have an invariant between them - the default must be one of the lengths - and separate
+        // writes would let a half-applied change break it.
+        app.MapGet("/gateway/snooze-presets", (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, host.TenantBoundary);
+            if (t is null) return TenantRequired();
+            return Results.Json(new
+            {
+                presets = host.TenantSettingsResolver.SnoozePresets(t.Value),
+                defaultMinutes = host.TenantSettingsResolver.SnoozeDefaultMinutes(t.Value),
+                maxPresets = Core.Configuration.SnoozePresetsConfig.MaxPresets,
+            });
+        });
+
+        app.MapPut("/gateway/snooze-presets", async (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, host.TenantBoundary);
+            if (t is null) return TenantRequired();
+            try
+            {
+                var body = await JsonSerializer.DeserializeAsync<SnoozePresetsBody>(
+                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
+                if (body?.Presets is not { } presets || body.DefaultMinutes is not int defaultMinutes)
+                    return Results.BadRequest(new
+                    {
+                        error = "body { \"presets\": [<whole minutes>], \"defaultMinutes\": <whole minutes> } is required",
+                    });
+
+                if (!Core.Configuration.SnoozePresetsConfig.IsValidSet(presets, defaultMinutes, out var invalid))
+                    return Results.BadRequest(new { error = invalid });
+
+                // Persist BOTH for this tenant (issue #2017), holding the default-is-on-the-menu invariant.
+                host.TenantSettingsResolver.SetSnoozePresets(t.Value, presets, defaultMinutes, DateTime.UtcNow);
+                FileLog.Write($"[SettingsEndpoints] snooze_presets set to [{string.Join(", ", presets)}], default {defaultMinutes} for tenant={t.Value.ToLogString()}");
+                return Results.Json(new
+                {
+                    presets = host.TenantSettingsResolver.SnoozePresets(t.Value),
+                    defaultMinutes,
+                    maxPresets = Core.Configuration.SnoozePresetsConfig.MaxPresets,
+                });
+            }
+            catch (JsonException ex)
+            {
+                FileLog.Write($"[SettingsEndpoints] PUT /gateway/snooze-presets bad JSON: {ex.Message}");
+                return Results.BadRequest(new { error = "invalid JSON" });
+            }
+        });
+
+        // The display time zone (an IANA id) the private dashboards' hourly charts read local hours in.
+        // Auto-defaults to this Gateway machine's own zone; read at render time so a change applies to the
+        // next refresh with no restart. GET also reports the machine default so the page can show what
+        // "automatic" resolves to.
+        app.MapGet("/gateway/time-zone", (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, host.TenantBoundary);
+            if (t is null) return TenantRequired();
+            return Results.Json(new
+            {
+                timeZone = host.TenantSettingsResolver.TimeZone(t.Value),
+                // machineDefault is a machine fact, not per-tenant - what "automatic" resolves to.
+                machineDefault = Core.Configuration.TimeZoneConfig.MachineDefault(),
+            });
+        });
+
+        app.MapPut("/gateway/time-zone", async (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, host.TenantBoundary);
+            if (t is null) return TenantRequired();
+            try
+            {
+                var body = await JsonSerializer.DeserializeAsync<TimeZoneBody>(
+                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
+                if (body is null || string.IsNullOrWhiteSpace(body.TimeZone))
+                    return Results.BadRequest(new { error = "body { \"timeZone\": \"America/New_York\" } is required" });
+                if (!Core.Configuration.TimeZoneConfig.IsValid(body.TimeZone))
+                    return Results.BadRequest(new { error = "timeZone must be a valid IANA time zone id" });
+
+                var value = body.TimeZone.Trim();
+                host.TenantSettingsResolver.SetTimeZone(t.Value, value, DateTime.UtcNow);
+                FileLog.Write($"[SettingsEndpoints] time_zone set to {value} for tenant={t.Value.ToLogString()}");
+                return Results.Json(new { timeZone = value });
+            }
+            catch (JsonException ex)
+            {
+                FileLog.Write($"[SettingsEndpoints] PUT /gateway/time-zone bad JSON: {ex.Message}");
+                return Results.BadRequest(new { error = "invalid JSON" });
+            }
+        });
+
+        // The consolidated AI provider. DevThrottle is the only selectable provider; GET returns the
+        // derived wingman + transcription models, the TTS voice, and the selectable fallback voices.
+        // PUT keeps the endpoint for older clients but accepts only "devthrottle" and resets hosted
+        // model defaults atomically.
+        app.MapGet("/gateway/ai-provider", (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, host.TenantBoundary);
+            if (t is null) return TenantRequired();
+            return Results.Json(AiProviderSnapshot(host, t.Value));
+        });
+
+        app.MapPut("/gateway/ai-provider", async (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, host.TenantBoundary);
+            if (t is null) return TenantRequired();
+            try
+            {
+                var body = await JsonSerializer.DeserializeAsync<AiProviderBody>(
+                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
+                if (body is null || string.IsNullOrWhiteSpace(body.Provider))
+                    return Results.BadRequest(new { error = "body { \"provider\": \"devthrottle\" } is required" });
+                if (!string.Equals(body.Provider.Trim(), "devthrottle", StringComparison.OrdinalIgnoreCase))
+                    return Results.BadRequest(new { error = "provider must be \"devthrottle\"" });
+
+                // Reset THIS tenant's wingman/speech model and voice to the provider defaults by clearing the
+                // tenant overrides (issue #2017). transcription_mode is a global, single-valued provider fact
+                // (one hosted option), so it is still reset in the operator config where it lives.
+                Core.Configuration.CcDirectorConfigService.MergePatch(
+                    new System.Text.Json.Nodes.JsonObject
+                    {
+                        ["transcription_mode"] = Core.Configuration.TranscriptionMode.DevThrottle.ToConfigString(),
+                    });
+                host.TenantSettingsResolver.ClearAiProviderOverrides(t.Value);
+                FileLog.Write($"[SettingsEndpoints] ai_provider reset to defaults for tenant={t.Value.ToLogString()}");
+                return Results.Json(AiProviderSnapshot(host, t.Value));
+            }
+            catch (JsonException ex)
+            {
+                FileLog.Write($"[SettingsEndpoints] PUT /gateway/ai-provider bad JSON: {ex.Message}");
+                return Results.BadRequest(new { error = "invalid JSON" });
+            }
+        });
+
+        // The text-to-speech voice for spoken wingman output (consolidated AI settings). Read at
+        // synthesis time, so a change is honored on the next spoken summary.
+        app.MapGet("/gateway/tts-voice", (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, host.TenantBoundary);
+            if (t is null) return TenantRequired();
+            var mode = Core.Configuration.TranscriptionModeConfig.Get();
+            return Results.Json(new
+            {
+                voice = host.TenantSettingsResolver.TtsVoice(t.Value, mode),
+                voices = Core.Configuration.TtsVoiceConfig.FallbackVoices,
+            });
+        });
+
+        app.MapPut("/gateway/tts-voice", async (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, host.TenantBoundary);
+            if (t is null) return TenantRequired();
+            try
+            {
+                var body = await JsonSerializer.DeserializeAsync<TtsVoiceBody>(
+                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
+                if (body is null || string.IsNullOrWhiteSpace(body.Voice))
+                    return Results.BadRequest(new { error = "body { \"voice\": \"<id>\" } is required" });
+
+                // Any non-empty voice id is accepted - the catalog is dynamic and provider-specific, so
+                // there is no fixed allow-list to check against. Stored for THIS tenant (issue #2017).
+                host.TenantSettingsResolver.SetTtsVoice(t.Value, body.Voice, DateTime.UtcNow);
+                var voice = body.Voice.Trim();
+                FileLog.Write($"[SettingsEndpoints] tts_voice set to {voice} for tenant={t.Value.ToLogString()}");
+                return Results.Json(new { voice });
+            }
+            catch (JsonException ex)
+            {
+                FileLog.Write($"[SettingsEndpoints] PUT /gateway/tts-voice bad JSON: {ex.Message}");
+                return Results.BadRequest(new { error = "invalid JSON" });
+            }
+        });
+
+        // Issue #2022: the per-user autostart Run-key toggle (PUT /gateway/autostart) left this surface
+        // entirely. Start-at-login is now the installer default plus the `cc-devthrottle autostart
+        // on|off|status` command (the one home that works on a headless Linux server too, where a settings
+        // page cannot); the tray/menu-bar toggle stays as an optional desktop convenience. There is no
+        // machine-scoped autostart endpoint left here for a settings page to call.
+    }
+
+    /// <summary>
+    /// The machine/process-global owner-settings routes that STAY denied on hosted (issue #2022). Takes the
+    /// denied GROUP HANDLE and nothing else - the ungrouped builder is deliberately out of scope here so no
+    /// route can be mapped around the hosted refusal. These three families have NO per-tenant home: injected
+    /// text is the owner's process-global agent-launch words; training capture is a process-global toggle; and
+    /// transcription mode is a single-valued process-global provider fact. On shared hosted infrastructure
+    /// there is no correct per-tenant answer to serve, so they refuse rather than leak a fleet-wide value.
+    /// </summary>
+    private static void MapDeniedRoutes(HostedDenyGroup app, GatewayHost host)
+    {
+        _ = host; // the denied handlers read process-global config, not per-tenant host state; kept for symmetry.
+
         // Read wingman training-data capture state (issue #531 follow-up): when on, every wingman
         // summary saves up to 20,000 chars of the session terminal + the wingman response as a
-        // labeled example for improving the wingman.
+        // labeled example for improving the wingman. Process-global with no tenant dimension - denied on hosted.
         app.MapGet("/gateway/wingman/training-capture", () =>
             Results.Json(new { enabled = Core.Configuration.WingmanTrainingCaptureConfig.Get() }));
 
-        // Write the training-data capture toggle. Takes effect immediately (read at capture time) -
-        // no restart, unlike wingman_enabled.
+        // Write the training-data capture toggle. Takes effect immediately (read at capture time) - no restart.
         app.MapPut("/gateway/wingman/training-capture", async (HttpContext ctx) =>
         {
             try
@@ -299,85 +461,9 @@ internal static class SettingsEndpoints
             }
         });
 
-        // Network addressing mode (issue #457): "tailscale" (advertise the Tailscale Serve
-        // front door) or "lan" (advertise the machine's real LAN IP). Stored as the top-level
-        // config.json key addressing_mode. This is a per-machine setting read at process start;
-        // it applies to THIS Gateway host's own Directors on the next restart. Remote Directors
-        // read their own machine's config (see the docs note on issue #457).
-        app.MapGet("/gateway/addressing-mode", () =>
-            Results.Json(new { mode = Core.Configuration.AddressingModeConfig.Get().ToConfigString() }));
-
-        app.MapPut("/gateway/addressing-mode", async (HttpContext ctx) =>
-        {
-            try
-            {
-                var body = await JsonSerializer.DeserializeAsync<AddressingModeBody>(
-                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
-                if (body is null || string.IsNullOrWhiteSpace(body.Mode))
-                    return Results.BadRequest(new { error = "body { \"mode\": \"tailscale\"|\"lan\" } is required" });
-
-                if (!Core.Configuration.AddressingModeExtensions.IsValid(body.Mode))
-                    return Results.BadRequest(new { error = "mode must be \"tailscale\" or \"lan\"" });
-
-                var mode = Core.Configuration.AddressingModeExtensions.Parse(body.Mode);
-                Core.Configuration.CcDirectorConfigService.MergePatch(
-                    new System.Text.Json.Nodes.JsonObject { ["addressing_mode"] = mode.ToConfigString() });
-                FileLog.Write($"[SettingsEndpoints] addressing_mode set to {mode.ToConfigString()}");
-                return Results.Json(new { mode = mode.ToConfigString() });
-            }
-            catch (JsonException ex)
-            {
-                FileLog.Write($"[SettingsEndpoints] PUT /gateway/addressing-mode bad JSON: {ex.Message}");
-                return Results.BadRequest(new { error = "invalid JSON" });
-            }
-        });
-
-        // The per-user default snooze length in minutes (Snooze Length mission,
-        // docs/architecture/snooze-length-mission-2026-07-11.md). One value for the whole account:
-        // because every device talks to this one Gateway, this Gateway-owned setting IS "the same
-        // snooze length across all my devices". Read at snooze time, so a change applies to the next
-        // snooze with no Gateway restart. This is the length the plain one-click Snooze uses; the other
-        // lengths a menu may offer beside it are /gateway/snooze-presets below.
-        app.MapGet("/gateway/snooze-default", () =>
-            Results.Json(new { minutes = Core.Configuration.SnoozeDefaultConfig.Get() }));
-
-        app.MapPut("/gateway/snooze-default", async (HttpContext ctx) =>
-        {
-            try
-            {
-                var body = await JsonSerializer.DeserializeAsync<SnoozeDefaultBody>(
-                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
-                if (body?.Minutes is not int minutes)
-                    return Results.BadRequest(new { error = "body { \"minutes\": <whole minutes> } is required" });
-                if (!Core.Configuration.SnoozeDefaultConfig.IsValid(minutes))
-                    return Results.BadRequest(new { error = $"minutes must be between {Core.Configuration.SnoozeDefaultConfig.MinMinutes} and {Core.Configuration.SnoozeDefaultConfig.MaxMinutes}" });
-
-                // Goes through SnoozePresetsConfig, not SnoozeDefaultConfig.Set, so the default can never
-                // end up being a length the Snooze menu does not offer: a length that is not on the menu
-                // is added to it. Throws (fail loud) when the menu is already full - only the user can say
-                // which length to drop.
-                Core.Configuration.SnoozePresetsConfig.SetDefault(minutes);
-                FileLog.Write($"[SettingsEndpoints] snooze_default_minutes set to {minutes}");
-                return Results.Json(new { minutes });
-            }
-            catch (InvalidOperationException ex)
-            {
-                FileLog.Write($"[SettingsEndpoints] PUT /gateway/snooze-default rejected: {ex.Message}");
-                return Results.BadRequest(new { error = ex.Message });
-            }
-            catch (JsonException ex)
-            {
-                FileLog.Write($"[SettingsEndpoints] PUT /gateway/snooze-default bad JSON: {ex.Message}");
-                return Results.BadRequest(new { error = "invalid JSON" });
-            }
-        });
-
         // The injected text: the whole of what DevThrottle puts in front of an agent at the start of a
-        // session, and the user's choice to run their own words instead of ours. Gateway-owned so the
-        // choice is the same on every machine the user runs a Director on; each Director downloads and
-        // caches it (Sessions.InjectedTextStore) and injects it at launch. The GET carries "ours" (the
-        // shipped default, always current) so the Cockpit can show the default even while a custom
-        // version is live, and the placeholder tokens so the page can list what stays editable.
+        // session, and the user's choice to run their own words instead of ours. Process-global (the owner's
+        // own words) with no tenant dimension - denied on hosted permanently.
         app.MapGet("/gateway/injected-text", () =>
         {
             var s = Core.Configuration.InjectedTextConfig.Get();
@@ -450,87 +536,9 @@ internal static class SettingsEndpoints
             }
         });
 
-        // The per-user list of snooze lengths every Snooze menu offers, and which of them is the
-        // default. Gateway-owned like the default above, so the same lengths appear on the desktop, the
-        // phone, and in the Cockpit. The list and its default are written together in ONE call because
-        // they have an invariant between them - the default must be one of the lengths - and separate
-        // writes would let a half-applied change break it.
-        app.MapGet("/gateway/snooze-presets", () =>
-            Results.Json(new
-            {
-                presets = Core.Configuration.SnoozePresetsConfig.Get(),
-                defaultMinutes = Core.Configuration.SnoozeDefaultConfig.Get(),
-                maxPresets = Core.Configuration.SnoozePresetsConfig.MaxPresets,
-            }));
-
-        app.MapPut("/gateway/snooze-presets", async (HttpContext ctx) =>
-        {
-            try
-            {
-                var body = await JsonSerializer.DeserializeAsync<SnoozePresetsBody>(
-                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
-                if (body?.Presets is not { } presets || body.DefaultMinutes is not int defaultMinutes)
-                    return Results.BadRequest(new
-                    {
-                        error = "body { \"presets\": [<whole minutes>], \"defaultMinutes\": <whole minutes> } is required",
-                    });
-
-                if (!Core.Configuration.SnoozePresetsConfig.IsValidSet(presets, defaultMinutes, out var invalid))
-                    return Results.BadRequest(new { error = invalid });
-
-                Core.Configuration.SnoozePresetsConfig.Set(presets, defaultMinutes);
-                FileLog.Write($"[SettingsEndpoints] snooze_presets set to [{string.Join(", ", presets)}], default {defaultMinutes}");
-                return Results.Json(new
-                {
-                    presets = Core.Configuration.SnoozePresetsConfig.Get(),
-                    defaultMinutes,
-                    maxPresets = Core.Configuration.SnoozePresetsConfig.MaxPresets,
-                });
-            }
-            catch (JsonException ex)
-            {
-                FileLog.Write($"[SettingsEndpoints] PUT /gateway/snooze-presets bad JSON: {ex.Message}");
-                return Results.BadRequest(new { error = "invalid JSON" });
-            }
-        });
-
-        // The display time zone (an IANA id) the private dashboards' hourly charts read local hours in.
-        // Auto-defaults to this Gateway machine's own zone; read at render time so a change applies to the
-        // next refresh with no restart. GET also reports the machine default so the page can show what
-        // "automatic" resolves to.
-        app.MapGet("/gateway/time-zone", () =>
-            Results.Json(new
-            {
-                timeZone = Core.Configuration.TimeZoneConfig.Get(),
-                machineDefault = Core.Configuration.TimeZoneConfig.MachineDefault(),
-            }));
-
-        app.MapPut("/gateway/time-zone", async (HttpContext ctx) =>
-        {
-            try
-            {
-                var body = await JsonSerializer.DeserializeAsync<TimeZoneBody>(
-                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
-                if (body is null || string.IsNullOrWhiteSpace(body.TimeZone))
-                    return Results.BadRequest(new { error = "body { \"timeZone\": \"America/New_York\" } is required" });
-                if (!Core.Configuration.TimeZoneConfig.IsValid(body.TimeZone))
-                    return Results.BadRequest(new { error = "timeZone must be a valid IANA time zone id" });
-
-                Core.Configuration.TimeZoneConfig.Set(body.TimeZone);
-                var value = body.TimeZone.Trim();
-                FileLog.Write($"[SettingsEndpoints] time_zone set to {value}");
-                return Results.Json(new { timeZone = value });
-            }
-            catch (JsonException ex)
-            {
-                FileLog.Write($"[SettingsEndpoints] PUT /gateway/time-zone bad JSON: {ex.Message}");
-                return Results.BadRequest(new { error = "invalid JSON" });
-            }
-        });
-
-        // Transcription mode: DevThrottle hosted transcription is the only supported production
-        // capability. Legacy "local", "byo", and "openai" values are migrated by the config parser
-        // when read, but this API only accepts the current value.
+        // Transcription mode: DevThrottle hosted transcription is the only supported production capability.
+        // A single-valued process-global provider fact with no tenant dimension - denied on hosted; the AI tab
+        // reads the resolved transcription MODEL through the per-account ai-provider snapshot, never this route.
         app.MapGet("/gateway/transcription-mode", () =>
             Results.Json(new { mode = Core.Configuration.TranscriptionModeConfig.Get().ToConfigString() }));
 
@@ -558,182 +566,7 @@ internal static class SettingsEndpoints
                 return Results.BadRequest(new { error = "invalid JSON" });
             }
         });
-
-        // The consolidated AI provider. DevThrottle is the only selectable provider; GET returns the
-        // derived wingman + transcription models, the TTS voice, and the selectable fallback voices.
-        // PUT keeps the endpoint for older clients but accepts only "devthrottle" and resets hosted
-        // model defaults atomically.
-        app.MapGet("/gateway/ai-provider", () => Results.Json(AiProviderSnapshot()));
-
-        app.MapPut("/gateway/ai-provider", async (HttpContext ctx) =>
-        {
-            try
-            {
-                var body = await JsonSerializer.DeserializeAsync<AiProviderBody>(
-                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
-                if (body is null || string.IsNullOrWhiteSpace(body.Provider))
-                    return Results.BadRequest(new { error = "body { \"provider\": \"devthrottle\" } is required" });
-                if (!string.Equals(body.Provider.Trim(), "devthrottle", StringComparison.OrdinalIgnoreCase))
-                    return Results.BadRequest(new { error = "provider must be \"devthrottle\"" });
-
-                // Reset the wingman model, speech model, and voice to the hosted defaults.
-                var mode = Core.Configuration.TranscriptionMode.DevThrottle;
-                var wingmanModel = Core.Configuration.TranscriptionEndpointResolver.ResolveWingman(mode).Model;
-                var wingmanFastModel = Core.Configuration.TranscriptionEndpointResolver.ResolveWingmanFast(mode).Model;
-                var ttsModel = Core.Configuration.TranscriptionEndpointResolver.DefaultTtsModel(mode);
-                var ttsVoice = Core.Configuration.TranscriptionEndpointResolver.DefaultTtsVoice(mode);
-                Core.Configuration.CcDirectorConfigService.MergePatch(
-                    new System.Text.Json.Nodes.JsonObject
-                    {
-                        ["transcription_mode"] = mode.ToConfigString(),
-                        ["brain_model"] = wingmanModel,
-                        ["brain_model_fast"] = wingmanFastModel,
-                        ["tts_model"] = ttsModel,
-                        ["tts_voice"] = ttsVoice,
-                    });
-                FileLog.Write($"[SettingsEndpoints] ai_provider set: mode={mode.ToConfigString()}, wingmanModel={wingmanModel}, wingmanFastModel={wingmanFastModel}, ttsModel={ttsModel}, ttsVoice={ttsVoice}");
-                return Results.Json(AiProviderSnapshot());
-            }
-            catch (JsonException ex)
-            {
-                FileLog.Write($"[SettingsEndpoints] PUT /gateway/ai-provider bad JSON: {ex.Message}");
-                return Results.BadRequest(new { error = "invalid JSON" });
-            }
-        });
-
-        // The text-to-speech voice for spoken wingman output (consolidated AI settings). Read at
-        // synthesis time, so a change is honored on the next spoken summary.
-        app.MapGet("/gateway/tts-voice", () =>
-        {
-            var mode = Core.Configuration.TranscriptionModeConfig.Get();
-            return Results.Json(new
-            {
-                voice = Core.Configuration.TtsVoiceConfig.Resolve(mode),
-                voices = Core.Configuration.TtsVoiceConfig.FallbackVoices,
-            });
-        });
-
-        app.MapPut("/gateway/tts-voice", async (HttpContext ctx) =>
-        {
-            try
-            {
-                var body = await JsonSerializer.DeserializeAsync<TtsVoiceBody>(
-                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
-                if (body is null || string.IsNullOrWhiteSpace(body.Voice))
-                    return Results.BadRequest(new { error = "body { \"voice\": \"<id>\" } is required" });
-
-                // Any non-empty voice id is accepted - the catalog is dynamic and provider-specific, so
-                // there is no fixed allow-list to check against.
-                Core.Configuration.TtsVoiceConfig.Set(body.Voice);
-                var voice = body.Voice.Trim();
-                FileLog.Write($"[SettingsEndpoints] tts_voice set to {voice}");
-                return Results.Json(new { voice });
-            }
-            catch (JsonException ex)
-            {
-                FileLog.Write($"[SettingsEndpoints] PUT /gateway/tts-voice bad JSON: {ex.Message}");
-                return Results.BadRequest(new { error = "invalid JSON" });
-            }
-        });
-
-        // Toggle the per-user autostart Run-key. The write itself is GatewayApp-owned (it needs the
-        // tray exe path + args), supplied via SettingsHooks; a host with no hook answers unsupported.
-        app.MapPut("/gateway/autostart", async (HttpContext ctx) =>
-        {
-            var set = host.SettingsHooks?.SetAutostart;
-            if (set is null)
-            {
-                FileLog.Write("[SettingsEndpoints] PUT /gateway/autostart: no hook; unsupported on this host");
-                return Results.Json(new { supported = false });
-            }
-
-            try
-            {
-                var body = await JsonSerializer.DeserializeAsync<AutostartBody>(
-                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
-                if (body is null)
-                    return Results.BadRequest(new { error = "body { \"enabled\": true|false } is required" });
-
-                var nowEnabled = set(body.Enabled);
-                FileLog.Write($"[SettingsEndpoints] autostart requested={body.Enabled}, now={nowEnabled}");
-                return Results.Json(new { supported = true, enabled = nowEnabled });
-            }
-            catch (JsonException ex)
-            {
-                FileLog.Write($"[SettingsEndpoints] PUT /gateway/autostart bad JSON: {ex.Message}");
-                return Results.BadRequest(new { error = "invalid JSON" });
-            }
-        });
     }
-
-    /// <summary>The brain status block - shared by the snapshot GET and the restart POST.</summary>
-    private static async Task<object> BrainBlockAsync(GatewayHost host)
-    {
-        var brain = host.Brain;
-        var health = await brain.GetHealthAsync();
-
-        // Issue #510: the wingman agent picker is filled from the agents registered on this machine
-        // (the same enabled agent.entries the New Session dialog offers), not a hardcoded
-        // Claude-only list. The Cockpit selects the saved agent by id; "agentId" is the saved
-        // choice (brain_agent_id) so the picker round-trips across a page reload.
-        var agents = LoadMachineAgents();
-        var savedAgentId = Core.Configuration.CcDirectorConfigService.ReadRaw()["brain_agent_id"] is { } idNode
-            && idNode.GetValueKind() == System.Text.Json.JsonValueKind.String
-                ? idNode.GetValue<string>()
-                : null;
-
-        // Issue #510 (QA bounce, criterion 3): the Model field must round-trip across a page reload
-        // exactly as the agent does. We surface the SAVED model (config.json "brain_model" via
-        // BrainModelConfig.Get) - the same value the PUT writes - NOT host.BrainModel (the running
-        // brain's model, fixed at host construction). Sourcing the GET from the running brain meant a
-        // freshly-saved model was persisted to disk yet never shown back on reload. The saved value is
-        // what the user chose; the running brain still picks it up on the next Gateway restart (the
-        // documented "applies on next restart" contract for the live process is unchanged).
-        var savedModel = Core.Configuration.BrainModelConfig.Get();
-
-        return new
-        {
-            tool = host.BrainTool.ToString(),
-            // The agents registered on this machine, in list order (issue #510): the wingman can
-            // run as any of them (the driver-level hostability work landed in issue #509).
-            agents = agents.Select(a => new { id = a.Id, displayName = a.DisplayName, type = a.Type.ToString() }).ToArray(),
-            agentId = savedAgentId,
-            model = savedModel,
-            sessionId = brain.SessionId,
-            pid = brain.ProcessId,
-            alive = health.IsAlive,
-            started = !IsNotStarted(health.Status),
-            status = health.Status,
-            detail = BrainDetail(health),
-        };
-    }
-
-    /// <summary>
-    /// The agents registered on THIS machine, filtered to the enabled entries - exactly the set the
-    /// New Session dialog offers (issue #510). Uses <see cref="Core.Configuration.AgentEntryStore.LoadEntries"/>
-    /// with the same default <see cref="Core.Configuration.AgentOptions"/> the New Session dialog
-    /// falls back to, so the picker mirrors that list (including the one-time legacy seed when
-    /// agent.entries has never been written) rather than showing an empty dropdown.
-    /// </summary>
-    private static List<Core.Configuration.AgentEntry> LoadMachineAgents()
-    {
-        return Core.Configuration.AgentEntryStore.LoadEntries(new Core.Configuration.AgentOptions())
-            .Where(e => e.Enabled)
-            .ToList();
-    }
-
-    /// <summary>Human-readable one-liner for the brain state. Pure, for tests.</summary>
-    public static string BrainDetail(BrainHealth health)
-    {
-        if (IsNotStarted(health.Status))
-            return "not started (spawns on first use)";
-        return health.IsAlive
-            ? $"alive - {health.ActivityState}, idle {health.IdleSeconds:F0}s, context {health.ContextTokens:N0} tokens"
-            : $"DEAD ({health.Status}) - use Restart Brain";
-    }
-
-    private static bool IsNotStarted(string status) =>
-        string.Equals(status, "NotStarted", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// The consolidated AI-provider snapshot the Cockpit AI page renders: the selected provider plus
@@ -741,38 +574,41 @@ internal static class SettingsEndpoints
     /// transcription models come from the one routing spot; the voice + fallback selectable set come
     /// from <see cref="Core.Configuration.TtsVoiceConfig"/>.
     /// </summary>
-    private static object AiProviderSnapshot()
+    private static object AiProviderSnapshot(GatewayHost host, TenantId tenant)
     {
         var mode = Core.Configuration.TranscriptionModeConfig.Get();
+        var resolver = host.TenantSettingsResolver;
         return new
         {
             provider = "devthrottle",
-            // The saved wingman-model choices fall forward to provider defaults for stale/unset values,
-            // so models picked on the AI tab round-trip across a reload.
-            wingmanModel = Core.Configuration.WingmanModelConfig.Resolve(mode),
-            wingmanFastModel = Core.Configuration.WingmanModelConfig.ResolveFast(mode),
+            // The per-tenant model/voice choices (issue #2017), each the tenant's override else the operator
+            // default, so models picked on the AI tab round-trip across a reload for THIS tenant.
+            wingmanModel = resolver.WingmanModel(tenant, mode, Core.Configuration.WingmanModelRole.Thinking),
+            wingmanFastModel = resolver.WingmanModel(tenant, mode, Core.Configuration.WingmanModelRole.Fast),
             // Car Mode runs its OWN model, separate from the Wingman (a fast tier + tool_choice=required).
-            // The snapshot shows the user's saved setting (or the Qwen2.5-72B default); the env override
-            // is not reflected here because it is a per-install debug switch, not the user's choice.
-            carModeModel = Core.Configuration.CarModeModelConfig.Get(),
-            // Car Mode's hands-free sign-off phrase, a Gateway setting so the Cockpit can set it and the
-            // phone (where Car Mode runs) picks it up. Default "over and out".
-            carModeEndPhrase = Core.Configuration.CarModeEndPhraseConfig.Get(),
+            carModeModel = resolver.CarModeModel(tenant),
+            // Car Mode's hands-free sign-off phrase, per tenant. Default "over and out".
+            carModeEndPhrase = resolver.CarModeEndPhrase(tenant),
+            // transcriptionModel + voices are provider-level facts (one hosted option), not per-tenant.
             transcriptionModel = Core.Configuration.TranscriptionEndpointResolver.Resolve(mode).Model,
-            ttsModel = Core.Configuration.TtsModelConfig.Resolve(mode),
-            ttsVoice = Core.Configuration.TtsVoiceConfig.Resolve(mode),
+            ttsModel = resolver.TtsModel(tenant, mode),
+            ttsVoice = resolver.TtsVoice(tenant, mode),
             voices = Core.Configuration.TtsVoiceConfig.FallbackVoices,
+            // Issue #2022: whether the live model CATALOG and the Test button are available. The catalog
+            // (/gateway/ai/models) and test-chat (/gateway/ai/test-chat) spend the shared deployment provider
+            // credential with no per-caller scoping, so they STAY denied on hosted until that credential is
+            // scoped per account. The AI/Car Mode tabs read this Gateway-owned flag (never guess from the
+            // surface) to disable model browsing + Test on hosted and show a concise explanation, rather than
+            // offer a control that would fail. On self-host the catalog is available.
+            catalogAvailable = !GatewayHostedMode.IsHosted,
         };
     }
 
     private sealed record AiProviderBody(string? Provider);
     private sealed record TtsVoiceBody(string? Voice);
-    private sealed record AddressingModeBody(string? Mode);
     private sealed record TranscriptionModeBody(string? Mode);
-    private sealed record AutostartBody(bool Enabled);
     private sealed record SnoozeDefaultBody(int? Minutes);
     private sealed record SnoozePresetsBody(int[]? Presets, int? DefaultMinutes);
     private sealed record TimeZoneBody(string? TimeZone);
     private sealed record WingmanBody(bool Enabled);
-    private sealed record BrainConfigBody(string? AgentId, string? Tool, string? Model);
 }

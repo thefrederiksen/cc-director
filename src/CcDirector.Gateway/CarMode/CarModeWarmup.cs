@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Gateway.CarMode;
@@ -22,8 +23,8 @@ public sealed class CarModeWarmup
 {
     private static readonly HttpClient SharedHttp = new() { Timeout = TimeSpan.FromSeconds(20) };
 
-    private readonly Func<(string BaseUrl, string Model, string Key)> _model;
-    private readonly Func<(string BaseUrl, string Voice, string Model, string Key)> _tts;
+    private readonly Func<TenantId, (string BaseUrl, string Model, string Key)> _model;
+    private readonly Func<TenantId, (string BaseUrl, string Voice, string Model, string Key)> _tts;
     private readonly HttpClient _http;
     private readonly Action<string> _log;
 
@@ -31,8 +32,8 @@ public sealed class CarModeWarmup
     private int _inFlight;
 
     public CarModeWarmup(
-        Func<(string BaseUrl, string Model, string Key)> modelResolver,
-        Func<(string BaseUrl, string Voice, string Model, string Key)> ttsResolver,
+        Func<TenantId, (string BaseUrl, string Model, string Key)> modelResolver,
+        Func<TenantId, (string BaseUrl, string Voice, string Model, string Key)> ttsResolver,
         HttpClient? http = null,
         Action<string>? log = null)
     {
@@ -44,8 +45,10 @@ public sealed class CarModeWarmup
 
     /// <summary>Warm the model and text-to-speech provider in parallel, once. A warmup already in flight is
     ///  skipped (not queued). Never throws - both legs swallow and log their own failures.</summary>
-    public async Task WarmAsync(CancellationToken ct)
+    public async Task WarmAsync(TenantId tenant, CancellationToken ct)
     {
+        if (!tenant.IsValid)
+            throw new ArgumentException("Car Mode warmup requires an explicit tenant.", nameof(tenant));
         if (Interlocked.CompareExchange(ref _inFlight, 1, 0) != 0)
         {
             _log("[CarModeWarmup] skip: a warmup is already in flight");
@@ -54,7 +57,7 @@ public sealed class CarModeWarmup
         try
         {
             var sw = Stopwatch.StartNew();
-            await Task.WhenAll(WarmModelAsync(ct), WarmTtsAsync(ct));
+            await Task.WhenAll(WarmModelAsync(tenant, ct), WarmTtsAsync(tenant, ct));
             _log($"[CarModeWarmup] warmed model + text-to-speech in {sw.ElapsedMilliseconds}ms");
         }
         finally
@@ -64,11 +67,11 @@ public sealed class CarModeWarmup
     }
 
     // A one-token chat completion so the hosted model worker spins up. Best-effort: logged and swallowed.
-    private async Task WarmModelAsync(CancellationToken ct)
+    private async Task WarmModelAsync(TenantId tenant, CancellationToken ct)
     {
         try
         {
-            var (baseUrl, model, key) = _model();
+            var (baseUrl, model, key) = _model(tenant);
             if (string.IsNullOrWhiteSpace(key))
             {
                 _log("[CarModeWarmup] model warm skipped: no key configured");
@@ -89,11 +92,11 @@ public sealed class CarModeWarmup
     }
 
     // A tiny synthesis so the text-to-speech worker spins up. Best-effort: logged and swallowed.
-    private async Task WarmTtsAsync(CancellationToken ct)
+    private async Task WarmTtsAsync(TenantId tenant, CancellationToken ct)
     {
         try
         {
-            var (baseUrl, voice, model, key) = _tts();
+            var (baseUrl, voice, model, key) = _tts(tenant);
             if (string.IsNullOrWhiteSpace(key))
             {
                 _log("[CarModeWarmup] text-to-speech warm skipped: no key configured");
