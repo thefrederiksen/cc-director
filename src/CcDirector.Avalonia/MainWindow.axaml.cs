@@ -242,7 +242,8 @@ public partial class MainWindow : Window
         _sessionManager.OnSessionRemoved += OnExternalSessionRemoved;
 
         // Wire source control view file event
-        GitChangesView.ViewFileRequested += OnGitViewFileRequested;
+        SourceControlView.ViewFileRequested += OnGitViewFileRequested;
+        SourceControlView.OrphanedCountChanged += OnOrphanedWorktreeCountChanged;
 
         // Wire prompt input text changes for slash command autocomplete
         PromptInput.TextChanged += PromptInput_TextChanged;
@@ -1603,7 +1604,7 @@ public partial class MainWindow : Window
                     vm.Session.OnActivityStateChanged -= OnActiveSessionActivityChanged;
                     vm.Session.OnPendingPromptTextChanged -= OnActiveSessionPendingPromptTextChanged;
                     TerminalHost.Detach();
-                    GitChangesView.Detach();
+                    SourceControlView.Detach();
                     _activeSession = null;
 
                     SetSessionHeaderVisible(false);
@@ -1770,7 +1771,7 @@ public partial class MainWindow : Window
             _activeSession.Session.OnPendingPromptTextChanged -= OnActiveSessionPendingPromptTextChanged;
             _activeSession.Session.OnIsTranscribingChanged -= OnActiveSessionTranscribingChanged;
             TerminalHost.Detach();
-            GitChangesView.Detach();
+            SourceControlView.Detach();
         }
 
         _activeSession = vm;
@@ -1787,7 +1788,7 @@ public partial class MainWindow : Window
             PromptBarBorder.IsVisible = false;
             TabBarRefreshButton.IsVisible = false;
             TabBarCaptureButton.IsVisible = false;
-            GitChangesView.Detach();
+            SourceControlView.Detach();
             return;
         }
 
@@ -1814,7 +1815,7 @@ public partial class MainWindow : Window
         UpdateScrollBar();
 
         // Attach source control (hide tab if no .git)
-        GitChangesView.Attach(vm.Session.RepoPath);
+        SourceControlView.Attach(vm.Session.RepoPath);
         UpdateSourceControlTabVisibility(vm.Session.RepoPath);
 
         // Show prompt bar
@@ -1946,7 +1947,7 @@ public partial class MainWindow : Window
             _activeSession.Session.OnPendingPromptTextChanged -= OnActiveSessionPendingPromptTextChanged;
         }
         TerminalHost.Detach();
-        GitChangesView.Detach();
+        SourceControlView.Detach();
         _activeSession = null;
 
         var snapshots = _sessions.ToList();
@@ -2439,7 +2440,7 @@ public partial class MainWindow : Window
             vm.Session.OnActivityStateChanged -= OnActiveSessionActivityChanged;
             vm.Session.OnPendingPromptTextChanged -= OnActiveSessionPendingPromptTextChanged;
             TerminalHost.Detach();
-            GitChangesView.Detach();
+            SourceControlView.Detach();
             _activeSession = null;
 
             SetSessionHeaderVisible(false);
@@ -4110,6 +4111,13 @@ public partial class MainWindow : Window
         FileLog.Write($"[MainWindow] UpdateSourceControlTabVisibility: hasGit={hasGit}");
     }
 
+    /// <summary>Mirror the worktree safe-to-reap count onto the Source Control tab as a red badge.</summary>
+    private void OnOrphanedWorktreeCountChanged(int count)
+    {
+        SourceControlOrphanBadgeText.Text = count.ToString();
+        SourceControlOrphanBadge.IsVisible = count > 0;
+    }
+
     private void BtnSend_Click(object? sender, RoutedEventArgs e)
     {
         SendPrompt();
@@ -5381,7 +5389,7 @@ public partial class MainWindow : Window
 
         // Detach terminal and source control
         TerminalHost.Detach();
-        GitChangesView.Detach();
+        SourceControlView.Detach();
         _activeSession = null;
 
         // Stop git status polling
