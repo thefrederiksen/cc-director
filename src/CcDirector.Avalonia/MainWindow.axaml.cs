@@ -3692,6 +3692,12 @@ public partial class MainWindow : Window
                 }
             }
         }));
+        session.Menu.Items.Add(Item("Repository status...", async () =>
+        {
+            FileLog.Write("[MainWindow] Menu: Repository status");
+            var window = new RepositoryScreenWindow(AppRef().RootDirectoryStore, GetLiveSessionsOnThisMachineAsync);
+            await window.ShowDialog(this);
+        }));
         if (alpha)
         {
             session.Menu.Items.Add(new NativeMenuItemSeparator());
