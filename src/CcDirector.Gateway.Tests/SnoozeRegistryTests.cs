@@ -431,6 +431,26 @@ public sealed class SnoozeRegistryTests : IDisposable
     }
 
     [Fact]
+    public void A_hold_is_not_superseded_when_its_baseline_lost_sub_microsecond_ticks_to_the_store()
+    {
+        // Regression for the hosted "snooze dies ~200ms after it is set" bug. The baseline captured at hold
+        // time is the owner's last-turn stamp at full .NET 100ns tick precision; the hosted store (Postgres
+        // timestamptz) keeps only MICROSECONDS, so the baseline read back has its sub-microsecond ticks
+        // dropped. The SAME owner turn, still in memory at full precision, then read as strictly LATER than
+        // its own truncated baseline and deleted every hosted snooze on the next Director push. The compare
+        // must happen at the store's microsecond resolution so a value that merely round-tripped is not seen
+        // as newer than itself. (Self-host stored the baseline as full-precision TEXT and never hit this.)
+        var second = new DateTime(2026, 7, 23, 12, 2, 31, DateTimeKind.Utc);
+        var baselineFromStore = second.AddTicks(5537880);      // microsecond-aligned (…7880): what Postgres returns
+        var liveTurnFullPrecision = second.AddTicks(5537882);  // the IDENTICAL owner turn at full 100ns tick precision
+
+        var entry = new SnoozeRegistry.SnoozeEntry("s1", second.AddHours(1), "dir-1", null, baselineFromStore);
+
+        Assert.False(entry.SupersededByOwnerTurn(liveTurnFullPrecision)); // same turn -> the hold SURVIVES
+        Assert.True(entry.SupersededByOwnerTurn(second.AddMinutes(1)));   // a genuinely later turn still supersedes
+    }
+
+    [Fact]
     public void A_re_snooze_clears_an_elapsed_tombstone_and_arms_a_fresh_clock()
     {
         var reg = NewReg();
