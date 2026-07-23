@@ -113,8 +113,24 @@ public sealed class SnoozeRegistry
         {
             if (lastOwnerTurnAtUtc is not DateTime turn) return false;
             if (OwnerTurnBaselineUtc is not DateTime baseline) return true;
-            return turn.ToUniversalTime() > baseline.ToUniversalTime();
+            // COMPARE AT THE STORE'S RESOLUTION, NOT .NET's. The baseline round-trips through the snooze
+            // store between being captured and being read back here, and the hosted store (Postgres
+            // timestamptz) keeps only MICROSECOND precision - it drops the sub-microsecond ticks a .NET
+            // DateTime carries. The live turn value, in contrast, comes straight from the in-memory session
+            // DTO at full 100-nanosecond tick precision. So the SAME owner turn reads as 1-9 ticks LATER
+            // than its own persisted baseline, a strict `>` calls that "the owner is back", and the hold is
+            // deleted on the very next Director push - ~200ms after it was set, on EVERY hosted snooze
+            // (armed or deferred). Self-host stores the baseline as full-precision TEXT and never hit this,
+            // which is why it only broke on the hosted phone. Truncating both sides to microseconds makes a
+            // value that merely round-tripped equal to itself; a genuine later turn (milliseconds or more
+            // away - a human driving a turn) still supersedes.
+            return ToMicroseconds(turn.ToUniversalTime()) > ToMicroseconds(baseline.ToUniversalTime());
         }
+
+        // Floor a UTC instant to whole microseconds (Postgres timestamptz resolution). One microsecond is
+        // 10 ticks of 100ns, so drop the remainder. Store-agnostic: a full-precision (self-host TEXT)
+        // baseline and a microsecond (hosted Postgres) baseline both compare correctly after this.
+        private static DateTime ToMicroseconds(DateTime dt) => dt.AddTicks(-(dt.Ticks % 10));
     }
 
     /// <summary>
