@@ -266,6 +266,12 @@ public static class AutomationBrowserService
     /// <summary>
     /// Send CDP <c>Browser.close</c> over the browser-level WebSocket advertised by <c>/json/version</c>.
     /// A down browser is a no-op. The websocket disconnecting as Chrome exits is expected, not an error.
+    ///
+    /// Slice-2 hardening (tracked for the rail UI work, not needed yet): a browser that is UP but whose
+    /// CDP connection is wedged cannot be closed this way. Since the Director already holds the launched
+    /// <see cref="Process"/> handle in memory for its lifetime, a tracked-pid <c>Process.Kill()</c> is the
+    /// portable safety net (no WMI, no command-line matching) when the CDP close does not bring the port
+    /// down within the timeout. Left out of slice 1 to keep the stop path single and simple.
     /// </summary>
     private static async Task CloseViaCdpAsync(AutomationBrowser browser, CancellationToken ct)
     {
