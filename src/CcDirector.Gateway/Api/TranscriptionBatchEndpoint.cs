@@ -36,10 +36,18 @@ internal static class TranscriptionBatchEndpoint
         IEndpointRouteBuilder app,
         KeyVault vault,
         TranscriptionHistoryLog? history = null,
-        TranscriptionAudioArchive? audioArchive = null)
+        TranscriptionAudioArchive? audioArchive = null,
+        Tenancy.HostedTenantBoundary? tenantBoundary = null)
     {
         app.MapPost("/transcription", async (HttpContext ctx) =>
         {
+            // Per-tenant (issue #2059): the transcription-health record this turn writes goes to the caller's
+            // own partition. A request with no resolvable tenant is refused (403), never Local.
+            var reqTenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "a tenant could not be resolved for this request" },
+                    statusCode: StatusCodes.Status403Forbidden);
+
             var correct = string.Equals(ctx.Request.Query["correct"].ToString(), "true", StringComparison.OrdinalIgnoreCase);
 
             // Read the whole clip into memory. These are short clips (seconds), so the memory cost is
@@ -57,7 +65,7 @@ internal static class TranscriptionBatchEndpoint
             FileLog.Write($"[TranscriptionBatchEndpoint] POST /transcription: bytes={audio.Length}, contentType={contentType}, correct={correct}");
 
             var service = new GatewayTranscriptionService(vault, history: history, audioArchive: audioArchive);
-            var result = await service.TranscribeAsync(audio, fileName, contentType, correct, ctx.RequestAborted);
+            var result = await service.TranscribeAsync(audio, fileName, contentType, correct, ctx.RequestAborted, tenant: reqTenant.Value);
 
             return result.Outcome switch
             {

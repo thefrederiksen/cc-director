@@ -1,3 +1,4 @@
+using System.Linq;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
@@ -70,6 +71,16 @@ public sealed class TranscriptionAudioArchive
 
     /// <summary>The per-user transcription-audio directory. Resolved per call, never cached.</summary>
     public static string DefaultDirectory() => CcStorage.TranscriptionAudio();
+
+    /// <summary>This tenant's troubleshooting-audio directory (issue #2059). Local keeps the existing flat
+    /// directory (self-host unchanged); every other tenant gets its own subdirectory, so one tenant clearing
+    /// its history never touches another tenant's archived audio.</summary>
+    public static string DirectoryFor(Core.Tenancy.TenantId tenant)
+    {
+        if (tenant == Core.Tenancy.TenantId.Local) return DefaultDirectory();
+        var chars = tenant.Value.Select(c => char.IsLetterOrDigit(c) || c is '-' or '_' ? c : '_').ToArray();
+        return System.IO.Path.Combine(DefaultDirectory(), new string(chars));
+    }
 
     /// <summary>The file a clip for <paramref name="turnId"/> lands in.</summary>
     public string FileFor(string turnId, string extension)

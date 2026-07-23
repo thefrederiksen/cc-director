@@ -132,23 +132,17 @@ internal static class ContentFingerprint
 }
 
 /// <summary>
-/// Four route families that serve one account's CONTENT to any other account's authenticated device key
-/// are refused on the hosted Gateway. Issues #1897, #1853 (read side), #1896 and #1884.
+/// The wingman-instructions content family is refused on the hosted Gateway (issue #1853, read side): the
+/// single-owner wingman prompt has no per-tenant version to serve.
 ///
-/// All four share one defect: the store behind them has a single on-disk root with no tenant anywhere in
-/// the path, the file name, or the record, and the route addresses it by something that is not a tenant
-/// boundary - a positional index, a turn id, or an identifier the CALLER supplies. Public signup on the
-/// backing account project is open, so "any authenticated caller" means the public.
-///
-///   /transcription/*                     one shared local history with no tenant partition.
 ///   /gateway/wingman/instructions/*       the single-owner wingman prompt - one active prompt every
 ///                                        account's wingman speaks through, with no per-tenant version to
 ///                                        serve.
-///   /wingman/utterance/*                  staged audio and the assembled transcript, keyed solely by a
-///                                        caller-supplied Idempotency-Key under a shared root.
-///   /dictation/*                          the same VoiceUploadStore shape: re-registering another
-///                                        account's upload id returns ITS transcript from the terminal
-///                                        tombstone, with no session lookup in the way.
+///
+/// Sibling content families that USED to be refused here have since been tenant-partitioned and now SERVE
+/// per-tenant, so they left this file: the two upload families /wingman/utterance/* and /dictation/*
+/// (issue #1884), and /transcription/* Transcription Health (issue #2059 - proved in
+/// HostedTranscriptionServeTests).
 ///
 /// WHY A DENY AND NOT A PARTITION. The tenant is not missing from the query, it is missing from the DATA.
 /// These records were written with no tenant on them, so there is nothing to filter by; attributing them
@@ -208,10 +202,9 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
 {
     private const string Token = "test-token";
 
-    private const string TranscriptionRefusal = "transcription analysis is not available on the hosted gateway";
     private const string InstructionsRefusal = "the wingman instructions surface is not available on the hosted gateway";
-    // The utterance and dictation refusal constants were removed with their theories (issue #1884, un-deny):
-    // those two upload families are now served tenant-partitioned on hosted, not refused.
+    // The utterance/dictation (issue #1884) and transcription-analysis (issue #2059) refusal constants were
+    // removed with their theories: those surfaces are now served tenant-partitioned on hosted, not refused.
 
     private GatewayHost _gateway = null!;
     private HttpClient _http = null!;
@@ -268,31 +261,11 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
         try { if (Directory.Exists(_root)) Directory.Delete(_root, true); } catch { /* best effort */ }
     }
 
-    /// <summary>
-    /// The local Transcription Health history is unavailable on a shared hosted Gateway because its store
-    /// has no tenant partition.
-    /// </summary>
-    [Theory]
-    [InlineData("transcription/turns")]
-    [InlineData("transcription/turns?limit=2000")]
-    [InlineData("transcription/stats")]
-    [InlineData("transcription/terms")]
-    public async Task Transcription_analysis_reads_are_refused_to_an_enrolled_tenant(string path)
-    {
-        var resp = await Send(HttpMethod.Get, path);
-        // Fingerprint FIRST, status second: a renamed route must redden on "this is not the refusal
-        // body", not on "404 != 404". Asserting status ahead of the body would prove a route changed.
-        await AssertBodyIsNothingButTheRefusal(resp, TranscriptionRefusal, $"GET {path}");
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
-    }
-
-    [Fact]
-    public async Task Transcription_history_clear_is_refused_to_an_enrolled_tenant()
-    {
-        var resp = await Send(HttpMethod.Delete, "transcription/history");
-        await AssertBodyIsNothingButTheRefusal(resp, TranscriptionRefusal, "DELETE transcription/history");
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
-    }
+    // NOTE (issue #2059): the /transcription/* Transcription Health surface is NO LONGER denied here - the
+    // history store was tenant-partitioned and the routes now SERVE the caller's own tenant (403 when
+    // unresolved). Its hostile two-tenant proof is HostedTranscriptionServeTests; its self-host control
+    // remains in HostedContentReadSelfHostControlTests below. What stays denied here is the wingman-
+    // instructions single-owner prompt.
 
     /// <summary>
     /// Issue #1853. The wingman-instructions group is the single-owner wingman prompt: one active prompt
@@ -349,7 +322,6 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
     /// same body, because the refusal was never about who is asking.
     /// </summary>
     [Theory]
-    [InlineData("GET", "transcription/turns", null, TranscriptionRefusal)]
     [InlineData("GET", "gateway/wingman/instructions", null, InstructionsRefusal)]
     public async Task Every_family_is_refused_to_a_caller_carrying_no_tenant_at_all(
         string method, string path, string? body, string refusal)

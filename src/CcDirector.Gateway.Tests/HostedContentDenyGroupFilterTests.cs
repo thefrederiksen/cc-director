@@ -89,7 +89,6 @@ public sealed class HostedContentDenyGroupFilterTests
     // remaining denied content-read families keep their group-filter proof.
     private static string PrefixFor(string family) => family switch
     {
-        "transcription" => "transcription/",
         "instructions" => "gateway/wingman/instructions/",
         _ => throw new ArgumentOutOfRangeException(nameof(family)),
     };
@@ -99,15 +98,13 @@ public sealed class HostedContentDenyGroupFilterTests
     /// <summary>The second future route, whose parameter is a custom binder we can watch run (or not run).</summary>
     private static string BindingProbePath(string family) => PrefixFor(family) + "probe-binding";
 
-    private const string TranscriptionRefusal = "transcription analysis is not available on the hosted gateway";
     private const string InstructionsRefusal = "the wingman instructions surface is not available on the hosted gateway";
 
     /// <summary>Which family, its group-mapper, and the refusal its filter must produce.</summary>
-    public static TheoryData<string> Families() => new() { "transcription", "instructions" };
+    public static TheoryData<string> Families() => new() { "instructions" };
 
     private static string RefusalFor(string family) => family switch
     {
-        "transcription" => TranscriptionRefusal,
         "instructions" => InstructionsRefusal,
         _ => throw new ArgumentOutOfRangeException(nameof(family)),
     };
@@ -187,8 +184,6 @@ public sealed class HostedContentDenyGroupFilterTests
     // ===== 2. SELF-HOST: the same body-bound route still BINDS and SERVES, over BOTH non-hosted forms =====
 
     [Theory]
-    [InlineData("transcription", null)]
-    [InlineData("transcription", "0")]
     [InlineData("instructions", null)]
     [InlineData("instructions", "0")]
     public async Task A_route_added_to_the_group_still_binds_and_serves_on_self_host(string family, string? hostedValue)
@@ -311,9 +306,6 @@ public sealed class HostedContentDenyGroupFilterTests
 
             switch (family)
             {
-                case "transcription":
-                    return TranscriptionAnalysisEndpoint.Map(app);
-
                 case "instructions":
                     db = new GatewayDbTestHarness();
                     return WingmanInstructionsEndpoint.Map(

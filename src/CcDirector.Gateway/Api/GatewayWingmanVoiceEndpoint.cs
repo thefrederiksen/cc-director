@@ -600,7 +600,8 @@ internal static class GatewayWingmanVoiceEndpoint
 
             // Transcribe WITH the validated dictionary correction applied (the SAME engine every other
             // surface uses; fails open to the raw transcript in local mode or on any cleanup error).
-            var result = await transcription.TranscribeAsync(bytes, fileName, contentType, applyCorrection: true, ct);
+            var result = await transcription.TranscribeAsync(bytes, fileName, contentType, applyCorrection: true, ct,
+                tenant: GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary));
             // Out of credits / monthly cap (issue #939): map to the shared 402 state (branch by code)
             // instead of flattening it into a generic 502 - so the client shows the consistent
             // add-credits message and keeps the recording, not "transcription failed".
@@ -823,7 +824,7 @@ internal static class GatewayWingmanVoiceEndpoint
 
         app.MapPost("/wingman/utterance/{uploadId}/complete", async (string uploadId, UtteranceCompleteRequest? req, HttpContext ctx, CancellationToken ct) =>
         {
-            if (!gate.TryOpen(ctx, out var uploads, out _, out var deny)) return deny;
+            if (!gate.TryOpen(ctx, out var uploads, out var reqTenant, out var deny)) return deny;
             if (req is null || req.TotalChunks <= 0)
                 return Results.Json(new { error = "totalChunks (>0) is required" }, statusCode: StatusCodes.Status400BadRequest);
             if (!uploads.Exists(uploadId))
@@ -855,7 +856,8 @@ internal static class GatewayWingmanVoiceEndpoint
             // Transcribe through the single owner WITH the validated dictionary correction applied (the
             // SAME engine every other surface uses; fails open to raw in local mode or on any error).
             var result = await transcription.TranscribeAsync(
-                assembledAudio, "audio." + (req.Ext ?? "webm"), req.Mime ?? "audio/webm", applyCorrection: true, ct);
+                assembledAudio, "audio." + (req.Ext ?? "webm"), req.Mime ?? "audio/webm", applyCorrection: true, ct,
+                tenant: reqTenant);
             uploads.Delete(uploadId);
             // Out of credits / monthly cap (issue #939): map to the shared 402 state (branch by code)
             // instead of flattening it into a generic 502 - so the client shows the consistent

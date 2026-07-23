@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using CcDirector.Core.Dictation;
@@ -30,6 +31,23 @@ public sealed class TranscriptionHistoryLog
     }
 
     public static string DefaultDirectory() => CcStorage.TranscriptionHistory();
+
+    /// <summary>
+    /// This tenant's transcription-history directory (issue #2059). The single Local tenant keeps the existing
+    /// flat directory, so a self-host install's history does not move; every other tenant gets its own
+    /// subdirectory. This is the ONE source of truth for the per-tenant layout - both the writers (dictation,
+    /// voice, batch, recording) and the Transcription Health reader resolve the same directory from it, so a
+    /// tenant reads back exactly the history written for it and never another tenant's.
+    /// </summary>
+    public static string DirectoryFor(Core.Tenancy.TenantId tenant)
+    {
+        if (tenant == Core.Tenancy.TenantId.Local) return DefaultDirectory();
+        var chars = tenant.Value.Select(c => char.IsLetterOrDigit(c) || c is '-' or '_' ? c : '_').ToArray();
+        return Path.Combine(DefaultDirectory(), new string(chars));
+    }
+
+    /// <summary>A history log over a specific tenant's partition (issue #2059).</summary>
+    public static TranscriptionHistoryLog ForTenant(Core.Tenancy.TenantId tenant) => new(DirectoryFor(tenant));
 
     public string FileFor(DateTime utcNow)
         => Path.Combine(_directory, $"transcription-{utcNow:yyyyMMdd}.jsonl");

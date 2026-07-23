@@ -104,7 +104,8 @@ public sealed class GatewayTranscriptionService
     /// <param name="applyCorrection">When true, run the validated dictionary corrector on the raw text.</param>
     /// <param name="ct">Cancellation token.</param>
     public async Task<GatewayTranscriptionResult> TranscribeAsync(
-        byte[] audio, string fileName, string contentType, bool applyCorrection, CancellationToken ct)
+        byte[] audio, string fileName, string contentType, bool applyCorrection, CancellationToken ct,
+        CcDirector.Core.Tenancy.TenantId? tenant = null)
     {
         if (audio is null) throw new ArgumentNullException(nameof(audio));
 
@@ -145,7 +146,7 @@ public sealed class GatewayTranscriptionService
             swTranscribe.Stop();
             FileLog.Write($"[GatewayTranscriptionService] TranscribeAsync OUT OF CREDITS: mode={mode}, code={ex.Code}");
             RecordHistory(turnId, "out_of_credits",
-                swTranscribe.ElapsedMilliseconds, 0, applyCorrection, raw: null, cleanup: null);
+                swTranscribe.ElapsedMilliseconds, 0, applyCorrection, raw: null, cleanup: null, tenant: tenant);
             return GatewayTranscriptionResult.OutOfCredits(mode, routing.Endpoint.Model, ex.Code, ex.Message);
         }
         catch (TranscriptionPermanentException ex)
@@ -157,7 +158,7 @@ public sealed class GatewayTranscriptionService
             swTranscribe.Stop();
             FileLog.Write($"[GatewayTranscriptionService] TranscribeAsync PERMANENT: mode={mode}, code={ex.Code}, {ex.Message}");
             RecordHistory(turnId, "permanent_error",
-                swTranscribe.ElapsedMilliseconds, 0, applyCorrection, raw: null, cleanup: null);
+                swTranscribe.ElapsedMilliseconds, 0, applyCorrection, raw: null, cleanup: null, tenant: tenant);
             return GatewayTranscriptionResult.PermanentError(mode, routing.Endpoint.Model, ex.Code, ex.Message);
         }
         catch (Exception ex)
@@ -168,7 +169,7 @@ public sealed class GatewayTranscriptionService
             swTranscribe.Stop();
             FileLog.Write($"[GatewayTranscriptionService] TranscribeAsync provider FAILED: mode={mode}, {ex.Message}");
             RecordHistory(turnId, "provider_error",
-                swTranscribe.ElapsedMilliseconds, 0, applyCorrection, raw: null, cleanup: null);
+                swTranscribe.ElapsedMilliseconds, 0, applyCorrection, raw: null, cleanup: null, tenant: tenant);
             return GatewayTranscriptionResult.ProviderError(mode, routing.Endpoint.Model, ex.Message);
         }
 
@@ -182,29 +183,23 @@ public sealed class GatewayTranscriptionService
         FileLog.Write($"[GatewayTranscriptionService] TranscribeAsync OK: mode={mode}, corrected={applyCorrection}, "
                       + $"transcribeMs={swTranscribe.ElapsedMilliseconds}, cleanupMs={(applyCorrection ? swCleanup.ElapsedMilliseconds : 0)}, chars={text.Length}");
         RecordHistory(turnId, "ok", swTranscribe.ElapsedMilliseconds,
-            applyCorrection ? swCleanup.ElapsedMilliseconds : 0, applyCorrection, raw, cleanup);
+            applyCorrection ? swCleanup.ElapsedMilliseconds : 0, applyCorrection, raw, cleanup, tenant: tenant);
         return GatewayTranscriptionResult.Ok(text, mode, routing.Endpoint.Model);
     }
 
-    /// <summary>Append one minimized turn to local Transcription Health history.</summary>
+    /// <summary>Append one minimized turn to the caller tenant's Transcription Health history (issue #2059).
+    /// When a tenant is supplied the record is written to THAT tenant's partition
+    /// (<see cref="TranscriptionHistoryLog.ForTenant"/>); when it is null the injected <see cref="_history"/>
+    /// is used (self-host, tests, and the recording path which already injects its own per-tenant log). The
+    /// old hosted write-skip is gone: the write is now per-tenant on hosted, so it accumulates in the caller's
+    /// own partition and its Transcription Health page reads it back - never another tenant's.</summary>
     private void RecordHistory(
         string turnId, string outcome, long transcribeMs, long cleanupMs, bool corrected,
-        string? raw, CleanupOutcome? cleanup)
+        string? raw, CleanupOutcome? cleanup, CcDirector.Core.Tenancy.TenantId? tenant = null)
     {
-        // HOSTED WRITE GATE (deny-by-default, defense in depth for the transcription-analysis read deny
-        // #1897). The shared history has no tenant in its path, file name, or records, and its ONLY
-        // reader is the now-denied analysis group (verified: nothing billing / usage-metering / quota
-        // consumes it, so gating undercounts nothing). Continuing to append every account's local history
-        // to one shared file on hosted would accumulate cross-tenant data at rest that nothing on hosted can
-        // even read - so stop the write. Self-host is single-tenant and unchanged.
-        if (GatewayHostedMode.IsHosted)
-        {
-            FileLog.Write("[GatewayTranscriptionService] transcription history write SKIPPED on hosted: the shared local history has no tenant and its only reader is denied");
-            return;
-        }
-
+        var log = tenant is { } tv ? TranscriptionHistoryLog.ForTenant(tv) : _history;
         var finalText = cleanup?.Text ?? raw;
-        _history.Record(new TranscriptionHistoryRecord
+        log.Record(new TranscriptionHistoryRecord
         {
             TimestampUtc = DateTime.UtcNow,
             TurnId = turnId,
