@@ -21,8 +21,19 @@ namespace CcDirector.Gateway.Api;
 /// machines paired to THIS Gateway; this lists the devices registered to the DevThrottle ACCOUNT across
 /// the cloud. Both surfaces coexist.
 ///
+/// HOSTED (issue #1856 pattern): the self-host cloud proxy above is meaningless on the shared multi-tenant
+/// Gateway, which holds NO single account credential - identity arrives per device, bound to the device key
+/// at enrollment. On hosted the two routes answer about the CALLER: they resolve the request's tenant from
+/// its authenticated device key and serve that tenant's own devices from the local device registry (the
+/// database authority since the #2020 cutover), returning 403 when no tenant is bound - NEVER the Local
+/// partition, and NEVER a signedIn=false envelope to an authenticated tenant. This mirrors exactly what
+/// <c>/account/status</c> and the tenant-scoped <c>/devices</c> listing already do. Gated on
+/// <see cref="GatewayHostedMode.IsHosted"/> (not on the boundary having been wired) so a hosted Gateway can
+/// never silently fall through to the self-host answer; a missing boundary FAILS CLOSED with a 503.
+///
 /// Security (carries DT-05): the raw account token NEVER appears in the Cockpit-facing response (the DTOs
-/// have no token field) and is never written to the log on any path.
+/// have no token field) and is never written to the log on any path. On the hosted path no account token
+/// exists and the device rows carry only masked key metadata (prefix/last-four), never a raw key.
 ///
 /// Behaviour at the edges (no fabricated data):
 /// <list type="bullet">
@@ -46,17 +57,35 @@ internal static class AccountDevicesEndpoint
     /// The Gateway-hosted DevThrottle credential service (issue #636). Null on a host that has no
     /// credential service (a non-Windows host); the endpoints then report an explicit signed-out result.
     /// </param>
-    /// <param name="devices">The cloud device-registry client (the injectable cloud egress seam).</param>
+    /// <param name="devices">The cloud device-registry client (the injectable cloud egress seam, self-host).</param>
     /// <param name="thisDeviceName">
     /// This host's machine name, used to mark the Gateway's own device in the list. Injected for tests.
     /// </param>
-    public static void Map(IEndpointRouteBuilder app, DevThrottleAccountService? account, DeviceRegistryClient devices, string thisDeviceName)
+    /// <param name="localDevices">
+    /// The local device registry (the database device-credential authority). On hosted this is the source of
+    /// the caller tenant's device list and the target of the per-tenant revoke; unused on the self-host path.
+    /// </param>
+    /// <param name="tenantBoundary">
+    /// The hosted tenant boundary (issue #1856). On hosted it resolves the CALLER's tenant from their
+    /// authenticated device key; omitting it on a hosted Gateway does NOT fall back to the self-host answer -
+    /// the hosted path FAILS CLOSED with a 503. Ignored off hosted mode.
+    /// </param>
+    public static void Map(IEndpointRouteBuilder app, DevThrottleAccountService? account, DeviceRegistryClient devices, string thisDeviceName,
+        Pairing.DeviceRegistry localDevices, Tenancy.HostedTenantBoundary? tenantBoundary = null)
     {
         if (devices is null) throw new ArgumentNullException(nameof(devices));
         if (thisDeviceName is null) throw new ArgumentNullException(nameof(thisDeviceName));
+        if (localDevices is null) throw new ArgumentNullException(nameof(localDevices));
 
         app.MapGet("/account/devices", async (HttpContext ctx) =>
         {
+            // Issue #1856: on HOSTED, answer about the CALLER, not about this Gateway's (absent) account
+            // credential. Gated on hosted MODE, not on the boundary being wired, so a hosted Gateway can never
+            // silently take the self-host path and report a false signedIn=false; a missing boundary fails
+            // closed inside HostedDevices.
+            if (GatewayHostedMode.IsHosted)
+                return HostedDevices(ctx, tenantBoundary, localDevices, thisDeviceName);
+
             // Entry point: the delegate is the boundary, so the only try-catch lives here. A signed-out
             // Gateway is an expected state answered explicitly (not an exception); a cloud failure is an
             // unexpected failure caught here and reported as a clear error (never a fabricated list).
@@ -91,6 +120,11 @@ internal static class AccountDevicesEndpoint
             if (string.IsNullOrWhiteSpace(id))
                 return Results.BadRequest(new { error = "id is required" });
 
+            // Issue #1856: on HOSTED, revoke only the caller tenant's OWN device from the local registry. Same
+            // hosted-mode gate and fail-closed rule as the GET.
+            if (GatewayHostedMode.IsHosted)
+                return HostedRevoke(ctx, id, tenantBoundary, localDevices);
+
             // Entry point: same boundary rule as the GET above.
             var token = account?.GetAccessTokenForForwarding();
             if (string.IsNullOrEmpty(token))
@@ -121,6 +155,95 @@ internal static class AccountDevicesEndpoint
                     statusCode: StatusCodes.Status502BadGateway);
             }
         });
+    }
+
+    /// <summary>
+    /// Hosted <c>GET /account/devices</c>: serve the CALLER tenant's own devices from the local registry.
+    /// Fails closed (503) if the boundary is missing on a hosted Gateway, and denies (403) a request with no
+    /// bound tenant - never the Local partition, and never a signedIn=false envelope to an authenticated
+    /// tenant (that false was the exact lie that made the Account page contradict itself).
+    /// </summary>
+    private static IResult HostedDevices(HttpContext ctx, Tenancy.HostedTenantBoundary? boundary, Pairing.DeviceRegistry localDevices, string thisDeviceName)
+    {
+        if (boundary is not { IsHosted: true })
+        {
+            FileLog.Write("[AccountDevicesEndpoint] GET /account/devices (hosted): MISWIRED - hosted mode but no hosted tenant boundary; refusing rather than reporting a false signed-out state.");
+            return Results.Json(new { error = "this hosted gateway cannot resolve the caller's tenant" },
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
+        var tenant = boundary.ResolveRequestTenant(ctx);
+        if (tenant is null)
+        {
+            FileLog.Write("[AccountDevicesEndpoint] GET /account/devices (hosted): DENIED - no tenant is bound to this request");
+            return Results.Json(new { error = "no tenant is bound to this request" },
+                statusCode: StatusCodes.Status403Forbidden);
+        }
+
+        var records = localDevices.ListForTenant(tenant.Value);
+        var list = new List<AccountDeviceDto>(records.Count);
+        foreach (var record in records)
+            list.Add(ToDto(record, thisDeviceName));
+
+        FileLog.Write($"[AccountDevicesEndpoint] GET /account/devices (hosted): signedIn=true, returned {list.Count} device(s) for the caller's tenant");
+        return Results.Json(new AccountDevicesResponseDto { SignedIn = true, Devices = list });
+    }
+
+    /// <summary>
+    /// Hosted <c>DELETE /account/devices/{id}</c>: revoke a device only when it belongs to the CALLER's own
+    /// tenant. A device id that is not the caller tenant's is a 404 (indistinguishable from a non-existent id,
+    /// so one tenant cannot probe another's device ids), never a cross-tenant revoke.
+    /// </summary>
+    private static IResult HostedRevoke(HttpContext ctx, string id, Tenancy.HostedTenantBoundary? boundary, Pairing.DeviceRegistry localDevices)
+    {
+        if (boundary is not { IsHosted: true })
+        {
+            FileLog.Write($"[AccountDevicesEndpoint] DELETE /account/devices/{id} (hosted): MISWIRED - hosted mode but no hosted tenant boundary; refusing.");
+            return Results.Json(new { error = "this hosted gateway cannot resolve the caller's tenant" },
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
+        var tenant = boundary.ResolveRequestTenant(ctx);
+        if (tenant is null)
+        {
+            FileLog.Write($"[AccountDevicesEndpoint] DELETE /account/devices/{id} (hosted): DENIED - no tenant is bound to this request");
+            return Results.Json(new { error = "no tenant is bound to this request" },
+                statusCode: StatusCodes.Status403Forbidden);
+        }
+
+        var revoked = localDevices.RemoveForTenant(tenant.Value, id);
+        if (!revoked)
+        {
+            FileLog.Write($"[AccountDevicesEndpoint] DELETE /account/devices/{id} (hosted): not the caller tenant's device -> 404");
+            return Results.Json(new RevokeDeviceResponseDto { SignedIn = true, Id = id, Revoked = false },
+                statusCode: StatusCodes.Status404NotFound);
+        }
+
+        FileLog.Write($"[AccountDevicesEndpoint] DELETE /account/devices/{id} (hosted): revoked for the caller's tenant");
+        return Results.Json(new RevokeDeviceResponseDto { SignedIn = true, Id = id, Revoked = true });
+    }
+
+    /// <summary>
+    /// Maps a local registry record to the Cockpit-facing DTO for the hosted path. The registry carries the
+    /// device id, machine name, issued time and masked key metadata; platform / device-type / app-version /
+    /// last-seen are not recorded there and are OMITTED (null) rather than guessed. The this-device marker
+    /// matches the record's machine name to this host's machine name (case-insensitive), same as the cloud map.
+    /// </summary>
+    private static AccountDeviceDto ToDto(RegisteredDeviceDto record, string thisDeviceName)
+    {
+        return new AccountDeviceDto
+        {
+            Id = record.DeviceId,
+            Name = record.MachineName,
+            Platform = null,
+            DeviceType = null,
+            AppVersion = null,
+            KeyPrefix = string.IsNullOrEmpty(record.KeyPrefix) ? null : record.KeyPrefix,
+            KeyLast4 = string.IsNullOrEmpty(record.KeyLast4) ? null : record.KeyLast4,
+            CreatedAt = record.IssuedAtUtc.ToString("o"),
+            LastSeenAt = null,
+            ThisDevice = string.Equals(record.MachineName, thisDeviceName, StringComparison.OrdinalIgnoreCase),
+        };
     }
 
     /// <summary>
