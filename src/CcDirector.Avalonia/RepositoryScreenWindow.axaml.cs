@@ -1,16 +1,13 @@
 using System;
-using System.Collections.Generic;
-using System.Threading;
-using System.Threading.Tasks;
 using Avalonia.Controls;
-using CcDirector.Core.Configuration;
 using CcDirector.Core.Git;
 
 namespace CcDirector.Avalonia;
 
 /// <summary>
 /// A thin window hosting the Repository list. Transitional shell while the screen is a pop-up; the
-/// list control is the same one that will embed in the main window later.
+/// list control is the same one that will embed in the main window later. The window only displays -
+/// the <see cref="RepositoryMonitor"/> owns the state and the scanning.
 /// </summary>
 public partial class RepositoryScreenWindow : Window
 {
@@ -21,10 +18,10 @@ public partial class RepositoryScreenWindow : Window
         InitializeComponent();
     }
 
-    public RepositoryScreenWindow(RootDirectoryStore store,
-        Func<CancellationToken, Task<IReadOnlyList<LiveSessionRef>>>? liveSessionsProvider = null) : this()
+    public RepositoryScreenWindow(RepositoryMonitor monitor, Action? onRefreshRequested = null) : this()
     {
-        ListView.LiveSessionsProvider = liveSessionsProvider;
-        ListView.Attach(store);
+        if (onRefreshRequested != null)
+            ListView.RefreshRequested += onRefreshRequested;
+        ListView.Attach(monitor);
     }
 }

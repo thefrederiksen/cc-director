@@ -1,16 +1,28 @@
-using System;
-using System.IO;
+using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
 using Avalonia.Threading;
 using CcDirector.Avalonia.Controls;
-using CcDirector.Core.Configuration;
+using CcDirector.Core.Git;
 using Xunit;
 
 namespace CcDirector.Avalonia.Tests;
 
 public class RepositoryListViewRenderTests
 {
+    private static RepositoryMonitor MonitorWith(params string[] names)
+        => new(
+            enumerate: _ => names,
+            compute: (p, _, _) => Task.FromResult(new RepositoryStatus
+            {
+                Path = p,
+                Name = p,
+                Provider = RepoProvider.GitHub,
+                Branch = "main",
+                IsClean = true,
+                Success = true,
+            }));
+
     [AvaloniaFact]
     public void RepositoryListView_LoadsAndLaysOut()
     {
@@ -23,14 +35,29 @@ public class RepositoryListViewRenderTests
     }
 
     [AvaloniaFact]
+    public async Task RepositoryListView_RendersMonitorModel()
+    {
+        var monitor = MonitorWith("alpha", "beta", "gamma");
+        await monitor.RescanAsync(new[] { "/roots" });
+
+        var view = new RepositoryListView();
+        var window = new Window { Content = view, Width = 900, Height = 600 };
+        window.Show();
+        view.Attach(monitor);
+        Dispatcher.UIThread.RunJobs();
+
+        // The view rendered the monitor's three repositories without scanning anything itself.
+        Assert.Equal(3, monitor.Snapshot().Count);
+    }
+
+    [AvaloniaFact]
     public void RepositoryScreenWindow_Constructs_AndWiresNamedControls()
     {
         // Reproduces the "Repository status..." menu path. A hand-written InitializeComponent that
         // skipped the generated named-field hookup left ListView null and threw in this constructor.
-        var store = new RootDirectoryStore(
-            Path.Combine(Path.GetTempPath(), "ccd-rootstore-" + Guid.NewGuid().ToString("N") + ".json"));
+        var monitor = MonitorWith("alpha");
 
-        var window = new global::CcDirector.Avalonia.RepositoryScreenWindow(store, null);
+        var window = new global::CcDirector.Avalonia.RepositoryScreenWindow(monitor);
         window.Show();
         Dispatcher.UIThread.RunJobs();
 

@@ -1,12 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Media;
-using CcDirector.Core.Configuration;
+using Avalonia.Threading;
 using CcDirector.Core.Git;
 using CcDirector.Core.Utilities;
 
@@ -51,87 +49,73 @@ public partial class RepositoryListView : UserControl
     private static readonly ISolidColorBrush MutedBg = new SolidColorBrush(Color.Parse("#2D2D30"));
     private static readonly ISolidColorBrush MutedBr = new SolidColorBrush(Color.Parse("#3C3C3C"));
 
-    private readonly RepositoryStatusService _service = new();
-    private RootDirectoryStore? _store;
-    private bool _isLoading;
+    private RepositoryMonitor? _monitor;
 
-    /// <summary>Live sessions on this machine, so the worktree summary distinguishes in-use from safe. Optional.</summary>
-    public Func<CancellationToken, Task<IReadOnlyList<LiveSessionRef>>>? LiveSessionsProvider { get; set; }
+    /// <summary>Raised when the user clicks Refresh; the host triggers the monitor to rescan.</summary>
+    public event Action? RefreshRequested;
 
     public RepositoryListView()
     {
         InitializeComponent();
     }
 
-    /// <summary>Point the view at the configured root directories and scan.</summary>
-    public void Attach(RootDirectoryStore store)
+    /// <summary>
+    /// Subscribe to the background monitor and render its current model. The view never scans - it
+    /// displays what the service already knows and updates as results stream in.
+    /// </summary>
+    public void Attach(RepositoryMonitor monitor)
     {
         FileLog.Write("[RepositoryListView] Attach");
-        _store = store;
-        _ = RefreshAsync();
+        Detach();
+        _monitor = monitor;
+        monitor.Upserted += OnModelChanged;
+        monitor.Removed += OnModelChanged;
+        monitor.ProgressChanged += OnProgressChanged;
+        RenderFromMonitor();
     }
 
-    private void RefreshButton_Click(object? sender, RoutedEventArgs e) => _ = RefreshAsync();
-
-    private async Task RefreshAsync()
+    public void Detach()
     {
-        if (_store is null || _isLoading)
+        if (_monitor is { } m)
+        {
+            m.Upserted -= OnModelChanged;
+            m.Removed -= OnModelChanged;
+            m.ProgressChanged -= OnProgressChanged;
+            _monitor = null;
+        }
+    }
+
+    private void OnModelChanged(RepositoryStatus _) => Dispatcher.UIThread.Post(RenderFromMonitor);
+    private void OnProgressChanged() => Dispatcher.UIThread.Post(RenderFromMonitor);
+
+    private void RefreshButton_Click(object? sender, RoutedEventArgs e) => RefreshRequested?.Invoke();
+
+    private void RenderFromMonitor()
+    {
+        if (_monitor is null)
             return;
 
-        _isLoading = true;
-        StatusText.Text = "Scanning repositories...";
-        StatusText.IsVisible = true;
-        ContentScroller.IsVisible = false;
+        var statuses = _monitor.Snapshot();
+        RepoList.ItemsSource = BuildRows(statuses);
 
-        try
+        bool scanning = _monitor.IsScanning;
+        if (statuses.Count == 0)
         {
-            var roots = _store.Roots.Select(r => r.Path).Where(p => !string.IsNullOrWhiteSpace(p)).ToList();
-            var sessions = await FetchLiveSessionsAsync();
-            var statuses = await Task.Run(() => _service.ScanAsync(roots, sessions));
-
-            var rows = BuildRows(statuses);
-            RepoList.ItemsSource = rows;
-
-            if (rows.Count == 0)
-            {
-                StatusText.Text = roots.Count == 0
-                    ? "No root directories are configured. Add one in Repositories."
-                    : "No repositories found under the configured root directories.";
-                StatusText.IsVisible = true;
-                ContentScroller.IsVisible = false;
-            }
-            else
-            {
-                SummaryText.Text = BuildSummary(statuses);
-                StatusText.IsVisible = false;
-                ContentScroller.IsVisible = true;
-            }
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[RepositoryListView] RefreshAsync FAILED: {ex.Message}");
-            StatusText.Text = $"Could not scan repositories: {ex.Message}";
+            StatusText.Text = scanning
+                ? "Scanning repositories..."
+                : "No repositories found under the configured root directories.";
             StatusText.IsVisible = true;
             ContentScroller.IsVisible = false;
         }
-        finally
+        else
         {
-            _isLoading = false;
+            StatusText.IsVisible = false;
+            ContentScroller.IsVisible = true;
         }
-    }
 
-    private async Task<IReadOnlyList<LiveSessionRef>> FetchLiveSessionsAsync()
-    {
-        try
-        {
-            if (LiveSessionsProvider is { } provider)
-                return await provider(CancellationToken.None) ?? Array.Empty<LiveSessionRef>();
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[RepositoryListView] FetchLiveSessionsAsync FAILED (proceeding without session data): {ex.Message}");
-        }
-        return Array.Empty<LiveSessionRef>();
+        SummaryText.Text = scanning
+            ? $"Scanning... {_monitor.ScanDone} of {_monitor.ScanTotal}"
+            : BuildSummary(statuses);
     }
 
     // ----- pure builders (unit-tested without a UI) -----
