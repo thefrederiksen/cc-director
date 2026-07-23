@@ -69,8 +69,10 @@ public sealed class HostedEntitlementGateTests : IDisposable
         DeviceType = "workstation",
     };
 
-    /// <summary>Creates the payment-side table this Gateway only reads, and optionally seeds one row.</summary>
-    private GatewayDatabase OpenWithEntitlements(string? status = null, DateTime? periodEnd = null, bool? livemode = true)
+    /// <summary>Creates the payment-side table this Gateway only reads, and optionally seeds one row. The
+    /// table carries the two-tier <c>tier</c> column exactly as the payment side's schema does, so the
+    /// Gateway's read (which selects it) resolves.</summary>
+    private GatewayDatabase OpenWithEntitlements(string? status = null, DateTime? periodEnd = null, bool? livemode = true, string? tier = null)
     {
         var db = _harness.Open();
         using var ctx = db.CreateUnscopedContext();
@@ -78,13 +80,13 @@ public sealed class HostedEntitlementGateTests : IDisposable
             "CREATE TABLE IF NOT EXISTS entitlements (" +
             "subject TEXT NOT NULL PRIMARY KEY, status TEXT NOT NULL, " +
             "current_period_end TEXT NULL, stripe_subscription_id TEXT NULL, updated_at TEXT NULL, " +
-            "livemode INTEGER NULL)");
+            "livemode INTEGER NULL, tier TEXT NULL)");
 
         if (status is not null)
         {
             ctx.Database.ExecuteSqlRaw(
-                "INSERT INTO entitlements (subject, status, current_period_end, livemode) VALUES ({0}, {1}, {2}, {3})",
-                Subject, status, periodEnd, livemode);
+                "INSERT INTO entitlements (subject, status, current_period_end, livemode, tier) VALUES ({0}, {1}, {2}, {3}, {4})",
+                Subject, status, periodEnd, livemode, tier);
         }
         return db;
     }
@@ -288,5 +290,81 @@ public sealed class HostedEntitlementGateTests : IDisposable
 
         Assert.Equal(200, result.Status);
         Assert.NotNull(result.Response);
+    }
+
+    [Theory]
+    [InlineData("hosted")]
+    [InlineData("pro")]
+    [InlineData(null)]
+    public void Enrollment_grants_on_any_active_entitlement_regardless_of_tier(string? tier)
+    {
+        // The gate is TIER-AGNOSTIC. Enrolling is "may this account reach a hosted tenant at all", which BOTH
+        // plans grant - so a live active row enrolls whether its tier is hosted, pro, or (on an older row that
+        // predates the column) null. The tier decides a capability INSIDE the tenant, read separately; it must
+        // never become a second, silent paywall on enrollment. If this ever reddens for one tier, the gate has
+        // started refusing a plan that paid.
+        var db = OpenWithEntitlements(EntitlementRegistry.StatusActive, tier: tier);
+        var (devices, tenants, validator) = Wire(db);
+
+        var result = HostedEnrollmentEndpoint.Enroll(Token(), Req(), devices, tenants, validator,
+            new EntitlementRegistry(db, requireLivemode: false), DateTime.UtcNow);
+
+        Assert.Equal(200, result.Status);
+        Assert.NotNull(result.Response);
+    }
+
+    [Theory]
+    [InlineData("hosted")]
+    [InlineData("pro")]
+    public void Evaluate_exposes_the_tier_alongside_an_entitled_outcome(string tier)
+    {
+        // The reader SURFACES the plan for the capability that cares (the wingman): Evaluate returns the tier
+        // paired with the entitled outcome, from the same single read the gate uses - so the two can never
+        // disagree about the same row.
+        var db = OpenWithEntitlements(EntitlementRegistry.StatusActive, tier: tier);
+
+        var decision = new EntitlementRegistry(db, requireLivemode: false).Evaluate(Subject, DateTime.UtcNow);
+
+        Assert.Equal(EntitlementOutcome.Entitled, decision.Outcome);
+        Assert.Equal(tier, decision.Tier);
+    }
+
+    [Fact]
+    public void Evaluate_exposes_a_null_tier_on_an_older_row_that_predates_the_column()
+    {
+        // A row written before the tier column existed reads back as a null tier - not an error, just an older
+        // row - and it still ENTITLES (the gate is tier-agnostic). Null tier is the capability side's problem
+        // to interpret, not the gate's.
+        var db = OpenWithEntitlements(EntitlementRegistry.StatusActive, tier: null);
+
+        var decision = new EntitlementRegistry(db, requireLivemode: false).Evaluate(Subject, DateTime.UtcNow);
+
+        Assert.Equal(EntitlementOutcome.Entitled, decision.Outcome);
+        Assert.Null(decision.Tier);
+    }
+
+    [Fact]
+    public void Evaluate_carries_no_tier_when_the_read_finds_nothing()
+    {
+        // Absence: the read succeeds and finds no row. No outcome to grant, and no tier to expose.
+        var db = OpenWithEntitlements();   // table exists, no row for this subject
+
+        var decision = new EntitlementRegistry(db, requireLivemode: false).Evaluate(Subject, DateTime.UtcNow);
+
+        Assert.Equal(EntitlementOutcome.NotEntitled, decision.Outcome);
+        Assert.Null(decision.Tier);
+    }
+
+    [Fact]
+    public void Evaluate_carries_no_tier_when_the_read_fails()
+    {
+        // Ignorance: the read FAILS (the payment-side table is absent, as a lost SELECT grant looks from here).
+        // Unknown, and a null tier - a failed read establishes nothing, so it exposes nothing.
+        var db = _harness.Open();          // no entitlements table created
+
+        var decision = new EntitlementRegistry(db, requireLivemode: false).Evaluate(Subject, DateTime.UtcNow);
+
+        Assert.Equal(EntitlementOutcome.Unknown, decision.Outcome);
+        Assert.Null(decision.Tier);
     }
 }

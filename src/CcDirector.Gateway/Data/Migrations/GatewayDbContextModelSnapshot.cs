@@ -258,6 +258,10 @@ namespace CcDirector.Gateway.Data.Migrations
                         .HasColumnType("TEXT")
                         .HasColumnName("stripe_subscription_id");
 
+                    b.Property<string>("Tier")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tier");
+
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("TEXT")
                         .HasColumnName("updated_at");

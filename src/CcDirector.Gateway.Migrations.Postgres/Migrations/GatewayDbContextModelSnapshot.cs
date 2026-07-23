@@ -267,6 +267,10 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                         .HasColumnType("text")
                         .HasColumnName("stripe_subscription_id");
 
+                    b.Property<string>("Tier")
+                        .HasColumnType("text")
+                        .HasColumnName("tier");
+
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at");
