@@ -133,6 +133,10 @@ public sealed class PostgresProviderProofTests
             ("push_subscriptions", "Endpoint"),
             ("session_spend", "SessionId"),
             ("snoozes", "SessionId"),
+            // The per-account settings key (AddTenantSettings): tenant_settings.Key is byte-ordinal
+            // (GatewayDbContext UseCollation("C")) so a settings key compares exactly. This entry was
+            // missing here because the PG-gated suite never runs in CI; real-Postgres proof surfaced the gap.
+            ("tenant_settings", "Key"),
             ("tenants", "AccountSubject"),
             ("tenants", "Id"),
         };
