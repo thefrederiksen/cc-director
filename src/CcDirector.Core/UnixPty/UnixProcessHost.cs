@@ -62,15 +62,28 @@ public sealed class UnixProcessHost : IDisposable
 
         var resolvedExe = ResolveExecutable(exePath);
 
-        // argv must start with the program name and be null-terminated.
-        var argv = new List<string?> { resolvedExe };
+        // On macOS a session leader does NOT acquire an opened terminal as its controlling
+        // terminal automatically (unlike Linux) - that takes an explicit TIOCSCTTY ioctl issued
+        // by the child itself, which posix_spawn cannot express. So on macOS the spawn target is
+        // the bundled ccd-ptyshim, which performs the ioctl and then execs the real program.
+        // Without this the terminal has no foreground process group, the kernel has nobody to
+        // send the window-change signal to on resize, and the agent keeps painting at its spawn
+        // width forever - rendering as garbled, overlapping text in every terminal view.
+        var spawnTarget = OperatingSystem.IsMacOS() ? PtyShim.EnsurePresent() : resolvedExe;
+
+        // argv must start with the program name and be null-terminated. When spawning through
+        // the shim, the real program (absolute path) and its arguments follow the shim.
+        var argv = new List<string?> { spawnTarget };
+        if (spawnTarget != resolvedExe)
+            argv.Add(resolvedExe);
         argv.AddRange(TokenizeArgs(args));
         argv.Add(null);
 
         var envp = BuildEnvironment(environmentVars);
 
-        // The subordinate device path: the child opens this fresh (as session leader) so it
-        // becomes the controlling terminal, then we dup it onto stdin/stdout/stderr.
+        // The subordinate device path: the child opens this fresh (as session leader) and it
+        // becomes the controlling terminal - granted by the kernel on open (Linux) or claimed
+        // by the shim's TIOCSCTTY (macOS) - then we dup it onto stdin/stdout/stderr.
         var ptsPtr = ptsname(_console.MasterFd);
         if (ptsPtr == IntPtr.Zero)
             throw new InvalidOperationException("ptsname returned null for the PTY master fd.");
@@ -100,10 +113,10 @@ public sealed class UnixProcessHost : IDisposable
                 Check(posix_spawn_file_actions_addchdir_np(fileActions, workingDir),
                     "posix_spawn_file_actions_addchdir_np");
 
-            int rc = posix_spawnp(out _pid, resolvedExe, fileActions, attr, argv.ToArray(), envp);
+            int rc = posix_spawnp(out _pid, spawnTarget, fileActions, attr, argv.ToArray(), envp);
             if (rc != 0)
                 throw new InvalidOperationException(
-                    $"posix_spawnp failed for '{resolvedExe}' (rc={rc}, errno={Marshal.GetLastWin32Error()}).");
+                    $"posix_spawnp failed for '{spawnTarget}' (rc={rc}, errno={Marshal.GetLastWin32Error()}).");
         }
         finally
         {

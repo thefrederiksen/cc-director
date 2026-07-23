@@ -41,4 +41,36 @@
     <EmbeddedResource Include="Tools\skill-tool-overrides.json" />
   </ItemGroup>
 
+  <!-- macOS controlling-terminal shim (UnixPty/ccd-ptyshim.c, see its header comment).
+       Compiled with clang on macOS builds only and EMBEDDED into this assembly rather than
+       shipped as a loose file, because the Mac Director is distributed as one single-file
+       binary that gets copied around alone (build slots, the app bundle, launcher updates).
+       PtyShim.cs extracts it to the storage root at runtime. The linker ad-hoc signs the
+       binary at link time and that signature survives extraction, which Apple Silicon
+       requires before it will execute anything. Built universal (arm64 + x86_64) so a
+       forced osx-x64 publish keeps working. -->
+  <!-- The properties are set inside a target (not statically) because $(IntermediateOutputPath)
+       is only defined once the SDK's own targets have been imported, after this file's body. -->
+  <Target Name="PreparePtyShimProperties" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <PropertyGroup>
+      <PtyShimSource>$(MSBuildProjectDirectory)/UnixPty/ccd-ptyshim.c</PtyShimSource>
+      <PtyShimBinary>$(IntermediateOutputPath)ccd-ptyshim</PtyShimBinary>
+    </PropertyGroup>
+  </Target>
+
+  <Target Name="CompilePtyShim" Condition="$([MSBuild]::IsOSPlatform('OSX'))"
+          DependsOnTargets="PreparePtyShimProperties"
+          Inputs="$(PtyShimSource)" Outputs="$(PtyShimBinary)">
+    <Exec Command="clang -O2 -Wall -Werror -mmacosx-version-min=11.0 -arch arm64 -arch x86_64 -o &quot;$(PtyShimBinary)&quot; &quot;$(PtyShimSource)&quot;" />
+  </Target>
+
+  <Target Name="EmbedPtyShim" BeforeTargets="AssignTargetPaths" DependsOnTargets="CompilePtyShim"
+          Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <ItemGroup>
+      <EmbeddedResource Include="$(PtyShimBinary)">
+        <LogicalName>ccd-ptyshim</LogicalName>
+      </EmbeddedResource>
+    </ItemGroup>
+  </Target>
+
 </Project>
