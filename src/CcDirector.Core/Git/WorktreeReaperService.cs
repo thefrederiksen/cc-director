@@ -308,8 +308,10 @@ public sealed class WorktreeReaperService
                 }
             }
 
-            // One prune at the end clears any admin entries whose directories are now gone.
-            await _git.RunAsync(repositoryPath, new[] { "worktree", "prune" }, ct);
+            // One prune at the end clears any admin entries whose directories are now gone. Non-cancellable
+            // (inspection round 6): a cancel here would throw AFTER destructive removals completed and
+            // discard the outcome record; the removals are already done, so this cleanup must finish.
+            await _git.RunAsync(repositoryPath, new[] { "worktree", "prune" }, CancellationToken.None);
 
             var result = BuildResult(null);
             FileLog.Write($"[WorktreeReaperService] reaped {result.RemovedCount}/{outcomes.Count}, leftovers={result.Leftovers.Count}, skipped={result.Skipped.Count}");
@@ -386,10 +388,12 @@ public sealed class WorktreeReaperService
         // loses nothing that was tracked or uncommitted.
         FileLog.Write($"[WorktreeReaperService] folder remains after git deregistered {worktree.Path} (git success={remove.Success}); finishing physical delete");
         var normalizedLeft = NormalizePath(worktree.Path);
-        // Record the leftover BEFORE attempting the physical delete (inspection round 5): git has
-        // already deregistered it, so if this process died mid-delete with no record, no inventory
-        // could ever rediscover the folder. Recorded first, a crash simply retries next reap. If the
-        // delete fully succeeds we drop the record just below.
+        // Stamp a marker file INTO the folder to give it a stable identity (inspection round 6): a later
+        // retry deletes only a folder that still carries our marker, so if the owner clears this orphan
+        // and creates NEW data (or git registers a new worktree) at the same pathname, the retry sees no
+        // marker and never touches it. Record the leftover BEFORE the physical delete (round 5) so a
+        // crash mid-delete still leaves a retry record.
+        TryWriteLeftoverMarker(worktree.Path);
         _leftovers.Add(normalizedLeft, repositoryPath);
         TryDeleteDirectory(worktree.Path);
         await _git.RunAsync(repositoryPath, new[] { "worktree", "prune" }, CancellationToken.None);
@@ -400,43 +404,62 @@ public sealed class WorktreeReaperService
             return ReapOutcome.RemovedOk(worktree);
         }
 
+        // The folder survived a partial delete (a locked file remains). The recursive delete may have
+        // removed the marker, so re-assert it on the surviving folder for the next retry.
+        TryWriteLeftoverMarker(worktree.Path);
         FileLog.Write($"[WorktreeReaperService] LEFTOVER (locked files remain): {worktree.Path}");
         return ReapOutcome.LeftBehind(worktree);
     }
 
+    /// <summary>The stable-identity marker the reaper stamps into a leftover folder. A retry deletes a
+    /// leftover ONLY while this file is present, so a folder the owner later recreated at the same path
+    /// (which will not carry it) is never deleted.</summary>
+    private const string LeftoverMarkerName = ".ccd-worktree-leftover";
+
+    private static void TryWriteLeftoverMarker(string folder)
+    {
+        try
+        {
+            if (Directory.Exists(folder))
+                File.WriteAllText(Path.Combine(folder, LeftoverMarkerName), "cc-director worktree leftover - safe to delete\n");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[WorktreeReaperService] could not stamp leftover marker in {folder}: {ex.Message}");
+        }
+    }
+
+    private static bool HasLeftoverMarker(string folder)
+    {
+        try { return File.Exists(Path.Combine(folder, LeftoverMarkerName)); }
+        catch { return false; }
+    }
+
     /// <summary>
     /// Retry the physical delete of folders a past reap deregistered but could not fully remove, for
-    /// the repository being reaped. Each candidate is checked, under the machine-wide lock, against
-    /// three ways it must NOT be deleted (inspection round 5): git registers the path as a worktree
-    /// AGAIN (the owner created a new worktree there - drop the stale record, never delete), a live
-    /// session reservation covers it (leave it entirely alone), or the folder is already gone (drop
-    /// it). Only a path that is still an unregistered, unreserved, existing orphan is deleted - and
-    /// those hold only ignored/build outputs, so finishing the delete loses nothing tracked. A
-    /// reservation read or lock failure skips the retry entirely rather than deleting blind.
+    /// the repository being reaped. A candidate is deleted ONLY when, under the machine-wide lock, it
+    /// still carries our leftover MARKER (inspection round 6) - the stable identity that proves it is
+    /// the very orphan we recorded and not a folder the owner recreated, or a new worktree git
+    /// registered, at the same pathname. A leftover with no marker (recreated), one a live reservation
+    /// covers (in use), or one already gone is dropped or left alone rather than deleted. Those orphans
+    /// hold only ignored/build outputs, so finishing the delete loses nothing tracked. A lock or
+    /// reservation read failure skips the retry entirely rather than deleting blind.
     /// </summary>
-    private async Task RetryPersistedLeftovers(string repositoryPath, CancellationToken ct)
+    private Task RetryPersistedLeftovers(string repositoryPath, CancellationToken ct)
     {
         var repoNorm = NormalizePath(repositoryPath);
         var mine = _leftovers.All()
             .Where(r => string.Equals(NormalizePath(r.RepositoryPath), repoNorm, StringComparison.OrdinalIgnoreCase))
             .ToList();
         if (mine.Count == 0)
-            return;
-
-        // The paths git STILL registers as a worktree of this repo. A leftover matching one is a NEW
-        // worktree at the same pathname, never to be deleted.
-        var registered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var list = await _git.RunAsync(repositoryPath, new[] { "worktree", "list", "--porcelain" }, CancellationToken.None);
-        if (list.Success)
-            foreach (var e in WorktreeListParser.Parse(list.Output))
-                registered.Add(NormalizePath(e.Path));
+            return Task.CompletedTask;
 
         IDisposable crit;
         try { crit = _reservations.EnterCriticalSection(); }
         catch (Exception ex)
         {
             FileLog.Write($"[WorktreeReaperService] leftover retry skipped - could not acquire the reap lock: {ex.Message}");
-            return;
+            return Task.CompletedTask;
         }
         using (crit)
         {
@@ -445,7 +468,7 @@ public sealed class WorktreeReaperService
             catch (Exception ex)
             {
                 FileLog.Write($"[WorktreeReaperService] leftover retry skipped - could not read live reservations: {ex.Message}");
-                return;
+                return Task.CompletedTask;
             }
 
             foreach (var leftover in mine)
@@ -453,17 +476,19 @@ public sealed class WorktreeReaperService
                 ct.ThrowIfCancellationRequested();
                 var path = leftover.Path;
 
-                if (registered.Contains(path))
+                if (!Directory.Exists(path))
                 {
-                    FileLog.Write($"[WorktreeReaperService] leftover {path} is a registered worktree again - not deleting; dropping the stale record");
-                    _leftovers.Remove(path);
+                    _leftovers.Remove(path); // already gone - a prior retry finished it, or the owner did
                     continue;
                 }
                 if (reservedNow.Any(p => PathCoversWorktree(path, p)))
                     continue; // a live session (re)entered it - leave it entirely alone
-                if (!Directory.Exists(path))
+                if (!HasLeftoverMarker(path))
                 {
-                    _leftovers.Remove(path); // already gone - a prior retry finished it, or the owner did
+                    // The folder at this path is no longer OUR orphan - the owner recreated it, or git
+                    // registered a new worktree here. Never delete it; drop the stale record.
+                    FileLog.Write($"[WorktreeReaperService] leftover {path} no longer carries our marker - not deleting; dropping the stale record");
+                    _leftovers.Remove(path);
                     continue;
                 }
 
@@ -473,9 +498,13 @@ public sealed class WorktreeReaperService
                     FileLog.Write($"[WorktreeReaperService] retried leftover deleted (lock cleared): {path}");
                     _leftovers.Remove(path);
                 }
-                // else: still locked - keep it persisted and retry on the next reap.
+                else
+                {
+                    TryWriteLeftoverMarker(path); // a locked file remained and may have taken the marker - re-assert it
+                }
             }
         }
+        return Task.CompletedTask;
     }
 
     private static void TryDeleteDirectory(string path)

@@ -150,8 +150,26 @@ public sealed class SessionManager : IDisposable
         // session's working directory (inspection): while this session is alive, the worktree reaper
         // - in this Director slot or another on this machine - must not remove the worktree it is in.
         // Only real local directories are reserved (a remote/label RepoPath matches no worktree).
+        //
+        // The reservation is owned by the SESSION PROCESS, not this Director (inspection round 6): a
+        // session (or a detached child) can outlive a force-killed Director, and its worktree must stay
+        // protected. Liveness therefore tracks the session's own process. If its start time cannot be
+        // read the reservation stays Director-owned (the pre-launch reservation), which is still correct
+        // while this Director is alive.
         if (!string.IsNullOrWhiteSpace(session.RepoPath) && Directory.Exists(session.RepoPath))
-            _reservations.Reserve(session.RepoPath, session.Id.ToString());
+        {
+            int spid = session.ProcessId;
+            DateTime? sstart = null;
+            if (spid > 0)
+            {
+                try { using var sp = System.Diagnostics.Process.GetProcessById(spid); sstart = sp.StartTime.ToUniversalTime(); }
+                catch { sstart = null; }
+            }
+            if (spid > 0 && sstart is not null)
+                _reservations.Reserve(session.RepoPath, session.Id.ToString(), spid, sstart);
+            else
+                _reservations.Reserve(session.RepoPath, session.Id.ToString());
+        }
 
         // Issue #820: every creation route funnels through here, so this is the one place to ensure
         // the session carries a three-digit number BEFORE subscribers (the desktop UI, the web

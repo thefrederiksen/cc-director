@@ -82,6 +82,40 @@ public sealed class WorktreeReservationStoreTests : IDisposable
         Assert.Empty(reused.LiveReservedPaths());
     }
 
+    // FAIL CLOSED (inspection round 6): a reservation file that exists but cannot be READ or PARSED
+    // (a lock, a corrupt record) must abort the read - we cannot know what worktree it protects, so
+    // treating it as absent would let the reaper delete under a live session.
+    [Fact]
+    public void LiveReservedPaths_WhenAReservationFileCannotBeParsed_ThrowsFailClosed()
+    {
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(Path.Combine(_dir, "corrupt.json"), "{ this is not valid json");
+
+        Assert.ThrowsAny<Exception>(() => Store().LiveReservedPaths());
+    }
+
+    // SESSION-PROCESS LIVENESS (inspection round 6): a reservation owned by a live SESSION process
+    // stays alive even though the DEFAULT owner (this Director) is reported gone - so a session, or a
+    // detached child, that outlives a force-killed Director keeps its worktree protected.
+    [Fact]
+    public void Reserve_OwnedByALiveSessionProcess_SurvivesEvenWhenTheDirectorIsGone()
+    {
+        var wt = Path.Combine(_dir, "wt");
+        const int directorPid = 4242, sessionPid = 5150;
+        var sessionStart = OwnerStart.AddMinutes(1);
+
+        var store = new WorktreeReservationStore(
+            dir: _dir, ownerPid: directorPid, ownerStartUtc: OwnerStart,
+            probeOwner: pid => pid == sessionPid
+                ? (OwnerState.Alive, sessionStart)   // the session process is alive
+                : (OwnerState.Gone, (DateTime?)null)); // the Director is gone
+
+        // Reserve owned by the SESSION process, not the Director.
+        store.Reserve(wt, "sess-1", sessionPid, sessionStart);
+
+        Assert.Contains(WorktreeReaperService.NormalizePath(wt), store.LiveReservedPaths());
+    }
+
     // The machine-wide critical section is mutually exclusive across store instances on the same dir -
     // this is what serializes a reservation write against the reaper's remove.
     [Fact]

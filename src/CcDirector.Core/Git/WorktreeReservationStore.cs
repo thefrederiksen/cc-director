@@ -108,15 +108,24 @@ public sealed class WorktreeReservationStore
 
     /// <summary>Reserve <paramref name="workingDirectory"/> for a live session, holding the machine-wide
     /// lock so the write is serialized against the reaper. Best-effort - never throws into the session
-    /// lifecycle. Written atomically (temp + move) so a reader never sees a partial record.</summary>
-    public void Reserve(string workingDirectory, string sessionId)
+    /// lifecycle. Written atomically (temp + move) so a reader never sees a partial record.
+    ///
+    /// <paramref name="ownerPid"/>/<paramref name="ownerStartUtc"/> override the owning process whose
+    /// liveness keeps this reservation alive (inspection round 6). The launch path reserves TWICE: once
+    /// before the process starts, owned by this Director (which is alive during launch), then again
+    /// after the session process exists, owned by that SESSION process - so a session (or a detached
+    /// child) that OUTLIVES a force-killed Director keeps its worktree protected, because liveness now
+    /// tracks the session's own process, not the Director's. Omit both to own by this Director.</summary>
+    public void Reserve(string workingDirectory, string sessionId, int? ownerPid = null, DateTime? ownerStartUtc = null)
     {
         if (string.IsNullOrWhiteSpace(workingDirectory) || string.IsNullOrWhiteSpace(sessionId))
             return;
         try
         {
             Directory.CreateDirectory(_dir);
-            var row = new Reservation(WorktreeReaperService.NormalizePath(workingDirectory), _ownerPid, _ownerStartUtc, sessionId);
+            var pid = ownerPid ?? _ownerPid;
+            var startUtc = ownerStartUtc ?? _ownerStartUtc;
+            var row = new Reservation(WorktreeReaperService.NormalizePath(workingDirectory), pid, startUtc, sessionId);
             var json = JsonSerializer.Serialize(row);
             using (EnterCriticalSection())
             {
@@ -168,13 +177,31 @@ public sealed class WorktreeReservationStore
         foreach (var file in files)
         {
             Reservation? r;
-            try { r = JsonSerializer.Deserialize<Reservation>(File.ReadAllText(file)); }
-            catch { r = null; }
+            try
+            {
+                r = JsonSerializer.Deserialize<Reservation>(File.ReadAllText(file));
+            }
+            catch (FileNotFoundException)
+            {
+                // A benign race: another reader pruned this file between the enumeration and the read.
+                // It protected nothing we still need to know about - skip it.
+                continue;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                continue;
+            }
+            catch (Exception ex)
+            {
+                // FAIL CLOSED (inspection round 6): we could not READ or PARSE a reservation record that
+                // exists (a locked file, a corrupt record). We cannot know what worktree it protects, so
+                // treating it as "no protection" would delete under a live session. Abort the whole reap.
+                throw new IOException($"could not read reservation record {file}: {ex.Message}", ex);
+            }
             if (r is null || string.IsNullOrWhiteSpace(r.WorktreePath))
             {
-                // An unreadable/corrupt record: we cannot know what it protects, so we do NOT delete it
-                // (deleting would silently drop protection) and it simply contributes nothing this pass.
-                continue;
+                // Parsed but empty/degenerate - same fail-closed reasoning: we cannot tell what it guards.
+                throw new IOException($"reservation record {file} is unreadable (empty or malformed)");
             }
 
             var (state, start) = _probeOwner(r.OwnerPid);
