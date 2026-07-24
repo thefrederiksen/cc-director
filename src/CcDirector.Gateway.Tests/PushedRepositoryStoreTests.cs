@@ -90,6 +90,30 @@ public class PushedRepositoryStoreTests
         Assert.Equal("current", Assert.Single(fresh!.Value.Repositories).Name);
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 2, ruling R2-4): a REPEATED Hello from the SAME connection
+    // must not reset the sequence baseline - otherwise a duplicate Hello lets an older
+    // sequence replay over newer data. The baseline resets only when ownership actually
+    // changes to a different connection.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public void RepeatedHello_OnTheSameConnection_KeepsTheSequenceBaseline()
+    {
+        var store = new PushedRepositoryStore();
+        var tenant = TenantId.Local;
+
+        store.RegisterConnection(tenant, "d1", "conn1");
+        Assert.True(store.ApplySnapshot(tenant, "d1", "conn1", 100, new[] { Repo("newest") }));
+
+        // The same connection says Hello again - the baseline must survive.
+        store.RegisterConnection(tenant, "d1", "conn1");
+
+        Assert.False(store.ApplySnapshot(tenant, "d1", "conn1", 50, new[] { Repo("replayed") }));
+
+        var fresh = store.TryGetFresh(tenant, "d1", Fresh);
+        Assert.Equal("newest", Assert.Single(fresh!.Value.Repositories).Name); // no replay landed
+    }
+
     [Fact]
     public void Push_WithoutARegisteredConnection_IsRejected()
     {

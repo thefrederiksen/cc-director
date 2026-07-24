@@ -36,7 +36,10 @@ public sealed class PushedRepositoryStore
     /// <summary>
     /// Mark <paramref name="connectionId"/> as the Director's current stream connection - the hub
     /// calls this at Hello, the same moment the session store learns it. The sequence baseline
-    /// resets so the new connection's first push, at any sequence, is authoritative.
+    /// resets ONLY when ownership actually changes to a different connection (so the new
+    /// connection's first push, at any sequence, is authoritative). A repeated Hello from the
+    /// CURRENT connection keeps the existing baseline (ruling R2-4) - resetting it would let an
+    /// older sequence replay over newer data.
     /// </summary>
     public void RegisterConnection(TenantId tenant, string directorId, string connectionId)
     {
@@ -44,6 +47,11 @@ public sealed class PushedRepositoryStore
         var entry = directors.GetOrAdd(directorId, _ => new Entry());
         lock (entry)
         {
+            if (string.Equals(entry.ActiveConnectionId, connectionId, StringComparison.Ordinal))
+            {
+                FileLog.Write($"[PushedRepositoryStore] repeated Hello from the current connection - sequence baseline kept: director={directorId}");
+                return;
+            }
             entry.ActiveConnectionId = connectionId;
             entry.LastSequence = -1;
         }
