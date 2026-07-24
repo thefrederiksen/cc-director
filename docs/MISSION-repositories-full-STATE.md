@@ -4,37 +4,46 @@ Branch: mission/repositories-full · Worktree: D:\ReposFred\devthrottle-repos-mi
 Spec: devthrottle_internal#510 · Brief: docs/MISSION-repositories-full-2026-07-23.md
 
 ## Done (committed on the branch)
-- (nothing yet)
+1. Phase A: model (worktree list+sizes+dirty-since+provisional), monitor enrich/recompute-one/
+   find-for-path, RepositoryWatcher (git-signal scoped, debounced), one-brain unify (session tab
+   reads monitor), verifying visual state. Commit "phase A".
+2. Phase B services + C2 DATA-LOSS FIX (origin-gone requires upstream; regression test): DiffParser,
+   GitDiffService, GitBranchService+BranchSafetyEvaluator, PullRequestService (gh/az parsers),
+   GitHistoryService. Commit "phase B services".
+3. Phase B UI + E: RepositoryDetailView (tabs: Changes diff viewer / Worktrees reuse / Branches /
+   Pull requests / History), ChangesDiffView, list click-through, HandToAgentDialog +
+   AgentBriefTemplates (hard rules + no-attribution), MainWindow spawn+stage-brief wiring.
+   Commit "phase B UI + phase E hand-off".
 
-## In progress
-- Step 1 (A-model): worktree list + sizes + dirty-since + provisional on the model.
+## In progress (built, tests running, NOT yet committed)
+4. Phase C: Gateway.Contracts RepoStatusDto/WorktreeDto/FleetWorktreeDto; RepositoryDtoMapper
+   (ControlApi, folds state strings); GatewayStreamClient repoSnapshot + PushRepoSnapshot (own
+   try/catch, old-Gateway safe); ControlApiHost monitor ctor param + WireRepositoryPush (3s
+   debounce) + SnapshotRepositories; GatewayClient ListFleetRepositories/WorktreesAsync;
+   ControlEndpoints /fleet/repositories + /fleet/worktrees (relay + standalone monitor fallback);
+   Gateway PushedRepositoryStore + DirectorHub.PushRepoSnapshot + GET /repositories + /worktrees
+   (tenant-scoped via ResolveReadTenant, streamStaleResolved); GatewayHost singletons + Map arg;
+   CLI repo_ops.py + cli.py repo/worktree list.
+   Gateway store tests written (PushedRepositoryStoreTests) - background run pending.
+5. Phase D (partial): RecommendationEngine (Core, pure, 6 tests green) + Recommendations rail page
+   in RepositoriesView (badge, cards, Show me -> detail, Hand to an agent).
+
+## Also built (with C, awaiting the same test runs)
+- App passes RepositoryMonitor into ControlApiHost (verified in source).
+- D persistence v1 FILE-BACKED (Architect deviation from #510's "real tables", documented in the
+  store remarks): Gateway RepoHistoryStore (JSONL at CcStorage.Root()/repo-history.jsonl), fed from
+  accepted PushRepoSnapshot only, provisional rows excluded; WeeklyTrends (per-week peaks) +
+  DirtyOverThreshold; GET /reports/repositories-weekly (tenant-scoped). Postgres = follow-up that
+  changes persistence, not shape. Tests written (RepoHistoryStoreTests).
+
+## Not built (honest gaps for the QA report)
+- Postgres persistence for the history (file-backed v1 instead - see above).
+- Worktree dwell-time events (appeared/reaped/reclaimed-bytes event log) - trends are snapshot-based.
+- Fleet-remote reap routing (out of scope per brief ruling; Gateway API is read-only).
+- Phase E scheduled cleanup agent (out of scope per brief ruling).
+- Weekly report HTML section (the endpoint serves JSON; the report renderer integration is follow-up).
 
 ## Next
-- Step 2 (A-unify), then per the brief's landing order.
-
-## Notes for a fresh seat
-- Owner approval required before ANY merge to origin/main. Commit/push to the branch freely.
-
-## C research (received, condensed - trust but verify line numbers)
-- Session push: GatewayStreamClient (ControlApi) dials Gateway SignalR hub /director-stream,
-  MessagePack. Sends: Hello, then InvokeAsync("PushSnapshot", seq, SessionDto[]) / "PushDelta" /
-  "RemoveSession"; one Interlocked _sequence shared by all sends. Snapshot func injected by
-  ControlApiHost.BuildStreamClient (~line 736); event wiring in WireDoorbellPush (~825); periodic
-  re-push timer already exists (reuse for repos).
-- Gateway receive: DirectorHub (Gateway/Streaming/DirectorHub.cs) methods Hello/PushSnapshot/
-  PushDelta/RemoveSession -> PushedSessionStore keyed Tenant -> directorId; tenant resolved from the
-  authenticated device key, NEVER the payload. Clone as PushedRepositoryStore + new hub methods
-  PushRepoSnapshot/RemoveRepo (never change existing signatures; old Gateway returns HubException
-  on unknown method - harmless, sends are try/caught).
-- GET /sessions shape to clone: GatewayEndpoints.Map (~753): ResolveReadTenant (403 unbound on
-  hosted), registry.ListDirectors(tenant) + ?machine= filter, pushedSessions.TryGetFresh per
-  Director, FleetRosterCache grace. Add GET /repositories + /worktrees the same way.
-- Local relay: ControlEndpoints /fleet/sessions (~376): gw.ListFleetSessionsAsync else standalone
-  fallback. Add /fleet/repositories + /fleet/worktrees; fallback reads RepositoryMonitor.Snapshot()
-  - pass the monitor into ControlApiHost ctor (App.axaml.cs ~521) and into ControlEndpoints.Map.
-- DTO casing: HTTP = camelCase web defaults; Python director.field() reads both. Stream = MessagePack
-  (member-based). RepositoryStatus lives in Core; mirror a contract DTO in Gateway.Contracts for the
-  push (SessionDto precedent).
-- Python CLI: tools/cc-devthrottle/src/cli.py typer app; session_app pattern (~42/76/486);
-  session_ops.list_sessions uses director.get_json("fleet/sessions"), rich Table box.ASCII, bare
-  print for --json. Add repo_ops/worktree_ops + repo_app/worktree_app identically.
+- Verify App passes monitor to ControlApiHost; run Gateway tests; commit C+D; full three suites;
+  slot-5 build + real-machine QA harness (repo list/worktree list CLI against live Director);
+  Codex inspection; QA report artifact; notify owner.

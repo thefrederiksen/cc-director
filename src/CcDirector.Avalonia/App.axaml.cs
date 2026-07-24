@@ -540,7 +540,10 @@ public partial class App : Application
                 return Task.CompletedTask;
             };
 
-            ControlApiHost = new ControlApiHost(SessionManager, version, requestShutdown, repositoryRegistry: RepositoryRegistry);
+            ControlApiHost = new ControlApiHost(SessionManager, version, requestShutdown, repositoryRegistry: RepositoryRegistry,
+                // Repositories mission (#510 phase C): the monitor feeds the Gateway push and the
+                // /fleet/repositories - /fleet/worktrees standalone fallback.
+                repositoryMonitor: RepositoryMonitor);
 
             _ = Task.Run(async () =>
             {

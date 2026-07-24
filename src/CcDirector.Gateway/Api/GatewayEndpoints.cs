@@ -71,6 +71,8 @@ internal static class GatewayEndpoints
         // of pulling it, whenever that Director's stream is connected and its last push is within
         // streamStaleAfter. Null (stream mode off) keeps the pull-only behaviour byte-identical to today.
         Streaming.PushedSessionStore? pushedSessions = null,
+        Streaming.PushedRepositoryStore? pushedRepositories = null,
+        Streaming.RepoHistoryStore? repoHistory = null,
         TimeSpan? streamStaleAfter = null,
         // Issue #1177 (Phase 1): when non-null, per-session commands are first tried DOWN the Director's
         // stream via this hook (GatewayHost.SendCommandAsync); a null return means the Director is not
@@ -750,6 +752,98 @@ internal static class GatewayEndpoints
         // the response: by default they're silently skipped (backward-compat flat list);
         // with ?envelope=true they're surfaced in machineErrors so the UI can render an
         // inline "unreachable" placeholder.
+        // GET /repositories + /worktrees - the fleet's repository/worktree fact (repositories mission,
+        // #510 phase C). Tenant-scoped exactly like /sessions: the caller sees only its own partition.
+        // Read-only: reaping runs on the owning Director after a live re-verify, never from here.
+        app.MapGet("/repositories", (HttpContext ctx, string? machine, string? repo) =>
+        {
+            var reqTenant = ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" },
+                    statusCode: StatusCodes.Status403Forbidden);
+            if (pushedRepositories is null)
+                return Results.Json(new List<RepoStatusDto>());
+
+            var rows = new List<RepoStatusDto>();
+            foreach (var directorId in pushedRepositories.DirectorIdsFor(reqTenant.Value))
+            {
+                var fresh = pushedRepositories.TryGetFresh(reqTenant.Value, directorId, streamStaleResolved);
+                if (fresh is null)
+                    continue;
+                rows.AddRange(fresh.Value.Repositories);
+            }
+            if (!string.IsNullOrWhiteSpace(machine))
+                rows = rows.Where(r => string.Equals(r.MachineName, machine, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (!string.IsNullOrWhiteSpace(repo))
+                rows = rows.Where(r => string.Equals(r.Name, repo, StringComparison.OrdinalIgnoreCase)).ToList();
+            return Results.Json(rows.OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList());
+        });
+
+        app.MapGet("/worktrees", (HttpContext ctx, string? machine, string? repo, string? state) =>
+        {
+            var reqTenant = ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" },
+                    statusCode: StatusCodes.Status403Forbidden);
+            if (pushedRepositories is null)
+                return Results.Json(new List<FleetWorktreeDto>());
+
+            var rows = new List<FleetWorktreeDto>();
+            foreach (var directorId in pushedRepositories.DirectorIdsFor(reqTenant.Value))
+            {
+                var fresh = pushedRepositories.TryGetFresh(reqTenant.Value, directorId, streamStaleResolved);
+                if (fresh is null)
+                    continue;
+                foreach (var r in fresh.Value.Repositories)
+                    foreach (var w in r.Worktrees)
+                        rows.Add(new FleetWorktreeDto
+                        {
+                            RepoName = r.Name,
+                            RepoPath = r.Path,
+                            MachineName = r.MachineName,
+                            DirectorId = r.DirectorId,
+                            Path = w.Path,
+                            Branch = w.Branch,
+                            State = w.State,
+                            Reason = w.Reason,
+                            SessionLabels = w.SessionLabels,
+                            SizeBytes = w.SizeBytes,
+                            LastActivityUtc = w.LastActivityUtc,
+                            DataAgeSeconds = fresh.Value.DataAgeSeconds,
+                        });
+            }
+            if (!string.IsNullOrWhiteSpace(machine))
+                rows = rows.Where(w => string.Equals(w.MachineName, machine, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (!string.IsNullOrWhiteSpace(repo))
+                rows = rows.Where(w => string.Equals(w.RepoName, repo, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (!string.IsNullOrWhiteSpace(state))
+                rows = rows.Where(w => string.Equals(w.State, state, StringComparison.OrdinalIgnoreCase)).ToList();
+            return Results.Json(rows.OrderBy(w => w.RepoName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(w => w.Branch, StringComparer.OrdinalIgnoreCase).ToList());
+        });
+
+        // GET /reports/repositories-weekly - the memory turned into numbers (repositories mission,
+        // #510 phase D): weekly worktree/disk trends plus today's dirty-too-long callouts. Feeds the
+        // dev-effectiveness report; tenant-scoped like every read.
+        app.MapGet("/reports/repositories-weekly", (HttpContext ctx, int? weeks) =>
+        {
+            var reqTenant = ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" },
+                    statusCode: StatusCodes.Status403Forbidden);
+            if (repoHistory is null)
+                return Results.Json(new { error = "repository history is not enabled on this Gateway" },
+                    statusCode: StatusCodes.Status404NotFound);
+            var trends = repoHistory.WeeklyTrends(reqTenant.Value, Math.Clamp(weeks ?? 8, 1, 26));
+            var dirty = repoHistory.DirtyOverThreshold(reqTenant.Value);
+            return Results.Json(new
+            {
+                weeks = trends,
+                dirtyOverThreshold = dirty,
+                dirtyThresholdDays = Streaming.RepoHistoryStore.DirtyThresholdDays,
+            });
+        });
+
         app.MapGet("/sessions", (HttpContext ctx, string? director, string? agent, string? state,
                                        string? statusColor, string? machine,
                                        bool? includeExited, string? q, bool? envelope) =>

@@ -1,0 +1,123 @@
+"""Repository and worktree listing - the fleet fact any agent can ask for in one call.
+
+Backed by the Director's /fleet/repositories and /fleet/worktrees relays: with a Gateway the
+answer is fleet-wide (every machine); standalone it is this Director's own monitor model.
+Read-only - reaping always runs on the owning Director with a live re-verify.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from typing import Any, Dict, List
+
+import typer
+from rich import box
+from rich.console import Console
+from rich.table import Table
+
+# Make cc_shared importable when running from source, matching the existing cc-* tools.
+_tools_dir = str(Path(__file__).resolve().parent.parent.parent)
+if _tools_dir not in sys.path:
+    sys.path.insert(0, _tools_dir)
+
+from cc_shared import director  # noqa: E402
+
+console = Console()
+
+
+def _get(path: str) -> List[Dict[str, Any]]:
+    try:
+        rows = director.get_json(path) or []
+    except director.DirectorError as err:
+        console.print(f"[red]Error:[/red] {err}")
+        raise typer.Exit(1)
+    if isinstance(rows, dict) and rows.get("error"):
+        console.print(f"[red]Error:[/red] {rows['error']}")
+        raise typer.Exit(1)
+    return rows
+
+
+def _gb(size: Any) -> str:
+    try:
+        bytes_ = int(size)
+    except (TypeError, ValueError):
+        return "-"
+    if bytes_ >= 1_073_741_824:
+        return f"{bytes_ / 1_073_741_824:.1f}G"
+    if bytes_ >= 1_048_576:
+        return f"{bytes_ / 1_048_576:.0f}M"
+    return f"{bytes_ / 1024:.0f}K" if bytes_ > 0 else "0"
+
+
+def list_repositories(json_output: bool, dirty_only: bool = False) -> None:
+    rows = _get("fleet/repositories")
+    if dirty_only:
+        rows = [r for r in rows if not director.field(r, "isClean", "IsClean")]
+    if json_output:
+        print(json.dumps(rows, indent=2))
+        return
+
+    table = Table(show_header=True, header_style="bold", box=box.ASCII)
+    for col in ("REPOSITORY", "MACHINE", "PROVIDER", "BRANCH", "STATE", "WORKTREES", "SIZE(WT)"):
+        table.add_column(col)
+    for r in rows:
+        clean = director.field(r, "isClean", "IsClean")
+        uncommitted = director.field(r, "uncommittedCount", "UncommittedCount") or 0
+        state = "clean" if clean else f"{uncommitted} uncommitted"
+        wt_total = director.field(r, "worktreeCount", "WorktreeCount") or 0
+        wt_safe = director.field(r, "worktreesSafeToReap", "WorktreesSafeToReap") or 0
+        wt = "-" if not wt_total else f"{wt_total} ({wt_safe} safe)"
+        table.add_row(
+            str(director.field(r, "name", "Name") or "-"),
+            str(director.field(r, "machineName", "MachineName") or "-"),
+            str(director.field(r, "provider", "Provider") or "-"),
+            str(director.field(r, "branch", "Branch") or "-"),
+            state,
+            wt,
+            _gb(director.field(r, "worktreeBytes", "WorktreeBytes")),
+        )
+    console.print(table)
+    safe_total = sum(int(director.field(r, "worktreesSafeToReap", "WorktreesSafeToReap") or 0) for r in rows)
+    console.print(f"{len(rows)} repositories - {safe_total} worktrees safe to reap")
+
+
+def list_worktrees(json_output: bool, repo: str | None = None, state: str | None = None) -> None:
+    path = "fleet/worktrees"
+    rows = _get(path)
+    if repo:
+        rows = [w for w in rows if str(director.field(w, "repoName", "RepoName") or "").lower() == repo.lower()]
+    if state:
+        rows = [w for w in rows if str(director.field(w, "state", "State") or "").lower() == state.lower()]
+    if json_output:
+        print(json.dumps(rows, indent=2))
+        return
+
+    table = Table(show_header=True, header_style="bold", box=box.ASCII)
+    for col in ("REPO", "BRANCH", "MACHINE", "STATE", "SESSION", "SIZE", "REASON"):
+        table.add_column(col)
+    reclaim = 0
+    for w in rows:
+        w_state = str(director.field(w, "state", "State") or "-")
+        sessions = director.field(w, "sessionLabels", "SessionLabels") or []
+        if w_state == "safe-to-reap":
+            try:
+                reclaim += int(director.field(w, "sizeBytes", "SizeBytes") or 0)
+            except (TypeError, ValueError):
+                pass
+        table.add_row(
+            str(director.field(w, "repoName", "RepoName") or "-"),
+            str(director.field(w, "branch", "Branch") or "(detached)"),
+            str(director.field(w, "machineName", "MachineName") or "-"),
+            w_state,
+            ", ".join(sessions) if sessions else "-",
+            _gb(director.field(w, "sizeBytes", "SizeBytes")),
+            str(director.field(w, "reason", "Reason") or "-"),
+        )
+    console.print(table)
+    safe = sum(1 for w in rows if str(director.field(w, "state", "State")) == "safe-to-reap")
+    console.print(
+        f"{len(rows)} worktrees - {safe} safe ({_gb(reclaim)} reclaimable) - "
+        "reap runs on the owning Director"
+    )

@@ -228,6 +228,36 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         return list;
     }
 
+    /// <summary>The fleet's repositories (GET /repositories). Throws when the Gateway is disabled or the call fails.</summary>
+    public async Task<List<RepoStatusDto>> ListFleetRepositoriesAsync(CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled)
+            throw new InvalidOperationException("Gateway is not configured; cannot list fleet repositories.");
+        FileLog.Write("[GatewayClient] ListFleetRepositoriesAsync: GET /repositories");
+        using var resp = await _http.GetAsync("repositories", ct);
+        if (!resp.IsSuccessStatusCode)
+            throw await RelayFailureAsync(resp, "GET /repositories", ct);
+        var list = await resp.Content.ReadFromJsonAsync<List<RepoStatusDto>>(ct);
+        if (list is null)
+            throw new InvalidOperationException("Gateway GET /repositories returned an unparsable body.");
+        return list;
+    }
+
+    /// <summary>The fleet's worktrees, flattened (GET /worktrees). Throws when the Gateway is disabled or the call fails.</summary>
+    public async Task<List<FleetWorktreeDto>> ListFleetWorktreesAsync(CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled)
+            throw new InvalidOperationException("Gateway is not configured; cannot list fleet worktrees.");
+        FileLog.Write("[GatewayClient] ListFleetWorktreesAsync: GET /worktrees");
+        using var resp = await _http.GetAsync("worktrees", ct);
+        if (!resp.IsSuccessStatusCode)
+            throw await RelayFailureAsync(resp, "GET /worktrees", ct);
+        var list = await resp.Content.ReadFromJsonAsync<List<FleetWorktreeDto>>(ct);
+        if (list is null)
+            throw new InvalidOperationException("Gateway GET /worktrees returned an unparsable body.");
+        return list;
+    }
+
     /// <summary>
     /// Relay a single message to a session anywhere in the fleet via the Gateway's
     /// POST /sessions/{sid}/prompt. Fire-and-forget (WaitForIdle=false). Throws when the

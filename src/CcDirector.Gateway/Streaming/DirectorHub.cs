@@ -46,7 +46,8 @@ public sealed class DirectorHub : Hub
     public DirectorHub(PushedSessionStore store, DirectorRegistry registry, GatewayInputStatsAggregator inputStats,
         GatewayStreamRegistry streamRegistry, Snooze.SnoozeLandingObserver? snoozeLandings = null,
         Fleet.FleetRoleObserver? fleetRoles = null, Fleet.FleetDisplayStateObserver? fleetDisplayState = null,
-        HostedTenantBoundary? tenantBoundary = null)
+        HostedTenantBoundary? tenantBoundary = null, PushedRepositoryStore? repositoryStore = null,
+        RepoHistoryStore? repoHistory = null)
     {
         _store = store;
         _registry = registry;
@@ -56,6 +57,27 @@ public sealed class DirectorHub : Hub
         _fleetRoles = fleetRoles;
         _fleetDisplayState = fleetDisplayState;
         _tenantBoundary = tenantBoundary;
+        _repositoryStore = repositoryStore;
+        _repoHistory = repoHistory;
+    }
+
+    private readonly PushedRepositoryStore? _repositoryStore;
+    private readonly RepoHistoryStore? _repoHistory;
+
+    /// <summary>
+    /// A full repository/worktree snapshot from the bound Director (repositories mission, #510
+    /// phase C). Snapshots only; tenant comes from the connection binding, never the payload.
+    /// Accepted pushes also fold into the daily history (phase D) - rejected/stale ones never do.
+    /// </summary>
+    public void PushRepoSnapshot(long sequence, RepoStatusDto[] repositories)
+    {
+        var directorId = RequireBoundDirector();
+        var set = repositories ?? Array.Empty<RepoStatusDto>();
+        var accepted = _repositoryStore?.ApplySnapshot(RequireBoundTenant(), directorId, Context.ConnectionId,
+            sequence, set) ?? false;
+        if (accepted)
+            _repoHistory?.ObserveSnapshot(RequireBoundTenant(), set);
+        FileLog.Write($"[DirectorHub] PushRepoSnapshot: director={directorId} seq={sequence} repos={set.Length} accepted={accepted}");
     }
 
     /// <summary>

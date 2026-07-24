@@ -9,6 +9,31 @@ using CcDirector.Core.Utilities;
 
 namespace CcDirector.Avalonia.Controls;
 
+/// <summary>One recommendation card - display data only; the engine folded the strings.</summary>
+public sealed class RecommendationRowItem
+{
+    public string Title { get; init; } = "";
+    public string Body { get; init; } = "";
+    public string Why { get; init; } = "";
+    public string? RepoPath { get; init; }
+    public bool HasRepo => RepoPath is { Length: > 0 };
+    public IBrush StripeBrush { get; init; } = Brushes.Gray;
+
+    public static RecommendationRowItem From(Recommendation r) => new()
+    {
+        Title = r.Title,
+        Body = r.Body,
+        Why = r.Why,
+        RepoPath = r.RepoPath,
+        StripeBrush = r.Severity switch
+        {
+            1 => new SolidColorBrush(Color.Parse("#22C55E")),
+            2 => new SolidColorBrush(Color.Parse("#F59E0B")),
+            _ => new SolidColorBrush(Color.Parse("#3B82F6")),
+        },
+    };
+}
+
 /// <summary>
 /// The Repositories home: a left sub-rail hosting the live local-repository list and the root-folder
 /// registration, shown as a pinned, non-modal view inside the main window (issue #507, phase 4).
@@ -84,16 +109,68 @@ public partial class RepositoriesView : UserControl
         ShowRoots(false);
     }
 
-    private void ReposRailButton_Click(object? sender, RoutedEventArgs e) => ShowRoots(false);
-    private void RootsRailButton_Click(object? sender, RoutedEventArgs e) => ShowRoots(true);
+    private void ReposRailButton_Click(object? sender, RoutedEventArgs e) => ShowPage("repos");
+    private void RootsRailButton_Click(object? sender, RoutedEventArgs e) => ShowPage("roots");
+    private void RecoRailButton_Click(object? sender, RoutedEventArgs e) => ShowPage("reco");
 
-    private void ShowRoots(bool roots)
+    private void ShowRoots(bool roots) => ShowPage(roots ? "roots" : "repos");
+
+    private void ShowPage(string page)
     {
         DetailPage.IsVisible = false;
-        ReposPage.IsVisible = !roots;
-        RootsPage.IsVisible = roots;
-        SetActive(ReposRailButton, !roots);
-        SetActive(RootsRailButton, roots);
+        ReposPage.IsVisible = page == "repos";
+        RootsPage.IsVisible = page == "roots";
+        RecoPage.IsVisible = page == "reco";
+        SetActive(ReposRailButton, page == "repos");
+        SetActive(RootsRailButton, page == "roots");
+        SetActive(RecoRailButton, page == "reco");
+        if (page == "reco")
+            RenderRecommendations();
+    }
+
+    // ----- recommendations (folded by the engine; this only renders) -----
+
+    /// <summary>Recompute + render the recommendation cards and the rail badge.</summary>
+    public void RenderRecommendations()
+    {
+        if (_monitor is null)
+            return;
+        var recs = RecommendationEngine.Evaluate(_monitor.Snapshot());
+        RecoList.ItemsSource = recs.Select(RecommendationRowItem.From).ToList();
+        RecoEmptyText.IsVisible = recs.Count == 0;
+        RecoBadgeText.Text = recs.Count.ToString();
+        RecoBadge.IsVisible = recs.Count > 0;
+    }
+
+    private void RecoShow_Click(object? sender, RoutedEventArgs e)
+    {
+        if ((sender as Button)?.DataContext is not RecommendationRowItem row)
+            return;
+        if (row.RepoPath is { Length: > 0 } path)
+            OpenDetail(path);
+        else
+            ShowPage("repos"); // the fleet-wide reap summary: the list shows where the safe worktrees are
+    }
+
+    private async void RecoHandOff_Click(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (_monitor is null || (sender as Button)?.DataContext is not RecommendationRowItem row || row.RepoPath is null)
+                return;
+            var repo = _monitor.FindForPath(row.RepoPath);
+            var window = TopLevel.GetTopLevel(this) as Window;
+            if (repo is null || window is null)
+                return;
+            var dialog = new global::CcDirector.Avalonia.HandToAgentDialog(repo);
+            var brief = await dialog.ShowDialog<string?>(window);
+            if (!string.IsNullOrWhiteSpace(brief))
+                HandToAgentRequested?.Invoke(row.RepoPath, brief);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[RepositoriesView] RecoHandOff_Click FAILED: {ex.Message}");
+        }
     }
 
     private static void SetActive(Button button, bool active)

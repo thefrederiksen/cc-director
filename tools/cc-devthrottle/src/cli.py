@@ -40,6 +40,8 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 session_app = typer.Typer(help="Manage running sessions.", add_completion=False)
+repo_app = typer.Typer(help="List the fleet's repositories.", add_completion=False)
+worktree_app = typer.Typer(help="List the fleet's worktrees and who is in them.", add_completion=False)
 mission_app = typer.Typer(
     help="Create and list Missions (the unit of work sessions attach to).",
     add_completion=False,
@@ -74,6 +76,8 @@ autostart_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(session_app, name="session")
+app.add_typer(repo_app, name="repo")
+app.add_typer(worktree_app, name="worktree")
 app.add_typer(mission_app, name="mission")
 app.add_typer(message_app, name="message")
 app.add_typer(settings_app, name="settings")
@@ -489,6 +493,29 @@ def session_list(
 ) -> None:
     """List every session running across the fleet."""
     list_sessions(json_output)
+
+
+@repo_app.command("list")
+def repo_list(
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output raw JSON."),
+    dirty: bool = typer.Option(False, "--dirty", help="Only repositories with uncommitted work."),
+) -> None:
+    """List the fleet's repositories with their state and worktree summary."""
+    from .repo_ops import list_repositories
+
+    list_repositories(json_output, dirty_only=dirty)
+
+
+@worktree_app.command("list")
+def worktree_list(
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output raw JSON."),
+    repo: str = typer.Option(None, "--repo", help="Only worktrees of this repository."),
+    state: str = typer.Option(None, "--state", help="Filter: safe-to-reap, in-use, or needs-attention."),
+) -> None:
+    """List the fleet's worktrees: verdicts, sizes, and which session is in each."""
+    from .repo_ops import list_worktrees
+
+    list_worktrees(json_output, repo=repo, state=state)
 
 
 @session_app.command()
