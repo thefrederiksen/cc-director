@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using CcDirector.Core.Tenancy;
+using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 
 namespace CcDirector.Gateway.Streaming;
@@ -9,10 +10,12 @@ namespace CcDirector.Gateway.Streaming;
 /// stream (repositories mission, devthrottle_internal#510 phase C) - the sibling of
 /// <see cref="PushedSessionStore"/>, tenant-partitioned the same way: tenant first, then Director.
 ///
-/// Acceptance rule (a simplified form of the session store's ownership discipline): a push from a
-/// NEW connection always wins (a restarted Director reseeds authoritatively); a push from the SAME
-/// connection must carry a higher sequence than the last accepted one (out-of-order or duplicate
-/// pushes are dropped). Snapshots only - repositories change slowly; there is no delta path.
+/// Acceptance rule (the session store's ownership discipline): only the Director's CURRENT stream
+/// connection - the one bound at Hello, the same identity command routing trusts - may push. A push
+/// from any other connection is dropped, so a late push from a superseded connection can never
+/// overwrite the current connection's newer data. Within the current connection a push must carry a
+/// higher sequence than the last accepted one (out-of-order or duplicate pushes are dropped).
+/// Snapshots only - repositories change slowly; there is no delta path.
 ///
 /// READ-ONLY at the Gateway: this cache exists so agents and the Cockpit can ASK about the fleet's
 /// repositories in one call. Destructive actions always run on the owning Director after a live
@@ -22,25 +25,63 @@ public sealed class PushedRepositoryStore
 {
     private sealed class Entry
     {
-        public string ConnectionId = "";
-        public long LastSequence;
+        public string? ActiveConnectionId;
+        public long LastSequence = -1;
         public DateTime ReceivedAtUtc;
         public List<RepoStatusDto> Repositories = new();
     }
 
     private readonly ConcurrentDictionary<TenantId, ConcurrentDictionary<string, Entry>> _byTenant = new();
 
-    /// <summary>Apply a full snapshot for a Director. Returns false when the push was rejected as stale.</summary>
-    public bool ApplySnapshot(TenantId tenant, string directorId, string connectionId, long sequence, RepoStatusDto[] repositories)
+    /// <summary>
+    /// Mark <paramref name="connectionId"/> as the Director's current stream connection - the hub
+    /// calls this at Hello, the same moment the session store learns it. The sequence baseline
+    /// resets so the new connection's first push, at any sequence, is authoritative.
+    /// </summary>
+    public void RegisterConnection(TenantId tenant, string directorId, string connectionId)
     {
         var directors = _byTenant.GetOrAdd(tenant, _ => new ConcurrentDictionary<string, Entry>(StringComparer.OrdinalIgnoreCase));
         var entry = directors.GetOrAdd(directorId, _ => new Entry());
         lock (entry)
         {
-            bool sameConnection = string.Equals(entry.ConnectionId, connectionId, StringComparison.Ordinal);
-            if (sameConnection && sequence <= entry.LastSequence)
-                return false; // duplicate or out-of-order from the same connection
-            entry.ConnectionId = connectionId;
+            entry.ActiveConnectionId = connectionId;
+            entry.LastSequence = -1;
+        }
+    }
+
+    /// <summary>
+    /// Clear the current connection IF <paramref name="connectionId"/> is still it. A late
+    /// disconnect from a superseded connection is ignored so it cannot wipe a newer one.
+    /// </summary>
+    public void UnregisterConnection(TenantId tenant, string directorId, string connectionId)
+    {
+        if (!_byTenant.TryGetValue(tenant, out var directors) || !directors.TryGetValue(directorId, out var entry))
+            return;
+        lock (entry)
+        {
+            if (string.Equals(entry.ActiveConnectionId, connectionId, StringComparison.Ordinal))
+                entry.ActiveConnectionId = null;
+        }
+    }
+
+    /// <summary>
+    /// Apply a full snapshot for a Director. Returns false when the push was rejected: it did not
+    /// come from the Director's current connection, or its sequence is stale.
+    /// </summary>
+    public bool ApplySnapshot(TenantId tenant, string directorId, string connectionId, long sequence, RepoStatusDto[] repositories)
+    {
+        if (!_byTenant.TryGetValue(tenant, out var directors) || !directors.TryGetValue(directorId, out var entry))
+            return false; // never registered (no Hello bound this Director) - nothing may push
+
+        lock (entry)
+        {
+            if (!string.Equals(entry.ActiveConnectionId, connectionId, StringComparison.Ordinal))
+            {
+                FileLog.Write($"[PushedRepositoryStore] push REJECTED (not the current connection): director={directorId}, seq={sequence}");
+                return false; // a superseded (or unknown) connection may never overwrite current data
+            }
+            if (sequence <= entry.LastSequence)
+                return false; // duplicate or out-of-order from the current connection
             entry.LastSequence = sequence;
             entry.ReceivedAtUtc = DateTime.UtcNow;
             entry.Repositories = repositories.ToList();

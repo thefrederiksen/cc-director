@@ -24,6 +24,7 @@ public class PushedRepositoryStoreTests
         var store = new PushedRepositoryStore();
         var tenant = TenantId.Local;
 
+        store.RegisterConnection(tenant, "d1", "conn1");
         Assert.True(store.ApplySnapshot(tenant, "d1", "conn1", 1, new[] { Repo("alpha") }));
 
         var fresh = store.TryGetFresh(tenant, "d1", Fresh);
@@ -38,6 +39,7 @@ public class PushedRepositoryStoreTests
         var store = new PushedRepositoryStore();
         var tenant = TenantId.Local;
 
+        store.RegisterConnection(tenant, "d1", "conn1");
         Assert.True(store.ApplySnapshot(tenant, "d1", "conn1", 5, new[] { Repo("alpha") }));
         Assert.False(store.ApplySnapshot(tenant, "d1", "conn1", 5, new[] { Repo("stale") }));   // duplicate
         Assert.False(store.ApplySnapshot(tenant, "d1", "conn1", 3, new[] { Repo("older") }));   // out of order
@@ -47,18 +49,71 @@ public class PushedRepositoryStoreTests
     }
 
     [Fact]
-    public void NewConnection_AlwaysWins_EvenWithALowerSequence()
+    public void NewConnection_AfterTakeover_WinsEvenWithALowerSequence()
     {
-        // A restarted Director begins a new sequence from 1 on a new connection - its snapshot is
-        // authoritative and must replace the old connection's state.
+        // A restarted Director re-Hellos (registering the new connection) and begins a new
+        // sequence from 1 - its snapshot is authoritative and must replace the old state.
         var store = new PushedRepositoryStore();
         var tenant = TenantId.Local;
 
+        store.RegisterConnection(tenant, "d1", "conn1");
         Assert.True(store.ApplySnapshot(tenant, "d1", "conn1", 900, new[] { Repo("old") }));
+        store.RegisterConnection(tenant, "d1", "conn2");
         Assert.True(store.ApplySnapshot(tenant, "d1", "conn2", 1, new[] { Repo("fresh") }));
 
         var fresh = store.TryGetFresh(tenant, "d1", Fresh);
         Assert.Equal("fresh", Assert.Single(fresh!.Value.Repositories).Name);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection finding F9): only the CURRENT connection may push. After a new
+    // connection takes over, a late push from the superseded connection is dropped - even at a
+    // higher sequence - so two live connections can never alternate ownership of the store.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public void LatePush_FromASupersededConnection_IsRejected()
+    {
+        var store = new PushedRepositoryStore();
+        var tenant = TenantId.Local;
+
+        store.RegisterConnection(tenant, "d1", "conn1");
+        Assert.True(store.ApplySnapshot(tenant, "d1", "conn1", 10, new[] { Repo("old-world") }));
+
+        // The Director reconnects: conn2 is now the current connection.
+        store.RegisterConnection(tenant, "d1", "conn2");
+        Assert.True(store.ApplySnapshot(tenant, "d1", "conn2", 1, new[] { Repo("current") }));
+
+        // A late (even higher-sequence) push from the superseded conn1 must be dropped.
+        Assert.False(store.ApplySnapshot(tenant, "d1", "conn1", 999, new[] { Repo("stale-late") }));
+
+        var fresh = store.TryGetFresh(tenant, "d1", Fresh);
+        Assert.Equal("current", Assert.Single(fresh!.Value.Repositories).Name);
+    }
+
+    [Fact]
+    public void Push_WithoutARegisteredConnection_IsRejected()
+    {
+        var store = new PushedRepositoryStore();
+        Assert.False(store.ApplySnapshot(TenantId.Local, "d1", "conn1", 1, new[] { Repo("alpha") }));
+        Assert.Null(store.TryGetFresh(TenantId.Local, "d1", Fresh));
+    }
+
+    [Fact]
+    public void Unregister_OnlyClearsTheCurrentConnection()
+    {
+        var store = new PushedRepositoryStore();
+        var tenant = TenantId.Local;
+
+        store.RegisterConnection(tenant, "d1", "conn1");
+        store.RegisterConnection(tenant, "d1", "conn2");
+
+        // conn1's late disconnect must not clear conn2's ownership.
+        store.UnregisterConnection(tenant, "d1", "conn1");
+        Assert.True(store.ApplySnapshot(tenant, "d1", "conn2", 1, new[] { Repo("alpha") }));
+
+        // conn2's own disconnect does clear it - nothing may push afterwards.
+        store.UnregisterConnection(tenant, "d1", "conn2");
+        Assert.False(store.ApplySnapshot(tenant, "d1", "conn2", 2, new[] { Repo("beta") }));
     }
 
     [Fact]
@@ -68,6 +123,8 @@ public class PushedRepositoryStoreTests
         var tenantA = new TenantId("tenant-a");
         var tenantB = new TenantId("tenant-b");
 
+        store.RegisterConnection(tenantA, "dA", "cA");
+        store.RegisterConnection(tenantB, "dB", "cB");
         store.ApplySnapshot(tenantA, "dA", "cA", 1, new[] { Repo("a-repo") });
         store.ApplySnapshot(tenantB, "dB", "cB", 1, new[] { Repo("b-repo") });
 
@@ -85,6 +142,7 @@ public class PushedRepositoryStoreTests
     {
         var store = new PushedRepositoryStore();
         var tenant = TenantId.Local;
+        store.RegisterConnection(tenant, "d1", "conn1");
         store.ApplySnapshot(tenant, "d1", "conn1", 1, new[] { Repo("alpha") });
 
         // With a zero stale window everything is stale immediately.

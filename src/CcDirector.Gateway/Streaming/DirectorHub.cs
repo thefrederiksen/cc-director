@@ -148,6 +148,9 @@ public sealed class DirectorHub : Hub
         Context.Items[DirectorIdItemKey] = directorId;
         Context.Items[TenantIdItemKey] = tenant;
         _store.RegisterConnection(tenant, directorId, Context.ConnectionId);
+        // The repository store follows the same ownership discipline: only this - the current -
+        // connection may push repository snapshots from now on.
+        _repositoryStore?.RegisterConnection(tenant, directorId, Context.ConnectionId);
         // Gateway Cleanup mission (tunnel-only): the stream IS the registration now (HTTP register is gone).
         // Register this Director from the Hello identity so registry.Get(tenant, id) - the gate on create-session
         // and the other director-level routes - resolves it. Source="stream", no dialable endpoint.
@@ -272,6 +275,7 @@ public sealed class DirectorHub : Hub
             // that stops refreshing LastSeen (HttpHeartbeatTimeout); a reconnect re-Hellos and refreshes it.
             // The tenant is the one bound at Hello (Hello sets both, so a bound director always has a tenant).
             _store.UnregisterConnection(t, directorId, Context.ConnectionId);
+            _repositoryStore?.UnregisterConnection(t, directorId, Context.ConnectionId);
         }
         FileLog.Write($"[DirectorHub] disconnected: conn={Short(Context.ConnectionId)}, director={directorId ?? "(unbound)"} ({exception?.Message ?? "clean"})");
         return base.OnDisconnectedAsync(exception);
