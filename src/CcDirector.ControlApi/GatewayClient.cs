@@ -228,6 +228,38 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         return list;
     }
 
+    /// <summary>
+    /// Like <see cref="ListFleetSessionsAsync"/> but asks for the envelope (GET /sessions?envelope=true),
+    /// which also carries per-Director reachability (Online / Wobbly / Offline). The plain list
+    /// silently DROPS an unreachable Director's sessions while still returning 200, so a caller that
+    /// must not act on a partial roster - the destructive worktree reaper - needs the reachability to
+    /// tell whether the fleet view is complete. Throws when the Gateway is disabled or the call fails.
+    /// </summary>
+    public async Task<(List<SessionDto> Sessions, List<DirectorReachabilityDto> Reachability)> ListFleetSessionsWithReachabilityAsync(CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled)
+            throw new InvalidOperationException("Gateway is not configured; cannot list the fleet.");
+
+        FileLog.Write("[GatewayClient] ListFleetSessionsWithReachabilityAsync: GET /sessions?envelope=true");
+        using var resp = await _http.GetAsync("sessions?envelope=true", ct);
+        if (!resp.IsSuccessStatusCode)
+            throw await RelayFailureAsync(resp, "GET /sessions?envelope=true", ct);
+
+        var env = await resp.Content.ReadFromJsonAsync<SessionsEnvelope>(ct);
+        if (env is null)
+            throw new InvalidOperationException("Gateway GET /sessions?envelope=true returned an unparsable body.");
+
+        FileLog.Write($"[GatewayClient] ListFleetSessionsWithReachabilityAsync: {env.Sessions?.Count ?? 0} session(s), {env.Directors?.Count ?? 0} reachability record(s)");
+        return (env.Sessions ?? new List<SessionDto>(), env.Directors ?? new List<DirectorReachabilityDto>());
+    }
+
+    /// <summary>The /sessions?envelope=true response shape: the roster plus per-Director reachability.</summary>
+    private sealed class SessionsEnvelope
+    {
+        public List<SessionDto>? Sessions { get; set; }
+        public List<DirectorReachabilityDto>? Directors { get; set; }
+    }
+
 
     /// <summary>
     /// True when the Gateway does not actually serve this route: an explicit 404, or the Cockpit

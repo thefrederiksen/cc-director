@@ -453,6 +453,42 @@ public sealed class RepoHistoryStoreTests : IDisposable
         }
     }
 
+    // REGRESSION (inspection): a readable-but-corrupt live file lost row B, so the load must recover
+    // B from the good backup rather than silently drop it (and let the next save overwrite the good
+    // backup with the corrupt file).
+    [Fact]
+    public void CorruptLiveFile_RecoversTheLostRowsFromTheBackup()
+    {
+        var day = new DateOnly(2026, 07, 24);
+        string Row(string name, int wt) =>
+            "{\"Tenant\":\"local\",\"Date\":\"2026-07-24\",\"MachineName\":\"M1\",\"DirectorId\":\"d1\"," +
+            $"\"Path\":\"D:\\\\repos\\\\{name}\",\"Name\":\"{name}\",\"WorktreeCount\":{wt}}}";
+
+        File.WriteAllLines(_path + ".bak", new[] { Row("A", 1), Row("B", 2), Row("C", 4) });
+        File.WriteAllLines(_path, new[] { Row("A", 1), "{ this line is torn", Row("C", 4) });
+
+        var store = new RepoHistoryStore(_path);
+        // B (2) is recovered from the backup: A + B + C = 7, not 5.
+        Assert.Equal(7, store.WeeklyTrends(TenantId.Local, 1, day)[^1].MaxWorktrees);
+    }
+
+    // REGRESSION (inspection): a MIXED startup snapshot - some repos verified, one still provisional -
+    // must NOT reconcile away the verified history of the still-warming-up repository.
+    [Fact]
+    public void MixedSnapshot_WithAProvisionalRow_DoesNotEraseTheOtherRepositorysHistory()
+    {
+        var tenant = TenantId.Local;
+        var day = new DateOnly(2026, 07, 24);
+        var store = new RepoHistoryStore(_path);
+
+        store.ObserveSnapshot(tenant, "d1", new[] { Repo("A", worktrees: 5), Repo("B", worktrees: 3) }, day);
+        // Later push: A verified, B still provisional (warming up) - a partial view.
+        store.ObserveSnapshot(tenant, "d1", new[] { Repo("A", worktrees: 5), Repo("B", worktrees: 99, provisional: true) }, day);
+
+        // B's verified row (3) survives: A + B = 8, not 5.
+        Assert.Equal(8, store.WeeklyTrends(tenant, 1, day)[^1].MaxWorktrees);
+    }
+
     [Fact]
     public void TenantPartition_TrendsNeverMix()
     {

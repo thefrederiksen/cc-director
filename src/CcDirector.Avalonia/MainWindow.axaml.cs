@@ -4321,14 +4321,27 @@ public partial class MainWindow : Window
         }
 
         var app = global::Avalonia.Application.Current as App;
-        var fleetTask = app?.ControlApiHost?.ListFleetSessionsAsync(ct);
+        var fleetTask = app?.ControlApiHost?.ListFleetSessionsWithReachabilityAsync(ct);
         if (fleetTask is null)
             throw new InvalidOperationException(
                 "cannot confirm the machine-wide session roster: no fleet source is available. " +
                 "Removing worktrees is refused until the roster can be confirmed.");
 
         // A fleet-query failure PROPAGATES here (fail closed) - it is never downgraded to local-only.
-        var fleet = await fleetTask;
+        var (fleet, reachability) = await fleetTask;
+
+        // FAIL CLOSED on an INCOMPLETE roster (inspection): the Gateway returns 200 while silently
+        // dropping (or serving stale) the sessions of a Director whose tunnel is stale. A worktree is
+        // a local folder, so only Directors ON THIS MACHINE can have sessions in it; if any of them is
+        // not fully Online, this machine's roster may be missing a live session and the reap must not
+        // act on it.
+        var degraded = DegradedSameMachineDirectors(reachability, machine);
+        if (degraded.Count > 0)
+            throw new InvalidOperationException(
+                $"cannot confirm the machine-wide session roster: {degraded.Count} Director(s) on this machine are not fully reachable " +
+                $"({string.Join(", ", degraded)}), so a live session could be missing from the roster. " +
+                "Removing worktrees is refused until the roster can be confirmed.");
+
         foreach (var s in fleet)
         {
             if (!IsSessionAlive(s)
@@ -4342,6 +4355,19 @@ public partial class MainWindow : Window
 
         return byPath.Values.ToList();
     }
+
+    /// <summary>
+    /// The Directors ON THIS MACHINE that the Gateway reports as NOT fully Online (Wobbly or
+    /// Offline), each as "id (state)". A non-empty result means this machine's session roster may be
+    /// missing a live session, so the destructive reaper must fail closed. Pure and testable.
+    /// </summary>
+    internal static List<string> DegradedSameMachineDirectors(
+        IEnumerable<Gateway.Contracts.DirectorReachabilityDto> reachability, string machine)
+        => reachability
+            .Where(r => string.Equals(r.MachineName, machine, StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(r.State, Gateway.Contracts.DirectorReachabilityDto.StateOnline, StringComparison.OrdinalIgnoreCase))
+            .Select(r => $"{r.DirectorId} ({r.State})")
+            .ToList();
 
     /// <summary>A session is genuinely alive when it has not exited/failed and did not crash.</summary>
     private static bool IsSessionAlive(Gateway.Contracts.SessionDto s) =>

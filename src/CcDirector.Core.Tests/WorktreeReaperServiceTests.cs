@@ -44,6 +44,10 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         }
     }
 
+    /// <summary>A clock an hour in the future, so freshly-created test worktrees are past the
+    /// activity cooling-off window and can be reaped (the cooling-off itself has its own test).</summary>
+    private static readonly Func<DateTime> Later = () => DateTime.UtcNow.AddHours(1);
+
     /// <summary>An authoritative roster that positively reports no live sessions (reap may proceed).</summary>
     private static readonly Func<CancellationToken, Task<IReadOnlyList<LiveSessionRef>>> NoSessions =
         _ => Task.FromResult<IReadOnlyList<LiveSessionRef>>(Array.Empty<LiveSessionRef>());
@@ -85,7 +89,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         var safe = AddSafeWorktree("safe");
         var stranded = AddStrandedWorktree("stranded");
 
-        var result = await new WorktreeReaperService().ReapAsync(_primary, NoSessions);
+        var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, NoSessions);
 
         Assert.True(result.Success, result.Error);
         Assert.Equal(1, result.RemovedCount);
@@ -102,7 +106,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
     {
         var safe = AddSafeWorktree("busy");
 
-        var result = await new WorktreeReaperService().ReapAsync(_primary, SessionsIn(safe));
+        var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, SessionsIn(safe));
 
         Assert.Equal(0, result.RemovedCount);
         Assert.Contains(safe, result.Skipped);
@@ -114,7 +118,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
     {
         var safe = AddSafeWorktree("case");
 
-        var result = await new WorktreeReaperService().ReapAsync(
+        var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(
             _primary, SessionsIn(safe.ToUpperInvariant() + Path.DirectorySeparatorChar));
 
         Assert.Equal(0, result.RemovedCount);
@@ -126,7 +130,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
     {
         AddSafeWorktree("x");
 
-        await new WorktreeReaperService().ReapAsync(_primary, NoSessions);
+        await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, NoSessions);
 
         Assert.True(Directory.Exists(_primary), "the primary checkout must always survive");
         Assert.True(Directory.Exists(Path.Combine(_primary, ".git")));
@@ -152,7 +156,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
 
         using (var _ = new FileStream(lockedFile, FileMode.Open, FileAccess.Read, FileShare.Read))
         {
-            var result = await new WorktreeReaperService().ReapAsync(_primary, NoSessions);
+            var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, NoSessions);
 
             Assert.False(result.Success, "a folder that could not be deleted must not be reported as success");
             Assert.Contains(safe, result.Leftovers);
@@ -166,11 +170,29 @@ public sealed class WorktreeReaperServiceTests : IDisposable
     [Fact]
     public async Task Reap_EmptyRepo_NoWorktrees_IsANoOpSuccess()
     {
-        var result = await new WorktreeReaperService().ReapAsync(_primary, NoSessions);
+        var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, NoSessions);
 
         Assert.True(result.Success);
         Assert.Equal(0, result.RemovedCount);
         Assert.Empty(result.Leftovers);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Cooling-off (owner's suggestion): a worktree touched within the last few minutes is held
+    // back, so a session that just started working in it - and is not on the roster yet - does not
+    // lose its worktree. Here the safe worktree was just created (recent activity) and the DEFAULT
+    // clock is used, so it is inside the window and must NOT be removed.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Reap_HoldsBackAWorktreeTouchedWithinTheCoolingOffWindow()
+    {
+        var safe = AddSafeWorktree("just-touched");
+
+        var result = await new WorktreeReaperService().ReapAsync(_primary, NoSessions); // default clock = now
+
+        Assert.Equal(0, result.RemovedCount);
+        Assert.Contains(safe, result.Skipped);
+        Assert.True(Directory.Exists(safe), "a recently-touched worktree is held back by the cooling-off");
     }
 
     // ---------------------------------------------------------------------------------------
@@ -188,7 +210,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         Func<CancellationToken, Task<IReadOnlyList<LiveSessionRef>>> throwing =
             _ => throw new InvalidOperationException("fleet query failed");
 
-        var result = await new WorktreeReaperService().ReapAsync(_primary, throwing);
+        var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, throwing);
 
         Assert.False(result.Success);
         Assert.Contains("reap aborted", result.Error ?? "");
@@ -208,7 +230,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         var appearedAfter = AddSafeWorktree("appeared-after"); // also safe, but NOT approved
 
         var approvedSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { approved };
-        var result = await new WorktreeReaperService().ReapAsync(_primary, NoSessions, approvedSet);
+        var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, NoSessions, approvedSet);
 
         Assert.Equal(1, result.RemovedCount);
         Assert.False(Directory.Exists(approved), "the approved worktree is removed");
@@ -220,7 +242,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
     {
         var safe = AddSafeWorktree("also-would-be-reaped");
 
-        var result = await new WorktreeReaperService().ReapAsync(_primary, liveSessionsProvider: null);
+        var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, liveSessionsProvider: null);
 
         Assert.False(result.Success);
         Assert.Equal(0, result.RemovedCount);
@@ -246,7 +268,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         // "git worktree remove" runs, so real git refuses the removal - exactly the race the
         // finding describes.
         var git = new DirtyBeforeRemoveGitRunner(safe, surprise);
-        var result = await new WorktreeReaperService(git: git).ReapAsync(_primary, NoSessions);
+        var result = await new WorktreeReaperService(git: git, utcNow: Later).ReapAsync(_primary, NoSessions);
 
         Assert.False(result.Success, "a worktree git refused to remove must not be reported as a clean success");
         Assert.True(Directory.Exists(safe), "the worktree git refused to remove must still be present");
@@ -268,7 +290,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         var safe = AddSafeWorktree("locked-wt");
         RunGit(_primary, "worktree", "lock", safe); // an explicit user protection
 
-        var result = await new WorktreeReaperService().ReapAsync(_primary, NoSessions);
+        var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, NoSessions);
 
         Assert.True(Directory.Exists(safe), "a git-locked worktree must never be force-deleted");
         Assert.False(result.Success, "git refused to remove the locked worktree - not a clean success");
@@ -291,14 +313,60 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         var safe = AddSafeWorktree("fetch-fails");
 
         var git = new FailFetchGitRunner();
-        var result = await new WorktreeReaperService(git: git).ReapAsync(_primary, NoSessions);
+        var result = await new WorktreeReaperService(git: git, utcNow: Later).ReapAsync(_primary, NoSessions);
 
         Assert.False(result.Success);
         Assert.Contains("reap aborted", result.Error ?? "");
         Assert.True(Directory.Exists(safe), "nothing may be removed when remote state could not be refreshed");
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection): a session running in a SUBDIRECTORY of a worktree must protect the
+    // whole worktree, not only an exact-root match. Before the fix a session in W\src did not match
+    // worktree root W, so a clean merged W was still reapable and could be deleted under it.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Reap_ProtectsAWorktree_WhenASessionRunsInASubdirectoryOfIt()
+    {
+        var safe = AddSafeWorktree("subdir-session");
+        var subdir = Path.Combine(safe, "src", "app");
+
+        var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, SessionsIn(subdir));
+
+        Assert.Equal(0, result.RemovedCount);
+        Assert.True(Directory.Exists(safe), "a session in a subdirectory must protect the whole worktree");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection): the reap refreshes ORIGIN by name. A bare "git fetch --prune"
+    // follows the current branch's configured upstream, which can be a different remote, leaving
+    // origin/main - the ref the containment proof trusts - stale.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Reap_FetchesOriginByName_NotJustTheCurrentBranchUpstream()
+    {
+        AddSafeWorktree("fetch-name");
+        var git = new CaptureFetchGitRunner();
+
+        await new WorktreeReaperService(git: git, utcNow: Later).ReapAsync(_primary, NoSessions);
+
+        Assert.Contains(git.Fetches, f => f.Length >= 1 && f[0] == "fetch" && f.Contains("origin"));
+    }
+
     // ----- helpers -----
+
+    /// <summary>A git runner that records every "git fetch ..." invocation and runs it for real.</summary>
+    private sealed class CaptureFetchGitRunner : GitCommandRunner
+    {
+        public readonly List<string[]> Fetches = new();
+        public override async Task<GitCommandResult> RunAsync(
+            string workingDirectory, string[] args, CancellationToken ct = default)
+        {
+            if (args.Length >= 1 && args[0] == "fetch")
+                Fetches.Add(args);
+            return await base.RunAsync(workingDirectory, args, ct);
+        }
+    }
 
     /// <summary>A git runner that fails the "git fetch --prune" call and runs everything else for real.</summary>
     private sealed class FailFetchGitRunner : GitCommandRunner

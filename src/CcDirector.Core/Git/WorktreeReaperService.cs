@@ -65,13 +65,24 @@ public sealed class ReapResult
 /// </summary>
 public sealed class WorktreeReaperService
 {
+    /// <summary>
+    /// A worktree touched within this window is held back from reaping (owner's suggestion): a live
+    /// session working in a worktree keeps touching files, so a recent last-activity is a cheap,
+    /// roster-independent signal that something may be using it. This is a defense-in-depth layer on
+    /// top of the authoritative roster - it does not replace it (an idle session writes nothing, so
+    /// only the roster protects that case).
+    /// </summary>
+    public static readonly TimeSpan ActivityCoolingOff = TimeSpan.FromMinutes(10);
+
     private readonly WorktreeInventoryService _inventory;
     private readonly GitCommandRunner _git;
+    private readonly Func<DateTime> _utcNow;
 
-    public WorktreeReaperService(WorktreeInventoryService? inventory = null, GitCommandRunner? git = null)
+    public WorktreeReaperService(WorktreeInventoryService? inventory = null, GitCommandRunner? git = null, Func<DateTime>? utcNow = null)
     {
         _git = git ?? new GitCommandRunner();
         _inventory = inventory ?? new WorktreeInventoryService(_git);
+        _utcNow = utcNow ?? (() => DateTime.UtcNow);
     }
 
     /// <summary>
@@ -197,6 +208,17 @@ public sealed class WorktreeReaperService
                 if (RosterProtects(normalized, rosterNow))
                 {
                     FileLog.Write($"[WorktreeReaperService] SKIP (a live session is using it): {worktree.Path}");
+                    skipped.Add(normalized);
+                    continue;
+                }
+
+                // Cooling-off (owner's suggestion): hold back a worktree touched within the last
+                // few minutes. A live session working here keeps touching files, so recent activity
+                // is a cheap, roster-independent guard against deleting one that is in use - covering
+                // the split-second where a just-started session is not on the roster yet.
+                if (worktree.LastActivityUtc is { } activity && _utcNow() - activity < ActivityCoolingOff)
+                {
+                    FileLog.Write($"[WorktreeReaperService] SKIP (touched within the cooling-off window - may be in use): {worktree.Path}");
                     skipped.Add(normalized);
                     continue;
                 }
