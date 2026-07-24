@@ -58,7 +58,17 @@ Spec: devthrottle_internal#510 · Brief: docs/MISSION-repositories-full-2026-07-
 - Round 2 (BLOCK): fixes re-inspected; 6 closed clean, 1 REGRESSION (update-ref delete bypasses
   checked-out protection), 3 new majors (cancelled-scan late publish; /repositories serve-time
   fold missing for old Directors; repeated Hello resets sequence), rest partial. Rulings:
-  docs/MISSION-repositories-full-INSPECTION-2.md. Manager round 2 seated and fixing.
+  docs/MISSION-repositories-full-INSPECTION-2.md. All fixed by Manager round 2, pushed through
+  c9b429a2; suites green (Core 3433 / Avalonia 290 / Gateway 3678, 0 failed).
+- LIVE CATCH between rounds: first live run of the round-2 build exposed the R2-8 wiring as
+  non-structural (provider wired in MainWindow_Loaded; ShowMainWindow's scan fires first,
+  throws, dies unobserved; model provisional forever). Architect fixed in e3b9d01a
+  (constructor wiring + observed task); slot 5 rebuilt; live harness 8/8 with verified states.
+  The round-3 inspection found the SAME defect independently - two mechanisms converged.
+- Round 3 (BLOCK): 8 of the round-2 items CLOSED. Remaining: branch-restore compensation
+  unsafe (create-only restore needed; cancellation can bypass compensation) and five monitor
+  stamp/lifecycle interleavings (tombstones, reconcile-time stamps, scan ownership, stranded
+  deferrals). Rulings: docs/MISSION-repositories-full-INSPECTION-3.md. Manager round 3 seated.
 
 ## Next
 - Manager round 2 finishes R2-1..R2-12 and pushes.
