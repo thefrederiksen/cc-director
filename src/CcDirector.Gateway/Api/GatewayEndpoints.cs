@@ -1725,7 +1725,7 @@ internal static class GatewayEndpoints
             else
             {
                 // Manual unsnooze: drop the timer (an alarm turned off).
-                snoozeRegistry.Clear(sid);
+                snoozeRegistry.Clear(sid, ActivityCauses.ManualRelease);
             }
 
             // The hold is now a FACT, recorded and persisted in the registry. Round 4 finding 1: the desktop

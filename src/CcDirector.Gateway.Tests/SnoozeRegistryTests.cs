@@ -96,9 +96,9 @@ public sealed class SnoozeRegistryTests : IDisposable
         var reg = NewReg();
         reg.Snooze("s1", DateTime.UtcNow.AddMinutes(60), "dir-1");
 
-        Assert.True(reg.Clear("s1"));
+        Assert.True(reg.Clear("s1", ActivityCauses.ManualRelease));
         Assert.False(reg.Contains("s1"));
-        Assert.False(reg.Clear("s1"));   // already gone
+        Assert.False(reg.Clear("s1", ActivityCauses.ManualRelease));   // already gone
     }
 
     [Fact]
@@ -142,7 +142,7 @@ public sealed class SnoozeRegistryTests : IDisposable
         reg.Snooze("s1", DateTime.UtcNow.AddMinutes(60), "dir-1");
 
         var snapshot = reg.Entries();
-        reg.Clear("s1");   // mutate after snapshotting
+        reg.Clear("s1", ActivityCauses.ManualRelease);   // mutate after snapshotting
 
         Assert.Single(snapshot);              // the snapshot did not change under us
         Assert.False(reg.Contains("s1"));     // the live store did

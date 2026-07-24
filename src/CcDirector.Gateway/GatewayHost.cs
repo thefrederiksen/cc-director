@@ -335,6 +335,8 @@ public sealed class GatewayHost : IAsyncDisposable
     // tombstone and is retired only by an edge that ends a snooze (work, an owner turn, an exit, a
     // re-snooze), bounded by the live-session prune paths.
     private readonly Snooze.SnoozeRegistry _snoozeRegistry;
+    private readonly Activity.ActivityEventStore _activityEvents;
+    private Activity.ActivityRetentionSweep? _activityRetentionSweep;
     // Fills account_hosted_ai_spend by periodically mirroring the cloud credit-debit ledger (issue #1771).
     private Governance.HostedAiSpendSweep? _hostedAiSpendSweep;
     // Mission Screen mission (Phase 1b, issue #1405): the Gateway-owned, restart-surviving store of each
@@ -439,6 +441,14 @@ public sealed class GatewayHost : IAsyncDisposable
     // StartAsync, disposed in StopAsync.
     private System.Threading.Timer? _cronTimer;
     private static readonly TimeSpan CronSweepInterval = TimeSpan.FromMinutes(1);
+
+    // The activity ledger's 30-day retention purge (docs/PLAN-trustworthy-working-start-2026-07-24.md):
+    // wakes a few times a day and deletes each tenant's events older than the retention window. Guarded
+    // against overlap the same way the cron sweep is. Created in StartAsync, disposed in StopAsync.
+    private System.Threading.Timer? _activityRetentionTimer;
+    private int _activityRetentionInFlight;
+    private static readonly TimeSpan ActivityRetentionInterval = TimeSpan.FromHours(6);
+    private static readonly TimeSpan ActivityRetentionStartupDelay = TimeSpan.FromMinutes(5);
 
     // Scheduled-run auto-dismiss (issue #1200): wakes ~every 15s and closes automated runs that declared
     // themselves done, over the Director stream. Created in StartAsync only when stream mode is on (the
@@ -843,7 +853,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // LEGACY snooze.json, imported once on first upgrade then renamed aside. Tests MUST pass an isolated
         // path so they never touch the real legacy file. The registry is bounded by dropping a removed
         // Director's entries so they do not accumulate.
-        _snoozeRegistry = new Snooze.SnoozeRegistry(_gatewayDb, snoozePath ?? Path.Combine(CcStorage.Root(), "snooze.json"));
+        // The durable activity ledger (docs/PLAN-trustworthy-working-start-2026-07-24.md): tenant-scoped
+        // evidence of why sessions enter/leave Working and why snoozes end, retained 30 days. Constructed
+        // before the snooze registry because the registry appends its lifecycle decisions to it.
+        _activityEvents = new Activity.ActivityEventStore(_gatewayDb);
+        _snoozeRegistry = new Snooze.SnoozeRegistry(_gatewayDb, snoozePath ?? Path.Combine(CcStorage.Root(), "snooze.json"), _activityEvents);
         // Editable/versioned wingman instructions (issue #537) now persist in the wingman_instructions table
         // of the EF data layer. The path argument is the LEGACY wingman-instructions.json, imported once on
         // first upgrade then renamed aside. Tests MUST pass an isolated path so they never touch the real file.
@@ -1072,6 +1086,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // G8 increment 2: wrap the cron engine in the per-tenant worker seam so the background sweep enters
         // each tenant's scope before it reads the tenant-scoped cron_jobs store.
         _cronSweep = new Running.CronTenantSweep(_tenantBoundary, TenantRegistry, _cronEngine);
+
+        // The activity ledger's 30-day retention, on the same per-tenant worker seam.
+        _activityRetentionSweep = new Activity.ActivityRetentionSweep(_tenantBoundary, TenantRegistry, _activityEvents);
 
         // Web Push (mobile app-icon "needs you" dot): load (or generate on first run) the VAPID key
         // pair and the set of subscribed devices. The notifier that fans out to these is built and
@@ -2416,6 +2433,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // across machines - and because the Gateway is what moves to the server.
         Prompts.PromptEndpoints.Map(_app, _promptLog, _tenantBoundary);
 
+        // The activity ledger (docs/PLAN-trustworthy-working-start-2026-07-24.md): producers push observed
+        // activity/snooze evidence to POST /activity-events/batch (idempotent by producer-minted event id),
+        // and diagnosis reads GET /activity-events. Tenant-scoped exactly like the prompt log.
+        Activity.ActivityEventEndpoints.Map(_app, _activityEvents, _tenantBoundary);
+
         Mobile.MobileApp.Map(_app, Token);
         // The legacy /m mount: 301 to the canonical /mobile equivalent so installed phone PWAs and
         // bookmarks (and the sign-in callback devthrottle.com still hands back to /m/device-callback) keep
@@ -2460,6 +2482,12 @@ public sealed class GatewayHost : IAsyncDisposable
         // self-host the seam fires once under Local - the same single fire as before.
         _cronTimer = new System.Threading.Timer(_ => SweepCron(), null, CronSweepInterval, CronSweepInterval);
         FileLog.Write($"[GatewayHost] cron sweep started: every {CronSweepInterval.TotalSeconds:0}s ({(GatewayHostedMode.IsHosted ? "hosted, per-tenant via TenantScopedSweep" : "self-host, single Local tenant")})");
+
+        // The activity ledger's 30-day retention purge. A daily window enforced a few times a day is ample;
+        // the first pass is delayed so startup work is never contended by a bulk delete.
+        _activityRetentionTimer = new System.Threading.Timer(_ => SweepActivityRetention(), null,
+            ActivityRetentionStartupDelay, ActivityRetentionInterval);
+        FileLog.Write($"[GatewayHost] activity retention sweep started: every {ActivityRetentionInterval.TotalHours:0}h, retention {Activity.ActivityRetentionSweep.RetentionPeriod.TotalDays:0} days");
 
         // MTR-15 cancellation cutoff: the hosted active-tenant entitlement sweep. Forces a fresh entitlement
         // read for every tenant with a live lease every ~60s and revokes any that has become NotEntitled, so a
@@ -2706,6 +2734,35 @@ public sealed class GatewayHost : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// The activity-retention timer callback (a boundary - it owns the overlap guard and the try/catch so a
+    /// purge failure never crashes the timer thread). One sweep at a time; a skipped tick simply purges on
+    /// the next one, which retention granularity is indifferent to.
+    /// </summary>
+    private void SweepActivityRetention()
+    {
+        if (Interlocked.CompareExchange(ref _activityRetentionInFlight, 1, 0) != 0)
+            return;
+        _ = RunActivityRetentionSweepAsync();
+    }
+
+    private async Task RunActivityRetentionSweepAsync()
+    {
+        try
+        {
+            if (_activityRetentionSweep is not null)
+                await _activityRetentionSweep.SweepAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayHost] activity retention sweep FAILED: {ex.Message}");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _activityRetentionInFlight, 0);
+        }
+    }
+
     private void SweepEntitlementLeases()
     {
         // Skip this tick if the previous entitlement sweep is still running (many active tenants). One at a
@@ -2872,6 +2929,8 @@ public sealed class GatewayHost : IAsyncDisposable
 
         try { _cronTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] cron timer dispose error: {ex.Message}"); }
         _cronTimer = null;
+        try { _activityRetentionTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] activity retention timer dispose error: {ex.Message}"); }
+        _activityRetentionTimer = null;
         try { _leaseSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] lease sweep timer dispose error: {ex.Message}"); }
         _leaseSweepTimer = null;
         try { _autoDismissTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] auto-dismiss timer dispose error: {ex.Message}"); }

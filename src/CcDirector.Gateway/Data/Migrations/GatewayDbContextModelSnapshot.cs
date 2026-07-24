@@ -51,6 +51,95 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.ToTable("account_hosted_ai_spend", (string)null);
                 });
 
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.ActivityEventEntity", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<Guid>("EventId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("AfterScreenHash")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("AgentKind")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("BeforeScreenHash")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("BoundedScreenDiff")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Cause")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ContextId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Detail")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("DetectorMode")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("DetectorVersion")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("DirectorId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("DirectorSequence")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("InputOrigin")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Machine")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("NewState")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("OccurredUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long?>("OutputByteCount")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("PreviousState")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("RecordedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("SendSource")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("SessionId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("TenantId", "EventId");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "DirectorId", "DirectorSequence");
+
+                    b.HasIndex("TenantId", "EventType", "OccurredUtc");
+
+                    b.HasIndex("TenantId", "SessionId", "OccurredUtc");
+
+                    b.ToTable("activity_events", (string)null);
+                });
+
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.CronJobEntity", b =>
                 {
                     b.Property<string>("TenantId")
