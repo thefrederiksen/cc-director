@@ -174,8 +174,21 @@ public sealed class GitBranchService
     /// <summary>
     /// The atomic delete: <c>git update-ref -d refs/heads/&lt;name&gt; &lt;verified-sha&gt;</c>.
     /// Git refuses when the ref no longer points at the verified commit, which closes the
-    /// time-of-check to time-of-use window a plain force delete leaves open. On success the
-    /// branch's config section is cleaned up, as <c>git branch -D</c> would have done.
+    /// time-of-check to time-of-use window a plain force delete leaves open.
+    ///
+    /// update-ref binds the TIP but - unlike <c>git branch -D</c> - it does NOT refuse to delete
+    /// a branch that is checked out. A checkout into a worktree can land between verification and
+    /// deletion, which would leave that worktree with a broken symbolic HEAD. Compensating
+    /// post-check: immediately after a successful delete the worktrees are listed; if any worktree
+    /// HEAD still references the deleted branch, the ref is RESTORED at the verified sha (we hold
+    /// the exact commit, so restoration is lossless) and the delete is reported as refused.
+    ///
+    /// On a confirmed delete the branch's config section is cleaned up, as <c>git branch -D</c>
+    /// would have done - but only after confirming the ref is still absent at that moment, so a
+    /// branch another process just recreated does not lose ITS configuration. The residual
+    /// millisecond window between that check and the removal is accepted and documented: worst
+    /// case a just-recreated branch loses its tracking config - annoying, never destructive to
+    /// commits.
     /// </summary>
     internal async Task<(bool Deleted, string Message)> DeleteAtVerifiedTipAsync(
         string repoPath, string branch, string verifiedSha, string explanation, CancellationToken ct = default)
@@ -185,6 +198,46 @@ public sealed class GitBranchService
         {
             FileLog.Write($"[GitBranchService] delete refused for {branch}: ref no longer at {verifiedSha}: {del.Error.Trim()}");
             return (false, $"branch moved since it was verified - not deleted");
+        }
+
+        // The compensating post-check (ruling R2-1). Includes the FIRST entry too: the primary
+        // checkout is just as broken by losing its checked-out branch as a linked worktree is.
+        var wtList = await _git.RunAsync(repoPath, new[] { "worktree", "list", "--porcelain" }, ct);
+        bool mustRestore;
+        string refusal;
+        if (!wtList.Success)
+        {
+            // Cannot PROVE no worktree holds the branch - fail closed and put the ref back.
+            FileLog.Write($"[GitBranchService] worktree list failed after deleting {branch} - restoring: {wtList.Error.Trim()}");
+            mustRestore = true;
+            refusal = "could not verify the worktrees after deletion - the branch was restored, not deleted";
+        }
+        else
+        {
+            mustRestore = WorktreeListParser.Parse(wtList.Output).Any(e => e.Branch == branch);
+            refusal = "branch is checked out in a worktree - restored, not deleted";
+        }
+        if (mustRestore)
+        {
+            var restore = await _git.RunAsync(repoPath, new[] { "update-ref", $"refs/heads/{branch}", verifiedSha }, ct);
+            if (!restore.Success)
+            {
+                // Restoration failing is a real error and must be loud: the commit still exists,
+                // and the exact command to recreate the ref is part of the message.
+                FileLog.Write($"[GitBranchService] RESTORE FAILED for {branch} at {verifiedSha}: {restore.Error.Trim()}");
+                return (false, $"branch is checked out in a worktree and restoring it failed - run: git update-ref refs/heads/{branch} {verifiedSha}");
+            }
+            FileLog.Write($"[GitBranchService] {branch} is checked out in a worktree - restored at {verifiedSha}, not deleted");
+            return (false, refusal);
+        }
+
+        // Config cleanup only when the ref is confirmed absent RIGHT NOW - another process may
+        // have recreated the branch after our delete, and the new branch's config is not ours.
+        var refCheck = await _git.RunAsync(repoPath, new[] { "rev-parse", "--verify", "--quiet", $"refs/heads/{branch}" }, ct);
+        if (refCheck.Success)
+        {
+            FileLog.Write($"[GitBranchService] {branch} was recreated after deletion - leaving the new branch's config in place");
+            return (true, $"deleted {branch} ({explanation})");
         }
 
         // git branch -D removes the branch's config section; update-ref does not, so clean it up.

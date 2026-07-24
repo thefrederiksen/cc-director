@@ -276,6 +276,39 @@ public sealed class GitBranchServiceTests : IDisposable
         Assert.True(branch.SafeToDelete, branch.Explanation);
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 2, ruling R2-1): "git update-ref -d" binds the tip but does
+    // not reproduce "git branch -D"'s refusal to delete a branch that is checked out. When a
+    // checkout into a linked worktree lands between verification and deletion, the delete must
+    // be compensated: the ref is restored at the verified sha (lossless - we hold the exact
+    // commit) and the worktree's HEAD stays valid.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Delete_BranchCheckedOutInAWorktreeAfterVerification_IsRestored_AndTheWorktreeHeadStaysValid()
+    {
+        RunGit(_repo, "branch", "raced");
+        var verifiedTip = RunGit(_repo, "rev-parse", "raced").Trim();
+
+        // The race: AFTER the verdict was computed, another process checks the branch out into
+        // a linked worktree - the tip is unchanged, so the tip-bound delete alone would succeed
+        // and leave this worktree with a broken symbolic HEAD.
+        var wt = Path.Combine(_root, "wt-raced");
+        RunGit(_repo, "worktree", "add", wt, "raced");
+
+        var svc = new GitBranchService();
+        var (deleted, message) = await svc.DeleteAtVerifiedTipAsync(_repo, "raced", verifiedTip, "test");
+
+        Assert.False(deleted);
+        Assert.Contains("checked out in a worktree", message);
+
+        // The branch survived (or was restored) at exactly the verified commit.
+        Assert.Equal(verifiedTip, RunGit(_repo, "rev-parse", "refs/heads/raced").Trim());
+
+        // The worktree's HEAD is intact and usable.
+        Assert.Equal(verifiedTip, RunGit(wt, "rev-parse", "HEAD").Trim());
+        RunGit(wt, "status", "--short"); // throws on a broken HEAD - a healthy worktree does not
+    }
+
     private void WriteFile(string rel, string content)
         => File.WriteAllText(Path.Combine(_repo, rel), content);
 
