@@ -84,6 +84,13 @@ public sealed class RepositoryStatusService
             var inUse = inventory.InUseBySession.Count;
             var needs = inventory.NeedsAttention.Count;
 
+            // Carry the full (non-primary) worktree records on the status, with measured sizes -
+            // every surface renders from this one model, and "reap N GB" is quoted from it.
+            var worktrees = inventory.Worktrees
+                .Where(w => !w.IsPrimary)
+                .Select(w => w with { SizeBytes = MeasureWorktreeBytes(w) })
+                .ToList();
+
             return new RepositoryStatus
             {
                 Path = repoPath,
@@ -103,6 +110,8 @@ public sealed class RepositoryStatusService
                 WorktreesSafeToReap = safe,
                 WorktreesInUse = inUse,
                 WorktreesNeedAttention = needs,
+                Worktrees = worktrees,
+                WorktreeBytes = worktrees.Sum(w => w.SizeBytes ?? 0),
                 Success = true,
             };
         }
@@ -110,6 +119,46 @@ public sealed class RepositoryStatusService
         {
             FileLog.Write($"[RepositoryStatusService] GetStatusAsync FAILED: {ex.Message}");
             return new RepositoryStatus { Path = repoPath, Success = false, Error = ex.Message };
+        }
+    }
+
+    // Size measurements are a full directory walk, so they are cached per worktree and re-measured
+    // only when the worktree's last activity changes. Process-wide: the monitor, the per-session
+    // tab, and the watcher all share one measurement.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime? Stamp, long Bytes)> SizeCache
+        = new(StringComparer.OrdinalIgnoreCase);
+
+    private static long? MeasureWorktreeBytes(WorktreeInfo w)
+    {
+        try
+        {
+            var key = WorktreeReaperService.NormalizePath(w.Path);
+            if (SizeCache.TryGetValue(key, out var hit) && hit.Stamp == w.LastActivityUtc)
+                return hit.Bytes;
+
+            if (!Directory.Exists(w.Path))
+                return null;
+
+            long bytes = 0;
+            var options = new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                IgnoreInaccessible = true,
+                AttributesToSkip = FileAttributes.ReparsePoint, // never follow junctions/symlinks
+            };
+            foreach (var file in Directory.EnumerateFiles(w.Path, "*", options))
+            {
+                try { bytes += new FileInfo(file).Length; }
+                catch { /* transient file - skip */ }
+            }
+
+            SizeCache[key] = (w.LastActivityUtc, bytes);
+            return bytes;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[RepositoryStatusService] MeasureWorktreeBytes failed for {w.Path}: {ex.Message}");
+            return null;
         }
     }
 

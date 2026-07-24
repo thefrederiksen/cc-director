@@ -42,11 +42,12 @@ public partial class WorktreesView : UserControl
     private static readonly ISolidColorBrush AttentionBrush = new SolidColorBrush(Color.Parse("#F59E0B"));
     private static readonly ISolidColorBrush InUseBrush = new SolidColorBrush(Color.Parse("#3B82F6"));
 
-    private readonly WorktreeInventoryService _service = new();
     private readonly WorktreeReaperService _reaper = new();
-    private string? _repoPath;
+    private RepositoryMonitor? _monitor;
+    private string? _repoPath;          // the session's working directory (may be a worktree path)
+    private string? _repoEntryPath;     // the owning repository's path in the monitor model
+    private bool _provisional;          // entry came from the warm-start cache - display only, never act
     private WorktreeInventory? _lastInventory;
-    private bool _isLoading;
     private bool _isReaping;
 
     /// <summary>Raised (on the UI thread) whenever the safe-to-reap count changes, so the host can badge the tab.</summary>
@@ -67,19 +68,40 @@ public partial class WorktreesView : UserControl
         InitializeComponent();
     }
 
-    /// <summary>Point the view at a repository and kick off a scan. Immediate "Loading..." feedback.</summary>
-    public void Attach(string repoPath)
+    /// <summary>
+    /// Point the view at a repository (or a worktree of one) and render the background monitor's
+    /// model for it - the one-brain rule: this tab never scans, it displays what the service knows,
+    /// updating live as the monitor streams.
+    /// </summary>
+    public void Attach(RepositoryMonitor monitor, string repoPath)
     {
         FileLog.Write($"[WorktreesView] Attach: {repoPath}");
+        Detach();
+        _monitor = monitor;
         _repoPath = repoPath;
-        _ = RefreshAsync();
+        monitor.Upserted += OnMonitorChanged;
+        monitor.Removed += OnMonitorChanged;
+        monitor.ProgressChanged += OnMonitorProgress;
+        RenderFromMonitor();
     }
+
+    private void OnMonitorChanged(RepositoryStatus _) => Dispatcher.UIThread.Post(RenderFromMonitor);
+    private void OnMonitorProgress() => Dispatcher.UIThread.Post(RenderFromMonitor);
 
     /// <summary>Clear the view when the session context goes away.</summary>
     public void Detach()
     {
         FileLog.Write("[WorktreesView] Detach");
+        if (_monitor is { } m)
+        {
+            m.Upserted -= OnMonitorChanged;
+            m.Removed -= OnMonitorChanged;
+            m.ProgressChanged -= OnMonitorProgress;
+            _monitor = null;
+        }
         _repoPath = null;
+        _repoEntryPath = null;
+        _provisional = false;
         _lastInventory = null;
         SafeList.ItemsSource = null;
         NeedsList.ItemsSource = null;
@@ -103,6 +125,49 @@ public partial class WorktreesView : UserControl
         _ = RefreshAsync();
     }
 
+    /// <summary>
+    /// Render this repository's slice of the monitor model. Provisional (warm-start) entries render
+    /// dimmed and cannot be reaped until a live scan confirms them.
+    /// </summary>
+    private void RenderFromMonitor()
+    {
+        if (_monitor is null || _repoPath is null)
+            return;
+
+        var entry = _monitor.FindForPath(_repoPath);
+        if (entry is null)
+        {
+            _repoEntryPath = null;
+            StatusText.Text = _monitor.IsScanning
+                ? $"Scanning repositories... {_monitor.ScanDone} of {_monitor.ScanTotal}"
+                : "This folder is not under a registered root directory. Add its root under Repositories.";
+            StatusText.IsVisible = true;
+            ContentScroller.IsVisible = false;
+            SetOrphanedCount(0);
+            return;
+        }
+
+        _repoEntryPath = entry.Path;
+        _provisional = entry.Provisional;
+
+        var inventory = new WorktreeInventory
+        {
+            RepositoryPath = entry.Path,
+            Worktrees = entry.Worktrees,
+            Success = true,
+        };
+        _lastInventory = inventory;
+        Render(inventory);
+
+        // Warm-start trust rule: show it, dim it, never act on it.
+        ContentScroller.Opacity = entry.Provisional ? 0.55 : 1.0;
+        if (entry.Provisional)
+        {
+            ReapButton.IsVisible = false;
+            ShowBanner("Showing the last run while verifying... actions unlock when the scan confirms this repository.");
+        }
+    }
+
     private async void CopyReportButton_Click(object? sender, RoutedEventArgs e)
     {
         try
@@ -122,45 +187,34 @@ public partial class WorktreesView : UserControl
     }
 
     /// <summary>
-    /// Scan the repository off the UI thread, then render the result. Shows a clear message on
-    /// failure rather than silently degrading.
+    /// Ask the background monitor to recompute this one repository (with fresh live-session data),
+    /// then render its updated model. The view itself never scans.
     /// </summary>
     private async Task RefreshAsync()
     {
-        var repoPath = _repoPath;
-        if (string.IsNullOrWhiteSpace(repoPath) || _isLoading)
+        if (_monitor is null)
+            return;
+        var entryPath = _repoEntryPath ?? _repoPath;
+        if (string.IsNullOrWhiteSpace(entryPath))
             return;
 
-        _isLoading = true;
-        StatusText.Text = "Loading worktrees...";
+        StatusText.Text = "Refreshing...";
         StatusText.IsVisible = true;
-        ContentScroller.IsVisible = false;
 
         try
         {
-            // Ask the host which sessions are live on this machine (best-effort) so a git-safe
-            // worktree with a session in it is shown as "in use" rather than "safe to reap".
             var liveSessions = await FetchLiveSessionsAsync();
-            var inventory = await Task.Run(() => _service.GetInventoryAsync(repoPath, true, liveSessions));
-
-            // Ignore stale results if the view was re-pointed while we were scanning.
-            if (_repoPath != repoPath)
-                return;
-
-            _lastInventory = inventory;
-            Render(inventory);
+            await Task.Run(() => _monitor.RecomputeOneAsync(entryPath!, liveSessions));
         }
         catch (Exception ex)
         {
             FileLog.Write($"[WorktreesView] RefreshAsync FAILED: {ex.Message}");
-            StatusText.Text = $"Could not read worktrees: {ex.Message}";
+            StatusText.Text = $"Could not refresh: {ex.Message}";
             StatusText.IsVisible = true;
-            ContentScroller.IsVisible = false;
+            return;
         }
-        finally
-        {
-            _isLoading = false;
-        }
+
+        RenderFromMonitor();
     }
 
     private void Render(WorktreeInventory inventory)
@@ -212,6 +266,9 @@ public partial class WorktreesView : UserControl
     /// <summary>Show the confirmation overlay listing exactly what will be removed.</summary>
     private void ReapButton_Click(object? sender, RoutedEventArgs e)
     {
+        // Warm-start trust rule: never act on a provisional (cached, unverified) entry.
+        if (_provisional)
+            return;
         // Worktrees a live session is running in are already classified out of the safe set, so
         // the safe list is exactly what the button removes.
         if (_lastInventory is not { Success: true } inventory || inventory.SafeToReapCount == 0)
@@ -237,8 +294,10 @@ public partial class WorktreesView : UserControl
 
     private async Task RunReapAsync()
     {
-        var repoPath = _repoPath;
-        if (string.IsNullOrWhiteSpace(repoPath) || _isReaping)
+        // The reaper runs against the repository entry, not the session's own folder (which may
+        // itself be a worktree of that repository).
+        var repoPath = _repoEntryPath ?? _repoPath;
+        if (string.IsNullOrWhiteSpace(repoPath) || _isReaping || _provisional)
             return;
 
         _isReaping = true;
@@ -254,9 +313,9 @@ public partial class WorktreesView : UserControl
             // still protected (belt-and-suspenders on top of the detector's classification).
             var liveSessions = await FetchLiveSessionsAsync();
             var protectedPaths = ToProtectedSet(liveSessions);
-            var result = await Task.Run(() => _reaper.ReapAsync(repoPath, protectedPaths));
+            var result = await Task.Run(() => _reaper.ReapAsync(repoPath!, protectedPaths));
 
-            if (_repoPath != repoPath)
+            if ((_repoEntryPath ?? _repoPath) != repoPath)
                 return;
 
             // Re-scan first so the counts, badge, and listing reflect what actually happened,

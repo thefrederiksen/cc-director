@@ -38,6 +38,8 @@ public partial class App : Application
     public RepositoryMonitor RepositoryMonitor { get; } = new(
         cachePath: System.IO.Path.Combine(
             CcDirector.Core.Storage.CcStorage.ToolConfig("director"), "repo-worktree-cache.json"));
+
+    private RepositoryWatcher? _repositoryWatcher;
     public SessionStateStore SessionStateStore { get; private set; } = null!;
 
     /// <summary>
@@ -176,6 +178,26 @@ public partial class App : Application
         // Warm start: show the last run's repositories instantly from the cache, then scan in the
         // background to re-verify and reconcile (issue #507, phase 2).
         RepositoryMonitor.LoadCache();
+
+        // After each completed scan, watch the roots and every known repository's git signals so a
+        // change recomputes only the affected repo - react to change instead of re-scanning (#510 A).
+        _repositoryWatcher = new RepositoryWatcher(RepositoryMonitor);
+        RepositoryMonitor.ScanCompleted += () =>
+        {
+            try
+            {
+                var watchRoots = RootDirectoryStore.Roots
+                    .Select(r => r.Path)
+                    .Where(p => !string.IsNullOrWhiteSpace(p))
+                    .ToList();
+                _repositoryWatcher.SyncWatches(watchRoots, RepositoryMonitor.Snapshot().Select(s => s.Path));
+            }
+            catch (Exception ex)
+            {
+                CcDirector.Core.Utilities.FileLog.Write($"[App] watcher sync failed: {ex.Message}");
+            }
+        };
+
         StartRepositoryRescan();
 
         SessionStateStore = new SessionStateStore();

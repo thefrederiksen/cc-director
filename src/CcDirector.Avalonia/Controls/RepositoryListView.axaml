@@ -11,7 +11,8 @@
                     BorderThickness="1"
                     CornerRadius="4"
                     Padding="12,9"
-                    Margin="0,0,0,7">
+                    Margin="0,0,0,7"
+                    Opacity="{Binding RowOpacity}">
                 <Grid ColumnDefinitions="*,Auto,Auto,Auto">
                     <!-- Identity -->
                     <StackPanel Grid.Column="0" Spacing="3" VerticalAlignment="Center">
@@ -20,6 +21,11 @@
                             <Border Background="Transparent" BorderBrush="#3C3C3C" BorderThickness="1" CornerRadius="4"
                                     Padding="6,1" VerticalAlignment="Center" IsVisible="{Binding HasProvider}">
                                 <TextBlock Text="{Binding Provider}" Foreground="#8A8A8A" FontSize="9.5" />
+                            </Border>
+                            <Border Background="#3A2A1B" BorderBrush="#5A4326" BorderThickness="1" CornerRadius="4"
+                                    Padding="6,1" VerticalAlignment="Center" IsVisible="{Binding Verifying}"
+                                    ToolTip.Tip="Shown from the last run; the background scan is re-checking it">
+                                <TextBlock Text="verifying..." Foreground="#C9A24A" FontSize="9.5" />
                             </Border>
                         </StackPanel>
                         <TextBlock Text="{Binding SubPath}" Foreground="#666666" FontSize="10.5"

@@ -110,6 +110,92 @@ public class RepositoryMonitorTests
         }
     }
 
+    // ----- enrichment: provisional + dirty-since (the model-level rules) -----
+
+    [Fact]
+    public void Enrich_FreshScan_ClearsProvisional()
+    {
+        var fresh = Status("/r/a") with { Provisional = true };
+        Assert.False(RepositoryMonitor.Enrich(fresh, null).Provisional);
+    }
+
+    [Fact]
+    public void Enrich_TreeJustTurnedDirty_StampsDirtySinceNow()
+    {
+        var fresh = Status("/r/a") with { IsClean = false, UncommittedCount = 2 };
+        var prevClean = Status("/r/a");
+
+        var enriched = RepositoryMonitor.Enrich(fresh, prevClean);
+
+        Assert.NotNull(enriched.DirtySinceUtc);
+        Assert.True((DateTime.UtcNow - enriched.DirtySinceUtc!.Value).TotalMinutes < 1);
+    }
+
+    [Fact]
+    public void Enrich_StillDirty_CarriesDirtySinceForward()
+    {
+        var origin = new DateTime(2026, 07, 01, 12, 0, 0, DateTimeKind.Utc);
+        var fresh = Status("/r/a") with { IsClean = false, UncommittedCount = 5 };
+        var prevDirty = Status("/r/a") with { IsClean = false, UncommittedCount = 2, DirtySinceUtc = origin };
+
+        Assert.Equal(origin, RepositoryMonitor.Enrich(fresh, prevDirty).DirtySinceUtc);
+    }
+
+    [Fact]
+    public void Enrich_BackToClean_ClearsDirtySince()
+    {
+        var fresh = Status("/r/a"); // clean
+        var prevDirty = Status("/r/a") with { IsClean = false, DirtySinceUtc = DateTime.UtcNow.AddDays(-3) };
+
+        Assert.Null(RepositoryMonitor.Enrich(fresh, prevDirty).DirtySinceUtc);
+    }
+
+    [Fact]
+    public async Task LoadCache_MarksEntriesProvisional_AndScanClearsIt()
+    {
+        var cachePath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ccd-prov-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            var m1 = new RepositoryMonitor(_ => new[] { "/r/a" }, (p, _, _) => Task.FromResult(Status(p)), cachePath);
+            await m1.RescanAsync(new[] { "/r" });
+
+            var m2 = new RepositoryMonitor(_ => new[] { "/r/a" }, (p, _, _) => Task.FromResult(Status(p)), cachePath);
+            m2.LoadCache();
+            Assert.True(Assert.Single(m2.Snapshot()).Provisional); // cached = verifying, never acted on
+
+            await m2.RescanAsync(new[] { "/r" });
+            Assert.False(Assert.Single(m2.Snapshot()).Provisional); // live scan confirmed it
+        }
+        finally
+        {
+            if (File.Exists(cachePath)) File.Delete(cachePath);
+        }
+    }
+
+    [Fact]
+    public async Task RecomputeOne_NonRepoFolder_RemovesTheEntry()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ccd-notrepo-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir); // exists, but has no .git
+        try
+        {
+            var monitor = new RepositoryMonitor(_ => new[] { dir }, (p, _, _) => Task.FromResult(Status(p)));
+            await monitor.RescanAsync(new[] { "/r" });
+            Assert.Single(monitor.Snapshot());
+
+            var removed = new List<string>();
+            monitor.Removed += s => removed.Add(s.Path);
+            await monitor.RecomputeOneAsync(dir);
+
+            Assert.Empty(monitor.Snapshot());
+            Assert.Single(removed);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task Rescan_Upsert_UpdatesExistingEntryInPlace()
     {

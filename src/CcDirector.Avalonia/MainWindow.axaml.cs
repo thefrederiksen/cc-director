@@ -1832,8 +1832,10 @@ public partial class MainWindow : Window
         TerminalHost.Attach(vm.Session);
         UpdateScrollBar();
 
-        // Attach source control (hide tab if no .git)
-        SourceControlView.Attach(vm.Session.RepoPath);
+        // Attach source control (hide tab if no .git). The Worktrees page renders the background
+        // repository monitor's model - the same brain as the Repositories home.
+        if (global::Avalonia.Application.Current is App scApp)
+            SourceControlView.Attach(scApp.RepositoryMonitor, vm.Session.RepoPath);
         UpdateSourceControlTabVisibility(vm.Session.RepoPath);
 
         // Show prompt bar

@@ -76,7 +76,9 @@ public sealed class RepositoryMonitor
             {
                 foreach (var s in cached)
                     if (!string.IsNullOrWhiteSpace(s.Path))
-                        _byPath[WorktreeReaperService.NormalizePath(s.Path)] = s;
+                        // Cached entries are PROVISIONAL: shown dimmed as "verifying", never acted
+                        // on, until the live scan re-confirms them (the warm-start trust rule).
+                        _byPath[WorktreeReaperService.NormalizePath(s.Path)] = s with { Provisional = true };
             }
             FileLog.Write($"[RepositoryMonitor] warm-start: loaded {cached.Count} repositories from cache");
         }
@@ -114,6 +116,28 @@ public sealed class RepositoryMonitor
     }
 
     /// <summary>
+    /// Finds the repository entry a path belongs to: the repository itself, or the repository one of
+    /// whose worktrees IS that path. This is how a session sitting inside a worktree finds its repo's
+    /// entry (the one-brain rule: the per-session tab renders the same model as the Repositories home).
+    /// </summary>
+    public RepositoryStatus? FindForPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return null;
+        var key = WorktreeReaperService.NormalizePath(path);
+        lock (_gate)
+        {
+            if (_byPath.TryGetValue(key, out var direct))
+                return direct;
+            foreach (var s in _byPath.Values)
+                foreach (var w in s.Worktrees)
+                    if (string.Equals(WorktreeReaperService.NormalizePath(w.Path), key, StringComparison.OrdinalIgnoreCase))
+                        return s;
+        }
+        return null;
+    }
+
+    /// <summary>
     /// Rescan the given roots, streaming each repository's status into the model as it is computed.
     /// A new rescan supersedes any in-flight one.
     /// </summary>
@@ -143,8 +167,14 @@ public sealed class RepositoryMonitor
                 var status = await _compute(path, sessions, ct);
                 var key = WorktreeReaperService.NormalizePath(status.Path);
                 seen.Add(key);
-                lock (_gate) { _byPath[key] = status; ScanDone++; }
-                Upserted?.Invoke(status);
+                RepositoryStatus enriched;
+                lock (_gate)
+                {
+                    enriched = Enrich(status, _byPath.TryGetValue(key, out var prev) ? prev : null);
+                    _byPath[key] = enriched;
+                    ScanDone++;
+                }
+                Upserted?.Invoke(enriched);
                 ProgressChanged?.Invoke();
             }
 
@@ -175,6 +205,64 @@ public sealed class RepositoryMonitor
 
         FileLog.Write($"[RepositoryMonitor] rescan completed: {ScanDone}/{ScanTotal}");
         ScanCompleted?.Invoke();
+    }
+
+    /// <summary>
+    /// Recompute ONE repository and publish the result - the file watcher's path: a change under
+    /// one repo never re-scans the others. Removes the entry when the directory is gone.
+    /// </summary>
+    public async Task RecomputeOneAsync(string repoPath, IReadOnlyList<LiveSessionRef>? sessions = null, CancellationToken ct = default)
+    {
+        var key = WorktreeReaperService.NormalizePath(repoPath);
+
+        // "Gone" means the folder disappeared OR it is no longer a git repository (a root watcher
+        // fires for ANY subdirectory; a non-repo folder must never become a model entry).
+        bool isRepo = Directory.Exists(repoPath)
+                      && (Directory.Exists(Path.Combine(repoPath, ".git")) || File.Exists(Path.Combine(repoPath, ".git")));
+        if (!isRepo)
+        {
+            RepositoryStatus? gone = null;
+            lock (_gate)
+            {
+                if (_byPath.TryGetValue(key, out gone))
+                    _byPath.Remove(key);
+            }
+            if (gone != null)
+            {
+                FileLog.Write($"[RepositoryMonitor] recompute: {repoPath} is gone - removed");
+                Removed?.Invoke(gone);
+                SaveCache();
+            }
+            return;
+        }
+
+        var status = await _compute(repoPath, sessions, ct);
+        RepositoryStatus enriched;
+        lock (_gate)
+        {
+            enriched = Enrich(status, _byPath.TryGetValue(key, out var prev) ? prev : null);
+            _byPath[key] = enriched;
+        }
+        FileLog.Write($"[RepositoryMonitor] recomputed one: {enriched.Name}");
+        Upserted?.Invoke(enriched);
+        SaveCache();
+    }
+
+    /// <summary>
+    /// Model-level enrichment applied on every upsert: a freshly computed status is never
+    /// provisional, and dirty-since is carried forward from the previous entry (or stamped now when
+    /// the tree just turned dirty), so "uncommitted work sitting for N days" survives rescans and -
+    /// via the cache - restarts.
+    /// </summary>
+    internal static RepositoryStatus Enrich(RepositoryStatus fresh, RepositoryStatus? previous)
+    {
+        DateTime? dirtySince = null;
+        if (!fresh.IsClean)
+            dirtySince = previous is { IsClean: false, DirtySinceUtc: not null }
+                ? previous.DirtySinceUtc
+                : DateTime.UtcNow;
+
+        return fresh with { Provisional = false, DirtySinceUtc = dirtySince };
     }
 
     private static IReadOnlyList<string> DefaultEnumerate(IEnumerable<string> roots)

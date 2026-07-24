@@ -21,6 +21,10 @@ public sealed class RepoRowItem
     public string Sync { get; init; } = "";
     public string Worktrees { get; init; } = "";
 
+    /// <summary>True for warm-start cache entries not yet re-verified - rendered dimmed.</summary>
+    public bool Verifying { get; init; }
+    public double RowOpacity => Verifying ? 0.55 : 1.0;
+
     public ISolidColorBrush WhereFg { get; init; } = Brushes.Gray;
     public ISolidColorBrush WhereBg { get; init; } = Brushes.Transparent;
     public ISolidColorBrush WhereBr { get; init; } = Brushes.Gray;
@@ -140,6 +144,7 @@ public partial class RepositoryListView : UserControl
             Where = WhereText(s),
             Sync = SyncText(s),
             Worktrees = WorktreeText(s),
+            Verifying = s.Provisional,
             WhereFg = dirty ? Amber : Green,
             WhereBg = dirty ? AmberBg : GreenBg,
             WhereBr = dirty ? AmberBr : GreenBr,

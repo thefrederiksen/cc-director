@@ -134,9 +134,10 @@ public sealed class RawWorktreeEntry
 
 /// <summary>
 /// The full, display-ready record for one worktree: its identity, its dirty/ahead/behind
-/// counts, and the computed safety verdict. The UI renders these verbatim.
+/// counts, and the computed safety verdict. The UI renders these verbatim. A record so services
+/// can derive enriched copies (e.g. stamping the measured size) without mutation.
 /// </summary>
-public sealed class WorktreeInfo
+public sealed record WorktreeInfo
 {
     public string Path { get; init; } = "";
 
@@ -164,6 +165,13 @@ public sealed class WorktreeInfo
 
     /// <summary>Labels of the live sessions running in this worktree (empty when none).</summary>
     public IReadOnlyList<string> OpenSessions { get; init; } = Array.Empty<string>();
+
+    /// <summary>
+    /// Size of the worktree folder on disk in bytes, or null when not yet measured. Measured with a
+    /// cached walk (re-measured only when the worktree's last activity changes) because this is what
+    /// "reap and reclaim N GB" is quoted from.
+    /// </summary>
+    public long? SizeBytes { get; init; }
 
     public WorktreeSafety Safety { get; init; }
     public WorktreeSafetyReason Reason { get; init; }
