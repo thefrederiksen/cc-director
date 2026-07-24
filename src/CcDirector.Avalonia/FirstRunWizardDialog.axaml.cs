@@ -68,6 +68,20 @@ public partial class FirstRunWizardDialog : Window
     private bool _shotsDetectRan;
     private CancellationTokenSource? _shotsWatchCts;
 
+    // Code step: the roots store the board and New Session read, the folders added this run
+    // (path -> repo count, drives the proof number), and the one-shot suggestion scan.
+    private readonly RootDirectoryStore _rootStore = new();
+    private bool _rootStoreLoaded;
+    private readonly Dictionary<string, int> _codeAddedRoots = new(StringComparer.OrdinalIgnoreCase);
+    private bool _codeScanRan;
+    private CancellationTokenSource? _codeScanCts;
+
+    // Morning report step: the chosen cadence. Daily is the default - the report is the payoff the
+    // whole onboarding story builds to, so it arrives unless the user says otherwise.
+    private enum ReportCadence { Daily, Weekly, Off }
+
+    private ReportCadence _reportCadence = ReportCadence.Daily;
+
     // True once the completion marker has been written, so OnClosed does not write it twice.
     private bool _marked;
 
@@ -85,16 +99,10 @@ public partial class FirstRunWizardDialog : Window
         FileLog.Write("[FirstRunWizardDialog] Constructor: initializing");
         _options = options ?? throw new ArgumentNullException(nameof(options));
 
-        // The steps present in THIS release. Code and Morning report are absent until their own
-        // issues land; the model tolerates the shorter list.
-        _model = new FirstRunWizardModel(new[]
-        {
-            WizardStep.Welcome,
-            WizardStep.Agents,
-            WizardStep.Screenshots,
-            WizardStep.Gateway,
-            WizardStep.Done,
-        });
+        // All seven canonical steps are present: the onboarding is one JOURNEY (your workforce ->
+        // what we watch over -> show don't type -> with you everywhere -> the payoff -> done), and
+        // the Morning report screen is the promise the rest of the story builds to.
+        _model = new FirstRunWizardModel(FirstRunWizardModel.CanonicalOrder);
 
         InitializeComponent();
         BuildDots();
@@ -145,8 +153,10 @@ public partial class FirstRunWizardDialog : Window
 
         WelcomePanel.IsVisible = step == WizardStep.Welcome;
         AgentsPanel.IsVisible = step == WizardStep.Agents;
+        CodePanel.IsVisible = step == WizardStep.Code;
         ScreenshotsPanel.IsVisible = step == WizardStep.Screenshots;
         GatewayPanel.IsVisible = step == WizardStep.Gateway;
+        ReportPanel.IsVisible = step == WizardStep.MorningReport;
         DonePanel.IsVisible = step == WizardStep.Done;
 
         // Leaving the Screenshots step ends any take-a-screenshot watch.
@@ -179,6 +189,14 @@ public partial class FirstRunWizardDialog : Window
                     _ = ScanAgentsAsync();
                 break;
 
+            case WizardStep.Code:
+                PrimaryButton.Content = _codeAddedRoots.Count > 0 ? "Looks right" : "Continue";
+                PrimaryButton.IsVisible = true;
+                ConfigureStepSkip();
+                if (!_codeScanRan)
+                    _ = ScanCodeFoldersAsync();
+                break;
+
             case WizardStep.Screenshots:
                 PrimaryButton.Content = "Use this folder";
                 PrimaryButton.IsVisible = true;
@@ -192,6 +210,16 @@ public partial class FirstRunWizardDialog : Window
                 PrimaryButton.IsVisible = true;
                 ConfigureStepSkip();
                 RefreshGatewayChoiceUi();
+                break;
+
+            case WizardStep.MorningReport:
+                PrimaryButton.Content = "Sounds good";
+                PrimaryButton.IsVisible = true;
+                PrimaryButton.IsEnabled = true;
+                ConfigureStepSkip();
+                RefreshReportCards();
+                // The report travels through the gateway; say so plainly when none is connected.
+                ReportGatewayNote.IsVisible = !_gatewayConnected && string.IsNullOrWhiteSpace(GatewayConfig.Load().Url);
                 break;
 
             case WizardStep.Done:
@@ -230,6 +258,11 @@ public partial class FirstRunWizardDialog : Window
 
                 case WizardStep.Screenshots:
                     await SaveScreenshotsFolderAsync();
+                    Advance();
+                    break;
+
+                case WizardStep.MorningReport:
+                    await SaveReportCadenceAsync();
                     Advance();
                     break;
 
@@ -598,6 +631,231 @@ public partial class FirstRunWizardDialog : Window
         Advance();
     }
 
+    // ---- Code step (where your repositories live) --------------------------------------------------
+
+    /// <summary>
+    /// Populate the Code step: show any roots already registered (a re-run wizard tells the truth),
+    /// then stream in verified suggestions from the shallow scout scan - never a full drive walk.
+    /// </summary>
+    private async Task ScanCodeFoldersAsync()
+    {
+        FileLog.Write("[FirstRunWizardDialog] ScanCodeFoldersAsync");
+        _codeScanRan = true;
+        try
+        {
+            await EnsureRootStoreLoadedAsync();
+
+            // Roots that already exist (Settings, a previous run) appear first, marked Added.
+            foreach (var root in _rootStore.Roots)
+            {
+                if (_codeAddedRoots.ContainsKey(root.Path)) continue;
+                var count = await Task.Run(() => CodeFolderScout.CountRepos(root.Path));
+                _codeAddedRoots[root.Path] = count;
+                CodeSuggestionsPanel.Children.Add(CodeRow(root.Path, count, alreadyAdded: true));
+            }
+            UpdateCodeTotal();
+
+            _codeScanCts?.Cancel();
+            _codeScanCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+            // Progress<T> posts each suggestion onto the UI thread as the background sweep finds it.
+            var progress = new Progress<CodeFolderSuggestion>(s =>
+            {
+                if (_codeAddedRoots.ContainsKey(s.Path)) return;
+                if (CodeSuggestionsPanel.Children.OfType<Border>().Any(b => Equals(b.Tag as string, s.Path))) return;
+                CodeSuggestionsPanel.Children.Add(CodeRow(s.Path, s.RepoCount, alreadyAdded: false));
+            });
+
+            await CodeFolderScout.ScanAsync(progress, _codeScanCts.Token);
+
+            CodeScanStatusText.Text = CodeSuggestionsPanel.Children.Count > 0
+                ? "That is everywhere we checked - add anything else below."
+                : "No repositories found in the usual places. Browse to where your code lives.";
+        }
+        catch (OperationCanceledException)
+        {
+            FileLog.Write("[FirstRunWizardDialog] ScanCodeFoldersAsync: scan cancelled/timed out");
+            CodeScanStatusText.Text = "That is everywhere we checked - add anything else below.";
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[FirstRunWizardDialog] ScanCodeFoldersAsync FAILED: {ex.Message}");
+            CodeScanStatusText.Text = $"Folder scan failed: {ex.Message}";
+        }
+    }
+
+    private async Task EnsureRootStoreLoadedAsync()
+    {
+        if (_rootStoreLoaded) return;
+        await Task.Run(_rootStore.Load);
+        _rootStoreLoaded = true;
+    }
+
+    /// <summary>One suggestion row: the folder, its verified repo count, and Add (or the Added pill).</summary>
+    private Border CodeRow(string path, int repoCount, bool alreadyAdded)
+    {
+        var text = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        text.Children.Add(new TextBlock
+        {
+            Text = path,
+            Foreground = Brush("#16181D"),
+            FontSize = 14,
+            FontWeight = FontWeight.SemiBold,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        });
+        text.Children.Add(new TextBlock
+        {
+            Text = repoCount == 1 ? "1 git repository found" : $"{repoCount} git repositories found",
+            Foreground = Brush("#8A909A"),
+            FontSize = 11,
+        });
+
+        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        global::Avalonia.Controls.Grid.SetColumn(text, 0);
+        grid.Children.Add(text);
+
+        Control action;
+        if (alreadyAdded)
+        {
+            action = AddedPill();
+        }
+        else
+        {
+            var addButton = new Button
+            {
+                Content = "Add",
+                Classes = { "dialogButton" },
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            addButton.Click += async (_, _) => await AddCodeRootAsync(path, repoCount, addButton);
+            action = addButton;
+        }
+        global::Avalonia.Controls.Grid.SetColumn(action, 1);
+        grid.Children.Add(action);
+
+        return new Border
+        {
+            Tag = path,
+            Background = Brush("#FFFFFF"),
+            BorderBrush = Brush("#E6E8EC"),
+            BorderThickness = new global::Avalonia.Thickness(1),
+            CornerRadius = new global::Avalonia.CornerRadius(10),
+            Padding = new global::Avalonia.Thickness(16, 13),
+            Child = grid,
+        };
+    }
+
+    private static Border AddedPill() => new()
+    {
+        Background = Brush("#E5F3E9"),
+        CornerRadius = new global::Avalonia.CornerRadius(999),
+        Padding = new global::Avalonia.Thickness(10, 3),
+        VerticalAlignment = VerticalAlignment.Center,
+        Child = new TextBlock
+        {
+            Text = "Added",
+            Foreground = Brush("#1A7F37"),
+            FontSize = 11,
+            FontWeight = FontWeight.SemiBold,
+        },
+    };
+
+    /// <summary>Register a base folder in the same roots store the board and New Session read.</summary>
+    private async Task AddCodeRootAsync(string path, int repoCount, Button addButton)
+    {
+        FileLog.Write($"[FirstRunWizardDialog] AddCodeRootAsync: {path}");
+        try
+        {
+            addButton.IsEnabled = false;
+            await EnsureRootStoreLoadedAsync();
+
+            var duplicate = _rootStore.Roots.Any(r =>
+                string.Equals(System.IO.Path.GetFullPath(r.Path), System.IO.Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase));
+            if (!duplicate)
+            {
+                await Task.Run(() => _rootStore.Add(new RootDirectoryConfig
+                {
+                    Label = System.IO.Path.GetFileName(path.TrimEnd(System.IO.Path.DirectorySeparatorChar)),
+                    Path = path,
+                }));
+            }
+
+            _codeAddedRoots[path] = repoCount;
+            SwapCodeRowActionToAdded(path);
+            UpdateCodeTotal();
+            if (_model.Current == WizardStep.Code)
+                PrimaryButton.Content = "Looks right";
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[FirstRunWizardDialog] AddCodeRootAsync FAILED: {ex.Message}");
+            addButton.IsEnabled = true;
+        }
+    }
+
+    /// <summary>Replace a row's Add button with the Added pill after a successful add.</summary>
+    private void SwapCodeRowActionToAdded(string path)
+    {
+        var row = CodeSuggestionsPanel.Children.OfType<Border>().FirstOrDefault(b => Equals(b.Tag as string, path));
+        if (row?.Child is not Grid grid) return;
+        var button = grid.Children.OfType<Button>().FirstOrDefault();
+        if (button is null) return;
+        grid.Children.Remove(button);
+        var pill = AddedPill();
+        global::Avalonia.Controls.Grid.SetColumn(pill, 1);
+        grid.Children.Add(pill);
+    }
+
+    /// <summary>The proof number: repositories across every added folder.</summary>
+    private void UpdateCodeTotal()
+    {
+        var total = _codeAddedRoots.Values.Sum();
+        CodeTotalPanel.IsVisible = total > 0;
+        CodeTotalCount.Text = total.ToString();
+    }
+
+    private async void BtnBrowseCodeFolder_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[FirstRunWizardDialog] BtnBrowseCodeFolder_Click");
+        try
+        {
+            var result = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+            {
+                Title = "Select the folder where you keep your repositories",
+                AllowMultiple = false,
+            });
+            if (result.Count == 0) return;
+
+            // A picked SINGLE repository resolves to its parent (the roots list holds base folders;
+            // the monitor lists a root's children).
+            var picked = result[0].Path.LocalPath;
+            var (path, count) = await Task.Run(() =>
+            {
+                var resolved = CodeFolderScout.ResolveBrowsedFolder(picked);
+                return (resolved, CodeFolderScout.CountRepos(resolved));
+            });
+
+            if (_codeAddedRoots.ContainsKey(path)) return;
+
+            var existingRow = CodeSuggestionsPanel.Children.OfType<Border>().FirstOrDefault(b => Equals(b.Tag as string, path));
+            if (existingRow is not null)
+            {
+                // It was already suggested - adding it is what the user meant.
+                var button = (existingRow.Child as Grid)?.Children.OfType<Button>().FirstOrDefault();
+                if (button is not null)
+                    await AddCodeRootAsync(path, count, button);
+                return;
+            }
+
+            CodeSuggestionsPanel.Children.Add(CodeRow(path, count, alreadyAdded: true));
+            await AddCodeRootAsync(path, count, new Button());
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[FirstRunWizardDialog] BtnBrowseCodeFolder_Click FAILED: {ex.Message}");
+        }
+    }
+
     // ---- Screenshots step --------------------------------------------------------------------------
 
     /// <summary>
@@ -748,6 +1006,53 @@ public partial class FirstRunWizardDialog : Window
         {
             ["screenshots"] = new JsonObject { ["source_directory"] = path },
         }));
+    }
+
+    // ---- Morning report step (the promise screen) ---------------------------------------------------
+
+    private void RefreshReportCards()
+    {
+        StyleGatewayCard(ReportDailyCard, _reportCadence == ReportCadence.Daily, emphasized: false);
+        StyleGatewayCard(ReportWeeklyCard, _reportCadence == ReportCadence.Weekly, emphasized: false);
+        StyleGatewayCard(ReportOffCard, _reportCadence == ReportCadence.Off, emphasized: false);
+    }
+
+    private void SelectReportCadence(ReportCadence cadence)
+    {
+        FileLog.Write($"[FirstRunWizardDialog] SelectReportCadence: {cadence}");
+        _reportCadence = cadence;
+        RefreshReportCards();
+    }
+
+    private void ReportDailyCard_Pressed(object? sender, PointerPressedEventArgs e) => SelectReportCadence(ReportCadence.Daily);
+    private void ReportWeeklyCard_Pressed(object? sender, PointerPressedEventArgs e) => SelectReportCadence(ReportCadence.Weekly);
+    private void ReportOffCard_Pressed(object? sender, PointerPressedEventArgs e) => SelectReportCadence(ReportCadence.Off);
+
+    /// <summary>
+    /// Persist the cadence choice to config so the morning-report sender reads the user's answer
+    /// when it ships. Skipping the step writes nothing - only an explicit "Sounds good" commits.
+    /// </summary>
+    private async Task SaveReportCadenceAsync()
+    {
+        var cadence = _reportCadence switch
+        {
+            ReportCadence.Daily => "daily",
+            ReportCadence.Weekly => "weekly",
+            _ => "off",
+        };
+        FileLog.Write($"[FirstRunWizardDialog] SaveReportCadenceAsync: {cadence}");
+        await Task.Run(() => CcDirectorConfigService.MergePatch(new JsonObject
+        {
+            ["morning_report"] = new JsonObject { ["cadence"] = cadence, ["hour"] = 7 },
+        }));
+    }
+
+    // ---- Welcome: founder note ----------------------------------------------------------------------
+
+    private void BtnFounderMore_Click(object? sender, RoutedEventArgs e)
+    {
+        FounderMoreText.IsVisible = !FounderMoreText.IsVisible;
+        FounderMoreLink.Content = FounderMoreText.IsVisible ? "Show less" : "Read more";
     }
 
     // ---- Gateway step (native, hosted-first) -------------------------------------------------------
@@ -934,6 +1239,16 @@ public partial class FirstRunWizardDialog : Window
                     : "Add one from Settings > Agents",
                 done: false));
 
+        // Code row.
+        var repoTotal = _codeAddedRoots.Values.Sum();
+        if (repoTotal > 0)
+            DoneReceiptPanel.Children.Add(ReceiptRow(
+                repoTotal == 1 ? "1 repository" : $"{repoTotal} repositories",
+                string.Join(", ", _codeAddedRoots.Keys), done: true));
+        else
+            DoneReceiptPanel.Children.Add(ReceiptRow(
+                "No code folders yet", "Add them from the Repositories view to get repo suggestions", done: false));
+
         // Screenshots row.
         if (_shotsSelectedPath is not null)
             DoneReceiptPanel.Children.Add(ReceiptRow("Screenshots folder set", _shotsSelectedPath, done: true));
@@ -948,6 +1263,14 @@ public partial class FirstRunWizardDialog : Window
         else
             DoneReceiptPanel.Children.Add(ReceiptRow(
                 "No gateway", "Connect one from Settings for phone access and your morning report", done: false));
+
+        // Morning report row - the promise, restated on the receipt.
+        DoneReceiptPanel.Children.Add(_reportCadence switch
+        {
+            ReportCadence.Daily => ReceiptRow("Morning report", "Every morning at 7:00, your time", done: true),
+            ReportCadence.Weekly => ReceiptRow("Morning report", "Monday mornings", done: true),
+            _ => ReceiptRow("Morning report off", "Turn it on any time in Settings", done: false),
+        });
     }
 
     private static Border ReceiptRow(string name, string sub, bool done)
@@ -1023,6 +1346,7 @@ public partial class FirstRunWizardDialog : Window
         _hostedEnrollCts?.Cancel();
         _claudeInstallCts?.Cancel();
         _shotsWatchCts?.Cancel();
+        _codeScanCts?.Cancel();
         if (!_marked)
         {
             FileLog.Write("[FirstRunWizardDialog] OnClosed: writing completion marker (window closed without finishing)");
