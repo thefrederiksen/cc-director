@@ -35,12 +35,28 @@ public class BranchSafetyEvaluatorTests
 
     [Theory]
     [InlineData(true, false, false)]  // pull request merged
-    [InlineData(false, true, false)]  // origin branch gone
     [InlineData(false, false, true)]  // contained in main
-    public void AnySingleMergeSignal_IsSufficient(bool pr, bool gone, bool contained)
+    public void AMergeProofSignal_IsSufficientForBranchDeletion(bool pr, bool gone, bool contained)
     {
         var (safe, _) = BranchSafetyEvaluator.Evaluate(false, false, true, pr, gone, contained);
         Assert.True(safe);
+    }
+
+    // Policy split (issue 516, blocker: deleted-remote-branch as merge proof). A missing remote
+    // branch does NOT prove the commits reached origin/main - a pull request can be closed without
+    // merging and its head deleted, or the remote ref deleted directly. Deleting the LOCAL branch
+    // makes those commits unreachable, so origin-branch-gone alone must NOT authorize branch
+    // deletion; a positively confirmed merge (pull request merged or contained in origin/main) is
+    // required. The counterpart for worktree removal is unchanged (the branch ref survives there),
+    // and that side is locked by WorktreeSafetyEvaluatorTests.CleanBranch_WithOriginBranchGone_IsSafe.
+    [Fact]
+    public void OriginBranchGoneAlone_IsNotSufficientForBranchDeletion()
+    {
+        var (safe, why) = BranchSafetyEvaluator.Evaluate(
+            isCurrent: false, checkedOutInWorktree: false, inspectionSucceeded: true,
+            pullRequestMerged: false, originBranchGone: true, containedInMain: false);
+        Assert.False(safe);
+        Assert.Contains("not proven", why);
     }
 
     [Fact]
@@ -255,16 +271,22 @@ public sealed class GitBranchServiceTests : IDisposable
     }
 
     // ---------------------------------------------------------------------------------------
-    // The counterpart: when the CONFIGURED upstream (a differently named ref) genuinely was
-    // deleted on the remote, the branch IS safe via the upstream-gone signal.
+    // REGRESSION (issue 516, blocker: deleted-remote-branch as merge proof). A configured
+    // upstream that was deleted on the remote, with the branch's commits NOT contained in
+    // origin/main and no merged pull request, must NOT be safe to delete: the remote ref could
+    // have been deleted by a closed-not-merged pull request or a direct delete, and the local
+    // branch is the last reference to those commits. Deleting it would strand them. Before this
+    // fix the branch was ruled safe purely because its upstream was gone. (Worktree removal keeps
+    // origin-branch-gone as a valid signal - the branch ref survives there - which the worktree
+    // evaluator tests lock separately.)
     // ---------------------------------------------------------------------------------------
     [Fact]
-    public async Task Branch_WhoseConfiguredUpstreamWasDeleted_IsSafe()
+    public async Task Branch_WhoseConfiguredUpstreamWasDeleted_ButNotContainedInMain_IsNotSafeToDelete()
     {
         RunGit(_repo, "checkout", "-b", "was-merged");
         WriteFile("y.txt", "y\n");
         RunGit(_repo, "add", "-A");
-        RunGit(_repo, "commit", "-m", "work later squash merged and its upstream deleted");
+        RunGit(_repo, "commit", "-m", "unmerged work whose remote ref was deleted without merging");
         RunGit(_repo, "push", "origin", "was-merged:refs/heads/upstream-name");
         RunGit(_repo, "config", "branch.was-merged.remote", "origin");
         RunGit(_repo, "config", "branch.was-merged.merge", "refs/heads/upstream-name");
@@ -273,6 +295,36 @@ public sealed class GitBranchServiceTests : IDisposable
 
         var branches = await new GitBranchService().ListAsync(_repo);
         var branch = Assert.Single(branches, b => b.Name == "was-merged");
+        Assert.False(branch.SafeToDelete, branch.Explanation);
+
+        // The bulk "delete safe branches" action refuses it and the branch - the only remaining
+        // reference to those commits - survives.
+        var (deleted, _) = await new GitBranchService().DeleteIfSafeAsync(_repo, "was-merged");
+        Assert.False(deleted);
+        Assert.Contains("was-merged", (await new GitBranchService().ListAsync(_repo)).Select(b => b.Name));
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // The safe counterpart: a branch whose upstream is gone AND whose commits ARE contained in
+    // origin/main is safe to delete - the merge is positively confirmed, so nothing is stranded.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Branch_UpstreamGone_AndContainedInMain_IsSafeToDelete()
+    {
+        RunGit(_repo, "checkout", "-b", "really-merged");
+        WriteFile("z.txt", "z\n");
+        RunGit(_repo, "add", "-A");
+        RunGit(_repo, "commit", "-m", "work merged into main then its upstream deleted");
+        RunGit(_repo, "push", "origin", "really-merged:refs/heads/really-upstream");
+        RunGit(_repo, "config", "branch.really-merged.remote", "origin");
+        RunGit(_repo, "config", "branch.really-merged.merge", "refs/heads/really-upstream");
+        RunGit(_repo, "checkout", "main");
+        RunGit(_repo, "merge", "--ff-only", "really-merged");
+        RunGit(_repo, "push", "origin", "main");
+        RunGit(_repo, "push", "origin", "--delete", "really-upstream");
+
+        var branches = await new GitBranchService().ListAsync(_repo);
+        var branch = Assert.Single(branches, b => b.Name == "really-merged");
         Assert.True(branch.SafeToDelete, branch.Explanation);
     }
 

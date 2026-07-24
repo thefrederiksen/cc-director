@@ -24,10 +24,18 @@ public sealed record BranchInfo
 }
 
 /// <summary>
-/// The pure safe-delete decision for a local branch - the same fail-closed shape as the worktree
-/// verdict: deletable ONLY when provably merged (origin branch gone after prune, or contained in
-/// origin/main, or its pull request merged) and never the current branch, never one checked out in
-/// a worktree. No signal = not deletable.
+/// The pure safe-delete decision for a local branch. Deleting a local branch makes its commits
+/// unreachable if they are not held elsewhere, so this is fail-closed: deletable ONLY when the
+/// merge is POSITIVELY confirmed - a merged pull request, or the commits contained in origin/main -
+/// and never the current branch, never one checked out in a worktree. No signal = not deletable.
+///
+/// Policy split (issue 516, blocker: a deleted remote branch is NOT proof of merge). Unlike worktree
+/// removal - which leaves the branch ref in place, so the commits stay reachable - branch deletion
+/// removes the last local reference to the commits. A missing remote branch does not prove those
+/// commits reached origin/main: a pull request can be closed without merging and its head deleted,
+/// or the remote ref can be deleted directly. So the origin-branch-gone signal, which remains
+/// sufficient for reaping a clean worktree (see <see cref="WorktreeSafetyEvaluator"/>), is NOT
+/// sufficient here. It is accepted only as a helping hand toward a clearer refusal message.
 /// </summary>
 public static class BranchSafetyEvaluator
 {
@@ -47,10 +55,12 @@ public static class BranchSafetyEvaluator
             return (false, "Could not inspect this branch - treated as unsafe.");
         if (pullRequestMerged)
             return (true, "Pull request merged.");
-        if (originBranchGone)
-            return (true, "Origin branch deleted after merge.");
         if (containedInMain)
             return (true, "All commits already contained in origin/main.");
+        if (originBranchGone)
+            // Deliberately NOT safe (issue 516). A gone remote branch does not prove a merge, and
+            // deleting the local branch would strand its commits. Say so plainly.
+            return (false, "Remote branch is gone, but its commits are not proven to be in origin/main - deleting could strand them. Confirm the merge first.");
         return (false, "Has commits not proven to be in origin/main.");
     }
 }
