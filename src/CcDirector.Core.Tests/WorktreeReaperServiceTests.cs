@@ -256,7 +256,61 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         Assert.Contains("dirty", outcome.Error ?? "");
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection): a worktree protected by "git worktree lock" must NEVER be
+    // force-deleted, even when it is clean and merged (so the detector would call it safe). git
+    // refuses to remove a locked worktree and keeps it registered; the reaper must respect that
+    // refusal, not fall through to a recursive delete that bypasses the lock.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Reap_NeverForceDeletesALockedWorktree_EvenWhenCleanAndMerged()
+    {
+        var safe = AddSafeWorktree("locked-wt");
+        RunGit(_primary, "worktree", "lock", safe); // an explicit user protection
+
+        var result = await new WorktreeReaperService().ReapAsync(_primary, NoSessions);
+
+        Assert.True(Directory.Exists(safe), "a git-locked worktree must never be force-deleted");
+        Assert.False(result.Success, "git refused to remove the locked worktree - not a clean success");
+        var outcome = result.Outcomes.FirstOrDefault(
+            o => WorktreeReaperService.NormalizePath(o.Path) == WorktreeReaperService.NormalizePath(safe));
+        Assert.NotNull(outcome);
+        Assert.False(outcome!.Removed);
+
+        RunGit(_primary, "worktree", "unlock", safe); // so the test teardown can clean up
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection): a FAILED "git fetch --prune" leaves the merge signals stale, so a
+    // destructive reap must abort rather than act on them. An injected fetch failure removes
+    // nothing.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Reap_WhenFetchFails_AbortsAndRemovesNothing()
+    {
+        var safe = AddSafeWorktree("fetch-fails");
+
+        var git = new FailFetchGitRunner();
+        var result = await new WorktreeReaperService(git: git).ReapAsync(_primary, NoSessions);
+
+        Assert.False(result.Success);
+        Assert.Contains("reap aborted", result.Error ?? "");
+        Assert.True(Directory.Exists(safe), "nothing may be removed when remote state could not be refreshed");
+    }
+
     // ----- helpers -----
+
+    /// <summary>A git runner that fails the "git fetch --prune" call and runs everything else for real.</summary>
+    private sealed class FailFetchGitRunner : GitCommandRunner
+    {
+        public override async Task<GitCommandResult> RunAsync(
+            string workingDirectory, string[] args, CancellationToken ct = default)
+        {
+            if (args.Length >= 2 && args[0] == "fetch" && args[1] == "--prune")
+                return new GitCommandResult { Success = false, ExitCode = 1, Error = "injected fetch failure (network down)" };
+            return await base.RunAsync(workingDirectory, args, ct);
+        }
+    }
 
     /// <summary>
     /// A git runner that creates an untracked file in <c>worktreePath</c> the first time a

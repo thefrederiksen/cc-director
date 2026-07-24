@@ -103,12 +103,20 @@ public sealed class WorktreeReaperService
             if (liveSessionsProvider is null)
                 return ReapResult.Failure("cannot confirm which worktrees are in use by live sessions - reap aborted");
 
-            // Refresh remote-tracking refs first so the merge signals are current...
-            await _git.RunAsync(repositoryPath, new[] { "fetch", "--prune" }, ct);
+            // Refresh remote-tracking refs first so the merge signals are current. A FAILED fetch
+            // means the merge proof (contained-in-origin/main, origin-branch-gone) would be computed
+            // against STALE remote state - remote main may have been rewritten to drop the very
+            // commits a worktree carries. This is a destructive path, so a failed fetch ABORTS the
+            // reap rather than acting on stale signals (issue 516 / inspection).
+            var fetch = await _git.RunAsync(repositoryPath, new[] { "fetch", "--prune" }, ct);
+            if (!fetch.Success)
+            {
+                FileLog.Write($"[WorktreeReaperService] ReapAsync aborted - git fetch failed, remote state is stale: {fetch.Error.Trim()}");
+                return ReapResult.Failure($"could not refresh remote state (git fetch failed) - reap aborted so nothing is removed on stale merge signals: {fetch.Error.Trim()}");
+            }
 
-            // ...THEN read the authoritative live-session roster, as late as possible before acting.
-            // Any failure aborts - never a silent fall-through to "no sessions". Cancellation is the
-            // caller superseding us and propagates to the outer handler.
+            // ...THEN read the authoritative live-session roster. Any failure aborts - never a silent
+            // fall-through to "no sessions". Cancellation is the caller superseding us and propagates.
             IReadOnlyList<LiveSessionRef> liveSessions;
             try
             {
@@ -132,7 +140,27 @@ public sealed class WorktreeReaperService
             if (!inventory.Success)
                 return ReapResult.Failure($"could not enumerate worktrees: {inventory.Error}");
 
-            var protectedSet = BuildProtectedSet(liveSessions);
+            // The inventory itself is slow - it runs a remote probe per worktree - so a session could
+            // have STARTED during it. Re-read the roster ONE more time, as late as possible right
+            // before the destructive loop, and protect against THAT set; the same fail-closed rule
+            // applies (inspection: close the roster-to-removal window, not just the fetch window).
+            IReadOnlyList<LiveSessionRef> liveSessionsAtAct;
+            try
+            {
+                liveSessionsAtAct = await liveSessionsProvider(ct)
+                    ?? throw new InvalidOperationException("the live-session source returned no result");
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[WorktreeReaperService] ReapAsync aborted - could not re-confirm live sessions before removal: {ex.Message}");
+                return ReapResult.Failure($"could not confirm which worktrees are in use by live sessions - reap aborted: {ex.Message}");
+            }
+
+            var protectedSet = BuildProtectedSet(liveSessionsAtAct);
 
             // The owner-approved set from the confirmation, normalized for comparison. Null means
             // no confirmation gate (a non-interactive caller reaps every currently-safe worktree).
@@ -232,27 +260,25 @@ public sealed class WorktreeReaperService
 
         if (stillRegistered)
         {
-            // Case (a): git refused and kept the worktree. Re-prove it is clean at THIS instant
-            // before doing anything destructive; a worktree that turned dirty in the window fails
-            // here and is left untouched, never force-deleted on the stale earlier proof.
+            // Case (a): git REFUSED and kept the worktree registered. git refuses for a REASON - the
+            // worktree turned dirty in the window, it is protected by "git worktree lock", it holds a
+            // submodule, and so on. We RESPECT git's refusal and never force-delete a worktree git
+            // still owns (inspection: this must not bypass "git worktree lock"). Re-check only to give
+            // the clearest message; the outcome is "left untouched" either way.
             var recheck = await _git.RunAsync(worktree.Path, new[] { "status", "--porcelain" }, ct);
-            if (!recheck.Success)
-            {
-                FileLog.Write($"[WorktreeReaperService] git refused to remove {worktree.Path} and its state could not be re-verified: {recheck.Error.Trim()} - left in place");
-                return ReapOutcome.Failed(worktree, $"git refused to remove the worktree and its state could not be re-verified: {remove.Error.Trim()}");
-            }
-            if (!string.IsNullOrWhiteSpace(recheck.Output))
+            if (recheck.Success && !string.IsNullOrWhiteSpace(recheck.Output))
             {
                 FileLog.Write($"[WorktreeReaperService] {worktree.Path} became dirty in the remove window - left in place, not force-deleted");
                 return ReapOutcome.Failed(worktree, "worktree became dirty after the safety scan - not removed");
             }
-            // Registered, clean, yet git refused for some non-content reason that has since cleared:
-            // nothing to lose, so fall through to finish the removal physically.
+            FileLog.Write($"[WorktreeReaperService] git refused to remove {worktree.Path} (still registered) - left untouched, not force-deleted: {remove.Error.Trim()}");
+            return ReapOutcome.Failed(worktree, $"git refused to remove the worktree and it is left untouched: {remove.Error.Trim()}");
         }
 
-        // Either git deregistered the worktree (case b) or it is registered-and-proven-clean:
-        // finishing the physical delete loses nothing (everything present is committed or ignored).
-        FileLog.Write($"[WorktreeReaperService] folder remains after git remove (git success={remove.Success}, stillRegistered={stillRegistered}); finishing physical delete: {worktree.Path}");
+        // git DEREGISTERED the worktree (it proceeded past its own clean check) but could not delete
+        // every file - only leftover ignored/build outputs remain, and finishing the physical delete
+        // loses nothing that was tracked or uncommitted.
+        FileLog.Write($"[WorktreeReaperService] folder remains after git deregistered {worktree.Path} (git success={remove.Success}); finishing physical delete");
         TryDeleteDirectory(worktree.Path);
         await _git.RunAsync(repositoryPath, new[] { "worktree", "prune" }, ct);
 
