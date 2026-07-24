@@ -105,8 +105,10 @@ public sealed class DictionarySuggestionDailySweepTests
             Array.Empty<string>(), new Dictionary<string, IReadOnlyList<string>>(),
             new Dictionary<string, DictationProfile> { ["default"] = new("default", true) });
 
+        // The full chained corpus (Mindzee bridges mindzie ~ Mindsee below the direct-link threshold),
+        // matching the canonical corpus the miner and service tests pin.
         var i = 0;
-        foreach (var (spelling, times) in new[] { ("mindzie", 44), ("Mindsee", 20), ("Mindsy", 15) })
+        foreach (var (spelling, times) in new[] { ("mindzie", 44), ("Mindsee", 20), ("Mindsy", 15), ("Mindzee", 12) })
             for (var n = 0; n < times; n++)
                 transcripts.Append(TenantId.Local, "dictation", $"the {spelling} change", null, false,
                     turnId: null, nowUtc: clock.AddSeconds(i++));
