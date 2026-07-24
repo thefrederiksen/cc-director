@@ -23,6 +23,7 @@ using CcDirector.Core.Claude;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.GatewayConnection;
 using CcDirector.Core.Home;
+using CcDirector.Core.Instances;
 using CcDirector.Core.Network;
 using CcDirector.Core.Onboarding;
 using CcDirector.Core.Sessions;
@@ -136,6 +137,9 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         FileLog.Write("[MainWindow] Avalonia MainWindow initialized");
+
+        // Show which named instance this window is, so multiple instances are distinguishable.
+        Title = "Director" + InstanceTitleSuffix();
 
         Loaded += MainWindow_Loaded;
         Activated += MainWindow_Activated;
@@ -1434,6 +1438,16 @@ public partial class MainWindow : Window
         {
             FileLog.Write($"[MainWindow] ToolsIndicator_PointerPressed FAILED: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Title-bar suffix identifying which instance this window is (e.g. " -- Company B").
+    /// Shown for every instance, default included - the default is not special.
+    /// </summary>
+    private static string InstanceTitleSuffix()
+    {
+        var name = InstanceContext.DisplayName ?? InstanceContext.Slug;
+        return string.IsNullOrWhiteSpace(name) ? "" : $" -- {name}";
     }
 
     private void SetBuildInfo()
@@ -3604,6 +3618,52 @@ public partial class MainWindow : Window
         file.Menu.Items.Add(Item("Settings...", () => BtnSettings_Click(this, new RoutedEventArgs()),
             new KeyGesture(Key.OemComma, KeyModifiers.Control)));
         file.Menu.Items.Add(new NativeMenuItemSeparator());
+
+        // ----- Named director instances -----
+        file.Menu.Items.Add(Item("Create named director instance...", async () =>
+        {
+            FileLog.Write("[MainWindow] Menu: Create named director instance");
+            var dlg = new CreateInstanceDialog();
+            var ok = await dlg.ShowDialog<bool?>(this);
+            if (ok == true && dlg.CreatedInstance is not null)
+            {
+                if (dlg.LaunchAfter)
+                    InstanceProcess.Launch(dlg.CreatedInstance.Name);
+                else
+                    ShowNotification($"Created director \"{dlg.CreatedInstance.DisplayName}\". " +
+                                     "Launch it from File → Switch director.");
+            }
+        }));
+        file.Menu.Items.Add(Item("Rename this director...", async () =>
+        {
+            FileLog.Write("[MainWindow] Menu: Rename this director");
+            var slug = InstanceContext.Slug;
+            var current = NamedInstanceRegistry.Get(slug)?.DisplayName
+                          ?? InstanceContext.DisplayName ?? slug;
+            var dlg = new RenameDirectorDialog(slug, current);
+            var ok = await dlg.ShowDialog<bool?>(this);
+            if (ok == true && dlg.NewDisplayName is not null)
+                ShowNotification($"Renamed to \"{dlg.NewDisplayName}\". Restart this director to update the title bar.");
+        }));
+        file.Menu.Items.Add(Item("Switch director...", async () =>
+        {
+            FileLog.Write("[MainWindow] Menu: Switch director");
+            var dlg = new SelectDirectorDialog("Switch to which director?");
+            var ok = await dlg.ShowDialog<bool?>(this);
+            if (ok != true) return;
+            if (dlg.WantsNew)
+            {
+                var create = new CreateInstanceDialog();
+                var created = await create.ShowDialog<bool?>(this);
+                if (created == true && create.CreatedInstance is not null && create.LaunchAfter)
+                    InstanceProcess.Launch(create.CreatedInstance.Name);
+                return;
+            }
+            if (dlg.LaunchSlug is not null)
+                InstanceProcess.Launch(dlg.LaunchSlug);
+        }));
+        file.Menu.Items.Add(new NativeMenuItemSeparator());
+
         file.Menu.Items.Add(Item("Save Workspace...", async () =>
         {
             var app = AppRef();

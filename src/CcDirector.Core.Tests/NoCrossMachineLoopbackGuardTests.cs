@@ -76,6 +76,7 @@ public sealed class NoCrossMachineLoopbackGuardTests
         // --- Desktop app: local Director/Cockpit access + local-only labels ---
         ["src/CcDirector.Avalonia/App.axaml.cs"] = "Local Control API bootstrap / loopback references.",
         ["src/CcDirector.Avalonia/CockpitUrlResolver.cs"] = "Resolves the local Cockpit URL (same machine).",
+        ["src/CcDirector.Avalonia/SelectDirectorDialog.axaml.cs"] = "The named-instance picker probes each instance's liveness by opening a TCP connection to its Control API port on 127.0.0.1. All named instances are local processes on THIS machine (one exe, many profiles), so a running/stopped check is inherently a SAME-machine loopback probe - the same boundary as ControlApiHost's loopback bind.",
         ["src/CcDirector.Avalonia/Controls/GatewayConnectionPanel.axaml.cs"] = "Epic #1069 A: BuildLoopbackEnrollUrl dials the co-located Gateway's /devices/enroll-signed-in at the literal 127.0.0.1 BY DESIGN - the Gateway's guardrail 1 requires the enroll caller to be a proven SAME-machine loopback connection (IPAddress.IsLoopback), so a machine-name or tailnet address would 403. Same-machine only; the enrolled key then registers/heartbeats over the pick's real address.",
         ["src/CcDirector.Avalonia/MainWindow.axaml.cs"] = "Local-only labelled endpoint strings (handover/about).",
         ["src/CcDirector.Avalonia/Controls/ConnectionsView.axaml.cs"] = "Local connection references.",
