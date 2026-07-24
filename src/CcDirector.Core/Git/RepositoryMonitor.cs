@@ -206,6 +206,10 @@ public sealed class RepositoryMonitor
         RequireLiveSessionsProvider(nameof(RescanAsync));
         CancellationTokenSource cts;
         long scanStartStamp;
+        // Ownership, the scanning flag, and the scan's start stamp are taken in ONE gated
+        // region BEFORE enumeration (ruling R4-4): from the moment this scan owns the monitor
+        // it is visibly scanning, so a recompute arriving during enumeration - or drained by a
+        // predecessor's exit - defers to this scan instead of racing it.
         lock (_gate)
         {
             _cts?.Cancel();
@@ -217,19 +221,33 @@ public sealed class RepositoryMonitor
             // outranks this scan's removals: a repository created and published mid-scan
             // survives the scan's reconciliation instead of being removed by it.
             scanStartStamp = NextComputeStampLocked();
+            IsScanning = true;
+            ScanTotal = 0;
+            ScanDone = 0;
         }
         var ct = cts.Token;
 
-        var paths = _enumerate(roots);
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        lock (_gate) { IsScanning = true; ScanTotal = paths.Count; ScanDone = 0; }
-        ProgressChanged?.Invoke();
-        FileLog.Write($"[RepositoryMonitor] rescan started: {paths.Count} repositories");
-
+        // Everything from here runs inside try/finally (ruling R4-4): an enumeration fault in
+        // a scan that owns the monitor must still release the lifecycle state and drain the
+        // deferred queue on its way out - before this, the fault left IsScanning and the
+        // deferred requests stranded forever.
         bool completed = false;
         try
         {
+            ProgressChanged?.Invoke();
+            var paths = _enumerate(roots);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            lock (_gate)
+            {
+                // A superseded scan must not clobber its replacement's progress counters.
+                if (ct.IsCancellationRequested || !ReferenceEquals(_cts, cts))
+                    throw new OperationCanceledException(ct);
+                ScanTotal = paths.Count;
+            }
+            ProgressChanged?.Invoke();
+            FileLog.Write($"[RepositoryMonitor] rescan started: {paths.Count} repositories");
+
             foreach (var path in paths)
             {
                 ct.ThrowIfCancellationRequested();
@@ -338,13 +356,16 @@ public sealed class RepositoryMonitor
             // Scan lifecycle state belongs to the CURRENT scan only (ruling R3-6): ownership is
             // checked under the gate against the monitor's current cancellation source. A
             // superseded scan exits without touching IsScanning or progress - its replacement is
-            // still scanning and owns both.
-            bool owner;
+            // still scanning and owns both. The owner check, the IsScanning clear, and the
+            // completion decision are ONE gate acquisition (ruling R4-4): ScanCompleted and the
+            // completion log are raised only when that same gated decision said owner.
+            bool owner, raiseCompleted;
             lock (_gate)
             {
                 owner = ReferenceEquals(_cts, cts);
                 if (owner)
                     IsScanning = false;
+                raiseCompleted = owner && completed;
             }
             if (owner)
             {
@@ -354,15 +375,17 @@ public sealed class RepositoryMonitor
                 // no successor never strands them. Each deferred request kept its ORIGINAL
                 // requester's token (ruling R2-5). When a newer scan superseded this one, that
                 // newer scan owns the drain: every one of ITS exit paths runs this same block.
+                // Each drained request goes back through RecomputeOneAsync's own deferral check
+                // (ruling R4-4): when a newer scan has meanwhile started, it re-defers to that
+                // scan instead of running concurrently with it.
                 await DrainDeferredRecomputesAsync();
             }
+            if (raiseCompleted)
+            {
+                FileLog.Write($"[RepositoryMonitor] rescan completed: {ScanDone}/{ScanTotal}");
+                ScanCompleted?.Invoke();
+            }
         }
-
-        if (!completed)
-            return; // superseded or cancelled - never reports completion
-
-        FileLog.Write($"[RepositoryMonitor] rescan completed: {ScanDone}/{ScanTotal}");
-        ScanCompleted?.Invoke();
     }
 
     /// <summary>

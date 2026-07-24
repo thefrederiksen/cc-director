@@ -748,9 +748,16 @@ public class RepositoryMonitorTests
     // ---------------------------------------------------------------------------------------
     // REGRESSION (inspection round 3, ruling R3-5): a scan's removals publish with the SCAN'S
     // OWN START stamp, not a fresh stamp taken at reconciliation time. A repository legitimately
-    // created and published by a compute that started AFTER the scan began must survive that
+    // published by a compute whose start stamp is NEWER than the scan's must survive that
     // scan's reconciliation - before the fix the delayed reconciliation took a newer stamp and
     // removed it.
+    //
+    // Reworked for round 4 (ruling R4-4): a scan is now visibly scanning from the same gated
+    // region that takes ownership, BEFORE enumeration - so the original route to this window (a
+    // recompute during a slow enumeration) correctly DEFERS instead of publishing. The window
+    // that remains reachable: a recompute that passed the deferral check before the scan
+    // started, parked on the repository's single-flight semaphore behind an in-flight compute,
+    // and handed its start stamp only after the scan had begun.
     // ---------------------------------------------------------------------------------------
     [Fact]
     public async Task Rescan_RepositoryPublishedByAComputeThatStartedAfterTheScanBegan_SurvivesItsReconciliation()
@@ -759,38 +766,53 @@ public class RepositoryMonitorTests
         Directory.CreateDirectory(System.IO.Path.Combine(dir, ".git"));
         try
         {
-            bool blockNextEnumerate = false;
-            var enumerateEntered = new TaskCompletionSource();
-            using var releaseEnumerate = new ManualResetEventSlim(false);
+            var firstDirComputeEntered = new TaskCompletionSource();
+            var releaseFirstDirCompute = new TaskCompletionSource();
+            var scanComputeEntered = new TaskCompletionSource();
+            var releaseScanCompute = new TaskCompletionSource();
+            int dirComputes = 0;
             var monitor = new RepositoryMonitor(
-                enumerate: _ =>
+                enumerate: _ => new[] { "/r/a" }, // the enumeration never sees the new repository
+                compute: async (p, _, _) =>
                 {
-                    if (blockNextEnumerate)
+                    if (p == "/r/a")
                     {
-                        blockNextEnumerate = false;
-                        enumerateEntered.SetResult();
-                        releaseEnumerate.Wait(); // the scan already began; its enumeration is slow
+                        scanComputeEntered.TrySetResult();
+                        await releaseScanCompute.Task;
                     }
-                    return new[] { "/r/a" }; // the enumeration never saw the new repository
-                },
-                compute: (p, _, _) => Task.FromResult(Status(p)))
-            { LiveSessionsProvider = NoSessions };
+                    else if (Interlocked.Increment(ref dirComputes) == 1)
+                    {
+                        firstDirComputeEntered.TrySetResult();
+                        await releaseFirstDirCompute.Task;
+                    }
+                    return Status(p);
+                }) { LiveSessionsProvider = NoSessions };
 
-            blockNextEnumerate = true;
-            var scanTask = Task.Run(() => monitor.RescanAsync(new[] { "/r" }));
-            await enumerateEntered.Task;
+            // Compute A holds the repository's semaphore, mid-compute.
+            var computeA = monitor.RecomputeOneAsync(dir);
+            await firstDirComputeEntered.Task;
 
-            // The repository is created NOW, and a compute that started AFTER the scan began
-            // publishes it (the scan is not marked running yet, so nothing defers this).
-            await monitor.RecomputeOneAsync(dir);
+            // Compute B passes the deferral check (no scan is running yet) and parks on the
+            // semaphore behind A. Its start stamp has NOT been handed out yet.
+            var computeB = monitor.RecomputeOneAsync(dir);
+
+            // The scan begins - it takes its start stamp now and blocks in its own compute.
+            var scanTask = monitor.RescanAsync(new[] { "/r" });
+            await scanComputeEntered.Task;
+
+            // A finishes; B then acquires the semaphore, is handed a stamp NEWER than the
+            // scan's, and publishes the repository the enumeration never saw.
+            releaseFirstDirCompute.SetResult();
+            await computeA;
+            await computeB;
             Assert.Contains(monitor.Snapshot(), s => s.Path == dir);
 
             var removed = new List<string>();
             monitor.Removed += s => removed.Add(s.Path);
-            releaseEnumerate.Set();
+            releaseScanCompute.SetResult();
             await scanTask;
 
-            // The newer add outranks the older scan's removals and survives untouched.
+            // The newer publish outranks the older scan's removals and survives untouched.
             Assert.Contains(monitor.Snapshot(), s => s.Path == dir);
             Assert.DoesNotContain(dir, removed);
             Assert.Contains(monitor.Snapshot(), s => s.Path == "/r/a"); // the scan's own result stands
@@ -907,6 +929,157 @@ public class RepositoryMonitorTests
             Assert.False(monitor.IsScanning);
             Assert.Contains(monitor.Snapshot(), s => s.Path == dir);
             Assert.False(scanCompletedRaised); // a cancelled scan still never reports completion
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 4, ruling R4-4): the old scan's drain must not run
+    // recomputes concurrently with a replacement scan. Ownership was a stale snapshot: the old
+    // scan checked ownership and cleared IsScanning under the gate, released it, and only THEN
+    // drained - a replacement scan could take ownership in that interval, and because it set
+    // IsScanning only after enumeration, the old drain saw the monitor as idle and ran the
+    // deferred recompute inside the new scan. A scan now sets IsScanning in the same gated
+    // region that takes ownership, BEFORE enumeration, and drained deferred recomputes go back
+    // through the normal deferral check - re-deferring to the newer scan.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Rescan_DeferredRecomputeDrainedWhileAReplacementIsEnumerating_ReDefersToTheReplacement()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ccd-draindefer-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(System.IO.Path.Combine(dir, ".git"));
+        try
+        {
+            var scanOneComputeEntered = new TaskCompletionSource();
+            var releaseScanOneCompute = new TaskCompletionSource();
+            var scanTwoEnumerateEntered = new TaskCompletionSource();
+            using var releaseScanTwoEnumerate = new ManualResetEventSlim(false);
+            int enumerateCalls = 0;
+            var monitor = new RepositoryMonitor(
+                enumerate: _ =>
+                {
+                    if (Interlocked.Increment(ref enumerateCalls) == 2)
+                    {
+                        // The REPLACEMENT scan owns the monitor and is still enumerating.
+                        scanTwoEnumerateEntered.SetResult();
+                        releaseScanTwoEnumerate.Wait();
+                    }
+                    return new[] { "/r/a" };
+                },
+                compute: async (p, _, _) =>
+                {
+                    if (p == "/r/a" && !scanOneComputeEntered.Task.IsCompleted)
+                    {
+                        scanOneComputeEntered.TrySetResult();
+                        await releaseScanOneCompute.Task;
+                    }
+                    return Status(p);
+                }) { LiveSessionsProvider = NoSessions };
+
+            Task? scanTwo = null;
+            bool scanTwoStarted = false;
+            monitor.ProgressChanged += () =>
+            {
+                // Scan one's OWNING exit raises progress after clearing the scanning flag and
+                // BEFORE draining. Start the replacement scan exactly there and hold it inside
+                // its enumeration - scan one's drain then runs while the replacement owns the
+                // monitor mid-enumeration, which is the inspector's interleaving.
+                if (!monitor.IsScanning && !scanTwoStarted)
+                {
+                    scanTwoStarted = true;
+                    scanTwo = Task.Run(() => monitor.RescanAsync(new[] { "/r" }));
+                    scanTwoEnumerateEntered.Task.Wait();
+                }
+            };
+
+            var scanOne = monitor.RescanAsync(new[] { "/r" });
+            await scanOneComputeEntered.Task;
+
+            // A watcher recompute arrives during scan one and is deferred.
+            await monitor.RecomputeOneAsync(dir);
+            Assert.DoesNotContain(monitor.Snapshot(), s => s.Path == dir);
+
+            // Scan one completes; its exit starts the replacement (handler above), then drains.
+            releaseScanOneCompute.SetResult();
+            await scanOne;
+
+            // The drained recompute must have RE-DEFERRED to the replacement scan - never run
+            // concurrently with it.
+            Assert.DoesNotContain(monitor.Snapshot(), s => s.Path == dir);
+            Assert.True(monitor.IsScanning); // the replacement is still scanning
+
+            releaseScanTwoEnumerate.Set();
+            await scanTwo!;
+
+            // The replacement's completion path reached the re-deferred request.
+            Assert.False(monitor.IsScanning);
+            Assert.Contains(monitor.Snapshot(), s => s.Path == dir);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 4, ruling R4-4): an enumeration fault cannot strand the
+    // lifecycle state. Enumeration ran BEFORE the scan's try/finally - when a replacement scan
+    // took ownership and then its enumeration threw, the replaced scan refused cleanup (not
+    // the owner) and the replacement never reached any cleanup path: IsScanning and the
+    // deferred queue were stranded forever. Enumeration now runs inside the try/finally, so
+    // the THROWER - which owns the monitor - releases the lifecycle state and drains the
+    // deferred queue on its way out (proving WHICH scan drains: the faulting successor).
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Rescan_EnumerationFaultInAScanThatSupersededAnother_ReleasesLifecycleStateAndDrains()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ccd-enumfault-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(System.IO.Path.Combine(dir, ".git"));
+        try
+        {
+            var scanOneComputeEntered = new TaskCompletionSource();
+            var releaseScanOneCompute = new TaskCompletionSource();
+            int enumerateCalls = 0;
+            var monitor = new RepositoryMonitor(
+                enumerate: _ =>
+                {
+                    if (Interlocked.Increment(ref enumerateCalls) == 2)
+                        throw new InvalidOperationException("injected enumeration fault");
+                    return new[] { "/r/a" };
+                },
+                compute: async (p, _, _) =>
+                {
+                    if (!scanOneComputeEntered.Task.IsCompleted)
+                    {
+                        scanOneComputeEntered.TrySetResult();
+                        await releaseScanOneCompute.Task;
+                    }
+                    return Status(p);
+                }) { LiveSessionsProvider = NoSessions };
+
+            var scanOne = monitor.RescanAsync(new[] { "/r" });
+            await scanOneComputeEntered.Task; // scan one is mid-compute and visibly scanning
+
+            // A watcher recompute arrives and is deferred on the running scan.
+            await monitor.RecomputeOneAsync(dir);
+
+            // The replacement scan takes ownership, then its enumeration throws. The fault
+            // propagates LOUDLY to the caller.
+            await Assert.ThrowsAsync<InvalidOperationException>(() => monitor.RescanAsync(new[] { "/r" }));
+
+            // The thrower owned the monitor at its exit, so IT released the lifecycle state
+            // and drained the deferred queue.
+            Assert.False(monitor.IsScanning);
+            Assert.Contains(monitor.Snapshot(), s => s.Path == dir);
+
+            // The superseded scan exits quietly without re-clearing its replacement's state.
+            releaseScanOneCompute.SetResult();
+            await scanOne;
+            Assert.False(monitor.IsScanning);
+            Assert.Contains(monitor.Snapshot(), s => s.Path == dir);
         }
         finally
         {
