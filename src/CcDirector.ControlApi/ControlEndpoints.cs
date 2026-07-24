@@ -401,6 +401,11 @@ internal static class ControlEndpoints
         // GET /fleet/repositories + /fleet/worktrees - the repository/worktree directory (#510 phase C).
         // With a Gateway, relay its fleet-wide aggregation; standalone, serve this Director's own
         // monitor model. Read-only: reaping always runs on the owning Director with a live re-verify.
+        List<RepoStatusDto> LocalRepoDtos() =>
+            (repositoryMonitor?.Snapshot() ?? (IReadOnlyList<Core.Git.RepositoryStatus>)Array.Empty<Core.Git.RepositoryStatus>())
+                .Select(s => RepositoryDtoMapper.Map(s, directorId, Environment.MachineName))
+                .ToList();
+
         app.MapGet("/fleet/repositories", async (CancellationToken ct) =>
         {
             var gw = gatewayClientProvider?.Invoke();
@@ -408,7 +413,12 @@ internal static class ControlEndpoints
             {
                 try
                 {
-                    return Results.Json(await gw.ListFleetRepositoriesAsync(ct));
+                    var fleet = await gw.ListFleetRepositoriesAsync(ct);
+                    // null = the Gateway is older and has no /repositories yet - serve this
+                    // Director's own model (version tolerance, not outage-hiding: a DOWN Gateway
+                    // still fails loud below).
+                    if (fleet != null)
+                        return Results.Json(fleet);
                 }
                 catch (Exception ex)
                 {
@@ -417,10 +427,7 @@ internal static class ControlEndpoints
                         statusCode: StatusCodes.Status502BadGateway);
                 }
             }
-            var local = (repositoryMonitor?.Snapshot() ?? (IReadOnlyList<Core.Git.RepositoryStatus>)Array.Empty<Core.Git.RepositoryStatus>())
-                .Select(s => RepositoryDtoMapper.Map(s, directorId, Environment.MachineName))
-                .ToList();
-            return Results.Json(local);
+            return Results.Json(LocalRepoDtos());
         });
 
         app.MapGet("/fleet/worktrees", async (CancellationToken ct) =>
@@ -430,7 +437,9 @@ internal static class ControlEndpoints
             {
                 try
                 {
-                    return Results.Json(await gw.ListFleetWorktreesAsync(ct));
+                    var fleet = await gw.ListFleetWorktreesAsync(ct);
+                    if (fleet != null)
+                        return Results.Json(fleet);
                 }
                 catch (Exception ex)
                 {
@@ -439,9 +448,7 @@ internal static class ControlEndpoints
                         statusCode: StatusCodes.Status502BadGateway);
                 }
             }
-            var repos = (repositoryMonitor?.Snapshot() ?? (IReadOnlyList<Core.Git.RepositoryStatus>)Array.Empty<Core.Git.RepositoryStatus>())
-                .Select(s => RepositoryDtoMapper.Map(s, directorId, Environment.MachineName));
-            return Results.Json(RepositoryDtoMapper.Flatten(repos));
+            return Results.Json(RepositoryDtoMapper.Flatten(LocalRepoDtos()));
         });
 
         // POST /fleet/send - deliver one message. A local target is delivered directly (works with

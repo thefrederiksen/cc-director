@@ -228,13 +228,23 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         return list;
     }
 
-    /// <summary>The fleet's repositories (GET /repositories). Throws when the Gateway is disabled or the call fails.</summary>
-    public async Task<List<RepoStatusDto>> ListFleetRepositoriesAsync(CancellationToken ct = default)
+    /// <summary>
+    /// The fleet's repositories (GET /repositories). Returns NULL when the Gateway answers 404 -
+    /// an older Gateway that does not know the route yet (version tolerance, the same posture as
+    /// the stream push skipping on an old hub); the caller then serves its own local model.
+    /// Throws when the Gateway is disabled or genuinely fails.
+    /// </summary>
+    public async Task<List<RepoStatusDto>?> ListFleetRepositoriesAsync(CancellationToken ct = default)
     {
         if (!_config.IsEnabled)
             throw new InvalidOperationException("Gateway is not configured; cannot list fleet repositories.");
         FileLog.Write("[GatewayClient] ListFleetRepositoriesAsync: GET /repositories");
         using var resp = await _http.GetAsync("repositories", ct);
+        if (resp.StatusCode == HttpStatusCode.NotFound)
+        {
+            FileLog.Write("[GatewayClient] GET /repositories: 404 (older Gateway) - caller serves local");
+            return null;
+        }
         if (!resp.IsSuccessStatusCode)
             throw await RelayFailureAsync(resp, "GET /repositories", ct);
         var list = await resp.Content.ReadFromJsonAsync<List<RepoStatusDto>>(ct);
@@ -243,13 +253,21 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         return list;
     }
 
-    /// <summary>The fleet's worktrees, flattened (GET /worktrees). Throws when the Gateway is disabled or the call fails.</summary>
-    public async Task<List<FleetWorktreeDto>> ListFleetWorktreesAsync(CancellationToken ct = default)
+    /// <summary>
+    /// The fleet's worktrees, flattened (GET /worktrees). NULL on 404 (older Gateway - caller
+    /// serves its own local model); throws when the Gateway is disabled or genuinely fails.
+    /// </summary>
+    public async Task<List<FleetWorktreeDto>?> ListFleetWorktreesAsync(CancellationToken ct = default)
     {
         if (!_config.IsEnabled)
             throw new InvalidOperationException("Gateway is not configured; cannot list fleet worktrees.");
         FileLog.Write("[GatewayClient] ListFleetWorktreesAsync: GET /worktrees");
         using var resp = await _http.GetAsync("worktrees", ct);
+        if (resp.StatusCode == HttpStatusCode.NotFound)
+        {
+            FileLog.Write("[GatewayClient] GET /worktrees: 404 (older Gateway) - caller serves local");
+            return null;
+        }
         if (!resp.IsSuccessStatusCode)
             throw await RelayFailureAsync(resp, "GET /worktrees", ct);
         var list = await resp.Content.ReadFromJsonAsync<List<FleetWorktreeDto>>(ct);
