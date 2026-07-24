@@ -168,6 +168,15 @@ public partial class MainWindow : Window
         AlphaMode.Changed += OnAlphaModeChanged;
         Closed += (_, _) => AlphaMode.Changed -= OnAlphaModeChanged;
 
+        // The monitor's live-session source is wired HERE, in the constructor, NOT in
+        // MainWindow_Loaded: App.ShowMainWindow starts the first repository rescan
+        // synchronously right after constructing this window, and the monitor refuses to
+        // scan unwired (ruling R2-8). Loaded fires asynchronously after layout, so wiring
+        // there loses the race and the first scan throws - which is exactly what happened
+        // on the first live run of the fixed build.
+        if (global::Avalonia.Application.Current is App appForMonitor)
+            appForMonitor.RepositoryMonitor.LiveSessionsProvider = GetLiveSessionsOnThisMachineAsync;
+
         BuildNativeMenu();
     }
 
@@ -249,12 +258,10 @@ public partial class MainWindow : Window
         SourceControlView.LiveSessionsProvider = GetLiveSessionsOnThisMachineAsync;
 
         // Keep the pinned Repositories badge (safe-to-reap worktree count) in sync with the scan.
+        // (The monitor's LiveSessionsProvider itself is wired in the CONSTRUCTOR - it must be
+        // in place before App.ShowMainWindow triggers the first rescan; see the ctor comment.)
         if (global::Avalonia.Application.Current is App appForRepo)
         {
-            // The monitor owns the live-session source: every compute (full scan or watcher
-            // recompute) consults it, so background recomputes can never erase the
-            // in-use-by-session classification.
-            appForRepo.RepositoryMonitor.LiveSessionsProvider = GetLiveSessionsOnThisMachineAsync;
             appForRepo.RepositoryMonitor.Upserted += _ => Dispatcher.UIThread.Post(UpdateRepositoriesBadge);
             appForRepo.RepositoryMonitor.Removed += _ => Dispatcher.UIThread.Post(UpdateRepositoriesBadge);
             appForRepo.RepositoryMonitor.ProgressChanged += () => Dispatcher.UIThread.Post(UpdateRepositoriesBadge);

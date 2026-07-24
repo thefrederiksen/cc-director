@@ -169,7 +169,13 @@ public partial class App : Application
             .Select(r => r.Path)
             .Where(p => !string.IsNullOrWhiteSpace(p))
             .ToList();
-        _ = System.Threading.Tasks.Task.Run(() => RepositoryMonitor.RescanAsync(roots));
+        // The task is observed, never orphaned: a scan that throws (for example the monitor's
+        // refuse-to-scan-unwired guard) must land in the log as an ERROR immediately, not
+        // surface minutes later as an unobserved-task finalizer message.
+        _ = System.Threading.Tasks.Task.Run(() => RepositoryMonitor.RescanAsync(roots))
+            .ContinueWith(
+                t => FileLog.Write($"[App] ERROR repository rescan FAILED: {t.Exception?.GetBaseException().Message}"),
+                System.Threading.Tasks.TaskContinuationOptions.OnlyOnFaulted);
     }
 
     private void InitializeServices(SplashScreen splash)
