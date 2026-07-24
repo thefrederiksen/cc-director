@@ -62,6 +62,10 @@ public static class BranchSafetyEvaluator
 /// </summary>
 public sealed class GitBranchService
 {
+    /// <summary>git's "expected old value" meaning "the ref must not exist" - makes a restore
+    /// create-only, so a concurrently recreated branch is never overwritten (ruling R3-1).</summary>
+    private const string ZeroSha = "0000000000000000000000000000000000000000";
+
     private readonly GitCommandRunner _git;
     private readonly IMergedPullRequestProbe _pullRequestProbe;
 
@@ -181,7 +185,10 @@ public sealed class GitBranchService
     /// deletion, which would leave that worktree with a broken symbolic HEAD. Compensating
     /// post-check: immediately after a successful delete the worktrees are listed; if any worktree
     /// HEAD still references the deleted branch, the ref is RESTORED at the verified sha (we hold
-    /// the exact commit, so restoration is lossless) and the delete is reported as refused.
+    /// the exact commit, so restoration is lossless) and the delete is reported as refused. The
+    /// restore is CREATE-ONLY (ruling R3-1, expected old value of forty zeros): a branch another
+    /// process recreated in the window stands untouched, and the outcome reports that a branch of
+    /// the same name has since appeared.
     ///
     /// On a confirmed delete the branch's config section is cleaned up, as <c>git branch -D</c>
     /// would have done - but only after confirming the ref is still absent at that moment, so a
@@ -219,9 +226,22 @@ public sealed class GitBranchService
         }
         if (mustRestore)
         {
-            var restore = await _git.RunAsync(repoPath, new[] { "update-ref", $"refs/heads/{branch}", verifiedSha }, ct);
+            // CREATE-ONLY restore (ruling R3-1): the expected-old-value of forty zeros makes git
+            // refuse when the ref exists again. Another process can recreate the branch at a NEW
+            // commit between our delete and this restore - an unconditional restore would silently
+            // rewind that new branch to the verified sha and discard its tip.
+            var restore = await _git.RunAsync(repoPath, new[] { "update-ref", $"refs/heads/{branch}", verifiedSha, ZeroSha }, ct);
             if (!restore.Success)
             {
+                // Two distinct outcomes hide behind a refused create: either the ref exists again
+                // (the concurrent recreation - the new branch stands, and the worktree HEAD is
+                // valid again by that very fact), or the restore genuinely failed (loud error).
+                var recreated = await _git.RunAsync(repoPath, new[] { "rev-parse", "--verify", "--quiet", $"refs/heads/{branch}" }, ct);
+                if (recreated.Success)
+                {
+                    FileLog.Write($"[GitBranchService] {branch} was recreated by another process after deletion - the new branch stands, not restored");
+                    return (true, $"deleted {branch} ({explanation}) - a branch of the same name has since appeared and was left untouched");
+                }
                 // Restoration failing is a real error and must be loud: the commit still exists,
                 // and the exact command to recreate the ref is part of the message.
                 FileLog.Write($"[GitBranchService] RESTORE FAILED for {branch} at {verifiedSha}: {restore.Error.Trim()}");

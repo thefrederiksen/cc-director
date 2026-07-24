@@ -343,6 +343,77 @@ public sealed class GitBranchServiceTests : IDisposable
         RunGit(wt, "status", "--short"); // throws on a broken HEAD - a healthy worktree does not
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 3, ruling R3-1): the compensation restore is CREATE-ONLY.
+    // When another process recreates the branch at a NEW commit between the delete and the
+    // restore, the restore must refuse (git's expected-old-value of forty zeros) and the
+    // recreated tip must survive untouched - the old restore silently rewound it.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Delete_BranchRecreatedBetweenDeleteAndRestore_TheRecreatedTipSurvivesUntouched()
+    {
+        RunGit(_repo, "branch", "raced");
+        var verifiedTip = RunGit(_repo, "rev-parse", "raced").Trim();
+
+        // The commit the concurrent recreation will point at - different from the verified tip.
+        WriteFile("r.txt", "r\n");
+        RunGit(_repo, "add", "-A");
+        RunGit(_repo, "commit", "-m", "the recreated branch's commit");
+        var recreatedTip = RunGit(_repo, "rev-parse", "main").Trim();
+        Assert.NotEqual(verifiedTip, recreatedTip);
+
+        // Checked out into a worktree AFTER verification, so compensation decides on a restore.
+        var wt = Path.Combine(_root, "wt-recreate");
+        RunGit(_repo, "worktree", "add", wt, "raced");
+
+        // The interleaved "other process": right after our delete succeeds, it recreates the
+        // branch at the newer commit.
+        var git = new InterleavingGitRunner(
+            args => args.Length >= 2 && args[0] == "update-ref" && args[1] == "-d",
+            async () =>
+            {
+                var recreate = await new GitCommandRunner().RunAsync(
+                    _repo, new[] { "update-ref", "refs/heads/raced", recreatedTip });
+                Assert.True(recreate.Success, recreate.Error);
+            });
+
+        var svc = new GitBranchService(git);
+        var (deleted, message) = await svc.DeleteAtVerifiedTipAsync(_repo, "raced", verifiedTip, "test");
+
+        // The concurrently recreated branch stands, at ITS tip - never rewound to the verified
+        // sha - and the outcome says plainly what happened.
+        Assert.Equal(recreatedTip, RunGit(_repo, "rev-parse", "refs/heads/raced").Trim());
+        Assert.True(deleted, message);
+        Assert.Contains("same name has since appeared", message);
+    }
+
+    /// <summary>
+    /// A git runner that fires an interleaved action right after the first command matching
+    /// <c>match</c> succeeds - the deterministic stand-in for "another process acted between
+    /// two of our git commands".
+    /// </summary>
+    private sealed class InterleavingGitRunner : GitCommandRunner
+    {
+        private readonly Func<string[], bool> _match;
+        private readonly Func<Task> _interleaved;
+        private int _fired;
+
+        public InterleavingGitRunner(Func<string[], bool> match, Func<Task> interleaved)
+        {
+            _match = match;
+            _interleaved = interleaved;
+        }
+
+        public override async Task<GitCommandResult> RunAsync(
+            string workingDirectory, string[] args, CancellationToken ct = default)
+        {
+            var result = await base.RunAsync(workingDirectory, args, ct);
+            if (result.Success && _match(args) && Interlocked.Exchange(ref _fired, 1) == 0)
+                await _interleaved();
+            return result;
+        }
+    }
+
     private void WriteFile(string rel, string content)
         => File.WriteAllText(Path.Combine(_repo, rel), content);
 
