@@ -209,6 +209,36 @@ internal static class AuthMiddleware
         var authentication = AuthenticateRequest(ctx, cfg.Token, cfg.Devices, GatewayHostedMode.IsHosted);
         if (authentication == AuthenticationResultKind.Authenticated)
         {
+            // MTR-15 cancellation cutoff: on hosted, an authenticated device-key request must still belong to
+            // a currently-ENTITLED tenant. AuthorizeAsync serves O(1) from a live lease; on a miss it re-reads
+            // and, on a successful NotEntitled, revokes the tenant's device credentials and denies (402). A
+            // failed read (Unknown) that no unexpired lease covers is a temporary 503 (never a tombstone).
+            // Self-host has no lease service, so the check is skipped entirely.
+            if (cfg.Leases is not null && cfg.Boundary is not null && cfg.Boundary.IsHosted)
+            {
+                var resolved = cfg.Boundary.ResolveRequestTenant(ctx);
+                if (resolved is { IsValid: true } tenant
+                    && tenant != CcDirector.Core.Tenancy.TenantId.Local
+                    && tenant != CcDirector.Core.Tenancy.TenantId.System)
+                {
+                    var access = await cfg.Leases.AuthorizeAsync(tenant);
+                    if (access == CcDirector.Gateway.Tenancy.HostedAccessDecision.DenyNotEntitled)
+                    {
+                        ctx.Response.StatusCode = StatusCodes.Status402PaymentRequired;
+                        ctx.Response.ContentType = "application/json; charset=utf-8";
+                        await ctx.Response.WriteAsync("{\"error\":\"hosted subscription required\",\"code\":\"hosted_subscription_required\"}");
+                        return;
+                    }
+                    if (access == CcDirector.Gateway.Tenancy.HostedAccessDecision.RetryUnknown)
+                    {
+                        ctx.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+                        ctx.Response.Headers.RetryAfter = "10";
+                        ctx.Response.ContentType = "application/json; charset=utf-8";
+                        await ctx.Response.WriteAsync("{\"error\":\"entitlement temporarily unverifiable\",\"code\":\"entitlement_unknown\"}");
+                        return;
+                    }
+                }
+            }
             await next();
             return;
         }
@@ -434,6 +464,18 @@ internal static class AuthMiddleware
         /// as a valid Bearer alongside the shared machine token. Null disables per-device-key auth.
         /// </summary>
         public DeviceRegistry? Devices { get; init; }
+
+        /// <summary>
+        /// MTR-15 cancellation cutoff (hosted only). When set, every authenticated device-key request
+        /// re-checks the tenant's entitlement - served O(1) from a live lease, re-read on a miss - so a
+        /// cancelled tenant is cut off within the sweep bound, not left authorized forever after enrollment.
+        /// Null on self-host, where there is no entitlement and the check is skipped.
+        /// </summary>
+        public CcDirector.Gateway.Tenancy.HostedAccessLeaseService? Leases { get; init; }
+
+        /// <summary>The boundary that resolves the authenticated device key to its tenant, for the lease
+        /// check. Null on self-host.</summary>
+        public CcDirector.Gateway.Tenancy.HostedTenantBoundary? Boundary { get; init; }
     }
 
     internal enum AuthenticationResultKind
