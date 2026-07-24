@@ -218,12 +218,40 @@ jobs:
           echo "New image ${TARGET} live in production. External outage ~${outage}s (warmed swap)."
           curl -s -m 15 "${GATEWAY_URL}/healthz"; echo
 
-      # Return to steady state: one running instance. The staging slot now holds the OLD instance (the swap
-      # exchanged them); stopping it means only production writes the shared file mount between deploys, and
-      # it is still there to swap back instantly if this release turns out bad (rollback-hosted-gateway).
-      - name: Stop the staging slot
-        if: always()
-        run: az webapp stop --resource-group "$AZURE_RG" --name "$APP" --slot "$SLOT" --output none || true
+      # Return to steady state (one running instance) ONLY after production has proven itself STABLY healthy
+      # on the new commit. Stopping the staging slot two seconds after the swap - while the just-swapped
+      # production container was still settling - is what took production down (a 502 outage that needed a
+      # manual swap-back). On a single-instance plan both slots share one worker, so a stop of one slot can
+      # disturb the other; it is only safe once production is solidly up. Require ~45s of an unbroken streak
+      # of clean external 200s on the new commit first. If production does NOT stabilize, LEAVE staging
+      # running (it is the instant swap-back instance) and fail loudly so the release is not treated as good.
+      - name: Confirm production is stable, then stop staging
+        id: settle
+        run: |
+          TARGET="${{ steps.short.outputs.short }}"
+          need=15; streak=0; deadline=$(( $(date +%s) + 150 ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            body=$(curl -s -m 5 -w '\n%{http_code}' "${GATEWAY_URL}/healthz" 2>/dev/null || printf '\n000')
+            code=$(printf '%s' "$body" | tail -n1)
+            commit=$(printf '%s' "$body" | sed '$d' | jq -r '.commit // empty' 2>/dev/null || echo "")
+            if [ "$code" = "200" ] && [ "$commit" = "$TARGET" ]; then
+              streak=$(( streak + 1 )); echo "production stable 200 commit=$commit ($streak/$need)"
+              [ "$streak" -ge "$need" ] && break
+            else
+              streak=0; echo "production HTTP $code commit=${commit:-<none>} (waiting for a stable streak)"
+            fi
+            sleep 3
+          done
+          if [ "$streak" -lt "$need" ]; then
+            echo "ERROR: production did not hold a stable streak on $TARGET after the swap. Leaving the staging"
+            echo "       slot RUNNING so rollback-hosted-gateway (swap-back) can recover instantly. Do not"
+            echo "       deploy again until this is understood."
+            echo "stopped_staging=no" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "Production held a stable streak on $TARGET; stopping the staging slot."
+          az webapp stop --resource-group "$AZURE_RG" --name "$APP" --slot "$SLOT" --output none
+          echo "stopped_staging=yes" >> "$GITHUB_OUTPUT"
 
       # Does this deploy carry a schema change to the LIVE Supabase Postgres? Diff the Postgres migration set
       # (the one Database.Migrate() applies on hosted) between the outgoing live commit and the shipped one.
