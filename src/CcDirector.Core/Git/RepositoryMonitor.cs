@@ -193,11 +193,18 @@ public sealed class RepositoryMonitor
     {
         RequireLiveSessionsProvider(nameof(RescanAsync));
         CancellationTokenSource cts;
+        long scanStartStamp;
         lock (_gate)
         {
             _cts?.Cancel();
             _cts = CancellationTokenSource.CreateLinkedTokenSource(externalCt);
             cts = _cts;
+            // The scan's removals publish with the SCAN'S OWN START stamp (ruling R3-5),
+            // captured here when the scan begins - never a fresh stamp at reconciliation time.
+            // A compute that starts after this moment carries a newer stamp, so its publish
+            // outranks this scan's removals: a repository created and published mid-scan
+            // survives the scan's reconciliation instead of being removed by it.
+            scanStartStamp = NextComputeStampLocked();
         }
         var ct = cts.Token;
 
@@ -253,14 +260,20 @@ public sealed class RepositoryMonitor
                 // may remove entries - a superseded scan's roots are not the truth any more.
                 if (ct.IsCancellationRequested || !ReferenceEquals(_cts, cts))
                     throw new OperationCanceledException(ct);
-                removed = _byPath.Where(kv => !seen.Contains(kv.Key)).Select(kv => kv.Value).ToList();
-                foreach (var r in removed)
+                removed = new List<RepositoryStatus>();
+                foreach (var kv in _byPath.Where(kv => !seen.Contains(kv.Key)).ToList())
                 {
-                    var removedKey = WorktreeReaperService.NormalizePath(r.Path);
-                    _byPath.Remove(removedKey);
-                    // A removal is a publish of "absent" (ruling R2-5): stamp it, so an older
-                    // compute still in flight cannot publish late and resurrect the repository.
-                    _publishStamps[removedKey] = NextComputeStampLocked();
+                    // A removal is a publish of "absent" (ruling R2-5) stamped with the scan's
+                    // START stamp (ruling R3-5). A key whose recorded publish is NEWER than the
+                    // scan start was legitimately published by a compute that began after this
+                    // scan enumerated - that publish outranks the removal, so the entry stays.
+                    // (A repository genuinely gone is removed by its own gone-path recompute or
+                    // by the next scan.)
+                    if (_publishStamps.TryGetValue(kv.Key, out var newest) && newest > scanStartStamp)
+                        continue;
+                    _byPath.Remove(kv.Key);
+                    _publishStamps[kv.Key] = scanStartStamp;
+                    removed.Add(kv.Value);
                 }
             }
             foreach (var r in removed)

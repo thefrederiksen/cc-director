@@ -746,6 +746,62 @@ public class RepositoryMonitorTests
     }
 
     // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 3, ruling R3-5): a scan's removals publish with the SCAN'S
+    // OWN START stamp, not a fresh stamp taken at reconciliation time. A repository legitimately
+    // created and published by a compute that started AFTER the scan began must survive that
+    // scan's reconciliation - before the fix the delayed reconciliation took a newer stamp and
+    // removed it.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Rescan_RepositoryPublishedByAComputeThatStartedAfterTheScanBegan_SurvivesItsReconciliation()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ccd-newadd-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(System.IO.Path.Combine(dir, ".git"));
+        try
+        {
+            bool blockNextEnumerate = false;
+            var enumerateEntered = new TaskCompletionSource();
+            using var releaseEnumerate = new ManualResetEventSlim(false);
+            var monitor = new RepositoryMonitor(
+                enumerate: _ =>
+                {
+                    if (blockNextEnumerate)
+                    {
+                        blockNextEnumerate = false;
+                        enumerateEntered.SetResult();
+                        releaseEnumerate.Wait(); // the scan already began; its enumeration is slow
+                    }
+                    return new[] { "/r/a" }; // the enumeration never saw the new repository
+                },
+                compute: (p, _, _) => Task.FromResult(Status(p)))
+            { LiveSessionsProvider = NoSessions };
+
+            blockNextEnumerate = true;
+            var scanTask = Task.Run(() => monitor.RescanAsync(new[] { "/r" }));
+            await enumerateEntered.Task;
+
+            // The repository is created NOW, and a compute that started AFTER the scan began
+            // publishes it (the scan is not marked running yet, so nothing defers this).
+            await monitor.RecomputeOneAsync(dir);
+            Assert.Contains(monitor.Snapshot(), s => s.Path == dir);
+
+            var removed = new List<string>();
+            monitor.Removed += s => removed.Add(s.Path);
+            releaseEnumerate.Set();
+            await scanTask;
+
+            // The newer add outranks the older scan's removals and survives untouched.
+            Assert.Contains(monitor.Snapshot(), s => s.Path == dir);
+            Assert.DoesNotContain(dir, removed);
+            Assert.Contains(monitor.Snapshot(), s => s.Path == "/r/a"); // the scan's own result stands
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
     // REGRESSION (inspection round 2, ruling R2-8): scanning without a live-session source is a
     // programming error and fails LOUDLY. An unwired monitor used to silently publish
     // session-blind safety classifications - an occupied worktree could be marked safe to reap.
