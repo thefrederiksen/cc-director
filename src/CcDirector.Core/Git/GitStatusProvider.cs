@@ -22,6 +22,13 @@ public class GitStatusResult
     public string? Error { get; init; }
 }
 
+/// <summary>
+/// The result of counting changed files: the count, plus whether the probe actually succeeded.
+/// A failed probe carries Success=false and a meaningless count, so callers fail closed rather
+/// than read the zero as "clean" (issue 516).
+/// </summary>
+public readonly record struct GitCountResult(bool Success, int Count);
+
 public class GitStatusProvider
 {
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(10);
@@ -65,10 +72,11 @@ public class GitStatusProvider
     }
 
     /// <summary>
-    /// Returns just the total count of changed files (staged + unstaged) without
-    /// allocating GitFileEntry objects. Uses the cache if available.
+    /// The total count of changed files (staged + unstaged), WITH whether the probe succeeded.
+    /// <see cref="GitCountResult.Success"/> is false when git could not be run - the count is then
+    /// UNKNOWN, and callers must not treat it as "zero, therefore clean" (issue 516).
     /// </summary>
-    public async Task<int> GetCountAsync(string repoPath)
+    public async Task<GitCountResult> GetCountAsync(string repoPath)
     {
         FileLog.Write($"[GitStatusProvider] GetCountAsync: repoPath={repoPath}");
 
@@ -80,13 +88,19 @@ public class GitStatusProvider
             {
                 int cachedCount = cached.Result.StagedChanges.Count + cached.Result.UnstagedChanges.Count;
                 FileLog.Write($"[GitStatusProvider] GetCountAsync: cache hit, count={cachedCount}");
-                return cachedCount;
+                return new GitCountResult(Success: true, Count: cachedCount);
             }
         }
 
         var (rawOutput, error, exitCode) = await RunGitStatusAsync(repoPath);
         if (exitCode != 0)
-            return 0;
+        {
+            // A permissions problem, a transient process failure, a corrupt repository, or a missing
+            // git executable - the count is UNKNOWN. Reporting 0 here would erase the distinction
+            // between "clean" and "could not tell", which downstream reads as verified-clean.
+            FileLog.Write($"[GitStatusProvider] GetCountAsync: git failed (exit={exitCode}) - count is unknown: {error}");
+            return new GitCountResult(Success: false, Count: 0);
+        }
 
         int count = CountPorcelainLines(rawOutput);
 
@@ -98,7 +112,7 @@ public class GitStatusProvider
         }
 
         FileLog.Write($"[GitStatusProvider] GetCountAsync: count={count}");
-        return count;
+        return new GitCountResult(Success: true, Count: count);
     }
 
     /// <summary>

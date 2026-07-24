@@ -5826,8 +5826,11 @@ public partial class MainWindow : Window
                     var repoPath = vm.Session.RepoPath;
                     if (!Directory.Exists(repoPath)) return;
 
-                    int count = await _gitStatusProvider.GetCountAsync(repoPath);
-                    global::Avalonia.Threading.Dispatcher.UIThread.Post(() => vm.UncommittedCount = count);
+                    var count = await _gitStatusProvider.GetCountAsync(repoPath);
+                    // Only publish a count the probe actually produced; a failed probe leaves the
+                    // previous value rather than showing a false zero (issue 516).
+                    if (count.Success)
+                        global::Avalonia.Threading.Dispatcher.UIThread.Post(() => vm.UncommittedCount = count.Count);
                 }
                 finally
                 {
