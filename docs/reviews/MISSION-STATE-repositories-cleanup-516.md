@@ -140,3 +140,20 @@ RECENT ACTIVITY instead. Built (commit 955bb38c, Core reaper 15 green, Avalonia 
 Residual (documented, minor): junction/symlink path alias not resolved.
 IN FLIGHT: visible round-3 inspector session f9777443 (-> docs/reviews/codex-inspection-round3.md);
 patient Gateway RepoHistory+PushedRepo test run. Then: full three-suite green + Codex PASS -> MERGE.
+
+## Codex round 3 = FAIL -> fixed; round 4 running (2026-07-24)
+Round 3 (session f9777443) found 3: #2 version-skew envelope fail-open, #3 mid-loop outcome loss,
+#1 TOCTOU. FIXED (commit e8f3b48b, reaper suite 17 green):
+- #2: GatewayClient throws when the envelope omits 'directors'/'sessions' (can't confirm completeness).
+- #3: reaper preserves accumulated outcomes on a mid-loop roster failure (BuildResult helper).
+- #1: made the HARD guarantee explicit + tested - a live session holds an OS handle under its
+  worktree, so the physical remove FAILS and it is left in place, EVEN when roster+cooling-off miss
+  it (test: open file under ignored .temp, empty roster, past-cooling-off clock). Roster fail-closed,
+  cooling-off, and per-delete re-read are early-exit layers; the OS file lock is the guarantee.
+NOTE on infra: Gateway test suite uses a MACHINE-WIDE cross-process lock (only one Gateway suite runs
+at a time across worktrees) - that is why concurrent runs "hang" (they wait for the lock). Other
+worktrees (activity-producer, dict-scan) hold it; my Gateway runs wait. Killed my own orphan testhost
+78928 that was holding this worktree's dll lock. Gateway UNIT tests passed 33 green on an earlier tree
+(ba8on8jex); re-running with the latest #3/#5 tests (bmqi66un1, waiting on the lock).
+IN FLIGHT: round-4 inspector session 89598394 -> docs/reviews/codex-inspection-round4.md; Gateway unit
+re-run bmqi66un1; then full Gateway suite (needs the lock). Then Codex PASS + three-suite green -> MERGE.
