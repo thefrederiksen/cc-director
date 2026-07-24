@@ -51,8 +51,17 @@ Spec: devthrottle_internal#510 · Brief: docs/MISSION-repositories-full-2026-07-
 - Phase E scheduled cleanup agent (out of scope per brief ruling).
 - Weekly report HTML section (the endpoint serves JSON; the report renderer integration is follow-up).
 
+## Inspection loop
+- Round 1 (BLOCK): 14 findings; all fixed by Manager round 1, pushed through 53f4f97a; three
+  suites green (Core 3423 / Avalonia 289 / Gateway 3672, 0 failed). Slot 5 rebuilt on the fixed
+  branch; live harness 8/8 PASS (port 7880).
+- Round 2 (BLOCK): fixes re-inspected; 6 closed clean, 1 REGRESSION (update-ref delete bypasses
+  checked-out protection), 3 new majors (cancelled-scan late publish; /repositories serve-time
+  fold missing for old Directors; repeated Hello resets sequence), rest partial. Rulings:
+  docs/MISSION-repositories-full-INSPECTION-2.md. Manager round 2 seated and fixing.
+
 ## Next
-- Manager finishes inspection-round-1 fixes (F1-F14) and pushes.
-- Architect: final three-suite pass on the fixed branch; rebuild slot 5 and smoke the changed UI
-  (discard confirmation, provisional click block); second Codex inspection over the fix diff;
-  QA report artifact; notify owner; WAIT for approval before anything lands on origin/main.
+- Manager round 2 finishes R2-1..R2-12 and pushes.
+- Architect: three-suite verification; slot-5 rebuild + live harness re-run; THIRD inspection
+  pass over the round-2 diff; QA report artifact; notify owner; WAIT for approval before
+  anything lands on origin/main.
