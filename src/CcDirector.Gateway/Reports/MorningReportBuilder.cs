@@ -1,0 +1,255 @@
+using CcDirector.Core.Tenancy;
+using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Data;
+using CcDirector.Gateway.Data.Entities;
+using Microsoft.EntityFrameworkCore;
+
+namespace CcDirector.Gateway.Reports;
+
+/// <summary>
+/// Assembles ONE account's morning report (issue #2119) from the Gateway's existing tenant-scoped stores.
+/// READ-ONLY: it writes nothing and needs no table of its own.
+///
+/// THE HONESTY RULE, STATED AS CODE. A number is emitted only when its backing store holds data for THIS
+/// tenant; otherwise the field is null and never reaches the JSON. The distinction the rule protects is
+/// between "no data" and "zero":
+///   - a tenant whose event ledger holds NO session rows at all gets NO <c>sessionsRan</c> - the Gateway
+///     genuinely does not know how many sessions ran;
+///   - a tenant whose ledger holds rows but none inside the window gets <c>sessionsRan: 0</c> - the Gateway
+///     looked and the answer is zero.
+/// A report that zero-filled the first case would state, in an email, a fact it had never measured. That is
+/// the failure this whole slice exists to avoid, and it is also what lets this slice merge and ship BEFORE
+/// the repo-state snapshot feed exists: with no repo-state store, the hygiene items are simply absent.
+///
+/// TENANCY IS EXPLICIT, NEVER AMBIENT. The tenant is resolved by the ROUTE (from the account the caller
+/// named) and passed in, and every read goes through <see cref="GatewayDatabase.CreateContext(TenantId)"/>
+/// with that exact tenant. There is no AsyncLocal inference here: a service-token request carries no device
+/// key, so there is no ambient tenant to accidentally read - and no way for one account's report to contain
+/// another account's rows.
+/// </summary>
+public sealed class MorningReportBuilder
+{
+    private readonly GatewayDatabase _db;
+    private readonly Streaming.PushedSessionStore? _pushedSessions;
+    private readonly TimeSpan _streamStale;
+    private readonly Func<DateTime> _utcNow;
+
+    /// <summary>
+    /// How far back the waiting-session scan reads the event ledger. A session whose last recorded
+    /// transition is older than this is NOT reported as waiting: the Gateway will not claim to know the
+    /// current state of something it has not heard about in a month.
+    /// </summary>
+    public const int WaitingLookbackDays = 30;
+
+    /// <summary>
+    /// The hard ceiling on ledger rows the waiting scan materializes. Reaching it is LOGGED (never silent):
+    /// a truncated scan can only under-report waiting sessions, and the log says so, so a short list is
+    /// never mistaken for a quiet fleet.
+    /// </summary>
+    public const int MaxLedgerRowsScanned = 20_000;
+
+    /// <summary>Micro-dollars per cent - the ceil-rounding divisor for hosted-AI spend.</summary>
+    private const long MicrosPerCent = 10_000;
+
+    /// <param name="db">The Gateway EF database.</param>
+    /// <param name="pushedSessions">The live pushed-session cache, used ONLY to put a friendly name and a
+    /// repository path on a waiting row. Null (or a session it has never seen) costs the row nothing but
+    /// those two labels - the waiting fact itself comes from the durable ledger.</param>
+    /// <param name="streamStale">How old a Director's pushed roster may be and still be believed.</param>
+    /// <param name="utcNow">Clock seam for tests.</param>
+    public MorningReportBuilder(
+        GatewayDatabase db,
+        Streaming.PushedSessionStore? pushedSessions = null,
+        TimeSpan? streamStale = null,
+        Func<DateTime>? utcNow = null)
+    {
+        _db = db ?? throw new ArgumentNullException(nameof(db));
+        _pushedSessions = pushedSessions;
+        _streamStale = streamStale ?? TimeSpan.FromMinutes(5);
+        _utcNow = utcNow ?? (() => DateTime.UtcNow);
+    }
+
+    /// <summary>Build the report for <paramref name="tenant"/> over <paramref name="window"/>.</summary>
+    /// <param name="account">The account string the caller named, echoed into the report.</param>
+    public MorningReportDto Build(string account, TenantId tenant, MorningReportWindow window)
+    {
+        ArgumentNullException.ThrowIfNull(window);
+        if (!tenant.IsValid)
+            throw new ArgumentException("A valid TenantId is required.", nameof(tenant));
+
+        var now = _utcNow();
+        using var ctx = _db.CreateContext(tenant);
+
+        var report = new MorningReportDto
+        {
+            Account = account,
+            Window = new MorningReportWindowDto
+            {
+                StartUtc = window.StartUtc,
+                EndUtc = window.EndUtc,
+                Date = window.Date,
+                Tz = window.Tz,
+            },
+            Stats = new MorningReportStatsDto
+            {
+                SessionsRan = SessionsRan(ctx, window),
+                WorkDelivered = WorkDelivered(ctx, window),
+                HostedAiSpendUsd = HostedAiSpendUsd(ctx, window),
+            },
+            Attention = WaitingSessions(ctx, tenant, now),
+        };
+
+        FileLog.Write($"[MorningReportBuilder] Build: tenant={tenant.ToLogString()} window={window.StartUtc:o}..{window.EndUtc:o} " +
+                      $"sessionsRan={Describe(report.Stats.SessionsRan)} workDelivered={Describe(report.Stats.WorkDelivered)} " +
+                      $"spendUsd={Describe(report.Stats.HostedAiSpendUsd)} attention={report.Attention.Count}");
+        return report;
+    }
+
+    /// <summary>Distinct sessions with at least one recorded transition in the window, or null when this
+    /// tenant has no session history at all.</summary>
+    private static int? SessionsRan(GatewayDbContext ctx, MorningReportWindow window)
+    {
+        var anyHistory = ctx.GovernanceEvents.AsNoTracking()
+            .Any(e => e.SubjectKind == GovernanceEventSubject.Session && e.SessionId != null);
+        if (!anyHistory)
+            return null;
+
+        return ctx.GovernanceEvents.AsNoTracking()
+            .Where(e => e.SubjectKind == GovernanceEventSubject.Session &&
+                        e.SessionId != null &&
+                        e.OccurredUtc >= window.StartUtc && e.OccurredUtc < window.EndUtc)
+            .Select(e => e.SessionId)
+            .Distinct()
+            .Count();
+    }
+
+    /// <summary>Runs ACCEPTED in the window, or null when this tenant has no workflow runs at all.</summary>
+    private static int? WorkDelivered(GatewayDbContext ctx, MorningReportWindow window)
+    {
+        if (!ctx.WorkflowRuns.AsNoTracking().Any())
+            return null;
+
+        return ctx.WorkflowRuns.AsNoTracking()
+            .Count(r => r.AcceptanceStatus == WorkflowRunAcceptance.Accepted &&
+                        r.CompletedUtc != null &&
+                        r.CompletedUtc >= window.StartUtc && r.CompletedUtc < window.EndUtc);
+    }
+
+    /// <summary>
+    /// Hosted-AI dollars in the window, CEIL-rounded to the cent, or null when this tenant has no mirrored
+    /// spend at all. Rounding UP is deliberate (the cost-accuracy rule): a report about real money must
+    /// never claim the owner spent less than they did, so a fraction of a cent becomes a whole cent.
+    /// </summary>
+    private static decimal? HostedAiSpendUsd(GatewayDbContext ctx, MorningReportWindow window)
+    {
+        if (!ctx.AccountHostedAiSpend.AsNoTracking().Any())
+            return null;
+
+        var micros = ctx.AccountHostedAiSpend.AsNoTracking()
+            .Where(e => e.TransactionCreatedUtc >= window.StartUtc && e.TransactionCreatedUtc < window.EndUtc)
+            .Sum(e => (long?)e.AmountMicros) ?? 0L;
+
+        return CeilMicrosToUsd(micros);
+    }
+
+    /// <summary>Micro-dollars to dollars, rounded UP to the next whole cent. Never undercounts.</summary>
+    internal static decimal CeilMicrosToUsd(long micros)
+    {
+        if (micros <= 0)
+            return 0m;
+        var cents = (micros + MicrosPerCent - 1) / MicrosPerCent;
+        return cents / 100m;
+    }
+
+    /// <summary>
+    /// The waiting-session rows: every session whose LAST recorded transition is a wait on the human (or on
+    /// a permission grant), with the instant it entered that state and how long ago that was.
+    ///
+    /// The ledger appends only on a REAL transition, so the last event IS the start of the current state -
+    /// the waiting-since instant is read, not inferred. A session that has exited, recovered, gone active or
+    /// idle has a later event of that kind and so is not here.
+    /// </summary>
+    private List<MorningAttentionItemDto> WaitingSessions(GatewayDbContext ctx, TenantId tenant, DateTime now)
+    {
+        var lookback = now - TimeSpan.FromDays(WaitingLookbackDays);
+
+        // Newest first, capped. Grouping in memory after this ordering makes the FIRST row per session its
+        // latest event, which is the state it is in now.
+        var rows = ctx.GovernanceEvents.AsNoTracking()
+            .Where(e => e.SubjectKind == GovernanceEventSubject.Session &&
+                        e.SessionId != null &&
+                        e.OccurredUtc >= lookback)
+            .OrderByDescending(e => e.OccurredUtc)
+            .ThenByDescending(e => e.RecordedUtc)
+            .Take(MaxLedgerRowsScanned)
+            .Select(e => new { e.SessionId, e.State, e.OccurredUtc })
+            .ToList();
+
+        if (rows.Count == MaxLedgerRowsScanned)
+            FileLog.Write($"[MorningReportBuilder] WaitingSessions: the {MaxLedgerRowsScanned}-row scan cap was reached for " +
+                          $"tenant={tenant.ToLogString()}; sessions whose last transition falls outside the scanned rows are " +
+                          "NOT reported. The waiting list may be short - it is never padded.");
+
+        var live = LiveSessionsById(tenant);
+        var items = new List<MorningAttentionItemDto>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var row in rows)
+        {
+            var sessionId = row.SessionId!;
+            if (!seen.Add(sessionId))
+                continue; // an older event for a session whose latest we already ruled on
+
+            if (row.State != GovernanceEventState.WaitingOnHuman &&
+                row.State != GovernanceEventState.WaitingOnPermission)
+                continue;
+
+            // A session the Gateway can currently see is judged on what it can see: one that is HELD
+            // (snoozed) was deliberately parked by the owner and is not "waiting on you" this morning, and
+            // one that has EXITED is not waiting on anybody. A session the Gateway cannot see is reported
+            // from the ledger as-is - that is the whole point of a durable record.
+            if (live.TryGetValue(sessionId, out var liveSession))
+            {
+                if (HoldStates.IsHeld(liveSession.HoldState))
+                    continue;
+                if (string.Equals(liveSession.ActivityState, "Exited", StringComparison.OrdinalIgnoreCase))
+                    continue;
+            }
+
+            var since = DateTime.SpecifyKind(row.OccurredUtc, DateTimeKind.Utc);
+            items.Add(new WaitingSessionAttentionDto
+            {
+                Session = string.IsNullOrWhiteSpace(liveSession?.Name) ? sessionId : liveSession!.Name!,
+                Repo = string.IsNullOrWhiteSpace(liveSession?.RepoPath) ? null : liveSession!.RepoPath,
+                WaitingSinceUtc = since,
+                AgeHours = Math.Round(Math.Max(0, (now - since).TotalHours), 1),
+            });
+        }
+
+        // Longest wait first - the row the owner most needs to see is the one at the top of the email.
+        items.Sort((a, b) => ((WaitingSessionAttentionDto)b).AgeHours.CompareTo(((WaitingSessionAttentionDto)a).AgeHours));
+        return items;
+    }
+
+    /// <summary>
+    /// The tenant's live sessions by id, from every Director that has pushed fresh data. Labels only - the
+    /// waiting VERDICT never comes from here, so an offline Director costs a row its name, not its place in
+    /// the report.
+    /// </summary>
+    private Dictionary<string, SessionDto> LiveSessionsById(TenantId tenant)
+    {
+        var map = new Dictionary<string, SessionDto>(StringComparer.Ordinal);
+        if (_pushedSessions is null)
+            return map;
+
+        foreach (var (_, session) in _pushedSessions.SnapshotFresh(tenant, _streamStale))
+        {
+            if (!string.IsNullOrEmpty(session.SessionId))
+                map[session.SessionId] = session;
+        }
+        return map;
+    }
+
+    private static string Describe(object? value) => value is null ? "absent" : value.ToString()!;
+}
