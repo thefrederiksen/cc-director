@@ -519,6 +519,64 @@ public sealed class GitBranchServiceTests : IDisposable
         RunGit(wt, "status", "--short"); // throws on a broken HEAD - a healthy worktree does not
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 4, ruling R4-2): only the exact missing-ref outcome of
+    // "rev-parse --verify --quiet" (exit 1) permits the config cleanup. Any OTHER failure - a
+    // transient or repository-level error - proves nothing about the ref's absence, and
+    // cleaning up on it could strip a live branch's tracking configuration. The stale section
+    // is inert; a wrong cleanup is not.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Delete_RefProbeFailsWithANonMissingExit_LeavesTheConfigSectionAlone()
+    {
+        RunGit(_repo, "checkout", "-b", "probe-fail");
+        WriteFile("p.txt", "p\n");
+        RunGit(_repo, "add", "-A");
+        RunGit(_repo, "commit", "-m", "probe fail work");
+        RunGit(_repo, "push", "-u", "origin", "probe-fail"); // -u writes branch.probe-fail.remote and .merge
+        RunGit(_repo, "checkout", "main");
+        var verifiedTip = RunGit(_repo, "rev-parse", "probe-fail").Trim();
+
+        // The post-delete ref probe fails with a NON-missing exit (a transient failure).
+        var git = new CannedResultGitRunner(
+            args => args.Length >= 1 && args[0] == "rev-parse" && args.Contains("refs/heads/probe-fail"),
+            new GitCommandResult { Success = false, ExitCode = 128, Error = "fatal: injected transient failure" });
+
+        var svc = new GitBranchService(git);
+        var (deleted, message) = await svc.DeleteAtVerifiedTipAsync(_repo, "probe-fail", verifiedTip, "test");
+
+        // The delete itself stands - but absence was NOT proven, so the config section stays.
+        Assert.True(deleted, message);
+        Assert.Equal("origin", RunGit(_repo, "config", "--get", "branch.probe-fail.remote").Trim());
+        Assert.Equal("refs/heads/probe-fail", RunGit(_repo, "config", "--get", "branch.probe-fail.merge").Trim());
+    }
+
+    /// <summary>
+    /// A git runner that replaces the first command matching <c>match</c> with a canned
+    /// result - the deterministic stand-in for a transient git failure with a specific exit
+    /// code. Every other command runs for real.
+    /// </summary>
+    private sealed class CannedResultGitRunner : GitCommandRunner
+    {
+        private readonly Func<string[], bool> _match;
+        private readonly GitCommandResult _canned;
+        private int _fired;
+
+        public CannedResultGitRunner(Func<string[], bool> match, GitCommandResult canned)
+        {
+            _match = match;
+            _canned = canned;
+        }
+
+        public override async Task<GitCommandResult> RunAsync(
+            string workingDirectory, string[] args, CancellationToken ct = default)
+        {
+            if (_match(args) && Interlocked.Exchange(ref _fired, 1) == 0)
+                return _canned;
+            return await base.RunAsync(workingDirectory, args, ct);
+        }
+    }
+
     /// <summary>
     /// A git runner that fires an interleaved action right after the first command matching
     /// <c>match</c> succeeds - the deterministic stand-in for "another process acted between

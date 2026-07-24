@@ -317,6 +317,16 @@ public sealed class GitBranchService
             return (true, $"deleted {branch} ({explanation})");
         }
 
+        // "rev-parse --verify --quiet" exits 1 for a missing ref - ONLY that exact outcome
+        // proves absence (ruling R4-2). Any other failure - a transient error, a repository
+        // problem - proves nothing, and cleaning up on it could strip a live branch's tracking
+        // configuration. The stale section is inert; a wrong cleanup is not, so skip.
+        if (refCheck.ExitCode != 1)
+        {
+            FileLog.Write($"[GitBranchService] ref probe for {branch} failed with exit {refCheck.ExitCode} (not the missing-ref outcome) - leaving the config section alone: {refCheck.Error.Trim()}");
+            return (true, $"deleted {branch} ({explanation})");
+        }
+
         // git branch -D removes the branch's config section; update-ref does not, so clean it up.
         // A branch without any config has no section - that outcome is expected, not an error.
         var cleanup = await _git.RunAsync(repoPath, new[] { "config", "--remove-section", $"branch.{branch}" }, CancellationToken.None);
