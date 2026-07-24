@@ -98,6 +98,9 @@ public static class FleetWorktreeFold
     /// <summary>The folded state for a worktree whose repository has not been re-verified yet.</summary>
     public const string VerifyingState = "verifying";
 
+    /// <summary>The folded reason for a worktree whose repository has not been re-verified yet.</summary>
+    public const string VerifyingReason = "Still verifying this repository - cached data is never acted on.";
+
     public static List<FleetWorktreeDto> Flatten(IEnumerable<RepoStatusDto> repositories, double dataAgeSeconds = 0)
         => repositories
             .SelectMany(r => r.Worktrees.Select(w => new FleetWorktreeDto
@@ -109,7 +112,7 @@ public static class FleetWorktreeFold
                 Path = w.Path,
                 Branch = w.Branch,
                 State = r.Provisional ? VerifyingState : w.State,
-                Reason = r.Provisional ? "Still verifying this repository - cached data is never acted on." : w.Reason,
+                Reason = r.Provisional ? VerifyingReason : w.Reason,
                 SessionLabels = w.SessionLabels,
                 SizeBytes = w.SizeBytes,
                 LastActivityUtc = w.LastActivityUtc,
@@ -117,4 +120,57 @@ public static class FleetWorktreeFold
                 Provisional = r.Provisional,
             }))
             .ToList();
+
+    /// <summary>
+    /// The one repository-level serve fold (inspection round 2, ruling R2-3): a PROVISIONAL
+    /// repository's safe count serves as ZERO and its nested worktree states serve as
+    /// "verifying", whatever the pushing Director sent - a pre-fix Director can push
+    /// Provisional=true with a stale safe count and stale state strings, and the Gateway owns
+    /// the verdict at serve time. Used by BOTH the Gateway's GET /repositories serve path and
+    /// the Director's outgoing mapper, so no surface can fold its own way. A verified
+    /// repository passes through unchanged. Returns a copy - the cached instance is never
+    /// mutated.
+    /// </summary>
+    public static RepoStatusDto FoldRepositoryForServe(RepoStatusDto r)
+    {
+        if (!r.Provisional)
+            return r;
+        return new RepoStatusDto
+        {
+            DirectorId = r.DirectorId,
+            MachineName = r.MachineName,
+            Path = r.Path,
+            Name = r.Name,
+            RemoteUrl = r.RemoteUrl,
+            Provider = r.Provider,
+            Org = r.Org,
+            Branch = r.Branch,
+            IsClean = r.IsClean,
+            UncommittedCount = r.UncommittedCount,
+            DirtySinceUtc = r.DirtySinceUtc,
+            AheadCount = r.AheadCount,
+            BehindCount = r.BehindCount,
+            BehindMainCount = r.BehindMainCount,
+            WorktreeCount = r.WorktreeCount,
+            WorktreesSafeToReap = 0, // fail closed: unverified work is never reclaimable
+            WorktreesInUse = r.WorktreesInUse,
+            WorktreesNeedAttention = r.WorktreesNeedAttention,
+            WorktreeBytes = r.WorktreeBytes,
+            Provisional = true,
+            Worktrees = r.Worktrees.Select(w => new WorktreeDto
+            {
+                Path = w.Path,
+                Branch = w.Branch,
+                State = VerifyingState,
+                Reason = VerifyingReason,
+                SessionLabels = w.SessionLabels,
+                SizeBytes = w.SizeBytes,
+                LastActivityUtc = w.LastActivityUtc,
+                AheadOfMain = w.AheadOfMain,
+                BehindMain = w.BehindMain,
+                DirtyFileCount = w.DirtyFileCount,
+                IsDetachedHead = w.IsDetachedHead,
+            }).ToList(),
+        };
+    }
 }

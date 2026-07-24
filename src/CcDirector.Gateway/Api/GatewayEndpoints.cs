@@ -770,7 +770,12 @@ internal static class GatewayEndpoints
                 var fresh = pushedRepositories.TryGetFresh(reqTenant.Value, directorId, streamStaleResolved);
                 if (fresh is null)
                     continue;
-                rows.AddRange(fresh.Value.Repositories);
+                // The one repository-level serve fold (ruling R2-3): a pre-fix Director can push
+                // Provisional=true with a stale safe count and stale worktree states - the
+                // Gateway owns the verdict at SERVE time, for /repositories exactly as for
+                // /worktrees. A provisional repository serves a zero safe count and "verifying"
+                // worktrees, whatever was pushed.
+                rows.AddRange(fresh.Value.Repositories.Select(FleetWorktreeFold.FoldRepositoryForServe));
             }
             if (!string.IsNullOrWhiteSpace(machine))
                 rows = rows.Where(r => string.Equals(r.MachineName, machine, StringComparison.OrdinalIgnoreCase)).ToList();

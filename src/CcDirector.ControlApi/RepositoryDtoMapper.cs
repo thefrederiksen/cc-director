@@ -10,39 +10,44 @@ namespace CcDirector.ControlApi;
 /// </summary>
 public static class RepositoryDtoMapper
 {
-    public static RepoStatusDto Map(RepositoryStatus s, string directorId, string machineName) => new()
-    {
-        DirectorId = directorId,
-        MachineName = machineName,
-        Path = s.Path,
-        Name = s.Name,
-        RemoteUrl = s.RemoteUrl,
-        Provider = s.Provider.ToString(),
-        Org = s.Org,
-        Branch = s.Branch,
-        IsClean = s.IsClean,
-        UncommittedCount = s.UncommittedCount,
-        DirtySinceUtc = s.DirtySinceUtc,
-        AheadCount = s.AheadCount,
-        BehindCount = s.BehindCount,
-        BehindMainCount = s.BehindMainCount,
-        WorktreeCount = s.WorktreeCount,
-        // Fail closed for a provisional (still-verifying) entry: cached data never advertises a
-        // safe count, and its worktrees fold to "verifying" - never "safe-to-reap".
-        WorktreesSafeToReap = s.Provisional ? 0 : s.WorktreesSafeToReap,
-        WorktreesInUse = s.WorktreesInUse,
-        WorktreesNeedAttention = s.WorktreesNeedAttention,
-        WorktreeBytes = s.WorktreeBytes,
-        Provisional = s.Provisional,
-        Worktrees = s.Worktrees.Select(w => Map(w, s.Provisional)).ToList(),
-    };
+    /// <summary>
+    /// Builds the raw DTO and then applies the ONE shared repository-level fold
+    /// (<see cref="FleetWorktreeFold.FoldRepositoryForServe"/>, ruling R2-3): a provisional
+    /// entry's safe count folds to zero and its worktrees to "verifying". The Gateway applies
+    /// the same fold at serve time, so a pre-fix Director's pushed shape cannot bypass it.
+    /// </summary>
+    public static RepoStatusDto Map(RepositoryStatus s, string directorId, string machineName)
+        => FleetWorktreeFold.FoldRepositoryForServe(new RepoStatusDto
+        {
+            DirectorId = directorId,
+            MachineName = machineName,
+            Path = s.Path,
+            Name = s.Name,
+            RemoteUrl = s.RemoteUrl,
+            Provider = s.Provider.ToString(),
+            Org = s.Org,
+            Branch = s.Branch,
+            IsClean = s.IsClean,
+            UncommittedCount = s.UncommittedCount,
+            DirtySinceUtc = s.DirtySinceUtc,
+            AheadCount = s.AheadCount,
+            BehindCount = s.BehindCount,
+            BehindMainCount = s.BehindMainCount,
+            WorktreeCount = s.WorktreeCount,
+            WorktreesSafeToReap = s.WorktreesSafeToReap,
+            WorktreesInUse = s.WorktreesInUse,
+            WorktreesNeedAttention = s.WorktreesNeedAttention,
+            WorktreeBytes = s.WorktreeBytes,
+            Provisional = s.Provisional,
+            Worktrees = s.Worktrees.Select(Map).ToList(),
+        });
 
-    public static WorktreeDto Map(WorktreeInfo w, bool provisional = false) => new()
+    public static WorktreeDto Map(WorktreeInfo w) => new()
     {
         Path = w.Path,
         Branch = w.Branch,
-        State = provisional ? FleetWorktreeFold.VerifyingState : StateString(w.Safety),
-        Reason = provisional ? "Still verifying this repository - cached data is never acted on." : w.Explanation,
+        State = StateString(w.Safety),
+        Reason = w.Explanation,
         SessionLabels = w.OpenSessions.ToList(),
         SizeBytes = w.SizeBytes,
         LastActivityUtc = w.LastActivityUtc,
