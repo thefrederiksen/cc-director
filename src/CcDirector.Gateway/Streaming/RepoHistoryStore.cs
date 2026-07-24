@@ -11,6 +11,12 @@ public sealed record RepoDailySnapshot
     public string Tenant { get; init; } = "";
     public DateOnly Date { get; init; }
     public string MachineName { get; init; } = "";
+
+    /// <summary>The repository's full path - part of the identity key. Two repositories can share a
+    /// leaf name on one machine; only the path tells them apart.</summary>
+    public string Path { get; init; } = "";
+
+    /// <summary>The leaf name, kept for display only - never part of the key.</summary>
     public string Name { get; init; } = "";
     public int UncommittedCount { get; init; }
     public int DirtyDays { get; init; }
@@ -65,6 +71,11 @@ public sealed class RepoHistoryStore
             {
                 if (r.Provisional)
                     continue; // unverified warm-start data never becomes history
+                if (string.IsNullOrWhiteSpace(r.Path))
+                {
+                    FileLog.Write($"[RepoHistoryStore] snapshot row without a path ignored (name={r.Name})");
+                    continue; // the path IS the identity - a pathless row cannot be keyed
+                }
                 int dirtyDays = r.DirtySinceUtc is { } since && !r.IsClean
                     ? (int)Math.Max(0, (DateTime.UtcNow - since).TotalDays)
                     : 0;
@@ -73,6 +84,7 @@ public sealed class RepoHistoryStore
                     Tenant = tenant.Value,
                     Date = date,
                     MachineName = r.MachineName,
+                    Path = r.Path,
                     Name = r.Name,
                     UncommittedCount = r.UncommittedCount,
                     DirtyDays = dirtyDays,
@@ -146,7 +158,12 @@ public sealed class RepoHistoryStore
     private static DateOnly StartOfWeek(DateOnly d)
         => d.AddDays(-(((int)d.DayOfWeek + 6) % 7)); // Monday
 
-    private static string Key(RepoDailySnapshot r) => $"{r.Tenant}|{r.Date:yyyy-MM-dd}|{r.MachineName}|{r.Name}".ToLowerInvariant();
+    /// <summary>
+    /// The row identity: tenant, day, machine, and the repository PATH (lowercased). The leaf name
+    /// is display only - two repositories sharing a folder name on one machine must never
+    /// overwrite each other's snapshots (inspection finding F13).
+    /// </summary>
+    private static string Key(RepoDailySnapshot r) => $"{r.Tenant}|{r.Date:yyyy-MM-dd}|{r.MachineName}|{r.Path}".ToLowerInvariant();
 
     private void Load()
     {
@@ -162,7 +179,9 @@ public sealed class RepoHistoryStore
                 if (string.IsNullOrWhiteSpace(line))
                     continue;
                 var row = JsonSerializer.Deserialize<RepoDailySnapshot>(line);
-                if (row != null)
+                // Rows without a path predate the path-keyed format (days old, unreleased) and
+                // cannot be keyed - ignored rather than migrated.
+                if (row != null && !string.IsNullOrWhiteSpace(row.Path))
                     _rows[Key(row)] = row;
             }
         }

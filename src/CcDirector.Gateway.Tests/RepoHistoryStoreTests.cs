@@ -92,6 +92,62 @@ public sealed class RepoHistoryStoreTests : IDisposable
         Assert.Equal(0, store.WeeklyTrends(tenant, 1, day)[^1].MaxWorktrees);
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection finding F13): the history key is the repository PATH, not the leaf
+    // name. Two repositories sharing a folder name on one machine keep separate daily rows.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public void SameLeafName_DifferentPaths_DoNotOverwriteEachOther()
+    {
+        var tenant = TenantId.Local;
+        var day = new DateOnly(2026, 07, 24);
+        var store = new RepoHistoryStore(_path);
+
+        var first = Repo("widget", worktrees: 5, safe: 2);
+        first.Path = @"D:\repos\widget";
+        var second = Repo("widget", worktrees: 3, safe: 1);
+        second.Path = @"D:\other\widget";
+
+        store.ObserveSnapshot(tenant, new[] { first, second }, day);
+
+        // Both rows survive: the day's fleet totals SUM the two same-named repositories.
+        var trends = store.WeeklyTrends(tenant, weeks: 1, today: day);
+        Assert.Equal(8, trends[^1].MaxWorktrees);
+        Assert.Equal(3, trends[^1].MaxSafeToReap);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection finding F13): legacy rows without a path (the pre-path file
+    // format, unreleased) cannot be keyed and are ignored on load - no migration.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public void Load_IgnoresLegacyRowsWithoutAPath()
+    {
+        var day = new DateOnly(2026, 07, 24);
+        File.WriteAllLines(_path, new[]
+        {
+            // A legacy line: no Path property at all.
+            "{\"Tenant\":\"local\",\"Date\":\"2026-07-24\",\"MachineName\":\"M1\",\"Name\":\"widget\",\"WorktreeCount\":9}",
+        });
+
+        var store = new RepoHistoryStore(_path);
+        Assert.Equal(0, store.WeeklyTrends(TenantId.Local, 1, day)[^1].MaxWorktrees);
+    }
+
+    [Fact]
+    public void PathlessPushedRow_IsIgnored_NotKeyed()
+    {
+        var tenant = TenantId.Local;
+        var day = new DateOnly(2026, 07, 24);
+        var store = new RepoHistoryStore(_path);
+
+        var pathless = Repo("ghost", worktrees: 9);
+        pathless.Path = "";
+        store.ObserveSnapshot(tenant, new[] { pathless }, day);
+
+        Assert.Equal(0, store.WeeklyTrends(tenant, 1, day)[^1].MaxWorktrees);
+    }
+
     [Fact]
     public void TenantPartition_TrendsNeverMix()
     {
