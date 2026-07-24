@@ -76,7 +76,7 @@
 .wf-reg-head,
 .wf-reg-row {
   display: grid;
-  grid-template-columns: 5px minmax(230px, 1.5fr) 160px minmax(150px, 1fr) 170px;
+  grid-template-columns: 5px minmax(230px, 1.5fr) 160px minmax(150px, 1fr) 170px 110px;
   gap: 0 16px;
   align-items: start;
 }
@@ -305,7 +305,13 @@
   }
 
   .wf-spine {
-    grid-row: 1 / span 4;
+    grid-row: 1 / span 5;
+  }
+
+  /* Stacked rows read better with the actions side by side. */
+  .wf-cell-actions {
+    flex-direction: row;
+    gap: 14px;
   }
 }
 
@@ -548,4 +554,54 @@
   margin: 10px 0;
   padding: 2px 14px;
   color: var(--text-dim);
+}
+
+/* Row actions (preview + clone from the register - owner ask, 2026-07-24). */
+.wf-cell-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  padding-top: 2px;
+}
+
+/* The conduct preview popup: wider than the form dialogs, with the conduct itself scrolling inside
+   a bounded body so the dialog never outgrows the viewport. The scrollbar is always visible when the
+   content overflows (scrollbars are load-bearing here, not decoration). */
+.wf-dialog.wf-preview {
+  width: min(760px, calc(100vw - 40px));
+  max-height: calc(100vh - 80px);
+  display: flex;
+  flex-direction: column;
+}
+
+.wf-preview-fact {
+  margin: 4px 0;
+  font-size: 13px;
+}
+
+.wf-preview-steps {
+  margin: 8px 0;
+  padding-left: 22px;
+  font-size: 13px;
+}
+
+.wf-preview-steps li {
+  margin: 3px 0;
+}
+
+.wf-preview-body {
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow-y: scroll;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: 10px 0 4px;
+}
+
+.wf-preview-full-link {
+  margin-right: auto;
+  font-size: 13px;
+  align-self: center;
 }
