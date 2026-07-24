@@ -1137,6 +1137,51 @@ public class RepositoryMonitorTests
     }
 
     // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 4, ruling R4-5): the gone path takes its stamp BEFORE
+    // touching the filesystem. It used to observe the filesystem first and stamp inside the
+    // gate afterward - a newer add could start, publish, and then be removed by the OLDER
+    // absence observation, which received the HIGHER stamp. Stamps order by observation time:
+    // when a newer publish stamp exists for the key, the stale absence observation yields (the
+    // newer state stands; a repository truly gone is removed by a later observation).
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task RecomputeOne_GoneObservationRacingANewerAdd_LeavesTheNewlyAddedRepositoryInTheModel()
+    {
+        var observationEntered = new TaskCompletionSource();
+        var releaseObservation = new TaskCompletionSource();
+        int observations = 0;
+        var monitor = new RepositoryMonitor(
+            enumerate: _ => Array.Empty<string>(),
+            compute: (p, _, _) => Task.FromResult(Status(p)),
+            isRepository: p =>
+            {
+                if (Interlocked.Increment(ref observations) == 1)
+                {
+                    // The FIRST call is the gone check: it has LOOKED at the filesystem and
+                    // seen the repository absent, but has not yet applied its removal.
+                    observationEntered.SetResult();
+                    releaseObservation.Task.Wait();
+                    return false;
+                }
+                return true; // the newer add observes the repository present
+            }) { LiveSessionsProvider = NoSessions };
+
+        // The gone observation begins and holds mid-observation.
+        var goneCheck = Task.Run(() => monitor.RecomputeOneAsync("/r/x"));
+        await observationEntered.Task;
+
+        // A NEWER add starts and publishes while the older absence observation is in flight.
+        await monitor.RecomputeOneAsync("/r/x");
+        Assert.Single(monitor.Snapshot());
+
+        // The older absence observation finally applies - it must yield to the newer publish.
+        releaseObservation.SetResult();
+        await goneCheck;
+
+        Assert.Single(monitor.Snapshot()); // the newly added repository stands
+    }
+
+    // ---------------------------------------------------------------------------------------
     // REGRESSION (inspection round 2, ruling R2-8): scanning without a live-session source is a
     // programming error and fails LOUDLY. An unwired monitor used to silently publish
     // session-blind safety classifications - an occupied worktree could be marked safe to reap.

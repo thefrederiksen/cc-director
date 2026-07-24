@@ -29,6 +29,7 @@ public sealed class RepositoryMonitor
     private readonly Func<IEnumerable<string>, IReadOnlyList<string>> _enumerate;
     private readonly Func<string, IReadOnlyList<LiveSessionRef>?, CancellationToken, Task<RepositoryStatus>> _compute;
     private readonly Func<string, CancellationToken, Task<string?>> _resolvePrimary;
+    private readonly Func<string, bool> _isRepository;
 
     private readonly object _gate = new();
     private readonly Dictionary<string, RepositoryStatus> _byPath = new(StringComparer.OrdinalIgnoreCase);
@@ -109,12 +110,14 @@ public sealed class RepositoryMonitor
         Func<IEnumerable<string>, IReadOnlyList<string>>? enumerate = null,
         Func<string, IReadOnlyList<LiveSessionRef>?, CancellationToken, Task<RepositoryStatus>>? compute = null,
         string? cachePath = null,
-        Func<string, CancellationToken, Task<string?>>? resolvePrimary = null)
+        Func<string, CancellationToken, Task<string?>>? resolvePrimary = null,
+        Func<string, bool>? isRepository = null)
     {
         _enumerate = enumerate ?? DefaultEnumerate;
         _compute = compute ?? DefaultCompute;
         _cachePath = cachePath;
         _resolvePrimary = resolvePrimary ?? DefaultResolvePrimary;
+        _isRepository = isRepository ?? DefaultIsRepository;
     }
 
     /// <summary>
@@ -411,24 +414,46 @@ public sealed class RepositoryMonitor
             }
         }
 
+        // The observation stamp is taken BEFORE touching the filesystem (ruling R4-5): stamps
+        // order by OBSERVATION time, and an absence observed before a newer add published must
+        // lose to that add. Stamping after the observation handed the OLDER observation the
+        // NEWER stamp, letting it remove the legitimately added repository.
+        long observationStamp;
+        lock (_gate)
+            observationStamp = NextComputeStampLocked();
+
         // "Gone" means the folder disappeared OR it is no longer a git repository (a root watcher
-        // fires for ANY subdirectory; a non-repo folder must never become a model entry).
-        bool gitIsFile = File.Exists(Path.Combine(repoPath, ".git"));
-        bool isRepo = Directory.Exists(repoPath)
-                      && (Directory.Exists(Path.Combine(repoPath, ".git")) || gitIsFile);
+        // fires for ANY subdirectory; a non-repo folder must never become a model entry). The
+        // observation goes through the injectable seam so tests can hold it open at its exact
+        // point in time (ruling R4-5).
+        bool isRepo = _isRepository(repoPath);
         if (!isRepo)
         {
             var key = WorktreeReaperService.NormalizePath(repoPath);
             RepositoryStatus? gone = null;
+            bool applied = false;
             lock (_gate)
             {
-                if (_byPath.TryGetValue(key, out gone))
-                    _byPath.Remove(key);
-                // Absence is ALWAYS stamped (ruling R3-4a) - whether or not a model row exists.
-                // A FIRST-TIME compute can be in flight for this key with no row published yet;
-                // without a tombstone its later publish would create the very repository this
-                // newer check just saw vanish. A removal is a publish of "absent" (ruling R2-5).
-                _publishStamps[key] = NextComputeStampLocked();
+                // Apply the removal only when no NEWER publish exists for the key (ruling
+                // R4-5): a newer publish means this absence observation is stale - the newer
+                // state stands, and a repository truly gone is removed by a later observation.
+                if (!(_publishStamps.TryGetValue(key, out var newest) && newest > observationStamp))
+                {
+                    applied = true;
+                    if (_byPath.TryGetValue(key, out gone))
+                        _byPath.Remove(key);
+                    // Absence is ALWAYS stamped (ruling R3-4a) - whether or not a model row
+                    // exists. A FIRST-TIME compute can be in flight for this key with no row
+                    // published yet; without a tombstone its later publish would create the
+                    // very repository this newer check just saw vanish. A removal is a publish
+                    // of "absent" (ruling R2-5).
+                    _publishStamps[key] = observationStamp;
+                }
+            }
+            if (!applied)
+            {
+                FileLog.Write($"[RepositoryMonitor] recompute: absence observation for {repoPath} is stale - a newer publish stands, yielding");
+                return;
             }
             if (gone != null)
             {
@@ -441,6 +466,7 @@ public sealed class RepositoryMonitor
 
         // A .git FILE marks a linked worktree - canonicalize to the primary checkout and recompute
         // THAT entry. Failing to resolve is a real error, not a reason to guess.
+        bool gitIsFile = File.Exists(Path.Combine(repoPath, ".git"));
         var targetPath = repoPath;
         if (gitIsFile)
         {
@@ -691,6 +717,12 @@ public sealed class RepositoryMonitor
 
     private static async Task<RepositoryStatus> DefaultCompute(string path, IReadOnlyList<LiveSessionRef>? sessions, CancellationToken ct)
         => await new RepositoryStatusService().GetStatusAsync(path, sessions, fetchPrune: false, ct);
+
+    /// <summary>A path is a repository when it exists and holds a .git directory (a primary
+    /// checkout) or a .git file (a linked worktree).</summary>
+    private static bool DefaultIsRepository(string path)
+        => Directory.Exists(path)
+           && (Directory.Exists(Path.Combine(path, ".git")) || File.Exists(Path.Combine(path, ".git")));
 
     /// <summary>
     /// The primary checkout owning a linked worktree: git names the shared .git directory via
