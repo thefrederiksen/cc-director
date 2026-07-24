@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { setVoiceModeAllSessions, type SessionDto } from "@devthrottle/client-core/api/client";
 import { getAutoSpeak, inVoiceQueueOrder, queueTouchMs, setAutoSpeak } from "@devthrottle/client-core/voice/queueTouch";
+import { sessionsNeedingVoice } from "@devthrottle/client-core/voice/voiceAllSweep";
 import { getSessionsEnvelope } from "@devthrottle/client-core/fleet/fleetClient";
 import { emptyRetentionCache, mergeRosterRetention, type RosterSessionMark } from "@devthrottle/client-core/fleet/rosterRetention";
 import { classify, contextLine, deletionReason, dotHex, inBucket, inDesktopOrder, inWaitingOrder, isWorking, pendingDeletion, repoLeaf, snoozeCountdown, snoozeExpired } from "@devthrottle/client-core/sessions/ordering";
@@ -29,9 +30,15 @@ import { enablePush, notificationPermission, pushSupported, reconcileBadge } fro
 const POLL_INTERVAL_MS = 5000;
 
 // Voice-mode queue flow: how long the roster sits still before auto-speak jumps into the next
-// waiting session (a beat to see the list and to uncheck the box), and how recently-listened a
-// session must be to be passed over for now (it comes around again on a later pass).
-const AUTO_SPEAK_DELAY_MS = 1500;
+// waiting session, and how recently-listened a session must be to be passed over for now (it comes
+// around again on a later pass).
+//
+// THE DELAY IS THE WAY OUT OF THE LOOP (owner, 2026-07-24). Respond and Snooze return to this tab,
+// and auto-speak then takes the next session by itself - so this pause is the only moment there is
+// to reach the Auto-speak checkbox and stop. At 1.5 seconds it was not enough time to get a thumb
+// there, and the queue could not be left. Three seconds costs nothing while the queue is genuinely
+// being worked, and it is long enough to tap the box off.
+const AUTO_SPEAK_DELAY_MS = 3000;
 const AUTO_SPEAK_COOLDOWN_MS = 20000;
 
 /** The roster's two lenses: the full roster, or only the sessions that can speak to you right now. */
@@ -183,26 +190,111 @@ export function Home() {
   const shownTotal = filtered ? filtered.length : 0;
   const active = filterIsActive(filter);
 
+  // THE VOICE TAB PUTS THE WHOLE GATEWAY ON VOICE (owner, 2026-07-24). Opening this tab IS the
+  // decision "read my fleet to me", so every session on the Gateway is switched into voice mode on
+  // arrival - including the ones created after you got here. It used to be a button you had to
+  // remember to press, and worse, that button read the roster to pick its own direction: the moment
+  // ONE session was on voice it flipped to "Turn voice off for all sessions", so a session created
+  // afterwards could never be switched on from this screen at all. That is why sessions went missing
+  // from the queue - not a bug in the queue, they were simply never voice sessions.
+  //
+  // The Gateway's one fan-out endpoint walks the whole roster itself, so this is a single call, and
+  // it is only made when at least one session is actually still off. Ids already attempted are
+  // remembered for the visit so a session whose computer is offline (permanently skipped, so
+  // permanently still "off") cannot make this fire on every 5-second poll. Leaving the tab forgets
+  // them, so coming back re-arms the sweep.
+  const voiceAllAttempted = useRef<Set<string>>(new Set());
+  const [voiceAllBusy, setVoiceAllBusy] = useState(false);
+  const [voiceAllNote, setVoiceAllNote] = useState<string | null>(null);
+  const [voiceAllError, setVoiceAllError] = useState<string | null>(null);
+  useEffect(() => {
+    if (tab === "voice") return;
+    voiceAllAttempted.current.clear();
+    setVoiceAllNote(null);
+    setVoiceAllError(null);
+  }, [tab]);
+  useEffect(() => {
+    if (tab !== "voice" || sessions === null || sessions.length === 0) return;
+    const fresh = sessionsNeedingVoice(sessions, voiceAllAttempted.current);
+    if (fresh.length === 0) return;
+    for (const sid of fresh) voiceAllAttempted.current.add(sid);
+    setVoiceAllBusy(true);
+    void (async () => {
+      try {
+        const result = await setVoiceModeAllSessions(true);
+        setVoiceAllError(null);
+        // Fail loud, the mobile rule: name what was passed over rather than quietly leaving a session
+        // out of the queue. Silence here is exactly the failure that started this.
+        setVoiceAllNote(
+          result.skipped > 0
+            ? `${result.changed} ${result.changed === 1 ? "session" : "sessions"} switched into voice mode, ${result.skipped} skipped (computer offline)`
+            : `${result.changed} ${result.changed === 1 ? "session" : "sessions"} switched into voice mode`,
+        );
+      } catch (err) {
+        setVoiceAllError(
+          err instanceof Error ? err.message : "Could not put every session into voice mode",
+        );
+      } finally {
+        setVoiceAllBusy(false);
+      }
+    })();
+  }, [tab, sessions]);
+
+  // The way back out: turn the whole fleet off and leave the voice lens in one action. It has to do
+  // both - turning voice off while standing on the tab that turns voice on would be undone by the
+  // sweep above on the very next poll.
+  const turnVoiceAllOff = useCallback(async () => {
+    setVoiceAllBusy(true);
+    setVoiceAllError(null);
+    setVoiceAllNote(null);
+    try {
+      await setVoiceModeAllSessions(false);
+      voiceAllAttempted.current.clear();
+      selectTab("all");
+    } catch (err) {
+      setVoiceAllError(
+        err instanceof Error ? err.message : "Could not turn voice off for all sessions",
+      );
+    } finally {
+      setVoiceAllBusy(false);
+    }
+  }, [selectTab]);
+
   // AUTO-SPEAK (voice-mode queue flow): with the box checked and the Voice tab open, the roster
   // jumps into the next session in the queue BY ITSELF and reads it aloud - hands-free driving mode.
   // The next session is the oldest waiting one not listened to in the last few seconds (a session
   // just left unhandled sits out one beat rather than instantly re-trapping the listener; with
   // nothing else waiting it comes around on a later poll - deliberately, unhandled keeps coming
-  // back). The short delay leaves a moment to see the list, switch tabs, or uncheck the box - both
-  // of which stop the loop.
+  // back).
+  //
+  // The countdown is keyed to the CHOSEN SESSION ID, not to the roster array. The array is a new
+  // object on every render (each 5-second poll, and every voice-clip download event), so an effect
+  // that depended on it restarted its timer each time - survivable at 1.5 seconds, but a 3-second
+  // timer could be reset forever by a busy roster and never fire at all. Keyed to the id, the timer
+  // is only ever restarted when the session it is about to open actually changes.
+  const autoSpeakNextId =
+    tab === "voice" && autoSpeak && !showFilter
+      ? voiceReady.find((s) => Date.now() - queueTouchMs(s.sessionId ?? "") > AUTO_SPEAK_COOLDOWN_MS)
+          ?.sessionId ?? null
+      : null;
+  // True only while the countdown is running, so the screen can say out loud that it is about to
+  // move and that unchecking the box stops it - a silent pause reads as the app being slow.
+  const [autoSpeakArmed, setAutoSpeakArmed] = useState(false);
   useEffect(() => {
-    if (tab !== "voice" || !autoSpeak || showFilter || voiceReady.length === 0) return;
-    const now = Date.now();
-    const next = voiceReady.find((s) => now - queueTouchMs(s.sessionId ?? "") > AUTO_SPEAK_COOLDOWN_MS);
-    if (!next) return;
-    const sid = encodeURIComponent(next.sessionId ?? "");
+    if (autoSpeakNextId === null || autoSpeakNextId.length === 0) {
+      setAutoSpeakArmed(false);
+      return;
+    }
+    setAutoSpeakArmed(true);
+    const sid = encodeURIComponent(autoSpeakNextId);
     const timer = window.setTimeout(() => {
+      setAutoSpeakArmed(false);
       navigate(`/session/${sid}/voice`, {
         state: { voiceMode: true, autoSpeak: true, fromTab: "voice" },
       });
     }, AUTO_SPEAK_DELAY_MS);
     return () => window.clearTimeout(timer);
-  }, [tab, autoSpeak, showFilter, voiceReady, navigate]);
+  }, [autoSpeakNextId, navigate]);
 
   return (
     <div className="screen">
@@ -302,13 +394,28 @@ export function Home() {
         <p className="status-line">No sessions running.</p>
       )}
 
-      {/* The one-tap fleet-wide voice switch (issue #1765): "as I leave the house, put my whole fleet on
-          voice; when I get home, take it all off". It reads the roster to decide its own action - offer
-          "turn all on" while no session is a voice session, "turn all off" once any is - so the same
-          button covers both halves of the walk-out / come-home round trip. Lives in the Voice tab, the
-          voice-focused surface, and speaks to the Gateway which fans the change out to every session. */}
+      {/* The fleet-wide voice state, stated plainly (owner, 2026-07-24). Being on this tab IS the
+          fleet-wide switch - the sweep above has already put every session on the Gateway into voice
+          mode - so there is nothing left to turn ON, and the old "turn all on / turn all off" button
+          (issue #1765) is now one direction only: the way back out. */}
       {tab === "voice" && sessions !== null && total > 0 && (
-        <VoiceAllControl sessions={sessions} />
+        <div className="voice-all">
+          <p className="voice-all-line" role="status">
+            {voiceAllBusy
+              ? "Putting every session on the Gateway into voice mode..."
+              : "Every session on the Gateway is in voice mode, so all of them come through this queue."}
+          </p>
+          {voiceAllNote && <p className="voice-all-note" role="status">{voiceAllNote}</p>}
+          {voiceAllError && <p className="voice-all-error" role="alert">{voiceAllError}</p>}
+          <button
+            type="button"
+            className="voice-all-btn voice-all-btn-off"
+            onClick={() => void turnVoiceAllOff()}
+            disabled={voiceAllBusy}
+          >
+            Turn voice off for all sessions
+          </button>
+        </div>
       )}
 
       {/* Auto-speak (voice-mode queue flow): the hands-free switch. One checkbox; when on, the queue
@@ -321,6 +428,14 @@ export function Home() {
             <span className="autospeak-hint">Jump into the next waiting session and read it aloud</span>
           </span>
         </label>
+      )}
+
+      {/* The three-second pause before auto-speak takes the next session, said out loud. This is the
+          moment the loop can be left, so the screen names the way out rather than just going quiet. */}
+      {tab === "voice" && autoSpeakArmed && (
+        <p className="autospeak-countdown" role="status">
+          Opening the next session in a moment - uncheck Auto-speak to stop.
+        </p>
       )}
 
       {/* Honest feedback while auto-speak idles: the loop is armed, there is just nothing to read. */}
@@ -426,57 +541,10 @@ function EnableAlerts() {
   );
 }
 
-// The fleet-wide voice switch shown at the top of the Voice tab (issue #1765). One control for the whole
-// round trip: while no session is in voice mode it offers "Turn on voice for all N sessions"; the moment
-// any session is a voice session it offers "Turn voice off for all sessions". Tapping calls the Gateway's
-// one fan-out endpoint, which walks the roster itself, and shows a fail-loud summary of what changed and
-// what was skipped (the mobile rule: never fail silently - name the offline sessions that were passed
-// over). The next roster poll (5s) repaints each row's voice state, so the button flips to its opposite.
-function VoiceAllControl({ sessions }: { sessions: SessionDto[] }) {
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const anyOn = sessions.some((s) => Boolean(s.voiceMode));
-  // No session on voice yet -> the action is to turn the whole fleet ON; otherwise turn it all OFF.
-  const enable = !anyOn;
-  const count = sessions.length;
-
-  const onClick = async () => {
-    setBusy(true);
-    setError(null);
-    setNote(null);
-    try {
-      const result = await setVoiceModeAllSessions(enable);
-      const changedLabel = `${result.changed} ${result.changed === 1 ? "session" : "sessions"} ${enable ? "on" : "off"}`;
-      setNote(result.skipped > 0 ? `${changedLabel}, ${result.skipped} skipped (computer offline)` : changedLabel);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not change voice mode for all sessions");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const label = enable
-    ? `Turn on voice for all ${count} ${count === 1 ? "session" : "sessions"}`
-    : "Turn voice off for all sessions";
-  const busyLabel = enable ? "Turning voice on..." : "Turning voice off...";
-
-  return (
-    <div className="voice-all">
-      <button
-        type="button"
-        className={`voice-all-btn${enable ? "" : " voice-all-btn-off"}`}
-        onClick={() => void onClick()}
-        disabled={busy}
-      >
-        {busy ? busyLabel : label}
-      </button>
-      {note && <p className="voice-all-note" role="status">{note}</p>}
-      {error && <p className="voice-all-error" role="alert">{error}</p>}
-    </div>
-  );
-}
+// The fleet-wide voice switch used to be a component here (issue #1765) - one button that read the
+// roster and picked its own direction. It is gone: the ON half now happens by itself whenever the
+// Voice tab is open (see the sweep in Home), and the OFF half is the one plain button rendered
+// there. The Gateway endpoint it calls is unchanged.
 
 // The plain-English note under an unreachable card, naming the machine and (when known) how long ago it
 // was last seen. Wobbly reads as a soft "reconnecting"; offline as a firm "unreachable" - both honest.
