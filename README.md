@@ -35,3 +35,4 @@ Create your free account and download at **[devthrottle.com](https://devthrottle
 ---
 
 <sub>DevThrottle is open source (MIT) -- this repo is the source, and you're welcome to read it. The product experience, onboarding, and support all live at <a href="https://devthrottle.com">devthrottle.com</a>. Using DevThrottle is free but needs a (free) account; it's MIT, so you can always fork it.</sub>
+
