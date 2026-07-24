@@ -1,0 +1,125 @@
+name: Provision hosted Gateway slots
+
+# One-time (idempotent, safe to re-run) infrastructure change that moves the hosted Gateway onto an
+# App Service tier that supports DEPLOYMENT SLOTS and creates a warmed "staging" slot. This is what lets
+# a deploy become a warmed slot swap - the old instance keeps serving until the new one is proven healthy,
+# so the external outage drops from a ~95s in-place restart to a few seconds of hand-off.
+#
+# This does NOT deploy application code and it does NOT run on a push. A human starts it deliberately from
+# the Actions UI or with `gh workflow run provision-hosted-gateway-slots.yml`. Like the deploy workflow it
+# needs NO stored secret - only the Azure OIDC federated login as the devthrottle-hosted-gateway service
+# principal (Contributor on the subscription, which can change the plan SKU and create slots).
+#
+# What it ensures, each step create-if-absent / set-in-place:
+#   1. The App Service Plan is at a slot-capable SKU (S1 by default). Basic (B1) supports zero slots.
+#   2. A "staging" slot exists, its configuration cloned from production (same image, same app settings
+#      incl. the Supabase connection and CC_DIRECTOR_ROOT, so it behaves like production while warming).
+#   3. The Azure Files share is mounted on staging (configuration-source does not clone storage mounts).
+#   4. The swap warmup gate is set: a swap into production is not completed until the incoming instance
+#      answers /healthz 200, so users never cut over to a cold instance.
+#   5. The staging slot is STOPPED. Steady state is ONE running instance writing the shared file mount;
+#      the deploy pipeline starts staging only for the duration of a deploy and stops it again after the
+#      swap, so the two-writers-on-the-share window is bounded to the warmup, never permanent.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_sku:
+        description: App Service Plan SKU to ensure (S1 is the cheapest tier with deployment slots)
+        required: false
+        default: S1
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AZURE_RG: rg-devthrottle-hosted-gateway
+  PLAN: plan-devthrottle-gw
+  APP: devthrottle-gw
+  SLOT: staging
+  STORAGE: stdevthrottlegw
+  SHARE: gwdata
+  MOUNT_PATH: /home/gateway/cc-director
+
+jobs:
+  provision:
+    name: Ensure S1 plan and a warmed staging slot
+    runs-on: ubuntu-latest
+    environment: hosted-gateway-production
+
+    steps:
+      - name: Azure login (OIDC, no stored secret)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_GW_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_GW_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_GW_SUBSCRIPTION_ID }}
+
+      - name: Show current plan SKU
+        run: az appservice plan show -g "$AZURE_RG" -n "$PLAN" --query "{name:sku.name,tier:sku.tier,capacity:sku.capacity}" -o json
+
+      - name: Ensure the plan is at a slot-capable SKU
+        run: |
+          CUR=$(az appservice plan show -g "$AZURE_RG" -n "$PLAN" --query "sku.name" -o tsv)
+          echo "Current SKU: $CUR ; target: ${{ inputs.target_sku }}"
+          if [ "$CUR" != "${{ inputs.target_sku }}" ]; then
+            az appservice plan update -g "$AZURE_RG" -n "$PLAN" --sku "${{ inputs.target_sku }}" -o none
+            echo "Upgraded plan $PLAN to ${{ inputs.target_sku }}"
+          else
+            echo "Plan already at ${{ inputs.target_sku }} - nothing to do"
+          fi
+
+      - name: Ensure the staging slot exists (config cloned from production)
+        run: |
+          if az webapp deployment slot list -g "$AZURE_RG" -n "$APP" --query "[?name=='$SLOT'] | length(@)" -o tsv | grep -q '^1$'; then
+            echo "Slot '$SLOT' already exists"
+          else
+            az webapp deployment slot create -g "$AZURE_RG" -n "$APP" --slot "$SLOT" \
+              --configuration-source "$APP" -o none
+            echo "Created slot '$SLOT' with configuration cloned from production"
+          fi
+
+      - name: Mount the Azure Files share on the staging slot
+        run: |
+          KEY=$(az storage account keys list -g "$AZURE_RG" --account-name "$STORAGE" --query '[0].value' -o tsv)
+          if az webapp config storage-account list -g "$AZURE_RG" -n "$APP" --slot "$SLOT" \
+               --query "[?name=='gwdata'] | length(@)" -o tsv 2>/dev/null | grep -q '^1$'; then
+            echo "Mount 'gwdata' already present on staging -> update"
+            az webapp config storage-account update -g "$AZURE_RG" -n "$APP" --slot "$SLOT" \
+              --custom-id gwdata --storage-type AzureFiles --share-name "$SHARE" \
+              --account-name "$STORAGE" --access-key "$KEY" --mount-path "$MOUNT_PATH" -o none
+          else
+            az webapp config storage-account add -g "$AZURE_RG" -n "$APP" --slot "$SLOT" \
+              --custom-id gwdata --storage-type AzureFiles --share-name "$SHARE" \
+              --account-name "$STORAGE" --access-key "$KEY" --mount-path "$MOUNT_PATH" -o none
+          fi
+          echo "Azure Files share mounted on staging at $MOUNT_PATH"
+
+      - name: Match production runtime flags on staging (Always On, WebSockets, HTTPS only)
+        run: |
+          az webapp config set -g "$AZURE_RG" -n "$APP" --slot "$SLOT" \
+            --always-on true --web-sockets-enabled true -o none
+          az webapp update -g "$AZURE_RG" -n "$APP" --slot "$SLOT" --https-only true -o none
+
+      - name: Set the swap warmup gate (production and staging)
+        run: |
+          # The platform will not complete a swap until the instance being moved into the destination slot
+          # answers /healthz with 200. Set identically on both slots so a forward swap and a swap-back are
+          # equally gated. These are platform settings, harmless to swap (identical on both sides).
+          az webapp config appsettings set -g "$AZURE_RG" -n "$APP" --settings \
+            WEBSITE_SWAP_WARMUP_PING_PATH=/healthz \
+            WEBSITE_SWAP_WARMUP_PING_STATUSES=200 -o none
+          az webapp config appsettings set -g "$AZURE_RG" -n "$APP" --slot "$SLOT" --settings \
+            WEBSITE_SWAP_WARMUP_PING_PATH=/healthz \
+            WEBSITE_SWAP_WARMUP_PING_STATUSES=200 -o none
+
+      - name: Stop the staging slot (steady state is one running instance)
+        run: az webapp stop -g "$AZURE_RG" -n "$APP" --slot "$SLOT" -o none
+
+      - name: Report final state
+        run: |
+          echo "== Plan =="
+          az appservice plan show -g "$AZURE_RG" -n "$PLAN" --query "{name:sku.name,tier:sku.tier}" -o table
+          echo "== Slots =="
+          az webapp deployment slot list -g "$AZURE_RG" -n "$APP" --query "[].{name:name,state:state}" -o table
