@@ -13,6 +13,7 @@ import { NotFound } from "./panes/NotFound";
 import { SessionsEmpty, SessionsView } from "./sessions/SessionsView";
 import { SessionDetail } from "./sessions/SessionDetail";
 import { SessionRedirect } from "./sessions/SessionRedirect";
+import { AssistantView } from "./assistant/AssistantView";
 import { FleetMapView } from "./fleet/FleetMapView";
 import { DirectorsView } from "./fleet/DirectorsView";
 import { DirectorDetailView } from "./fleet/DirectorDetailView";
@@ -30,6 +31,7 @@ import { SettingsView } from "./settings/SettingsView";
 import { InjectedTextView } from "./injectedtext/InjectedTextView";
 import "./styles.css";
 import "./components/components.css";
+import "./assistant/assistant.css";
 import "./fleet/fleet.css";
 import "./fleet/fleetmap.css";
 import "./missions/missions.css";
@@ -136,6 +138,10 @@ const router = createBrowserRouter(
             // page lists, pivotable by machine / repository / agent. Reads the same GET /sessions
             // envelope through client-core.
             { path: "/fleet-map", element: <FleetMapView /> },
+            // The Assistant (fleet assistant build): a fleet-level chat + voice screen that is not
+            // tied to any session. It drives the Gateway brain at POST /assistant/turn - the desk
+            // surface of the same brain Car Mode uses on the phone.
+            { path: "/assistant", element: <AssistantView /> },
             // Missions (issue #1405) is no longer its own page: it is the "Missions" pivot of the Fleet
             // Map (the fleet has one home). The old /missions route redirects there so existing bookmarks
             // still land on the map; the pivot the map opens on is the last one the browser chose.

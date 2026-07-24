@@ -2155,6 +2155,10 @@ public sealed class GatewayHost : IAsyncDisposable
         var carModeChat = new CarMode.HostedCarModeChat(CarMode.HostedCarModeChat.DefaultResolver(_keyVault.Get, _tenantSettingsResolver));
         var carModeFleet = new CarMode.LoopbackCarModeFleet(Port, Token);
         var carModeBrain = new CarMode.CarModeBrain(carModeChat, carModeFleet, _carModeConversations, _carModePending, _carModeSubjects);
+        // The cockpit Assistant (POST /assistant/turn): the SAME loop, tools, stores, model, and turn cache
+        // as Car Mode, with only the desk-surface speech style. Sharing the stores means a device that uses
+        // both surfaces keeps one conversation and one armed-confirmation state - no split-brain.
+        var assistantBrain = new CarMode.CarModeBrain(carModeChat, carModeFleet, _carModeConversations, _carModePending, _carModeSubjects, surface: CarMode.CarModeSurface.Desk);
         // Keep-warm (Car Mode performance round): warm the SAME hosted model the brain uses and the SAME
         // text-to-speech target /wingman/tts uses, resolved fresh each warmup so a settings change applies.
         var carModeWarmup = new CarMode.CarModeWarmup(
@@ -2166,7 +2170,7 @@ public sealed class GatewayHost : IAsyncDisposable
                 var key = _keyVault.Get(tts.KeyName) ?? "";
                 return (tts.BaseUrl, _tenantSettingsResolver.TtsVoice(tenant, mode), _tenantSettingsResolver.TtsModel(tenant, mode), key);
             });
-        Api.CarModeEndpoint.Map(_app, carModeBrain, _carModeTurnCache, _carModeDiagnostics, carModeWarmup, _tenantBoundary);
+        Api.CarModeEndpoint.Map(_app, carModeBrain, assistantBrain, _carModeTurnCache, _carModeDiagnostics, carModeWarmup, _tenantBoundary);
         // Editable/versioned wingman instructions settings surface (issue #537), incl. A/B test
         // over saved training sessions (reads the shared training store; uses the hosted wingman brain).
         WingmanInstructionsEndpoint.Map(_app, _instructionsStore, WingmanBrainAsync);

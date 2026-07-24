@@ -63,6 +63,7 @@ interface NavItem {
 // and it is next to the place you start work rather than filed away under settings.
 const NAV_MAIN: ReadonlyArray<NavItem> = [
   { to: "/fleet-map", label: "Fleet Map", icon: "fleet-map" },
+  { to: "/assistant", label: "Assistant", icon: "assistant" },
   { to: "/sessions", label: "Sessions", icon: "sessions", subtree: "/session" },
   { to: "/directors", label: "Directors", icon: "directors" },
   { to: "/schedule", label: "Schedule", icon: "schedule" },

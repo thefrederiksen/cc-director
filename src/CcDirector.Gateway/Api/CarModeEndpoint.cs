@@ -40,8 +40,9 @@ namespace CcDirector.Gateway.Api;
 /// </summary>
 internal static class CarModeEndpoint
 {
-    public static void Map(IEndpointRouteBuilder app, CarModeBrain brain, CarModeTurnCache turnCache,
-        CarModeDiagnosticsStore diagnostics, CarModeWarmup warmup, HostedTenantBoundary tenantBoundary)
+    public static void Map(IEndpointRouteBuilder app, CarModeBrain brain, CarModeBrain assistantBrain,
+        CarModeTurnCache turnCache, CarModeDiagnosticsStore diagnostics, CarModeWarmup warmup,
+        HostedTenantBoundary tenantBoundary)
     {
         // Keep-warm (Car Mode performance round): the browser calls this the instant the owner taps Start,
         // and every few minutes WHILE Car Mode is open, so the hosted model + text-to-speech are hot before
@@ -78,9 +79,25 @@ internal static class CarModeEndpoint
             },
         }));
 
-        app.MapPost("/carmode/turn", async (HttpContext ctx, CarModeTurnRequest? req, CancellationToken ct) =>
+        // The turn route, mapped twice over the SAME loop, stores, and cache: /carmode/turn drives the car
+        // brain (hands-free, one or two spoken sentences) and /assistant/turn drives the desk brain (the
+        // cockpit Assistant screen - same rules, desk speech style). One handler, so idempotency, tenant
+        // resolution, the 402 mapping, and the failure shape can never drift apart between the two doors.
+        MapTurnRoute(app, "/carmode/turn", "Car Mode", brain, turnCache, tenantBoundary);
+        MapTurnRoute(app, "/assistant/turn", "The Assistant", assistantBrain, turnCache, tenantBoundary);
+
+        MapDiagnosticsRoutes(app, diagnostics);
+    }
+
+    /// <summary>Map one turn route over the given brain. Identical mechanics for every surface: tenant
+    ///  resolution, the authenticated-credential conversation key, Idempotency-Key single-flight, the shared
+    ///  402 money refusal, and the loud 502 failure whose message names the surface.</summary>
+    private static void MapTurnRoute(IEndpointRouteBuilder app, string pattern, string surfaceLabel,
+        CarModeBrain brain, CarModeTurnCache turnCache, HostedTenantBoundary tenantBoundary)
+    {
+        app.MapPost(pattern, async (HttpContext ctx, CarModeTurnRequest? req, CancellationToken ct) =>
         {
-            FileLog.Write($"[CarModeEndpoint] turn: len={req?.Text?.Length ?? 0}");
+            FileLog.Write($"[CarModeEndpoint] {pattern} turn: len={req?.Text?.Length ?? 0}");
             var tenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
             if (tenant is null)
                 return Results.Json(new { error = "no tenant is bound to this request" },
@@ -138,9 +155,9 @@ internal static class CarModeEndpoint
             }
             catch (CarModeUnavailableException ex)
             {
-                // A money refusal (out of credits / cap / no key): the ONE shared 402 state, so the phone
+                // A money refusal (out of credits / cap / no key): the ONE shared 402 state, so the client
                 // shows the consistent add-credit / add-key notice instead of a generic error.
-                FileLog.Write($"[CarModeEndpoint] turn unavailable: {ex.State}");
+                FileLog.Write($"[CarModeEndpoint] {pattern} turn unavailable: {ex.State}");
                 return HostedAiHttp.PaymentRequiredResult(ex.State);
             }
             catch (OperationCanceledException)
@@ -150,13 +167,17 @@ internal static class CarModeEndpoint
             }
             catch (Exception ex)
             {
-                // A loud, specific failure the phone speaks (decision 8), never a silent stall.
-                FileLog.Write($"[CarModeEndpoint] turn FAILED: {ex.Message}");
-                return Results.Json(new { error = "Car Mode could not complete that: " + ex.Message },
+                // A loud, specific failure the client shows and speaks (decision 8), never a silent stall.
+                FileLog.Write($"[CarModeEndpoint] {pattern} turn FAILED: {ex.Message}");
+                return Results.Json(new { error = surfaceLabel + " could not complete that: " + ex.Message },
                     statusCode: StatusCodes.Status502BadGateway);
             }
         });
+    }
 
+    /// <summary>The per-device diagnostics store routes (unchanged; Car Mode's phone page is the writer).</summary>
+    private static void MapDiagnosticsRoutes(IEndpointRouteBuilder app, CarModeDiagnosticsStore diagnostics)
+    {
         // The browser posts ONE merged timing record per turn here. It fills the client stamps and echoes
         // the server timing it received in the turn response; the SERVER fills the received-at time, the
         // device hash (from its own credential extraction, never trusting the client), and the Gateway
