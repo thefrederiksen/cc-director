@@ -76,11 +76,20 @@ public sealed record EntitlementDecision(EntitlementOutcome Outcome, string? Tie
 /// into a denial. The failure is logged LOUD, because a persistent inability to read this table means
 /// nobody can enroll and that must not be silent.
 ///
+/// THE FREE TRIAL IS FOLDED IN HERE, AND ONLY HERE (issue #2117). The public pricing page promises every new
+/// account 14 days of Pro, and that promise has to be kept at the same read every other entitlement question
+/// is answered at - not bolted onto the enrollment endpoint - or the trial would let a member IN at
+/// enrollment and then be invisible to the ongoing request-path cutoff, which is where a trial has to EXPIRE.
+/// One place decides, so the enrollment gate, the hosted access lease and the 60-second sweep can never
+/// disagree about whether an account may use hosted today. See <see cref="TrialRegistry"/> for who is granted
+/// a trial; this type only READS the ledger and never grants.
+///
 /// Nothing personally identifying is logged here - not the subject, not the subscription reference.
 /// </summary>
 public sealed class EntitlementRegistry
 {
     private readonly GatewayDatabase _db;
+    private readonly TrialRegistry? _trials;
 
     /// <param name="db">The Gateway database. The entitlement table is read through the UNSCOPED context:
     /// it is keyed by account subject and is read BEFORE any tenant exists, so scoping it to a tenant would
@@ -90,10 +99,17 @@ public sealed class EntitlementRegistry
     /// hosted demands real money and nothing else has to remember to. A test may pass false to exercise the
     /// rest of the policy without a live row.
     /// </param>
-    public EntitlementRegistry(GatewayDatabase db, bool? requireLivemode = null)
+    /// <param name="trials">
+    /// The free-trial ledger (issue #2117). NULL means no trial concept at all - the behaviour before trials
+    /// existed, byte-for-byte, which is what self-host and the existing tests get. When supplied, an account
+    /// with no valid PAID entitlement is entitled while its trial is running, at Pro tier and expiring at the
+    /// trial's end instant.
+    /// </param>
+    public EntitlementRegistry(GatewayDatabase db, bool? requireLivemode = null, TrialRegistry? trials = null)
     {
         _db = db ?? throw new ArgumentNullException(nameof(db));
         _requireLivemode = requireLivemode ?? GatewayHostedMode.IsHosted;
+        _trials = trials;
     }
 
     private readonly bool _requireLivemode;
@@ -130,6 +146,59 @@ public sealed class EntitlementRegistry
     /// this came from; this method does not re-verify it.</param>
     /// <param name="nowUtc">The moment to judge the paid period against, injected for exact-boundary tests.</param>
     public EntitlementDecision Evaluate(string accountSubject, DateTime nowUtc)
+    {
+        var paid = EvaluatePaid(accountSubject, nowUtc);
+
+        // No trial ledger wired means trials do not exist here at all - the paid answer IS the answer, exactly
+        // as it was before trials. That is the self-host case and the control the trial tests revert against.
+        if (_trials is null)
+            return paid;
+
+        // A VALID PAID ENTITLEMENT ALWAYS WINS, and it is checked first. That is what makes "subscribes on day
+        // seven" seamless: the moment the payment side writes an active row, this returns the PAID decision -
+        // paid tier, paid period end, no trial expiry clipped onto it - and the member's access simply carries
+        // on. There is no gap because the trial was never removed, and no double-grant because the trial is
+        // not consulted at all while a paid row is valid.
+        if (paid.Outcome == EntitlementOutcome.Entitled)
+            return paid;
+
+        // The paid answer is NotEntitled (no row, cancelled, elapsed, test-mode) or Unknown (the read failed).
+        // Either way a running trial entitles this account on its own, so the trial is read in BOTH cases: a
+        // failed PAID read is not a reason to deny a member who is inside their free window.
+        var trial = _trials.Evaluate(accountSubject, nowUtc);
+
+        if (trial.Outcome == TrialOutcome.Active)
+        {
+            // THE TRIAL GRANT. Pro tier - the trial grants exactly the Pro entitlement set the pricing page
+            // promises - and the period end is the trial's own end instant, so the hosted access lease clips
+            // to it and caching can never extend a trial one moment past its end. This is where "expiry is
+            // enforced at the entitlement read, not just displayed" actually happens: the instant the trial
+            // ends this stops returning Entitled, and the same read that lets a member in is the one that
+            // stops letting them in.
+            FileLog.Write("[EntitlementRegistry] Evaluate: ENTITLED by the free Pro trial (no paid entitlement; the trial has not ended)");
+            return new EntitlementDecision(EntitlementOutcome.Entitled, TierPro, trial.ExpiresAtUtc);
+        }
+
+        if (trial.Outcome == TrialOutcome.Unknown)
+        {
+            // The trial read FAILED. We cannot say whether a trial covers this account, so we may not deny -
+            // that would lock out a member inside their free window because the database hiccuped - and we may
+            // not grant. Ignorance about EITHER source is ignorance about the answer.
+            FileLog.Write("[EntitlementRegistry] Evaluate: UNKNOWN - the trial read failed, so no verdict can be given (must be retried, never treated as unpaid or as paid)");
+            return new EntitlementDecision(EntitlementOutcome.Unknown, null);
+        }
+
+        // The trial read succeeded and no trial covers this account. The paid answer stands, whatever it was -
+        // a NotEntitled refusal, or an Unknown that must still be retried rather than refused.
+        return paid;
+    }
+
+    /// <summary>
+    /// The PAID half of the decision: the payment side's row and nothing else. Split out from
+    /// <see cref="Evaluate"/> so the paid policy - active, the past-due grace window, live-money-only, and the
+    /// three outcomes - is one unbroken piece of reasoning that the free trial sits beside rather than inside.
+    /// </summary>
+    private EntitlementDecision EvaluatePaid(string accountSubject, DateTime nowUtc)
     {
         // A blank subject is not a failed read - it is a caller error, and answering Unknown would invite a
         // retry loop that can never succeed. There is no entitlement for nobody, and no tier.
@@ -237,4 +306,20 @@ public sealed class EntitlementRegistry
 
     /// <summary>The pro plan tier.</summary>
     public const string TierPro = "pro";
+
+    /// <summary>
+    /// Where a member goes to subscribe. Stated ONCE so every refusal the Gateway writes points at the same
+    /// place: an entitlement denial has to tell the member what to do about it, and a refusal that only says
+    /// "not entitled" is a raw error, not an answer (issue #2117). The client is dumb - the Gateway hands it
+    /// the finished message and this address, and the client only renders them.
+    /// </summary>
+    public const string SubscribeUrl = "https://devthrottle.com/pricing";
+
+    /// <summary>
+    /// The human sentence that accompanies every hosted entitlement refusal, paired with
+    /// <see cref="SubscribeUrl"/>. One string, so the wording cannot drift between the enrollment refusal and
+    /// the request-path cutoff.
+    /// </summary>
+    public const string SubscribeMessage =
+        "Your DevThrottle Pro access has ended. Subscribe to keep using the wingman, dictation and spoken replies.";
 }

@@ -125,7 +125,11 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
         var validator = new JwtAccessTokenValidator(
             "test-signing-secret", timeProvider: null, publicKeySetJson: _key.PublicKeySetJson(),
             expectedAudience: Audience, expectedIssuer: Issuer, allowSymmetricHs256: false);
-        var hosted = new HostedEnrollDependencies(devices, tenants, validator, new EntitlementRegistry(db, requireLivemode: false));
+        // The free-trial ledger (issue #2117) rides in the bundle. These tests seed a PAID entitlement, which
+        // wins outright, so the trial is never consulted and this wiring changes none of their outcomes - it
+        // just keeps the bundle complete, the way the host builds it.
+        var hosted = new HostedEnrollDependencies(devices, tenants, validator,
+            new EntitlementRegistry(db, requireLivemode: false), new TrialRegistry(db));
         return (devices, tenants, hosted);
     }
 

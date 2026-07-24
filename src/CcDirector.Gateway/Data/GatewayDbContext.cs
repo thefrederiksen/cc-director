@@ -143,6 +143,15 @@ public sealed class GatewayDbContext : DbContext
     /// </summary>
     public DbSet<EntitlementEntity> Entitlements => Set<EntitlementEntity>();
 
+    /// <summary>
+    /// The free-trial ledger (<c>account_trials</c>, issue #2117) - the Gateway's OWN record of which accounts
+    /// were granted the 14-day Pro trial the public pricing page promises, and when each trial ends. GLOBAL
+    /// like <see cref="Tenants"/>: keyed by the verified account subject and read before any tenant exists, so
+    /// it carries no <c>tenant_id</c> and no query filter. This one IS ours to create and write, unlike
+    /// <see cref="Entitlements"/> - a trial is not a payment, so no payment webhook produces it.
+    /// </summary>
+    public DbSet<AccountTrialEntity> AccountTrials => Set<AccountTrialEntity>();
+
     /// <summary>The durable per-device-key credential records (<c>device_credentials</c>, MTR-14) - the per-row
     /// replacement for the shared <c>devices.json</c> file. A GLOBAL table (no <c>tenant_id</c> query filter):
     /// a presented key is resolved by its hash before any tenant is known, and the tenant is read off the
@@ -505,6 +514,22 @@ public sealed class GatewayDbContext : DbContext
             b.HasIndex(e => e.AccountSubject).IsUnique();
         });
 
+        modelBuilder.Entity<AccountTrialEntity>(b =>
+        {
+            b.ToTable("account_trials");
+            // The account subject is the natural primary key - one trial per account, enforced at the
+            // DATABASE rather than only in code, so two racing grants can never write an account two trials
+            // (and therefore can never restart a free window). This table is GLOBAL, like tenants: it is
+            // deliberately NOT passed to ApplyTenantScope, because it is keyed by subject and read before any
+            // tenant is resolved.
+            b.HasKey(e => e.Subject);
+            b.Property(e => e.Subject).HasColumnName("subject").IsRequired();
+            b.Property(e => e.StartedAtUtc).HasColumnName("started_at_utc").IsRequired();
+            b.Property(e => e.ExpiresAtUtc).HasColumnName("expires_at_utc").IsRequired();
+            // The expiry sweep and the "who is still in trial" read both order by the end instant.
+            b.HasIndex(e => e.ExpiresAtUtc);
+        });
+
         modelBuilder.Entity<DeviceCredentialEntity>(b =>
         {
             b.ToTable("device_credentials");
@@ -603,6 +628,15 @@ public sealed class GatewayDbContext : DbContext
             // so pin them to "C" too - the account subject in particular must match EXACTLY on both providers.
             modelBuilder.Entity<TenantEntity>().Property(e => e.Id).UseCollation("C");
             modelBuilder.Entity<TenantEntity>().Property(e => e.AccountSubject).UseCollation("C");
+
+            // account_trials.subject is the same verified account subject as tenants.account_subject, and it
+            // is this table's PRIMARY KEY - the thing that enforces one trial per account. Its equality and
+            // uniqueness must match SQLite's byte-ordinal BINARY collation exactly, or the same subject could
+            // be treated as two different accounts on Postgres and be granted a second trial. Pin it to "C"
+            // for the same reason as the keys above. It stays TEXT here (unlike entitlements.subject, which is
+            // uuid because the website's schema owns that column) - this table is ours, and its column type
+            // matches tenants.account_subject, the other subject-keyed table the Gateway itself creates.
+            modelBuilder.Entity<AccountTrialEntity>().Property(e => e.Subject).UseCollation("C");
 
             // The device_credentials natural-key columns (MTR-14): the DeviceId primary key and the
             // DeviceKeyHash lookup index both rely on byte-ordinal equality/ordering, same as the keys above -

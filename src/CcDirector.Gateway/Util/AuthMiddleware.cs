@@ -226,7 +226,16 @@ internal static class AuthMiddleware
                     {
                         ctx.Response.StatusCode = StatusCodes.Status402PaymentRequired;
                         ctx.Response.ContentType = "application/json; charset=utf-8";
-                        await ctx.Response.WriteAsync("{\"error\":\"hosted subscription required\",\"code\":\"hosted_subscription_required\"}");
+                        // The refusal carries the FINISHED sentence and the address to act on, not just a
+                        // code (issue #2117). A member whose free trial has just ended meets this response,
+                        // and "hosted subscription required" alone is a raw error - it tells them nothing
+                        // about what to do. error/code are unchanged so existing callers keep parsing; the
+                        // message and subscribeUrl are additive, and the Gateway - not the client - owns
+                        // their wording.
+                        await ctx.Response.WriteAsync(
+                            "{\"error\":\"hosted subscription required\",\"code\":\"hosted_subscription_required\"," +
+                            "\"message\":\"" + CcDirector.Gateway.Tenancy.EntitlementRegistry.SubscribeMessage + "\"," +
+                            "\"subscribeUrl\":\"" + CcDirector.Gateway.Tenancy.EntitlementRegistry.SubscribeUrl + "\"}");
                         return;
                     }
                     if (access == CcDirector.Gateway.Tenancy.HostedAccessDecision.RetryUnknown)

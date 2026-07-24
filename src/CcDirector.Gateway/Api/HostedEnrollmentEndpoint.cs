@@ -43,9 +43,14 @@ internal static class HostedEnrollmentEndpoint
     /// and no boundary, and enrollment behaves exactly as it always has. On hosted this is REQUIRED, and the
     /// gate is what makes hosted a paid product rather than a free one.
     /// </param>
+    /// <param name="trials">
+    /// The free-trial ledger (issue #2117). NULL means no trial concept - the behaviour before trials existed.
+    /// When supplied, an account with no paid entitlement that this Gateway has never seen before is GRANTED
+    /// the 14-day Pro trial here, at its first arrival, and enrolls on it.
+    /// </param>
     public static void Map(IEndpointRouteBuilder app, DeviceRegistry devices,
         Tenancy.TenantRegistry tenants, JwtAccessTokenValidator accountTokenValidator,
-        Tenancy.EntitlementRegistry? entitlements = null)
+        Tenancy.EntitlementRegistry? entitlements = null, Tenancy.TrialRegistry? trials = null)
     {
         if (devices is null) throw new ArgumentNullException(nameof(devices));
         if (tenants is null) throw new ArgumentNullException(nameof(tenants));
@@ -53,10 +58,24 @@ internal static class HostedEnrollmentEndpoint
 
         app.MapPost(Path, (EnrollSignedInRequest req, HttpContext ctx) =>
         {
-            var result = Enroll(BearerToken.Read(ctx), req, devices, tenants, accountTokenValidator, entitlements, DateTime.UtcNow);
-            return result.Status == StatusCodes.Status200OK
-                ? Results.Json(result.Response, statusCode: StatusCodes.Status200OK)
-                : Results.Json(new { error = result.Error }, statusCode: result.Status);
+            var result = Enroll(BearerToken.Read(ctx), req, devices, tenants, accountTokenValidator, entitlements, DateTime.UtcNow, trials);
+            if (result.Status == StatusCodes.Status200OK)
+                return Results.Json(result.Response, statusCode: StatusCodes.Status200OK);
+
+            // A payment refusal has to say what to do about it, not just that it happened (issue #2117): the
+            // member is told, in one finished sentence the Gateway owns, that access has ended and where to
+            // subscribe. Every other status keeps its plain error shape.
+            if (result.Status == StatusCodes.Status402PaymentRequired)
+            {
+                return Results.Json(new
+                {
+                    error = result.Error,
+                    message = Tenancy.EntitlementRegistry.SubscribeMessage,
+                    subscribeUrl = Tenancy.EntitlementRegistry.SubscribeUrl,
+                }, statusCode: result.Status);
+            }
+
+            return Results.Json(new { error = result.Error }, statusCode: result.Status);
         });
     }
 
@@ -70,7 +89,8 @@ internal static class HostedEnrollmentEndpoint
     /// </summary>
     public static EnrollResult Enroll(string? bearer, EnrollSignedInRequest? req, DeviceRegistry devices,
         Tenancy.TenantRegistry tenants, JwtAccessTokenValidator accountTokenValidator,
-        Tenancy.EntitlementRegistry? entitlements = null, DateTime? nowUtc = null)
+        Tenancy.EntitlementRegistry? entitlements = null, DateTime? nowUtc = null,
+        Tenancy.TrialRegistry? trials = null)
     {
         if (req is null || string.IsNullOrWhiteSpace(req.DeviceId))
             return new EnrollResult(StatusCodes.Status400BadRequest, null, "deviceId is required");
@@ -104,7 +124,42 @@ internal static class HostedEnrollmentEndpoint
         // Null entitlements is the SELF-HOST case - no gate at all, unchanged behaviour. That is the control.
         if (entitlements is not null)
         {
-            var outcome = entitlements.LookupBySubject(validation.Subject, nowUtc ?? DateTime.UtcNow);
+            var now = nowUtc ?? DateTime.UtcNow;
+            var outcome = entitlements.LookupBySubject(validation.Subject, now);
+
+            // THE FREE TRIAL GRANT (issue #2117), and this is the ONLY place a trial is created. The public
+            // pricing page promises every new account 14 days of Pro with no card, so an account that the
+            // entitlement read just refused gets one more question asked of it: is this its FIRST arrival at
+            // the hosted Gateway? If it is, the trial is granted here and the account enrolls on it.
+            //
+            // It sits AFTER the paid read, so a paying account never reaches it and can never be handed a
+            // trial it does not need. It reads NotEntitled only - an Unknown falls through to the 503 below
+            // untouched, because granting a trial on a failed paid read would hand a free window to an account
+            // whose subscription we simply could not see.
+            //
+            // "Never seen before" is the tenant mapping: an account that already holds a tenant was using
+            // hosted before the trial existed, and the owner's rollout rule grants it nothing (issue #2117).
+            // TrialRegistry re-checks its own ledger, so an account whose trial has already ended is refused
+            // here rather than being handed a second one.
+            if (outcome == Tenancy.EntitlementOutcome.NotEntitled && trials is not null)
+            {
+                var alreadyKnown = tenants.LookupBySubject(validation.Subject) is not null;
+                var trial = trials.GrantIfFirstArrival(validation.Subject, alreadyKnown, now);
+
+                if (trial.Outcome == Tenancy.TrialOutcome.Active)
+                {
+                    FileLog.Write("[HostedEnrollment] enrolling on the free Pro trial (no paid entitlement; the account is inside its trial window)");
+                    outcome = Tenancy.EntitlementOutcome.Entitled;
+                }
+                else if (trial.Outcome == Tenancy.TrialOutcome.Unknown)
+                {
+                    // The trial ledger could not be read or written. We do not know what covers this account,
+                    // so this is the SAME temporary condition as an unreadable entitlement table: retry, never
+                    // refuse, never grant.
+                    outcome = Tenancy.EntitlementOutcome.Unknown;
+                }
+            }
+
             if (outcome == Tenancy.EntitlementOutcome.Unknown)
             {
                 FileLog.Write("[HostedEnrollment] RETRY: the entitlement read failed, so entitlement is UNKNOWN - " +
