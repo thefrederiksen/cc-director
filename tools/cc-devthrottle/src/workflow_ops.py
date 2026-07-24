@@ -20,6 +20,7 @@ import socket
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
 
 import requests
 import typer
@@ -201,6 +202,12 @@ class WorkflowClient:
     def publish(self, workflow_id: str) -> Dict[str, Any]:
         return self._json_or_raise(
             self._request("POST", f"/gateway/workflows/{workflow_id}/publish")
+        )
+
+    def clone(self, workflow_id: str, new_id: str) -> Dict[str, Any]:
+        query = urlencode({"newId": new_id, "by": default_authored_by()})
+        return self._json_or_raise(
+            self._request("POST", f"/gateway/workflows/{workflow_id}/clone?{query}")
         )
 
     def delete(self, workflow_id: str) -> Dict[str, Any]:
@@ -571,6 +578,18 @@ def publish_workflow(workflow_id: str) -> None:
 
 # reset_workflow was retired with the Shared Workflow Library phase 3: built-ins are read-only,
 # can never diverge from the shipped content, and have nothing to reset.
+
+
+def clone_workflow(workflow_id: str, new_id: str) -> None:
+    try:
+        result = _client().clone(workflow_id, new_id)
+    except GatewayError as ex:
+        _fail(str(ex))
+        return
+    console.print(
+        f"Cloned '{workflow_id}' into '{result.get('id')}' v{result.get('version')}. "
+        "The clone is yours: published, editable, and independent of the original."
+    )
 
 
 def set_workflow_enabled(workflow_id: str, enabled: bool) -> None:

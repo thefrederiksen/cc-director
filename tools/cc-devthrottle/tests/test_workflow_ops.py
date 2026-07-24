@@ -66,6 +66,7 @@ class TestActionsDiscoverability:
             "workflow-push",
             "workflow-publish",
             "workflow-materialize",
+            "workflow-clone",
             "workflow-delete",
             "workflow-runs",
             "workflow-run-show",

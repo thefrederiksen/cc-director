@@ -183,6 +183,24 @@ export async function setWorkflowEnabled(
 // resetWorkflow was RETIRED with the Shared Workflow Library phase 3: built-ins are read-only,
 // can never diverge from the shipped content, and have nothing to reset.
 
+// POST /gateway/workflows/{id}/clone - copy a workflow's published content into a new tenant-owned,
+// fully editable workflow (the sanctioned way to customize a read-only built-in). Returns the clone.
+export async function cloneWorkflow(
+  id: string,
+  newId: string,
+  by: string,
+  signal?: AbortSignal,
+): Promise<WorkflowDefinition> {
+  const query = new URLSearchParams({ newId, by });
+  const res = await fetch(`/gateway/workflows/${encodeURIComponent(id)}/clone?${query.toString()}`, {
+    method: "POST",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) throw await gatewayErrorFrom(res, `POST /gateway/workflows/${id}/clone`);
+  return (await res.json()) as WorkflowDefinition;
+}
+
 /** A workflow id slug from a display name: "Release Train" -> "release-train". The Gateway enforces
  *  the same shape server-side; this just makes the dialog's default id readable. */
 export function suggestWorkflowId(name: string): string {

@@ -385,6 +385,113 @@ public sealed class WorkflowStore
     // built-ins are read-only, so they can never diverge from shipped content and there is nothing to
     // reset. The seeder always republishes the running binary's content on a hash change.
 
+    /// <summary>
+    /// Clone a workflow's PUBLISHED content into a new tenant-owned workflow (Shared Workflow
+    /// Library phase 4 - the sanctioned customization path for the read-only built-ins, and equally
+    /// usable on the tenant's own workflows). The clone copies everything the published version
+    /// carries - steps, instructions, outcome criteria, helper files - into version 1 of a fresh id,
+    /// born PUBLISHED (the content just came off a published bundle, so it is immediately runnable)
+    /// and fully editable; provenance (source id and version) is recorded on the version row's
+    /// change note. Null when the source does not exist or has no published version.
+    /// </summary>
+    /// <exception cref="WorkflowValidationException">The new id is invalid.</exception>
+    /// <exception cref="WorkflowConflictException">The new id is taken or is a built-in id.</exception>
+    public WorkflowDto? Clone(string sourceId, string newId, string authoredBy)
+    {
+        var sourceKey = NormalizeId(sourceId);
+        WorkflowValidation.ValidateId(newId);
+        var id = newId.Trim();
+
+        lock (_gate)
+        {
+            // The clone's id obeys the same rules as create: never a built-in id (the library can
+            // never be shadowed), never a taken id.
+            if (IsLibraryBuiltIn(id))
+                throw new WorkflowConflictException(
+                    $"'{id}' is a built-in DevThrottle workflow; its id is reserved. Pick a different id.");
+
+            WorkflowVersionEntity sourceVersion;
+            List<WorkflowFileEntity> sourceFiles;
+            using (var src = OpenOwningContext(sourceKey))
+            {
+                var sourceHead = src.Workflows.AsNoTracking().FirstOrDefault(h => h.Id == sourceKey);
+                if (sourceHead is null || sourceHead.Archived || sourceHead.PublishedVersion is null)
+                    return null;
+                sourceVersion = src.WorkflowVersions.AsNoTracking().First(
+                    v => v.WorkflowId == sourceKey && v.Status == WorkflowVersionStatus.Published);
+                sourceFiles = src.WorkflowFiles.AsNoTracking()
+                    .Where(f => f.VersionId == sourceVersion.Id)
+                    .ToList();
+            }
+
+            using var ctx = _db.CreateContext();
+            if (ctx.Workflows.Any(h => h.Id == id))
+                throw new WorkflowConflictException($"A workflow with id '{id}' already exists.");
+
+            var now = DateTime.UtcNow;
+            var head = new WorkflowEntity
+            {
+                Id = id,
+                TenantId = ctx.ActiveTenant!,
+                IsBuiltIn = false,
+                Archived = false,
+                LatestVersion = 1,
+                PublishedVersion = 1,
+                ShippedContentHash = null,
+                CreatedUtc = now,
+                UpdatedUtc = now,
+            };
+            var version = new WorkflowVersionEntity
+            {
+                TenantId = ctx.ActiveTenant!,
+                WorkflowId = id,
+                Version = 1,
+                Status = WorkflowVersionStatus.Published,
+                Name = sourceVersion.Name,
+                Summary = sourceVersion.Summary,
+                WhenToUse = sourceVersion.WhenToUse,
+                HumanCheckpoint = sourceVersion.HumanCheckpoint,
+                Steps = sourceVersion.Steps.Select(s => new WorkflowStepDto
+                {
+                    Name = s.Name,
+                    Description = s.Description,
+                    Doer = s.Doer,
+                    Reviewer = s.Reviewer,
+                    Done = s.Done,
+                }).ToList(),
+                InstructionsMarkdown = sourceVersion.InstructionsMarkdown,
+                OutcomeCriteria = sourceVersion.OutcomeCriteria.Select(c => new WorkflowOutcomeCriterionDto
+                {
+                    CriterionId = c.CriterionId,
+                    Description = c.Description,
+                    ProofHint = c.ProofHint,
+                }).ToList(),
+                ContentHash = sourceVersion.ContentHash, // identical content, identical bundle hash
+                AuthoredBy = string.IsNullOrWhiteSpace(authoredBy) ? "unknown" : authoredBy.Trim(),
+                ChangeNote = $"Cloned from '{sourceKey}' v{sourceVersion.Version}.",
+                CreatedUtc = now,
+                PublishedUtc = now,
+            };
+            var files = sourceFiles.Select(f => new WorkflowFileEntity
+            {
+                TenantId = ctx.ActiveTenant!,
+                VersionId = version.Id,
+                FileName = f.FileName,
+                Content = f.Content,
+                ContentHash = f.ContentHash,
+            }).ToList();
+
+            ctx.Workflows.Add(head);
+            ctx.WorkflowVersions.Add(version);
+            ctx.WorkflowFiles.AddRange(files);
+            ctx.SaveChanges();
+
+            FileLog.Write($"[WorkflowStore] Clone: '{sourceKey}' v{sourceVersion.Version} -> '{id}' v1 " +
+                          $"({files.Count} files), authoredBy={version.AuthoredBy}");
+            return ToDto(head, version, hasDraft: false);
+        }
+    }
+
     /// <summary>Archive (soft-delete) a user-defined workflow. Its versions remain - a run that
     /// pinned one must always resolve. False when no such workflow exists.</summary>
     public bool Archive(string id)
