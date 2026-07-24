@@ -83,3 +83,18 @@ Durable Architect state. Any reseat continues from here. Keep current.
   squash-merge to origin/main, delete branch, remove worktree, email owner (soren@centerconsulting.com).
 - All caller sites of changed public APIs verified (ReapAsync, ObserveSnapshot, GetCount/GetStatus/
   GetSyncStatus/FetchAsync) - only the intended callers, all compile (Avalonia + Gateway build green).
+
+## Codex inspection round 1 = FAIL -> fixed 9 findings (2026-07-24)
+Codex (gpt-5.6-sol) adversarial pass found 9 real defects; all fixed as inspection-follow-up commits:
+- Reaper (e02677df): #1 locked-worktree force-delete (respect git refusal; never delete a registered
+  worktree), #2 roster TOCTOU (re-read roster right before the destructive loop), #3 failed-fetch abort.
+- Branch (a5025440): #4 fetch fresh + abort-on-failure before proving containment in DeleteIfSafeAsync.
+- Monitor/Watcher (5337434a): #7 monitor never publishes Success=false over a good row; #8 watcher
+  invalidates the status cache before recompute.
+- History (e91b2c7d): #5 empty/provisional push never erases (reconcile only on a real observation),
+  #6 rows stamped + reconciliation scoped by the BOUND Director (payload DirectorId ignored),
+  #9 suppressed save failure retried (pending flag; Save returns bool).
+All new fixes have regression tests; Core-side ones revert-proofed and green. Gateway-side tests
+build green; RUN pending a clear window (heavy Gateway-suite contention from other worktrees).
+- Re-running Codex on the updated diff (brescn4ph). Full Core+Avalonia suites (bt4c1ufal). Patient
+  Gateway verification (ba8on8jex). Iterate Codex to PASS, then three-suite green, then merge.
