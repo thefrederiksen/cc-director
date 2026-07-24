@@ -27,17 +27,27 @@ Durable Architect state. Any reseat continues from here. Keep current.
 | F01 | MAJOR   | PR CLI pipe deadlock    | Core/Git/PullRequestService.cs; Core/Utilities/ProcessRunner.cs | COMMITTED 4b20cc62 |
 | F02 | BLOCKER | remote-gone = merge     | Core/Git/GitBranchService, WorktreeSafetyEvaluator, WorktreeInventoryService; Avalonia/RepositoryDetailView | COMMITTED f00705d9 |
 | F03 | BLOCKER | worktree remove -> rmdir| Core/Git/WorktreeReaperService.cs                        | COMMITTED f2507264 |
-| F04 | MAJOR   | watcher blind + no recov| Core/Git/RepositoryWatcher.cs; Avalonia/App.axaml.cs     | TODO   |
+| F04 | MAJOR   | watcher blind + no recov| Core/Git/RepositoryWatcher.cs; Avalonia/App.axaml.cs     | COMMITTED 18e32466 |
 | F05 | BLOCKER | reap fails open         | Avalonia/WorktreesView; Core/Git/WorktreeReaperService   | COMMITTED 90ead86a |
 | F06 | MAJOR   | probe fail = clean      | Core/Git/GitStatusProvider, RepositoryStatusService      | COMMITTED 27b042e8 |
-| F07 | MAJOR   | history non-atomic write| Gateway/Streaming/RepoHistoryStore.cs                    | TODO   |
-| F08 | MINOR   | snapshot no reconcile   | Gateway/Streaming/RepoHistoryStore.cs                    | TODO   |
-| F09 | MAJOR   | Hello reclaims ownership| Gateway/Streaming/DirectorHub, PushedRepositoryStore; ControlApi/GatewayStreamClient | TODO |
-| F10 | MAJOR   | history unbounded rewrite| ControlApi/GatewayStreamClient; Gateway/DirectorHub, RepoHistoryStore | TODO |
+| F07 | MAJOR   | history non-atomic write| Gateway/Streaming/RepoHistoryStore.cs                    | COMMITTED 243324fd |
+| F08 | MINOR   | snapshot no reconcile   | Gateway/Streaming/RepoHistoryStore.cs, DirectorHub       | COMMITTED 80c70f7c |
+| F09 | MAJOR   | Hello reclaims ownership| Gateway/Streaming/PushedRepositoryStore                  | COMMITTED af3edd7b |
+| F10 | MAJOR   | history unbounded rewrite| Gateway/Streaming/RepoHistoryStore.cs                    | COMMITTED e2c921e1 |
 | F11 | MAJOR   | scan no cancel/kill     | Core/Git/RepositoryStatusService, GitSyncStatusProvider, GitStatusProvider, GitCommandRunner | TODO |
-| F12 | MINOR   | confirm not bound       | Avalonia/WorktreesView; Core/Git/WorktreeReaperService   | TODO   |
+| F12 | MINOR   | confirm not bound       | Avalonia/WorktreesView; Core/Git/WorktreeReaperService   | COMMITTED 69298750 |
 
 ## Progress log
+- ALL 12 findings COMMITTED. Gateway findings F07/F08/F09/F10 build-verified (dotnet build green)
+  but their xUnit tests NOT yet RUN due to another session hogging the Gateway suite (vstest hangs
+  under concurrency). MUST before merge: run full Gateway.Tests suite green + revert-proof each
+  Gateway finding, once the other worktree testhost clears. Core + Avalonia suites already green.
+- NEXT GATES: (1) Gateway suite green + Gateway revert-proofs; (2) full three-suite green on final tree;
+  (3) Codex inspection of full diff, iterate to PASS; (4) squash-merge, delete branch, remove worktree, email owner.
+- F12, F04 COMMITTED. Now on Gateway cluster (F07/F08/F09/F10). NOTE: another session runs the
+  full Gateway suite in devthrottle-activity-ledger; Gateway test runs contend/hang per brief.
+  Plan: implement all Gateway fixes+tests, verify with as few Gateway test runs as possible.
+  F09 (PushedRepositoryStore epoch fix) + F07 (RepoHistoryStore atomic write + load recovery) code done.
 - F01/F06/F11 COMMITTED. Shared ProcessRunner (concurrent drain + kill-on-cancel) introduced in
   F01 and reused by F11 git providers. F06 GetCountAsync now returns success flag; status service
   fails closed on any failed probe. All watched failing via temporary reverts. Core git suites green.
