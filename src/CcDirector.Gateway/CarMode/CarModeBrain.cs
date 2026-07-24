@@ -30,8 +30,12 @@ public sealed class CarModeBrain
     private readonly CarModePendingStore _pending;
     private readonly CarModeSubjectStore _subjects;
     private readonly Action<string> _log;
+    private readonly string _systemPrompt;
 
-    public CarModeBrain(ICarModeChat chat, ICarModeFleet fleet, CarModeConversationStore conversations, CarModePendingStore pending, CarModeSubjectStore subjects, Action<string>? log = null)
+    /// <param name="surface">Which surface this brain instance speaks to. Car (the default) keeps the
+    ///  hands-free one-or-two-sentence style; Desk (the cockpit Assistant screen) appends the desk-surface
+    ///  overrides. Everything else - loop, tools, stores, model - is identical.</param>
+    public CarModeBrain(ICarModeChat chat, ICarModeFleet fleet, CarModeConversationStore conversations, CarModePendingStore pending, CarModeSubjectStore subjects, Action<string>? log = null, CarModeSurface surface = CarModeSurface.Car)
     {
         _chat = chat ?? throw new ArgumentNullException(nameof(chat));
         _fleet = fleet ?? throw new ArgumentNullException(nameof(fleet));
@@ -39,6 +43,7 @@ public sealed class CarModeBrain
         _pending = pending ?? throw new ArgumentNullException(nameof(pending));
         _subjects = subjects ?? throw new ArgumentNullException(nameof(subjects));
         _log = log ?? FileLog.Write;
+        _systemPrompt = surface == CarModeSurface.Desk ? SystemPrompt + DeskAddendum : SystemPrompt;
     }
 
     /// <summary>
@@ -146,7 +151,7 @@ public sealed class CarModeBrain
         }
 
         var messages = new List<object>();
-        messages.Add(new { role = "system", content = SystemPrompt });
+        messages.Add(new { role = "system", content = _systemPrompt });
         foreach (var m in _conversations.GetHistory(deviceKey))
             messages.Add(new { role = m.Role, content = m.Content });
         messages.Add(new { role = "user", content = userText });
@@ -282,7 +287,7 @@ public sealed class CarModeBrain
                     sessions = sessions.Select(s => new
                     {
                         s.Name, s.Number, s.Repo, s.MachineName, mission = s.MissionName,
-                        s.State, s.NeedsYou, s.WaitingMinutes, s.Summary,
+                        s.State, s.NeedsYou, s.WaitingMinutes, s.Summary, s.AgeHours, s.IdleMinutes,
                     }),
                 });
             }
@@ -385,6 +390,55 @@ public sealed class CarModeBrain
                     }, ToolResultJson),
                     Action: null,
                     ArmedConfirmation: true);
+            }
+            case "get_credits":
+            {
+                var credits = await timer.TimeFleetAsync(() => _fleet.GetCreditsAsync(ct));
+                if (!credits.SignedIn)
+                    return Result(new { signedIn = false, message = "The Gateway is not signed in to a DevThrottle account, so there is no balance to read." });
+                return Result(new
+                {
+                    signedIn = true,
+                    balanceDollars = Math.Round((credits.BalanceMicros ?? 0) / 1_000_000.0, 2),
+                    lastActionCostDollars = credits.LastDebitMicros is { } debit ? Math.Round(debit / 1_000_000.0, 4) : (double?)null,
+                });
+            }
+            case "list_machines":
+            {
+                var machines = await timer.TimeFleetAsync(() => _fleet.ListMachinesAsync(ct));
+                return Result(new
+                {
+                    count = machines.Count,
+                    machines = machines.Select(m => new
+                    {
+                        machine = m.MachineName, m.Version, m.LastSeenMinutesAgo, m.SessionCount,
+                    }),
+                });
+            }
+            case "list_schedules":
+            {
+                var schedules = await timer.TimeFleetAsync(() => _fleet.ListSchedulesAsync(ct));
+                return Result(new
+                {
+                    count = schedules.Count,
+                    schedules = schedules.Select(s => new
+                    {
+                        s.Name, s.Enabled, s.Schedule, s.Machine, action = s.ActionSummary,
+                        s.NextRunUtc, s.LastFiredUtc, s.LastStatus,
+                    }),
+                });
+            }
+            case "get_spend":
+            {
+                var daysText = ReadStringArg(call.ArgumentsJson, "days");
+                var days = int.TryParse(daysText, out var parsed) && parsed > 0 && parsed <= 90 ? parsed : 7;
+                var spend = await timer.TimeFleetAsync(() => _fleet.GetSpendAsync(days, ct));
+                return Result(new
+                {
+                    days,
+                    totalDollars = Math.Round(spend.TotalMicros / 1_000_000.0, 2),
+                    hostedActionCount = spend.DebitCount,
+                });
             }
             default:
                 return Result(new { error = $"Unknown tool \"{call.Name}\"." });
@@ -490,6 +544,12 @@ public sealed class CarModeBrain
         + "- When a question is ABOUT THE FLEET - how many sessions there are, which need you, what a session "
         + "is doing, the latest one, or an action on a session - use the tools to get REAL facts first. Never "
         + "guess a count, a name, or a state.\n"
+        + "- Account and infrastructure questions have their own read tools: get_credits for the credit "
+        + "balance, get_spend for recent hosted AI spending, list_machines for which machines are online, and "
+        + "list_schedules for the scheduled jobs. Use them the same way - never guess a balance, a dollar "
+        + "figure, or a schedule. Sessions in list_sessions carry ageHours (how long open) and idleMinutes "
+        + "(how long since output), so \"open too long\" and \"is anything stuck\" are answered from those "
+        + "real numbers.\n"
         + "- When the owner asks for HELP or how this works - \"help\", \"what can you do\", \"what can you "
         + "help me with\", \"how does this work\", \"how do I talk to you\" - call get_help and nothing else. "
         + "It speaks a fixed guided explanation; do NOT write your own and do NOT read the fleet for it.\n"
@@ -558,6 +618,23 @@ public sealed class CarModeBrain
         + "in the message content; only speak_answer is heard.\n"
         + "- A normal turn is: call the tools you need to get facts or act, then call speak_answer once with the "
         + "final spoken sentence. Keep it to one or two short spoken sentences.";
+
+    // The desk-surface overlay (the cockpit Assistant screen): the SAME brain, tools, and rules, with only
+    // the speech-style constraints relaxed - the owner is at his computer, the reply is shown as text and
+    // may also be read aloud, so a fleet overview may run a few sentences. Appended AFTER the car prompt so
+    // every behavioural rule above still binds; only the style rules are overridden, explicitly.
+    private const string DeskAddendum =
+        "\n\nDESK SURFACE OVERRIDES - this conversation comes from the cockpit Assistant screen, not the car:\n"
+        + "- The owner is at his computer in the cockpit, typing or talking. Your reply is shown on screen as "
+        + "text and may also be read aloud.\n"
+        + "- The one-or-two-sentence limit is relaxed: use up to four or five plain sentences when the "
+        + "question genuinely needs them - a fleet overview, a recommendation with its reasons. Short is "
+        + "still better whenever short answers it.\n"
+        + "- Keep it plain spoken text all the same: no markdown, no bullet lists, no headings, no emoji, "
+        + "because the same words may be read aloud.\n"
+        + "- Include concrete numbers (counts, hours, dollars) when you have them from the tools.\n"
+        + "- Everything else is unchanged: every answer still goes through speak_answer, actions still mean "
+        + "calling the tool, and destructive actions still need the owner's confirmation.";
 
     // The tool catalog. Standard chat-completions function tools: reads, ordinary acts, and the
     // destructive delete (which the loop holds for a spoken confirmation - the model just requests it).
@@ -697,6 +774,44 @@ public sealed class CarModeBrain
             "function": {
               "name": "get_help",
               "description": "Explain to the owner what Car Mode can do and how to talk to it. Call this - and NOTHING else - when the owner asks for help or how this works: \"help\", \"what can you do\", \"what can you help me with\", \"how does this work\", \"how do I talk to you\". It speaks a fixed guided explanation of the two ways to talk to Car Mode; you do not write the words and you do not read the fleet for it.",
+              "parameters": { "type": "object", "properties": {}, "required": [] }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "get_credits",
+              "description": "Read the account's current credit balance in dollars, and what the last hosted action cost. Use for questions about credits, balance, subscription money, or \"are we running low\". Never guess a balance.",
+              "parameters": { "type": "object", "properties": {}, "required": [] }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "get_spend",
+              "description": "Read the total hosted AI spend in dollars over the trailing window, and how many hosted actions it covers. Use for \"what have we spent\", \"how fast are we burning credits\", or pace questions. Defaults to the last 7 days.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "days": { "type": "string", "description": "The trailing window in days, 1 to 90. Omit for 7." }
+                },
+                "required": []
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "list_machines",
+              "description": "List the machines running Directors right now: each machine's name, how many minutes since the Gateway last heard from it, and how many sessions it is running. Use for \"which machines are online\" or \"where is everything running\".",
+              "parameters": { "type": "object", "properties": {}, "required": [] }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "list_schedules",
+              "description": "List the scheduled jobs: each job's name, whether it is enabled, when it runs, on which machine, what it does, the next due time, and how its last run went. Use for questions about schedules, cron jobs, nightly runs, or \"what runs automatically\".",
               "parameters": { "type": "object", "properties": {}, "required": [] }
             }
           },

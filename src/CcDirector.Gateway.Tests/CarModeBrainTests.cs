@@ -94,6 +94,29 @@ public sealed class CarModeBrainTests
             Snoozed.Add(sessionId);
             return Task.CompletedTask;
         }
+
+        // Fleet-overview read tools (the cockpit Assistant build).
+        public int CreditsCalls;
+        public CarModeCredits CreditsResult { get; set; } = new(false, null, null);
+        public IReadOnlyList<CarModeMachineInfo> Machines { get; set; } = new List<CarModeMachineInfo>();
+        public IReadOnlyList<CarModeScheduleInfo> Schedules { get; set; } = new List<CarModeScheduleInfo>();
+        public List<int> SpendDays { get; } = new();
+        public CarModeSpendSummary SpendResult { get; set; } = new(0, 0, DateTime.UtcNow, DateTime.UtcNow);
+
+        public Task<CarModeCredits> GetCreditsAsync(CancellationToken ct)
+        {
+            CreditsCalls++;
+            return Task.FromResult(CreditsResult);
+        }
+        public Task<IReadOnlyList<CarModeMachineInfo>> ListMachinesAsync(CancellationToken ct)
+            => Task.FromResult(Machines);
+        public Task<IReadOnlyList<CarModeScheduleInfo>> ListSchedulesAsync(CancellationToken ct)
+            => Task.FromResult(Schedules);
+        public Task<CarModeSpendSummary> GetSpendAsync(int days, CancellationToken ct)
+        {
+            SpendDays.Add(days);
+            return Task.FromResult(SpendResult);
+        }
     }
 
     private static CarModeToolCall Call(string name, string args = "{}") => new("call_1", name, args);
@@ -988,5 +1011,161 @@ public sealed class CarModeBrainTests
         Assert.Equal("done", a.Spoken);
         Assert.Same(a, b);                                 // the very same cached response object
         Assert.Equal(1, cache.Count());
+    }
+
+    // ---- Fleet-overview read tools (the cockpit Assistant build) ----
+
+    [Fact]
+    public async Task RunTurn_GetCredits_SignedIn_ReturnsDollarsToTheModel()
+    {
+        var fleet = new FakeFleet { CreditsResult = new CarModeCredits(true, 12_340_000, 5_600) };
+        var chat = new ScriptedChat(
+            new CarModeAssistantTurn(null, new[] { Call("get_credits") }),
+            Speak("You have about twelve dollars and thirty four cents left."));
+        var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
+
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "how are we doing on credits", CancellationToken.None);
+
+        Assert.Equal(1, fleet.CreditsCalls);
+        Assert.Contains("twelve dollars", result.Spoken);
+        // The tool result the model saw carries real dollars, converted from micro-dollars.
+        Assert.Contains("12.34", chat.SeenMessages[1]);
+    }
+
+    [Fact]
+    public async Task RunTurn_GetCredits_SignedOut_TellsTheModelThereIsNoBalance()
+    {
+        var fleet = new FakeFleet { CreditsResult = new CarModeCredits(false, null, null) };
+        var chat = new ScriptedChat(
+            new CarModeAssistantTurn(null, new[] { Call("get_credits") }),
+            Speak("The Gateway is not signed in, so there is no balance to read."));
+        var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
+
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "credits", CancellationToken.None);
+
+        Assert.Contains("not signed in", chat.SeenMessages[1]);
+        Assert.Contains("no balance", result.Spoken);
+    }
+
+    [Fact]
+    public async Task RunTurn_ListMachines_ReturnsMachineFactsToTheModel()
+    {
+        var fleet = new FakeFleet
+        {
+            Machines = new[]
+            {
+                new CarModeMachineInfo { MachineName = "SOREN_NORTH", Version = "1.2.3", LastSeenMinutesAgo = 0, SessionCount = 9 },
+                new CarModeMachineInfo { MachineName = "dev-machine-1", Version = "1.2.3", LastSeenMinutesAgo = 4, SessionCount = 2 },
+            },
+        };
+        var chat = new ScriptedChat(
+            new CarModeAssistantTurn(null, new[] { Call("list_machines") }),
+            Speak("Two machines are online."));
+        var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
+
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "which machines are online", CancellationToken.None);
+
+        Assert.Contains("SOREN_NORTH", chat.SeenMessages[1]);
+        Assert.Contains("dev-machine-1", chat.SeenMessages[1]);
+        Assert.Contains("Two machines", result.Spoken);
+    }
+
+    [Fact]
+    public async Task RunTurn_ListSchedules_ReturnsScheduleFactsToTheModel()
+    {
+        var fleet = new FakeFleet
+        {
+            Schedules = new[]
+            {
+                new CarModeScheduleInfo
+                {
+                    Name = "Nightly hygiene", Enabled = true, Schedule = "0 3 * * *", Machine = "SOREN_NORTH",
+                    ActionSummary = "run \"/repo-hygiene\" in devthrottle", LastStatus = "succeeded",
+                },
+            },
+        };
+        var chat = new ScriptedChat(
+            new CarModeAssistantTurn(null, new[] { Call("list_schedules") }),
+            Speak("One schedule: Nightly hygiene at three in the morning."));
+        var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
+
+        var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "what runs automatically", CancellationToken.None);
+
+        Assert.Contains("Nightly hygiene", chat.SeenMessages[1]);
+        Assert.Contains("0 3 * * *", chat.SeenMessages[1]);
+        Assert.Contains("Nightly hygiene", result.Spoken);
+    }
+
+    [Fact]
+    public async Task RunTurn_GetSpend_DefaultsToSevenDays_AndConvertsDollars()
+    {
+        var fleet = new FakeFleet { SpendResult = new CarModeSpendSummary(2_500_000, 41, DateTime.UtcNow.AddDays(-7), DateTime.UtcNow) };
+        var chat = new ScriptedChat(
+            new CarModeAssistantTurn(null, new[] { Call("get_spend") }),
+            Speak("About two and a half dollars this week."));
+        var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
+
+        await brain.RunTurnAsync(TenantId.Local, "device-a", "what have we spent", CancellationToken.None);
+
+        Assert.Equal(new[] { 7 }, fleet.SpendDays);
+        Assert.Contains("2.5", chat.SeenMessages[1]);
+    }
+
+    [Fact]
+    public async Task RunTurn_GetSpend_HonorsTheDaysArgument()
+    {
+        var fleet = new FakeFleet { SpendResult = new CarModeSpendSummary(0, 0, DateTime.UtcNow.AddDays(-30), DateTime.UtcNow) };
+        var chat = new ScriptedChat(
+            new CarModeAssistantTurn(null, new[] { Call("get_spend", "{\"days\":\"30\"}") }),
+            Speak("Nothing in the last thirty days."));
+        var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
+
+        await brain.RunTurnAsync(TenantId.Local, "device-a", "spend for the month", CancellationToken.None);
+
+        Assert.Equal(new[] { 30 }, fleet.SpendDays);
+    }
+
+    // ---- The desk surface (the cockpit Assistant screen) ----
+
+    [Fact]
+    public async Task DeskSurface_AppendsTheDeskOverridesToTheSystemPrompt()
+    {
+        var fleet = new FakeFleet();
+        var chat = new ScriptedChat(Speak("Hello."));
+        var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { }, CarModeSurface.Desk);
+
+        await brain.RunTurnAsync(TenantId.Local, "device-a", "hello", CancellationToken.None);
+
+        Assert.Contains("DESK SURFACE OVERRIDES", chat.SeenMessages[0]);
+    }
+
+    [Fact]
+    public async Task CarSurface_DoesNotCarryTheDeskOverrides()
+    {
+        var fleet = new FakeFleet();
+        var chat = new ScriptedChat(Speak("Hello."));
+        var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
+
+        await brain.RunTurnAsync(TenantId.Local, "device-a", "hello", CancellationToken.None);
+
+        Assert.DoesNotContain("DESK SURFACE OVERRIDES", chat.SeenMessages[0]);
+    }
+
+    [Fact]
+    public async Task ListSessions_CarriesAgeAndIdleFacts()
+    {
+        var session = Session("Old Timer", false) with { AgeHours = 31, IdleMinutes = 95 };
+        var fleet = new FakeFleet { Sessions = new[] { session } };
+        var chat = new ScriptedChat(
+            new CarModeAssistantTurn(null, new[] { Call("list_sessions") }),
+            Speak("Old Timer has been open thirty one hours."));
+        var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
+
+        await brain.RunTurnAsync(TenantId.Local, "device-a", "anything open too long", CancellationToken.None);
+
+        // The tool result rides inside the messages list as an escaped JSON string, and System.Text.Json's
+        // default encoder writes an embedded double-quote as the u0022 escape - match that exact form.
+        Assert.Contains("\\u0022AgeHours\\u0022:31", chat.SeenMessages[1]);
+        Assert.Contains("\\u0022IdleMinutes\\u0022:95", chat.SeenMessages[1]);
     }
 }

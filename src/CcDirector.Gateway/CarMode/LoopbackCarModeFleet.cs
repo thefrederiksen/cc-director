@@ -193,6 +193,108 @@ public sealed class LoopbackCarModeFleet : ICarModeFleet
         _log($"[CarModeFleet] snoozed session {sessionId}");
     }
 
+    public async Task<CarModeCredits> GetCreditsAsync(CancellationToken ct)
+    {
+        // The SAME token-free proxy the Settings account section reads (GET /account/credits). A signed-out
+        // Gateway answers signedIn=false explicitly; a cloud failure is a non-success status and throws loud.
+        var root = await GetJsonObjectAsync("/account/credits", ct);
+        var signedIn = root.TryGetProperty("signedIn", out var si) && si.ValueKind == JsonValueKind.True;
+        var balance = GetInt64OrNull(root, "balanceMicros");
+        var lastDebit = GetInt64OrNull(root, "lastDebitMicros");
+        _log($"[CarModeFleet] credits: signedIn={signedIn}");
+        return new CarModeCredits(signedIn, balance, lastDebit);
+    }
+
+    public async Task<IReadOnlyList<CarModeMachineInfo>> ListMachinesAsync(CancellationToken ct)
+    {
+        // Machines = the Director registry grouped by machine name (GET /directors), which serves hosted
+        // per-tenant too - never the hosted-denied /machines or /launchers surfaces. Session counts come
+        // from the same aggregated roster every client sees.
+        var directors = await GetJsonArrayAsync("/directors", ct);
+        var sessions = await GetSessionsAsync(ct);
+        var machines = directors
+            .Select(d => new
+            {
+                Machine = GetString(d, "machineName"),
+                Version = GetString(d, "version"),
+                LastSeen = GetDateTimeOrNull(d, "lastSeen"),
+            })
+            .Where(d => !string.IsNullOrWhiteSpace(d.Machine))
+            .GroupBy(d => d.Machine, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new CarModeMachineInfo
+            {
+                MachineName = g.Key,
+                Version = g.Select(d => d.Version).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)) ?? "",
+                LastSeenMinutesAgo = MinutesAgo(g.Max(d => d.LastSeen)),
+                SessionCount = sessions.Count(s => string.Equals(s.MachineName, g.Key, StringComparison.OrdinalIgnoreCase)),
+            })
+            .OrderBy(m => m.MachineName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        _log($"[CarModeFleet] machines -> {machines.Count}");
+        return machines;
+    }
+
+    public async Task<IReadOnlyList<CarModeScheduleInfo>> ListSchedulesAsync(CancellationToken ct)
+    {
+        // GET /cron/jobs returns { jobs: [CronJobDto...] }; map each to the compact speakable view.
+        var root = await GetJsonObjectAsync("/cron/jobs", ct);
+        var jobs = root.TryGetProperty("jobs", out var arr) && arr.ValueKind == JsonValueKind.Array
+            ? arr.EnumerateArray().ToList()
+            : new List<JsonElement>();
+        var schedules = jobs.Select(j =>
+        {
+            var kind = GetString(j, "scheduleKind");
+            var schedule = string.Equals(kind, "oneOff", StringComparison.OrdinalIgnoreCase)
+                ? $"once at {GetString(j, "runAt")}"
+                : GetString(j, "cronExpression");
+            var machine = j.TryGetProperty("target", out var target) ? GetString(target, "machine") : "";
+            var actionSummary = "";
+            if (j.TryGetProperty("action", out var action))
+            {
+                var repoLeaf = RepoLeaf(GetString(action, "repoPath"));
+                var workList = GetString(action, "workListName");
+                var seed = GetString(action, "seed");
+                actionSummary = !string.IsNullOrWhiteSpace(workList)
+                    ? $"drain the {workList} work list in {repoLeaf}"
+                    : $"run \"{Truncate(seed, 80)}\" in {repoLeaf}";
+            }
+            return new CarModeScheduleInfo
+            {
+                Name = GetString(j, "name"),
+                Enabled = j.TryGetProperty("enabled", out var en) && en.ValueKind == JsonValueKind.True,
+                Schedule = schedule,
+                Machine = machine,
+                ActionSummary = actionSummary,
+                NextRunUtc = GetDateTimeOrNull(j, "nextRunUtc"),
+                LastFiredUtc = GetDateTimeOrNull(j, "lastFiredUtc"),
+                LastStatus = NullIfEmpty(GetString(j, "lastStatus")),
+            };
+        }).ToList();
+        _log($"[CarModeFleet] schedules -> {schedules.Count}");
+        return schedules;
+    }
+
+    public async Task<CarModeSpendSummary> GetSpendAsync(int days, CancellationToken ct)
+    {
+        if (days <= 0) throw new ArgumentOutOfRangeException(nameof(days), "The spend window must be at least one day.");
+        var until = DateTime.UtcNow;
+        var since = until.AddDays(-days);
+        var root = await GetJsonObjectAsync(
+            $"/gateway/governance/hosted-ai-spend/summary?since={Uri.EscapeDataString(since.ToString("o"))}&until={Uri.EscapeDataString(until.ToString("o"))}", ct);
+        // A summary with no total is a malformed response, not a zero - zero dollars is exactly the kind of
+        // plausible fabricated number that ships unnoticed, so it fails loud instead.
+        var total = GetInt64OrNull(root, "totalMicros")
+            ?? throw new InvalidOperationException("The hosted-AI spend summary came back without a totalMicros field.");
+        var summary = new CarModeSpendSummary(
+            total,
+            (int)(GetInt64OrNull(root, "debitCount")
+                ?? throw new InvalidOperationException("The hosted-AI spend summary came back without a debitCount field.")),
+            GetDateTimeOrNull(root, "sinceUtc") ?? since,
+            GetDateTimeOrNull(root, "untilUtc") ?? until);
+        _log($"[CarModeFleet] spend over {days}d -> {summary.DebitCount} debits");
+        return summary;
+    }
+
     /// <summary>Read THIS Gateway's aggregated roster, reusing a read taken within the last
     ///  <see cref="RosterCacheTtl"/> so one turn's several roster reads (and back-to-back turns) collapse to
     ///  a single loopback aggregation. A cache miss does one real GET and refills the cache.</summary>
@@ -227,6 +329,46 @@ public sealed class LoopbackCarModeFleet : ICarModeFleet
         var sessions = JsonSerializer.Deserialize<List<SessionDto>>(json, JsonOptions);
         return sessions ?? new List<SessionDto>();
     }
+
+    /// <summary>GET a loopback endpoint that returns a JSON object and hand back its root element (a clone,
+    ///  safe after the document is disposed). Throws on a non-success status or a non-object body, so a
+    ///  malformed response is a loud failure rather than a silently empty read.</summary>
+    private async Task<JsonElement> GetJsonObjectAsync(string path, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{_baseUrl}{path}");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _token);
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException($"GET {path} failed: {(int)response.StatusCode} {response.StatusCode}.");
+        var json = await response.Content.ReadAsStringAsync(ct);
+        using var doc = JsonDocument.Parse(json);
+        if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            throw new InvalidOperationException($"GET {path} returned {doc.RootElement.ValueKind}, expected a JSON object.");
+        return doc.RootElement.Clone();
+    }
+
+    private static long? GetInt64OrNull(JsonElement el, string name) =>
+        el.ValueKind == JsonValueKind.Object && el.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.Number
+            ? p.GetInt64()
+            : null;
+
+    private static DateTime? GetDateTimeOrNull(JsonElement el, string name) =>
+        el.ValueKind == JsonValueKind.Object && el.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.String
+            && p.TryGetDateTime(out var t)
+            ? t
+            : null;
+
+    private static int? MinutesAgo(DateTime? utc)
+    {
+        if (utc is not { } t) return null;
+        var minutes = (DateTime.UtcNow - t.ToUniversalTime()).TotalMinutes;
+        return minutes <= 0 ? 0 : (int)Math.Round(minutes);
+    }
+
+    private static string Truncate(string value, int max) =>
+        value.Length <= max ? value : value[..max].TrimEnd() + "...";
+
+    private static string? NullIfEmpty(string value) => string.IsNullOrWhiteSpace(value) ? null : value;
 
     /// <summary>GET a loopback endpoint that returns a JSON array and hand back its elements. Throws on a
     ///  non-success status (no silent empty list).</summary>
@@ -399,7 +541,16 @@ public sealed class LoopbackCarModeFleet : ICarModeFleet
             NeedsYou = needsYou,
             WaitingMinutes = WaitingMinutes(s.NeedsYouSince),
             Summary = summary,
+            AgeHours = AgeHours(s.CreatedAt),
+            IdleMinutes = s.IdleSeconds <= 0 ? 0 : (int)Math.Round(s.IdleSeconds / 60.0),
         };
+    }
+
+    /// <summary>Whole hours since a session was created; 0 when under an hour (or the clock skewed).</summary>
+    private static int AgeHours(DateTime createdAt)
+    {
+        var hours = (DateTime.UtcNow - createdAt.ToUniversalTime()).TotalHours;
+        return hours <= 0 ? 0 : (int)Math.Floor(hours);
     }
 
     /// <summary>The last path segment of a repository path (the human name a person calls a repo), for

@@ -57,4 +57,22 @@ public interface ICarModeFleet
     ///  Gateway records a snooze-until from the per-user default length, so the session RETURNS to "needs
     ///  you" on its own when the timer fires (Snooze Length mission). Addressed by session id.</summary>
     Task SnoozeSessionAsync(string sessionId, CancellationToken ct);
+
+    /// <summary>The account credit balance, exactly what the Settings account section shows
+    ///  (GET /account/credits). SignedIn false means there is no account credential and no balance -
+    ///  the brain says so plainly rather than inventing a number.</summary>
+    Task<CarModeCredits> GetCreditsAsync(CancellationToken ct);
+
+    /// <summary>The machines running Directors right now (GET /directors grouped by machine), each with how
+    ///  recently the Gateway heard from it and how many roster sessions it carries. Answers "which machines
+    ///  are online" without touching the hosted-denied /machines and /launchers surfaces.</summary>
+    Task<IReadOnlyList<CarModeMachineInfo>> ListMachinesAsync(CancellationToken ct);
+
+    /// <summary>The scheduled jobs (GET /cron/jobs) as compact speakable views: name, on/off, when, where,
+    ///  and what each fire does, plus the next due time and the last outcome.</summary>
+    Task<IReadOnlyList<CarModeScheduleInfo>> ListSchedulesAsync(CancellationToken ct);
+
+    /// <summary>The hosted AI spend total over the trailing <paramref name="days"/> days
+    ///  (GET /gateway/governance/hosted-ai-spend/summary). Real ledger dollars, never an estimate.</summary>
+    Task<CarModeSpendSummary> GetSpendAsync(int days, CancellationToken ct);
 }

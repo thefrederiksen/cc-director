@@ -78,7 +78,7 @@ public sealed class CarModeDiagnosticsEndpointPartitionTests : IAsyncLifetime
         var requireToken = new AuthMiddleware.RequireToken { Token = SharedMachineToken, Devices = devices };
         _app.Use(async (ctx, next) => await AuthMiddleware.Run(ctx, requireToken, next));
 
-        CarModeEndpoint.Map(_app, brain, new CarModeTurnCache(_ => { }), diagnostics, warmup, null!);
+        CarModeEndpoint.Map(_app, brain, brain, new CarModeTurnCache(_ => { }), diagnostics, warmup, null!);
         await _app.StartAsync();
         _baseAddress = $"http://127.0.0.1:{port}";
     }
@@ -402,5 +402,9 @@ public sealed class CarModeDiagnosticsEndpointPartitionTests : IAsyncLifetime
         public Task<CarModeExplain> ExplainSessionAsync(string sessionId, CancellationToken ct) => throw Unexpected();
         public Task SwitchVoiceModeAsync(string sessionId, bool enabled, CancellationToken ct) => throw Unexpected();
         public Task SnoozeSessionAsync(string sessionId, CancellationToken ct) => throw Unexpected();
+        public Task<CarModeCredits> GetCreditsAsync(CancellationToken ct) => throw Unexpected();
+        public Task<IReadOnlyList<CarModeMachineInfo>> ListMachinesAsync(CancellationToken ct) => throw Unexpected();
+        public Task<IReadOnlyList<CarModeScheduleInfo>> ListSchedulesAsync(CancellationToken ct) => throw Unexpected();
+        public Task<CarModeSpendSummary> GetSpendAsync(int days, CancellationToken ct) => throw Unexpected();
     }
 }

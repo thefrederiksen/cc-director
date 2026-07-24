@@ -51,6 +51,10 @@ const devProxy = proxyTarget
       "/fanout": { target: proxyTarget, changeOrigin: true },
       "/cron": { target: proxyTarget, changeOrigin: true },
       "/wingman": { target: proxyTarget, changeOrigin: true },
+      // The Assistant screen (fleet assistant build): its turn calls POST /assistant/turn, and its
+      // keep-warm ping reuses Car Mode's POST /carmode/warmup.
+      "/assistant": { target: proxyTarget, changeOrigin: true },
+      "/carmode": { target: proxyTarget, changeOrigin: true },
       "/lists": { target: proxyTarget, changeOrigin: true },
       "/account": { target: proxyTarget, changeOrigin: true },
       "/gateway": { target: proxyTarget, changeOrigin: true },
