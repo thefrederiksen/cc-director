@@ -240,48 +240,26 @@
                      opens the Gateway Connection panel on the resolver's current step. All colors, glyphs,
                      text and the tooltip are set from code-behind via GatewayStatusBoxPresenter, which runs
                      the same GatewayConnectionStateResolver the panel uses (so box and panel never disagree). -->
+                <!-- Slimmed to a compact chip (Browsers feature, slice 2): a status dot plus the
+                     presenter's short verdict. The dot and text carry the four visual states; the two
+                     full check lines (which gateway, which account) moved into the tooltip. Same click
+                     target, same panel. -->
                 <Border x:Name="GatewayStatusBox" DockPanel.Dock="Bottom"
-                        Margin="8,0,8,4" Padding="10,8" CornerRadius="4"
-                        Background="#3A331B" BorderBrush="#F0B848" BorderThickness="1"
+                        Margin="8,0,8,6" Padding="10,5" CornerRadius="12"
+                        Background="#2A2A2A" BorderBrush="#3C3C3C" BorderThickness="1"
+                        HorizontalAlignment="Left"
                         Cursor="Hand"
                         Focusable="True"
                         KeyDown="GatewayStatusBox_KeyDown"
                         PointerPressed="GatewayStatusBox_PointerPressed">
-                    <StackPanel Spacing="6">
-                        <!-- Line 1: WHICH gateway this Director is pointed at. The marker (green check /
-                             amber ring / red cross) reinforces connected / connecting / failed. The line names
-                             the gateway host first and appends the resolved verdict in parentheses, so neither
-                             color nor glyph is the only way to learn the state. With no gateway selected yet
-                             (brand new) the host is empty and this whole row is hidden from code-behind. -->
-                        <StackPanel x:Name="GatewayConnectedRow" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                            <Viewbox Width="15" Height="15" VerticalAlignment="Center">
-                                <Path x:Name="GatewayConnectedMarker"
-                                      Fill="#F0B848"
-                                      Data="M8,1 A7,7 0 1 0 8,15 A7,7 0 1 0 8,1 Z M8,3 A5,5 0 1 1 8,13 A5,5 0 1 1 8,3 Z" />
-                            </Viewbox>
-                            <TextBlock x:Name="GatewayConnectedLine"
-                                       Text=""
-                                       FontSize="11" FontWeight="SemiBold"
-                                       Foreground="#F0B848"
-                                       TextWrapping="Wrap" MaxWidth="176"
-                                       MaxLines="2" TextTrimming="CharacterEllipsis"
-                                       VerticalAlignment="Center" />
-                        </StackPanel>
-                        <!-- Line 2: Account signed in (the Gateway's own account report). -->
-                        <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                            <Viewbox Width="15" Height="15" VerticalAlignment="Center">
-                                <Path x:Name="GatewaySignedInMarker"
-                                      Fill="#777777"
-                                      Data="M8,1 A7,7 0 1 0 8,15 A7,7 0 1 0 8,1 Z M8,3 A5,5 0 1 1 8,13 A5,5 0 1 1 8,3 Z" />
-                            </Viewbox>
-                            <TextBlock x:Name="GatewaySignedInLine"
-                                       Text="Sign in"
-                                       FontSize="11" FontWeight="SemiBold"
-                                       Foreground="#777777"
-                                       TextWrapping="Wrap" MaxWidth="176"
-                                       MaxLines="2" TextTrimming="CharacterEllipsis"
-                                       VerticalAlignment="Center" />
-                        </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="7" VerticalAlignment="Center">
+                        <Ellipse x:Name="GatewayChipDot" Width="8" Height="8"
+                                 Fill="#F0B848" VerticalAlignment="Center" />
+                        <TextBlock x:Name="GatewayChipText"
+                                   Text="Checking Gateway..."
+                                   FontSize="11" FontWeight="SemiBold"
+                                   Foreground="#F0B848"
+                                   VerticalAlignment="Center" />
                     </StackPanel>
                 </Border>
 
@@ -414,6 +392,13 @@
                         </StackPanel>
                     </DockPanel>
                 </Button>
+
+                <!-- Pinned Browsers group (Browsers feature, slice 2): the drivable, signed-in-once
+                     automation browsers on this machine, one row each with a status dot and the single
+                     next action. Sits directly above the pinned Repositories entry. All content is the
+                     Core fold rendered verbatim; the control raises ManageRequested to open
+                     Settings > Browsers. -->
+                <controls:BrowsersRailGroup x:Name="BrowsersRail" DockPanel.Dock="Bottom" />
 
                 <!-- Session list -->
                 <ListBox x:Name="SessionList"

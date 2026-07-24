@@ -257,6 +257,11 @@ public partial class MainWindow : Window
             UpdateRepositoriesBadge();
         }
 
+        // Pinned Browsers group (Browsers feature, slice 2): manage lands on Settings > Browsers,
+        // and its action/failure feedback rides the shared notification strip.
+        BrowsersRail.ManageRequested += (_, _) => _ = OpenSettingsAsync(onBrowsersTab: true);
+        BrowsersRail.Notified += (_, message) => Dispatcher.UIThread.Post(() => ShowNotification(message));
+
         // Wire prompt input text changes for slash command autocomplete
         PromptInput.TextChanged += PromptInput_TextChanged;
         PromptInput.LostFocus += (_, _) => SlashCommandPopup.IsOpen = false;
@@ -662,20 +667,17 @@ public partial class MainWindow : Window
 
         var content = GatewayStatusBoxPresenter.Describe(inputs, _boxGatewayHost, _boxAccountEmail);
 
-        var (bg, border) = BoxColors(content.Visual);
-        GatewayStatusBox.Background = Brush.Parse(bg);
-        GatewayStatusBox.BorderBrush = Brush.Parse(border);
-        PaintCheckLine(GatewayConnectedMarker, GatewayConnectedLine, content.Connected);
-        PaintCheckLine(GatewaySignedInMarker, GatewaySignedInLine, content.SignedIn);
-        // Line 1 names WHICH gateway; when none is selected yet the line is empty and the whole row is
-        // hidden so a brand-new box does not show a marker with no verdict. (Line 2 never goes empty, so
-        // the same rule never collapses the Sign in nudge.)
-        GatewayConnectedRow.IsVisible = !string.IsNullOrEmpty(content.Connected.Text);
-        ToolTip.SetTip(GatewayStatusBox, content.Tooltip);
-        var accessibleName = string.IsNullOrEmpty(content.Connected.Text)
+        // The chip form: the dot and the short verdict carry the state; the two full check lines
+        // (which gateway, which account) live in the tooltip so no information was lost in the slim-down.
+        var (dot, text) = ChipStyle(content.Visual);
+        GatewayChipDot.Fill = Brush.Parse(dot);
+        GatewayChipText.Text = content.ChipText;
+        GatewayChipText.Foreground = Brush.Parse(text);
+        var detail = string.IsNullOrEmpty(content.Connected.Text)
             ? content.SignedIn.Text
             : $"{content.Connected.Text}. {content.SignedIn.Text}";
-        AutomationProperties.SetName(GatewayStatusBox, accessibleName);
+        ToolTip.SetTip(GatewayStatusBox, $"{detail}.\n{content.Tooltip}");
+        AutomationProperties.SetName(GatewayStatusBox, detail);
         AutomationProperties.SetHelpText(GatewayStatusBox, content.Tooltip);
 
         // A missing gateway is NOT an error (a legitimate local-only Director); only the red failure
@@ -720,33 +722,16 @@ public partial class MainWindow : Window
         };
     }
 
-    // The box surface applies colors and glyphs; the presenter's per-line marker state decides which
-    // (spec section 6). Colors live here with the surface, not in the Core presenter.
-    private static void PaintCheckLine(global::Avalonia.Controls.Shapes.Path marker, TextBlock text, GatewayStatusLine line)
+    // The chip surface applies colors; the presenter's visual state decides which (spec section 6).
+    // Colors live here with the surface, not in the Core presenter. Green keeps the text muted (all is
+    // well, nothing shouts); the attention and failure states color the text with the dot.
+    private static (string Dot, string Text) ChipStyle(GatewayStatusBoxVisual visual) => visual switch
     {
-        var (glyph, color) = MarkerStyle(line.Marker);
-        marker.Data = Geometry.Parse(glyph);
-        marker.Fill = Brush.Parse(color);
-        text.Text = line.Text;
-        text.Foreground = Brush.Parse(color);
-    }
-
-    private static (string Glyph, string Color) MarkerStyle(GatewayCheckState marker) => marker switch
-    {
-        GatewayCheckState.Passed => (GatewayIconCheck, "#22C55E"),   // green filled check
-        GatewayCheckState.Working => (GatewayIconRing, "#F0B848"),   // amber ring, in progress
-        GatewayCheckState.Failed => (GatewayIconCross, "#EF4444"),   // red cross, connection failed
-        GatewayCheckState.Pending => (GatewayIconRing, "#F0B848"),   // amber ring, the actionable nudge
-        _ => (GatewayIconRing, "#777777"),                           // muted ring, cannot tell yet
-    };
-
-    private static (string Background, string Border) BoxColors(GatewayStatusBoxVisual visual) => visual switch
-    {
-        GatewayStatusBoxVisual.Green => ("#1B3A2A", "#22C55E"),
-        GatewayStatusBoxVisual.Red => ("#3A1B1B", "#DC2626"),
-        // Amber (needs attention) and Yellow (verifying) share the warm scheme; the line content and
-        // markers carry the distinction (line 1 appends "(Connecting...)" for yellow).
-        _ => ("#3A331B", "#F0B848"),
+        GatewayStatusBoxVisual.Green => ("#22C55E", "#CCCCCC"),
+        GatewayStatusBoxVisual.Red => ("#EF4444", "#EF4444"),
+        // Amber (needs attention) and Yellow (verifying) share the warm scheme; the chip text carries
+        // the distinction ("Sign in" / "No Gateway" versus "Connecting...").
+        _ => ("#F0B848", "#F0B848"),
     };
 
     /// <summary>
@@ -3724,6 +3709,15 @@ public partial class MainWindow : Window
         view.Menu.Items.Add(Item("Gateway Connection (preview)...", OpenGatewayConnectionPreview));
         menu.Items.Add(view);
 
+        // ===== Browsers =====
+        // Top-level on purpose (Browsers feature, slice 2): the drivable-browser capability is a
+        // headline feature and the menu entry is how it advertises itself. Both items land on
+        // Settings > Browsers - the rail group is the everyday launch surface.
+        var browsers = new NativeMenuItem("Browsers") { Menu = new NativeMenu() };
+        browsers.Menu.Items.Add(Item("New Browser...", () => _ = OpenSettingsAsync(onBrowsersTab: true, openBrowserCreate: true)));
+        browsers.Menu.Items.Add(Item("Manage Browsers...", () => _ = OpenSettingsAsync(onBrowsersTab: true)));
+        menu.Items.Add(browsers);
+
         // ===== Tools (alpha only - none of these are verified working yet) =====
         if (alpha)
         {
@@ -3854,22 +3848,35 @@ public partial class MainWindow : Window
     /// <summary>
     /// Open the CC Director Settings dialog. When <paramref name="onGatewayTab"/> is true the
     /// dialog is shown on the Gateway tab (issue #442: the no-Gateway needs-attention indicator
-    /// routes here so the user lands on the field they must set).
+    /// routes here so the user lands on the field they must set). <paramref name="onBrowsersTab"/>
+    /// lands on the Browsers tab (the rail group and the Browsers menu route here), and
+    /// <paramref name="openBrowserCreate"/> also opens its inline new-browser panel.
     /// </summary>
-    private async Task OpenSettingsAsync(bool onGatewayTab = false, bool onToolsTab = false)
+    private async Task OpenSettingsAsync(
+        bool onGatewayTab = false, bool onToolsTab = false,
+        bool onBrowsersTab = false, bool openBrowserCreate = false)
     {
-        FileLog.Write($"[MainWindow] OpenSettingsAsync: onGatewayTab={onGatewayTab}, onToolsTab={onToolsTab}");
+        FileLog.Write($"[MainWindow] OpenSettingsAsync: onGatewayTab={onGatewayTab}, onToolsTab={onToolsTab}, onBrowsersTab={onBrowsersTab}");
         var dialog = new SettingsDialog(ReloadScreenshotsPanelAsync);
+        // Live-sync the pinned rail group with every change made on the Browsers tab, so the rail
+        // behind the open dialog never shows a browser that was just renamed or removed.
+        dialog.BrowsersView.Changed += (_, _) => _ = BrowsersRail.RefreshAsync();
         if (onGatewayTab)
             dialog.SelectGatewayTab();
         else if (onToolsTab)
             dialog.SelectToolsTab();
+        else if (onBrowsersTab)
+            dialog.SelectBrowsersTab(openBrowserCreate);
         await dialog.ShowDialog<bool?>(this);
 
         // The Tools tab can download/repair tools while the dialog is open, so re-run the health
         // check on close - this clears the rail indicator once the toolset is whole again.
         _lastToolHealth = null;
         _ = RefreshToolHealthAsync(force: true);
+
+        // The Browsers tab can create/rename/remove/sign-in browsers; repaint the rail group so the
+        // pinned rows match the moment the dialog closes.
+        _ = BrowsersRail.RefreshAsync();
     }
 
     private async void BtnHelp_Click(object? sender, RoutedEventArgs e)
