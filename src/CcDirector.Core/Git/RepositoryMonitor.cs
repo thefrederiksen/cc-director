@@ -53,6 +53,18 @@ public sealed class RepositoryMonitor
     private long _computeStampCounter;
     private readonly Dictionary<string, long> _publishStamps = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// In-flight compute registrations (ruling R4-3): key -> the start stamps of every compute
+    /// currently in flight for it. A compute's start stamp otherwise lives in a local variable
+    /// until publication, which made a ROWLESS in-flight compute invisible to scan
+    /// reconciliation - the scan observed the path absent, tombstoned nothing (no row), and the
+    /// older compute's later publish resurrected the repository. Every compute registers its
+    /// start stamp here in the same gated region that hands the stamp out, and clears it when
+    /// it publishes or abandons; reconciliation tombstones every unseen key that has a row OR a
+    /// pending compute.
+    /// </summary>
+    private readonly Dictionary<string, List<long>> _pendingComputes = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>True while a scan is in progress.</summary>
     public bool IsScanning { get; private set; }
 
@@ -221,12 +233,21 @@ public sealed class RepositoryMonitor
             foreach (var path in paths)
             {
                 ct.ThrowIfCancellationRequested();
-                var repoLock = GetRepoLock(WorktreeReaperService.NormalizePath(path));
+                var pendingKey = WorktreeReaperService.NormalizePath(path);
+                var repoLock = GetRepoLock(pendingKey);
                 await repoLock.WaitAsync(ct);
                 RepositoryStatus? published;
+                long computeStamp;
+                lock (_gate)
+                {
+                    // The stamp is handed out and the compute REGISTERED as in flight in one
+                    // gated region (ruling R4-3), so a concurrent scan's reconciliation can
+                    // see this compute even before it has published a row.
+                    computeStamp = NextComputeStampLocked();
+                    RegisterPendingComputeLocked(pendingKey, computeStamp);
+                }
                 try
                 {
-                    var computeStamp = NextComputeStamp();
                     var sessions = await FetchLiveSessionsAsync(ct);
                     var status = await _compute(path, sessions, ct);
                     var key = WorktreeReaperService.NormalizePath(status.Path);
@@ -246,6 +267,8 @@ public sealed class RepositoryMonitor
                 }
                 finally
                 {
+                    lock (_gate)
+                        ClearPendingComputeLocked(pendingKey, computeStamp);
                     repoLock.Release();
                 }
                 if (published != null)
@@ -262,7 +285,14 @@ public sealed class RepositoryMonitor
                 if (ct.IsCancellationRequested || !ReferenceEquals(_cts, cts))
                     throw new OperationCanceledException(ct);
                 removed = new List<RepositoryStatus>();
-                foreach (var kv in _byPath.Where(kv => !seen.Contains(kv.Key)).ToList())
+                // Every unseen key with a model row OR a pending in-flight compute gets the
+                // scan's absence tombstone (ruling R4-3): a rowless compute older than the
+                // scan would otherwise be invisible here and publish stale state afterward.
+                var unseenKeys = _byPath.Keys.Where(k => !seen.Contains(k))
+                    .Concat(_pendingComputes.Keys.Where(k => !seen.Contains(k)))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                foreach (var key in unseenKeys)
                 {
                     // A removal is a publish of "absent" (ruling R2-5) stamped with the scan's
                     // START stamp (ruling R3-5). A key whose recorded publish is NEWER than the
@@ -270,11 +300,14 @@ public sealed class RepositoryMonitor
                     // scan enumerated - that publish outranks the removal, so the entry stays.
                     // (A repository genuinely gone is removed by its own gone-path recompute or
                     // by the next scan.)
-                    if (_publishStamps.TryGetValue(kv.Key, out var newest) && newest > scanStartStamp)
+                    if (_publishStamps.TryGetValue(key, out var newest) && newest > scanStartStamp)
                         continue;
-                    _byPath.Remove(kv.Key);
-                    _publishStamps[kv.Key] = scanStartStamp;
-                    removed.Add(kv.Value);
+                    _publishStamps[key] = scanStartStamp;
+                    if (_byPath.TryGetValue(key, out var row))
+                    {
+                        _byPath.Remove(key);
+                        removed.Add(row);
+                    }
                 }
             }
             foreach (var r in removed)
@@ -400,9 +433,17 @@ public sealed class RepositoryMonitor
         var repoLock = GetRepoLock(targetKey);
         await repoLock.WaitAsync(ct);
         RepositoryStatus? published;
+        long computeStamp;
+        lock (_gate)
+        {
+            // Stamp hand-out and in-flight registration are one gated region (ruling R4-3):
+            // a scan that observes this path absent while the compute is still rowless can
+            // tombstone it at reconciliation instead of being resurrected by its late publish.
+            computeStamp = NextComputeStampLocked();
+            RegisterPendingComputeLocked(targetKey, computeStamp);
+        }
         try
         {
-            var computeStamp = NextComputeStamp();
             var sessions = await FetchLiveSessionsAsync(ct);
             var status = await _compute(targetPath, sessions, ct);
             lock (_gate)
@@ -410,6 +451,8 @@ public sealed class RepositoryMonitor
         }
         finally
         {
+            lock (_gate)
+                ClearPendingComputeLocked(targetKey, computeStamp);
             repoLock.Release();
         }
         if (published == null)
@@ -468,6 +511,13 @@ public sealed class RepositoryMonitor
             {
                 if (_byPath.ContainsKey(key) || removedThisScan.Contains(key))
                     continue;
+                // A registered pending compute is DIRECT proof a compute is in flight for this
+                // key (ruling R4-3) - its tombstone must outlive that compute even when the
+                // compute holds a stale reference to an already-evicted semaphore (the
+                // documented single-flight crossover), which the held-semaphore check below
+                // cannot see.
+                if (_pendingComputes.ContainsKey(key))
+                    continue;
                 // A held semaphore is proof a compute is still in flight for this key (ruling
                 // R3-4b): its stamp - a removal tombstone in particular - must survive until
                 // that compute has published and been dropped, however many scans complete in
@@ -489,15 +539,28 @@ public sealed class RepositoryMonitor
             return _repoLocks.ContainsKey(WorktreeReaperService.NormalizePath(path));
     }
 
-    /// <summary>The next compute-start stamp. Callers must NOT hold <see cref="_gate"/>.</summary>
-    private long NextComputeStamp()
-    {
-        lock (_gate)
-            return NextComputeStampLocked();
-    }
-
     /// <summary>The next compute-start stamp. Callers MUST hold <see cref="_gate"/>.</summary>
     private long NextComputeStampLocked() => ++_computeStampCounter;
+
+    /// <summary>Registers a compute as in flight for its key (ruling R4-3). Callers MUST hold
+    /// <see cref="_gate"/> and MUST have taken the stamp in the same gated region.</summary>
+    private void RegisterPendingComputeLocked(string key, long stamp)
+    {
+        if (!_pendingComputes.TryGetValue(key, out var stamps))
+            _pendingComputes[key] = stamps = new List<long>();
+        stamps.Add(stamp);
+    }
+
+    /// <summary>Clears a compute's in-flight registration on publish or abandon (ruling R4-3).
+    /// Callers MUST hold <see cref="_gate"/>.</summary>
+    private void ClearPendingComputeLocked(string key, long stamp)
+    {
+        if (!_pendingComputes.TryGetValue(key, out var stamps))
+            return;
+        stamps.Remove(stamp);
+        if (stamps.Count == 0)
+            _pendingComputes.Remove(key);
+    }
 
     /// <summary>
     /// THE one guarded publish path (ruling R2-5) - every write of a computed status into the

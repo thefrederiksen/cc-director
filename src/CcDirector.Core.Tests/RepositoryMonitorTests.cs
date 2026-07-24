@@ -915,6 +915,55 @@ public class RepositoryMonitorTests
     }
 
     // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 4, ruling R4-3): scan absence tombstones an UNPUBLISHED
+    // in-flight compute. A rowless compute that started before the scan, stayed in flight
+    // while the scan observed the path absent, and publishes only after reconciliation used to
+    // be invisible - its stamp lived in a local variable until publication and reconciliation
+    // visited only model rows, so the late publish resurrected a repository the scan had just
+    // proven absent. In-flight computes are now registered in a pending map, and
+    // reconciliation tombstones every unseen key that has a row OR a pending compute.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Rescan_ObservingAPathAbsent_TombstonesARowlessInFlightCompute()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ccd-rowless-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(System.IO.Path.Combine(dir, ".git"));
+        try
+        {
+            var computeEntered = new TaskCompletionSource();
+            var releaseCompute = new TaskCompletionSource();
+            var monitor = new RepositoryMonitor(
+                enumerate: _ => Array.Empty<string>(), // the scan observes the path ABSENT
+                compute: async (p, _, _) =>
+                {
+                    computeEntered.TrySetResult();
+                    await releaseCompute.Task; // the rowless FIRST-TIME compute stays in flight
+                    return Status(p);
+                }) { LiveSessionsProvider = NoSessions };
+
+            // The model is EMPTY: this is the repository's first-ever compute - no row exists
+            // and nothing has been published for its key. It blocks mid-compute.
+            var firstCompute = monitor.RecomputeOneAsync(dir);
+            await computeEntered.Task;
+
+            // A full scan runs TO COMPLETION - enumeration, reconciliation, eviction - while
+            // the rowless compute is still in flight.
+            await monitor.RescanAsync(new[] { "/r" });
+
+            // The older compute finally publishes - the scan's absence tombstone must outrank
+            // and drop it.
+            releaseCompute.SetResult();
+            await firstCompute;
+
+            Assert.Empty(monitor.Snapshot()); // the repository the scan proved absent stays absent
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
     // REGRESSION (inspection round 2, ruling R2-8): scanning without a live-session source is a
     // programming error and fails LOUDLY. An unwired monitor used to silently publish
     // session-blind safety classifications - an occupied worktree could be marked safe to reap.
