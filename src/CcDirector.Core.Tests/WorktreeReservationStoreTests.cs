@@ -21,7 +21,9 @@ public sealed class WorktreeReservationStoreTests : IDisposable
         dir: _dir,
         ownerPid: 4242,
         ownerStartUtc: OwnerStart,
-        processStartUtc: pid => ownerAlive && pid == 4242 ? OwnerStart : (DateTime?)null);
+        probeOwner: pid => ownerAlive && pid == 4242
+            ? (OwnerState.Alive, OwnerStart)
+            : (OwnerState.Gone, (DateTime?)null));
 
     [Fact]
     public void Reserve_MakesThePathLive_ReleaseRemovesIt()
@@ -47,5 +49,52 @@ public sealed class WorktreeReservationStoreTests : IDisposable
         var live = Store(ownerAlive: false).LiveReservedPaths();
 
         Assert.Empty(live);
+    }
+
+    // FAIL CLOSED (inspection round 5): an owner process that cannot be INSPECTED (access denied,
+    // transient error) must NOT be treated as gone - dropping protection on uncertainty is the unsafe
+    // direction. The reservation is kept and still protects the worktree.
+    [Fact]
+    public void Reservation_WhoseOwnerCannotBeInspected_IsKept_NotPruned()
+    {
+        var wt = Path.Combine(_dir, "wt");
+        Store(ownerAlive: true).Reserve(wt, "sess-1");
+
+        var uninspectable = new WorktreeReservationStore(
+            dir: _dir, ownerPid: 4242, ownerStartUtc: OwnerStart,
+            probeOwner: _ => (OwnerState.Unknown, (DateTime?)null));
+
+        Assert.Contains(WorktreeReaperService.NormalizePath(wt), uninspectable.LiveReservedPaths());
+    }
+
+    // FAIL CLOSED (inspection round 5): a reused pid whose start time no longer matches means the
+    // original owner is gone - the reservation is stale and pruned.
+    [Fact]
+    public void Reservation_WhoseOwnerPidWasReused_IsPruned()
+    {
+        var wt = Path.Combine(_dir, "wt");
+        Store(ownerAlive: true).Reserve(wt, "sess-1");
+
+        var reused = new WorktreeReservationStore(
+            dir: _dir, ownerPid: 4242, ownerStartUtc: OwnerStart,
+            probeOwner: _ => (OwnerState.Alive, OwnerStart.AddHours(6))); // alive, but different start
+
+        Assert.Empty(reused.LiveReservedPaths());
+    }
+
+    // The machine-wide critical section is mutually exclusive across store instances on the same dir -
+    // this is what serializes a reservation write against the reaper's remove.
+    [Fact]
+    public void EnterCriticalSection_IsMutuallyExclusive_AcrossInstances()
+    {
+        var a = Store();
+        var b = Store();
+
+        using (a.EnterCriticalSection(TimeSpan.FromSeconds(1)))
+        {
+            Assert.Throws<TimeoutException>(() => b.EnterCriticalSection(TimeSpan.FromMilliseconds(150)));
+        }
+        // Released - now it can be acquired.
+        using (b.EnterCriticalSection(TimeSpan.FromSeconds(1))) { }
     }
 }

@@ -261,6 +261,14 @@ public static class CcStorage
     /// <summary>Terminal screen captures: base/terminal-captures/.</summary>
     public static string TerminalCaptures() => Path.Combine(Base(), "terminal-captures");
 
+    /// <summary>Machine-local reservations a live session holds on its worktree so the worktree reaper
+    /// (in any Director slot) will not delete the folder under it: base/worktree-reservations/.</summary>
+    public static string WorktreeReservations() => Path.Combine(Base(), "worktree-reservations");
+
+    /// <summary>Machine-local record of worktree folders git deregistered but could not physically
+    /// delete (a locked build output), retried on a later reap: base/worktree-leftovers/.</summary>
+    public static string WorktreeLeftovers() => Path.Combine(Base(), "worktree-leftovers");
+
     /// <summary>WebView2 user-data directory for the card renderer: base/webview2-card/.</summary>
     public static string WebView2Card() => Path.Combine(Base(), "webview2-card");
 

@@ -1,57 +1,114 @@
+using System.Diagnostics;
 using System.Text.Json;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Git;
 
+/// <summary>Whether a reservation's owning Director process could be found.</summary>
+public enum OwnerState
+{
+    /// <summary>The process exists (start time follows for a pid-reuse check).</summary>
+    Alive,
+    /// <summary>The process definitively does not exist - the reservation is stale.</summary>
+    Gone,
+    /// <summary>The process could not be inspected (access denied, transient error) - we must NOT
+    /// conclude it is gone. Treated as still-live so protection is never dropped on uncertainty.</summary>
+    Unknown,
+}
+
 /// <summary>
-/// A machine-local, synchronous reservation a session holds on its working directory while it is
-/// alive - the coordination the destructive worktree reaper needs and the Gateway roster cannot
-/// provide (inspection). A worktree is a LOCAL folder, so only sessions on THIS machine can be in
-/// it; when ANY Director slot launches a session it writes a reservation here, and the reaper (in
-/// any slot) refuses to remove a worktree that a live reservation covers. Because it is a local
-/// filesystem write taken AT LAUNCH, there is no Gateway propagation delay and no partial-roster
-/// window: a session that has started has already reserved its worktree before the reaper could see
-/// it, and a session in a SUBDIRECTORY reserves and protects the whole worktree.
+/// A machine-local reservation a session holds on its working directory while it is alive - the
+/// coordination the destructive worktree reaper needs and the Gateway roster cannot provide
+/// (inspection). A worktree is a LOCAL folder, so only sessions on THIS machine can be in it; when
+/// any Director slot launches a session it writes a reservation here BEFORE the process starts, and
+/// the reaper (in any slot) refuses to remove a worktree that a live reservation covers.
 ///
-/// Crash safety: a reservation records the OWNING Director's process id and start time. Sessions are
-/// children of their Director, so if that Director process is gone the sessions are gone too and the
-/// reservation is stale - any reader prunes it. A missed <see cref="Release"/> while the Director is
-/// still alive only OVER-protects (a worktree is spared until the Director restarts), which is the
-/// safe direction.
+/// EXCLUSION, not just a snapshot (inspection round 5). The reserve-write and the reaper's
+/// "read reservations then remove" are serialized by a machine-wide lock file
+/// (<see cref="EnterCriticalSection"/>), so there is no check-to-remove gap: either a session's
+/// reservation is written before the reaper reads (it is protected) or the reaper finishes removing
+/// before the reservation is written (the session launches into an already-gone worktree and fails,
+/// which is correct). Combined with reserve-BEFORE-launch ordering, a started session has always
+/// reserved its worktree before the reaper could act.
+///
+/// FAIL CLOSED (inspection round 5). Every uncertainty resolves toward keeping protection: an owner
+/// process that cannot be inspected is treated as live (<see cref="OwnerState.Unknown"/>), and an
+/// enumeration failure THROWS so the reaper aborts rather than acting on an empty set. Only a
+/// definitively-gone owner (or a reused pid whose start time no longer matches) prunes a reservation.
 /// </summary>
 public sealed class WorktreeReservationStore
 {
     private readonly string _dir;
     private readonly int _ownerPid;
     private readonly DateTime _ownerStartUtc;
-    private readonly Func<int, DateTime?> _processStartUtc;
+    private readonly Func<int, (OwnerState State, DateTime? StartUtc)> _probeOwner;
+
+    /// <summary>How long to wait for the machine-wide reap lock before giving up.</summary>
+    private static readonly TimeSpan LockWait = TimeSpan.FromSeconds(30);
 
     /// <param name="dir">Reservation directory (defaults to the machine-local cc-director path).</param>
     /// <param name="ownerPid">This Director's process id (test seam; defaults to the current process).</param>
     /// <param name="ownerStartUtc">This Director's process start time (test seam).</param>
-    /// <param name="processStartUtc">Returns a pid's start time in UTC, or null when the process is not
-    /// alive (test seam; defaults to a real process lookup).</param>
+    /// <param name="probeOwner">Probes a pid: whether it exists and its start time (test seam;
+    /// defaults to a real process lookup).</param>
     public WorktreeReservationStore(
         string? dir = null,
         int? ownerPid = null,
         DateTime? ownerStartUtc = null,
-        Func<int, DateTime?>? processStartUtc = null)
+        Func<int, (OwnerState State, DateTime? StartUtc)>? probeOwner = null)
     {
         _dir = dir ?? DefaultDir();
-        var self = System.Diagnostics.Process.GetCurrentProcess();
+        var self = Process.GetCurrentProcess();
         _ownerPid = ownerPid ?? self.Id;
         _ownerStartUtc = ownerStartUtc ?? self.StartTime.ToUniversalTime();
-        _processStartUtc = processStartUtc ?? DefaultProcessStartUtc;
+        _probeOwner = probeOwner ?? DefaultProbe;
     }
 
-    private static string DefaultDir() => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "cc-director", "worktree-reservations");
+    private static string DefaultDir() => CcStorage.WorktreeReservations();
 
     private sealed record Reservation(string WorktreePath, int OwnerPid, DateTime OwnerStartUtc, string SessionId);
 
-    /// <summary>Reserve <paramref name="workingDirectory"/> for a live session. Best-effort - never
-    /// throws into the session lifecycle.</summary>
+    /// <summary>
+    /// Acquire the machine-wide lock that serializes reservation writes against the reaper's
+    /// read-then-remove. The reaper wraps its per-worktree reservation check plus the destructive git
+    /// removal in this; <see cref="Reserve"/> takes it around its write. Cross-process via a lock file
+    /// (released automatically if the holder dies). Throws <see cref="TimeoutException"/> if it cannot
+    /// be acquired within the wait - the reaper treats that as fail-closed and removes nothing.
+    /// </summary>
+    public IDisposable EnterCriticalSection() => EnterCriticalSection(LockWait);
+
+    public IDisposable EnterCriticalSection(TimeSpan timeout)
+    {
+        Directory.CreateDirectory(_dir);
+        var lockPath = Path.Combine(_dir, ".reap.lock");
+        var sw = Stopwatch.StartNew();
+        while (true)
+        {
+            try
+            {
+                var fs = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+                return new Releaser(fs);
+            }
+            catch (IOException)
+            {
+                if (sw.Elapsed >= timeout)
+                    throw new TimeoutException($"could not acquire the worktree-reap lock within {timeout.TotalSeconds:0}s");
+                Thread.Sleep(15);
+            }
+        }
+    }
+
+    private sealed class Releaser : IDisposable
+    {
+        private FileStream? _fs;
+        public Releaser(FileStream fs) => _fs = fs;
+        public void Dispose() { try { _fs?.Dispose(); } catch { } finally { _fs = null; } }
+    }
+
+    /// <summary>Reserve <paramref name="workingDirectory"/> for a live session, holding the machine-wide
+    /// lock so the write is serialized against the reaper. Best-effort - never throws into the session
+    /// lifecycle. Written atomically (temp + move) so a reader never sees a partial record.</summary>
     public void Reserve(string workingDirectory, string sessionId)
     {
         if (string.IsNullOrWhiteSpace(workingDirectory) || string.IsNullOrWhiteSpace(sessionId))
@@ -60,7 +117,14 @@ public sealed class WorktreeReservationStore
         {
             Directory.CreateDirectory(_dir);
             var row = new Reservation(WorktreeReaperService.NormalizePath(workingDirectory), _ownerPid, _ownerStartUtc, sessionId);
-            File.WriteAllText(FileFor(sessionId), JsonSerializer.Serialize(row));
+            var json = JsonSerializer.Serialize(row);
+            using (EnterCriticalSection())
+            {
+                var final = FileFor(sessionId);
+                var tmp = final + ".tmp";
+                File.WriteAllText(tmp, json);
+                File.Move(tmp, final, overwrite: true);
+            }
         }
         catch (Exception ex)
         {
@@ -87,7 +151,9 @@ public sealed class WorktreeReservationStore
 
     /// <summary>
     /// The normalized worktree paths currently reserved by a LIVE session (its owning Director is
-    /// alive). Prunes reservations whose owning Director is gone as it reads.
+    /// alive). Prunes reservations whose owning Director is DEFINITIVELY gone as it reads. THROWS if
+    /// the reservation directory cannot be enumerated, so the reaper fails closed rather than treating
+    /// an unreadable store as "no reservations".
     /// </summary>
     public IReadOnlySet<string> LiveReservedPaths()
     {
@@ -95,9 +161,9 @@ public sealed class WorktreeReservationStore
         if (!Directory.Exists(_dir))
             return live;
 
-        string[] files;
-        try { files = Directory.GetFiles(_dir, "*.json"); }
-        catch (Exception ex) { FileLog.Write($"[WorktreeReservationStore] enumerate failed: {ex.Message}"); return live; }
+        // A failure to enumerate is NOT "no reservations" - it is "cannot tell", which must abort the
+        // reap. Let it propagate (the reaper catches it and fails closed).
+        var files = Directory.GetFiles(_dir, "*.json");
 
         foreach (var file in files)
         {
@@ -106,20 +172,40 @@ public sealed class WorktreeReservationStore
             catch { r = null; }
             if (r is null || string.IsNullOrWhiteSpace(r.WorktreePath))
             {
-                TryDelete(file);
+                // An unreadable/corrupt record: we cannot know what it protects, so we do NOT delete it
+                // (deleting would silently drop protection) and it simply contributes nothing this pass.
                 continue;
             }
 
-            var start = _processStartUtc(r.OwnerPid);
-            // Alive when the owning Director's pid exists AND its start time matches (guards against a
-            // reused pid). If the start time cannot be read at all we keep the reservation (fail safe).
-            bool alive = start is null
-                ? false
-                : Math.Abs((start.Value - r.OwnerStartUtc).TotalSeconds) < 2;
+            var (state, start) = _probeOwner(r.OwnerPid);
+            bool alive;
+            bool definitivelyGone = false;
+            switch (state)
+            {
+                case OwnerState.Gone:
+                    alive = false;
+                    definitivelyGone = true; // the owning Director is gone - its sessions are gone too
+                    break;
+                case OwnerState.Unknown:
+                    alive = true; // cannot inspect - keep protection (fail safe), do NOT prune
+                    break;
+                default: // Alive
+                    if (start is null)
+                        alive = true; // exists but start unreadable - keep (fail safe)
+                    else if (Math.Abs((start.Value - r.OwnerStartUtc).TotalSeconds) < 2)
+                        alive = true; // our owner
+                    else
+                    {
+                        alive = false; // the pid was reused by a different process - original owner gone
+                        definitivelyGone = true;
+                    }
+                    break;
+            }
+
             if (alive)
                 live.Add(r.WorktreePath);
-            else
-                TryDelete(file); // the Director is gone, so its sessions are gone - stale
+            else if (definitivelyGone)
+                TryDelete(file); // prune ONLY when we are certain the owner is gone
         }
         return live;
     }
@@ -136,16 +222,20 @@ public sealed class WorktreeReservationStore
         try { File.Delete(file); } catch { /* another reader won the race - fine */ }
     }
 
-    private static DateTime? DefaultProcessStartUtc(int pid)
+    private static (OwnerState, DateTime?) DefaultProbe(int pid)
     {
         try
         {
-            using var p = System.Diagnostics.Process.GetProcessById(pid);
-            return p.StartTime.ToUniversalTime();
+            using var p = Process.GetProcessById(pid);
+            return (OwnerState.Alive, p.StartTime.ToUniversalTime());
+        }
+        catch (ArgumentException)
+        {
+            return (OwnerState.Gone, null); // no such process - definitively gone
         }
         catch
         {
-            return null; // not running (or not inspectable) - treat as gone
+            return (OwnerState.Unknown, null); // could not inspect - do NOT conclude gone
         }
     }
 }

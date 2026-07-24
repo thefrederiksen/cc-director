@@ -653,6 +653,14 @@ public sealed class SessionManager : IDisposable
             if (!string.Equals(launchExe, resolvedExe, StringComparison.OrdinalIgnoreCase))
                 _log?.Invoke($"Launching '{resolvedExe}' via shell: {launchExe} {launchArgs}");
 
+            // Reserve the worktree BEFORE the process starts (inspection round 5). The reserve-write is
+            // serialized against the reaper's remove by a machine-wide lock, so a reaper can never
+            // observe this running process without also observing its reservation - closing the
+            // launch-versus-reap race. RaiseSessionCreated re-reserves (idempotent) for the other
+            // creation routes (restore, web Control API) that do not pass through this launch path.
+            if (!string.IsNullOrWhiteSpace(repoPath) && Directory.Exists(repoPath))
+                _reservations.Reserve(repoPath, id.ToString());
+
             // Get initial terminal dimensions (default 120x30)
             backend.Start(launchExe, launchArgs, repoPath, 120, 30, envVars);
             session.MarkRunning();

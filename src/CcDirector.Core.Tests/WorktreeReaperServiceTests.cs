@@ -477,7 +477,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         // ...but the reaper reads through a store whose owner-liveness lookup reports pid 7777 gone.
         var deadOwnerStore = new WorktreeReservationStore(
             dir: resvDir, ownerPid: 7777, ownerStartUtc: ReservationOwnerStart,
-            processStartUtc: _ => (DateTime?)null);
+            probeOwner: _ => (OwnerState.Gone, (DateTime?)null));
 
         var result = await new WorktreeReaperService(leftovers: _leftovers, utcNow: Later, reservations: deadOwnerStore)
             .ReapAsync(_primary, NoSessions);
@@ -520,14 +520,78 @@ public sealed class WorktreeReaperServiceTests : IDisposable
             Assert.Contains(safe, first.Leftovers);
             Assert.True(Directory.Exists(safe), "the locked folder remains after the first reap");
         }
-        Assert.Contains(normalizedSafe, _leftovers.All());
+        Assert.Contains(_leftovers.All(), r => WorktreeReaperService.NormalizePath(r.Path) == normalizedSafe);
 
         // Lock released. A later reap - even with nothing new to remove - retries the persisted
         // leftover, finishes the delete, and drops the record.
         var second = await new WorktreeReaperService(leftovers: _leftovers, utcNow: Later).ReapAsync(_primary, NoSessions);
 
         Assert.False(Directory.Exists(safe), "the persisted leftover is retried and removed once unlocked");
-        Assert.DoesNotContain(normalizedSafe, _leftovers.All());
+        Assert.DoesNotContain(_leftovers.All(), r => WorktreeReaperService.NormalizePath(r.Path) == normalizedSafe);
+    }
+
+    // REGRESSION (inspection round 5): a persisted leftover path must NEVER be deleted if git registers
+    // a worktree there again - the owner created a new worktree at the same pathname and it may hold
+    // uncommitted work. The retry drops the stale record instead of deleting the live worktree.
+    [Fact]
+    public async Task Reap_LeftoverRetry_NeverDeletesANewWorktreeReusingThePath()
+    {
+        var reused = Path.Combine(_root, "reused-path");
+        var normalized = WorktreeReaperService.NormalizePath(reused);
+        // Record a leftover for this repo at that path (as if a prior reap deregistered it there).
+        _leftovers.Add(normalized, WorktreeReaperService.NormalizePath(_primary));
+
+        // The owner now creates a brand-new git worktree at the SAME path, with uncommitted work.
+        RunGit(_primary, "worktree", "add", "-b", "reused", reused, "main");
+        WriteFile(reused, "precious.txt", "uncommitted work\n");
+
+        var result = await new WorktreeReaperService(leftovers: _leftovers, utcNow: Later).ReapAsync(_primary, NoSessions);
+
+        Assert.True(Directory.Exists(reused), "a re-created worktree at a former leftover path must not be deleted");
+        Assert.True(File.Exists(Path.Combine(reused, "precious.txt")), "the new worktree's uncommitted work must survive");
+        Assert.DoesNotContain(_leftovers.All(), r => WorktreeReaperService.NormalizePath(r.Path) == normalized);
+    }
+
+    // REGRESSION (inspection round 5): a session reaching a worktree through a junction/symlink alias
+    // must still protect it. Lexical normalization would leave the alias path unmatched against the
+    // real worktree path git lists, so the live worktree could be reaped. NormalizePath resolves both
+    // to the real path, so the match holds.
+    [Fact]
+    public async Task Reap_ResolvesAJunctionAlias_SoASessionReachingAWorktreeThroughItProtectsIt()
+    {
+        if (!OperatingSystem.IsWindows())
+            return; // junctions are a Windows concept
+
+        var safe = AddSafeWorktree("aliased");
+        Directory.CreateDirectory(Path.Combine(safe, "src")); // the subdir the session sits in
+        var alias = Path.Combine(_root, "alias-aliased");
+        RunCmd($"mklink /J \"{alias}\" \"{safe}\""); // junction (no admin needed)
+
+        var sessionThroughAlias = Path.Combine(alias, "src");
+        var result = await new WorktreeReaperService(leftovers: _leftovers, utcNow: Later)
+            .ReapAsync(_primary, SessionsIn(sessionThroughAlias));
+
+        Assert.Equal(0, result.RemovedCount);
+        Assert.True(Directory.Exists(safe), "a session reaching the worktree via a junction alias must protect it");
+    }
+
+    private static void RunCmd(string command)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = "cmd.exe",
+            Arguments = "/c " + command,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        using var p = Process.Start(psi)!;
+        p.StandardOutput.ReadToEnd();
+        var err = p.StandardError.ReadToEnd();
+        p.WaitForExit();
+        if (p.ExitCode != 0)
+            throw new InvalidOperationException($"cmd /c {command} failed (exit {p.ExitCode}): {err}");
     }
 
     private static readonly DateTime ReservationOwnerStart = new(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
@@ -537,7 +601,9 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         dir: dir,
         ownerPid: 7777,
         ownerStartUtc: ReservationOwnerStart,
-        processStartUtc: pid => pid == 7777 ? ReservationOwnerStart : (DateTime?)null);
+        probeOwner: pid => pid == 7777
+            ? (OwnerState.Alive, ReservationOwnerStart)
+            : (OwnerState.Gone, (DateTime?)null));
 
     // ----- helpers -----
 

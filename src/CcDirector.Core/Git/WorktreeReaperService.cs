@@ -174,16 +174,11 @@ public sealed class WorktreeReaperService
                 ? null
                 : new HashSet<string>(approvedPaths.Select(NormalizePath), StringComparer.OrdinalIgnoreCase);
 
-            // The machine-local reservations: a session on ANY Director slot holds one on its working
-            // directory while alive (inspection). This is the guarantee the roster only approximates -
-            // it is written at launch, so it has no propagation delay and no partial-fleet window, and
-            // it protects the whole worktree even when the session sits in a subdirectory.
-            var reservedPaths = _reservations.LiveReservedPaths();
-
             // Retry folders a PAST reap deregistered but could not physically delete (a locked build
             // output). git no longer lists them as worktrees, so no inventory can rediscover them -
-            // without this they leak forever despite the UI promising a retry (inspection round 4).
-            RetryPersistedLeftovers(reservedPaths, ct);
+            // without this they leak forever despite the UI promising a retry (inspection round 4). The
+            // retry re-reads reservations and re-checks git registration under the lock (round 5).
+            await RetryPersistedLeftovers(repositoryPath, ct);
 
             var outcomes = new List<ReapOutcome>();
             // Worktrees held back because a live session is running in them - reported so the user
@@ -234,14 +229,19 @@ public sealed class WorktreeReaperService
                 }
                 catch (OperationCanceledException)
                 {
-                    throw;
+                    // The caller superseded us. Preserve the record of what was already removed
+                    // (inspection round 5) - a bare cancellation that discarded completed destructive
+                    // deletes would hide them. Prune with a non-cancellable token so cleanup still runs.
+                    FileLog.Write($"[WorktreeReaperService] ReapAsync cancelled before re-confirming live sessions for {worktree.Path}");
+                    await _git.RunAsync(repositoryPath, new[] { "worktree", "prune" }, CancellationToken.None);
+                    return BuildResult($"reap cancelled after removing {outcomes.Count(o => o.Removed)} worktree(s)");
                 }
                 catch (Exception ex)
                 {
                     FileLog.Write($"[WorktreeReaperService] ReapAsync aborted - could not re-confirm live sessions before removing {worktree.Path}: {ex.Message}");
                     // Preserve what was already removed (inspection): prune, then report the outcomes
                     // so far plus the abort reason - never discard the record of a completed delete.
-                    await _git.RunAsync(repositoryPath, new[] { "worktree", "prune" }, ct);
+                    await _git.RunAsync(repositoryPath, new[] { "worktree", "prune" }, CancellationToken.None);
                     return BuildResult($"reap aborted after removing {outcomes.Count(o => o.Removed)} worktree(s) - could not re-confirm live sessions before removing {worktree.Path}: {ex.Message}");
                 }
                 if (RosterProtects(normalized, rosterNow))
@@ -251,19 +251,11 @@ public sealed class WorktreeReaperService
                     continue;
                 }
 
-                // The hard guard: a machine-local reservation from a live session (this slot or
-                // another) protects the worktree with no roster propagation delay.
-                if (reservedPaths.Any(p => PathCoversWorktree(normalized, p)))
-                {
-                    FileLog.Write($"[WorktreeReaperService] SKIP (a live session reservation covers it): {worktree.Path}");
-                    skipped.Add(normalized);
-                    continue;
-                }
-
                 // Cooling-off (owner's suggestion): hold back a worktree touched within the last
                 // few minutes. A live session working here keeps touching files, so recent activity
                 // is a cheap, roster-independent guard against deleting one that is in use - covering
-                // the split-second where a just-started session is not on the roster yet.
+                // the split-second where a just-started session is not on the roster yet. Cheap, so
+                // done before taking the lock.
                 if (worktree.LastActivityUtc is { } activity && _utcNow() - activity < ActivityCoolingOff)
                 {
                     FileLog.Write($"[WorktreeReaperService] SKIP (touched within the cooling-off window - may be in use): {worktree.Path}");
@@ -271,7 +263,49 @@ public sealed class WorktreeReaperService
                     continue;
                 }
 
-                outcomes.Add(await RemoveOneAsync(repositoryPath, worktree, ct));
+                // THE HARD GUARANTEE (inspection round 5). Enter the machine-wide critical section that
+                // serializes a session-launch reservation write against this reservation check PLUS the
+                // destructive removal. Either a session reserved this worktree before we read (we see it
+                // and skip) or it cannot reserve until after we finish removing (it then launches into
+                // an already-gone worktree, which fails - correct). There is no check-to-remove gap.
+                try
+                {
+                    using var crit = _reservations.EnterCriticalSection();
+
+                    // Re-read reservations INSIDE the lock, as late as possible. A read failure is
+                    // "cannot tell", not "none": it FAILS CLOSED and aborts the reap.
+                    IReadOnlySet<string> reservedNow;
+                    try
+                    {
+                        reservedNow = _reservations.LiveReservedPaths();
+                    }
+                    catch (Exception ex)
+                    {
+                        FileLog.Write($"[WorktreeReaperService] ReapAsync aborted - could not read live reservations before removing {worktree.Path}: {ex.Message}");
+                        await _git.RunAsync(repositoryPath, new[] { "worktree", "prune" }, CancellationToken.None);
+                        return BuildResult($"reap aborted after removing {outcomes.Count(o => o.Removed)} worktree(s) - could not confirm live reservations before removing {worktree.Path}: {ex.Message}");
+                    }
+
+                    if (reservedNow.Any(p => PathCoversWorktree(normalized, p)))
+                    {
+                        FileLog.Write($"[WorktreeReaperService] SKIP (a live session reservation covers it): {worktree.Path}");
+                        skipped.Add(normalized);
+                        continue;
+                    }
+
+                    outcomes.Add(await RemoveOneAsync(repositoryPath, worktree, ct));
+                }
+                catch (OperationCanceledException)
+                {
+                    FileLog.Write($"[WorktreeReaperService] ReapAsync cancelled around removing {worktree.Path}");
+                    await _git.RunAsync(repositoryPath, new[] { "worktree", "prune" }, CancellationToken.None);
+                    return BuildResult($"reap cancelled after removing {outcomes.Count(o => o.Removed)} worktree(s)");
+                }
+                catch (TimeoutException ex)
+                {
+                    FileLog.Write($"[WorktreeReaperService] ReapAsync aborted - could not acquire the worktree-reap lock before removing {worktree.Path}: {ex.Message}");
+                    return BuildResult($"reap aborted after removing {outcomes.Count(o => o.Removed)} worktree(s) - could not acquire the worktree-reap lock before removing {worktree.Path}: {ex.Message}");
+                }
             }
 
             // One prune at the end clears any admin entries whose directories are now gone.
@@ -299,7 +333,11 @@ public sealed class WorktreeReaperService
         if (!string.IsNullOrWhiteSpace(status.Output))
             return ReapOutcome.Failed(worktree, "worktree became dirty after the safety scan - not removed");
 
-        var remove = await _git.RunAsync(repositoryPath, new[] { "worktree", "remove", worktree.Path }, ct);
+        // From here the operation is destructive and must run to completion - a cancellation that
+        // killed git mid-remove would leave a deregistered, half-erased worktree that no inventory
+        // and no leftover record could recover (inspection round 5). So the removal and every git call
+        // after it use CancellationToken.None; cancellation is honoured only BETWEEN worktrees.
+        var remove = await _git.RunAsync(repositoryPath, new[] { "worktree", "remove", worktree.Path }, CancellationToken.None);
 
         // Cleanly removed: git deregistered the worktree and the folder is gone.
         if (remove.Success && !Directory.Exists(worktree.Path))
@@ -316,7 +354,7 @@ public sealed class WorktreeReaperService
         //       leftover files remain - all committed or ignored - and finishing the delete is safe.
         // The discriminator is whether git still lists this path as a worktree: (a) keeps it
         // registered, (b) removes the registration. We fail closed on any inability to tell.
-        var list = await _git.RunAsync(repositoryPath, new[] { "worktree", "list", "--porcelain" }, ct);
+        var list = await _git.RunAsync(repositoryPath, new[] { "worktree", "list", "--porcelain" }, CancellationToken.None);
         if (!list.Success)
         {
             FileLog.Write($"[WorktreeReaperService] could not enumerate worktrees to confirm removal of {worktree.Path}: {list.Error.Trim()} - left in place");
@@ -333,7 +371,7 @@ public sealed class WorktreeReaperService
             // submodule, and so on. We RESPECT git's refusal and never force-delete a worktree git
             // still owns (inspection: this must not bypass "git worktree lock"). Re-check only to give
             // the clearest message; the outcome is "left untouched" either way.
-            var recheck = await _git.RunAsync(worktree.Path, new[] { "status", "--porcelain" }, ct);
+            var recheck = await _git.RunAsync(worktree.Path, new[] { "status", "--porcelain" }, CancellationToken.None);
             if (recheck.Success && !string.IsNullOrWhiteSpace(recheck.Output))
             {
                 FileLog.Write($"[WorktreeReaperService] {worktree.Path} became dirty in the remove window - left in place, not force-deleted");
@@ -347,49 +385,96 @@ public sealed class WorktreeReaperService
         // every file - only leftover ignored/build outputs remain, and finishing the physical delete
         // loses nothing that was tracked or uncommitted.
         FileLog.Write($"[WorktreeReaperService] folder remains after git deregistered {worktree.Path} (git success={remove.Success}); finishing physical delete");
+        var normalizedLeft = NormalizePath(worktree.Path);
+        // Record the leftover BEFORE attempting the physical delete (inspection round 5): git has
+        // already deregistered it, so if this process died mid-delete with no record, no inventory
+        // could ever rediscover the folder. Recorded first, a crash simply retries next reap. If the
+        // delete fully succeeds we drop the record just below.
+        _leftovers.Add(normalizedLeft, repositoryPath);
         TryDeleteDirectory(worktree.Path);
-        await _git.RunAsync(repositoryPath, new[] { "worktree", "prune" }, ct);
+        await _git.RunAsync(repositoryPath, new[] { "worktree", "prune" }, CancellationToken.None);
 
         if (!Directory.Exists(worktree.Path))
+        {
+            _leftovers.Remove(normalizedLeft); // fully deleted - nothing to retry
             return ReapOutcome.RemovedOk(worktree);
+        }
 
         FileLog.Write($"[WorktreeReaperService] LEFTOVER (locked files remain): {worktree.Path}");
-        // Persist it so a later reap can finish the delete once the lock is released - git has already
-        // deregistered it, so no future inventory would ever surface it again (inspection round 4).
-        _leftovers.Add(NormalizePath(worktree.Path));
         return ReapOutcome.LeftBehind(worktree);
     }
 
     /// <summary>
-    /// Retry the physical delete of folders a past reap deregistered but could not fully remove. A
-    /// leftover whose folder is already gone (finished by a prior retry, or removed by hand) is
-    /// dropped; one a live reservation now covers is left strictly alone; one that deletes cleanly is
-    /// dropped; one still locked stays for the next attempt. These folders are already deregistered
-    /// from git and hold only ignored/build outputs, so finishing the delete loses nothing tracked.
+    /// Retry the physical delete of folders a past reap deregistered but could not fully remove, for
+    /// the repository being reaped. Each candidate is checked, under the machine-wide lock, against
+    /// three ways it must NOT be deleted (inspection round 5): git registers the path as a worktree
+    /// AGAIN (the owner created a new worktree there - drop the stale record, never delete), a live
+    /// session reservation covers it (leave it entirely alone), or the folder is already gone (drop
+    /// it). Only a path that is still an unregistered, unreserved, existing orphan is deleted - and
+    /// those hold only ignored/build outputs, so finishing the delete loses nothing tracked. A
+    /// reservation read or lock failure skips the retry entirely rather than deleting blind.
     /// </summary>
-    private void RetryPersistedLeftovers(IReadOnlySet<string> reservedPaths, CancellationToken ct)
+    private async Task RetryPersistedLeftovers(string repositoryPath, CancellationToken ct)
     {
-        foreach (var path in _leftovers.All())
+        var repoNorm = NormalizePath(repositoryPath);
+        var mine = _leftovers.All()
+            .Where(r => string.Equals(NormalizePath(r.RepositoryPath), repoNorm, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (mine.Count == 0)
+            return;
+
+        // The paths git STILL registers as a worktree of this repo. A leftover matching one is a NEW
+        // worktree at the same pathname, never to be deleted.
+        var registered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var list = await _git.RunAsync(repositoryPath, new[] { "worktree", "list", "--porcelain" }, CancellationToken.None);
+        if (list.Success)
+            foreach (var e in WorktreeListParser.Parse(list.Output))
+                registered.Add(NormalizePath(e.Path));
+
+        IDisposable crit;
+        try { crit = _reservations.EnterCriticalSection(); }
+        catch (Exception ex)
         {
-            ct.ThrowIfCancellationRequested();
-
-            // Never touch a folder a live session has (re)reserved - the safe direction.
-            if (reservedPaths.Any(p => PathCoversWorktree(path, p)))
-                continue;
-
-            if (!Directory.Exists(path))
+            FileLog.Write($"[WorktreeReaperService] leftover retry skipped - could not acquire the reap lock: {ex.Message}");
+            return;
+        }
+        using (crit)
+        {
+            IReadOnlySet<string> reservedNow;
+            try { reservedNow = _reservations.LiveReservedPaths(); }
+            catch (Exception ex)
             {
-                _leftovers.Remove(path); // already gone - a prior retry finished it, or the owner did
-                continue;
+                FileLog.Write($"[WorktreeReaperService] leftover retry skipped - could not read live reservations: {ex.Message}");
+                return;
             }
 
-            TryDeleteDirectory(path);
-            if (!Directory.Exists(path))
+            foreach (var leftover in mine)
             {
-                FileLog.Write($"[WorktreeReaperService] retried leftover deleted (lock cleared): {path}");
-                _leftovers.Remove(path);
+                ct.ThrowIfCancellationRequested();
+                var path = leftover.Path;
+
+                if (registered.Contains(path))
+                {
+                    FileLog.Write($"[WorktreeReaperService] leftover {path} is a registered worktree again - not deleting; dropping the stale record");
+                    _leftovers.Remove(path);
+                    continue;
+                }
+                if (reservedNow.Any(p => PathCoversWorktree(path, p)))
+                    continue; // a live session (re)entered it - leave it entirely alone
+                if (!Directory.Exists(path))
+                {
+                    _leftovers.Remove(path); // already gone - a prior retry finished it, or the owner did
+                    continue;
+                }
+
+                TryDeleteDirectory(path);
+                if (!Directory.Exists(path))
+                {
+                    FileLog.Write($"[WorktreeReaperService] retried leftover deleted (lock cleared): {path}");
+                    _leftovers.Remove(path);
+                }
+                // else: still locked - keep it persisted and retry on the next reap.
             }
-            // else: still locked - keep it persisted and retry on the next reap.
         }
     }
 
@@ -433,16 +518,80 @@ public sealed class WorktreeReaperService
         => string.Equals(normalizedSessionPath, normalizedWorktree, StringComparison.OrdinalIgnoreCase)
            || normalizedSessionPath.StartsWith(normalizedWorktree + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Full-path, trailing-separator-trimmed form used to compare worktree paths across git and the OS.</summary>
+    /// <summary>
+    /// Canonical, trailing-separator-trimmed form used to compare worktree paths across git and the OS.
+    /// When the path EXISTS it is resolved to its real filesystem path (inspection round 5): a session
+    /// reaching a worktree through a junction or symlink alias (e.g. D:\aliases\W\src -> D:\repos\W)
+    /// would otherwise normalize to the alias while git lists the real target, so neither the roster
+    /// nor the reservation guard would match and the live worktree could be reaped. Resolving both
+    /// sides to the real path closes that alias bypass. A path that does not exist (or cannot be
+    /// opened) falls back to lexical Path.GetFullPath.
+    /// </summary>
     public static string NormalizePath(string path)
     {
         try
         {
-            return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var full = Path.GetFullPath(path);
+            var real = TryResolveFinalPath(full) ?? full;
+            return real.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         }
         catch
         {
             return path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         }
     }
+
+    /// <summary>
+    /// Resolve <paramref name="fullPath"/> to its real filesystem path, following junctions and
+    /// symlinks anywhere in the path (Windows GetFinalPathNameByHandle). Returns null when the path
+    /// does not exist or cannot be opened, or on any non-Windows platform, so the caller falls back to
+    /// the lexical path.
+    /// </summary>
+    private static string? TryResolveFinalPath(string fullPath)
+    {
+        if (!OperatingSystem.IsWindows())
+            return null;
+        // FILE_FLAG_BACKUP_SEMANTICS is required to open a DIRECTORY handle.
+        const int FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+        const uint FILE_SHARE_ALL = 0x1 | 0x2 | 0x4; // read | write | delete
+        const uint OPEN_EXISTING = 3;
+        var handle = CreateFileW(fullPath, 0, FILE_SHARE_ALL, IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero);
+        if (handle.IsInvalid)
+            return null;
+        try
+        {
+            var sb = new System.Text.StringBuilder(1024);
+            var len = GetFinalPathNameByHandleW(handle, sb, (uint)sb.Capacity, 0);
+            if (len == 0)
+                return null;
+            if (len > sb.Capacity)
+            {
+                sb.EnsureCapacity((int)len + 1);
+                len = GetFinalPathNameByHandleW(handle, sb, (uint)sb.Capacity, 0);
+                if (len == 0)
+                    return null;
+            }
+            var result = sb.ToString();
+            // GetFinalPathNameByHandle returns the \\?\ (or \\?\UNC\) extended-length prefix; strip it
+            // so the result matches ordinary Path.GetFullPath output for comparison.
+            if (result.StartsWith(@"\\?\UNC\", StringComparison.Ordinal))
+                return @"\\" + result.Substring(8);
+            if (result.StartsWith(@"\\?\", StringComparison.Ordinal))
+                return result.Substring(4);
+            return result;
+        }
+        finally
+        {
+            handle.Dispose();
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(
+        string lpFileName, uint dwDesiredAccess, uint dwShareMode, IntPtr lpSecurityAttributes,
+        uint dwCreationDisposition, uint dwFlagsAndAttributes, IntPtr hTemplateFile);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetFinalPathNameByHandleW(
+        Microsoft.Win32.SafeHandles.SafeFileHandle hFile, System.Text.StringBuilder lpszFilePath, uint cchFilePath, uint dwFlags);
 }
