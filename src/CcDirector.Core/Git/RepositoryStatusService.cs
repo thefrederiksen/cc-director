@@ -138,6 +138,14 @@ public sealed class RepositoryStatusService
     /// Measures a worktree's on-disk size, honoring cancellation DURING the walk: a superseded
     /// compute stops immediately and stores nothing. Deliberately no file caps or byte budgets -
     /// a silently truncated size would be a lie; either the walk finishes or it is cancelled.
+    ///
+    /// KNOWN LIMITATION (inspection round 2, ruling R2-10 - accepted, no further code change):
+    /// cancellation is honored once per enumerated file, but a single blocked filesystem call
+    /// INSIDE Directory.EnumerateFiles - a stalled enumeration advancing to its next result, a
+    /// blocked metadata read - cannot be interrupted by any token. Bounding it would require a
+    /// timeout, and a timeout that silently truncates a size is exactly the lie the no-fallback
+    /// rule forbids. The compute runs on a background thread, so a blocked walk delays model
+    /// freshness for that repository; it never blocks the user interface.
     /// </summary>
     internal static long? MeasureWorktreeBytes(WorktreeInfo w, CancellationToken ct)
     {
