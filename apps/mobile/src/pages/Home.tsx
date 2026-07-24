@@ -29,9 +29,15 @@ import { enablePush, notificationPermission, pushSupported, reconcileBadge } fro
 const POLL_INTERVAL_MS = 5000;
 
 // Voice-mode queue flow: how long the roster sits still before auto-speak jumps into the next
-// waiting session (a beat to see the list and to uncheck the box), and how recently-listened a
-// session must be to be passed over for now (it comes around again on a later pass).
-const AUTO_SPEAK_DELAY_MS = 1500;
+// waiting session, and how recently-listened a session must be to be passed over for now (it comes
+// around again on a later pass).
+//
+// THE DELAY IS THE WAY OUT OF THE LOOP (owner, 2026-07-24). Respond and Snooze return to this tab,
+// and auto-speak then takes the next session by itself - so this pause is the only moment there is
+// to reach the Auto-speak checkbox and stop. At 1.5 seconds it was not enough time to get a thumb
+// there, and the queue could not be left. Three seconds costs nothing while the queue is genuinely
+// being worked, and it is long enough to tap the box off.
+const AUTO_SPEAK_DELAY_MS = 3000;
 const AUTO_SPEAK_COOLDOWN_MS = 20000;
 
 /** The roster's two lenses: the full roster, or only the sessions that can speak to you right now. */
@@ -188,21 +194,36 @@ export function Home() {
   // The next session is the oldest waiting one not listened to in the last few seconds (a session
   // just left unhandled sits out one beat rather than instantly re-trapping the listener; with
   // nothing else waiting it comes around on a later poll - deliberately, unhandled keeps coming
-  // back). The short delay leaves a moment to see the list, switch tabs, or uncheck the box - both
-  // of which stop the loop.
+  // back).
+  //
+  // The countdown is keyed to the CHOSEN SESSION ID, not to the roster array. The array is a new
+  // object on every render (each 5-second poll, and every voice-clip download event), so an effect
+  // that depended on it restarted its timer each time - survivable at 1.5 seconds, but a 3-second
+  // timer could be reset forever by a busy roster and never fire at all. Keyed to the id, the timer
+  // is only ever restarted when the session it is about to open actually changes.
+  const autoSpeakNextId =
+    tab === "voice" && autoSpeak && !showFilter
+      ? voiceReady.find((s) => Date.now() - queueTouchMs(s.sessionId ?? "") > AUTO_SPEAK_COOLDOWN_MS)
+          ?.sessionId ?? null
+      : null;
+  // True only while the countdown is running, so the screen can say out loud that it is about to
+  // move and that unchecking the box stops it - a silent pause reads as the app being slow.
+  const [autoSpeakArmed, setAutoSpeakArmed] = useState(false);
   useEffect(() => {
-    if (tab !== "voice" || !autoSpeak || showFilter || voiceReady.length === 0) return;
-    const now = Date.now();
-    const next = voiceReady.find((s) => now - queueTouchMs(s.sessionId ?? "") > AUTO_SPEAK_COOLDOWN_MS);
-    if (!next) return;
-    const sid = encodeURIComponent(next.sessionId ?? "");
+    if (autoSpeakNextId === null || autoSpeakNextId.length === 0) {
+      setAutoSpeakArmed(false);
+      return;
+    }
+    setAutoSpeakArmed(true);
+    const sid = encodeURIComponent(autoSpeakNextId);
     const timer = window.setTimeout(() => {
+      setAutoSpeakArmed(false);
       navigate(`/session/${sid}/voice`, {
         state: { voiceMode: true, autoSpeak: true, fromTab: "voice" },
       });
     }, AUTO_SPEAK_DELAY_MS);
     return () => window.clearTimeout(timer);
-  }, [tab, autoSpeak, showFilter, voiceReady, navigate]);
+  }, [autoSpeakNextId, navigate]);
 
   return (
     <div className="screen">
@@ -276,7 +297,11 @@ export function Home() {
           className={`view-tab${tab === "voice" ? " active" : ""}`}
           onClick={() => selectTab("voice")}
         >
-          Voice mode
+          {/* "Voice sessions", NOT "Voice mode" (owner, 2026-07-24). This tab is a LENS - the sessions
+              that can speak to you right now. Voice mode is a state of the fleet, and auto-speak is a
+              state of this phone; naming the lens after one of them made all three read as the same
+              thing, which is exactly the confusion this screen has to stop causing. */}
+          Voice sessions
         </button>
       </div>
 
@@ -305,22 +330,38 @@ export function Home() {
       {/* The one-tap fleet-wide voice switch (issue #1765): "as I leave the house, put my whole fleet on
           voice; when I get home, take it all off". It reads the roster to decide its own action - offer
           "turn all on" while no session is a voice session, "turn all off" once any is - so the same
-          button covers both halves of the walk-out / come-home round trip. Lives in the Voice tab, the
-          voice-focused surface, and speaks to the Gateway which fans the change out to every session. */}
+          button covers both halves of the walk-out / come-home round trip.
+
+          VOICE MODE AND AUTO-SPEAK ARE TWO DIFFERENT THINGS (owner, 2026-07-24), and this is the first
+          of them: voice mode is about the FLEET - every session narrates its turns. Auto-speak, below,
+          is about THIS PHONE - it also plays them to you one after another without a tap. Voice mode on
+          with auto-speak off is the ordinary case: your sessions all speak, and you choose which one to
+          listen to. That is why they are two separate controls and never one. */}
       {tab === "voice" && sessions !== null && total > 0 && (
         <VoiceAllControl sessions={sessions} />
       )}
 
-      {/* Auto-speak (voice-mode queue flow): the hands-free switch. One checkbox; when on, the queue
-          below is read to you session by session without a single tap on a row. */}
+      {/* Auto-speak (voice-mode queue flow): the hands-free switch, and a PHONE setting, not a fleet
+          one. One checkbox; when on, the queue below is read to you session by session without a
+          single tap on a row. */}
       {tab === "voice" && sessions !== null && total > 0 && (
         <label className="autospeak-row">
           <input type="checkbox" checked={autoSpeak} onChange={toggleAutoSpeak} />
           <span className="autospeak-label">
             Auto-speak
-            <span className="autospeak-hint">Jump into the next waiting session and read it aloud</span>
+            <span className="autospeak-hint">
+              This phone only - open each waiting voice session in turn and play it without a tap
+            </span>
           </span>
         </label>
+      )}
+
+      {/* The three-second pause before auto-speak takes the next session, said out loud. This is the
+          moment the loop can be left, so the screen names the way out rather than just going quiet. */}
+      {tab === "voice" && autoSpeakArmed && (
+        <p className="autospeak-countdown" role="status">
+          Opening the next session in a moment - uncheck Auto-speak to stop.
+        </p>
       )}
 
       {/* Honest feedback while auto-speak idles: the loop is armed, there is just nothing to read. */}
@@ -426,12 +467,20 @@ function EnableAlerts() {
   );
 }
 
-// The fleet-wide voice switch shown at the top of the Voice tab (issue #1765). One control for the whole
-// round trip: while no session is in voice mode it offers "Turn on voice for all N sessions"; the moment
-// any session is a voice session it offers "Turn voice off for all sessions". Tapping calls the Gateway's
-// one fan-out endpoint, which walks the roster itself, and shows a fail-loud summary of what changed and
-// what was skipped (the mobile rule: never fail silently - name the offline sessions that were passed
-// over). The next roster poll (5s) repaints each row's voice state, so the button flips to its opposite.
+// The fleet-wide voice switch shown at the top of the Voice sessions tab (issue #1765). One control for
+// the whole round trip: while no session is in voice mode it offers "Turn on voice for all N sessions";
+// the moment any session is a voice session it offers "Turn voice off for all sessions". Tapping calls
+// the Gateway's one fan-out endpoint, which walks the roster itself, and shows a fail-loud summary of
+// what changed and what was skipped (the mobile rule: never fail silently - name the offline sessions
+// that were passed over). The next roster poll (5s) repaints each row's voice state, so the button flips
+// to its opposite.
+//
+// KNOWN LIMIT, being fixed properly next (owner, 2026-07-24): this button decides its own direction by
+// reading the roster, so once ONE session is on voice it only ever offers OFF - a session created after
+// that cannot be switched on from here, and quietly never joins the voice queue. The real fix is for the
+// GATEWAY to hold "this tenant is in voice mode" and apply it to a session at birth, with a banner on
+// every screen of the app showing that state and carrying the off switch. That is a Gateway change and
+// its own piece of work; this button stays exactly as it was until then.
 function VoiceAllControl({ sessions }: { sessions: SessionDto[] }) {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -464,6 +513,10 @@ function VoiceAllControl({ sessions }: { sessions: SessionDto[] }) {
 
   return (
     <div className="voice-all">
+      <p className="voice-all-line">
+        Voice mode is about the fleet: every session narrates its turns. Auto-speak, below, is about this
+        phone.
+      </p>
       <button
         type="button"
         className={`voice-all-btn${enable ? "" : " voice-all-btn-off"}`}

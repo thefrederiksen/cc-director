@@ -1498,7 +1498,10 @@ a.banner-btn {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  /* A REAL gap between the two verbs (owner, 2026-07-24). At 10px a thumb aimed at Respond and
+     landing slightly low hit Snooze instead - two different outcomes a hair apart, on a screen used
+     without looking. 24px means a mis-aimed tap lands on nothing. */
+  gap: 24px;
   padding-bottom: 12px;
 }
 
@@ -1517,7 +1520,12 @@ a.banner-btn {
   touch-action: manipulation;
 }
 
-/* The second verb: park it for a while - and go back to the list (the arrow says so). */
+/* The second verb: park it for a while - and go back to the list (the arrow says so).
+
+   AMBER, NOT GREY (owner, 2026-07-24). In the theme's own surface-2 with a border-coloured outline
+   this button was near-invisible against the dark background - it did not read as a button at all,
+   let alone as the snooze. Amber says "park this for later": clearly a control, clearly not the
+   green Respond above it, and deliberately not red - snoozing is an ordinary move, not a warning. */
 .voice-action-snooze {
   display: flex;
   align-items: center;
@@ -1525,13 +1533,13 @@ a.banner-btn {
   gap: 10px;
   width: 100%;
   min-height: 56px;
-  border: 1px solid var(--border);
+  border: 1px solid #8a6516;
   border-radius: 12px;
   padding: 13px 0;
   font-size: 17px;
   font-weight: 700;
-  color: var(--text);
-  background: var(--surface-2);
+  color: #f0b429;
+  background: #2b2210;
   cursor: pointer;
   touch-action: manipulation;
 }
@@ -1542,7 +1550,8 @@ a.banner-btn {
 }
 
 /* CSS-only back-to-the-list arrow on the Snooze button (no unicode glyphs): a leftwards chevron with
-   a tail, saying "this also takes you back". */
+   a tail, saying "this also takes you back". Drawn in currentColor so it is always the same amber as
+   the label beside it and can never be left behind by a colour change. */
 .voice-back-arrow {
   position: relative;
   display: inline-block;
@@ -1557,8 +1566,8 @@ a.banner-btn {
   top: 50%;
   width: 9px;
   height: 9px;
-  border-left: 3px solid var(--text-dim);
-  border-bottom: 3px solid var(--text-dim);
+  border-left: 3px solid currentColor;
+  border-bottom: 3px solid currentColor;
   transform: translateY(-50%) rotate(45deg);
 }
 
@@ -1571,7 +1580,7 @@ a.banner-btn {
   height: 3px;
   margin-top: -1.5px;
   border-radius: 2px;
-  background: var(--text-dim);
+  background: currentColor;
 }
 
 /* D. Waiting on a choice: option buttons (single, or multi-select with Submit). */
@@ -2181,6 +2190,15 @@ a.banner-btn {
   opacity: 0.6;
 }
 
+/* The standing statement of what this tab does to the fleet: every session on the Gateway is a voice
+   session while you are here. Quiet - it reports a fact, it is not a call to action. */
+.voice-all-line {
+  margin: 0 2px 10px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+
 .voice-all-note {
   margin: 8px 2px 0;
   font-size: 13px;
@@ -2230,6 +2248,15 @@ a.banner-btn {
   font-size: 12px;
   font-weight: 400;
   color: var(--text-dim);
+}
+
+/* The three-second pause before auto-speak moves on. In the same amber as Snooze because it is the
+   same idea - this is your moment to act - and it points straight at the checkbox above it. */
+.autospeak-countdown {
+  margin: 6px 14px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #f0b429;
 }
 
 /* Machine / repo picker rows on the add screen. The row chrome reuses .row; .picker-link is the
