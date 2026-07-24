@@ -193,6 +193,9 @@ public sealed class ControlApiHost : IAsyncDisposable
     private SessionStatusWingman? _statusWingman;
     private ProactiveExplainService? _proactiveExplain;
     private TerminalStateDetector? _terminalStateDetector;
+    private Core.Activity.ActivityEventOutbox? _activityOutbox;
+    private Core.Activity.ActivityEventProducer? _activityProducer;
+    private ActivityEventUploader? _activityUploader;
     private TransientErrorAutoResume? _transientErrorAutoResume;
     private TerminalSessionRecorder? _sessionRecorder;
     private Core.Storage.TurnReviewLogger? _turnReviewLogger;
@@ -690,7 +693,15 @@ public sealed class ControlApiHost : IAsyncDisposable
         // Terminal-driven state: the detector's only rule is byte -> working, plus the idle
         // clock (time since the last ConPTY character). No footer/grid/LLM guesswork, and no
         // Claude Code hooks - the detector is the single authority for session state.
-        _terminalStateDetector = new TerminalStateDetector(_sessionManager, driveState: true);
+        // The activity-evidence producer (docs/PLAN-trustworthy-working-start-2026-07-24.md, increment 2):
+        // records submissions, state transitions with shadow causes, unexplained terminal wakes, and
+        // transcript-proven turns into a durable outbox the uploader below drains to the Gateway ledger.
+        // OBSERVE-ONLY - it changes no session state and gates nothing.
+        _activityOutbox = new Core.Activity.ActivityEventOutbox();
+        _activityProducer = new Core.Activity.ActivityEventProducer(_sessionManager, _activityOutbox);
+        _activityProducer.Start();
+
+        _terminalStateDetector = new TerminalStateDetector(_sessionManager, driveState: true, _activityProducer);
         _terminalStateDetector.Start();
         FileLog.Write("[ControlApiHost] Session state source: terminal (byte->working)");
 
@@ -733,8 +744,13 @@ public sealed class ControlApiHost : IAsyncDisposable
         // or knows its origin; the Gateway stores because it is what the whole fleet reports to and what
         // moves to the server. The Director keeps no copy.
         _conversationIngestor = new Core.Storage.ConversationIngestor(
-            _sessionManager, new GatewayPromptSink(() => _gatewayClient));
+            _sessionManager, new GatewayPromptSink(() => _gatewayClient), _activityProducer);
         _conversationIngestor.Start();
+
+        // Drain the activity outbox to the Gateway ledger. Late-binds the Gateway client per tick (the
+        // prompt sink's pattern) and deletes an outbox record only on the Gateway's acknowledgement.
+        _activityUploader = new ActivityEventUploader(() => _gatewayClient, _activityOutbox);
+        _activityUploader.Start();
     }
 
     /// <summary>
@@ -1065,6 +1081,11 @@ public sealed class ControlApiHost : IAsyncDisposable
 
         _terminalStateDetector?.Dispose();
         _terminalStateDetector = null;
+        _activityUploader?.Dispose();
+        _activityUploader = null;
+        _activityProducer?.Dispose();
+        _activityProducer = null;
+        _activityOutbox = null;
         _transientErrorAutoResume?.Dispose();
         _transientErrorAutoResume = null;
         _turnReviewLogger?.Dispose();

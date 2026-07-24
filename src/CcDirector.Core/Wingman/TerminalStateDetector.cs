@@ -50,6 +50,7 @@ public sealed class TerminalStateDetector : IDisposable
 
     private readonly SessionManager _sessionManager;
     private readonly bool _driveState;
+    private readonly Activity.ActivityEventProducer? _activityProducer;
     private readonly ConcurrentDictionary<Guid, Watcher> _watchers = new();
     private bool _started;
     private bool _disposed;
@@ -58,10 +59,19 @@ public sealed class TerminalStateDetector : IDisposable
     /// When true the detector is authoritative and sets <see cref="Session.ActivityState"/> to
     /// Working on byte activity. When false it is observe-only (logs, writes nothing).
     /// </param>
-    public TerminalStateDetector(SessionManager sessionManager, bool driveState)
+    /// <param name="activityProducer">
+    /// The shadow-evidence producer (docs/PLAN-trustworthy-working-start-2026-07-24.md). When present,
+    /// a flip from settled to active that NO recent submission explains records a
+    /// terminal-output-while-settled evidence event - the candidate phantom turn - with the bounded
+    /// screen evidence. Purely observational: the detector's rules and writes are byte-for-byte
+    /// unchanged whether this is null or not.
+    /// </param>
+    public TerminalStateDetector(SessionManager sessionManager, bool driveState,
+        Activity.ActivityEventProducer? activityProducer = null)
     {
         _sessionManager = sessionManager;
         _driveState = driveState;
+        _activityProducer = activityProducer;
     }
 
     public void Start()
@@ -97,7 +107,7 @@ public sealed class TerminalStateDetector : IDisposable
         // (a queued run emits no bytes yet is genuinely Working), so skip them entirely.
         if (session.BackendType == Backends.SessionBackendType.GitHubActions) return;
         if (_watchers.ContainsKey(session.Id)) return;
-        var w = new Watcher(session, _driveState);
+        var w = new Watcher(session, _driveState, _activityProducer);
         if (_watchers.TryAdd(session.Id, w))
             w.Start();
         else
@@ -127,8 +137,16 @@ public sealed class TerminalStateDetector : IDisposable
         private readonly Session _session;
         private readonly CircularTerminalBuffer _buffer;
         private readonly bool _driveState;
+        private readonly Activity.ActivityEventProducer? _activityProducer;
         private readonly Action<byte[]> _onBytes;
         private readonly System.Threading.Timer _quietTimer;
+
+        // The screen body captured at the last flip to settled, and its normalized hash - the "before"
+        // side of the bounded evidence an unexplained wake records. Touched only on the PTY producer
+        // thread and the quiet-timer thread, which never race the same flip (the flip direction decides
+        // which side reads/writes it).
+        private string? _settledBody;
+        private string? _settledBodyHash;
 
         // True for agents whose idle terminal never goes byte-silent (Grok): an animated footer
         // keeps repainting forever. For these the byte rule is replaced by a screen-body rule.
@@ -144,11 +162,12 @@ public sealed class TerminalStateDetector : IDisposable
         private string? _lastBody;
         private long _lastBodyCheckTicks;
 
-        public Watcher(Session session, bool driveState)
+        public Watcher(Session session, bool driveState, Activity.ActivityEventProducer? activityProducer)
         {
             _session = session;
             _buffer = session.Buffer!;
             _driveState = driveState;
+            _activityProducer = activityProducer;
             _continuousIdle = session.Driver.EmitsContinuousIdleOutput;
             _onBytes = OnBytes;
             _quietTimer = new System.Threading.Timer(OnQuiet, null, Timeout.Infinite, Timeout.Infinite);
@@ -218,6 +237,7 @@ public sealed class TerminalStateDetector : IDisposable
             {
                 _active = true;
                 FileLog.Write($"[TerminalStateDetector] {_session.Id} terminal=ACTIVE (byte) | hook={_session.ActivityState}");
+                RecordUnexplainedWakeEvidence(bytes.Length, "byte");
                 if (_driveState) _session.ApplyTerminalActivityState(ActivityState.Working);
             }
             ArmQuietTimer(); // restart the idle countdown on every byte
@@ -273,9 +293,34 @@ public sealed class TerminalStateDetector : IDisposable
             {
                 _active = true;
                 FileLog.Write($"[TerminalStateDetector] {_session.Id} terminal=ACTIVE (body) | hook={_session.ActivityState}");
+                RecordUnexplainedWakeEvidence(byteCount: 0, "body");
                 if (_driveState) _session.ApplyTerminalActivityState(ActivityState.Working);
             }
             ArmQuietTimer();
+        }
+
+        /// <summary>
+        /// Shadow evidence at the flip from settled to active (docs/PLAN-trustworthy-working-start-
+        /// 2026-07-24.md): when NO recent submission explains this wake, record a terminal-output-while-
+        /// settled event carrying the bounded before/after evidence - the candidate phantom turn the
+        /// July 24 snooze died to. A wake inside the submission window is the ordinary echo of a
+        /// submitted turn and records nothing. Observational only; the state write that follows is
+        /// untouched, and the producer guards its own faults.
+        /// </summary>
+        private void RecordUnexplainedWakeEvidence(long byteCount, string mode)
+        {
+            if (_activityProducer is null) return;
+            if (_session.LastSubmissionAtUtc is DateTime submitted
+                && DateTime.UtcNow - submitted <= Activity.ActivityEventProducer.SubmissionWindow)
+                return;
+
+            string? afterBody = TryReadScreenBody(out var body) ? body : null;
+            var afterHash = afterBody is null ? null : Activity.ActivityEvidence.BodyHash(afterBody);
+            var diff = afterBody is not null && _settledBody is not null
+                ? Activity.ActivityEvidence.BoundedRowDiff(_settledBody, afterBody)
+                : null;
+            _activityProducer.RecordTerminalOutputWhileSettled(
+                _session, byteCount, _settledBodyHash, afterHash, diff, mode);
         }
 
         private void OnQuiet(object? state)
@@ -314,6 +359,15 @@ public sealed class TerminalStateDetector : IDisposable
             // badge. This is the dumb time-based rule -- we do not try to tell "finished cleanly"
             // apart from "blocked on a question"; a long silence means "needs you".
             _active = false;
+
+            // Capture the settled screen body - the "before" side of the evidence a later
+            // unexplained wake records. Only when the shadow producer is wired; the snapshot is
+            // locked, and paying for it every settle with nobody reading it would be waste.
+            if (_activityProducer is not null && TryReadScreenBody(out var settledBody))
+            {
+                _settledBody = settledBody;
+                _settledBodyHash = Activity.ActivityEvidence.BodyHash(settledBody);
+            }
             FileLog.Write($"[TerminalStateDetector] {_session.Id} terminal=NEEDS-YOU after {idle.TotalSeconds:F1}s silent | hook={_session.ActivityState}");
             if (_driveState) _session.ApplyTerminalActivityState(ActivityState.WaitingForInput);
         }

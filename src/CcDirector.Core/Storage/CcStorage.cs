@@ -115,6 +115,15 @@ public static class CcStorage
     public static string StateChanges() => Path.Combine(Base(), "state-changes");
 
     /// <summary>
+    /// The durable activity-event outbox: base/activity-outbox/outbox.jsonl. Delivery state for the
+    /// Gateway activity ledger (docs/PLAN-trustworthy-working-start-2026-07-24.md): events wait here,
+    /// each minted ONCE with its id and sequence, until the Gateway acknowledges the batch - the Gateway
+    /// is the only durable history, this file is only the not-yet-acknowledged tail. Composes the path
+    /// without touching disk; the outbox creates the directory.
+    /// </summary>
+    public static string ActivityOutbox() => Path.Combine(Base(), "activity-outbox", "outbox.jsonl");
+
+    /// <summary>
     /// Per-utterance resumable voice-chunk staging: base/voice-utterances/&lt;uploadId&gt;/. Transient - the
     /// service deletes each utterance directory after transcription, and creates them itself, so this
     /// composes the path without touching disk. Resolved here for the same reason as

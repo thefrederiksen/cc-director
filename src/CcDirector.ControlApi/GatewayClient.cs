@@ -353,6 +353,38 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     }
 
     /// <summary>
+    /// Push one activity-event batch to the Gateway ledger (docs/PLAN-trustworthy-working-start-
+    /// 2026-07-24.md). Returns the Gateway's acknowledgement, or null when the push did not land
+    /// (disabled, HTTP failure, transport fault) - the caller keeps the outbox records and retries.
+    /// A duplicate in the response is a SUCCESSFUL replay: the Gateway already durably holds that
+    /// event, which acknowledges it exactly as a fresh write does.
+    /// </summary>
+    public async Task<ActivityEventIngestResponse?> PushActivityEventsAsync(
+        IReadOnlyList<ActivityEventRecord> events, CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled) return null;
+        if (events.Count == 0) return new ActivityEventIngestResponse { Written = 0, Duplicates = 0 };
+
+        try
+        {
+            var body = new ActivityEventIngestRequest { Events = events };
+            using var resp = await _http.PostAsJsonAsync("activity-events/batch", body, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                FileLog.Write($"[GatewayClient] PushActivityEventsAsync: POST /activity-events/batch returned HTTP {(int)resp.StatusCode}");
+                return null;
+            }
+
+            return await resp.Content.ReadFromJsonAsync<ActivityEventIngestResponse>(ct);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayClient] PushActivityEventsAsync FAILED: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Rename a session anywhere in the fleet via the Gateway's PATCH /sessions/{sid}, which routes the
     /// rename to the owning Director over the tunnel and returns the updated <see cref="SessionDto"/>.
     /// Issue #1490: the Director's loopback POST /fleet/rename relays here for a non-local target. Throws
