@@ -39,6 +39,21 @@ def _get(path: str) -> List[Dict[str, Any]]:
     return rows
 
 
+def _raw(dto: Dict[str, Any], *keys: str) -> Any:
+    """First present key's RAW value (director.field stringifies - wrong for bools/ints/lists)."""
+    for key in keys:
+        if key in dto and dto[key] is not None:
+            return dto[key]
+    return None
+
+
+def _int(dto: Dict[str, Any], *keys: str) -> int:
+    try:
+        return int(_raw(dto, *keys) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _gb(size: Any) -> str:
     try:
         bytes_ = int(size)
@@ -54,7 +69,7 @@ def _gb(size: Any) -> str:
 def list_repositories(json_output: bool, dirty_only: bool = False) -> None:
     rows = _get("fleet/repositories")
     if dirty_only:
-        rows = [r for r in rows if not director.field(r, "isClean", "IsClean")]
+        rows = [r for r in rows if not _raw(r, "isClean", "IsClean")]
     if json_output:
         print(json.dumps(rows, indent=2))
         return
@@ -63,11 +78,11 @@ def list_repositories(json_output: bool, dirty_only: bool = False) -> None:
     for col in ("REPOSITORY", "MACHINE", "PROVIDER", "BRANCH", "STATE", "WORKTREES", "SIZE(WT)"):
         table.add_column(col)
     for r in rows:
-        clean = director.field(r, "isClean", "IsClean")
-        uncommitted = director.field(r, "uncommittedCount", "UncommittedCount") or 0
+        clean = bool(_raw(r, "isClean", "IsClean"))
+        uncommitted = _int(r, "uncommittedCount", "UncommittedCount")
         state = "clean" if clean else f"{uncommitted} uncommitted"
-        wt_total = director.field(r, "worktreeCount", "WorktreeCount") or 0
-        wt_safe = director.field(r, "worktreesSafeToReap", "WorktreesSafeToReap") or 0
+        wt_total = _int(r, "worktreeCount", "WorktreeCount")
+        wt_safe = _int(r, "worktreesSafeToReap", "WorktreesSafeToReap")
         wt = "-" if not wt_total else f"{wt_total} ({wt_safe} safe)"
         table.add_row(
             str(director.field(r, "name", "Name") or "-"),
@@ -76,10 +91,10 @@ def list_repositories(json_output: bool, dirty_only: bool = False) -> None:
             str(director.field(r, "branch", "Branch") or "-"),
             state,
             wt,
-            _gb(director.field(r, "worktreeBytes", "WorktreeBytes")),
+            _gb(_raw(r, "worktreeBytes", "WorktreeBytes")),
         )
     console.print(table)
-    safe_total = sum(int(director.field(r, "worktreesSafeToReap", "WorktreesSafeToReap") or 0) for r in rows)
+    safe_total = sum(_int(r, "worktreesSafeToReap", "WorktreesSafeToReap") for r in rows)
     console.print(f"{len(rows)} repositories - {safe_total} worktrees safe to reap")
 
 
@@ -100,19 +115,16 @@ def list_worktrees(json_output: bool, repo: str | None = None, state: str | None
     reclaim = 0
     for w in rows:
         w_state = str(director.field(w, "state", "State") or "-")
-        sessions = director.field(w, "sessionLabels", "SessionLabels") or []
+        sessions = _raw(w, "sessionLabels", "SessionLabels") or []
         if w_state == "safe-to-reap":
-            try:
-                reclaim += int(director.field(w, "sizeBytes", "SizeBytes") or 0)
-            except (TypeError, ValueError):
-                pass
+            reclaim += _int(w, "sizeBytes", "SizeBytes")
         table.add_row(
             str(director.field(w, "repoName", "RepoName") or "-"),
             str(director.field(w, "branch", "Branch") or "(detached)"),
             str(director.field(w, "machineName", "MachineName") or "-"),
             w_state,
             ", ".join(sessions) if sessions else "-",
-            _gb(director.field(w, "sizeBytes", "SizeBytes")),
+            _gb(_raw(w, "sizeBytes", "SizeBytes")),
             str(director.field(w, "reason", "Reason") or "-"),
         )
     console.print(table)
