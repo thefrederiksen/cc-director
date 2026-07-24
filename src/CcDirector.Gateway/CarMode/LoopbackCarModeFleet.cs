@@ -201,6 +201,11 @@ public sealed class LoopbackCarModeFleet : ICarModeFleet
         var signedIn = root.TryGetProperty("signedIn", out var si) && si.ValueKind == JsonValueKind.True;
         var balance = GetInt64OrNull(root, "balanceMicros");
         var lastDebit = GetInt64OrNull(root, "lastDebitMicros");
+        // Codex review finding 6: a signed-in response with no balance is a MALFORMED payload, and turning
+        // it into a zero-dollar answer is exactly the plausible fabricated number the no-fallback rule
+        // exists to prevent. Fail loud; the turn reports a specific contract failure instead.
+        if (signedIn && balance is null)
+            throw new InvalidOperationException("The /account/credits response said signedIn but carried no balanceMicros - malformed payload.");
         _log($"[CarModeFleet] credits: signedIn={signedIn}");
         return new CarModeCredits(signedIn, balance, lastDebit);
     }
@@ -238,9 +243,11 @@ public sealed class LoopbackCarModeFleet : ICarModeFleet
     {
         // GET /cron/jobs returns { jobs: [CronJobDto...] }; map each to the compact speakable view.
         var root = await GetJsonObjectAsync("/cron/jobs", ct);
-        var jobs = root.TryGetProperty("jobs", out var arr) && arr.ValueKind == JsonValueKind.Array
-            ? arr.EnumerateArray().ToList()
-            : new List<JsonElement>();
+        // Codex review finding 6: a response without a jobs ARRAY is a contract failure, not an empty
+        // schedule list - "you have no scheduled jobs" from a malformed body is a confident false answer.
+        if (!root.TryGetProperty("jobs", out var arr) || arr.ValueKind != JsonValueKind.Array)
+            throw new InvalidOperationException("The /cron/jobs response carried no jobs array - malformed payload.");
+        var jobs = arr.EnumerateArray().ToList();
         var schedules = jobs.Select(j =>
         {
             var kind = GetString(j, "scheduleKind");
@@ -371,7 +378,9 @@ public sealed class LoopbackCarModeFleet : ICarModeFleet
     private static string? NullIfEmpty(string value) => string.IsNullOrWhiteSpace(value) ? null : value;
 
     /// <summary>GET a loopback endpoint that returns a JSON array and hand back its elements. Throws on a
-    ///  non-success status (no silent empty list).</summary>
+    ///  non-success status AND on a non-array body (Codex review finding 6): every caller's endpoint
+    ///  contract is a JSON array, so a non-array body is a malformed response - treating it as an empty
+    ///  list would turn a contract failure into a confident "there are none".</summary>
     private async Task<IReadOnlyList<JsonElement>> GetJsonArrayAsync(string path, CancellationToken ct)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, $"{_baseUrl}{path}");
@@ -381,9 +390,9 @@ public sealed class LoopbackCarModeFleet : ICarModeFleet
             throw new InvalidOperationException($"GET {path} failed: {(int)response.StatusCode} {response.StatusCode}.");
         var json = await response.Content.ReadAsStringAsync(ct);
         using var doc = JsonDocument.Parse(json);
-        return doc.RootElement.ValueKind == JsonValueKind.Array
-            ? doc.RootElement.EnumerateArray().Select(e => e.Clone()).ToList()
-            : new List<JsonElement>();
+        if (doc.RootElement.ValueKind != JsonValueKind.Array)
+            throw new InvalidOperationException($"GET {path} returned {doc.RootElement.ValueKind}, expected a JSON array.");
+        return doc.RootElement.EnumerateArray().Select(e => e.Clone()).ToList();
     }
 
     /// <summary>POST a JSON body to a loopback endpoint with the Bearer, throwing on a non-success status

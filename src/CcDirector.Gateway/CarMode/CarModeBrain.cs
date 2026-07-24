@@ -396,10 +396,15 @@ public sealed class CarModeBrain
                 var credits = await timer.TimeFleetAsync(() => _fleet.GetCreditsAsync(ct));
                 if (!credits.SignedIn)
                     return Result(new { signedIn = false, message = "The Gateway is not signed in to a DevThrottle account, so there is no balance to read." });
+                // The fleet guarantees a signed-in read carries a balance (it throws on a malformed
+                // payload); this throw is the same guarantee restated here so a fake fleet in a test -
+                // or a future second implementation - can never turn "no number" into zero dollars.
+                var balanceMicros = credits.BalanceMicros
+                    ?? throw new InvalidOperationException("get_credits: signed in but no balanceMicros - the fleet must fail loud on a malformed credits payload, never hand the brain a null balance.");
                 return Result(new
                 {
                     signedIn = true,
-                    balanceDollars = Math.Round((credits.BalanceMicros ?? 0) / 1_000_000.0, 2),
+                    balanceDollars = Math.Round(balanceMicros / 1_000_000.0, 2),
                     lastActionCostDollars = credits.LastDebitMicros is { } debit ? Math.Round(debit / 1_000_000.0, 4) : (double?)null,
                 });
             }
@@ -430,8 +435,15 @@ public sealed class CarModeBrain
             }
             case "get_spend":
             {
+                // Codex review finding 6: seven days is the default for an OMITTED argument only. An
+                // explicitly supplied but invalid days value goes back to the model as a tool error it can
+                // correct - silently substituting 7 would answer a question the owner did not ask.
                 var daysText = ReadStringArg(call.ArgumentsJson, "days");
-                var days = int.TryParse(daysText, out var parsed) && parsed > 0 && parsed <= 90 ? parsed : 7;
+                int days;
+                if (string.IsNullOrWhiteSpace(daysText))
+                    days = 7;
+                else if (!int.TryParse(daysText, out days) || days < 1 || days > 90)
+                    return Result(new { error = "days must be a whole number from 1 to 90, or omitted for the default 7." });
                 var spend = await timer.TimeFleetAsync(() => _fleet.GetSpendAsync(days, ct));
                 return Result(new
                 {

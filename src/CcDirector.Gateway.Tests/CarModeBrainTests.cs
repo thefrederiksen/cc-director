@@ -1112,6 +1112,39 @@ public sealed class CarModeBrainTests
     }
 
     [Fact]
+    public async Task RunTurn_GetSpend_InvalidDays_IsAToolError_NotASilentSevenDayAnswer()
+    {
+        // Codex review finding 6: an explicitly supplied but invalid window must come back to the model
+        // as a tool error it can correct - never silently become the seven-day default, which would
+        // answer a question the owner did not ask.
+        var fleet = new FakeFleet();
+        var chat = new ScriptedChat(
+            new CarModeAssistantTurn(null, new[] { Call("get_spend", "{\"days\":\"three weeks\"}") }),
+            Speak("How many days did you mean?"));
+        var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
+
+        await brain.RunTurnAsync(TenantId.Local, "device-a", "spend for three weeks", CancellationToken.None);
+
+        Assert.Empty(fleet.SpendDays);                     // the fleet was never asked
+        Assert.Contains("days must be a whole number", chat.SeenMessages[1]);
+    }
+
+    [Fact]
+    public async Task RunTurn_GetCredits_SignedInWithNoBalance_FailsLoud_NeverZeroDollars()
+    {
+        // Codex review finding 6: a signed-in credits read with no balance is a malformed payload. The
+        // fleet contract is to throw before the brain ever sees it; if a (fake or future) fleet hands the
+        // brain that shape anyway, the brain itself must fail loud - zero dollars is the classic
+        // plausible fabricated number and must be impossible to produce.
+        var fleet = new FakeFleet { CreditsResult = new CarModeCredits(true, null, null) };
+        var chat = new ScriptedChat(new CarModeAssistantTurn(null, new[] { Call("get_credits") }));
+        var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => brain.RunTurnAsync(TenantId.Local, "device-a", "credits", CancellationToken.None));
+    }
+
+    [Fact]
     public async Task RunTurn_GetSpend_HonorsTheDaysArgument()
     {
         var fleet = new FakeFleet { SpendResult = new CarModeSpendSummary(0, 0, DateTime.UtcNow.AddDays(-30), DateTime.UtcNow) };
