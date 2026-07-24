@@ -190,11 +190,15 @@ public sealed class GitBranchService
     /// process recreated in the window stands untouched, and the outcome reports that a branch of
     /// the same name has since appeared.
     ///
-    /// Everything after the successful delete is a NON-CANCELLABLE compensation phase (ruling
-    /// R3-2): the caller's token governs only the delete itself; the worktree listing, the
-    /// restore decision, and the config cleanup run on <see cref="CancellationToken.None"/>, so
-    /// every exit path completes compensation and cancellation can never leave a deleted branch
-    /// with a broken checked-out worktree.
+    /// The destructive act and its compensation are ONE non-cancellable unit (rulings R3-2 and
+    /// R4-1): the caller's cancellation applies BEFORE the delete only - the token is checked
+    /// immediately before the delete is issued, and the delete command itself plus everything
+    /// after it run on <see cref="CancellationToken.None"/>. A cancellable process wait could
+    /// throw AFTER the child git process already deleted the ref, concealing the completed
+    /// mutation and skipping compensation. The whole post-delete phase is additionally wrapped
+    /// so that ANY exception inside compensation still attempts the create-only restore on the
+    /// way out before the exception propagates - no exit path can leave the ref missing without
+    /// having proven the delete safe.
     ///
     /// On a confirmed delete the branch's config section is cleaned up, as <c>git branch -D</c>
     /// would have done - but only after confirming the ref is still absent at that moment, so a
@@ -206,7 +210,13 @@ public sealed class GitBranchService
     internal async Task<(bool Deleted, string Message)> DeleteAtVerifiedTipAsync(
         string repoPath, string branch, string verifiedSha, string explanation, CancellationToken ct = default)
     {
-        var del = await _git.RunAsync(repoPath, new[] { "update-ref", "-d", $"refs/heads/{branch}", verifiedSha }, ct);
+        // The caller's cancellation applies BEFORE the destructive act only (ruling R4-1): it
+        // is honored here and never again. The delete command itself runs on
+        // CancellationToken.None - a cancellable process wait can throw AFTER the child git
+        // process already deleted the ref, which would conceal the completed mutation and skip
+        // every compensation step below.
+        ct.ThrowIfCancellationRequested();
+        var del = await _git.RunAsync(repoPath, new[] { "update-ref", "-d", $"refs/heads/{branch}", verifiedSha }, CancellationToken.None);
         if (!del.Success)
         {
             FileLog.Write($"[GitBranchService] delete refused for {branch}: ref no longer at {verifiedSha}: {del.Error.Trim()}");
@@ -218,7 +228,42 @@ public sealed class GitBranchService
         // decision, and the config-section cleanup all use CancellationToken.None. Honoring the
         // caller's token after the destructive step could skip the worktree check and the
         // restore, leaving a checked-out worktree with a broken symbolic HEAD.
+        try
+        {
+            return await CompensateAfterDeleteAsync(repoPath, branch, verifiedSha, explanation);
+        }
+        catch (Exception ex)
+        {
+            // ANY exception inside compensation still attempts the create-only restore on the
+            // way out (ruling R4-1): after the delete succeeded, an escaping exception means
+            // the delete was never proven safe, so the ref must not stay missing. Create-only
+            // means a concurrently recreated branch is never overwritten. The ORIGINAL
+            // exception always propagates - the restore attempt is logged, never allowed to
+            // replace it.
+            FileLog.Write($"[GitBranchService] compensation for {branch} threw - attempting the create-only restore before the exception propagates: {ex.Message}");
+            try
+            {
+                var restoreOnTheWayOut = await _git.RunAsync(repoPath, new[] { "update-ref", $"refs/heads/{branch}", verifiedSha, ZeroSha }, CancellationToken.None);
+                if (!restoreOnTheWayOut.Success)
+                    FileLog.Write($"[GitBranchService] restore-on-the-way-out for {branch} was refused (the ref may already exist again): {restoreOnTheWayOut.Error.Trim()}");
+            }
+            catch (Exception restoreEx)
+            {
+                FileLog.Write($"[GitBranchService] restore-on-the-way-out for {branch} itself failed - recreate the ref with: git update-ref refs/heads/{branch} {verifiedSha}: {restoreEx.Message}");
+            }
+            throw;
+        }
+    }
 
+    /// <summary>
+    /// The post-delete compensation phase (rulings R2-1, R3-1, R3-2, R4-1): worktree check,
+    /// create-only restore decision, and config cleanup. Runs entirely on
+    /// <see cref="CancellationToken.None"/>; the caller wraps it so any exception thrown here
+    /// still attempts the create-only restore before propagating.
+    /// </summary>
+    private async Task<(bool Deleted, string Message)> CompensateAfterDeleteAsync(
+        string repoPath, string branch, string verifiedSha, string explanation)
+    {
         // The compensating post-check (ruling R2-1). Includes the FIRST entry too: the primary
         // checkout is just as broken by losing its checked-out branch as a linked worktree is.
         var wtList = await _git.RunAsync(repoPath, new[] { "worktree", "list", "--porcelain" }, CancellationToken.None);

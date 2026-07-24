@@ -452,6 +452,73 @@ public sealed class GitBranchServiceTests : IDisposable
         Assert.Throws<InvalidOperationException>(() => RunGit(_repo, "config", "--get", "branch.cancel-clean.merge"));
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 4, ruling R4-1): cancellation raced into the DELETE'S OWN
+    // process wait never skips compensation. The real hazard lives inside GitCommandRunner:
+    // WaitForExitAsync(token) can throw OperationCanceledException AFTER the child git process
+    // already deleted the ref - the successful result is then concealed and no compensation
+    // runs, leaving a checked-out worktree with a broken symbolic HEAD. The delete command must
+    // run on CancellationToken.None; the caller's token applies before the destructive act only.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Delete_CancellationRacedIntoTheDeletesProcessWait_NeverSkipsCompensation()
+    {
+        RunGit(_repo, "branch", "wait-race");
+        var verifiedTip = RunGit(_repo, "rev-parse", "wait-race").Trim();
+
+        // Checked out into a worktree AFTER verification - compensation must restore.
+        var wt = Path.Combine(_root, "wt-wait-race");
+        RunGit(_repo, "worktree", "add", wt, "wait-race");
+
+        using var cts = new CancellationTokenSource();
+        var git = new CancelDuringProcessWaitGitRunner(
+            args => args.Length >= 2 && args[0] == "update-ref" && args[1] == "-d",
+            () => cts.Cancel());
+
+        var svc = new GitBranchService(git);
+        var (deleted, message) = await svc.DeleteAtVerifiedTipAsync(_repo, "wait-race", verifiedTip, "test", cts.Token);
+
+        Assert.False(deleted);
+        Assert.Contains("worktree", message);
+
+        // The mutation was never concealed: compensation ran, the branch is back at the
+        // verified commit, and the worktree's HEAD is intact and usable.
+        Assert.Equal(verifiedTip, RunGit(_repo, "rev-parse", "refs/heads/wait-race").Trim());
+        Assert.Equal(verifiedTip, RunGit(wt, "rev-parse", "HEAD").Trim());
+        RunGit(wt, "status", "--short"); // throws on a broken HEAD - a healthy worktree does not
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 4, ruling R4-1): ANY exception inside compensation still
+    // attempts the create-only restore before the exception propagates. A thrown worktree
+    // listing is the severe case - the code can neither prove the delete safe nor leave the
+    // ref missing, so the ref must be back when the exception reaches the caller.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Delete_WorktreeListingThrows_StillRestoresTheRefBeforeTheExceptionPropagates()
+    {
+        RunGit(_repo, "branch", "throw-race");
+        var verifiedTip = RunGit(_repo, "rev-parse", "throw-race").Trim();
+
+        // Checked out into a worktree AFTER verification - losing the ref breaks this worktree.
+        var wt = Path.Combine(_root, "wt-throw-race");
+        RunGit(_repo, "worktree", "add", wt, "throw-race");
+
+        var git = new ThrowingGitRunner(
+            args => args.Length >= 1 && args[0] == "worktree",
+            () => new InvalidOperationException("injected worktree listing failure"));
+
+        var svc = new GitBranchService(git);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => svc.DeleteAtVerifiedTipAsync(_repo, "throw-race", verifiedTip, "test"));
+
+        // The exception escaped LOUDLY - but the ref was restored on the way out, so the
+        // worktree's HEAD is intact and usable.
+        Assert.Equal(verifiedTip, RunGit(_repo, "rev-parse", "refs/heads/throw-race").Trim());
+        Assert.Equal(verifiedTip, RunGit(wt, "rev-parse", "HEAD").Trim());
+        RunGit(wt, "status", "--short"); // throws on a broken HEAD - a healthy worktree does not
+    }
+
     /// <summary>
     /// A git runner that fires an interleaved action right after the first command matching
     /// <c>match</c> succeeds - the deterministic stand-in for "another process acted between
@@ -476,6 +543,71 @@ public sealed class GitBranchServiceTests : IDisposable
             if (result.Success && _match(args) && Interlocked.Exchange(ref _fired, 1) == 0)
                 await _interleaved();
             return result;
+        }
+    }
+
+    /// <summary>
+    /// A git runner that reproduces the exact cancellation window inside the production
+    /// runner's process wait (ruling R4-6): for the first command matching <c>match</c>, the
+    /// child git process runs TO COMPLETION first (the mutation happens), the interleaved
+    /// cancellation then fires, and the wait's cancellation is surfaced exactly where
+    /// <c>WaitForExitAsync(token)</c> would surface it - AFTER the mutation, BEFORE the
+    /// successful result is returned. The plain InterleavingGitRunner cannot reach this
+    /// window because it only acts after RunAsync already returned its result.
+    /// </summary>
+    private sealed class CancelDuringProcessWaitGitRunner : GitCommandRunner
+    {
+        private readonly Func<string[], bool> _match;
+        private readonly Action _cancel;
+        private int _fired;
+
+        public CancelDuringProcessWaitGitRunner(Func<string[], bool> match, Action cancel)
+        {
+            _match = match;
+            _cancel = cancel;
+        }
+
+        public override async Task<GitCommandResult> RunAsync(
+            string workingDirectory, string[] args, CancellationToken ct = default)
+        {
+            if (_match(args) && Interlocked.Exchange(ref _fired, 1) == 0)
+            {
+                // The child's mutation completes regardless of the caller's token.
+                var result = await base.RunAsync(workingDirectory, args, CancellationToken.None);
+                _cancel();
+                // WaitForExitAsync(token) throws here when the caller's token was passed in -
+                // concealing the completed mutation. A token of CancellationToken.None sails
+                // through, which is exactly what ruling R4-1 requires of the delete command.
+                ct.ThrowIfCancellationRequested();
+                return result;
+            }
+            return await base.RunAsync(workingDirectory, args, ct);
+        }
+    }
+
+    /// <summary>
+    /// A git runner that throws from the first command matching <c>match</c> - the
+    /// deterministic stand-in for a runtime failure (a process-start failure and the like)
+    /// inside a compensation command.
+    /// </summary>
+    private sealed class ThrowingGitRunner : GitCommandRunner
+    {
+        private readonly Func<string[], bool> _match;
+        private readonly Func<Exception> _exception;
+        private int _fired;
+
+        public ThrowingGitRunner(Func<string[], bool> match, Func<Exception> exception)
+        {
+            _match = match;
+            _exception = exception;
+        }
+
+        public override async Task<GitCommandResult> RunAsync(
+            string workingDirectory, string[] args, CancellationToken ct = default)
+        {
+            if (_match(args) && Interlocked.Exchange(ref _fired, 1) == 0)
+                throw _exception();
+            return await base.RunAsync(workingDirectory, args, ct);
         }
     }
 
