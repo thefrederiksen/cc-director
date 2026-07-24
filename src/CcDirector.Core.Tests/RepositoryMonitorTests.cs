@@ -26,6 +26,35 @@ public class RepositoryMonitorTests
             compute: (p, _, _) => { perCompute?.Invoke(); return Task.FromResult(Status(p)); })
         { LiveSessionsProvider = NoSessions };
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection): a compute that returns Success=false is UNKNOWN, not new truth.
+    // It must not be published over a good row (the DTO drops Success, so a published failure is
+    // served as a clean, zero-value repository), and a transient failure must not remove the row.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task FailedCompute_IsNotPublished_AndDoesNotRemoveTheGoodRow()
+    {
+        bool fail = false;
+        var monitor = new RepositoryMonitor(
+            enumerate: _ => new[] { "/r/a" },
+            compute: (p, _, _) => Task.FromResult(fail
+                ? new RepositoryStatus { Path = p, Name = "a", Success = false, Error = "transient git failure" }
+                : new RepositoryStatus { Path = p, Name = "a", IsClean = true, WorktreeCount = 3, Success = true }))
+        { LiveSessionsProvider = NoSessions };
+
+        await monitor.RescanAsync(new[] { "/r" });
+        Assert.Equal(3, monitor.Snapshot().Single().WorktreeCount);
+
+        // The next scan's compute fails - the good row must survive unchanged, not become a zeroed
+        // error row and not be reconciled away.
+        fail = true;
+        await monitor.RescanAsync(new[] { "/r" });
+
+        var after = Assert.Single(monitor.Snapshot());
+        Assert.True(after.Success);
+        Assert.Equal(3, after.WorktreeCount);
+    }
+
     [Fact]
     public async Task Rescan_StreamsEachRepository_AndBuildsModel()
     {

@@ -76,9 +76,31 @@ public sealed class RepositoryStatusService
             var remoteUrl = await ReadOriginUrlAsync(repoPath, ct);
             var (provider, org) = ClassifyRemote(remoteUrl);
 
-            var sync = await _sync.GetSyncStatusAsync(repoPath);
-            var uncommitted = await _status.GetCountAsync(repoPath);
+            var sync = await _sync.GetSyncStatusAsync(repoPath, ct);
+            var count = await _status.GetCountAsync(repoPath, ct);
             var inventory = await _worktrees.GetInventoryAsync(repoPath, fetchPrune, liveSessions, ct);
+
+            // Fail closed (issue 516): if ANY probe failed, this row is UNKNOWN, never a
+            // non-provisional "verified clean" that fleet reporting and recommendations would trust.
+            if (!sync.Success || !count.Success || !inventory.Success)
+            {
+                var reason = !sync.Success ? (sync.Error ?? "sync status probe failed")
+                    : !count.Success ? "could not read the uncommitted count"
+                    : (inventory.Error ?? "worktree inventory failed");
+                FileLog.Write($"[RepositoryStatusService] GetStatusAsync: a git probe failed for {repoPath} - reporting unknown: {reason}");
+                return new RepositoryStatus
+                {
+                    Path = repoPath,
+                    Name = System.IO.Path.GetFileName(repoPath.TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar)),
+                    RemoteUrl = remoteUrl,
+                    Provider = provider,
+                    Org = org,
+                    Success = false,
+                    Error = reason,
+                };
+            }
+
+            var uncommitted = count.Count;
 
             var safe = inventory.SafeToReapCount;
             var inUse = inventory.InUseBySession.Count;

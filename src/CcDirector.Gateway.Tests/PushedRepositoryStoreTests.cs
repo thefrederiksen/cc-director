@@ -114,6 +114,55 @@ public class PushedRepositoryStoreTests
         Assert.Equal("newest", Assert.Single(fresh!.Value.Repositories).Name); // no replay landed
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (issue 516): a superseded connection that re-Hellos (its periodic reseed) must
+    // NOT reclaim ownership. Before the fix, RegisterConnection treated any connection different
+    // from the current one as a new owner, so connA -> connB -> connA-again handed ownership back
+    // to A, and two overlapping connections could alternate the authoritative snapshot forever.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public void SupersededConnection_ReHelloing_CannotReclaimOwnership()
+    {
+        var store = new PushedRepositoryStore();
+        var tenant = TenantId.Local;
+
+        store.RegisterConnection(tenant, "d1", "connA");
+        Assert.True(store.ApplySnapshot(tenant, "d1", "connA", 5, new[] { Repo("from-A") }));
+
+        // connB supersedes connA.
+        store.RegisterConnection(tenant, "d1", "connB");
+        Assert.True(store.ApplySnapshot(tenant, "d1", "connB", 1, new[] { Repo("from-B") }));
+
+        // connA re-Hellos - the critical sequence register A -> register B -> register A again.
+        store.RegisterConnection(tenant, "d1", "connA");
+
+        // connA still cannot push; connB remains the owner and its data stands.
+        Assert.False(store.ApplySnapshot(tenant, "d1", "connA", 6, new[] { Repo("A-reclaim") }));
+        var fresh = store.TryGetFresh(tenant, "d1", Fresh);
+        Assert.Equal("from-B", Assert.Single(fresh!.Value.Repositories).Name);
+    }
+
+    // A still-live older connection CAN take over once the newer owner disconnects - the lockout
+    // is only while a newer connection is present, never permanent.
+    [Fact]
+    public void OlderConnection_ReclaimsAfterTheNewerOwnerDisconnects()
+    {
+        var store = new PushedRepositoryStore();
+        var tenant = TenantId.Local;
+
+        store.RegisterConnection(tenant, "d1", "connA");
+        store.RegisterConnection(tenant, "d1", "connB"); // B supersedes A
+        Assert.True(store.ApplySnapshot(tenant, "d1", "connB", 1, new[] { Repo("from-B") }));
+
+        // B disconnects; A re-Hellos and may now resume.
+        store.UnregisterConnection(tenant, "d1", "connB");
+        store.RegisterConnection(tenant, "d1", "connA");
+        Assert.True(store.ApplySnapshot(tenant, "d1", "connA", 1, new[] { Repo("from-A-again") }));
+
+        var fresh = store.TryGetFresh(tenant, "d1", Fresh);
+        Assert.Equal("from-A-again", Assert.Single(fresh!.Value.Repositories).Name);
+    }
+
     [Fact]
     public void Push_WithoutARegisteredConnection_IsRejected()
     {

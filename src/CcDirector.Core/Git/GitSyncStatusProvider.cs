@@ -1,4 +1,4 @@
-using System.Diagnostics;
+using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Git;
 
@@ -17,11 +17,11 @@ public class GitSyncStatus
 
 public class GitSyncStatusProvider
 {
-    public async Task<GitSyncStatus> GetSyncStatusAsync(string repoPath)
+    public async Task<GitSyncStatus> GetSyncStatusAsync(string repoPath, CancellationToken ct = default)
     {
         try
         {
-            var output = await RunGitAsync(repoPath, "status --branch --porcelain=v2");
+            var output = await RunGitAsync(repoPath, new[] { "status", "--branch", "--porcelain=v2" }, ct);
             if (output == null)
                 return new GitSyncStatus { Success = false, Error = "Failed to start git process" };
 
@@ -30,10 +30,10 @@ public class GitSyncStatusProvider
             // Determine behind-main count if not on main
             if (!status.IsDetachedHead && !IsMainBranch(status.BranchName))
             {
-                var mainBranch = await DetectMainBranchAsync(repoPath);
+                var mainBranch = await DetectMainBranchAsync(repoPath, ct);
                 if (mainBranch != null)
                 {
-                    var countOutput = await RunGitAsync(repoPath, $"rev-list --count HEAD..origin/{mainBranch}");
+                    var countOutput = await RunGitAsync(repoPath, new[] { "rev-list", "--count", $"HEAD..origin/{mainBranch}" }, ct);
                     if (countOutput != null && int.TryParse(countOutput.Trim(), out var count))
                     {
                         return new GitSyncStatus
@@ -48,10 +48,21 @@ public class GitSyncStatusProvider
                             Success = true
                         };
                     }
+
+                    // The main branch was detected but the behind-main count could not be read (a
+                    // transient object-store failure, malformed output). The sync status is
+                    // INCOMPLETE, so fail closed rather than publish a false BehindMainCount of zero
+                    // as verified (inspection).
+                    return new GitSyncStatus { Success = false, Error = $"could not read behind-main count for {status.BranchName}" };
                 }
             }
 
             return status;
+        }
+        catch (OperationCanceledException)
+        {
+            // A superseded scan cancelled this compute - propagate, never fold into a failed status.
+            throw;
         }
         catch (Exception ex)
         {
@@ -108,11 +119,15 @@ public class GitSyncStatusProvider
         };
     }
 
-    public async Task FetchAsync(string repoPath)
+    public async Task FetchAsync(string repoPath, CancellationToken ct = default)
     {
         try
         {
-            await RunGitAsync(repoPath, "fetch --quiet");
+            await RunGitAsync(repoPath, new[] { "fetch", "--quiet" }, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch
         {
@@ -120,13 +135,13 @@ public class GitSyncStatusProvider
         }
     }
 
-    private async Task<string?> DetectMainBranchAsync(string repoPath)
+    private async Task<string?> DetectMainBranchAsync(string repoPath, CancellationToken ct)
     {
-        var result = await RunGitAsync(repoPath, "rev-parse --verify --quiet origin/main");
+        var result = await RunGitAsync(repoPath, new[] { "rev-parse", "--verify", "--quiet", "origin/main" }, ct);
         if (result != null)
             return "main";
 
-        result = await RunGitAsync(repoPath, "rev-parse --verify --quiet origin/master");
+        result = await RunGitAsync(repoPath, new[] { "rev-parse", "--verify", "--quiet", "origin/master" }, ct);
         if (result != null)
             return "master";
 
@@ -136,26 +151,14 @@ public class GitSyncStatusProvider
     private static bool IsMainBranch(string branchName) =>
         branchName is "main" or "master";
 
-    private async Task<string?> RunGitAsync(string repoPath, string args)
+    private async Task<string?> RunGitAsync(string repoPath, string[] args, CancellationToken ct)
     {
-        var psi = new ProcessStartInfo
-        {
-            FileName = "git",
-            Arguments = args,
-            WorkingDirectory = repoPath,
-            CreateNoWindow = true,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
-        };
-
-        using var process = Process.Start(psi);
-        if (process == null)
+        // ProcessRunner drains BOTH pipes (the old code never drained stderr, so a git command that
+        // filled its error pipe could deadlock) and honors cancellation by killing the child so a
+        // superseded scan does not leave git processes behind (issue 516).
+        var r = await ProcessRunner.RunAsync("git", args, repoPath, ct);
+        if (!r.Started)
             return null;
-
-        var output = await process.StandardOutput.ReadToEndAsync();
-        await process.WaitForExitAsync();
-
-        return process.ExitCode == 0 ? output : null;
+        return r.ExitCode == 0 ? r.StandardOutput : null;
     }
 }

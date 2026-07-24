@@ -121,10 +121,16 @@ public sealed class SessionManager : IDisposable
     /// (<see cref="WireSessionReaper"/>), which fires off a process exit rather than a flag.</summary>
     private readonly System.Threading.Timer _deletionReaper;
 
-    public SessionManager(AgentOptions options, Action<string>? log = null)
+    /// <summary>Machine-local reservations: while a session is alive its working directory is
+    /// reserved so the worktree reaper (in this or any Director slot on this machine) never removes
+    /// it out from under the session. Injectable for tests; production uses the default machine path.</summary>
+    private readonly Git.WorktreeReservationStore _reservations;
+
+    public SessionManager(AgentOptions options, Action<string>? log = null, Git.WorktreeReservationStore? reservations = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _log = log;
+        _reservations = reservations ?? new Git.WorktreeReservationStore();
         _deletionReaper = new System.Threading.Timer(
             _ => ReapPendingDeletions(), null, DeletionReaperIntervalMs, DeletionReaperIntervalMs);
     }
@@ -139,6 +145,31 @@ public sealed class SessionManager : IDisposable
         // (the "two sessions in the desktop, one with no claude" symptom). One-shot + idempotent
         // downstream, so a duplicate announce of the same session does no harm.
         WireSessionReaper(session);
+
+        // Every creation route funnels through here, so this is also the one place to RESERVE the
+        // session's working directory (inspection): while this session is alive, the worktree reaper
+        // - in this Director slot or another on this machine - must not remove the worktree it is in.
+        // Only real local directories are reserved (a remote/label RepoPath matches no worktree).
+        //
+        // The reservation is owned by the SESSION PROCESS, not this Director (inspection round 6): a
+        // session (or a detached child) can outlive a force-killed Director, and its worktree must stay
+        // protected. Liveness therefore tracks the session's own process. If its start time cannot be
+        // read the reservation stays Director-owned (the pre-launch reservation), which is still correct
+        // while this Director is alive.
+        if (!string.IsNullOrWhiteSpace(session.RepoPath) && Directory.Exists(session.RepoPath))
+        {
+            int spid = session.ProcessId;
+            DateTime? sstart = null;
+            if (spid > 0)
+            {
+                try { using var sp = System.Diagnostics.Process.GetProcessById(spid); sstart = sp.StartTime.ToUniversalTime(); }
+                catch { sstart = null; }
+            }
+            if (spid > 0 && sstart is not null)
+                _reservations.Reserve(session.RepoPath, session.Id.ToString(), spid, sstart);
+            else
+                _reservations.Reserve(session.RepoPath, session.Id.ToString());
+        }
 
         // Issue #820: every creation route funnels through here, so this is the one place to ensure
         // the session carries a three-digit number BEFORE subscribers (the desktop UI, the web
@@ -282,6 +313,9 @@ public sealed class SessionManager : IDisposable
     private void WireSessionReaper(Session session)
     {
         session.OnExited += exitCode => OnSessionProcessExited(session, exitCode);
+        // Release the worktree reservation the moment the session's process exits (clean exit, crash,
+        // or an explicit close that kills the process), so the worktree becomes reapable again.
+        session.OnExited += _ => _reservations.Release(session.Id.ToString());
     }
 
     /// <summary>
@@ -636,6 +670,14 @@ public sealed class SessionManager : IDisposable
             var (launchExe, launchArgs) = CommandLineLauncher.Build(resolvedExe, args);
             if (!string.Equals(launchExe, resolvedExe, StringComparison.OrdinalIgnoreCase))
                 _log?.Invoke($"Launching '{resolvedExe}' via shell: {launchExe} {launchArgs}");
+
+            // Reserve the worktree BEFORE the process starts (inspection round 5). The reserve-write is
+            // serialized against the reaper's remove by a machine-wide lock, so a reaper can never
+            // observe this running process without also observing its reservation - closing the
+            // launch-versus-reap race. RaiseSessionCreated re-reserves (idempotent) for the other
+            // creation routes (restore, web Control API) that do not pass through this launch path.
+            if (!string.IsNullOrWhiteSpace(repoPath) && Directory.Exists(repoPath))
+                _reservations.Reserve(repoPath, id.ToString());
 
             // Get initial terminal dimensions (default 120x30)
             backend.Start(launchExe, launchArgs, repoPath, 120, 30, envVars);

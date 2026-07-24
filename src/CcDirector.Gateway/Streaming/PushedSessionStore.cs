@@ -100,8 +100,39 @@ public sealed class PushedSessionStore
         var entry = DirectorsFor(tenant).GetOrAdd(directorId, _ => new DirectorEntry());
         lock (entry.Gate)
         {
+            if (!entry.ConnectionEpochs.TryGetValue(connectionId, out var epoch))
+            {
+                epoch = entry.NextEpoch++;
+                entry.ConnectionEpochs[connectionId] = epoch;
+            }
+
+            if (string.Equals(entry.ActiveConnectionId, connectionId, StringComparison.Ordinal))
+            {
+                // Repeated Hello from the CURRENT connection - keep the baseline (do not let an older
+                // sequence replay over newer data).
+                return;
+            }
+
+            if (epoch < entry.CurrentEpoch)
+            {
+                // A SUPERSEDED connection re-sending Hello (its periodic reseed) must NOT reclaim
+                // ownership (inspection): otherwise two overlapping connections alternate the
+                // authoritative session roster, and a stale snapshot omitting a live session would be
+                // served as authoritative to the destructive reaper.
+                FileLog.Write($"[PushedSessionStore] RegisterConnection IGNORED (superseded conn epoch {epoch} < current {entry.CurrentEpoch}): tenant={tenant.ToLogString()}, director={directorId}, conn={Short(connectionId)}");
+                return;
+            }
+
             entry.ActiveConnectionId = connectionId;
+            entry.CurrentEpoch = epoch;
             entry.LastSequence = -1;
+            // Treat the cache as STALE until THIS new connection pushes its own snapshot (inspection
+            // round 5). The previous connection's sessions are kept for reconnect continuity, but if we
+            // left the old ReceivedAtUtc in place TryGetFresh would serve the PRIOR connection's roster
+            // as fresh under the new active connection - a stale set that could omit a live session the
+            // new connection knows about, which the destructive reaper would then act on. Resetting it
+            // makes the register-to-first-snapshot interval fail closed: reads fall back to pull.
+            entry.ReceivedAtUtc = DateTime.MinValue;
         }
         FileLog.Write($"[PushedSessionStore] RegisterConnection: tenant={tenant.ToLogString()}, director={directorId}, conn={Short(connectionId)} is now the active connection");
     }
@@ -125,12 +156,16 @@ public sealed class PushedSessionStore
 
         lock (entry.Gate)
         {
+            entry.ConnectionEpochs.Remove(connectionId);
             if (!string.Equals(entry.ActiveConnectionId, connectionId, StringComparison.Ordinal))
             {
                 FileLog.Write($"[PushedSessionStore] UnregisterConnection IGNORED (not active): tenant={tenant.ToLogString()}, director={directorId}, conn={Short(connectionId)}, active={Short(entry.ActiveConnectionId)}");
                 return false;
             }
             entry.ActiveConnectionId = null;
+            // Drop the ownership epoch so a still-live older connection can reclaim on its next Hello -
+            // it was only held back while a newer connection was present.
+            entry.CurrentEpoch = 0;
         }
         FileLog.Write($"[PushedSessionStore] UnregisterConnection: tenant={tenant.ToLogString()}, director={directorId}, conn={Short(connectionId)} cleared; aggregation will fall back to pull");
         return true;
@@ -379,6 +414,18 @@ public sealed class PushedSessionStore
     {
         public readonly object Gate = new();
         public string? ActiveConnectionId;
+
+        // Connection RECENCY (inspection): each connection is stamped with a monotonically increasing
+        // epoch the first time it registers. A superseded (lower-epoch) connection re-sending Hello
+        // cannot reclaim ownership, so two overlapping connections cannot alternate the authoritative
+        // session roster - the same discipline PushedRepositoryStore uses. This matters because the
+        // roster is a DESTRUCTIVE authority (the worktree reaper trusts it): a reclaimed old connection
+        // would push a stale snapshot that omits a live session, and the reaper could then delete that
+        // session's worktree.
+        public long CurrentEpoch;                 // 0 = no owner
+        public long NextEpoch = 1;
+        public readonly Dictionary<string, long> ConnectionEpochs = new(StringComparer.Ordinal);
+
         public long LastSequence = -1;
         public DateTime ReceivedAtUtc = DateTime.MinValue;
         public readonly Dictionary<string, SessionDto> Sessions = new(StringComparer.Ordinal);

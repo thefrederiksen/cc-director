@@ -204,6 +204,24 @@ public sealed class RepositoryStatusServiceTests : IDisposable
         Assert.DoesNotContain(repos, r => r.Name == "two-wt");
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (issue 516): a failed git probe must be reported as UNKNOWN, never folded into a
+    // non-provisional "verified clean" row eligible for fleet reporting and recommendations. A real
+    // directory that is not a git repository makes the status, sync, and worktree probes all fail;
+    // the aggregate must come back Success=false, not Success=true with IsClean=true.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task GetStatusAsync_WhenGitProbesFail_ReportsUnknown_NotVerifiedClean()
+    {
+        var notARepo = Path.Combine(_root, "not-a-repo");
+        Directory.CreateDirectory(notARepo);
+
+        var status = await new RepositoryStatusService().GetStatusAsync(notARepo, fetchPrune: false);
+
+        Assert.False(status.Success, "a failed git probe must report unknown, never a verified-clean row");
+        Assert.False(status.IsClean);
+    }
+
     // ----- helpers -----
 
     private (string Repo, string Origin) MakeRepoWithBareOrigin(string name)

@@ -154,3 +154,4 @@ mobile/public/fixtures/
 # ad-hoc test-run scratch written to the repo root. Regenerable from a live session;
 # thousands of per-run capture files, never part of the codebase.
 artifacts/
+_inspection/

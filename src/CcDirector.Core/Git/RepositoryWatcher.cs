@@ -3,20 +3,27 @@ using CcDirector.Core.Utilities;
 namespace CcDirector.Core.Git;
 
 /// <summary>
-/// Watches the registered root directories and each known repository's git-state signals, and asks
-/// the <see cref="RepositoryMonitor"/> to recompute ONLY the affected repository - so after the
-/// first scan the model stays current by reacting to change instead of re-scanning everything
+/// Watches the registered root directories and each known repository, and asks the
+/// <see cref="RepositoryMonitor"/> to recompute ONLY the affected repository - so after the first
+/// scan the model stays current by reacting to change instead of re-scanning everything
 /// (issue devthrottle_internal#510, phase A).
 ///
-/// Deliberately narrow watch set:
+/// Watch set:
 /// - each ROOT, non-recursive, directory events only: a repo folder appearing or vanishing;
-/// - each repo's .git, recursive, but FILTERED to HEAD, packed-refs, refs/, logs/HEAD, and
-///   worktrees/ - the signals that change repo/worktree state.
-/// It deliberately IGNORES .git/index and .git/objects: our own status scans touch the index, so
-/// watching it would feed the watcher its own echo, and object writes are covered by the reflog.
-/// Working-tree files are never watched (builds and node_modules would flood us).
+/// - each repo, recursive: inside .git only the state signals (HEAD, packed-refs, refs/, logs/HEAD,
+///   worktrees/) fire - .git/index and .git/objects are ignored because our own status scans touch
+///   the index (self-echo) and object writes are covered by the reflog; OUTSIDE .git, any
+///   working-tree change fires, so editing a tracked file, adding an untracked file, or deleting a
+///   worktree file updates the repository's cleanliness and dirty-age (issue 516).
 ///
-/// Events are debounced per repository (a burst collapses to one recompute).
+/// Events are debounced per repository (a burst - including a build-output flood - collapses to one
+/// recompute after it settles).
+///
+/// Recovery (issue 516): a FileSystemWatcher can silently drop events on an internal-buffer overflow,
+/// and some state changes emit no event a per-repo watcher can see (a repository created by
+/// "git init" in an existing folder, a slow clone whose directory appeared before its .git). Two
+/// safety nets cover these: a <see cref="FileSystemWatcher.Error"/> handler and a periodic timer both
+/// raise <see cref="ReconciliationRequested"/>, which the host wires to a full rescan.
 /// </summary>
 public sealed class RepositoryWatcher : IDisposable
 {
@@ -27,14 +34,25 @@ public sealed class RepositoryWatcher : IDisposable
     private readonly Dictionary<string, FileSystemWatcher> _rootWatchers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, FileSystemWatcher> _repoWatchers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, CancellationTokenSource> _pending = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Timer _reconcileTimer;
     private bool _disposed;
 
     /// <summary>Raised after a debounced change triggered a recompute (test observability).</summary>
     public event Action<string>? Recomputed;
 
-    public RepositoryWatcher(RepositoryMonitor monitor)
+    /// <summary>
+    /// Raised when the watcher cannot trust its incremental view and a FULL rescan is needed: a
+    /// FileSystemWatcher error (buffer overflow) or the periodic reconciliation tick. The host wires
+    /// this to its repository rescan. This is how a "git init" in an existing folder, a slow clone,
+    /// and any events dropped on overflow are eventually reconciled.
+    /// </summary>
+    public event Action? ReconciliationRequested;
+
+    public RepositoryWatcher(RepositoryMonitor monitor, TimeSpan? reconcileInterval = null)
     {
         _monitor = monitor;
+        var interval = reconcileInterval ?? TimeSpan.FromMinutes(5);
+        _reconcileTimer = new Timer(_ => RaiseReconciliation("periodic reconciliation"), null, interval, interval);
     }
 
     /// <summary>
@@ -70,7 +88,7 @@ public sealed class RepositoryWatcher : IDisposable
                 var gitDir = Path.Combine(repo, ".git");
                 if (!Directory.Exists(gitDir))
                     continue; // a worktree-style .git FILE has its real state under the primary's .git
-                try { _repoWatchers[repo] = CreateGitWatcher(repo, gitDir); }
+                try { _repoWatchers[repo] = CreateRepoWatcher(repo); }
                 catch (Exception ex) { FileLog.Write($"[RepositoryWatcher] git watch failed for {repo}: {ex.Message}"); }
             }
 
@@ -94,27 +112,49 @@ public sealed class RepositoryWatcher : IDisposable
             Schedule(Path.Combine(root, Path.GetFileName(e.OldName ?? "")));
             Schedule(Path.Combine(root, Path.GetFileName(e.Name ?? "")));
         };
+        w.Error += (_, e) => OnWatcherError($"root {root}", e);
         return w;
     }
 
-    private FileSystemWatcher CreateGitWatcher(string repoPath, string gitDir)
+    private FileSystemWatcher CreateRepoWatcher(string repoPath)
     {
-        var w = new FileSystemWatcher(gitDir)
+        var w = new FileSystemWatcher(repoPath)
         {
-            NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite,
+            NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size,
             IncludeSubdirectories = true,
+            InternalBufferSize = 64 * 1024, // the largest allowed - fewer overflows on busy trees
             EnableRaisingEvents = true,
         };
-        void OnGit(object _, FileSystemEventArgs e)
+        void OnChange(object _, FileSystemEventArgs e)
         {
-            if (IsSignal(e.Name))
+            if (IsRepoSignal(e.Name))
                 Schedule(repoPath);
         }
-        w.Created += OnGit;
-        w.Deleted += OnGit;
-        w.Changed += OnGit;
-        w.Renamed += (_, e) => { if (IsSignal(e.Name) || IsSignal(e.OldName)) Schedule(repoPath); };
+        w.Created += OnChange;
+        w.Deleted += OnChange;
+        w.Changed += OnChange;
+        w.Renamed += (_, e) => { if (IsRepoSignal(e.Name) || IsRepoSignal(e.OldName)) Schedule(repoPath); };
+        w.Error += (_, e) => OnWatcherError($"repository {repoPath}", e);
         return w;
+    }
+
+    /// <summary>
+    /// Whether a path relative to the repository ROOT should trigger a recompute. Pure and testable.
+    /// Inside .git only the state signals count (the index and object churn are ignored); OUTSIDE
+    /// .git, any working-tree change counts, so cleanliness and dirty-age stay current (issue 516).
+    /// </summary>
+    internal static bool IsRepoSignal(string? relative)
+    {
+        if (string.IsNullOrEmpty(relative))
+            return false;
+        var p = relative.Replace('/', '\\');
+
+        if (p.Equals(".git", StringComparison.OrdinalIgnoreCase))
+            return false; // the .git directory itself changing is not a state signal
+        if (p.StartsWith(".git\\", StringComparison.OrdinalIgnoreCase))
+            return IsSignal(p[".git\\".Length..]); // inside .git: only the state signals
+
+        return true; // a working-tree path - the tree may have become dirty or clean
     }
 
     /// <summary>True when a path relative to .git is a state signal we react to. Pure and testable.</summary>
@@ -128,6 +168,27 @@ public sealed class RepositoryWatcher : IDisposable
             || p.StartsWith("refs\\", StringComparison.OrdinalIgnoreCase)
             || p.Equals("logs\\HEAD", StringComparison.OrdinalIgnoreCase)
             || p.StartsWith("worktrees\\", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void OnWatcherError(string context, ErrorEventArgs e)
+    {
+        FileLog.Write($"[RepositoryWatcher] watcher error for {context}: {e.GetException()?.Message} - requesting full reconciliation");
+        RaiseReconciliation($"watcher error ({context})");
+    }
+
+    private void RaiseReconciliation(string why)
+    {
+        if (_disposed)
+            return;
+        FileLog.Write($"[RepositoryWatcher] full reconciliation requested: {why}");
+        try
+        {
+            ReconciliationRequested?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[RepositoryWatcher] reconciliation handler threw: {ex.Message}");
+        }
     }
 
     /// <summary>Debounced per-repo: a burst of events collapses into one recompute.</summary>
@@ -167,6 +228,11 @@ public sealed class RepositoryWatcher : IDisposable
         try
         {
             FileLog.Write($"[RepositoryWatcher] change settled - recomputing {repoPath}");
+            // Drop the 10-second status cache for this repository FIRST (inspection): a working-tree
+            // change that lands right after a scan populated the cache would otherwise recompute from
+            // the stale "clean" count and republish clean, staying wrong until the periodic
+            // reconciliation. Invalidating here makes the recompute read the tree as it is now.
+            GitStatusProvider.InvalidateCache(repoPath);
             await _monitor.RecomputeOneAsync(repoPath);
             Recomputed?.Invoke(repoPath);
         }
@@ -181,6 +247,7 @@ public sealed class RepositoryWatcher : IDisposable
         lock (_gate)
         {
             _disposed = true;
+            _reconcileTimer.Dispose();
             foreach (var w in _rootWatchers.Values) w.Dispose();
             foreach (var w in _repoWatchers.Values) w.Dispose();
             _rootWatchers.Clear();

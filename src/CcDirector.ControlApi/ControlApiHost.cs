@@ -186,6 +186,11 @@ public sealed class ControlApiHost : IAsyncDisposable
     public Task<List<Gateway.Contracts.SessionDto>>? ListFleetSessionsAsync(CancellationToken ct = default)
         => _gatewayClient?.ListFleetSessionsAsync(ct);
 
+    /// <summary>The fleet roster WITH per-Director reachability, so a caller that must not act on a
+    /// partial roster (the destructive reaper) can fail closed when the fleet view is incomplete.</summary>
+    public Task<(List<Gateway.Contracts.SessionDto> Sessions, List<Gateway.Contracts.DirectorReachabilityDto> Reachability)>? ListFleetSessionsWithReachabilityAsync(CancellationToken ct = default)
+        => _gatewayClient?.ListFleetSessionsWithReachabilityAsync(ct);
+
     private TurnSummaryCache? _turnSummaryCache;
     // Mission records (mission-as-first-class-unit-of-work): a durable, file-backed store with no runtime
     // dependencies, so it is ready from construction (unlike the caches wired up in StartAsync).

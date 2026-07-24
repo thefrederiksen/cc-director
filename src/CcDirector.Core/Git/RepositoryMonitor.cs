@@ -641,6 +641,16 @@ public sealed class RepositoryMonitor
     /// </summary>
     private RepositoryStatus? PublishIfNewestLocked(string key, RepositoryStatus status, long computeStamp)
     {
+        // A FAILED compute is UNKNOWN, not new truth (inspection): the DTO layer drops Success/Error,
+        // so a published failure would be served as a clean, zero-value repository and would overwrite
+        // a correct row (and, via the Gateway, a correct history row) with zeros. Never publish it -
+        // keep the previous row; the next successful compute updates it. The scan still marks the key
+        // seen, so reconciliation does not remove the prior row for a transient failure.
+        if (!status.Success)
+        {
+            FileLog.Write($"[RepositoryMonitor] compute for {status.Path} returned unknown (Success=false) - not published, previous row kept");
+            return null;
+        }
         if (_publishStamps.TryGetValue(key, out var newest) && newest > computeStamp)
         {
             FileLog.Write($"[RepositoryMonitor] publish dropped for {status.Path}: a newer compute (stamp {newest}) already ruled this key (this compute started at stamp {computeStamp})");

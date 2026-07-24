@@ -56,6 +56,11 @@ public sealed class RepoHistoryStore
 {
     public const int DirtyThresholdDays = 7;
 
+    /// <summary>How long a daily row is kept. The only reader caps its window at 26 weeks, so rows
+    /// older than that (plus a week of margin) are pruned - otherwise the file and the in-memory
+    /// dictionary grow forever and every push rewrites all of history (issue 516).</summary>
+    public const int RetentionDays = 26 * 7 + 7;
+
     private readonly string _path;
     private readonly object _gate = new();
     private Dictionary<string, RepoDailySnapshot>? _rows; // key: tenant|date|machine|repo
@@ -65,26 +70,55 @@ public sealed class RepoHistoryStore
         _path = path;
     }
 
-    /// <summary>Fold a pushed snapshot into today's rows. Idempotent per day; cheap on every push.</summary>
-    public void ObserveSnapshot(TenantId tenant, IReadOnlyList<RepoStatusDto> repositories, DateOnly? today = null)
+    /// <summary>
+    /// Fold a pushed snapshot into today's rows. Idempotent per day; cheap on every push.
+    ///
+    /// <paramref name="directorId"/> is the AUTHORITATIVE Director bound to the pushing connection
+    /// (inspection): every row is stamped with it and reconciliation is scoped to it, so a payload
+    /// DirectorId can never make one Director rewrite or reconcile another Director's history.
+    ///
+    /// The snapshot is a Director's FULL current view, so a REAL observation also RECONCILES: rows
+    /// for that Director whose repository disappeared from the snapshot (removed, moved, or renamed)
+    /// are dropped for today, rather than left in the dirty callouts and double-counted (issue 516).
+    /// Reconciliation runs ONLY when the snapshot contains at least one accepted (non-provisional)
+    /// row (inspection): an empty or all-provisional push - a cold start before the first live scan,
+    /// a warm-cache push - must never be mistaken for "all repositories removed" and erase today's
+    /// verified history. The accepted cost is that an all-removed day is not auto-cleared until the
+    /// next real observation or the retention window; keeping a stale row beats erasing a true one.
+    /// </summary>
+    public void ObserveSnapshot(TenantId tenant, string directorId, IReadOnlyList<RepoStatusDto> repositories, DateOnly? today = null)
     {
+        if (string.IsNullOrWhiteSpace(directorId))
+        {
+            FileLog.Write("[RepoHistoryStore] ObserveSnapshot ignored - no bound Director id");
+            return; // the Director id is half the identity and the reconciliation scope
+        }
+
         var date = today ?? DateOnly.FromDateTime(DateTime.UtcNow);
         lock (_gate)
         {
             Load();
+
+            var presentKeys = new HashSet<string>(StringComparer.Ordinal);
+
+            // Change detection (issue 516): every accepted push re-pushes the FULL snapshot, and on a
+            // hosted Gateway this happens on a periodic cadence for every tenant. Rewriting the whole
+            // global file when nothing actually changed is pure noisy-neighbour cost, so the disk
+            // write is skipped unless this observation added, changed, removed, or pruned a row.
+            bool changed = false;
+            bool sawProvisional = false;
+
             foreach (var r in repositories)
             {
                 if (r.Provisional)
+                {
+                    sawProvisional = true;
                     continue; // unverified warm-start data never becomes history
+                }
                 if (string.IsNullOrWhiteSpace(r.Path))
                 {
                     FileLog.Write($"[RepoHistoryStore] snapshot row without a path ignored (name={r.Name})");
                     continue; // the path IS the identity - a pathless row cannot be keyed
-                }
-                if (string.IsNullOrWhiteSpace(r.DirectorId))
-                {
-                    FileLog.Write($"[RepoHistoryStore] snapshot row without a Director id ignored (name={r.Name})");
-                    continue; // the Director id is part of the identity (ruling R2-9)
                 }
                 int dirtyDays = r.DirtySinceUtc is { } since && !r.IsClean
                     ? (int)Math.Max(0, (DateTime.UtcNow - since).TotalDays)
@@ -94,7 +128,7 @@ public sealed class RepoHistoryStore
                     Tenant = tenant.Value,
                     Date = date,
                     MachineName = r.MachineName,
-                    DirectorId = r.DirectorId,
+                    DirectorId = directorId, // the BOUND Director, never the payload's r.DirectorId
                     Path = r.Path,
                     Name = r.Name,
                     UncommittedCount = r.UncommittedCount,
@@ -104,11 +138,59 @@ public sealed class RepoHistoryStore
                     WorktreesSafeToReap = r.WorktreesSafeToReap,
                     WorktreeBytes = r.WorktreeBytes,
                 };
-                _rows![Key(row)] = row;
+                var key = Key(row);
+                if (!_rows!.TryGetValue(key, out var existing) || !existing.Equals(row))
+                    changed = true;
+                _rows![key] = row;
+                presentKeys.Add(key);
             }
-            Save();
+
+            // Reconcile ONLY on a COMPLETE, fully-verified observation: at least one accepted row AND
+            // no provisional row anywhere in the push (inspection). A MIXED snapshot - some repos
+            // verified, others still provisional during startup - is a partial view, and reconciling
+            // from it would delete the verified history of a repository that simply had not finished
+            // warming up yet. Drop THIS Director's rows for today whose repository is no longer
+            // present. Scoped to (tenant, today, bound Director), so another Director's rows and other
+            // days are untouched.
+            if (presentKeys.Count > 0 && !sawProvisional)
+            {
+                var stale = _rows!.Values
+                    .Where(row => row.Tenant == tenant.Value
+                                  && row.Date == date
+                                  && string.Equals(row.DirectorId, directorId, StringComparison.OrdinalIgnoreCase)
+                                  && !presentKeys.Contains(Key(row)))
+                    .ToList();
+                foreach (var row in stale)
+                    _rows!.Remove(Key(row));
+                if (stale.Count > 0)
+                    changed = true;
+            }
+
+            // Retention (issue 516): age out rows past the read window across ALL tenants, so the
+            // file and dictionary do not grow without bound and write cost does not grow with all
+            // past tenants/Directors/repositories.
+            var cutoff = date.AddDays(-RetentionDays);
+            var expired = _rows!.Values.Where(row => row.Date < cutoff).ToList();
+            foreach (var row in expired)
+                _rows!.Remove(Key(row));
+            if (expired.Count > 0)
+            {
+                changed = true;
+                FileLog.Write($"[RepoHistoryStore] pruned {expired.Count} row(s) older than {RetentionDays} days");
+            }
+
+            // Persist when there is a logical change OR a previous save failed and is still pending
+            // (inspection): change detection compares in-memory rows, so a suppressed write failure
+            // would otherwise stay non-durable until some unrelated value changed. Retry until a save
+            // actually succeeds.
+            if (changed || _saveFailedPending)
+                _saveFailedPending = !Save();
         }
     }
+
+    /// <summary>True when the last <see cref="Save"/> failed and the in-memory state is not yet on
+    /// disk. Set under <see cref="_gate"/>; forces the next observation to retry the write.</summary>
+    private bool _saveFailedPending;
 
     /// <summary>Weekly trends for the last <paramref name="weeks"/> weeks (oldest first).</summary>
     public IReadOnlyList<RepoWeekTrend> WeeklyTrends(TenantId tenant, int weeks = 8, DateOnly? today = null)
@@ -187,39 +269,112 @@ public sealed class RepoHistoryStore
         if (_rows != null)
             return;
         _rows = new Dictionary<string, RepoDailySnapshot>(StringComparer.Ordinal);
-        try
+
+        // Read the live file. If it is missing or unreadable AS A WHOLE, fall back to the backup
+        // entirely. If it was readable but LOST rows to corrupt lines, recover those rows from the
+        // backup WITHOUT overwriting the newer live rows (inspection): otherwise the next save would
+        // persist the incomplete set and File.Replace would overwrite the good backup with the
+        // corrupt old live file, losing the dropped rows forever (issue 516).
+        var liveSkipped = TryLoadFrom(_path);
+        if (liveSkipped < 0)
         {
-            if (!File.Exists(_path))
-                return;
-            foreach (var line in File.ReadAllLines(_path))
-            {
-                if (string.IsNullOrWhiteSpace(line))
-                    continue;
-                var row = JsonSerializer.Deserialize<RepoDailySnapshot>(line);
-                // Rows without a path or without a Director id predate the current key format
-                // (days old, unreleased) and cannot be keyed - ignored rather than migrated.
-                if (row != null && !string.IsNullOrWhiteSpace(row.Path) && !string.IsNullOrWhiteSpace(row.DirectorId))
-                    _rows[Key(row)] = row;
-            }
+            TryLoadFrom(_path + ".bak");
         }
-        catch (Exception ex)
+        else if (liveSkipped > 0)
         {
-            FileLog.Write($"[RepoHistoryStore] load failed (starting empty): {ex.Message}");
+            FileLog.Write($"[RepoHistoryStore] live history had {liveSkipped} corrupt line(s) - recovering the lost rows from the backup");
+            TryLoadFrom(_path + ".bak", fillGapsOnly: true);
         }
     }
 
-    private void Save()
+    /// <summary>
+    /// Loads rows from <paramref name="path"/> into <see cref="_rows"/>. Returns the number of
+    /// corrupt lines skipped, or -1 when the file is missing or cannot be read as a whole. With
+    /// <paramref name="fillGapsOnly"/> a row is added only when its key is not already present -
+    /// used to recover rows a corrupt live file lost, without clobbering the newer live rows.
+    /// </summary>
+    private int TryLoadFrom(string path, bool fillGapsOnly = false)
+    {
+        if (!File.Exists(path))
+            return -1;
+
+        string[] lines;
+        try
+        {
+            lines = File.ReadAllLines(path);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[RepoHistoryStore] could not read {path} (will try the backup): {ex.Message}");
+            return -1;
+        }
+
+        int skipped = 0;
+        foreach (var line in lines)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+                continue;
+            RepoDailySnapshot? row;
+            try
+            {
+                row = JsonSerializer.Deserialize<RepoDailySnapshot>(line);
+            }
+            catch (Exception)
+            {
+                // A single corrupt line (a torn write) must NOT drop every good line after it -
+                // skip this one and keep the rest (issue 516). Previously the first bad line ended
+                // the whole load, and the next save rewrote the file from the truncated result.
+                skipped++;
+                continue;
+            }
+            // Rows without a path or without a Director id predate the current key format
+            // (days old, unreleased) and cannot be keyed - ignored rather than migrated.
+            if (row != null && !string.IsNullOrWhiteSpace(row.Path) && !string.IsNullOrWhiteSpace(row.DirectorId))
+            {
+                var key = Key(row);
+                if (fillGapsOnly && _rows!.ContainsKey(key))
+                    continue; // recovery pass: keep the newer live row, only fill genuine gaps
+                _rows![key] = row;
+            }
+        }
+        if (skipped > 0)
+            FileLog.Write($"[RepoHistoryStore] skipped {skipped} unparseable line(s) in {path}");
+        return skipped;
+    }
+
+    /// <summary>Persists the current rows atomically. Returns false if the write failed (the caller
+    /// keeps the state pending and retries on the next observation).</summary>
+    private bool Save()
     {
         try
         {
             var dir = Path.GetDirectoryName(_path);
             if (dir != null)
                 Directory.CreateDirectory(dir);
-            File.WriteAllLines(_path, _rows!.Values.Select(r => JsonSerializer.Serialize(r)));
+
+            // Write the whole file to a temp, flush it to disk, then swap it in atomically - so a
+            // crash, a full disk, or an interrupted write can never truncate the live history
+            // (issue 516). File.Replace keeps the previous file as a .bak for the load-time fallback.
+            var tmp = _path + ".tmp";
+            using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+            using (var writer = new StreamWriter(fs))
+            {
+                foreach (var r in _rows!.Values)
+                    writer.WriteLine(JsonSerializer.Serialize(r));
+                writer.Flush();
+                fs.Flush(flushToDisk: true);
+            }
+
+            if (File.Exists(_path))
+                File.Replace(tmp, _path, _path + ".bak");
+            else
+                File.Move(tmp, _path);
+            return true;
         }
         catch (Exception ex)
         {
             FileLog.Write($"[RepoHistoryStore] save failed: {ex.Message}");
+            return false;
         }
     }
 }

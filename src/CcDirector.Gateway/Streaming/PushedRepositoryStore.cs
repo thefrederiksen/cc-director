@@ -26,6 +26,15 @@ public sealed class PushedRepositoryStore
     private sealed class Entry
     {
         public string? ActiveConnectionId;
+
+        // Connection RECENCY (issue 516). Each connection is stamped with a monotonically increasing
+        // epoch the first time it registers. The current owner is the highest epoch seen among live
+        // connections; a superseded (lower-epoch) connection re-Helloing can never reclaim ownership,
+        // so two overlapping connections cannot alternate the authoritative snapshot indefinitely.
+        public long CurrentEpoch;                 // 0 = no owner
+        public long NextEpoch = 1;
+        public readonly Dictionary<string, long> ConnectionEpochs = new(StringComparer.Ordinal);
+
         public long LastSequence = -1;
         public DateTime ReceivedAtUtc;
         public List<RepoStatusDto> Repositories = new();
@@ -47,12 +56,30 @@ public sealed class PushedRepositoryStore
         var entry = directors.GetOrAdd(directorId, _ => new Entry());
         lock (entry)
         {
+            if (!entry.ConnectionEpochs.TryGetValue(connectionId, out var epoch))
+            {
+                epoch = entry.NextEpoch++;
+                entry.ConnectionEpochs[connectionId] = epoch;
+            }
+
             if (string.Equals(entry.ActiveConnectionId, connectionId, StringComparison.Ordinal))
             {
                 FileLog.Write($"[PushedRepositoryStore] repeated Hello from the current connection - sequence baseline kept: director={directorId}");
                 return;
             }
+
+            if (epoch < entry.CurrentEpoch)
+            {
+                // A SUPERSEDED connection re-Helloing (its periodic reseed) must NOT reclaim
+                // ownership (issue 516): otherwise two overlapping connections alternate the
+                // authoritative snapshot forever. It keeps its older epoch and stays superseded.
+                FileLog.Write($"[PushedRepositoryStore] Hello IGNORED from a superseded connection (epoch {epoch} < current {entry.CurrentEpoch}): director={directorId}");
+                return;
+            }
+
+            // A genuinely newer connection takes ownership and starts a fresh sequence baseline.
             entry.ActiveConnectionId = connectionId;
+            entry.CurrentEpoch = epoch;
             entry.LastSequence = -1;
         }
     }
@@ -67,8 +94,14 @@ public sealed class PushedRepositoryStore
             return;
         lock (entry)
         {
+            entry.ConnectionEpochs.Remove(connectionId);
             if (string.Equals(entry.ActiveConnectionId, connectionId, StringComparison.Ordinal))
+            {
                 entry.ActiveConnectionId = null;
+                // Drop the ownership epoch so a still-live older connection can reclaim on its next
+                // Hello - it was only held back while a newer connection was present.
+                entry.CurrentEpoch = 0;
+            }
         }
     }
 

@@ -36,7 +36,9 @@ public sealed class WorktreeInventoryService
 
             // Learn which origin branches were deleted (delete-branch-on-merge => gone == merged).
             if (fetchPrune)
-                await _git.RunAsync(repositoryPath, new[] { "fetch", "--prune" }, ct);
+                // Fetch ORIGIN by name (inspection): a bare fetch follows the current branch's
+                // upstream, which can be a different remote and leave origin/main stale.
+                await _git.RunAsync(repositoryPath, new[] { "fetch", "--prune", "origin" }, ct);
 
             var mainRef = await ResolveMainRefAsync(repositoryPath, ct);
             var sessionsByPath = BuildSessionMap(liveSessions);

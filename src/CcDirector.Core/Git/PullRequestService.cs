@@ -166,26 +166,17 @@ public sealed class PullRequestService
 
     private static async Task<(int Exit, string Output, string Error)> RunCliAsync(string exe, string[] args, string workingDir, CancellationToken ct)
     {
-        var psi = new System.Diagnostics.ProcessStartInfo
-        {
-            FileName = exe,
-            WorkingDirectory = workingDir,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
-        foreach (var a in args) psi.ArgumentList.Add(a);
-
         try
         {
-            using var proc = System.Diagnostics.Process.Start(psi);
-            if (proc is null)
-                return (-1, "", $"{exe} could not start");
-            var stdout = await proc.StandardOutput.ReadToEndAsync(ct);
-            var stderr = await proc.StandardError.ReadToEndAsync(ct);
-            await proc.WaitForExitAsync(ct);
-            return (proc.ExitCode, stdout, stderr);
+            // ProcessRunner drains stdout and stderr concurrently and kills the child tree on
+            // cancellation - a CLI that fills its stderr pipe (an auth prompt, a stack of warnings)
+            // can no longer deadlock the capture, and a cancelled call leaves no orphaned process.
+            var r = await ProcessRunner.RunAsync(exe, args, workingDir, ct);
+            return r.Started ? (r.ExitCode, r.StandardOutput, r.StandardError) : (-1, "", $"{exe} could not start");
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {

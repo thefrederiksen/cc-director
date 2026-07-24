@@ -79,7 +79,7 @@ public sealed class DirectorHub : Hub
         var accepted = _repositoryStore?.ApplySnapshot(RequireBoundTenant(), directorId, Context.ConnectionId,
             sequence, set) ?? false;
         if (accepted)
-            _repoHistory?.ObserveSnapshot(RequireBoundTenant(), set);
+            _repoHistory?.ObserveSnapshot(RequireBoundTenant(), directorId, set);
         FileLog.Write($"[DirectorHub] PushRepoSnapshot: director={directorId} seq={sequence} repos={set.Length} accepted={accepted}");
     }
 

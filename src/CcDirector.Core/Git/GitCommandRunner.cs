@@ -59,7 +59,19 @@ public class GitCommandRunner
         proc.Start();
         proc.BeginOutputReadLine();
         proc.BeginErrorReadLine();
-        await proc.WaitForExitAsync(ct);
+        try
+        {
+            await proc.WaitForExitAsync(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancelling the wait does NOT terminate the child (issue 516). A superseded scan
+            // otherwise leaves its git/ls-remote process running - one hung credential or network
+            // pipe could keep the replacement scan waiting on the per-repository semaphore. Kill the
+            // whole tree so the cancelled command leaves nothing behind.
+            try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { }
+            throw;
+        }
 
         var result = new GitCommandResult
         {
