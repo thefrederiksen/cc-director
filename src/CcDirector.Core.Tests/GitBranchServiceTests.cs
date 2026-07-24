@@ -277,6 +277,40 @@ public sealed class GitBranchServiceTests : IDisposable
     }
 
     // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 2, ruling R2-7): git permits MULTIPLE branch.<name>.merge
+    // values (an octopus pull), and "git config --get" silently returns only the last one - so
+    // the probe could rule "upstream gone" while ANOTHER configured merge ref still exists on
+    // the remote. A multi-valued merge configuration is ambiguous and must fail closed: the
+    // branch is simply not eligible for the origin-gone signal, same as a missing value.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Branch_WithTwoConfiguredMergeValues_IsNeverRuledSafeViaUpstreamGone()
+    {
+        RunGit(_repo, "checkout", "-b", "octopus");
+        WriteFile("o.txt", "o\n");
+        RunGit(_repo, "add", "-A");
+        RunGit(_repo, "commit", "-m", "unmerged work with two configured merge refs");
+        RunGit(_repo, "push", "origin", "octopus:refs/heads/first-upstream");
+        RunGit(_repo, "push", "origin", "octopus:refs/heads/second-upstream");
+        RunGit(_repo, "config", "branch.octopus.remote", "origin");
+        RunGit(_repo, "config", "branch.octopus.merge", "refs/heads/first-upstream");
+        RunGit(_repo, "config", "--add", "branch.octopus.merge", "refs/heads/second-upstream");
+        RunGit(_repo, "checkout", "main");
+
+        // The value "--get" would select (the LAST one) is deleted on the remote; the OTHER
+        // configured merge ref survives. Before the fix this was ruled origin-gone and safe.
+        RunGit(_repo, "push", "origin", "--delete", "second-upstream");
+
+        var branches = await new GitBranchService().ListAsync(_repo);
+        var branch = Assert.Single(branches, b => b.Name == "octopus");
+        Assert.False(branch.SafeToDelete, branch.Explanation);
+
+        var (deleted, _) = await new GitBranchService().DeleteIfSafeAsync(_repo, "octopus");
+        Assert.False(deleted);
+        Assert.Contains("octopus", (await new GitBranchService().ListAsync(_repo)).Select(b => b.Name));
+    }
+
+    // ---------------------------------------------------------------------------------------
     // REGRESSION (inspection round 2, ruling R2-1): "git update-ref -d" binds the tip but does
     // not reproduce "git branch -D"'s refusal to delete a branch that is checked out. When a
     // checkout into a linked worktree lands between verification and deletion, the delete must

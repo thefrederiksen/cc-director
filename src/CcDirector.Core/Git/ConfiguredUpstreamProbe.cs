@@ -25,12 +25,27 @@ public static class ConfiguredUpstreamProbe
     public static async Task<UpstreamVerdict> ProbeAsync(GitCommandRunner git, string repoPath, string branch, CancellationToken ct)
     {
         var remote = await git.RunAsync(repoPath, new[] { "config", "--get", $"branch.{branch}.remote" }, ct);
-        var merge = await git.RunAsync(repoPath, new[] { "config", "--get", $"branch.{branch}.merge" }, ct);
+        // --get-all, not --get: git permits MULTIPLE merge values (an octopus pull), and --get
+        // silently returns only the last one - which could be gone while another configured
+        // merge ref survives, a false "upstream gone" on a destructive path (ruling R2-7).
+        var merge = await git.RunAsync(repoPath, new[] { "config", "--get-all", $"branch.{branch}.merge" }, ct);
         var remoteName = remote.Success ? remote.Output.Trim() : "";
-        var mergeRef = merge.Success ? merge.Output.Trim() : "";
+        var mergeRefs = merge.Success
+            ? merge.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            : Array.Empty<string>();
 
-        if (remoteName.Length == 0 || mergeRef.Length == 0)
+        if (remoteName.Length == 0 || mergeRefs.Length == 0)
             return new UpstreamVerdict(HasConfiguredUpstream: false, UpstreamGone: false, InspectionSucceeded: true);
+
+        if (mergeRefs.Length > 1)
+        {
+            // Ambiguous configuration fails closed: the branch is simply NOT eligible for the
+            // origin-gone signal, exactly as if no upstream were configured.
+            FileLog.Write($"[ConfiguredUpstreamProbe] branch {branch} has {mergeRefs.Length} configured merge values - C2 does not apply");
+            return new UpstreamVerdict(HasConfiguredUpstream: false, UpstreamGone: false, InspectionSucceeded: true);
+        }
+
+        var mergeRef = mergeRefs[0];
 
         // The merge ref is a full ref name (refs/heads/...), so the ls-remote pattern is exact.
         var lsRemote = await git.RunAsync(repoPath, new[] { "ls-remote", remoteName, mergeRef }, ct);
