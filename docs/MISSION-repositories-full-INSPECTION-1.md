@@ -274,6 +274,7 @@ cache eviction (F7, F8), stale-connection rejection (F9), and the history key co
       F4/F5/F6 127d8875, F3 11c43c71, F7 e80a7b3c, F8 3b395c8e, F9 31ab7f86, F10 587e55d3,
       F13 7b272aab, F11 f35c21bc, F12 7dee9aa7; F14 via the tests above)
 - [x] All three suites green (Core 3423 passed / 0 failed / 8 skipped; Avalonia 289 passed /
-      0 failed; Gateway full-suite result recorded in the Manager's report)
+      0 failed; Gateway 3672 passed / 0 failed / 17 skipped, the skips being the usual gated
+      live-Postgres proofs)
 - [ ] Second inspection pass over the fix diff
 - [ ] QA report to the owner
