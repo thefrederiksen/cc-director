@@ -135,6 +135,75 @@ public sealed class RepositoryWatcherIntegrationTests : IDisposable
         Assert.InRange(Volatile.Read(ref recomputes), 1, 2);
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 2, ruling R2-12; exercises ruling R2-5 end to end): a REAL
+    // RepositoryWatcher fires on a REAL git commit while a full scan is mid-flight. The
+    // watcher's recompute is deferred (the scan holds the model), runs after the scan
+    // completes, and the model ends holding the post-commit state - the newest compute wins
+    // through the real watcher -> deferral -> drain -> guarded publish pipeline.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Watcher_FiringDuringAScan_IsDeferred_AndTheNewestStateLandsAfterTheScan()
+    {
+        var repo = MakeRepo("delta");
+        var initialHead = RunGit(repo, "rev-parse", "HEAD").Trim();
+
+        bool holdNextCompute = false;
+        var scanComputeEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseScanCompute = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var monitor = new RepositoryMonitor(
+            enumerate: _ => new[] { repo },
+            compute: async (p, _, _) =>
+            {
+                // The commit sha is read at compute START - it proves WHEN this compute saw the
+                // repository, which is what "newest compute wins" is about.
+                var head = RunGit(p, "rev-parse", "HEAD").Trim();
+                if (Volatile.Read(ref holdNextCompute))
+                {
+                    Volatile.Write(ref holdNextCompute, false);
+                    scanComputeEntered.TrySetResult();
+                    await releaseScanCompute.Task;
+                }
+                return new RepositoryStatus { Path = p, Name = Path.GetFileName(p), Branch = head, IsClean = true, Success = true };
+            }) { LiveSessionsProvider = NoSessions };
+
+        await monitor.RescanAsync(new[] { _root }); // initial scan - the model knows the repo
+
+        using var watcher = new RepositoryWatcher(monitor);
+        var watcherProcessed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        watcher.Recomputed += _ => watcherProcessed.TrySetResult();
+        watcher.SyncWatches(new[] { _root }, new[] { repo });
+
+        try
+        {
+            // A full scan starts and blocks mid-compute; its compute captured the OLD head.
+            Volatile.Write(ref holdNextCompute, true);
+            var scanTask = monitor.RescanAsync(new[] { _root });
+            await scanComputeEntered.Task;
+
+            // The REAL commit lands while the scan runs; the REAL watcher fires; the recompute
+            // must be deferred (it returns without computing - the scan holds the model).
+            File.WriteAllText(Path.Combine(repo, "change.txt"), "x\n");
+            RunGit(repo, "add", "-A");
+            RunGit(repo, "commit", "-m", "change during the scan");
+            var newHead = RunGit(repo, "rev-parse", "HEAD").Trim();
+            Assert.NotEqual(initialHead, newHead);
+
+            await WaitUntilAsync(() => watcherProcessed.Task.IsCompleted, TimeSpan.FromSeconds(15));
+            Assert.True(monitor.IsScanning); // the watcher was handled WHILE the scan was running
+
+            releaseScanCompute.TrySetResult();
+            await scanTask; // the scan publishes its OLD-head result, then drains the deferral
+
+            var entry = Assert.Single(monitor.Snapshot());
+            Assert.Equal(newHead, entry.Branch); // the deferred recompute landed the newest state
+        }
+        finally
+        {
+            releaseScanCompute.TrySetResult(); // never leave the compute (and Dispose) hanging
+        }
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
     {
         var sw = Stopwatch.StartNew();
