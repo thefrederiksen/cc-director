@@ -37,14 +37,22 @@ public sealed class LoopbackCarModeFleet : ICarModeFleet
     private IReadOnlyList<SessionDto>? _rosterCache;
     private DateTime _rosterCachedAtUtc = DateTime.MinValue;
 
+    /// <summary>The one loopback client every fleet instance shares. Instances are now created per turn
+    ///  (one per caller credential - issue #2129), so each newing up its own HttpClient would leak
+    ///  sockets; the client is stateless, so sharing is safe.</summary>
+    private static readonly HttpClient SharedLoopbackClient = new() { Timeout = TimeSpan.FromSeconds(20) };
+
     /// <param name="port">This Gateway's own listening port (loopback).</param>
-    /// <param name="token">The per-machine Gateway token, attached as the Bearer so the call works
-    ///  whether or not the host-wide auth gate is on.</param>
-    /// <param name="http">HTTP client; a short-timeout loopback client when null.</param>
+    /// <param name="token">The credential the loopback calls authenticate WITH - normally the CALLING
+    ///  device's own authenticated credential (issue #2129), so on the hosted Gateway every read and act
+    ///  resolves to the caller's own tenant exactly as it would for any client. Self-host with the auth
+    ///  gate off has no caller credential; the factory in GatewayHost passes the machine token for that
+    ///  one case (self-host is single-tenant Local, so no isolation is at stake).</param>
+    /// <param name="http">HTTP client; the shared loopback client when null.</param>
     /// <param name="log">Log sink; <see cref="FileLog.Write"/> when null.</param>
     public LoopbackCarModeFleet(int port, string token, HttpClient? http = null, Action<string>? log = null)
     {
-        _http = http ?? new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+        _http = http ?? SharedLoopbackClient;
         _baseUrl = $"http://127.0.0.1:{port}";
         _token = token ?? "";
         _log = log ?? FileLog.Write;
@@ -195,6 +203,12 @@ public sealed class LoopbackCarModeFleet : ICarModeFleet
 
     public async Task<CarModeCredits> GetCreditsAsync(CancellationToken ct)
     {
+        // Issue #2129: /account/credits reads the MACHINE's one stored account credential, which has no
+        // per-tenant meaning on the hosted Gateway (absent by design there; were it present, every tenant
+        // would be shown the same account's balance). Refuse with a relayable fact instead of either lie.
+        if (GatewayHostedMode.IsHosted)
+            throw new CarModeToolUnavailableException(
+                "The credit balance is not available per account on the hosted Gateway yet. Sessions, machines, and schedules all still work.");
         // The SAME token-free proxy the Settings account section reads (GET /account/credits). A signed-out
         // Gateway answers signedIn=false explicitly; a cloud failure is a non-success status and throws loud.
         var root = await GetJsonObjectAsync("/account/credits", ct);
@@ -283,6 +297,12 @@ public sealed class LoopbackCarModeFleet : ICarModeFleet
 
     public async Task<CarModeSpendSummary> GetSpendAsync(int days, CancellationToken ct)
     {
+        // Issue #2129: the governance spend store is process-wide, so on the hosted Gateway its total would
+        // AGGREGATE every tenant's spending - an aggregate no single tenant may see (partition when
+        // attributable, deny when aggregate). Refuse with a relayable fact until a per-tenant read exists.
+        if (GatewayHostedMode.IsHosted)
+            throw new CarModeToolUnavailableException(
+                "Spending totals are not available per account on the hosted Gateway yet. Sessions, machines, and schedules all still work.");
         if (days <= 0) throw new ArgumentOutOfRangeException(nameof(days), "The spend window must be at least one day.");
         var until = DateTime.UtcNow;
         var since = until.AddDays(-days);

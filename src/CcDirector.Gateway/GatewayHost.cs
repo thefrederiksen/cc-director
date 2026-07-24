@@ -2199,12 +2199,19 @@ public sealed class GatewayHost : IAsyncDisposable
         // conversation context is kept server-side per device. Inherits the host-wide auth gate (the
         // caller's per-device key), like every other data route.
         var carModeChat = new CarMode.HostedCarModeChat(CarMode.HostedCarModeChat.DefaultResolver(_keyVault.Get, _tenantSettingsResolver));
-        var carModeFleet = new CarMode.LoopbackCarModeFleet(Port, Token);
-        var carModeBrain = new CarMode.CarModeBrain(carModeChat, carModeFleet, _carModeConversations, _carModePending, _carModeSubjects);
+        // The fleet view is created PER TURN, as the CALLING DEVICE (issue #2129): the loopback calls
+        // authenticate with the caller's own credential, so on hosted every read and act resolves to the
+        // caller's tenant exactly as it would for any client - the machine token (which hosted rejects,
+        // and which carries no tenant) never authenticates a tenant's fleet read. The empty-credential arm
+        // exists ONLY for self-host with the auth gate off (single-tenant Local): there is no caller
+        // credential on the request at all, and the machine token is the same identity every client uses.
+        Func<string, CarMode.ICarModeFleet> carModeFleetForCaller = callerCredential =>
+            new CarMode.LoopbackCarModeFleet(Port, string.IsNullOrEmpty(callerCredential) ? Token : callerCredential);
+        var carModeBrain = new CarMode.CarModeBrain(carModeChat, carModeFleetForCaller, _carModeConversations, _carModePending, _carModeSubjects);
         // The cockpit Assistant (POST /assistant/turn): the SAME loop, tools, stores, model, and turn cache
         // as Car Mode, with only the desk-surface speech style. Sharing the stores means a device that uses
         // both surfaces keeps one conversation and one armed-confirmation state - no split-brain.
-        var assistantBrain = new CarMode.CarModeBrain(carModeChat, carModeFleet, _carModeConversations, _carModePending, _carModeSubjects, surface: CarMode.CarModeSurface.Desk);
+        var assistantBrain = new CarMode.CarModeBrain(carModeChat, carModeFleetForCaller, _carModeConversations, _carModePending, _carModeSubjects, surface: CarMode.CarModeSurface.Desk);
         // Keep-warm (Car Mode performance round): warm the SAME hosted model the brain uses and the SAME
         // text-to-speech target /wingman/tts uses, resolved fresh each warmup so a settings change applies.
         var carModeWarmup = new CarMode.CarModeWarmup(
