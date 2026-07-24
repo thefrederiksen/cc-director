@@ -432,6 +432,85 @@ public class RepositoryMonitorTests
     }
 
     // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 2, ruling R2-2): a CANCELLED scan never publishes.
+    // Cancellation can land in the narrow interval after a compute returns and before its
+    // publish; re-checking only at the next loop iteration is too late. The token is
+    // re-checked under the gate at the publish itself, so the cancelled scan's result never
+    // reaches the model.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Rescan_CancelledAfterComputeButBeforePublish_NeverPublishes()
+    {
+        var computeEntered = new TaskCompletionSource();
+        var releaseCompute = new TaskCompletionSource();
+        var monitor = new RepositoryMonitor(
+            enumerate: _ => new[] { "/r/x" },
+            compute: async (p, _, _) =>
+            {
+                computeEntered.SetResult();
+                await releaseCompute.Task; // hold the compute so cancellation lands first
+                return Status(p);
+            });
+
+        using var cts = new CancellationTokenSource();
+        var scanTask = monitor.RescanAsync(new[] { "/r" }, cts.Token);
+        await computeEntered.Task;
+
+        // The cancellation arrives while the compute is in flight; the compute itself does not
+        // observe the token and returns a result anyway - the publish must still be suppressed.
+        cts.Cancel();
+        releaseCompute.SetResult();
+        await scanTask; // a cancelled scan returns quietly - the newer owner has the model
+
+        Assert.Empty(monitor.Snapshot()); // the cancelled scan published nothing
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 2, ruling R2-2): a SUPERSEDED scan whose compute returns
+    // after the newer scan removed the repository must not republish it - even though the
+    // superseded scan is no longer the owner of the model.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Rescan_Superseded_CannotRepublishARepositoryTheNewerScanRemoved()
+    {
+        var paths = new List<string> { "/r/x" };
+        var oldComputeEntered = new TaskCompletionSource();
+        var releaseOldCompute = new TaskCompletionSource();
+        bool blockNextCompute = false;
+        var monitor = new RepositoryMonitor(
+            enumerate: _ => paths.ToList(),
+            compute: async (p, _, _) =>
+            {
+                if (blockNextCompute)
+                {
+                    blockNextCompute = false;
+                    oldComputeEntered.SetResult();
+                    await releaseOldCompute.Task;
+                }
+                return Status(p);
+            });
+
+        await monitor.RescanAsync(new[] { "/r" }); // the model holds /r/x
+        Assert.Single(monitor.Snapshot());
+
+        // The OLD scan blocks mid-compute for /r/x.
+        blockNextCompute = true;
+        var oldScan = monitor.RescanAsync(new[] { "/r" });
+        await oldComputeEntered.Task;
+
+        // The NEW scan supersedes it; its roots no longer contain /r/x, so it removes it.
+        paths.Clear();
+        await monitor.RescanAsync(new[] { "/r" });
+        Assert.Empty(monitor.Snapshot());
+
+        // The old scan's compute returns after cancellation - its publish must be suppressed.
+        releaseOldCompute.SetResult();
+        await oldScan;
+
+        Assert.Empty(monitor.Snapshot()); // not resurrected
+    }
+
+    // ---------------------------------------------------------------------------------------
     // REGRESSION (inspection round 2, ruling R2-5, boundary ordering 2 / deferral semantics):
     // a recompute deferred during a scan keeps its ORIGINAL requester's token. When that
     // requester cancels before the scan completes, the drain SKIPS the request instead of

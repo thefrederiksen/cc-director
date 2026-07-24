@@ -212,6 +212,13 @@ public sealed class RepositoryMonitor
                     seen.Add(key);
                     lock (_gate)
                     {
+                        // A cancelled or superseded scan never publishes (ruling R2-2):
+                        // cancellation can land in the narrow interval after the compute
+                        // returned, and the next loop iteration's check is too late. Re-check
+                        // the token AND that this scan still owns the model, under the gate,
+                        // before writing anything.
+                        if (ct.IsCancellationRequested || !ReferenceEquals(_cts, cts))
+                            throw new OperationCanceledException(ct);
                         published = PublishIfNewestLocked(key, status, computeStamp);
                         ScanDone++;
                     }
@@ -229,6 +236,10 @@ public sealed class RepositoryMonitor
             List<RepositoryStatus> removed;
             lock (_gate)
             {
+                // Same rule at the reconcile (ruling R2-2): only the owning, uncancelled scan
+                // may remove entries - a superseded scan's roots are not the truth any more.
+                if (ct.IsCancellationRequested || !ReferenceEquals(_cts, cts))
+                    throw new OperationCanceledException(ct);
                 removed = _byPath.Where(kv => !seen.Contains(kv.Key)).Select(kv => kv.Value).ToList();
                 foreach (var r in removed)
                 {
