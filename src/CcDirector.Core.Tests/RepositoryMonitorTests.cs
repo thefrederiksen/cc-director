@@ -568,6 +568,81 @@ public class RepositoryMonitorTests
     }
 
     // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 2, ruling R2-11): per-repository semaphores are evicted
+    // alongside the size-cache eviction after a completed scan - an entry whose key left the
+    // model and whose semaphore is un-held is removed, so the process-lifetime lock map cannot
+    // grow forever with removed, moved, and transient repositories.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task CompletedScan_EvictsSemaphores_ForRepositoriesNoLongerPresent()
+    {
+        var paths = new List<string> { "/r/a", "/r/b" };
+        var monitor = new RepositoryMonitor(
+            enumerate: _ => paths.ToList(),
+            compute: (p, _, _) => Task.FromResult(Status(p)))
+        { LiveSessionsProvider = NoSessions };
+
+        await monitor.RescanAsync(new[] { "/r" });
+        Assert.True(monitor.RepoLockExistsFor("/r/a"));
+        Assert.True(monitor.RepoLockExistsFor("/r/b"));
+
+        paths.Remove("/r/b");
+        await monitor.RescanAsync(new[] { "/r" });
+
+        Assert.True(monitor.RepoLockExistsFor("/r/a"));  // still in the model - kept
+        Assert.False(monitor.RepoLockExistsFor("/r/b")); // departed and un-held - evicted
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // The eviction's safety property (ruling R2-11): a semaphore HELD by an in-flight compute
+    // is never evicted, even when its repository just left the model.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task CompletedScan_KeepsTheSemaphore_WhileAComputeStillHoldsIt()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ccd-heldlock-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(System.IO.Path.Combine(dir, ".git"));
+        try
+        {
+            var paths = new List<string> { dir };
+            var recomputeEntered = new TaskCompletionSource();
+            var releaseRecompute = new TaskCompletionSource();
+            bool blockNextCompute = false;
+            var monitor = new RepositoryMonitor(
+                enumerate: _ => paths.ToList(),
+                compute: async (p, _, _) =>
+                {
+                    if (blockNextCompute)
+                    {
+                        blockNextCompute = false;
+                        recomputeEntered.SetResult();
+                        await releaseRecompute.Task;
+                    }
+                    return Status(p);
+                }) { LiveSessionsProvider = NoSessions };
+
+            await monitor.RescanAsync(new[] { "/r" });
+
+            // A recompute holds the semaphore while a scan removes the repository.
+            blockNextCompute = true;
+            var oldRecompute = monitor.RecomputeOneAsync(dir);
+            await recomputeEntered.Task;
+
+            paths.Clear();
+            await monitor.RescanAsync(new[] { "/r" });
+
+            Assert.True(monitor.RepoLockExistsFor(dir)); // held - kept despite the removal
+
+            releaseRecompute.SetResult();
+            await oldRecompute;
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
     // REGRESSION (inspection round 2, ruling R2-8): scanning without a live-session source is a
     // programming error and fails LOUDLY. An unwired monitor used to silently publish
     // session-blind safety classifications - an occupied worktree could be marked safe to reap.

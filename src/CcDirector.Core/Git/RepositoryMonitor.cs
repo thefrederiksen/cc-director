@@ -272,6 +272,14 @@ public sealed class RepositoryMonitor
             // The size cache only stays meaningful for worktrees that still exist: evict entries
             // this completed scan did not see (reaped, moved, or deleted worktrees).
             RepositoryStatusService.EvictSizeCacheExcept(CurrentWorktreePaths());
+
+            // Per-repository compute state is evicted alongside it (ruling R2-11): semaphores
+            // and stale publish stamps for keys no longer in the model would otherwise
+            // accumulate for the process lifetime.
+            var removedThisScan = new HashSet<string>(
+                removed.Select(r => WorktreeReaperService.NormalizePath(r.Path)),
+                StringComparer.OrdinalIgnoreCase);
+            EvictStaleComputeState(removedThisScan);
         }
         catch (OperationCanceledException)
         {
@@ -393,6 +401,53 @@ public sealed class RepositoryMonitor
                 _repoLocks[key] = sem = new SemaphoreSlim(1, 1);
             return sem;
         }
+    }
+
+    /// <summary>
+    /// Evicts per-repository compute state after a completed scan (ruling R2-11): a semaphore is
+    /// removed when its key is no longer in the model AND it is currently un-held (a held one has
+    /// a compute in flight and is kept). Accepted and documented crossover: a compute that still
+    /// holds a REFERENCE to an evicted semaphore while the same key is re-created briefly gives
+    /// that key two semaphores - single-flight degrades to double-flight for one compute, and the
+    /// publish-stamp rule (R2-5) still guarantees the newest compute start wins. Evicted
+    /// semaphores are not disposed: a stale reference may still be awaited, and an un-disposed
+    /// SemaphoreSlim without a wait handle holds no operating system resources.
+    ///
+    /// Publish stamps are evicted for keys neither in the model nor removed by THIS scan: a
+    /// removal stamp must survive until the next completed scan so it can still drop a late
+    /// publish from a compute that started before the removal.
+    /// </summary>
+    private void EvictStaleComputeState(IReadOnlySet<string> removedThisScan)
+    {
+        lock (_gate)
+        {
+            int evictedLocks = 0, evictedStamps = 0;
+            foreach (var key in _repoLocks.Keys.ToList())
+            {
+                if (_byPath.ContainsKey(key))
+                    continue;
+                if (_repoLocks[key].CurrentCount == 0)
+                    continue; // held - a compute is in flight for this key right now
+                _repoLocks.Remove(key);
+                evictedLocks++;
+            }
+            foreach (var key in _publishStamps.Keys.ToList())
+            {
+                if (_byPath.ContainsKey(key) || removedThisScan.Contains(key))
+                    continue;
+                _publishStamps.Remove(key);
+                evictedStamps++;
+            }
+            if (evictedLocks > 0 || evictedStamps > 0)
+                FileLog.Write($"[RepositoryMonitor] evicted compute state for departed repositories: {evictedLocks} semaphore(s), {evictedStamps} stamp(s)");
+        }
+    }
+
+    /// <summary>Test probe: whether a per-repository semaphore exists for this path.</summary>
+    internal bool RepoLockExistsFor(string path)
+    {
+        lock (_gate)
+            return _repoLocks.ContainsKey(WorktreeReaperService.NormalizePath(path));
     }
 
     /// <summary>The next compute-start stamp. Callers must NOT hold <see cref="_gate"/>.</summary>
