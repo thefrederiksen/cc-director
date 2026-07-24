@@ -17,6 +17,7 @@ using System.Text.Json.Nodes;
 using Avalonia.Platform.Storage;
 using CcDirector.Core.Onboarding;
 using CcDirector.Core.Settings;
+using CcDirector.Core.Tools;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CcDirector.Setup.Engine;
@@ -67,6 +68,13 @@ public partial class FirstRunWizardDialog : Window
     private string? _shotsSelectedPath;
     private bool _shotsDetectRan;
     private CancellationTokenSource? _shotsWatchCts;
+
+    // Tools step: the shipped cc-* toolbelt, read from the embedded manifest catalog. The screen
+    // explains that DevThrottle maintains these itself; while any are still installing it polls so
+    // rows flip to Ready live - the same state the main window's corner indicator tracks.
+    private global::Avalonia.Threading.DispatcherTimer? _toolsPollTimer;
+    private int _toolsReadyCount;
+    private int _toolsTotalCount;
 
     // Code step: the roots store the board and New Session read, the folders added this run
     // (path -> repo count, drives the proof number), and the one-shot suggestion scan.
@@ -153,15 +161,19 @@ public partial class FirstRunWizardDialog : Window
 
         WelcomePanel.IsVisible = step == WizardStep.Welcome;
         AgentsPanel.IsVisible = step == WizardStep.Agents;
+        ToolsPanel.IsVisible = step == WizardStep.Tools;
         CodePanel.IsVisible = step == WizardStep.Code;
         ScreenshotsPanel.IsVisible = step == WizardStep.Screenshots;
         GatewayPanel.IsVisible = step == WizardStep.Gateway;
         ReportPanel.IsVisible = step == WizardStep.MorningReport;
         DonePanel.IsVisible = step == WizardStep.Done;
 
-        // Leaving the Screenshots step ends any take-a-screenshot watch.
+        // Leaving the Screenshots step ends any take-a-screenshot watch; leaving Tools stops the
+        // install-progress poll.
         if (step != WizardStep.Screenshots)
             CancelScreenshotWatch();
+        if (step != WizardStep.Tools)
+            StopToolsPoll();
 
         RefreshDots();
 
@@ -187,6 +199,14 @@ public partial class FirstRunWizardDialog : Window
                 ConfigureStepSkip();
                 if (!_agentScanRan)
                     _ = ScanAgentsAsync();
+                break;
+
+            case WizardStep.Tools:
+                PrimaryButton.Content = "Continue";
+                PrimaryButton.IsVisible = true;
+                PrimaryButton.IsEnabled = true;
+                ConfigureStepSkip();
+                _ = RefreshToolsScreenAsync();
                 break;
 
             case WizardStep.Code:
@@ -629,6 +649,90 @@ public partial class FirstRunWizardDialog : Window
         FileLog.Write("[FirstRunWizardDialog] BtnDeferAgents_Click");
         _model.DeferAgents();
         Advance();
+    }
+
+    // ---- Tools step (the toolbelt, maintained automatically) ---------------------------------------
+
+    /// <summary>
+    /// Render the toolbelt from the embedded manifest catalog: every shipped tool with its one-line
+    /// description and a Ready / Installing pill. All ready ends the story in one glance; anything
+    /// still installing starts a light poll so the rows flip to Ready live while the user watches -
+    /// the promise ("maintenance is our job now") demonstrated, not described.
+    /// </summary>
+    private async Task RefreshToolsScreenAsync()
+    {
+        try
+        {
+            var catalog = await Task.Run(() => new ToolCatalogService().GetCatalog());
+            _toolsTotalCount = catalog.Count;
+            _toolsReadyCount = catalog.Count(t => t.IsAvailable);
+
+            ToolsTitle.Text = $"{_toolsTotalCount} tools, maintained for you";
+
+            ToolsListPanel.Children.Clear();
+            foreach (var tool in catalog)
+            {
+                ToolsListPanel.Children.Add(AgentRow(
+                    tool.Name,
+                    tool.Description,
+                    tool.IsAvailable ? "Ready" : "Installing...",
+                    ready: tool.IsAvailable));
+            }
+
+            if (_toolsReadyCount == _toolsTotalCount)
+            {
+                ToolsStatusText.Text = $"All {_toolsTotalCount} tools are installed and up to date.";
+                ToolsStatusText.Foreground = Brush("#1A7F37");
+                StopToolsPoll();
+            }
+            else
+            {
+                ToolsStatusText.Text =
+                    $"{_toolsReadyCount} of {_toolsTotalCount} ready - DevThrottle is installing the rest now. It finishes on its own; you don't have to wait.";
+                ToolsStatusText.Foreground = Brush("#0066B8");
+                StartToolsPoll();
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[FirstRunWizardDialog] RefreshToolsScreenAsync FAILED: {ex.Message}");
+            ToolsStatusText.Text = $"Could not read the tool catalog: {ex.Message}";
+            ToolsStatusText.Foreground = Brush("#DC2626");
+        }
+    }
+
+    private void StartToolsPoll()
+    {
+        if (_toolsPollTimer is not null) return;
+        FileLog.Write("[FirstRunWizardDialog] StartToolsPoll");
+        _toolsPollTimer = new global::Avalonia.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(2),
+        };
+        _toolsPollTimer.Tick += (_, _) => _ = RefreshToolsScreenAsync();
+        _toolsPollTimer.Start();
+    }
+
+    private void StopToolsPoll()
+    {
+        if (_toolsPollTimer is null) return;
+        FileLog.Write("[FirstRunWizardDialog] StopToolsPoll");
+        _toolsPollTimer.Stop();
+        _toolsPollTimer = null;
+    }
+
+    private void BtnToolsDocs_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[FirstRunWizardDialog] BtnToolsDocs_Click");
+        try
+        {
+            Process.Start(new ProcessStartInfo("https://devthrottle.com/docs/tools") { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[FirstRunWizardDialog] BtnToolsDocs_Click FAILED: {ex.Message}");
+            ToolsStatusText.Text = "Could not open the browser. Visit devthrottle.com/docs/tools manually.";
+        }
     }
 
     // ---- Code step (where your repositories live) --------------------------------------------------
@@ -1264,6 +1368,14 @@ public partial class FirstRunWizardDialog : Window
             DoneReceiptPanel.Children.Add(ReceiptRow(
                 "No gateway", "Connect one from Settings for phone access and your morning report", done: false));
 
+        // Tools row (only when the Tools screen was seen, so the numbers are real).
+        if (_toolsTotalCount > 0)
+        {
+            DoneReceiptPanel.Children.Add(_toolsReadyCount == _toolsTotalCount
+                ? ReceiptRow($"{_toolsTotalCount} tools ready", "Installed and kept current automatically", done: true)
+                : ReceiptRow("Tools installing", "Finishes on its own in the background", done: false));
+        }
+
         // Morning report row - the promise, restated on the receipt.
         DoneReceiptPanel.Children.Add(_reportCadence switch
         {
@@ -1347,6 +1459,7 @@ public partial class FirstRunWizardDialog : Window
         _claudeInstallCts?.Cancel();
         _shotsWatchCts?.Cancel();
         _codeScanCts?.Cancel();
+        StopToolsPoll();
         if (!_marked)
         {
             FileLog.Write("[FirstRunWizardDialog] OnClosed: writing completion marker (window closed without finishing)");
