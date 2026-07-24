@@ -125,3 +125,18 @@ RESIDUALS ESCALATED TO OWNER (architectural, out of a fix mission - genuine deci
   session + a rebuildable directory. Recommended: merge the safety fixes now + keep the destructive
   reap / delete-branches actions GATED until (a)+(b) land. Awaiting owner's choice (merge+gate vs.
   build the plumbing now). Regression tests for the round-2 fixes pending that decision.
+
+## Owner decision: FIX IT PROPERLY (don't gate) - escalated residuals BUILT (2026-07-24)
+Owner chose to fix the two escalated safety gaps before deploy (gating the buttons was "silly").
+Owner's age idea discussed: creation-age misses "old worktree, new session"; used it keyed to
+RECENT ACTIVITY instead. Built (commit 955bb38c, Core reaper 15 green, Avalonia 9 green):
+- COMPLETE ROSTER: authoritative roster reads GET /sessions?envelope=true and FAILS CLOSED if any
+  Director ON THIS MACHINE is not fully Online (Wobbly/Offline) - closes the silent-partial-roster gap.
+  New: GatewayClient.ListFleetSessionsWithReachabilityAsync, ControlApiHost passthrough,
+  MainWindow.DegradedSameMachineDirectors (tested).
+- ACTIVITY COOLING-OFF (owner's idea): hold back a worktree touched within 10 min (WorktreeReaperService
+  .ActivityCoolingOff; injectable clock for tests).
+- Per-worktree roster re-read right before each removal (tightest window).
+Residual (documented, minor): junction/symlink path alias not resolved.
+IN FLIGHT: visible round-3 inspector session f9777443 (-> docs/reviews/codex-inspection-round3.md);
+patient Gateway RepoHistory+PushedRepo test run. Then: full three-suite green + Codex PASS -> MERGE.
