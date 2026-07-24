@@ -114,7 +114,9 @@ internal static class RecordingEndpoints
         Tenancy.HostedTenantBoundary? tenantBoundary = null,
         KeyVault? keyVault = null,
         TranscriptionHistoryLog? history = null,
-        TranscriptionAudioArchive? audioArchive = null)
+        TranscriptionAudioArchive? audioArchive = null,
+        DictionarySuggestionService? suggestions = null,
+        DictionarySuggestionDismissalStore? dismissals = null)
     {
         FileLog.Write($"[RecordingEndpoints] mapping {Prefix} recording + dictionary routes PER-TENANT (issues #2058/#2060); hosted={GatewayHostedMode.IsHosted} - each route resolves the caller's tenant and answers 403 when none resolves");
 
@@ -122,7 +124,7 @@ internal static class RecordingEndpoints
         // being refused on hosted. They map under the same prefix on the ungrouped builder; each handler
         // resolves the caller's tenant and dispatches to that tenant's own recording store / glossary.
         var app = outer.MapGroup(Prefix);
-        MapRoutes(app, tenantBoundary, keyVault, history, audioArchive);
+        MapRoutes(app, tenantBoundary, keyVault, history, audioArchive, suggestions, dismissals);
     }
 
     /// <summary>
@@ -136,7 +138,9 @@ internal static class RecordingEndpoints
         Tenancy.HostedTenantBoundary? tenantBoundary,
         KeyVault? keyVault,
         TranscriptionHistoryLog? history,
-        TranscriptionAudioArchive? audioArchive)
+        TranscriptionAudioArchive? audioArchive,
+        DictionarySuggestionService? suggestions = null,
+        DictionarySuggestionDismissalStore? dismissals = null)
     {
         // Lazily built on FIRST USE, not at host startup: constructing the service resolves
         // the OpenAI API key (the transcriber needs it), and the Gateway must boot on machines
@@ -359,6 +363,16 @@ internal static class RecordingEndpoints
             }
         });
 
+        // ===== Dictionary suggestions API (devthrottle #2075) ================
+        // The server mines this tenant's stored transcripts for terms the model keeps getting wrong that are
+        // not yet in the glossary, and offers them for one-press addition. Everything the Dictionary page does
+        // is available here too, so a customer who scripts their setup gets the same flow. Mapped only when the
+        // suggestion service and dismissal store were wired (production always wires them; the recording-only
+        // test harnesses map neither and simply do not expose these routes). Same tenant idiom as every /ingest
+        // route: resolve the caller's tenant, 403 when none resolves, never the Local partition on hosted.
+        if (suggestions is not null && dismissals is not null)
+            MapSuggestionRoutes(app, tenantBoundary, suggestions, dismissals);
+
         app.MapGet("/recordings", (HttpContext ctx) =>
         {
             var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
@@ -461,6 +475,151 @@ internal static class RecordingEndpoints
             return Results.Text(guide, "text/plain; charset=utf-8");
         });
     }
+
+    /// <summary>
+    /// The dictionary-suggestions routes (devthrottle #2075), all under <c>/ingest/dictionary</c>, all sharing
+    /// the same tenant idiom as the glossary routes above:
+    ///   GET  /dictionary/suggestions          the ranked pending suggestions with evidence, plus the count
+    ///   GET  /dictionary/suggestions/count     just the count (the nav-badge poll)
+    ///   POST /dictionary/suggestions/apply     add the chosen terms to the glossary (term + wrong spellings)
+    ///   POST /dictionary/suggestions/dismiss   stop suggesting a term (remembered, evidence snapshotted)
+    ///   GET  /dictionary/dismissed             the dismissed terms with their evidence, for the Restore screen
+    ///   POST /dictionary/dismissed/restore     make a dismissed term eligible again
+    /// Every write invalidates this tenant's cached suggestions so the next read reflects the change at once.
+    /// </summary>
+    private static void MapSuggestionRoutes(
+        IEndpointRouteBuilder app,
+        Tenancy.HostedTenantBoundary? tenantBoundary,
+        DictionarySuggestionService suggestions,
+        DictionarySuggestionDismissalStore dismissals)
+    {
+        app.MapGet("/dictionary/suggestions", (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
+            var list = suggestions.GetSuggestions(t.Value);
+            return Results.Json(new SuggestionsResponse(list.Select(ToSuggestionDto).ToList(), list.Count));
+        });
+
+        app.MapGet("/dictionary/suggestions/count", (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
+            return Results.Json(new { count = suggestions.GetSuggestionCount(t.Value) });
+        });
+
+        app.MapPost("/dictionary/suggestions/apply", async (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
+            SuggestionApplyRequest? req;
+            try
+            {
+                req = await JsonSerializer.DeserializeAsync<SuggestionApplyRequest>(
+                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
+            }
+            catch (JsonException ex)
+            {
+                FileLog.Write($"[RecordingEndpoints] apply bad JSON: {ex.Message}");
+                return Results.BadRequest(new { error = "invalid JSON" });
+            }
+            if (req?.Terms is not { Count: > 0 })
+                return Results.BadRequest(new { error = "provide 'terms' (the canonical terms to add)" });
+
+            // Resolve each requested term against the CURRENT pending suggestions, so a caller can only apply a
+            // term the server actually offered - and so the term's wrong spellings (its evidence) are written
+            // as Common mistranscriptions in the same press. A term that is not currently suggested is ignored.
+            var vocab = new List<string>();
+            var mistranscriptions = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+            var applied = new List<string>();
+            foreach (var term in req.Terms)
+            {
+                var match = suggestions.FindSuggestion(t.Value, term ?? "");
+                if (match is null) continue;
+                vocab.Add(match.Term);
+                mistranscriptions[match.Term] = match.Variants.Select(v => v.Heard).ToList();
+                applied.Add(match.Term);
+            }
+
+            var updated = TenantGlossary.AddTerms(t.Value, vocab, mistranscriptions);
+            suggestions.Invalidate(t.Value); // the glossary changed, so the pending set changed
+            var remaining = suggestions.GetSuggestions(t.Value);
+            return Results.Json(new SuggestionApplyResponse(
+                ToDto(updated), applied, remaining.Select(ToSuggestionDto).ToList(), remaining.Count));
+        });
+
+        app.MapPost("/dictionary/suggestions/dismiss", async (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
+            SuggestionTermRequest? req;
+            try
+            {
+                req = await JsonSerializer.DeserializeAsync<SuggestionTermRequest>(
+                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
+            }
+            catch (JsonException ex)
+            {
+                FileLog.Write($"[RecordingEndpoints] dismiss bad JSON: {ex.Message}");
+                return Results.BadRequest(new { error = "invalid JSON" });
+            }
+            if (string.IsNullOrWhiteSpace(req?.Term))
+                return Results.BadRequest(new { error = "provide 'term' (the term to dismiss)" });
+
+            // Snapshot the evidence from the current suggestion so the Dismissed-terms screen can still explain
+            // it after its transcripts age out. If the term is no longer suggested, dismiss it with empty
+            // evidence so the exclusion still holds (idempotent, honest).
+            var match = suggestions.FindSuggestion(t.Value, req.Term)
+                ?? new MistranscriptionSuggestion(req.Term.Trim(), Array.Empty<MistranscriptionVariant>(), 0, 0);
+            dismissals.Dismiss(t.Value, match, DateTime.UtcNow);
+            suggestions.Invalidate(t.Value);
+            return Results.Json(new { ok = true, dismissed = match.Term, count = suggestions.GetSuggestionCount(t.Value) });
+        });
+
+        app.MapGet("/dictionary/dismissed", (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
+            var list = dismissals.List(t.Value).Select(ToDismissedDto).ToList();
+            return Results.Json(new DismissedResponse(list));
+        });
+
+        app.MapPost("/dictionary/dismissed/restore", async (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
+            SuggestionTermRequest? req;
+            try
+            {
+                req = await JsonSerializer.DeserializeAsync<SuggestionTermRequest>(
+                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
+            }
+            catch (JsonException ex)
+            {
+                FileLog.Write($"[RecordingEndpoints] restore bad JSON: {ex.Message}");
+                return Results.BadRequest(new { error = "invalid JSON" });
+            }
+            if (string.IsNullOrWhiteSpace(req?.Term))
+                return Results.BadRequest(new { error = "provide 'term' (the term to restore)" });
+
+            var restored = dismissals.Restore(t.Value, req.Term);
+            suggestions.Invalidate(t.Value); // the term is eligible again, so recompute on next read
+            return Results.Json(new { ok = true, restored });
+        });
+    }
+
+    private static SuggestionDto ToSuggestionDto(MistranscriptionSuggestion s) => new(
+        s.Term,
+        s.Variants.Select(v => new VariantDto(v.Heard, v.Count)).ToList(),
+        s.WrongCount,
+        s.TotalCount);
+
+    private static DismissedTermDto ToDismissedDto(DismissedTerm d) => new(
+        d.Term,
+        d.Variants.Select(v => new VariantDto(v.Heard, v.Count)).ToList(),
+        d.WrongCount,
+        d.TotalCount,
+        d.DismissedAtUtc);
 
     private static string BuildAgentInfo(string? baseUrl)
     {
@@ -565,11 +724,10 @@ internal static class RecordingEndpoints
 
     /// <summary>This tenant's dictation glossary file. Local keeps the existing shared file; every other
     /// tenant gets its own glossary. Read by BOTH the dictionary editor routes and this tenant's recording
-    /// transcriber, so a per-tenant edit biases only that tenant's transcription (issue #2060).</summary>
-    private static string GlossaryPathFor(TenantId tenant)
-        => tenant == TenantId.Local ? GatewayTranscriptionService.DictionaryPath()
-            : Path.Combine(Path.GetDirectoryName(GatewayTranscriptionService.DictionaryPath())!,
-                TenantFolder(tenant), "dictionary.yaml");
+    /// transcriber, so a per-tenant edit biases only that tenant's transcription (issue #2060). Delegates to
+    /// <see cref="TenantGlossary.PathFor"/> so the editor routes, the transcriber, and the suggestion "apply"
+    /// path can never disagree on the glossary location (devthrottle #2075).</summary>
+    private static string GlossaryPathFor(TenantId tenant) => TenantGlossary.PathFor(tenant);
 
     private static RecordingIngestService BuildService(
         TenantId tenant,
@@ -673,3 +831,34 @@ internal sealed record DictionaryProfileDto(bool CleanupEnabled);
 internal sealed record DictionaryAddRequest(
     List<string>? Terms,
     Dictionary<string, List<string>>? Mistranscriptions);
+
+// ===== Dictionary suggestions DTOs (devthrottle #2075) ==================================================
+
+/// <summary>One wrong spelling and how often it was seen - the "heard as X (n)" evidence.</summary>
+internal sealed record VariantDto(string Heard, int Count);
+
+/// <summary>A pending suggestion: the canonical term to add, its wrong spellings, and the counts behind
+/// "wrong 53 of 97 times".</summary>
+internal sealed record SuggestionDto(string Term, List<VariantDto> Variants, int WrongCount, int TotalCount);
+
+/// <summary>GET /ingest/dictionary/suggestions - the ranked pending suggestions plus their count (the count
+/// the nav badge renders; the client never re-derives it).</summary>
+internal sealed record SuggestionsResponse(List<SuggestionDto> Suggestions, int Count);
+
+/// <summary>POST /ingest/dictionary/suggestions/apply request: the canonical terms the customer chose to add.</summary>
+internal sealed record SuggestionApplyRequest(List<string>? Terms);
+
+/// <summary>POST /ingest/dictionary/suggestions/apply response: the updated glossary, which terms were
+/// actually applied, and the suggestions that remain (with their new count).</summary>
+internal sealed record SuggestionApplyResponse(
+    DictionaryDto Dictionary, List<string> Applied, List<SuggestionDto> Suggestions, int Count);
+
+/// <summary>POST /ingest/dictionary/suggestions/dismiss and /ingest/dictionary/dismissed/restore request.</summary>
+internal sealed record SuggestionTermRequest(string? Term);
+
+/// <summary>A dismissed term with its snapshotted evidence and when it was dismissed.</summary>
+internal sealed record DismissedTermDto(
+    string Term, List<VariantDto> Variants, int WrongCount, int TotalCount, DateTime DismissedAtUtc);
+
+/// <summary>GET /ingest/dictionary/dismissed - the dismissed terms, newest first.</summary>
+internal sealed record DismissedResponse(List<DismissedTermDto> Dismissed);

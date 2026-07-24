@@ -95,6 +95,11 @@ public sealed class GatewayDbContext : DbContext
     /// transcript per utterance, per tenant, write-only, for later mistranscription mining (devthrottle #2075).</summary>
     public DbSet<DictationTranscriptEntity> DictationTranscripts => Set<DictationTranscriptEntity>();
 
+    /// <summary>Dismissed dictionary suggestions (<c>dictation_suggestion_dismissals</c>, devthrottle #2075) -
+    /// one row per term the tenant told us to stop suggesting, with a snapshot of the evidence so the
+    /// "Dismissed terms" screen can still explain why it was once offered. Tenant-scoped.</summary>
+    public DbSet<DictationSuggestionDismissalEntity> DictationSuggestionDismissals => Set<DictationSuggestionDismissalEntity>();
+
     /// <summary>The append-only governance audit trail (<c>governance_audit_events</c>) - structured
     /// intervention and permission/sandbox decisions, never inferred from transcripts (issue #1771).</summary>
     public DbSet<GovernanceAuditEventEntity> GovernanceAuditEvents => Set<GovernanceAuditEventEntity>();
@@ -354,6 +359,21 @@ public sealed class GatewayDbContext : DbContext
             b.HasIndex(e => new { e.TenantId, e.TimestampUtc });
         });
 
+        modelBuilder.Entity<DictationSuggestionDismissalEntity>(b =>
+        {
+            b.ToTable("dictation_suggestion_dismissals");
+            // COMPOSITE primary key (tenant_id, Term) - the per-tenant key pattern (mirroring mission_notes /
+            // tenant_settings). Term is the NORMALIZED canonical spelling, namespaced per tenant, so with Term
+            // alone two tenants dismissing the same word would collide at the database. Scoping the key by
+            // tenant lets each tenant own its own dismissal for a given term; the store upserts by reading
+            // THROUGH the tenant query filter. Term is derived (lower-cased alphanumerics), compared ordinally
+            // (SQLite BINARY / Postgres "C"), matching how the miner folds a spelling before excluding it.
+            b.HasKey(e => new { e.TenantId, e.Term });
+            // The "Dismissed terms" screen lists newest-first; index the tenant-leading order path so it rides
+            // the global query filter's "tenant_id = @t" prefix rather than forcing a cross-tenant scan.
+            b.HasIndex(e => new { e.TenantId, e.DismissedAtUtc });
+        });
+
         modelBuilder.Entity<TenantSettingEntity>(b =>
         {
             b.ToTable("tenant_settings");
@@ -481,6 +501,7 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<TenantSettingEntity>(modelBuilder);
         ApplyTenantScope<DictationTranscriptEntity>(modelBuilder);
         ApplyTenantScope<WorkflowTenantOverrideEntity>(modelBuilder);
+        ApplyTenantScope<DictationSuggestionDismissalEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
 
@@ -517,6 +538,10 @@ public sealed class GatewayDbContext : DbContext
             // workflow_tenant_overrides.WorkflowId is a workflow slug compared ordinally everywhere else
             // (the stores normalize to lower-case and compare Ordinal), so pin it to "C" the same way.
             modelBuilder.Entity<WorkflowTenantOverrideEntity>().Property(e => e.WorkflowId).UseCollation("C");
+            // dictation_suggestion_dismissals.Term is the normalized canonical spelling, byte-ordinal equality
+            // like the keys above (the miner folds a spelling and compares exactly), so pin it to "C" so both
+            // providers agree on uniqueness and the miner's dismissed-exclusion check matches identically.
+            modelBuilder.Entity<DictationSuggestionDismissalEntity>().Property(e => e.Term).UseCollation("C");
             // The tenants mapping table's natural-key string columns (the tenant id primary key and the
             // account_subject unique index) rely on byte-ordinal equality/uniqueness, same as the keys above,
             // so pin them to "C" too - the account subject in particular must match EXACTLY on both providers.

@@ -1,5 +1,7 @@
+import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useKeepWarm } from "@devthrottle/client-core/net/useKeepWarm";
+import { getSuggestionCount } from "@devthrottle/client-core/dictation/dictionaryClient";
 import { NavIcon, type NavIconName } from "./components";
 import { CockpitStatusPill } from "./network/CockpitStatusPill";
 
@@ -50,6 +52,10 @@ interface NavItem {
   // a plain anchor to this absolute URL instead of a NavLink, and `to` is ignored. Used for Help, which
   // leaves the app for the public documentation site.
   href?: string;
+  // A red attention count rendered as a badge on the row (devthrottle #2075). The value is computed on
+  // the Gateway and rendered here verbatim - the client never re-derives it (rule 7: the client is dumb).
+  // Only the Dictionary item carries one today (pending dictionary suggestions).
+  badge?: number;
 }
 
 // The fleet work: what is running, how it is driven, and the corpora and tools it reads and writes.
@@ -89,13 +95,35 @@ export function AppShell() {
   // Keep-warm heartbeat (P2): hold the direct LAN path open during active use.
   useKeepWarm();
 
+  // The pending dictionary-suggestions count (devthrottle #2075) - the Gateway-owned verdict rendered as a
+  // red badge on the Dictionary nav item. Polled here so the whole app shows the attention signal without
+  // opening the page, and re-read on every route change so applying/dismissing on the page updates it
+  // promptly (leaving the page re-polls). The client renders the number; it never decides it.
+  const [suggestCount, setSuggestCount] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    const poll = () => void getSuggestionCount().then((n) => {
+      if (!cancelled) setSuggestCount(n);
+    });
+    poll();
+    const id = window.setInterval(poll, 45_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [location.pathname]);
+
+  const mainNav = NAV_MAIN.map((item) =>
+    item.to === "/dictionary" ? { ...item, badge: suggestCount } : item,
+  );
+
   return (
     <div className="shell">
       <nav className="rail rail-left" aria-label="Primary">
         <div className="brand">DevThrottle</div>
         <CockpitStatusPill />
         <div className="nav">
-          <NavList items={NAV_MAIN} pathname={location.pathname} />
+          <NavList items={mainNav} pathname={location.pathname} />
           <NavList items={NAV_FOOT} pathname={location.pathname} className="nav-list-foot" />
         </div>
         <div className="rail-foot">Cockpit (React)</div>
@@ -146,6 +174,11 @@ function NavList({
               >
                 <NavIcon name={item.icon} />
                 <span className="nav-link-label">{item.label}</span>
+                {item.badge !== undefined && item.badge > 0 && (
+                  <span className="nav-badge" title={`${item.badge} pending`}>
+                    {item.badge}
+                  </span>
+                )}
               </NavLink>
             )}
           </li>

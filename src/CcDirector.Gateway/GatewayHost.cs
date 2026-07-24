@@ -552,6 +552,10 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly Transcription.TranscriptionHistoryLog _transcriptionHistory = new();
     private readonly Transcription.TranscriptionAudioArchive _transcriptionAudioArchive = new();
     private readonly Transcription.TranscriptStore _transcripts;
+    // devthrottle #2075: the dismissed-suggestions store and the suggestions engine that mines the stored
+    // transcripts per tenant. Both are tenant-scoped and constructed after _transcripts / _gatewayDb below.
+    private readonly Transcription.DictionarySuggestionDismissalStore _dictionaryDismissals;
+    private readonly Transcription.DictionarySuggestionService _dictionarySuggestions;
     // The voice-turn staging root, likewise bound to an explicitly-named partition. This path stages a clip
     // for the duration of one turn and then deletes it; it writes no delivery record and performs no
     // cross-request lookup by upload id, so it is unchanged by the dictation partition work. Per-tenant
@@ -964,6 +968,13 @@ public sealed class GatewayHost : IAsyncDisposable
         // no IsHosted branch; self-host is just the single Local tenant. No legacy file to import here (the old
         // flat dictation/sessions/*.jsonl log is retired, not migrated - it had no readers).
         _transcripts = new Transcription.TranscriptStore(_gatewayDb);
+        // devthrottle #2075: the dictionary-suggestions engine. It mines the tenant's stored transcripts
+        // (_transcripts) against that tenant's glossary (TenantGlossary.Load) and its dismissed terms
+        // (_dictionaryDismissals) to produce ranked, evidence-carrying suggestions. Tenant-scoped throughout;
+        // same store on SQLite (self-host) and Postgres (hosted), no IsHosted branch.
+        _dictionaryDismissals = new Transcription.DictionarySuggestionDismissalStore(_gatewayDb);
+        _dictionarySuggestions = new Transcription.DictionarySuggestionService(
+            _transcripts, _dictionaryDismissals, Transcription.TenantGlossary.Load);
         // Cron-job definitions persist across a Gateway restart (epic #479, #482) in the cron_jobs table
         // (next-run times recomputed on load). The path argument is the LEGACY cronjobs.json, imported once
         // on first upgrade then renamed aside. Tests MUST pass an isolated path so they never touch the real
@@ -1836,6 +1847,10 @@ public sealed class GatewayHost : IAsyncDisposable
             recordingKeyVault: _keyVault,
             transcriptionHistory: _transcriptionHistory,
             transcriptionAudioArchive: _transcriptionAudioArchive,
+            // devthrottle #2075: the dictionary-suggestions engine + dismissal store, so the
+            // /ingest/dictionary/suggestions routes serve per tenant.
+            dictionarySuggestions: _dictionarySuggestions,
+            dictionaryDismissals: _dictionaryDismissals,
             requestShutdown: () =>
             {
                 var handler = OnShutdownRequested;

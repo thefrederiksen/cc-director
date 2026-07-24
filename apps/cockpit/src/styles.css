@@ -142,6 +142,22 @@ body {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
+/* Red attention count on a nav row (devthrottle #2075). The Gateway computes the number of pending
+   dictionary suggestions; this only renders it. Red is reserved for attention, never for an action. */
+.nav-badge {
+  margin-left: auto;
+  background: var(--attention);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 10px;
+  padding: 1px 7px;
+  min-width: 20px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
 .rail-foot {
   padding: 12px 8px 4px;
   font-size: 11px;

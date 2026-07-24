@@ -3,6 +3,7 @@ using System;
 using CcDirector.Gateway.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace CcDirector.Gateway.Data.Migrations
 {
     [DbContext(typeof(GatewayDbContext))]
-    partial class GatewayDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260724135206_AddDictationSuggestionDismissals")]
+    partial class AddDictationSuggestionDismissals
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.2");
@@ -864,32 +867,6 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.HasIndex("WorkflowId");
 
                     b.ToTable("workflow_runs", (string)null);
-                });
-
-            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.WorkflowTenantOverrideEntity", b =>
-                {
-                    b.Property<string>("TenantId")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("tenant_id");
-
-                    b.Property<string>("WorkflowId")
-                        .HasColumnType("TEXT");
-
-                    b.Property<bool>("Enabled")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("UpdatedBy")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.HasKey("TenantId", "WorkflowId");
-
-                    b.HasIndex("TenantId");
-
-                    b.ToTable("workflow_tenant_overrides", (string)null);
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.WorkflowVersionEntity", b =>

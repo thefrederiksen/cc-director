@@ -148,7 +148,12 @@ internal static class GatewayEndpoints
         // on the host AFTER Map runs. Null/zero (older callers, bare test hosts) means "not started"/unknown.
         DateTime? gatewayStartedAtUtc = null,
         int gatewayPort = 0,
-        Func<string>? gatewayModeLabel = null)
+        Func<string>? gatewayModeLabel = null,
+        // devthrottle #2075: the dictionary-suggestions engine and the dismissal store, threaded into the
+        // /ingest/dictionary/suggestions routes. Null (older callers, recording-only test harnesses) simply
+        // does not expose the suggestion routes; production wires both.
+        Transcription.DictionarySuggestionService? dictionarySuggestions = null,
+        Transcription.DictionarySuggestionDismissalStore? dictionaryDismissals = null)
     {
         // The old issue #1188 "session lock" (423 Locked on human input while a PENDING dictation record
         // existed) was removed deliberately (issue #1308). This is a single-operator tool: a collision
@@ -337,7 +342,8 @@ internal static class GatewayEndpoints
         var logoutVisibility = authEnabled ? "" : "style=\"display:none\"";
 
         // Phone recorder ingest (offline-recorded audio -> transcription -> vault).
-        RecordingEndpoints.Map(app, tenantBoundary, recordingKeyVault, transcriptionHistory, transcriptionAudioArchive);
+        RecordingEndpoints.Map(app, tenantBoundary, recordingKeyVault, transcriptionHistory, transcriptionAudioArchive,
+            dictionarySuggestions, dictionaryDismissals);
 
         // Read-only view of the Communication Manager approval queue (see the phone's
         // pending drafts remotely). Step 1 of centralizing the comm queue on the Gateway.
