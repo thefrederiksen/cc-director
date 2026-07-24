@@ -125,14 +125,16 @@ public sealed class HostedRecordingServeTests : IAsyncLifetime
         Assert.Equal("application/json", resp.Content.Headers.ContentType?.MediaType);
     }
 
-    /// <summary>FAIL CLOSED: a device with no bound tenant is refused 403, never served the Local partition.</summary>
+    /// <summary>FAIL CLOSED: a device with no bound tenant is refused, never served the Local partition.
+    /// MTR-14B: an unbound device on hosted is an invalid credential, denied at the auth gate (401) before it
+    /// can reach the route's tenant-boundary 403. Refused either way; no cross-tenant/Local read.</summary>
     [Theory]
     [InlineData("ingest/recordings")]
     [InlineData("ingest/dictionary")]
-    public async Task Ingest_reads_refuse_an_unresolved_tenant_with_403(string path)
+    public async Task Ingest_reads_refuse_an_unresolved_tenant_with_401(string path)
     {
         var resp = await _httpUnbound.GetAsync(path);
-        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
     }
 
     /// <summary>Control: an unauthenticated caller is still rejected by the host-wide auth gate.</summary>
