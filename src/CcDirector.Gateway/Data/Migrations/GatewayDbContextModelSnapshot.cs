@@ -831,6 +831,32 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.ToTable("workflow_runs", (string)null);
                 });
 
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.WorkflowTenantOverrideEntity", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("WorkflowId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("UpdatedBy")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("TenantId", "WorkflowId");
+
+                    b.HasIndex("TenantId");
+
+                    b.ToTable("workflow_tenant_overrides", (string)null);
+                });
+
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.WorkflowVersionEntity", b =>
                 {
                     b.Property<Guid>("Id")
