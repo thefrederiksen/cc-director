@@ -321,6 +321,70 @@ public sealed class WorktreeReaperServiceTests : IDisposable
     }
 
     // ---------------------------------------------------------------------------------------
+    // THE HARD BACKSTOP (inspection round 3): even when the roster and the activity cooling-off both
+    // MISS a live session - it has not propagated to the Gateway yet, and it writes only to an
+    // ignored nested folder like the production .temp so git status stays clean and the activity
+    // sample is old - a running session holds an OS handle under its worktree, so the physical
+    // removal FAILS and the worktree is left in place, never deleted. This is the guarantee the
+    // heuristics only approximate.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Reap_NeverDeletesAWorktree_WithAnOpenFileUnderIt_EvenWhenRosterAndCoolingOffMissIt()
+    {
+        var safe = AddSafeWorktree("held-open");
+        // An ignored nested payload dir (like a session's .temp) - keeps git status clean.
+        WriteFile(safe, ".gitignore", ".temp/\n");
+        RunGit(safe, "add", ".gitignore");
+        RunGit(safe, "commit", "-m", "ignore temp");
+        RunGit(safe, "push", "origin", "held-open");
+        RunGit(_primary, "merge", "--ff-only", "held-open");
+        RunGit(_primary, "push", "origin", "main");
+
+        var tempDir = Path.Combine(safe, ".temp");
+        Directory.CreateDirectory(tempDir);
+        var held = Path.Combine(tempDir, "session.bin");
+        File.WriteAllText(held, "session payload");
+
+        using (var _ = new FileStream(held, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            // Empty roster (session not propagated) AND a future clock (past the cooling-off): both
+            // heuristics miss it - only the OS file lock protects it.
+            var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, NoSessions);
+
+            Assert.True(Directory.Exists(safe), "a worktree with an open file is never physically deleted");
+            Assert.DoesNotContain(result.Outcomes, o => o.Removed
+                && WorktreeReaperService.NormalizePath(o.Path) == WorktreeReaperService.NormalizePath(safe));
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 3): a roster failure PART-WAY through the loop must still report
+    // the worktrees it already removed, not a bare failure with an empty outcome list that hides a
+    // completed destructive delete.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Reap_WhenRosterFailsMidLoop_StillReportsWhatWasAlreadyRemoved()
+    {
+        AddSafeWorktree("mid-a");
+        AddSafeWorktree("mid-b");
+
+        int calls = 0;
+        Func<CancellationToken, Task<IReadOnlyList<LiveSessionRef>>> provider = _ =>
+        {
+            calls++;
+            if (calls >= 3) // call 1 = inventory roster, call 2 = first removal's re-read, call 3 throws
+                throw new InvalidOperationException("gateway went away mid-reap");
+            return Task.FromResult<IReadOnlyList<LiveSessionRef>>(Array.Empty<LiveSessionRef>());
+        };
+
+        var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, provider);
+
+        Assert.False(result.Success);
+        Assert.Contains("aborted after removing", result.Error ?? "");
+        Assert.Equal(1, result.RemovedCount); // the one removed before the failure is REPORTED, not discarded
+    }
+
+    // ---------------------------------------------------------------------------------------
     // REGRESSION (inspection): a session running in a SUBDIRECTORY of a worktree must protect the
     // whole worktree, not only an exact-root match. Before the fix a session in W\src did not match
     // worktree root W, so a clean merged W was still reapable and could be deleted under it.

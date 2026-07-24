@@ -249,8 +249,20 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         if (env is null)
             throw new InvalidOperationException("Gateway GET /sessions?envelope=true returned an unparsable body.");
 
-        FileLog.Write($"[GatewayClient] ListFleetSessionsWithReachabilityAsync: {env.Sessions?.Count ?? 0} session(s), {env.Directors?.Count ?? 0} reachability record(s)");
-        return (env.Sessions ?? new List<SessionDto>(), env.Directors ?? new List<DirectorReachabilityDto>());
+        // FAIL CLOSED on MISSING completeness metadata (inspection): a legacy or version-skewed Gateway
+        // may return a 200 envelope WITHOUT the reachability ('directors') array - or without 'sessions'.
+        // A destructive caller must distinguish "the server authoritatively returned an empty array"
+        // (present but empty) from "the field was absent" (unknown). Coalescing absent-to-empty would
+        // make the reaper trust a roster whose completeness it cannot confirm, so an absent field throws.
+        if (env.Directors is null)
+            throw new InvalidOperationException(
+                "Gateway GET /sessions?envelope=true omitted per-Director reachability; cannot confirm the roster is complete.");
+        if (env.Sessions is null)
+            throw new InvalidOperationException(
+                "Gateway GET /sessions?envelope=true omitted the session list; cannot confirm the roster is complete.");
+
+        FileLog.Write($"[GatewayClient] ListFleetSessionsWithReachabilityAsync: {env.Sessions.Count} session(s), {env.Directors.Count} reachability record(s)");
+        return (env.Sessions, env.Directors);
     }
 
     /// <summary>The /sessions?envelope=true response shape: the roster plus per-Director reachability.</summary>

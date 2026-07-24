@@ -170,6 +170,22 @@ public sealed class WorktreeReaperService
             // sees they were deliberately spared.
             var skipped = inventory.InUseBySession.Select(w => NormalizePath(w.Path)).ToList();
 
+            // Builds the final result, ALWAYS carrying the outcomes accumulated so far (inspection): a
+            // mid-loop abort must still report what it already removed, never a bare failure that hides
+            // a completed destructive delete.
+            ReapResult BuildResult(string? error)
+            {
+                var lo = outcomes.Where(o => o.Leftover != null).Select(o => o.Leftover!).ToList();
+                return new ReapResult
+                {
+                    Success = error is null && outcomes.All(o => o.Removed),
+                    Outcomes = outcomes,
+                    Leftovers = lo,
+                    Skipped = skipped.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                    Error = error,
+                };
+            }
+
             foreach (var worktree in inventory.SafeToReap)
             {
                 var normalized = NormalizePath(worktree.Path);
@@ -203,7 +219,10 @@ public sealed class WorktreeReaperService
                 catch (Exception ex)
                 {
                     FileLog.Write($"[WorktreeReaperService] ReapAsync aborted - could not re-confirm live sessions before removing {worktree.Path}: {ex.Message}");
-                    return ReapResult.Failure($"could not confirm which worktrees are in use by live sessions - reap aborted: {ex.Message}");
+                    // Preserve what was already removed (inspection): prune, then report the outcomes
+                    // so far plus the abort reason - never discard the record of a completed delete.
+                    await _git.RunAsync(repositoryPath, new[] { "worktree", "prune" }, ct);
+                    return BuildResult($"reap aborted after removing {outcomes.Count(o => o.Removed)} worktree(s) - could not re-confirm live sessions before removing {worktree.Path}: {ex.Message}");
                 }
                 if (RosterProtects(normalized, rosterNow))
                 {
@@ -229,15 +248,8 @@ public sealed class WorktreeReaperService
             // One prune at the end clears any admin entries whose directories are now gone.
             await _git.RunAsync(repositoryPath, new[] { "worktree", "prune" }, ct);
 
-            var leftovers = outcomes.Where(o => o.Leftover != null).Select(o => o.Leftover!).ToList();
-            var result = new ReapResult
-            {
-                Success = outcomes.All(o => o.Removed),
-                Outcomes = outcomes,
-                Leftovers = leftovers,
-                Skipped = skipped.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
-            };
-            FileLog.Write($"[WorktreeReaperService] reaped {result.RemovedCount}/{outcomes.Count}, leftovers={leftovers.Count}, skipped={result.Skipped.Count}");
+            var result = BuildResult(null);
+            FileLog.Write($"[WorktreeReaperService] reaped {result.RemovedCount}/{outcomes.Count}, leftovers={result.Leftovers.Count}, skipped={result.Skipped.Count}");
             return result;
         }
         catch (Exception ex)
