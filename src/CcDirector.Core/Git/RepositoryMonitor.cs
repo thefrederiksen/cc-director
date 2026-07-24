@@ -215,6 +215,7 @@ public sealed class RepositoryMonitor
         ProgressChanged?.Invoke();
         FileLog.Write($"[RepositoryMonitor] rescan started: {paths.Count} repositories");
 
+        bool completed = false;
         try
         {
             foreach (var path in paths)
@@ -293,24 +294,41 @@ public sealed class RepositoryMonitor
                 removed.Select(r => WorktreeReaperService.NormalizePath(r.Path)),
                 StringComparer.OrdinalIgnoreCase);
             EvictStaleComputeState(removedThisScan);
+            completed = true;
         }
         catch (OperationCanceledException)
         {
             FileLog.Write("[RepositoryMonitor] rescan superseded/cancelled");
-            return; // a newer scan owns the model now
         }
         finally
         {
-            lock (_gate) { IsScanning = false; }
-            ProgressChanged?.Invoke();
+            // Scan lifecycle state belongs to the CURRENT scan only (ruling R3-6): ownership is
+            // checked under the gate against the monitor's current cancellation source. A
+            // superseded scan exits without touching IsScanning or progress - its replacement is
+            // still scanning and owns both.
+            bool owner;
+            lock (_gate)
+            {
+                owner = ReferenceEquals(_cts, cts);
+                if (owner)
+                    IsScanning = false;
+            }
+            if (owner)
+            {
+                ProgressChanged?.Invoke();
+                // Deferred requests are drained on EVERY exit path of the OWNING scan (ruling
+                // R3-6) - completed, externally cancelled, or faulted - so a cancelled scan with
+                // no successor never strands them. Each deferred request kept its ORIGINAL
+                // requester's token (ruling R2-5). When a newer scan superseded this one, that
+                // newer scan owns the drain: every one of ITS exit paths runs this same block.
+                await DrainDeferredRecomputesAsync();
+            }
         }
 
+        if (!completed)
+            return; // superseded or cancelled - never reports completion
+
         FileLog.Write($"[RepositoryMonitor] rescan completed: {ScanDone}/{ScanTotal}");
-
-        // Run the single-repository recomputes that arrived while this scan held the model.
-        // Each deferred request kept its ORIGINAL requester's token (ruling R2-5).
-        await DrainDeferredRecomputesAsync();
-
         ScanCompleted?.Invoke();
     }
 

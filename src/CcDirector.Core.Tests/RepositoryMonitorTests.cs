@@ -802,6 +802,119 @@ public class RepositoryMonitorTests
     }
 
     // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 3, ruling R3-6a): scan lifecycle state belongs to the
+    // CURRENT scan only. A superseded scan's exit must not clear IsScanning while its
+    // replacement is still scanning - before the fix it did, and watcher recomputes then
+    // bypassed deferral mid-scan. The deferred request the superseded interval parks must
+    // then be drained by the NEWER scan's completion path.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Rescan_Superseded_DoesNotClearIsScanningForItsReplacement_WhichDrainsTheDeferred()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ccd-lifecycle-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(System.IO.Path.Combine(dir, ".git"));
+        try
+        {
+            var paths = new List<string> { "/r/old" };
+            var oldEntered = new TaskCompletionSource();
+            var releaseOld = new TaskCompletionSource();
+            var newEntered = new TaskCompletionSource();
+            var releaseNew = new TaskCompletionSource();
+            var monitor = new RepositoryMonitor(
+                enumerate: _ => paths.ToList(),
+                compute: async (p, _, _) =>
+                {
+                    if (p == "/r/old") { oldEntered.TrySetResult(); await releaseOld.Task; }
+                    if (p == "/r/new") { newEntered.TrySetResult(); await releaseNew.Task; }
+                    return Status(p);
+                }) { LiveSessionsProvider = NoSessions };
+
+            var oldScan = monitor.RescanAsync(new[] { "/r" });
+            await oldEntered.Task; // the old scan is mid-compute
+
+            paths[0] = "/r/new";
+            var newScan = monitor.RescanAsync(new[] { "/r" }); // supersedes the old scan
+            await newEntered.Task; // the new scan is mid-compute and owns the monitor
+
+            // The old scan exits (its publish is suppressed as superseded). It must NOT mark
+            // the monitor idle - the replacement scan is still running.
+            releaseOld.SetResult();
+            await oldScan;
+            Assert.True(monitor.IsScanning);
+
+            // Because the monitor still reads as scanning, a watcher recompute defers instead
+            // of racing the live scan.
+            await monitor.RecomputeOneAsync(dir);
+            Assert.DoesNotContain(monitor.Snapshot(), s => s.Path == dir); // parked, not run
+
+            // The NEWER scan's completion path must provably reach the deferred request.
+            releaseNew.SetResult();
+            await newScan;
+            Assert.False(monitor.IsScanning);
+            Assert.Contains(monitor.Snapshot(), s => s.Path == dir); // drained by the new scan
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 3, ruling R3-6b): an externally cancelled scan with NO
+    // successor drains its deferred requests on the way out - before the fix it returned from
+    // the catch without draining, stranding them until some later scan happened to complete.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Rescan_CancelledExternallyWithNoSuccessor_DrainsItsDeferredRecomputes()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ccd-canceldrain-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(System.IO.Path.Combine(dir, ".git"));
+        try
+        {
+            var computeEntered = new TaskCompletionSource();
+            var releaseCompute = new TaskCompletionSource();
+            bool blockNextCompute = true;
+            var monitor = new RepositoryMonitor(
+                enumerate: _ => new[] { "/r/x" },
+                compute: async (p, _, _) =>
+                {
+                    if (blockNextCompute)
+                    {
+                        blockNextCompute = false;
+                        computeEntered.SetResult();
+                        await releaseCompute.Task;
+                    }
+                    return Status(p);
+                }) { LiveSessionsProvider = NoSessions };
+
+            bool scanCompletedRaised = false;
+            monitor.ScanCompleted += () => scanCompletedRaised = true;
+
+            using var cts = new CancellationTokenSource();
+            var scanTask = monitor.RescanAsync(new[] { "/r" }, cts.Token);
+            await computeEntered.Task; // the scan is mid-compute
+
+            // A watcher recompute arrives and is deferred; its own requester never gives up.
+            await monitor.RecomputeOneAsync(dir);
+
+            // The scan is cancelled externally - no successor scan exists.
+            cts.Cancel();
+            releaseCompute.SetResult();
+            await scanTask;
+
+            // The cancelled scan cleared its own lifecycle state and drained the deferred
+            // request on its way out - the request is not stranded.
+            Assert.False(monitor.IsScanning);
+            Assert.Contains(monitor.Snapshot(), s => s.Path == dir);
+            Assert.False(scanCompletedRaised); // a cancelled scan still never reports completion
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
     // REGRESSION (inspection round 2, ruling R2-8): scanning without a live-session source is a
     // programming error and fails LOUDLY. An unwired monitor used to silently publish
     // session-blind safety classifications - an occupied worktree could be marked safe to reap.
