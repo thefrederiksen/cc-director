@@ -691,6 +691,44 @@ public sealed class GitBranchServiceTests : IDisposable
         RunGit(wt, "status", "--short"); // throws on a broken HEAD - a healthy worktree does not
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection): branch deletion proves containment with `git cherry` against the
+    // LOCAL origin/main, which can be stale. A failed `git fetch --prune` therefore aborts the
+    // delete rather than acting on stale merge signals and stranding commits.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Delete_WhenFetchFails_IsRefused_AndTheBranchSurvives()
+    {
+        // A branch that IS merged into main - it would be safe to delete on fresh state.
+        RunGit(_repo, "checkout", "-b", "merged-x");
+        WriteFile("mx.txt", "m\n");
+        RunGit(_repo, "add", "-A");
+        RunGit(_repo, "commit", "-m", "merged x");
+        RunGit(_repo, "push", "-u", "origin", "merged-x");
+        RunGit(_repo, "checkout", "main");
+        RunGit(_repo, "merge", "--ff-only", "merged-x");
+        RunGit(_repo, "push", "origin", "main");
+
+        var git = new FailFetchGitRunner();
+        var (deleted, msg) = await new GitBranchService(git).DeleteIfSafeAsync(_repo, "merged-x");
+
+        Assert.False(deleted);
+        Assert.Contains("git fetch failed", msg);
+        Assert.Contains("merged-x", (await new GitBranchService().ListAsync(_repo)).Select(b => b.Name));
+    }
+
+    /// <summary>A git runner that fails "git fetch --prune" and runs every other command for real.</summary>
+    private sealed class FailFetchGitRunner : GitCommandRunner
+    {
+        public override async Task<GitCommandResult> RunAsync(
+            string workingDirectory, string[] args, CancellationToken ct = default)
+        {
+            if (args.Length >= 2 && args[0] == "fetch" && args[1] == "--prune")
+                return new GitCommandResult { Success = false, ExitCode = 1, Error = "injected fetch failure (network down)" };
+            return await base.RunAsync(workingDirectory, args, ct);
+        }
+    }
+
     private sealed class ThrowingMessageException : Exception
     {
         public override string Message => throw new InvalidOperationException("toxic Message getter");

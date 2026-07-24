@@ -174,6 +174,16 @@ public sealed class GitBranchService
     public async Task<(bool Deleted, string Message)> DeleteIfSafeAsync(string repoPath, string branch, CancellationToken ct = default)
     {
         FileLog.Write($"[GitBranchService] DeleteIfSafeAsync: {branch} in {repoPath}");
+
+        // Refresh remote state before proving the merge (inspection): the containment check runs
+        // `git cherry` against the LOCAL origin/main ref, which can be stale - remote main may have
+        // been rewritten to drop the very commits this branch carries. A failed fetch means the
+        // merge signals cannot be trusted, so this destructive path ABORTS rather than deleting a
+        // branch on stale containment and stranding its commits.
+        var fetch = await _git.RunAsync(repoPath, new[] { "fetch", "--prune" }, ct);
+        if (!fetch.Success)
+            return (false, $"could not refresh remote state (git fetch failed) - not deleted so nothing is stranded on stale merge signals: {fetch.Error.Trim()}");
+
         var current = (await ListAsync(repoPath, ct)).FirstOrDefault(b => b.Name == branch);
         if (current is null)
             return (false, $"branch not found: {branch}");
