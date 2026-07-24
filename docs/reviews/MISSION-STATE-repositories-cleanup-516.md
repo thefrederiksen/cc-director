@@ -69,3 +69,17 @@ Durable Architect state. Any reseat continues from here. Keep current.
     best-effort provider. ReapAsync takes the roster/provider, fetches it AFTER fetch --prune, feeds it
     into the inventory recompute (not null), and aborts if it cannot be determined.
   - F12: bind the reap to the approved worktree set shown at confirmation (ReapAsync gains approvedPaths).
+
+## Verification status (2026-07-24, late)
+- All 12 findings COMMITTED to fix/repositories-cleanup-safety-516 (see ledger). Working tree CLEAN.
+- Non-Gateway findings (F01,F02,F03,F04,F05,F06,F11,F12): full test-first + revert-proof done, green.
+- Gateway findings: F07,F09 revert-proofed (bit). F08,F10 tests PASS (in 31-test green run) but the
+  watch-on-revert demo is blocked by a concurrent Gateway suite in devthrottle-activity-ledger
+  (vstest hangs when two Gateway suites overlap). Retry F08/F10 revert-proof when that clears.
+- IN FLIGHT (background): Codex adversarial inspection of full src diff (bwomcgu3i); full Gateway
+  suite queued to run when the other worktree's testhost clears (bbw3fbdyw).
+- REMAINING GATES before merge: Codex PASS (iterate if FAIL); full Gateway suite green; full Core +
+  Avalonia suites green on final tree (run sequentially, never overlapping a Gateway suite); then
+  squash-merge to origin/main, delete branch, remove worktree, email owner (soren@centerconsulting.com).
+- All caller sites of changed public APIs verified (ReapAsync, ObserveSnapshot, GetCount/GetStatus/
+  GetSyncStatus/FetchAsync) - only the intended callers, all compile (Avalonia + Gateway build green).
