@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Git;
@@ -39,7 +38,7 @@ public class GitStatusProvider
     private static readonly Dictionary<string, CacheEntry> _cache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly object _cacheLock = new();
 
-    public async Task<GitStatusResult> GetStatusAsync(string repoPath)
+    public async Task<GitStatusResult> GetStatusAsync(string repoPath, CancellationToken ct = default)
     {
         FileLog.Write($"[GitStatusProvider] GetStatusAsync: repoPath={repoPath}");
 
@@ -54,7 +53,7 @@ public class GitStatusProvider
             }
         }
 
-        var (rawOutput, error, exitCode) = await RunGitStatusAsync(repoPath);
+        var (rawOutput, error, exitCode) = await RunGitStatusAsync(repoPath, ct);
         if (exitCode < 0)
             return new GitStatusResult { Success = false, Error = error ?? "Failed to start git process" };
         if (exitCode != 0)
@@ -76,7 +75,7 @@ public class GitStatusProvider
     /// <see cref="GitCountResult.Success"/> is false when git could not be run - the count is then
     /// UNKNOWN, and callers must not treat it as "zero, therefore clean" (issue 516).
     /// </summary>
-    public async Task<GitCountResult> GetCountAsync(string repoPath)
+    public async Task<GitCountResult> GetCountAsync(string repoPath, CancellationToken ct = default)
     {
         FileLog.Write($"[GitStatusProvider] GetCountAsync: repoPath={repoPath}");
 
@@ -92,7 +91,7 @@ public class GitStatusProvider
             }
         }
 
-        var (rawOutput, error, exitCode) = await RunGitStatusAsync(repoPath);
+        var (rawOutput, error, exitCode) = await RunGitStatusAsync(repoPath, ct);
         if (exitCode != 0)
         {
             // A permissions problem, a transient process failure, a corrupt repository, or a missing
@@ -144,30 +143,22 @@ public class GitStatusProvider
         return null;
     }
 
-    private static async Task<(string Output, string? Error, int ExitCode)> RunGitStatusAsync(string repoPath)
+    private static async Task<(string Output, string? Error, int ExitCode)> RunGitStatusAsync(string repoPath, CancellationToken ct)
     {
         try
         {
-            var psi = new ProcessStartInfo
-            {
-                FileName = "git",
-                Arguments = "status --porcelain=v1 -u",
-                WorkingDirectory = repoPath,
-                CreateNoWindow = true,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
-
-            using var process = Process.Start(psi);
-            if (process == null)
+            // ProcessRunner drains stdout and stderr concurrently and honors cancellation by killing
+            // the child (issue 516): the old code read stdout to end before stderr, so a git process
+            // that filled its stderr pipe could deadlock, and it passed no token, so a superseded
+            // scan could not stop it.
+            var r = await ProcessRunner.RunAsync("git", new[] { "status", "--porcelain=v1", "-u" }, repoPath, ct);
+            if (!r.Started)
                 return ("", "Failed to start git process", -1);
-
-            var output = await process.StandardOutput.ReadToEndAsync();
-            var error = await process.StandardError.ReadToEndAsync();
-            await process.WaitForExitAsync();
-
-            return (output, error, process.ExitCode);
+            return (r.StandardOutput, r.StandardError, r.ExitCode);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {

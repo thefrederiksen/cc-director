@@ -76,8 +76,8 @@ public sealed class RepositoryStatusService
             var remoteUrl = await ReadOriginUrlAsync(repoPath, ct);
             var (provider, org) = ClassifyRemote(remoteUrl);
 
-            var sync = await _sync.GetSyncStatusAsync(repoPath);
-            var count = await _status.GetCountAsync(repoPath);
+            var sync = await _sync.GetSyncStatusAsync(repoPath, ct);
+            var count = await _status.GetCountAsync(repoPath, ct);
             var inventory = await _worktrees.GetInventoryAsync(repoPath, fetchPrune, liveSessions, ct);
 
             // Fail closed (issue 516): if ANY probe failed, this row is UNKNOWN, never a
