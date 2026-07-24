@@ -21,6 +21,22 @@ public class RepositoryWatcherSignalTests
     [InlineData(null, false)]
     public void IsSignal_FiltersToGitStateSignals(string? relative, bool expected)
         => Assert.Equal(expected, RepositoryWatcher.IsSignal(relative));
+
+    // Issue 516: paths relative to the repository ROOT. Inside .git only the state signals fire;
+    // OUTSIDE .git any working-tree change fires, so dirty state is observed.
+    [Theory]
+    [InlineData(".git", false)]                    // the .git directory itself is not a state change
+    [InlineData(@".git\HEAD", true)]
+    [InlineData(@".git\refs\heads\main", true)]
+    [InlineData(".git/logs/HEAD", true)]
+    [InlineData(@".git\index", false)]             // our own status scans touch this - echo risk
+    [InlineData(@".git\objects\ab\cdef", false)]   // object writes are covered by the reflog
+    [InlineData("src/Program.cs", true)]           // a tracked working-tree file
+    [InlineData("dirty.txt", true)]                // an untracked working-tree file
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void IsRepoSignal_GitStateSignalsOrAnyWorkingTreeChange(string? relative, bool expected)
+        => Assert.Equal(expected, RepositoryWatcher.IsRepoSignal(relative));
 }
 
 /// <summary>
@@ -104,6 +120,56 @@ public sealed class RepositoryWatcherIntegrationTests : IDisposable
             Assert.Contains("alpha", computed);
             Assert.DoesNotContain("beta", computed);
         }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (issue 516): an UNCOMMITTED working-tree change - nothing under .git changes -
+    // must recompute the repository, so its cleanliness and dirty-age do not go stale until the
+    // next full scan. The old watcher observed only .git and ignored the worktree entirely.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task WorkingTreeChange_WithNoGitChange_RecomputesTheRepo()
+    {
+        var a = MakeRepo("worktree-alpha");
+        var monitor = new RepositoryMonitor(
+            enumerate: _ => new[] { a },
+            compute: (p, _, _) => Task.FromResult(new RepositoryStatus { Path = p, Name = Path.GetFileName(p), IsClean = true, Success = true }))
+        { LiveSessionsProvider = NoSessions };
+        await monitor.RescanAsync(new[] { _root });
+
+        using var watcher = new RepositoryWatcher(monitor);
+        var recomputes = new List<string>();
+        watcher.Recomputed += p => { lock (recomputes) recomputes.Add(Path.GetFileName(p)); };
+        watcher.SyncWatches(new[] { _root }, new[] { a });
+
+        // Just an untracked file in the working tree - no add, no commit, no .git write.
+        File.WriteAllText(Path.Combine(a, "dirty.txt"), "work in progress\n");
+
+        await WaitUntilAsync(() => { lock (recomputes) return recomputes.Count >= 1; }, TimeSpan.FromSeconds(15));
+        lock (recomputes)
+            Assert.Contains("worktree-alpha", recomputes);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (issue 516): the periodic reconciliation asks the host for a full rescan without
+    // any file event, so a repository created by "git init" in an existing folder, a slow clone,
+    // and any events dropped on a buffer overflow are eventually reconciled. The old watcher had
+    // no periodic reconciliation and no error recovery at all.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task PeriodicReconciliation_RequestsAFullRescan_WithNoFileEvent()
+    {
+        var monitor = new RepositoryMonitor(
+            enumerate: _ => Array.Empty<string>(),
+            compute: (p, _, _) => Task.FromResult(new RepositoryStatus { Path = p, Success = true }))
+        { LiveSessionsProvider = NoSessions };
+
+        using var watcher = new RepositoryWatcher(monitor, reconcileInterval: TimeSpan.FromMilliseconds(300));
+        var requested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        watcher.ReconciliationRequested += () => requested.TrySetResult();
+
+        var done = await Task.WhenAny(requested.Task, Task.Delay(TimeSpan.FromSeconds(5)));
+        Assert.Same(requested.Task, done); // the periodic tick asked for a rescan
     }
 
     [Fact]

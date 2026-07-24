@@ -253,6 +253,10 @@ public partial class App : Application
         // After each completed scan, watch the roots and every known repository's git signals so a
         // change recomputes only the affected repo - react to change instead of re-scanning (#510 A).
         _repositoryWatcher = new RepositoryWatcher(RepositoryMonitor);
+        // A watcher buffer overflow or the periodic reconciliation tick asks for a full rescan, so
+        // working-tree changes the incremental watch missed, a "git init" in an existing folder, a
+        // slow clone, and any dropped events are eventually reconciled (issue 516).
+        _repositoryWatcher.ReconciliationRequested += StartRepositoryRescan;
         RepositoryMonitor.ScanCompleted += () =>
         {
             try
