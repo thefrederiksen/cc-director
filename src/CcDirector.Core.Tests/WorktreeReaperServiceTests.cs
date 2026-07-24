@@ -168,7 +168,66 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         Assert.Empty(result.Leftovers);
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (issue 516, blocker: a failed git worktree remove must not fall through to an
+    // unconditional recursive delete). A file appears in the worktree in the unavoidable window
+    // between the final clean-status check and "git worktree remove", so git correctly refuses to
+    // remove the now-dirty worktree. The reaper must treat that refusal as fail-closed and leave
+    // the folder - and the new content - in place, NEVER force-delete it as if it were a
+    // locked-file cleanup. Before the fix the remove result was discarded and the surviving folder
+    // was recursively deleted, discarding the uncommitted work.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Reap_WorktreeTurnsDirtyBetweenTheCheckAndTheRemove_IsNotForceDeleted()
+    {
+        var safe = AddSafeWorktree("racing");
+        var surprise = Path.Combine(safe, "created-in-the-window.txt");
+
+        // The injected runner drops an untracked file into the worktree the instant before
+        // "git worktree remove" runs, so real git refuses the removal - exactly the race the
+        // finding describes.
+        var git = new DirtyBeforeRemoveGitRunner(safe, surprise);
+        var result = await new WorktreeReaperService(git: git).ReapAsync(_primary);
+
+        Assert.False(result.Success, "a worktree git refused to remove must not be reported as a clean success");
+        Assert.True(Directory.Exists(safe), "the worktree git refused to remove must still be present");
+        Assert.True(File.Exists(surprise), "the file created in the window must NOT have been force-deleted");
+        var outcome = Assert.Single(result.Outcomes);
+        Assert.False(outcome.Removed);
+        Assert.Contains("dirty", outcome.Error ?? "");
+    }
+
     // ----- helpers -----
+
+    /// <summary>
+    /// A git runner that creates an untracked file in <c>worktreePath</c> the first time a
+    /// "git worktree remove" command runs, then delegates to real git - which then refuses the
+    /// removal because the worktree just became dirty. Reproduces the check-to-remove race
+    /// deterministically. Every other command runs for real.
+    /// </summary>
+    private sealed class DirtyBeforeRemoveGitRunner : GitCommandRunner
+    {
+        private readonly string _worktreePath;
+        private readonly string _fileToCreate;
+        private int _fired;
+
+        public DirtyBeforeRemoveGitRunner(string worktreePath, string fileToCreate)
+        {
+            _worktreePath = worktreePath;
+            _fileToCreate = fileToCreate;
+        }
+
+        public override async Task<GitCommandResult> RunAsync(
+            string workingDirectory, string[] args, CancellationToken ct = default)
+        {
+            if (args.Length >= 2 && args[0] == "worktree" && args[1] == "remove"
+                && Interlocked.Exchange(ref _fired, 1) == 0)
+            {
+                File.WriteAllText(_fileToCreate, "work that arrived after the safety scan\n");
+            }
+            return await base.RunAsync(workingDirectory, args, ct);
+        }
+    }
 
     private static void WriteFile(string repo, string relPath, string content)
     {

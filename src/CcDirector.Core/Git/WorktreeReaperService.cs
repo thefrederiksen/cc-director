@@ -133,21 +133,63 @@ public sealed class WorktreeReaperService
     {
         FileLog.Write($"[WorktreeReaperService] remove: path={worktree.Path}, branch={worktree.Branch}, proof={worktree.Reason} ({worktree.Explanation})");
 
-        // Re-verify cleanliness at the very last moment. Authoritative, so a failure below can be
-        // treated as a locked-file case rather than guessed at from git's error text.
+        // Re-verify cleanliness before asking git to remove the worktree.
         var status = await _git.RunAsync(worktree.Path, new[] { "status", "--porcelain" }, ct);
         if (!status.Success)
             return ReapOutcome.Failed(worktree, $"could not verify cleanliness: {status.Error}");
         if (!string.IsNullOrWhiteSpace(status.Output))
             return ReapOutcome.Failed(worktree, "worktree became dirty after the safety scan - not removed");
 
-        await _git.RunAsync(repositoryPath, new[] { "worktree", "remove", worktree.Path }, ct);
+        var remove = await _git.RunAsync(repositoryPath, new[] { "worktree", "remove", worktree.Path }, ct);
 
-        if (!Directory.Exists(worktree.Path))
+        // Cleanly removed: git deregistered the worktree and the folder is gone.
+        if (remove.Success && !Directory.Exists(worktree.Path))
             return ReapOutcome.RemovedOk(worktree);
 
-        // git could not fully delete the folder (Windows-locked bin/obj DLLs). Finish the job ourselves.
-        FileLog.Write($"[WorktreeReaperService] folder remains after git remove; attempting physical delete: {worktree.Path}");
+        // The folder is still here. Two very different situations look identical at this point and
+        // must NOT be confused (issue 516):
+        //   (a) git REFUSED the whole operation - there is an unavoidable window between the status
+        //       check above and this removal, and a file created in it makes git correctly refuse
+        //       the now-dirty worktree. git leaves the worktree fully REGISTERED and touches
+        //       nothing. Force-deleting here would discard that new content.
+        //   (b) git PROCEEDED (the worktree was clean by git's own check), DEREGISTERED the
+        //       worktree, and deleted most of it, but could not delete a locked build output. Only
+        //       leftover files remain - all committed or ignored - and finishing the delete is safe.
+        // The discriminator is whether git still lists this path as a worktree: (a) keeps it
+        // registered, (b) removes the registration. We fail closed on any inability to tell.
+        var list = await _git.RunAsync(repositoryPath, new[] { "worktree", "list", "--porcelain" }, ct);
+        if (!list.Success)
+        {
+            FileLog.Write($"[WorktreeReaperService] could not enumerate worktrees to confirm removal of {worktree.Path}: {list.Error.Trim()} - left in place");
+            return ReapOutcome.Failed(worktree, $"could not confirm the worktree was removed - left in place: {list.Error.Trim()}");
+        }
+        var normalizedTarget = NormalizePath(worktree.Path);
+        bool stillRegistered = WorktreeListParser.Parse(list.Output)
+            .Any(e => string.Equals(NormalizePath(e.Path), normalizedTarget, StringComparison.OrdinalIgnoreCase));
+
+        if (stillRegistered)
+        {
+            // Case (a): git refused and kept the worktree. Re-prove it is clean at THIS instant
+            // before doing anything destructive; a worktree that turned dirty in the window fails
+            // here and is left untouched, never force-deleted on the stale earlier proof.
+            var recheck = await _git.RunAsync(worktree.Path, new[] { "status", "--porcelain" }, ct);
+            if (!recheck.Success)
+            {
+                FileLog.Write($"[WorktreeReaperService] git refused to remove {worktree.Path} and its state could not be re-verified: {recheck.Error.Trim()} - left in place");
+                return ReapOutcome.Failed(worktree, $"git refused to remove the worktree and its state could not be re-verified: {remove.Error.Trim()}");
+            }
+            if (!string.IsNullOrWhiteSpace(recheck.Output))
+            {
+                FileLog.Write($"[WorktreeReaperService] {worktree.Path} became dirty in the remove window - left in place, not force-deleted");
+                return ReapOutcome.Failed(worktree, "worktree became dirty after the safety scan - not removed");
+            }
+            // Registered, clean, yet git refused for some non-content reason that has since cleared:
+            // nothing to lose, so fall through to finish the removal physically.
+        }
+
+        // Either git deregistered the worktree (case b) or it is registered-and-proven-clean:
+        // finishing the physical delete loses nothing (everything present is committed or ignored).
+        FileLog.Write($"[WorktreeReaperService] folder remains after git remove (git success={remove.Success}, stillRegistered={stillRegistered}); finishing physical delete: {worktree.Path}");
         TryDeleteDirectory(worktree.Path);
         await _git.RunAsync(repositoryPath, new[] { "worktree", "prune" }, ct);
 
