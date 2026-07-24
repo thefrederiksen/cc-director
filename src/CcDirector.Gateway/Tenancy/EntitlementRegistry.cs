@@ -47,7 +47,12 @@ public enum EntitlementOutcome
 /// </summary>
 /// <param name="Outcome">The three-way entitlement outcome. Never fold the three into two.</param>
 /// <param name="Tier">The plan tier the row records (hosted|pro), or null. Never gates enrollment.</param>
-public sealed record EntitlementDecision(EntitlementOutcome Outcome, string? Tier);
+/// <param name="CurrentPeriodEnd">The paid-period boundary from the row, present only on an
+/// <see cref="EntitlementOutcome.Entitled"/> outcome. The cancellation cutoff (MTR-15) CLIPS a positive lease
+/// to this instant (<c>expiry = min(now + ttl, CurrentPeriodEnd)</c>) so caching can never extend access one
+/// moment past the paid boundary. Null on NotEntitled/Unknown, and null on an Entitled row that recorded no
+/// period end (an active row need not carry one; the lease then falls back to the plain ttl).</param>
+public sealed record EntitlementDecision(EntitlementOutcome Outcome, string? Tier, DateTime? CurrentPeriodEnd = null);
 
 /// <summary>
 /// Reads the paid-entitlement record for a hosted account, at enrollment time.
@@ -197,7 +202,7 @@ public sealed class EntitlementRegistry
         var status = (row.Status ?? "").Trim();
 
         if (string.Equals(status, StatusActive, StringComparison.OrdinalIgnoreCase))
-            return new EntitlementDecision(EntitlementOutcome.Entitled, tier);
+            return new EntitlementDecision(EntitlementOutcome.Entitled, tier, row.CurrentPeriodEnd);
 
         // The dunning grace window: a payment that failed is being retried, and the customer has paid for
         // the period already. Entitled until that period ends, and not one moment after.
@@ -212,7 +217,7 @@ public sealed class EntitlementRegistry
             && nowUtc < periodEnd)
         {
             FileLog.Write("[EntitlementRegistry] Evaluate: ENTITLED within the payment-retry grace window (payment is past due, the paid period has not ended)");
-            return new EntitlementDecision(EntitlementOutcome.Entitled, tier);
+            return new EntitlementDecision(EntitlementOutcome.Entitled, tier, periodEnd);
         }
 
         // Canceled, past_due with the period ended or with no period recorded, or any state this code does

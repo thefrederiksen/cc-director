@@ -51,6 +51,12 @@ public sealed class NoCrossMachineLoopbackGuardTests
         ["src/CcDirector.Launcher/LauncherHost.cs"] = "Local launcher loopback bind.",
         ["src/CcDirector.Launcher/Program.cs"] = "Self-update helper POSTs /shutdown + probes /healthz on the launcher's own loopback (same machine).",
         ["src/CcDirector.Core/Account/LoopbackLoginListener.cs"] = "Binds an HttpListener on 127.0.0.1 only (operating-system-assigned ephemeral port) to receive the first-run browser sign-in hand-back; same-machine loopback trust boundary (security rule DT-07, issue #581).",
+        // Browsers feature: an automation browser's Chrome remote-debugging port is bound by Chrome on
+        // loopback, so machine-locality is the feature's designed security property - only an agent on
+        // THIS machine can attach (handover 2026-07-23). These three carry the loopback literal on purpose.
+        ["src/CcDirector.Core/Browsers/AutomationBrowser.cs"] = "Doc comment: BU_CDP_URL is http://127.0.0.1:<port> - the debug port is loopback by design (machine-local browsers).",
+        ["src/CcDirector.Core/Browsers/AutomationBrowserRegistry.cs"] = "AttachInfoFor builds the same-machine BU_CDP_URL (http://127.0.0.1:{port}); Chrome binds the debug port on loopback, and the loopback port probe binds 127.0.0.1 to test freeness.",
+        ["src/CcDirector.Core/Browsers/AutomationBrowserService.cs"] = "Probes and CDP-closes the browser over its own loopback debug port (http://127.0.0.1:{port}/json/version); same machine by construction.",
 
         // --- Loopback DETECTION / classification / labelling (the no-loopback policy itself) ---
         ["src/CcDirector.Core/Network/TailscaleIdentity.cs"] = "Formats a CLEARLY-LABELLED local-only fallback string; never advertised cross-machine.",
@@ -70,6 +76,7 @@ public sealed class NoCrossMachineLoopbackGuardTests
         // --- Desktop app: local Director/Cockpit access + local-only labels ---
         ["src/CcDirector.Avalonia/App.axaml.cs"] = "Local Control API bootstrap / loopback references.",
         ["src/CcDirector.Avalonia/CockpitUrlResolver.cs"] = "Resolves the local Cockpit URL (same machine).",
+        ["src/CcDirector.Avalonia/SelectDirectorDialog.axaml.cs"] = "The named-instance picker probes each instance's liveness by opening a TCP connection to its Control API port on 127.0.0.1. All named instances are local processes on THIS machine (one exe, many profiles), so a running/stopped check is inherently a SAME-machine loopback probe - the same boundary as ControlApiHost's loopback bind.",
         ["src/CcDirector.Avalonia/Controls/GatewayConnectionPanel.axaml.cs"] = "Epic #1069 A: BuildLoopbackEnrollUrl dials the co-located Gateway's /devices/enroll-signed-in at the literal 127.0.0.1 BY DESIGN - the Gateway's guardrail 1 requires the enroll caller to be a proven SAME-machine loopback connection (IPAddress.IsLoopback), so a machine-name or tailnet address would 403. Same-machine only; the enrolled key then registers/heartbeats over the pick's real address.",
         ["src/CcDirector.Avalonia/MainWindow.axaml.cs"] = "Local-only labelled endpoint strings (handover/about).",
         ["src/CcDirector.Avalonia/Controls/ConnectionsView.axaml.cs"] = "Local connection references.",

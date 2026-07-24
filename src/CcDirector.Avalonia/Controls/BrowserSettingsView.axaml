@@ -1,0 +1,171 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="CcDirector.Avalonia.Controls.BrowserSettingsView">
+
+    <!-- Settings > Browsers: the workshop for drivable automation browsers (Browsers feature,
+         slice 2). Create, sign in once, rename, stop/start, remove - every verdict shown here is the
+         Core fold (AutomationBrowserViewFold) rendered verbatim; this view decides layout only.
+         Hosted inside SettingsDialog, so its shared styles (card, hint, sectionTitle, dialogButton,
+         primaryButton, settingsInput) resolve from the dialog's Window.Styles. -->
+
+    <Grid RowDefinitions="Auto,Auto,Auto,*" Margin="0,4,0,0">
+
+        <!-- Header: what this is, the honest one-sign-in rule, and the primary actions. -->
+        <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,14,8">
+            <TextBlock Classes="sectionTitle" Text="Browsers" />
+            <TextBlock Classes="hint"
+                       Text="Real, signed-in browsers your agents can drive through Browser Harness. Each one is a dedicated browser profile DevThrottle creates - never your everyday browser. You sign it in once, by hand, and the login lasts for months; after that any agent on this machine attaches with one command. The one sign-in cannot be automated away: modern browsers block driving your main profile and encrypt its logins, so a dedicated profile with a single hand sign-in is the honest design." />
+            <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">
+                <Button x:Name="NewBrowserButton" Classes="primaryButton" Content="+ New browser"
+                        MinWidth="130" Click="BtnNewBrowser_Click"
+                        ToolTip.Tip="Create a new drivable browser profile" />
+                <Button x:Name="RefreshButton" Classes="dialogButton" Content="Refresh"
+                        Click="BtnRefresh_Click"
+                        ToolTip.Tip="Re-check each browser's live status" />
+                <TextBlock x:Name="StatusText" Text="" Foreground="#888888" FontSize="11"
+                           TextWrapping="Wrap" VerticalAlignment="Center" MaxWidth="480" />
+            </StackPanel>
+        </StackPanel>
+
+        <!-- Browser Harness missing: the feature stays visible and explains how to turn it on. -->
+        <Border Grid.Row="1" x:Name="HarnessBanner" IsVisible="False"
+                Background="#1E1E1E" BorderBrush="#3C3C3C" BorderThickness="1"
+                CornerRadius="6" Padding="14" Margin="0,0,14,10">
+            <Grid ColumnDefinitions="4,*">
+                <Border Grid.Column="0" Background="#F0B848" CornerRadius="2" />
+                <StackPanel Grid.Column="1" Spacing="6" Margin="12,0,0,0">
+                    <TextBlock Text="Turn on browser control" Foreground="#CCCCCC"
+                               FontSize="13" FontWeight="SemiBold" />
+                    <TextBlock Classes="hint"
+                               Text="To let your agents drive these browsers, install Browser Harness - the open-source tool DevThrottle uses. Your browsers below stay listed and ready; they just cannot be driven until it is installed." />
+                    <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">
+                        <Button Classes="dialogButton" Content="Install Browser Harness"
+                                MinWidth="180" Click="BtnInstallHarness_Click"
+                                ToolTip.Tip="Open the Browser Harness install guide in your browser" />
+                        <Button Classes="dialogButton" Content="Check again"
+                                Click="BtnRefresh_Click"
+                                ToolTip.Tip="Re-check whether browser-harness is now on PATH" />
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Inline create panel, shown by + New browser. -->
+        <Border Grid.Row="2" x:Name="CreatePanel" Classes="card" IsVisible="False" Margin="0,0,14,10">
+            <StackPanel Spacing="8">
+                <TextBlock Classes="sectionTitle" Margin="0" Text="New browser" />
+                <TextBlock Classes="hint"
+                           Text="Name it after the identity it will hold (for example the account or client it signs in as). DevThrottle creates a fresh, dedicated profile - your everyday browser is never touched." />
+                <Grid ColumnDefinitions="*,140,Auto,Auto" Margin="0,4,0,0">
+                    <TextBox x:Name="CreateNameBox" Grid.Column="0" Classes="settingsInput"
+                             Watermark="e.g. Center Consulting" />
+                    <ComboBox x:Name="CreateKindCombo" Grid.Column="1" Margin="8,0,0,0"
+                              VerticalAlignment="Stretch" HorizontalAlignment="Stretch" />
+                    <Button Grid.Column="2" Classes="primaryButton" Content="Create"
+                            Margin="8,0,0,0" MinWidth="90" Click="BtnCreate_Click" />
+                    <Button Grid.Column="3" Classes="dialogButton" Content="Cancel"
+                            Margin="8,0,0,0" Click="BtnCreateCancel_Click" />
+                </Grid>
+                <TextBlock x:Name="CreateError" Text="" Foreground="#EF4444" FontSize="11"
+                           TextWrapping="Wrap" IsVisible="False" />
+            </StackPanel>
+        </Border>
+
+        <!-- One card per browser. -->
+        <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                      Padding="0,0,14,0">
+            <StackPanel Spacing="8">
+                <ItemsControl x:Name="BrowserCards">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border Background="#1E1E1E" BorderBrush="#3C3C3C" BorderThickness="1"
+                                    CornerRadius="6" Padding="14,12" Margin="0,0,0,8">
+                                <Grid ColumnDefinitions="Auto,*,Auto,Auto" VerticalAlignment="Center">
+
+                                    <!-- Browser icon: the kind's letter on its color. -->
+                                    <Border Grid.Column="0" Width="34" Height="34" CornerRadius="8"
+                                            Background="{Binding IconBackground}" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding IconLetter}" Foreground="White"
+                                                   FontSize="15" FontWeight="Bold"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                    </Border>
+
+                                    <!-- Name (or the inline rename editor) + subtitle. -->
+                                    <StackPanel Grid.Column="1" Margin="12,0,12,0" VerticalAlignment="Center" Spacing="2">
+                                        <StackPanel Orientation="Horizontal" Spacing="8"
+                                                    IsVisible="{Binding !IsRenaming}">
+                                            <TextBlock Text="{Binding Name}" Foreground="#CCCCCC"
+                                                       FontSize="14" FontWeight="SemiBold"
+                                                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                            <Button Classes="dialogButton" Content="Rename" MinWidth="0"
+                                                    Height="22" Padding="8,0" FontSize="10"
+                                                    Tag="{Binding Id}" Click="BtnRenameStart_Click"
+                                                    IsEnabled="{Binding NotBusy}"
+                                                    ToolTip.Tip="Rename this browser (DevThrottle's own name - the browser profile itself is untouched)" />
+                                        </StackPanel>
+                                        <StackPanel Orientation="Horizontal" Spacing="6"
+                                                    IsVisible="{Binding IsRenaming}">
+                                            <TextBox Classes="settingsInput" MinWidth="220" Height="26" Padding="6,3"
+                                                     FontSize="12" Text="{Binding EditName, Mode=TwoWay}" />
+                                            <Button Classes="primaryButton" Content="Save" MinWidth="60" Height="26"
+                                                    Tag="{Binding Id}" Click="BtnRenameSave_Click" />
+                                            <Button Classes="dialogButton" Content="Cancel" MinWidth="60" Height="26"
+                                                    Tag="{Binding Id}" Click="BtnRenameCancel_Click" />
+                                        </StackPanel>
+                                        <TextBlock Text="{Binding Subtitle}" Foreground="#888888" FontSize="11.5"
+                                                   TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+
+                                    <!-- Status pill: the fold's label on the fold's color. -->
+                                    <Border Grid.Column="2" CornerRadius="10" Padding="10,3" Margin="0,0,12,0"
+                                            Background="{Binding PillBackground}" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding StatusLabel}" FontSize="11" FontWeight="SemiBold"
+                                                   Foreground="{Binding PillForeground}" />
+                                    </Border>
+
+                                    <!-- Actions for the current status. -->
+                                    <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="6"
+                                                VerticalAlignment="Center">
+                                        <Button Classes="primaryButton" Content="Sign in once" MinWidth="110"
+                                                IsVisible="{Binding ShowSignIn}" IsEnabled="{Binding NotBusy}"
+                                                Tag="{Binding Id}" Click="BtnSignIn_Click"
+                                                ToolTip.Tip="Open this browser on its sign-in page for the one-time hand sign-in" />
+                                        <Button Classes="dialogButton" Content="Start" MinWidth="70"
+                                                IsVisible="{Binding ShowStart}" IsEnabled="{Binding NotBusy}"
+                                                Tag="{Binding Id}" Click="BtnStart_Click"
+                                                ToolTip.Tip="Launch this browser so an agent can attach to it" />
+                                        <Button Classes="dialogButton" Content="Copy attach command" MinWidth="150"
+                                                IsVisible="{Binding ShowAttach}" IsEnabled="{Binding NotBusy}"
+                                                Tag="{Binding Id}" Click="BtnAttach_Click"
+                                                ToolTip.Tip="{Binding AttachToolTip}" />
+                                        <Button Classes="dialogButton" Content="Stop" MinWidth="60"
+                                                IsVisible="{Binding ShowStop}" IsEnabled="{Binding NotBusy}"
+                                                Tag="{Binding Id}" Click="BtnStop_Click"
+                                                ToolTip.Tip="Close this browser cleanly (its login is kept)" />
+                                        <Button Classes="iconButton"
+                                                Tag="{Binding Id}" Click="BtnRemove_Click"
+                                                IsEnabled="{Binding NotBusy}"
+                                                ToolTip.Tip="Remove this browser and permanently delete its profile folder">
+                                            <Canvas Width="12" Height="14" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                <Rectangle Canvas.Left="0" Canvas.Top="2" Width="12" Height="1.6" Fill="#E06C6C" />
+                                                <Rectangle Canvas.Left="4" Canvas.Top="0" Width="4" Height="2" Fill="#E06C6C" />
+                                                <Path Data="M 1,4 L 11,4 L 10,14 L 2,14 Z" Fill="#E06C6C" />
+                                                <Rectangle Canvas.Left="4" Canvas.Top="6" Width="1" Height="6" Fill="#252526" />
+                                                <Rectangle Canvas.Left="7" Canvas.Top="6" Width="1" Height="6" Fill="#252526" />
+                                            </Canvas>
+                                        </Button>
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <TextBlock x:Name="EmptyText" IsVisible="False"
+                           Text="No browsers yet. Click + New browser to create one - DevThrottle opens it, you sign in once, and from then on your agents drive it."
+                           Foreground="#888888" FontSize="12" FontStyle="Italic" Margin="4,4,0,0"
+                           TextWrapping="Wrap" />
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</UserControl>

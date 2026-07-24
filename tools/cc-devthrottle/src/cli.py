@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from . import __version__
+from . import browser_ops
 from . import diag_ops
 from . import email_ops
 from . import mission_ops
@@ -75,6 +76,11 @@ autostart_app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
 )
+browser_app = typer.Typer(
+    help="Manage DevThrottle's drivable automation browsers (signed in once, driven by an agent; machine-local).",
+    add_completion=False,
+    no_args_is_help=True,
+)
 app.add_typer(session_app, name="session")
 app.add_typer(repo_app, name="repo")
 app.add_typer(worktree_app, name="worktree")
@@ -87,6 +93,7 @@ app.add_typer(setup_app, name="setup")
 app.add_typer(email_app, name="email")
 app.add_typer(diag_app, name="diag")
 app.add_typer(autostart_app, name="autostart")
+app.add_typer(browser_app, name="browser")
 console = Console()
 
 _ACTIONS = [
@@ -452,6 +459,48 @@ _ACTIONS = [
         "mutatesState": False,
         "args": [],
     },
+    {
+        "id": "browser-list",
+        "description": "List this machine's drivable automation browsers (name, browser, status, account).",
+        "command": "cc-devthrottle browser list --json",
+        "mutatesState": False,
+        "args": [],
+    },
+    {
+        "id": "browser-create",
+        "description": "Register a new drivable browser (does not launch it).",
+        "command": 'cc-devthrottle browser create --name "Center Consulting" --browser chrome',
+        "mutatesState": True,
+        "args": [],
+    },
+    {
+        "id": "browser-signin",
+        "description": "Open the account page for a one-time human sign-in; add --done to mark it complete.",
+        "command": 'cc-devthrottle browser signin "Center Consulting"',
+        "mutatesState": True,
+        "args": [],
+    },
+    {
+        "id": "browser-start",
+        "description": "Launch a browser if it is down, then print how to attach the harness.",
+        "command": 'cc-devthrottle browser start "Center Consulting"',
+        "mutatesState": True,
+        "args": [],
+    },
+    {
+        "id": "browser-attach",
+        "description": "Print the BU_NAME/BU_CDP_URL export lines to attach browser-harness to a browser.",
+        "command": 'eval "$(cc-devthrottle browser attach \'Center Consulting\')"',
+        "mutatesState": False,
+        "args": [],
+    },
+    {
+        "id": "browser-stop",
+        "description": "Close a running automation browser cleanly (its login is kept).",
+        "command": 'cc-devthrottle browser stop "Center Consulting"',
+        "mutatesState": True,
+        "args": [],
+    },
 ]
 
 
@@ -459,6 +508,79 @@ def _version_callback(value: bool) -> None:
     if value:
         console.print(f"cc-devthrottle v{__version__}")
         raise typer.Exit()
+
+
+@browser_app.command("list")
+def browser_list(
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
+) -> None:
+    """List the drivable automation browsers on this machine."""
+    browser_ops.list_browsers(json_output)
+
+
+@browser_app.command("create")
+def browser_create(
+    name: str = typer.Option(..., "--name", help='Human-facing name, e.g. "Center Consulting".'),
+    browser: str = typer.Option("chrome", "--browser", help="Which browser: chrome or edge."),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
+) -> None:
+    """Register a new drivable browser (does not launch it)."""
+    browser_ops.create_browser(name, browser, json_output)
+
+
+@browser_app.command("signin")
+def browser_signin(
+    name: str = typer.Argument(..., help="Browser name or id."),
+    done: bool = typer.Option(False, "--done", help="Record that the human finished signing in."),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
+) -> None:
+    """Open the account page for a one-time hand sign-in, or (with --done) mark it complete."""
+    browser_ops.signin_browser(name, done, json_output)
+
+
+@browser_app.command("start")
+def browser_start(
+    name: str = typer.Argument(..., help="Browser name or id."),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
+) -> None:
+    """Launch the browser if it is down, then print how to attach to it."""
+    browser_ops.start_browser(name, json_output)
+
+
+@browser_app.command("stop")
+def browser_stop(
+    name: str = typer.Argument(..., help="Browser name or id."),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
+) -> None:
+    """Close a running browser cleanly (its login is kept; start it again any time)."""
+    browser_ops.stop_browser(name, json_output)
+
+
+@browser_app.command("attach")
+def browser_attach(
+    name: str = typer.Argument(..., help="Browser name or id."),
+) -> None:
+    """Print ONLY the export lines, so: eval "$(cc-devthrottle browser attach 'Name')\"."""
+    browser_ops.attach_browser(name)
+
+
+@browser_app.command("rename")
+def browser_rename(
+    name: str = typer.Argument(..., help="Current browser name or id."),
+    to: str = typer.Option(..., "--to", help="New name."),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
+) -> None:
+    """Rename a browser's label (id, port, and folder are unchanged)."""
+    browser_ops.rename_browser(name, to, json_output)
+
+
+@browser_app.command("remove")
+def browser_remove(
+    name: str = typer.Argument(..., help="Browser name or id."),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
+) -> None:
+    """Stop the browser, delete its folder, and drop it from the registry."""
+    browser_ops.remove_browser(name, json_output)
 
 
 @app.callback()

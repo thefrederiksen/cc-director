@@ -132,8 +132,17 @@ public class TerminalControl : Control
     // Link detection state
     private ContextMenu? _linkContextMenu;
 
-    // Paste state
-    private bool _isPasting;
+    // Paste state. Read on the background paste thread, set on the UI thread (the
+    // Cancel Paste menu item), so it is volatile to guarantee the cancel is seen.
+    private volatile bool _isPasting;
+
+    // Paste pacing. Clipboard text is sent to the agent TUI in small chunks with a
+    // short delay between them so interactive prompts (claude /login) do not drop
+    // characters. The chunk is small enough to be one atomic pipe write that the TUI
+    // reads in a single pass; chunking rather than one-char-at-a-time cuts the number
+    // of delays (and therefore the number of chances to stall) by this factor.
+    private const int PasteChunkSize = 8;
+    private const int PasteChunkDelayMs = 15;
 
     // Renderer mode
     private ITerminalRenderer _renderer = new OriginalRenderer();
@@ -1667,17 +1676,29 @@ public class TerminalControl : Control
     }
 
     /// <summary>
-    /// Paste clipboard text to the terminal as slow keystrokes.
-    /// Sends each character individually with a small delay so the terminal
-    /// can process them (required for interactive prompts like claude /login).
+    /// Paste clipboard text to the terminal as throttled keystrokes.
+    /// Sends the text in small chunks with a short delay between chunks so the agent
+    /// TUI can process them (required for interactive prompts like claude /login,
+    /// which drop characters if fed too fast).
+    ///
+    /// The send loop runs on a background thread, NOT the Avalonia UI thread.
+    /// SendInput only writes bytes to the ConPty pipe, so it does not need the UI
+    /// thread - and on a Director hosting many sessions the UI thread is often
+    /// saturated with rendering, which used to leave the per-chunk Task.Delay
+    /// continuations unscheduled for seconds at a time. A 92-char /login code took
+    /// 22s on a loaded machine for exactly this reason (11 characters stalled over
+    /// 800ms each, one for 7.3s), while the same paste was near-instant on an idle
+    /// machine. Pacing off the UI thread makes paste speed independent of render load.
     /// </summary>
     private async Task PasteToTerminalAsync()
     {
-        if (_session == null || _isPasting) return;
+        var session = _session;
+        if (session == null || _isPasting) return;
 
         string? text;
         try
         {
+            // Clipboard access must happen on the UI thread.
             var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
             if (clipboard == null) return;
             text = await clipboard.GetTextAsync();
@@ -1698,20 +1719,56 @@ public class TerminalControl : Control
 
         try
         {
-            foreach (var ch in text)
-            {
-                if (!_isPasting) break; // Cancelled
-
-                var bytes = Encoding.UTF8.GetBytes(new[] { ch });
-                _session.SendInput(bytes);
-                await Task.Delay(15);
-            }
-
+            await PaceChunksAsync(text, bytes => session.SendInput(bytes)).ConfigureAwait(false);
             FileLog.Write($"[TerminalControl] PasteToTerminalAsync: complete ({text.Length} chars sent)");
         }
         catch (Exception ex)
         {
             FileLog.Write($"[TerminalControl] PasteToTerminalAsync FAILED: {ex.Message}");
+        }
+        finally
+        {
+            _isPasting = false;
+        }
+    }
+
+    /// <summary>
+    /// Sends <paramref name="text"/> to <paramref name="send"/> in <see cref="PasteChunkSize"/>-character
+    /// chunks with a <see cref="PasteChunkDelayMs"/> delay between chunks, stopping early if
+    /// <see cref="_isPasting"/> is cleared (Cancel Paste).
+    ///
+    /// The loop runs inside <see cref="Task.Run(System.Action)"/> and every delay uses
+    /// ConfigureAwait(false), so it executes entirely on the thread pool and NEVER resumes on the
+    /// Avalonia UI thread. This is the whole fix: on a Director hosting many sessions the UI thread is
+    /// often saturated with rendering, and when the pacing awaited back onto it the per-chunk delay
+    /// continuations sat unscheduled for seconds - a 92-character /login code took 22s, with 11 chunks
+    /// stalling over 800ms each (one for 7.3s). Pacing on the thread pool makes paste speed independent
+    /// of render load. Kept as a separate method so a headless test can drive the real pacing against a
+    /// deliberately saturated UI thread. See PasteOffUiThreadTests.
+    /// </summary>
+    private async Task PaceChunksAsync(string text, Action<byte[]> send)
+    {
+        await Task.Run(async () =>
+        {
+            for (int i = 0; i < text.Length; i += PasteChunkSize)
+            {
+                if (!_isPasting) break; // Cancelled
+
+                var chunk = text.Substring(i, Math.Min(PasteChunkSize, text.Length - i));
+                send(Encoding.UTF8.GetBytes(chunk));
+                await Task.Delay(PasteChunkDelayMs).ConfigureAwait(false);
+            }
+        }).ConfigureAwait(false);
+    }
+
+    /// <summary>Test seam: drive the real <see cref="PaceChunksAsync"/> with injected text and a capture
+    /// callback instead of the clipboard and a live session. Mirrors the production _isPasting lifecycle.</summary>
+    internal async Task HarnessPaceChunksAsync(string text, Action<byte[]> send)
+    {
+        _isPasting = true;
+        try
+        {
+            await PaceChunksAsync(text, send).ConfigureAwait(false);
         }
         finally
         {

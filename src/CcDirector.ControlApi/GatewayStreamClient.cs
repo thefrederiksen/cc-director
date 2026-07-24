@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Http;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Network;
 using CcDirector.Core.Sessions;
@@ -244,11 +246,20 @@ public sealed class GatewayStreamClient : IAsyncDisposable
 
         while (!_disposed)
         {
-            if (await TryConnectAsync())
+            var outcome = await TryConnectAsync();
+            if (outcome == ConnectOutcome.Connected)
             {
                 await ReseedAsync();
                 _monitor?.MarkTunnelConnected();   // tunnel up = the two-way connection is proven (green)
                 await WaitUntilClosedAsync();      // returns when auto-reconnect has exhausted its attempts
+            }
+            else if (outcome == ConnectOutcome.SubscriptionRequired)
+            {
+                // The Gateway refused the device key (subscription lapsed / revoked). STOP - do not hammer a
+                // locked door. The status names the fix (renew / re-enroll); a settings change or a fresh
+                // enrollment rebuilds this client and re-dials.
+                _monitor?.MarkSubscriptionRequired("This gateway needs an active subscription - renew your subscription or re-enroll this device.");
+                break;
             }
             if (_disposed) break;
             _monitor?.MarkTunnelConnecting();      // dropped / dialing again (yellow) until the next connect
@@ -256,20 +267,55 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         }
     }
 
-    private async Task<bool> TryConnectAsync()
+    private enum ConnectOutcome
     {
-        if (_connection is null) return false;
+        /// <summary>The tunnel is up.</summary>
+        Connected,
+        /// <summary>A retryable failure (Gateway down, network blip) - keep re-dialing.</summary>
+        Retry,
+        /// <summary>A TERMINAL refusal: the Gateway rejected the device key with 401/402 (the hosted
+        /// subscription lapsed or the device was revoked). Do NOT keep hammering - stop and surface it.</summary>
+        SubscriptionRequired,
+    }
+
+    private async Task<ConnectOutcome> TryConnectAsync()
+    {
+        if (_connection is null) return ConnectOutcome.Retry;
         try
         {
             await _connection.StartAsync();
             FileLog.Write($"[GatewayStreamClient] connected to {_config.Url}");
-            return true;
+            return ConnectOutcome.Connected;
+        }
+        catch (Exception ex) when (IsSubscriptionRequired(ex))
+        {
+            // Terminal: the per-device key is no longer accepted (revoked / subscription lapsed). Re-dialing
+            // would just get refused again forever, so stop and let the connection status say why (the fix is
+            // to renew the subscription / re-enroll, which restarts the client).
+            FileLog.Write("[GatewayStreamClient] connect REFUSED (subscription required / device revoked) - stopping reconnect");
+            return ConnectOutcome.SubscriptionRequired;
         }
         catch (Exception ex)
         {
             FileLog.Write($"[GatewayStreamClient] connect failed (will retry): {ex.Message}");
-            return false;
+            return ConnectOutcome.Retry;
         }
+    }
+
+    /// <summary>
+    /// A tunnel-connect exception is a TERMINAL "subscription required" when the Gateway refused the device
+    /// key with 401 (credential revoked) or 402 (hosted subscription required). The key is a fixed per-device
+    /// credential, never refreshed, so a 401/402 means it is no longer valid - not a transient blip - and the
+    /// only fix is renewing the subscription or re-enrolling. Walks the inner-exception chain because SignalR
+    /// wraps the negotiate failure.
+    /// </summary>
+    private static bool IsSubscriptionRequired(Exception ex)
+    {
+        for (Exception? e = ex; e is not null; e = e.InnerException)
+            if (e is HttpRequestException hre
+                && hre.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.PaymentRequired)
+                return true;
+        return false;
     }
 
     private async Task WaitUntilClosedAsync()

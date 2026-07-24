@@ -105,6 +105,15 @@ public sealed class DeviceRegistry : IDisposable
     /// Atomically enroll or rotate a hosted device. The credential hash and verified tenant ownership
     /// commit in the same transaction; an unbound hosted key is never visible.
     /// </summary>
+    /// <summary>
+    /// TEST SEAM ONLY (null in production): fired with the account subject after a device is bound to a hosted
+    /// tenant, so a non-production (test) hosted Gateway can auto-provision the entitlement that production
+    /// requires at the paid enrollment endpoint - which the low-level test enroll paths bypass. Wired ONLY when
+    /// the deployment is NOT a real hosted image (GatewayHostedMode.IsHostedImage is false), so a production
+    /// hosted image never invokes it. Never touched on self-host.
+    /// </summary>
+    internal Action<string>? OnAccountBoundForTest;
+
     public DeviceRegistrationResponse RegisterForTenant(
         TenantId tenant,
         string accountSubject,
@@ -118,7 +127,7 @@ public sealed class DeviceRegistry : IDisposable
         if (string.IsNullOrWhiteSpace(accountSubject))
             throw new ArgumentException("accountSubject is required", nameof(accountSubject));
 
-        return RegisterCore(
+        var response = RegisterCore(
             deviceId,
             machineName,
             platform,
@@ -126,6 +135,10 @@ public sealed class DeviceRegistry : IDisposable
             tenant.Value,
             accountSubject.Trim(),
             preserveActiveRecord: true);
+        // After the device write completes (RegisterCore has disposed its own context), let a test harness
+        // provision the entitlement. No-op / null in production.
+        OnAccountBoundForTest?.Invoke(accountSubject.Trim());
+        return response;
     }
 
     /// <summary>
@@ -231,13 +244,20 @@ public sealed class DeviceRegistry : IDisposable
         if (string.IsNullOrWhiteSpace(tenantId))
             throw new ArgumentException("tenantId is required", nameof(tenantId));
 
-        using var ctx = _db.CreateUnscopedContext();
-        var changed = ctx.DeviceCredentials
-            .Where(d => d.DeviceId == deviceId)
-            .ExecuteUpdate(setters => setters
-                .SetProperty(d => d.AccountSubject, accountSubject.Trim())
-                .SetProperty(d => d.TenantId, tenantId.Trim()));
-        FileLog.Write($"[DeviceRegistry] SetAccountBinding: device id={deviceId}, found={changed == 1}");
+        int changed;
+        using (var ctx = _db.CreateUnscopedContext())
+        {
+            changed = ctx.DeviceCredentials
+                .Where(d => d.DeviceId == deviceId)
+                .ExecuteUpdate(setters => setters
+                    .SetProperty(d => d.AccountSubject, accountSubject.Trim())
+                    .SetProperty(d => d.TenantId, tenantId.Trim()));
+            FileLog.Write($"[DeviceRegistry] SetAccountBinding: device id={deviceId}, found={changed == 1}");
+        }
+        // After the device write commits and its context is disposed, let a test harness provision the
+        // entitlement (no-op / null in production).
+        if (changed == 1)
+            OnAccountBoundForTest?.Invoke(accountSubject.Trim());
         return changed == 1;
     }
 

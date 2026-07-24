@@ -43,11 +43,13 @@ public sealed class DirectorHub : Hub
     // tenant). Null for older callers/tests -> the self-host Local behavior, unchanged.
     private readonly HostedTenantBoundary? _tenantBoundary;
 
+    private readonly DirectorConnectionRegistry? _connections;
+
     public DirectorHub(PushedSessionStore store, DirectorRegistry registry, GatewayInputStatsAggregator inputStats,
         GatewayStreamRegistry streamRegistry, Snooze.SnoozeLandingObserver? snoozeLandings = null,
         Fleet.FleetRoleObserver? fleetRoles = null, Fleet.FleetDisplayStateObserver? fleetDisplayState = null,
-        HostedTenantBoundary? tenantBoundary = null, PushedRepositoryStore? repositoryStore = null,
-        RepoHistoryStore? repoHistory = null)
+        HostedTenantBoundary? tenantBoundary = null, DirectorConnectionRegistry? connections = null,
+        PushedRepositoryStore? repositoryStore = null, RepoHistoryStore? repoHistory = null)
     {
         _store = store;
         _registry = registry;
@@ -57,6 +59,7 @@ public sealed class DirectorHub : Hub
         _fleetRoles = fleetRoles;
         _fleetDisplayState = fleetDisplayState;
         _tenantBoundary = tenantBoundary;
+        _connections = connections;
         _repositoryStore = repositoryStore;
         _repoHistory = repoHistory;
     }
@@ -151,6 +154,11 @@ public sealed class DirectorHub : Hub
         // The repository store follows the same ownership discipline: only this - the current -
         // connection may push repository snapshots from now on.
         _repositoryStore?.RegisterConnection(tenant, directorId, Context.ConnectionId);
+        // MTR-15 cancellation cutoff: index this live tunnel by tenant with a server-side abort, so a revoked
+        // tenant's connection is severed the moment the sweep (or a request re-read) finds it NotEntitled. The
+        // durable device tombstone denies NEW auth; this ends the tunnel already up. Cleared on disconnect.
+        var abortContext = Context;
+        _connections?.Register(tenant, Context.ConnectionId, () => abortContext.Abort());
         // Gateway Cleanup mission (tunnel-only): the stream IS the registration now (HTTP register is gone).
         // Register this Director from the Hello identity so registry.Get(tenant, id) - the gate on create-session
         // and the other director-level routes - resolves it. Source="stream", no dialable endpoint.
@@ -277,6 +285,9 @@ public sealed class DirectorHub : Hub
             _store.UnregisterConnection(t, directorId, Context.ConnectionId);
             _repositoryStore?.UnregisterConnection(t, directorId, Context.ConnectionId);
         }
+        // MTR-15: drop this connection's abort entry (it is gone now). Keyed by connection id, so it is cleared
+        // whether or not a tenant was bound.
+        _connections?.Unregister(Context.ConnectionId);
         FileLog.Write($"[DirectorHub] disconnected: conn={Short(Context.ConnectionId)}, director={directorId ?? "(unbound)"} ({exception?.Message ?? "clean"})");
         return base.OnDisconnectedAsync(exception);
     }

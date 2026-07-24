@@ -358,6 +358,11 @@ public sealed class ControlApiHost : IAsyncDisposable
             // CLOSED on every client machine. LAN addressing mode used to bind IPAddress.Any here
             // (issue #457) for a Gateway->Director dial that no longer exists; it no longer changes
             // the bind interface.
+            //
+            // Named instances: PortAllocator is keyed by the per-slug DirectorId, so each instance
+            // (default or named) gets its own distinct fixed port with no collision. The actual
+            // bound port is recorded to the named-instance registry after Kestrel starts (below),
+            // so the picker shows/probes the right one even on the ephemeral-fallback path.
             int? allocated = PortAllocationOverride is not null
                 ? PortAllocationOverride(DirectorId)
                 : (PortAllocator.TryAllocate(DirectorId, out var p) ? p : (int?)null);
@@ -495,6 +500,11 @@ public sealed class ControlApiHost : IAsyncDisposable
 
         ControlEndpoints.Map(_app, _sessionManager, DirectorId, _version, _requestShutdownAsync, _authEnabled, _repositoryRegistry, _turnSummaryCache, gatewayUrl, _proactiveExplain, GatewayMonitor, resolveTailnetEndpoint, () => _gatewayClient, messageSteward, _missionStore, ct => signedInUserProvider.ResolveAsync(ct), _repositoryMonitor);
 
+        // DevThrottle's automation browsers (the drivable, signed-in-once Chromium instances). Loopback,
+        // machine-local surface backed by AutomationBrowserService; the CLI 'browser' verbs and the
+        // desktop rail both read these.
+        BrowserEndpoints.Map(_app);
+
         // Gateway Cleanup mission: the Director floor's tunnel-bounce. An operator/launcher can force
         // this Director to re-establish its OUTBOUND tunnel without a full restart. Loopback floor route.
         _app.MapPost("/reconnect", async (HttpContext ctx) =>
@@ -554,6 +564,12 @@ public sealed class ControlApiHost : IAsyncDisposable
         // (e.g. GET $CC_DIRECTOR_API/sessions/$CC_SESSION_ID to find themselves).
         _sessionManager.ControlApiBaseUrl = $"http://127.0.0.1:{Port}";
         _sessionManager.DirectorId = DirectorId;
+
+        // Named instances: record the ACTUAL bound port (fixed or ephemeral-fallback) back to the
+        // named-instance registry so the picker/switcher shows and probes the right port. Best-effort;
+        // never throws into startup.
+        CcDirector.Core.Instances.NamedInstanceRegistry.RecordBoundPort(
+            CcDirector.Core.Instances.InstanceContext.Slug, Port);
 
         // Issue #1357: let the (synchronous, non-blocking) Pi launch path name the signed-in user from
         // the provider's cached snapshot. Warm the cache once now so the first Pi session started right

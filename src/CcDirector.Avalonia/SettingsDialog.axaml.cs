@@ -635,12 +635,25 @@ public partial class SettingsDialog : Window
         SettingsTabs.SelectedIndex = gatewayTabIndex;
     }
 
+    /// <summary>Select the Browsers tab (the drivable automation browsers workshop). The main window's
+    /// pinned Browsers rail group and the Browsers menu route here; <paramref name="openCreate"/> also
+    /// opens the inline new-browser panel (the menu's "New Browser...").</summary>
+    public void SelectBrowsersTab(bool openCreate = false)
+    {
+        // Tab order in SettingsDialog.axaml: Account(0), Gateway(1), Agents(2), Browsers(3).
+        const int browsersTabIndex = 3;
+        SettingsTabs.SelectedIndex = browsersTabIndex;
+        if (openCreate)
+            BrowsersView.OpenCreatePanel();
+    }
+
     /// <summary>Select the Tools tab so the download-and-repair button is visible. The main window's
     /// rail tools indicator routes here when a tool is missing or failing.</summary>
     public void SelectToolsTab()
     {
-        // Tab order in SettingsDialog.axaml: Account(0), Gateway(1), Agents(2), Directories(3), Advanced(4), Tools(5).
-        const int toolsTabIndex = 5;
+        // Tab order in SettingsDialog.axaml: Account(0), Gateway(1), Agents(2), Browsers(3),
+        // Directories(4), Advanced(5), Tools(6).
+        const int toolsTabIndex = 6;
         SettingsTabs.SelectedIndex = toolsTabIndex;
     }
 

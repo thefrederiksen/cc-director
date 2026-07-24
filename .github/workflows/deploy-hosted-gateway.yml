@@ -6,12 +6,18 @@ name: Deploy hosted Gateway
 # only when someone runs this workflow. Start it from the GitHub Actions UI ("Run workflow") or with
 # `gh workflow run deploy-hosted-gateway.yml`; both are the same manual trigger.
 #
-# It REDEPLOYS only (rebuild image -> repin the App Service to the new immutable digest -> restart ->
-# verify /healthz); it does NOT provision resources or set app settings (the resource group, ACR,
-# plan, storage mount and the CC_GATEWAY_DB_CONNECTION are already provisioned by
-# docs/architecture/step3-azure-deploy in devthrottle_internal and persist across deploys), so this
-# workflow needs NO stored secrets - only an Azure OIDC federated login as the
-# devthrottle-hosted-gateway service principal.
+# It REDEPLOYS via a WARMED SLOT SWAP: rebuild the image -> pin it on the STAGING slot and fully warm it
+# (boot + EF migrations + JIT, with no user on it) -> swap staging into production behind the platform
+# warmup gate -> measure the true external outage -> stop staging. The old instance keeps serving until
+# the new one is proven healthy, so the user-facing outage is a few seconds of hand-off, not the ~95s of
+# an in-place stop-start restart. It does NOT provision resources or set app settings (the resource group,
+# ACR, plan, storage mount, the staging slot and the CC_GATEWAY_DB_CONNECTION are already provisioned - see
+# provision-hosted-gateway-slots.yml and docs/architecture/step3-azure-deploy in devthrottle_internal - and
+# persist across deploys), so this workflow needs NO stored secrets - only an Azure OIDC federated login as
+# the devthrottle-hosted-gateway service principal.
+#
+# Requires the staging slot to exist (run provision-hosted-gateway-slots.yml once). If a swap ships bad
+# code, rollback-hosted-gateway.yml swaps the previous instance back in seconds.
 #
 # Auth is OIDC (workload identity federation): no client secret is stored in this PUBLIC repo. The
 # service principal (Contributor on the subscription) trusts a federated credential scoped to this
@@ -44,11 +50,13 @@ env:
   ACR: crdevthrottlehg
   APP: devthrottle-gw
   IMAGE_NAME: devthrottle-gateway
+  SLOT: staging
   GATEWAY_URL: https://devthrottle-gw.azurewebsites.net
+  STAGING_URL: https://devthrottle-gw-staging.azurewebsites.net
 
 jobs:
   deploy:
-    name: Build image and redeploy
+    name: Build image and deploy via warmed slot swap
     runs-on: ubuntu-latest
     environment: hosted-gateway-production
 
@@ -73,12 +81,15 @@ jobs:
       # keeps builds distinguishable; the App Service is pinned by the resulting immutable DIGEST, never
       # the tag, so a rebuild always forces a real pull.
       - name: Build image in ACR
+        id: build
         run: |
+          start=$(date +%s)
           az acr build \
             --registry "$ACR" \
             --image "${IMAGE_NAME}:ci-${{ steps.short.outputs.short }}" \
             --build-arg COCKPIT_COMMIT="${{ steps.short.outputs.short }}" \
             .
+          echo "build_seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
 
       - name: Read the built image digest
         id: digest
@@ -93,32 +104,247 @@ jobs:
           esac
           echo "Built digest: $DIGEST"
 
-      - name: Repin the App Service to the new digest
+      # Read the commit the LIVE service is running BEFORE the swap - this is the OUTGOING build, and the
+      # /healthz .commit field (added alongside this workflow) is what makes it readable. Used for two
+      # things: the honest-readiness poll below tells "the new image is serving" apart from "the old
+      # container is still answering 200" by commit, and the migration-delta step diffs OUTGOING..target.
+      # Empty when the currently-live image predates the .commit field (only the very first deploy of this
+      # change) - both consumers handle that honestly rather than guessing.
+      - name: Read the outgoing (currently-live) commit
+        id: outgoing
         run: |
+          OUT=$(curl -s -m 15 "${GATEWAY_URL}/healthz" | jq -r '.commit // empty' 2>/dev/null || true)
+          echo "commit=$OUT" >> "$GITHUB_OUTPUT"
+          echo "Outgoing live commit: ${OUT:-<unknown - image predates the /healthz commit field>}"
+
+      # Deploy the new image to the STAGING slot and fully warm it BEFORE any user sees it. Staging shares
+      # the production configuration (same Supabase database, same storage) but has its own hostname, so
+      # this is where the new image boots, runs its EF migrations, and JIT-warms with zero user impact. If
+      # anything here fails, production is untouched and still serving the old image - the deploy aborts
+      # safely. Staging is normally STOPPED (steady state is one instance writing the shared mount), so we
+      # point it at the new digest and start it.
+      - name: Deploy the new image to the staging slot and warm it
+        id: warm
+        run: |
+          TARGET="${{ steps.short.outputs.short }}"
           REF="${ACR}.azurecr.io/${IMAGE_NAME}@${{ steps.digest.outputs.digest }}"
-          az webapp config container set \
-            --resource-group "$AZURE_RG" \
-            --name "$APP" \
-            --docker-custom-image-name "$REF" \
-            --output none
-          echo "Pinned $APP to $REF"
+          az webapp config container set --resource-group "$AZURE_RG" --name "$APP" --slot "$SLOT" \
+            --docker-custom-image-name "$REF" --output none
+          az webapp start --resource-group "$AZURE_RG" --name "$APP" --slot "$SLOT" --output none
+          echo "Staging pinned to $REF and started; warming until it serves commit $TARGET..."
 
-      - name: Restart to pull the digest-pinned image
-        run: az webapp restart --resource-group "$AZURE_RG" --name "$APP" --output none
-
-      # The container pulls the new image, boots and runs EF migrations; expect a brief 502/no-response
-      # window first. Poll /healthz to a real 200 before declaring success.
-      - name: Verify /healthz
-        run: |
-          for i in $(seq 1 30); do
-            code=$(curl -s -m 15 -o /dev/null -w "%{http_code}" "${GATEWAY_URL}/healthz" || true)
-            echo "attempt $i: HTTP $code"
-            if [ "$code" = "200" ]; then
-              echo "Gateway healthy at ${GATEWAY_URL}"
-              curl -s -m 15 "${GATEWAY_URL}/healthz"; echo
-              exit 0
+          # Poll the STAGING hostname until it answers 200 with the new commit, sustained 3 times: proof the
+          # new image booted and migrated cleanly. No user is on staging, so this costs no outage.
+          # up_since marks when staging first started answering 200. If it serves 200 but never reports the
+          # shipped commit, that is not a slow boot - it is the wrong image or a missing COCKPIT_COMMIT in the
+          # runtime image, so fail FAST with that diagnosis instead of burning the whole boot timeout.
+          streak=0
+          up_since=""
+          deadline=$(( $(date +%s) + 600 ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            body=$(curl -s -m 10 -w '\n%{http_code}' "${STAGING_URL}/healthz" 2>/dev/null || printf '\n000')
+            code=$(printf '%s' "$body" | tail -n1)
+            commit=$(printf '%s' "$body" | sed '$d' | jq -r '.commit // empty' 2>/dev/null || echo "")
+            if [ "$code" = "200" ] && [ "$commit" = "$TARGET" ]; then
+              streak=$(( streak + 1 )); echo "staging 200 commit=$commit (streak $streak)"
+              [ "$streak" -ge 3 ] && break
+            else
+              streak=0; echo "staging HTTP $code commit=${commit:-<none>} (warming)"
+              if [ "$code" = "200" ]; then
+                [ -z "$up_since" ] && up_since=$(date +%s)
+                if [ $(( $(date +%s) - up_since )) -gt 150 ]; then
+                  echo "ERROR: staging has served 200 for over 150s but never reports commit $TARGET (got"
+                  echo "       '${commit:-<none>}'). The running image is not the shipped build, or the runtime"
+                  echo "       image does not carry COCKPIT_COMMIT. Aborting before the swap; production untouched."
+                  echo "outcome=failed" >> "$GITHUB_OUTPUT"
+                  exit 1
+                fi
+              fi
             fi
-            sleep 10
+            sleep 3
           done
-          echo "ERROR: /healthz did not return 200 within the timeout"
-          exit 1
+          if [ "$streak" -lt 3 ]; then
+            echo "ERROR: staging never served a sustained 200 on commit $TARGET - aborting before the swap."
+            echo "outcome=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "Staging warm and healthy on $TARGET."
+
+      # Swap the warmed staging instance into production, MEASURING the true external outage the way a user
+      # experiences it. The swap is a warmed hand-off: the old instance keeps serving until the platform's
+      # warmup gate (WEBSITE_SWAP_WARMUP_PING_PATH=/healthz) confirms the incoming instance is healthy, then
+      # the front door cuts over. `az ... slot swap` BLOCKS until the swap completes, so we start a
+      # background poller on the PRODUCTION url FIRST and let it run across the cutover, then measure the gap
+      # between the last 200 on the old commit and the first 200 on the new commit. This is the number that
+      # should now be seconds instead of ~95.
+      - name: Swap into production and measure the external outage
+        id: readiness
+        run: |
+          TARGET="${{ steps.short.outputs.short }}"
+          LOG=/tmp/swap-poll.log; : > "$LOG"
+          ( while :; do
+              t=$(date +%s.%N)
+              body=$(curl -s -m 5 -w '\n%{http_code}' "${GATEWAY_URL}/healthz" 2>/dev/null || printf '\n000')
+              code=$(printf '%s' "$body" | tail -n1)
+              commit=$(printf '%s' "$body" | sed '$d' | jq -r '.commit // empty' 2>/dev/null || echo "")
+              echo "$t $code ${commit:-none}" >> "$LOG"
+              sleep 1
+            done ) & POLL=$!
+
+          t_deploy=$(date +%s)
+          az webapp deployment slot swap --resource-group "$AZURE_RG" --name "$APP" \
+            --slot "$SLOT" --target-slot production --output none
+          echo "Swap complete; sampling a few more seconds to catch the first sustained new-commit..."
+          sleep 8
+          kill "$POLL" 2>/dev/null || true
+
+          echo "--- production poll across the swap ---"; cat "$LOG"
+          # last 200 whose commit is NOT the new one (old instance serving), and first 200 on the new commit.
+          last_old=$(awk -v t="$TARGET" '$2=="200" && $3!=t {print $1}' "$LOG" | tail -n1)
+          first_new=$(awk -v t="$TARGET" '$2=="200" && $3==t {print $1; exit}' "$LOG")
+          if [ -z "$first_new" ]; then
+            echo "ERROR: production never served the new commit $TARGET after the swap."
+            echo "outcome=failed" >> "$GITHUB_OUTPUT"; exit 1
+          fi
+          if [ -n "$last_old" ]; then
+            outage=$(awk -v a="$last_old" -v b="$first_new" 'BEGIN{d=b-a; if(d<0)d=0; printf "%.1f", d}')
+          else
+            outage=0
+          fi
+          tth=$(( $(printf '%.0f' "$first_new") - t_deploy ))
+          echo "outage_seconds=$outage" >> "$GITHUB_OUTPUT"
+          echo "time_to_healthy_seconds=$tth" >> "$GITHUB_OUTPUT"
+          echo "outcome=healthy" >> "$GITHUB_OUTPUT"
+          echo "New image ${TARGET} live in production. External outage ~${outage}s (warmed swap)."
+          curl -s -m 15 "${GATEWAY_URL}/healthz"; echo
+
+      # Return to steady state (one running instance) ONLY after production has proven itself STABLY healthy
+      # on the new commit. Stopping the staging slot two seconds after the swap - while the just-swapped
+      # production container was still settling - is what took production down (a 502 outage that needed a
+      # manual swap-back). On a single-instance plan both slots share one worker, so a stop of one slot can
+      # disturb the other; it is only safe once production is solidly up. Require ~45s of an unbroken streak
+      # of clean external 200s on the new commit first. If production does NOT stabilize, LEAVE staging
+      # running (it is the instant swap-back instance) and fail loudly so the release is not treated as good.
+      - name: Confirm production is stable, then stop staging
+        id: settle
+        run: |
+          TARGET="${{ steps.short.outputs.short }}"
+          need=15; streak=0; deadline=$(( $(date +%s) + 150 ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            body=$(curl -s -m 5 -w '\n%{http_code}' "${GATEWAY_URL}/healthz" 2>/dev/null || printf '\n000')
+            code=$(printf '%s' "$body" | tail -n1)
+            commit=$(printf '%s' "$body" | sed '$d' | jq -r '.commit // empty' 2>/dev/null || echo "")
+            if [ "$code" = "200" ] && [ "$commit" = "$TARGET" ]; then
+              streak=$(( streak + 1 )); echo "production stable 200 commit=$commit ($streak/$need)"
+              [ "$streak" -ge "$need" ] && break
+            else
+              streak=0; echo "production HTTP $code commit=${commit:-<none>} (waiting for a stable streak)"
+            fi
+            sleep 3
+          done
+          if [ "$streak" -lt "$need" ]; then
+            echo "ERROR: production did not hold a stable streak on $TARGET after the swap. Leaving the staging"
+            echo "       slot RUNNING so rollback-hosted-gateway (swap-back) can recover instantly. Do not"
+            echo "       deploy again until this is understood."
+            echo "stopped_staging=no" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "Production held a stable streak on $TARGET; stopping the staging slot."
+          az webapp stop --resource-group "$AZURE_RG" --name "$APP" --slot "$SLOT" --output none
+          echo "stopped_staging=yes" >> "$GITHUB_OUTPUT"
+
+      # Does this deploy carry a schema change to the LIVE Supabase Postgres? Diff the Postgres migration set
+      # (the one Database.Migrate() applies on hosted) between the outgoing live commit and the shipped one.
+      # "unknown" (never a guess) when the outgoing commit is not readable - the image predated the .commit
+      # field, or the commit is not in this shallow clone.
+      - name: Detect migration delta
+        id: migration
+        if: always()
+        run: |
+          OUT="${{ steps.outgoing.outputs.commit }}"
+          if [ -z "$OUT" ]; then
+            echo "migration=unknown" >> "$GITHUB_OUTPUT"
+            echo "Outgoing commit unknown - cannot diff migrations."
+            exit 0
+          fi
+          git fetch --depth=200 origin >/dev/null 2>&1 || true
+          if git cat-file -e "${OUT}^{commit}" 2>/dev/null; then
+            n=$(git diff --name-only "$OUT" HEAD -- 'src/CcDirector.Gateway.Migrations.Postgres/Migrations/' | grep -c . || true)
+            if [ "${n:-0}" -gt 0 ]; then
+              echo "migration=yes" >> "$GITHUB_OUTPUT"
+              echo "Migration delta: $n changed Postgres migration file(s) between $OUT and HEAD."
+            else
+              echo "migration=no" >> "$GITHUB_OUTPUT"
+              echo "No Postgres migration change between $OUT and HEAD (code-only deploy)."
+            fi
+          else
+            echo "migration=unknown" >> "$GITHUB_OUTPUT"
+            echo "Outgoing commit $OUT not present in this clone - cannot diff migrations."
+          fi
+
+      # Auto-emit the per-deploy metrics so tracking is automatic, not a hand-measured after-the-fact note.
+      # Runs even on a failed readiness check so a bad deploy is recorded too. Writes a ledger-ready markdown
+      # row to the job summary AND a machine-readable deploy-metrics.json artifact. It does NOT push to the
+      # ledger in the PRIVATE devthrottle_internal repo: that would need a stored cross-repo token, and this
+      # workflow is deliberately secretless (OIDC only). Paste the row from the summary, or wire a scoped PAT
+      # later if fully-hands-off ledger commits are wanted.
+      - name: Emit deploy metrics
+        id: metrics
+        if: always()
+        run: |
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          TARGET="${{ steps.short.outputs.short }}"
+          FULL=$(git rev-parse HEAD)
+          OUTCOME="${{ steps.readiness.outputs.outcome }}"; OUTCOME="${OUTCOME:-failed}"
+          BUILD_S="${{ steps.build.outputs.build_seconds }}"; BUILD_S="${BUILD_S:-}"
+          OUTAGE_S="${{ steps.readiness.outputs.outage_seconds }}"
+          TTH_S="${{ steps.readiness.outputs.time_to_healthy_seconds }}"
+          MIG="${{ steps.migration.outputs.migration }}"; MIG="${MIG:-unknown}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          cat > deploy-metrics.json <<JSON
+          {
+            "timestamp_utc": "$NOW",
+            "commit_short": "$TARGET",
+            "commit_full": "$FULL",
+            "outgoing_commit": "${{ steps.outgoing.outputs.commit }}",
+            "run_id": "${{ github.run_id }}",
+            "run_url": "$RUN_URL",
+            "outcome": "$OUTCOME",
+            "build_seconds": "${BUILD_S}",
+            "external_outage_seconds": "${OUTAGE_S}",
+            "time_to_healthy_seconds": "${TTH_S}",
+            "migration": "$MIG",
+            "rollback": "no"
+          }
+          JSON
+
+          {
+            echo "## Hosted Gateway deploy metrics"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| time (UTC) | $NOW |"
+            echo "| commit | \`$TARGET\` |"
+            echo "| outcome | $OUTCOME |"
+            echo "| build | ${BUILD_S:-?}s |"
+            echo "| external outage | ${OUTAGE_S:-?}s |"
+            echo "| time-to-healthy | ${TTH_S:-?}s |"
+            echo "| migration | $MIG |"
+            echo "| rollback | no |"
+            echo "| run | $RUN_URL |"
+            echo ""
+            echo "Ledger-ready row (paste into deploy-ledger.md):"
+            echo ""
+            echo "\`\`\`"
+            echo "$NOW | \`$TARGET\` | ${{ github.run_id }} | build ${BUILD_S:-?}s | migration $MIG | external outage ${OUTAGE_S:-?}s | time-to-healthy ${TTH_S:-?}s | $OUTCOME"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload deploy metrics artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-metrics
+          path: deploy-metrics.json
+          if-no-files-found: warn

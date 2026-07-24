@@ -1,0 +1,126 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="CcDirector.Avalonia.Controls.BrowsersRailGroup">
+
+    <!-- The pinned Browsers group in the left rail (Browsers feature, slice 2). Sits directly above
+         the pinned Repositories entry and follows its visual language: the same button chrome for the
+         header, the same 12px semibold row names. Every row renders the Core fold
+         (AutomationBrowserView) verbatim - dot color, subtitle, and which single action to offer are
+         all decided in CcDirector.Core.Browsers.AutomationBrowserViewFold, never here (rule 7). -->
+
+    <UserControl.Styles>
+        <Style Selector="Button.railRow">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="10,5" />
+            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.railRow:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#2A2A2A" />
+        </Style>
+        <!-- The per-row action link (Start / Sign in / Attach): quiet text, no button chrome. -->
+        <Style Selector="Button.rowAction">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="6,2" />
+            <Setter Property="CornerRadius" Value="3" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+        <Style Selector="Button.rowAction:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#3C3C3C" />
+        </Style>
+    </UserControl.Styles>
+
+    <StackPanel>
+        <!-- Group header: same chrome as the pinned Repositories button below it. Click = expand/
+             collapse; the + on the right opens Settings > Browsers to add one. -->
+        <Button x:Name="HeaderButton"
+                Click="HeaderButton_Click"
+                Background="#2A2A2A" BorderBrush="#3C3C3C" BorderThickness="1"
+                Margin="8,4,8,0" Padding="10,8" CornerRadius="4"
+                HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Cursor="Hand"
+                ToolTip.Tip="Real, signed-in browsers your agents can drive through Browser Harness">
+            <DockPanel LastChildFill="True">
+                <!-- Right side of the header: setup nudge OR count, then add, then the chevron. -->
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                    <TextBlock x:Name="SetupLabel" Text="Setup" Foreground="#F0B848"
+                               FontSize="10" FontWeight="SemiBold" VerticalAlignment="Center"
+                               IsVisible="False"
+                               ToolTip.Tip="Browser Harness is not installed yet - click to set it up" />
+                    <Border x:Name="CountBadge" Background="#3C3C3C" CornerRadius="8" Padding="6,1"
+                            VerticalAlignment="Center" IsVisible="False">
+                        <TextBlock x:Name="CountText" Text="0" Foreground="#CCCCCC"
+                                   FontSize="9" FontWeight="SemiBold" />
+                    </Border>
+                    <Button x:Name="AddButton" Classes="rowAction" Content="+"
+                            Foreground="#CCCCCC" FontSize="13" Padding="5,0"
+                            Click="AddButton_Click"
+                            ToolTip.Tip="Add a browser" />
+                    <Path x:Name="Chevron" Fill="#888888" VerticalAlignment="Center"
+                          Data="M 0,0 L 4,4 L 8,0" Stretch="None" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                    <TextBlock Text="[B]" Foreground="#4A9EFF" FontFamily="Cascadia Mono, Consolas"
+                               FontSize="12" VerticalAlignment="Center" />
+                    <TextBlock Text="Browsers" Foreground="#CCCCCC" FontSize="12"
+                               FontWeight="SemiBold" VerticalAlignment="Center" />
+                </StackPanel>
+            </DockPanel>
+        </Button>
+
+        <!-- The expanded body. -->
+        <StackPanel x:Name="BodyPanel" Margin="8,2,8,0">
+
+            <!-- One row per browser. Everything shown is the Core fold, verbatim. -->
+            <ItemsControl x:Name="RowsList">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Button Classes="railRow" Tag="{Binding Id}" Click="Row_Click"
+                                Opacity="{Binding RowOpacity}"
+                                ToolTip.Tip="{Binding RowToolTip}">
+                            <Grid ColumnDefinitions="Auto,*,Auto" VerticalAlignment="Center">
+                                <Ellipse Grid.Column="0" Width="8" Height="8" Margin="2,0,9,0"
+                                         VerticalAlignment="Center" Fill="{Binding DotBrush}" />
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding Name}" Foreground="#CCCCCC"
+                                               FontSize="12" FontWeight="SemiBold"
+                                               TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding Subtitle}" Foreground="#888888"
+                                               FontSize="10" TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                                <Button Grid.Column="2" Classes="rowAction"
+                                        Content="{Binding ActionLabel}"
+                                        Foreground="{Binding ActionForeground}"
+                                        IsVisible="{Binding ActionVisible}"
+                                        Tag="{Binding Id}" Click="RowAction_Click"
+                                        ToolTip.Tip="{Binding ActionToolTip}" />
+                            </Grid>
+                        </Button>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <!-- Shown when Browser Harness is missing: the feature advertises itself with the
+                 discovered-but-dimmed rows above and this inline install link. -->
+            <Button x:Name="InstallLink" Classes="railRow" IsVisible="False"
+                    Click="InstallLink_Click"
+                    ToolTip.Tip="Open the Browser Harness install guide in your browser">
+                <TextBlock Text="Install Browser Harness" Foreground="#4A9EFF"
+                           FontSize="11" FontWeight="SemiBold" />
+            </Button>
+
+            <!-- Shown when the harness is installed but no browser exists yet. -->
+            <Button x:Name="AddFirstLink" Classes="railRow" IsVisible="False"
+                    Click="AddButton_Click"
+                    ToolTip.Tip="Create your first drivable browser in Settings">
+                <TextBlock Text="Add a browser..." Foreground="#4A9EFF"
+                           FontSize="11" FontWeight="SemiBold" />
+            </Button>
+        </StackPanel>
+    </StackPanel>
+</UserControl>

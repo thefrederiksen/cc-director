@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using CcDirector.Core.Instances;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
@@ -81,7 +82,14 @@ public static class DirectorIdStore
     public static string SlotFor(string slotKey) => Slot(slotKey);
 
     private static string DefaultSlotKey()
-        => Environment.ProcessPath ?? AppContext.BaseDirectory;
+    {
+        var exe = Environment.ProcessPath ?? AppContext.BaseDirectory;
+        // EVERY instance - default included - gets its own identity slot (and therefore its
+        // own mutex, DirectorId, port, and registration file) by folding its slug into the
+        // slot key. The default is not special-cased; it is just the instance whose slug is
+        // "default". No legacy exe-only key is kept - we start clean.
+        return $"{exe}|instance={InstanceContext.Slug}";
+    }
 
     private static string Slot(string slotKey)
     {

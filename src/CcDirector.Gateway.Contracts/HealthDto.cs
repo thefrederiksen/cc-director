@@ -25,6 +25,20 @@ public sealed class HealthDto
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public int? Sessions { get; set; }
     public string Version { get; set; } = "";
+
+    /// <summary>
+    /// The exact source commit this running image was built from (the short SHA stamped into the container
+    /// as the COCKPIT_COMMIT build argument), or NULL when the responder has no such stamp - in which case
+    /// it is OMITTED from the JSON. Unlike <see cref="Version"/>, which is a hand-bumped product version that
+    /// does NOT change per commit, this identifies the precise deployed build. The deploy pipeline reads it
+    /// to tell the OLD container apart from the NEW one during a redeploy: it polls /healthz until this
+    /// reports the commit it just shipped, which is the only honest signal that the new image is actually
+    /// serving traffic (the old container answers 200 right up until it is recycled). Fleet-global build
+    /// identity, identical for every tenant, so it carries no per-tenant fact and is safe on hosted.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? Commit { get; set; }
+
     public DateTime ServerTime { get; set; } = DateTime.UtcNow;
 
     /// <summary>Director's GUID. Empty when returned by the Gateway aggregator.</summary>

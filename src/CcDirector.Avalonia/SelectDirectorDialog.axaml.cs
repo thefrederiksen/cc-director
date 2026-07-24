@@ -1,0 +1,144 @@
+using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Net.Sockets;
+using Avalonia.Controls;
+using Avalonia.Interactivity;
+using Avalonia.Media;
+using Avalonia.Threading;
+using CcDirector.Core.Instances;
+using CcDirector.Core.Utilities;
+
+namespace CcDirector.Avalonia;
+
+public partial class SelectDirectorDialog : Window
+{
+    private static readonly IBrush RunningBrush = new SolidColorBrush(Color.Parse("#22C55E"));
+    private static readonly IBrush StoppedBrush = new SolidColorBrush(Color.Parse("#888888"));
+    private static readonly IBrush CheckingBrush = new SolidColorBrush(Color.Parse("#AAAAAA"));
+
+    private readonly ObservableCollection<InstanceRow> _rows = new();
+
+    /// <summary>The slug the user chose to launch, once the dialog closes with true.</summary>
+    public string? LaunchSlug { get; private set; }
+
+    /// <summary>True when the user asked to create a new instance instead of launching one.</summary>
+    public bool WantsNew { get; private set; }
+
+    public SelectDirectorDialog(string? header = null)
+    {
+        InitializeComponent();
+        if (!string.IsNullOrWhiteSpace(header))
+            HeaderText.Text = header;
+        InstanceList.ItemsSource = _rows;
+        Loaded += OnLoaded;
+    }
+
+    // Parameterless constructor for the XAML designer.
+    public SelectDirectorDialog() : this(null) { }
+
+    private void OnLoaded(object? sender, RoutedEventArgs e)
+    {
+        // Populate immediately for a responsive UI, then probe liveness in the background.
+        try
+        {
+            var instances = NamedInstanceRegistry.List();
+            foreach (var inst in instances)
+                _rows.Add(new InstanceRow(inst));
+            if (_rows.Count > 0)
+                InstanceList.SelectedIndex = 0;
+            _ = ProbeAllAsync();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[SelectDirectorDialog] Load FAILED: {ex.Message}");
+        }
+    }
+
+    private async Task ProbeAllAsync()
+    {
+        var tasks = _rows.Select(async row =>
+        {
+            var running = await IsPortOpenAsync(row.Port);
+            await Dispatcher.UIThread.InvokeAsync(() => row.SetStatus(running));
+        });
+        await Task.WhenAll(tasks);
+    }
+
+    private static async Task<bool> IsPortOpenAsync(int port)
+    {
+        try
+        {
+            using var client = new TcpClient();
+            var connect = client.ConnectAsync("127.0.0.1", port);
+            var done = await Task.WhenAny(connect, Task.Delay(300));
+            return done == connect && client.Connected;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void InstanceList_DoubleTapped(object? sender, RoutedEventArgs e) => LaunchSelected();
+
+    private void BtnLaunch_Click(object? sender, RoutedEventArgs e) => LaunchSelected();
+
+    private void BtnNew_Click(object? sender, RoutedEventArgs e)
+    {
+        WantsNew = true;
+        Close(true);
+    }
+
+    private void BtnCancel_Click(object? sender, RoutedEventArgs e) => Close(false);
+
+    private void LaunchSelected()
+    {
+        if (InstanceList.SelectedItem is not InstanceRow row)
+            return;
+        LaunchSlug = row.Slug;
+        Close(true);
+    }
+
+    /// <summary>One selectable instance row; status updates in place as the liveness probe returns.</summary>
+    public sealed class InstanceRow : INotifyPropertyChanged
+    {
+        private string _status = "checking…";
+        private IBrush _statusBrush = CheckingBrush;
+
+        public InstanceRow(NamedInstance inst)
+        {
+            Slug = inst.Name;
+            Port = inst.Port;
+            DisplayName = inst.DisplayName;
+            var gateway = string.IsNullOrWhiteSpace(inst.GatewayUrl) ? "no gateway" : inst.GatewayUrl;
+            Meta = $"slug {inst.Name} · {gateway} · :{inst.Port}";
+        }
+
+        public string Slug { get; }
+        public int Port { get; }
+        public string DisplayName { get; }
+        public string Meta { get; }
+
+        public string Status
+        {
+            get => _status;
+            private set { _status = value; OnChanged(nameof(Status)); }
+        }
+
+        public IBrush StatusBrush
+        {
+            get => _statusBrush;
+            private set { _statusBrush = value; OnChanged(nameof(StatusBrush)); }
+        }
+
+        public void SetStatus(bool running)
+        {
+            Status = running ? "running" : "stopped";
+            StatusBrush = running ? RunningBrush : StoppedBrush;
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+        private void OnChanged(string name) =>
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    }
+}

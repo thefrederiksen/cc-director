@@ -133,6 +133,26 @@ public sealed class TenantRegistry
     }
 
     /// <summary>
+    /// The verified account subject a tenant maps to, or null when the tenant id is unknown. This is the
+    /// REVERSE of <see cref="MintOrLookupBySubject"/> and the bridge the cancellation cutoff (MTR-15) needs:
+    /// the lease and the sweep are keyed by <see cref="TenantId"/>, but the entitlement reader
+    /// (<c>EntitlementRegistry</c>) reads by subject, so the cutoff resolves tenant -> subject here before it
+    /// reads entitlement. Read through the UNSCOPED context (the mapping table carries no tenant_id). The
+    /// subject is personally identifying and is never logged. A null means "no such tenant", never "not
+    /// entitled" - the caller must not fold those together.
+    /// </summary>
+    public string? SubjectForTenant(TenantId tenant)
+    {
+        if (!tenant.IsValid)
+            return null;
+
+        var id = tenant.Value;
+        using var ctx = _db.CreateUnscopedContext();
+        var row = ctx.Tenants.AsNoTracking().FirstOrDefault(t => t.Id == id);
+        return string.IsNullOrWhiteSpace(row?.AccountSubject) ? null : row!.AccountSubject;
+    }
+
+    /// <summary>
     /// The display email recorded on a tenant's row, or null when there is none (issue #1856). Read-only:
     /// it neither mints nor writes.
     ///
