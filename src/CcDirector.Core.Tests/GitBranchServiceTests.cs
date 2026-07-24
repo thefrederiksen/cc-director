@@ -585,6 +585,29 @@ public sealed class GitBranchServiceTests : IDisposable
         RunGit(wt, "status", "--short"); // throws on a broken HEAD - a healthy worktree does not
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 6): a REFUSED delete must never end in a restore attempt.
+    // A refusal means git verified the ref did not match and mutated nothing; when the branch
+    // is already entirely gone (another process deleted it), a restore attempt on the refusal
+    // path would RECREATE the deleted branch. The refusal is reported outside every recovery
+    // boundary, so no exception can reroute it into a restore.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Delete_RefusedBecauseTheBranchIsAlreadyGone_NeverRecreatesIt()
+    {
+        RunGit(_repo, "branch", "already-gone");
+        var verifiedTip = RunGit(_repo, "rev-parse", "already-gone").Trim();
+        RunGit(_repo, "branch", "-D", "already-gone"); // another process fully deleted it
+
+        var svc = new GitBranchService();
+        var (deleted, message) = await svc.DeleteAtVerifiedTipAsync(_repo, "already-gone", verifiedTip, "test");
+
+        Assert.False(deleted);
+        Assert.Contains("moved since it was verified", message);
+        // The branch stays GONE - the refusal path performed no recovery mutation.
+        Assert.Throws<InvalidOperationException>(() => RunGit(_repo, "rev-parse", "--verify", "refs/heads/already-gone"));
+    }
+
     /// <summary>
     /// A git runner that runs the first command matching <c>match</c> TO COMPLETION - the
     /// mutation really happens - and then throws, exactly where a process-layer failure after
