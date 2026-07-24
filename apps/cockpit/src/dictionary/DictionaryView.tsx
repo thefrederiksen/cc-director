@@ -3,7 +3,14 @@ import { Link, useBlocker } from "react-router-dom";
 import {
   getDictionary,
   saveDictionary,
+  getSuggestions,
+  applySuggestions,
+  dismissSuggestion,
+  getDismissed,
+  restoreDismissed,
   type Dictionary,
+  type DictionarySuggestion,
+  type DismissedTerm,
 } from "@devthrottle/client-core/dictation/dictionaryClient";
 import {
   addMistranscriptionTerm,
@@ -38,6 +45,18 @@ export function DictionaryView() {
   const [vocabNotice, setVocabNotice] = useState("");
   const [termNotice, setTermNotice] = useState("");
   const [variantNotices, setVariantNotices] = useState<Record<string, string>>({});
+
+  // ---- suggestions (devthrottle #2075) ----
+  // The server-mined terms the model keeps getting wrong that are not yet in the glossary. The client is
+  // dumb: it renders the ranked list, the evidence, and the count exactly as the Gateway computed them.
+  const [suggestions, setSuggestions] = useState<DictionarySuggestion[]>([]);
+  // Which suggested terms are ticked (pre-ticked, since the ranked list is already high-confidence).
+  const [selected, setSelected] = useState<Record<string, boolean>>({});
+  const [suggestBusy, setSuggestBusy] = useState(false);
+  const [suggestMsg, setSuggestMsg] = useState("");
+  // The dismissed terms and whether the (initially collapsed) Dismissed section is open.
+  const [dismissed, setDismissed] = useState<DismissedTerm[]>([]);
+  const [showDismissed, setShowDismissed] = useState(false);
 
   const clearMsgTimer = useRef<number | null>(null);
 
@@ -77,6 +96,37 @@ export function DictionaryView() {
       if (clearMsgTimer.current !== null) window.clearTimeout(clearMsgTimer.current);
     };
   }, []);
+
+  // Load the suggestions and dismissed terms separately from the glossary (devthrottle #2075). A failure
+  // here must not break the glossary editor - the panel just stays empty - so it is swallowed.
+  const refreshSuggestions = useCallback(async () => {
+    try {
+      const result = await getSuggestions();
+      setSuggestions(result.suggestions);
+      // Pre-tick every suggested term: the ranked list is already filtered to high-confidence terms, so
+      // the happy path is one press. Preserve any explicit user un-ticks for terms still present.
+      setSelected((prev) => {
+        const next: Record<string, boolean> = {};
+        for (const s of result.suggestions) next[s.term] = prev[s.term] ?? true;
+        return next;
+      });
+    } catch {
+      /* leave the panel empty if suggestions cannot be loaded */
+    }
+  }, []);
+
+  const refreshDismissed = useCallback(async () => {
+    try {
+      setDismissed(await getDismissed());
+    } catch {
+      /* leave dismissed list empty on failure */
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshSuggestions();
+    void refreshDismissed();
+  }, [refreshSuggestions, refreshDismissed]);
 
   const markDirty = useCallback(() => {
     setDirty(true);
@@ -183,6 +233,64 @@ export function DictionaryView() {
     markDirty();
   };
 
+  // ---- suggestions (devthrottle #2075) ----
+  const selectedCount = suggestions.filter((s) => selected[s.term]).length;
+
+  const toggleSelected = (term: string) =>
+    setSelected((prev) => ({ ...prev, [term]: !prev[term] }));
+
+  // Add every ticked suggestion to the glossary in one press: the term into Vocabulary and its wrong
+  // spellings into Common mistranscriptions. The server persists it and returns the updated glossary and
+  // the remaining suggestions, so this is NOT part of the manual-edit dirty buffer.
+  const applySelected = async () => {
+    const terms = suggestions.filter((s) => selected[s.term]).map((s) => s.term);
+    if (terms.length === 0) return;
+    setSuggestBusy(true);
+    setSuggestMsg("Adding...");
+    try {
+      const result = await applySuggestions(terms);
+      setDict(result.dictionary);
+      setSuggestions(result.suggestions);
+      setSuggestMsg(
+        `Added ${result.applied.length} term${result.applied.length === 1 ? "" : "s"} to your dictionary.`,
+      );
+      if (clearMsgTimer.current !== null) window.clearTimeout(clearMsgTimer.current);
+      clearMsgTimer.current = window.setTimeout(() => setSuggestMsg(""), 4000);
+    } catch (err) {
+      setSuggestMsg(`add failed: ${gatewayErrorMessage(err)}`);
+    } finally {
+      setSuggestBusy(false);
+    }
+  };
+
+  // Dismiss one term: stop suggesting it (remembered until restored). Removed from the panel at once and
+  // added to the dismissed list.
+  const dismissTerm = async (term: string) => {
+    setSuggestBusy(true);
+    try {
+      await dismissSuggestion(term);
+      await Promise.all([refreshSuggestions(), refreshDismissed()]);
+    } catch (err) {
+      setSuggestMsg(`dismiss failed: ${gatewayErrorMessage(err)}`);
+    } finally {
+      setSuggestBusy(false);
+    }
+  };
+
+  // Restore a dismissed term: it becomes eligible again, reappearing only when the mining pass next ranks
+  // it (so nothing may change on the page immediately - the hint copy says exactly that).
+  const restoreTerm = async (term: string) => {
+    setSuggestBusy(true);
+    try {
+      await restoreDismissed(term);
+      await Promise.all([refreshSuggestions(), refreshDismissed()]);
+    } catch (err) {
+      setSuggestMsg(`restore failed: ${gatewayErrorMessage(err)}`);
+    } finally {
+      setSuggestBusy(false);
+    }
+  };
+
   // ---- save ----
   const save = async () => {
     if (dict === null || !dirty) return;
@@ -234,6 +342,153 @@ export function DictionaryView() {
                 </button>
               </div>
             </div>
+
+            {/* ---- Suggestions (devthrottle #2075) ---- */}
+            {suggestions.length > 0 ? (
+              <div className="dc-section dc-suggest">
+                <div className="dc-suggest-head">
+                  <span className="dc-dot" />
+                  <h2>
+                    {suggestions.length} suggestion{suggestions.length === 1 ? "" : "s"} from your recent
+                    dictations
+                  </h2>
+                </div>
+                <p className="dc-hint">
+                  We compared what the model heard against your corrected text. These terms keep coming out
+                  wrong and are not in your dictionary yet. Nothing changes until you press Add.
+                </p>
+
+                {suggestions.map((s) => (
+                  <div className="dc-srow" key={s.term}>
+                    <input
+                      type="checkbox"
+                      checked={selected[s.term] ?? false}
+                      onChange={() => toggleSelected(s.term)}
+                      aria-label={`Add ${s.term}`}
+                    />
+                    <div>
+                      <div className="dc-sterm">{s.term}</div>
+                      <div className="dc-heard">
+                        heard as{" "}
+                        {s.variants.map((v, i) => (
+                          <span key={`${v.heard}/${i}`}>
+                            {i > 0 ? ", " : ""}
+                            <b>{v.heard}</b>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="dc-freq">
+                      wrong {s.wrongCount} of {s.totalCount} times
+                    </div>
+                    <button
+                      className="dc-row-dismiss"
+                      type="button"
+                      disabled={suggestBusy}
+                      onClick={() => void dismissTerm(s.term)}
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                ))}
+
+                <div className="dc-suggest-actions">
+                  <button
+                    className="dc-add"
+                    type="button"
+                    disabled={suggestBusy || selectedCount === 0}
+                    onClick={() => void applySelected()}
+                  >
+                    Add {selectedCount} selected to dictionary
+                  </button>
+                  <span className="dc-suggest-msg">{suggestMsg}</span>
+                  <div className="dc-spacer" />
+                  <span className="dc-fineprint">
+                    Untick to skip a term this round. Dismiss to never see it again.
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div className="dc-section">
+                <div className="dc-quiet-line">
+                  <span className="dc-tick">OK</span>
+                  <span>
+                    No suggestions right now. We keep comparing your dictations against your dictionary and
+                    will flag terms the model keeps getting wrong.
+                  </span>
+                  <div className="dc-spacer" />
+                  {dismissed.length > 0 && (
+                    <button
+                      className="dc-textlink"
+                      type="button"
+                      onClick={() => setShowDismissed((v) => !v)}
+                    >
+                      Dismissed terms ({dismissed.length})
+                    </button>
+                  )}
+                </div>
+                {suggestMsg !== "" && (
+                  <p className="dc-notice" role="status">
+                    {suggestMsg}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* When suggestions ARE present, keep the dismissed doorway reachable too. */}
+            {suggestions.length > 0 && dismissed.length > 0 && (
+              <div className="dc-dismiss-link-row">
+                <button className="dc-textlink" type="button" onClick={() => setShowDismissed((v) => !v)}>
+                  Dismissed terms ({dismissed.length})
+                </button>
+              </div>
+            )}
+
+            {/* ---- Dismissed terms (devthrottle #2075) ---- */}
+            {showDismissed && (
+              <div className="dc-section">
+                <h2>Dismissed suggestions</h2>
+                <p className="dc-hint">
+                  Terms you told us to stop offering. Restore one and it becomes eligible again the next time
+                  the evidence supports it.
+                </p>
+                {dismissed.length === 0 ? (
+                  <p className="dc-empty">Nothing dismissed.</p>
+                ) : (
+                  dismissed.map((d) => (
+                    <div className="dc-drow" key={d.term}>
+                      <div>
+                        <div className="dc-sterm">{d.term}</div>
+                        <div className="dc-heard">
+                          {d.variants.length > 0 ? (
+                            <>
+                              was heard as{" "}
+                              {d.variants.map((v, i) => (
+                                <span key={`${v.heard}/${i}`}>
+                                  {i > 0 ? ", " : ""}
+                                  <b>{v.heard}</b>
+                                </span>
+                              ))}
+                              {d.totalCount > 0 ? ` - wrong ${d.wrongCount} of ${d.totalCount} times` : ""}
+                            </>
+                          ) : (
+                            "dismissed"
+                          )}
+                        </div>
+                      </div>
+                      <button
+                        className="dc-btn-restore"
+                        type="button"
+                        disabled={suggestBusy}
+                        onClick={() => void restoreTerm(d.term)}
+                      >
+                        Restore
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
 
             {/* ---- Vocabulary ---- */}
             <div className="dc-section">

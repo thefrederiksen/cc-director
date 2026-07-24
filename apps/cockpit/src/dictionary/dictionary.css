@@ -199,3 +199,180 @@
   font-size: 12.5px;
   margin: 8px 0 0;
 }
+
+/* ---- Suggestions panel (devthrottle #2075) ----
+   Sits above Vocabulary. Red is reserved for the attention DOT and the nav badge only; the Add button
+   uses the same green as Save, because it is the same kind of act (it writes the dictionary). */
+.dc-suggest {
+  border-color: color-mix(in srgb, var(--attention) 45%, var(--border));
+}
+.dc-suggest-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 2px;
+}
+.dc-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--attention);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--attention) 16%, transparent);
+  flex: none;
+}
+.dc-srow {
+  display: grid;
+  grid-template-columns: 22px 1fr auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 0;
+  border-top: 1px solid var(--border);
+}
+.dc-srow:first-of-type {
+  border-top: none;
+}
+.dc-srow input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  margin: 0;
+}
+.dc-sterm {
+  font-weight: 600;
+  font-size: 14px;
+}
+.dc-heard {
+  color: var(--text-dim);
+  font-size: 12.5px;
+  margin-top: 2px;
+}
+.dc-heard b {
+  color: var(--text);
+  font-weight: 600;
+}
+.dc-freq {
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.dc-row-dismiss {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+.dc-row-dismiss:hover:not(:disabled) {
+  color: var(--attention);
+  background: var(--surface-2);
+}
+.dc-row-dismiss:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.dc-suggest-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.dc-add {
+  background: #1f7a47;
+  color: #fff;
+  border: 1px solid #2a9c5b;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-weight: 600;
+  font-size: 13.5px;
+  cursor: pointer;
+}
+.dc-add:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.dc-add:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.dc-suggest-msg {
+  color: var(--dc-green-msg);
+  font-size: 12.5px;
+}
+.dc-spacer {
+  flex: 1;
+}
+.dc-fineprint {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+/* Zero state: one quiet reassuring line, no badge, no nag. */
+.dc-quiet-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.dc-tick {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--dc-green-msg) 16%, transparent);
+  color: var(--dc-green-msg);
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+  line-height: 18px;
+  flex: none;
+}
+.dc-textlink {
+  color: var(--accent);
+  font-size: 13px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  white-space: nowrap;
+}
+.dc-textlink:hover {
+  text-decoration: underline;
+}
+.dc-dismiss-link-row {
+  display: flex;
+  justify-content: flex-end;
+  margin: -6px 0 0;
+}
+
+/* Dismissed terms section (rendered only when opened). */
+.dc-drow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+.dc-drow:first-of-type {
+  border-top: none;
+}
+.dc-btn-restore {
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  padding: 5px 12px;
+  font-size: 12.5px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.dc-btn-restore:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.dc-btn-restore:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
