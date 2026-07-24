@@ -181,4 +181,6 @@ Round 4 found 3 (docs/reviews/codex-inspection-round4.md). ALL FIXED:
   leftover (drops it when gone/cleared, leaves it when a reservation covers it, keeps it when still
   locked). Banner text corrected to the true promise. Test: Reap_RetriesAPersistedLeftover.
 All three fail-on-purpose verified (guard neutered -> red -> restored -> green). Pushed at d4195ff8.
-Core+Avalonia full suites running; Gateway suite next (machine-wide lock). Then Codex round 5 -> MERGE.
+Avalonia full suite 294 green. Core full suite running. Gateway suite next (machine-wide lock).
+Round-5 Codex inspection running as VISIBLE session ba6c64ff -> docs/reviews/codex-inspection-round5.md
+(prompt: codex-inspection-round5-prompt.md). PASS + three-suite green -> MERGE.
