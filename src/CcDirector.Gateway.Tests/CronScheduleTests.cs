@@ -183,4 +183,26 @@ public sealed class CronScheduleTests
 
         Assert.Null(CronSchedule.ComputeNextRunUtc(job, DateTime.UtcNow));
     }
+
+    [Fact]
+    public void LocalRunLabel_FormatsInJobTimeZone()
+    {
+        var job = ValidRecurring(); // America/Chicago, CDT (UTC-5) in July
+        var label = CronSchedule.LocalRunLabel(job, new DateTime(2026, 7, 24, 10, 0, 0, DateTimeKind.Utc));
+
+        Assert.Equal("2026-07-24 05:00", label);
+    }
+
+    [Fact]
+    public void LocalRunLabel_UnknownTimeZone_FallsBackToUtcSoItNeverThrows()
+    {
+        // A stored job whose zone id no longer resolves on this host must still yield a display label
+        // (the label is cosmetic and must never throw and break a fire); it reads in UTC.
+        var job = ValidRecurring();
+        job.TimeZoneId = "Mars Standard Time";
+
+        var label = CronSchedule.LocalRunLabel(job, new DateTime(2026, 7, 24, 10, 0, 0, DateTimeKind.Utc));
+
+        Assert.Equal("2026-07-24 10:00", label);
+    }
 }
