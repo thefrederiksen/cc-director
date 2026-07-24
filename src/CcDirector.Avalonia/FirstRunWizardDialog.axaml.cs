@@ -38,6 +38,8 @@ public partial class FirstRunWizardDialog : Window
 {
     private readonly AgentOptions _options;
     private readonly ToolDetectionWizardModel _toolModel = new(new ToolDetectionService());
+    private readonly ToolDetectionService _detectionService = new();
+    private CancellationTokenSource? _claudeInstallCts;
     private readonly FirstRunWizardModel _model;
     private readonly List<Ellipse> _dots = new();
 
@@ -170,7 +172,10 @@ public partial class FirstRunWizardDialog : Window
                 break;
 
             case WizardStep.Done:
-                // Primary ("Start my first agent") and the board link live in the content panel.
+                // Primary and the board link live in the content panel. With no agent on the machine
+                // the carried to-do leads: the button routes back to the Agents step and its installer
+                // instead of promising a session that cannot start.
+                DoneStartButton.Content = _model.AgentsFound ? "Start my first agent" : "Install an agent";
                 FooterNote.Text = "Everything here can be changed in Settings.";
                 FooterNote.IsVisible = true;
                 BuildDoneReceipt();
@@ -270,9 +275,17 @@ public partial class FirstRunWizardDialog : Window
 
     private async void BtnStartFirstAgent_Click(object? sender, RoutedEventArgs e)
     {
-        FileLog.Write("[FirstRunWizardDialog] BtnStartFirstAgent_Click");
+        FileLog.Write($"[FirstRunWizardDialog] BtnStartFirstAgent_Click: agentsFound={_model.AgentsFound}");
         try
         {
+            if (!_model.AgentsFound)
+            {
+                // "Install an agent": jump back to the Agents step, whose empty state carries the
+                // in-place installer. Nothing is finished yet - the wizard stays open.
+                _model.GoTo(WizardStep.Agents);
+                ShowStep(_model.Current);
+                return;
+            }
             await FinishAsync(wantsNewSession: true);
         }
         catch (Exception ex)
@@ -281,13 +294,14 @@ public partial class FirstRunWizardDialog : Window
         }
     }
 
-    // ---- Agents step (interim: reuses the tool-detection scan) -------------------------------------
+    // ---- Agents step -------------------------------------------------------------------------------
 
     private async Task ScanAgentsAsync()
     {
         FileLog.Write("[FirstRunWizardDialog] ScanAgentsAsync");
+        AgentsTitle.Text = "Your agents";
         AgentsStatusText.Text = "Scanning this machine for coding agents...";
-        AgentsInstallGuidance.IsVisible = false;
+        AgentsEmptyActions.IsVisible = false;
         try
         {
             var (suggestions, existing) = await Task.Run(() =>
@@ -304,16 +318,27 @@ public partial class FirstRunWizardDialog : Window
             var anyFound = suggestions.Any(s => s.Found) || existing.Count > 0;
             _model.SetAgentsFound(anyFound);
 
-            BuildAgentRows(suggestions, existing);
+            // Probe each found agent's version so the rows read "v2.1.4 - path": the version is the
+            // proof the detection is real, not a guess. Best-effort - a probe that fails or times
+            // out just leaves the row without a version.
+            var versions = await ProbeVersionsAsync(suggestions);
+            BuildAgentRows(suggestions, existing, versions);
 
             var foundCount = suggestions.Count(s => s.Found);
-            AgentsStatusText.Text = anyFound
-                ? $"We found {foundCount} coding {(foundCount == 1 ? "agent" : "agents")}. These are ready to use - you can add more or change paths later in Settings."
-                : "You need a coding agent. DevThrottle runs and supervises command-line coding agents, and we did not find one on this machine.";
+            if (anyFound)
+            {
+                AgentsTitle.Text = $"We found {foundCount} coding {(foundCount == 1 ? "agent" : "agents")}";
+                AgentsStatusText.Text = "These are ready to use. You can add more or change paths later in Settings.";
+            }
+            else
+            {
+                AgentsTitle.Text = "You need a coding agent";
+                AgentsStatusText.Text = "DevThrottle runs and supervises command-line coding agents, and we did not find any on this machine - so let's install one now.";
+            }
 
             // Zero agents: the one step the user cannot skip. Hide the skip link, block Continue, and
-            // show install guidance; otherwise allow both and hide the guidance.
-            AgentsInstallGuidance.IsVisible = !anyFound;
+            // offer the in-place install (or the deferral); otherwise allow both and hide the actions.
+            AgentsEmptyActions.IsVisible = !anyFound;
             PrimaryButton.IsEnabled = anyFound;
             ConfigureStepSkip();
 
@@ -326,7 +351,30 @@ public partial class FirstRunWizardDialog : Window
         }
     }
 
-    private void BuildAgentRows(IReadOnlyList<ToolDetectionSuggestion> suggestions, ISet<AgentKind> existing)
+    /// <summary>Version-probe every found agent (bounded per-tool by the plugin's validation timeout).</summary>
+    private async Task<Dictionary<AgentKind, string>> ProbeVersionsAsync(IReadOnlyList<ToolDetectionSuggestion> suggestions)
+    {
+        var versions = new Dictionary<AgentKind, string>();
+        foreach (var s in suggestions.Where(s => s.Found))
+        {
+            try
+            {
+                var test = await _detectionService.TestToolAsync(s.Tool, s.ResolvedPath);
+                if (test.Ok && !string.IsNullOrWhiteSpace(test.Version))
+                    versions[s.Tool] = test.Version!;
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[FirstRunWizardDialog] ProbeVersionsAsync: {s.Tool} probe failed: {ex.Message}");
+            }
+        }
+        return versions;
+    }
+
+    private void BuildAgentRows(
+        IReadOnlyList<ToolDetectionSuggestion> suggestions,
+        ISet<AgentKind> existing,
+        IReadOnlyDictionary<AgentKind, string> versions)
     {
         AgentsListPanel.Children.Clear();
 
@@ -335,9 +383,12 @@ public partial class FirstRunWizardDialog : Window
         foreach (var s in suggestions.Where(s => s.Found))
         {
             var alreadyAdded = existing.Contains(s.Tool);
+            var detail = versions.TryGetValue(s.Tool, out var v)
+                ? $"{(v.StartsWith('v') || v.StartsWith('V') ? v : "v" + v)} - {s.ResolvedPath}"
+                : s.ResolvedPath;
             AgentsListPanel.Children.Add(AgentRow(
                 s.DisplayName,
-                alreadyAdded ? $"Already in your Agents list - {s.ResolvedPath}" : s.ResolvedPath,
+                alreadyAdded ? $"Already in your Agents list - {detail}" : detail,
                 alreadyAdded ? "In list" : "Ready",
                 ready: true));
         }
@@ -443,6 +494,80 @@ public partial class FirstRunWizardDialog : Window
         FileLog.Write("[FirstRunWizardDialog] BtnRecheckAgents_Click");
         _agentScanRan = false;
         _ = ScanAgentsAsync();
+    }
+
+    /// <summary>
+    /// The zero-agents primary action: run the official Claude Code installer right here, stream its
+    /// progress into the screen, and re-scan when it finishes - the user never leaves the wizard.
+    /// </summary>
+    private async void BtnInstallClaude_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[FirstRunWizardDialog] BtnInstallClaude_Click");
+        try
+        {
+            AgentsInstallButton.IsEnabled = false;
+            AgentsRecheckButton.IsEnabled = false;
+            AgentsDeferButton.IsEnabled = false;
+            AgentsInstallErrorPanel.IsVisible = false;
+            AgentsInstallProgressText.IsVisible = true;
+            AgentsInstallProgressText.Text = "Starting the official Claude Code installer...";
+
+            _claudeInstallCts?.Cancel();
+            _claudeInstallCts = new CancellationTokenSource();
+
+            // Progress<T> posts to the UI context it was created on, so the report lands on the UI thread.
+            var progress = new Progress<string>(line => AgentsInstallProgressText.Text = line);
+            var result = await new ClaudeCodeInstaller().InstallAsync(progress, _claudeInstallCts.Token);
+
+            if (result.Success)
+            {
+                AgentsInstallProgressText.Text = "Installed. Checking this machine again...";
+                _agentScanRan = false;
+                await ScanAgentsAsync();
+
+                if (!_model.AgentsFound)
+                {
+                    // The script said success but the re-scan still sees nothing - never leave the
+                    // user with a silent no-op. Name the state and hand them the guide.
+                    AgentsInstallErrorText.Text =
+                        "The installer finished, but Claude Code was not found afterwards. Restart the Director and re-check, or use the install guide.";
+                    AgentsInstallErrorPanel.IsVisible = true;
+                }
+            }
+            else
+            {
+                AgentsInstallErrorText.Text = result.Message;
+                AgentsInstallErrorPanel.IsVisible = true;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            FileLog.Write("[FirstRunWizardDialog] BtnInstallClaude_Click: cancelled");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[FirstRunWizardDialog] BtnInstallClaude_Click FAILED: {ex.Message}");
+            AgentsInstallErrorText.Text = $"Could not run the installer: {ex.Message}";
+            AgentsInstallErrorPanel.IsVisible = true;
+        }
+        finally
+        {
+            AgentsInstallProgressText.IsVisible = false;
+            AgentsInstallButton.IsEnabled = true;
+            AgentsRecheckButton.IsEnabled = true;
+            AgentsDeferButton.IsEnabled = true;
+        }
+    }
+
+    /// <summary>
+    /// "I'll do this later": the honest deferral on the zero-agents state. The wizard proceeds, and
+    /// the missing agent stays a carried to-do - the Done screen leads with installing an agent.
+    /// </summary>
+    private void BtnDeferAgents_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[FirstRunWizardDialog] BtnDeferAgents_Click");
+        _model.DeferAgents();
+        Advance();
     }
 
     // ---- Gateway step (native, hosted-first) -------------------------------------------------------
@@ -623,7 +748,11 @@ public partial class FirstRunWizardDialog : Window
                 string.Join(", ", addedNames), done: true));
         else
             DoneReceiptPanel.Children.Add(ReceiptRow(
-                "No agent yet", "Add one from Settings > Agents", done: false));
+                "No agent yet",
+                _model.AgentsDeferred
+                    ? "You chose to do this later - the button below installs one now"
+                    : "Add one from Settings > Agents",
+                done: false));
 
         // Gateway row.
         var gatewayUrl = GatewayConfig.Load().Url;
@@ -705,6 +834,7 @@ public partial class FirstRunWizardDialog : Window
     protected override void OnClosed(EventArgs e)
     {
         _hostedEnrollCts?.Cancel();
+        _claudeInstallCts?.Cancel();
         if (!_marked)
         {
             FileLog.Write("[FirstRunWizardDialog] OnClosed: writing completion marker (window closed without finishing)");

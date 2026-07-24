@@ -276,4 +276,41 @@ public class FirstRunWizardModelTests
         model.GoTo(WizardStep.Agents);
         Assert.False(model.CanSkipCurrent);
     }
+
+    [Fact]
+    public void DeferAgents_RecordsTheCarriedToDo_WithoutMakingTheStepSkippable()
+    {
+        var model = new FirstRunWizardModel(ShellSteps());
+        model.SetAgentsFound(false);
+
+        Assert.False(model.AgentsDeferred);
+        model.DeferAgents();
+
+        // The deferral is a carried to-do, not a skip: the step's skip rule is unchanged.
+        Assert.True(model.AgentsDeferred);
+        Assert.False(model.CanSkipStep(WizardStep.Agents));
+    }
+
+    [Fact]
+    public void DeferAgents_IsCleared_WhenAnAgentIsFoundLater()
+    {
+        var model = new FirstRunWizardModel(ShellSteps());
+        model.SetAgentsFound(false);
+        model.DeferAgents();
+        Assert.True(model.AgentsDeferred);
+
+        // A later successful scan (e.g. after an install) resolves the to-do.
+        model.SetAgentsFound(true);
+        Assert.False(model.AgentsDeferred);
+    }
+
+    [Fact]
+    public void DeferAgents_WithAgentsAlreadyFound_ReportsNoPendingToDo()
+    {
+        var model = new FirstRunWizardModel(ShellSteps());
+        model.SetAgentsFound(true);
+
+        model.DeferAgents();
+        Assert.False(model.AgentsDeferred);
+    }
 }
