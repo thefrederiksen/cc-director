@@ -70,12 +70,16 @@ Spec: devthrottle_internal#510 · Brief: docs/MISSION-repositories-full-2026-07-
   stamp/lifecycle interleavings. Rulings: docs/MISSION-repositories-full-INSPECTION-3.md.
   All fixed/verified by Manager round 3, pushed through efdf9baf; suites green (Core 3441 /
   Avalonia 290 / Gateway 3680, 0 failed). Slot 5 rebuilt at efdf9baf; live harness 8/8.
-- Round 4 (BLOCK): create-only restore, startup wiring, tombstone basics CLOSED. Remaining:
-  the delete's cancellation boundary (token inside the delete's process wait can skip
-  compensation) + compensation not exception-safe; four monitor interleavings (rowless
-  in-flight computes invisible to reconciliation; stale ownership snapshot at drain;
-  enumeration outside try/finally; gone-path stamps at publication not observation time).
-  Rulings: docs/MISSION-repositories-full-INSPECTION-4.md. Manager round 4 seated.
+- Round 4 (BLOCK): create-only restore, startup wiring, tombstone basics CLOSED. Remaining
+  fixed by Manager round 4 through ef85357f (suites: Core 3448 / Avalonia 290 / Gateway 3680,
+  0 failed). Rulings + outcomes: docs/MISSION-repositories-full-INSPECTION-4.md.
+- Round 5 (BLOCK): four of five areas CLOSED. Three findings in the round-4 fix code (delete
+  command outside the recovery boundary; recovery-path logging able to defeat the restore;
+  throwing progress subscriber skips the drain) - fixed directly by the Architect in
+  804eb3ee + e4fc3870, tests watched failing first, Core 3450 / Avalonia 290 green.
+  Record: docs/MISSION-repositories-full-INSPECTION-5.md. Round-6 inspection in progress;
+  final Gateway suite rerun in progress; slot 5 live at ef85357f with harness 8/8 (needs one
+  final rebuild at the tip once round 6 passes).
 
 ## Next
 - Manager round 2 finishes R2-1..R2-12 and pushes.
