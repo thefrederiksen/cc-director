@@ -106,11 +106,15 @@ public sealed class RepoHistoryStore
             // global file when nothing actually changed is pure noisy-neighbour cost, so the disk
             // write is skipped unless this observation added, changed, removed, or pruned a row.
             bool changed = false;
+            bool sawProvisional = false;
 
             foreach (var r in repositories)
             {
                 if (r.Provisional)
+                {
+                    sawProvisional = true;
                     continue; // unverified warm-start data never becomes history
+                }
                 if (string.IsNullOrWhiteSpace(r.Path))
                 {
                     FileLog.Write($"[RepoHistoryStore] snapshot row without a path ignored (name={r.Name})");
@@ -141,10 +145,14 @@ public sealed class RepoHistoryStore
                 presentKeys.Add(key);
             }
 
-            // Reconcile ONLY on a real observation (at least one accepted row). Drop THIS Director's
-            // rows for today whose repository is no longer present. Scoped to (tenant, today, bound
-            // Director), so another Director's rows and other days are untouched.
-            if (presentKeys.Count > 0)
+            // Reconcile ONLY on a COMPLETE, fully-verified observation: at least one accepted row AND
+            // no provisional row anywhere in the push (inspection). A MIXED snapshot - some repos
+            // verified, others still provisional during startup - is a partial view, and reconciling
+            // from it would delete the verified history of a repository that simply had not finished
+            // warming up yet. Drop THIS Director's rows for today whose repository is no longer
+            // present. Scoped to (tenant, today, bound Director), so another Director's rows and other
+            // days are untouched.
+            if (presentKeys.Count > 0 && !sawProvisional)
             {
                 var stale = _rows!.Values
                     .Where(row => row.Tenant == tenant.Value
@@ -262,17 +270,33 @@ public sealed class RepoHistoryStore
             return;
         _rows = new Dictionary<string, RepoDailySnapshot>(StringComparer.Ordinal);
 
-        // Read the live file; if it is missing or unreadable AS A WHOLE, fall back to the
-        // last-known-good backup so a torn or truncated write never erases the accumulated history
-        // (issue 516). A single corrupt LINE inside a readable file is skipped, not fatal.
-        if (!TryLoadFrom(_path))
+        // Read the live file. If it is missing or unreadable AS A WHOLE, fall back to the backup
+        // entirely. If it was readable but LOST rows to corrupt lines, recover those rows from the
+        // backup WITHOUT overwriting the newer live rows (inspection): otherwise the next save would
+        // persist the incomplete set and File.Replace would overwrite the good backup with the
+        // corrupt old live file, losing the dropped rows forever (issue 516).
+        var liveSkipped = TryLoadFrom(_path);
+        if (liveSkipped < 0)
+        {
             TryLoadFrom(_path + ".bak");
+        }
+        else if (liveSkipped > 0)
+        {
+            FileLog.Write($"[RepoHistoryStore] live history had {liveSkipped} corrupt line(s) - recovering the lost rows from the backup");
+            TryLoadFrom(_path + ".bak", fillGapsOnly: true);
+        }
     }
 
-    private bool TryLoadFrom(string path)
+    /// <summary>
+    /// Loads rows from <paramref name="path"/> into <see cref="_rows"/>. Returns the number of
+    /// corrupt lines skipped, or -1 when the file is missing or cannot be read as a whole. With
+    /// <paramref name="fillGapsOnly"/> a row is added only when its key is not already present -
+    /// used to recover rows a corrupt live file lost, without clobbering the newer live rows.
+    /// </summary>
+    private int TryLoadFrom(string path, bool fillGapsOnly = false)
     {
         if (!File.Exists(path))
-            return false;
+            return -1;
 
         string[] lines;
         try
@@ -282,7 +306,7 @@ public sealed class RepoHistoryStore
         catch (Exception ex)
         {
             FileLog.Write($"[RepoHistoryStore] could not read {path} (will try the backup): {ex.Message}");
-            return false;
+            return -1;
         }
 
         int skipped = 0;
@@ -306,11 +330,16 @@ public sealed class RepoHistoryStore
             // Rows without a path or without a Director id predate the current key format
             // (days old, unreleased) and cannot be keyed - ignored rather than migrated.
             if (row != null && !string.IsNullOrWhiteSpace(row.Path) && !string.IsNullOrWhiteSpace(row.DirectorId))
-                _rows![Key(row)] = row;
+            {
+                var key = Key(row);
+                if (fillGapsOnly && _rows!.ContainsKey(key))
+                    continue; // recovery pass: keep the newer live row, only fill genuine gaps
+                _rows![key] = row;
+            }
         }
         if (skipped > 0)
             FileLog.Write($"[RepoHistoryStore] skipped {skipped} unparseable line(s) in {path}");
-        return true;
+        return skipped;
     }
 
     /// <summary>Persists the current rows atomically. Returns false if the write failed (the caller

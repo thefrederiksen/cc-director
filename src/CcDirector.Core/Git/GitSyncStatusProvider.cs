@@ -48,6 +48,12 @@ public class GitSyncStatusProvider
                             Success = true
                         };
                     }
+
+                    // The main branch was detected but the behind-main count could not be read (a
+                    // transient object-store failure, malformed output). The sync status is
+                    // INCOMPLETE, so fail closed rather than publish a false BehindMainCount of zero
+                    // as verified (inspection).
+                    return new GitSyncStatus { Success = false, Error = $"could not read behind-main count for {status.BranchName}" };
                 }
             }
 

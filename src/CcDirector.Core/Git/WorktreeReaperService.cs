@@ -108,7 +108,11 @@ public sealed class WorktreeReaperService
             // against STALE remote state - remote main may have been rewritten to drop the very
             // commits a worktree carries. This is a destructive path, so a failed fetch ABORTS the
             // reap rather than acting on stale signals (issue 516 / inspection).
-            var fetch = await _git.RunAsync(repositoryPath, new[] { "fetch", "--prune" }, ct);
+            // Fetch ORIGIN by name (inspection): a bare "git fetch --prune" fetches the CURRENT
+            // branch's configured upstream, which can be a different remote (e.g. "upstream"), leaving
+            // origin/main - the ref the containment proof uses - stale. Naming origin refreshes the
+            // exact ref the proof trusts.
+            var fetch = await _git.RunAsync(repositoryPath, new[] { "fetch", "--prune", "origin" }, ct);
             if (!fetch.Success)
             {
                 FileLog.Write($"[WorktreeReaperService] ReapAsync aborted - git fetch failed, remote state is stale: {fetch.Error.Trim()}");
@@ -140,27 +144,9 @@ public sealed class WorktreeReaperService
             if (!inventory.Success)
                 return ReapResult.Failure($"could not enumerate worktrees: {inventory.Error}");
 
-            // The inventory itself is slow - it runs a remote probe per worktree - so a session could
-            // have STARTED during it. Re-read the roster ONE more time, as late as possible right
-            // before the destructive loop, and protect against THAT set; the same fail-closed rule
-            // applies (inspection: close the roster-to-removal window, not just the fetch window).
-            IReadOnlyList<LiveSessionRef> liveSessionsAtAct;
-            try
-            {
-                liveSessionsAtAct = await liveSessionsProvider(ct)
-                    ?? throw new InvalidOperationException("the live-session source returned no result");
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                FileLog.Write($"[WorktreeReaperService] ReapAsync aborted - could not re-confirm live sessions before removal: {ex.Message}");
-                return ReapResult.Failure($"could not confirm which worktrees are in use by live sessions - reap aborted: {ex.Message}");
-            }
-
-            var protectedSet = BuildProtectedSet(liveSessionsAtAct);
+            // The roster is re-read INSIDE the loop, immediately before each removal (see below), so
+            // a session that started during the slow inventory - or after an earlier worktree's
+            // removal - is still seen. This is the tightest practical check-to-remove window.
 
             // The owner-approved set from the confirmation, normalized for comparison. Null means
             // no confirmation gate (a non-interactive caller reaps every currently-safe worktree).
@@ -187,9 +173,28 @@ public sealed class WorktreeReaperService
                     continue;
                 }
 
-                // Belt-and-suspenders on top of the roster classification: never remove a worktree
-                // whose path the roster protects, even if it still classified safe.
-                if (protectedSet.Contains(normalized))
+                // Re-read the AUTHORITATIVE roster IMMEDIATELY before removing THIS worktree
+                // (inspection): a session that started after the inventory, or after an earlier
+                // worktree in this loop was removed, is seen here. Same fail-closed rule - a roster
+                // failure aborts the whole reap. KNOWN RESIDUAL: a sub-git-operation window remains
+                // between this check and git's own removal; closing it fully needs a reservation the
+                // session-launch path shares with the reaper, which is follow-up work (QA report).
+                IReadOnlyList<LiveSessionRef> rosterNow;
+                try
+                {
+                    rosterNow = await liveSessionsProvider(ct)
+                        ?? throw new InvalidOperationException("the live-session source returned no result");
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[WorktreeReaperService] ReapAsync aborted - could not re-confirm live sessions before removing {worktree.Path}: {ex.Message}");
+                    return ReapResult.Failure($"could not confirm which worktrees are in use by live sessions - reap aborted: {ex.Message}");
+                }
+                if (RosterProtects(normalized, rosterNow))
                 {
                     FileLog.Write($"[WorktreeReaperService] SKIP (a live session is using it): {worktree.Path}");
                     skipped.Add(normalized);
@@ -302,13 +307,27 @@ public sealed class WorktreeReaperService
         }
     }
 
-    private static HashSet<string> BuildProtectedSet(IReadOnlyList<LiveSessionRef> liveSessions)
+    /// <summary>
+    /// Whether the live-session roster protects <paramref name="normalizedWorktree"/>: a session
+    /// whose working directory IS the worktree, or is ANY subdirectory of it, holds it in use
+    /// (inspection - a session running in W\src, not just W, must protect W). KNOWN RESIDUAL: paths
+    /// are compared after Path.GetFullPath, which does NOT resolve a junction or symlink alias of the
+    /// worktree; a session reaching it through such an alias is not matched (documented in the QA
+    /// report as follow-up).
+    /// </summary>
+    private static bool RosterProtects(string normalizedWorktree, IReadOnlyList<LiveSessionRef> roster)
     {
-        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var s in liveSessions)
-            if (!string.IsNullOrWhiteSpace(s.RepoPath))
-                set.Add(NormalizePath(s.RepoPath));
-        return set;
+        var prefix = normalizedWorktree + Path.DirectorySeparatorChar;
+        foreach (var s in roster)
+        {
+            if (string.IsNullOrWhiteSpace(s.RepoPath))
+                continue;
+            var sessionPath = NormalizePath(s.RepoPath);
+            if (string.Equals(sessionPath, normalizedWorktree, StringComparison.OrdinalIgnoreCase)
+                || sessionPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
     }
 
     /// <summary>Full-path, trailing-separator-trimmed form used to compare worktree paths across git and the OS.</summary>

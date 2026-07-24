@@ -180,7 +180,10 @@ public sealed class GitBranchService
         // been rewritten to drop the very commits this branch carries. A failed fetch means the
         // merge signals cannot be trusted, so this destructive path ABORTS rather than deleting a
         // branch on stale containment and stranding its commits.
-        var fetch = await _git.RunAsync(repoPath, new[] { "fetch", "--prune" }, ct);
+        // Fetch ORIGIN by name (inspection): a bare "git fetch --prune" fetches the current branch's
+        // configured upstream, which can be a different remote, leaving origin/main - the ref the
+        // containment check (git cherry origin/main) uses - stale.
+        var fetch = await _git.RunAsync(repoPath, new[] { "fetch", "--prune", "origin" }, ct);
         if (!fetch.Success)
             return (false, $"could not refresh remote state (git fetch failed) - not deleted so nothing is stranded on stale merge signals: {fetch.Error.Trim()}");
 
