@@ -387,6 +387,71 @@ public sealed class GitBranchServiceTests : IDisposable
         Assert.Contains("same name has since appeared", message);
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 3, ruling R3-2): everything after the successful ref delete
+    // is a NON-CANCELLABLE compensation phase. Cancellation landing right after the delete
+    // must not skip the worktree check and the restore - that left a checked-out worktree
+    // with a broken symbolic HEAD. The branch must end restored here (a worktree holds it).
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Delete_CancelledRightAfterTheDeleteSucceeds_StillRestoresTheWorktreeHeldBranch()
+    {
+        RunGit(_repo, "branch", "cancel-race");
+        var verifiedTip = RunGit(_repo, "rev-parse", "cancel-race").Trim();
+
+        // Checked out into a worktree AFTER verification - compensation must restore.
+        var wt = Path.Combine(_root, "wt-cancel");
+        RunGit(_repo, "worktree", "add", wt, "cancel-race");
+
+        // The caller's token is cancelled the instant the delete succeeds.
+        using var cts = new CancellationTokenSource();
+        var git = new InterleavingGitRunner(
+            args => args.Length >= 2 && args[0] == "update-ref" && args[1] == "-d",
+            () => { cts.Cancel(); return Task.CompletedTask; });
+
+        var svc = new GitBranchService(git);
+        var (deleted, message) = await svc.DeleteAtVerifiedTipAsync(_repo, "cancel-race", verifiedTip, "test", cts.Token);
+
+        Assert.False(deleted);
+        Assert.Contains("worktree", message);
+
+        // Never deleted-with-broken-worktree: the branch is back at the verified commit and
+        // the worktree's HEAD is intact and usable.
+        Assert.Equal(verifiedTip, RunGit(_repo, "rev-parse", "refs/heads/cancel-race").Trim());
+        Assert.Equal(verifiedTip, RunGit(wt, "rev-parse", "HEAD").Trim());
+        RunGit(wt, "status", "--short"); // throws on a broken HEAD - a healthy worktree does not
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // The other legal end state under ruling R3-2: no worktree holds the branch, so a
+    // cancellation right after the delete still lets compensation run to completion and the
+    // branch ends CLEANLY deleted (worktree listing, ref check, and config cleanup all ran).
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Delete_CancelledRightAfterTheDeleteSucceeds_NoWorktree_EndsCleanlyDeleted()
+    {
+        RunGit(_repo, "checkout", "-b", "cancel-clean");
+        WriteFile("cc.txt", "cc\n");
+        RunGit(_repo, "add", "-A");
+        RunGit(_repo, "commit", "-m", "cancel clean work");
+        RunGit(_repo, "push", "-u", "origin", "cancel-clean"); // -u writes branch config to clean up
+        RunGit(_repo, "checkout", "main");
+        var verifiedTip = RunGit(_repo, "rev-parse", "cancel-clean").Trim();
+
+        using var cts = new CancellationTokenSource();
+        var git = new InterleavingGitRunner(
+            args => args.Length >= 2 && args[0] == "update-ref" && args[1] == "-d",
+            () => { cts.Cancel(); return Task.CompletedTask; });
+
+        var svc = new GitBranchService(git);
+        var (deleted, message) = await svc.DeleteAtVerifiedTipAsync(_repo, "cancel-clean", verifiedTip, "test", cts.Token);
+
+        Assert.True(deleted, message);
+        Assert.Throws<InvalidOperationException>(() => RunGit(_repo, "rev-parse", "--verify", "refs/heads/cancel-clean"));
+        // The compensation phase finished: the branch's config section was cleaned up too.
+        Assert.Throws<InvalidOperationException>(() => RunGit(_repo, "config", "--get", "branch.cancel-clean.merge"));
+    }
+
     /// <summary>
     /// A git runner that fires an interleaved action right after the first command matching
     /// <c>match</c> succeeds - the deterministic stand-in for "another process acted between

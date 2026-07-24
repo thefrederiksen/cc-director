@@ -190,6 +190,12 @@ public sealed class GitBranchService
     /// process recreated in the window stands untouched, and the outcome reports that a branch of
     /// the same name has since appeared.
     ///
+    /// Everything after the successful delete is a NON-CANCELLABLE compensation phase (ruling
+    /// R3-2): the caller's token governs only the delete itself; the worktree listing, the
+    /// restore decision, and the config cleanup run on <see cref="CancellationToken.None"/>, so
+    /// every exit path completes compensation and cancellation can never leave a deleted branch
+    /// with a broken checked-out worktree.
+    ///
     /// On a confirmed delete the branch's config section is cleaned up, as <c>git branch -D</c>
     /// would have done - but only after confirming the ref is still absent at that moment, so a
     /// branch another process just recreated does not lose ITS configuration. The residual
@@ -207,9 +213,15 @@ public sealed class GitBranchService
             return (false, $"branch moved since it was verified - not deleted");
         }
 
+        // From here on the delete has already happened, so everything below is COMPENSATION and
+        // runs as a NON-CANCELLABLE phase (ruling R3-2): the worktree listing, the restore
+        // decision, and the config-section cleanup all use CancellationToken.None. Honoring the
+        // caller's token after the destructive step could skip the worktree check and the
+        // restore, leaving a checked-out worktree with a broken symbolic HEAD.
+
         // The compensating post-check (ruling R2-1). Includes the FIRST entry too: the primary
         // checkout is just as broken by losing its checked-out branch as a linked worktree is.
-        var wtList = await _git.RunAsync(repoPath, new[] { "worktree", "list", "--porcelain" }, ct);
+        var wtList = await _git.RunAsync(repoPath, new[] { "worktree", "list", "--porcelain" }, CancellationToken.None);
         bool mustRestore;
         string refusal;
         if (!wtList.Success)
@@ -230,13 +242,13 @@ public sealed class GitBranchService
             // refuse when the ref exists again. Another process can recreate the branch at a NEW
             // commit between our delete and this restore - an unconditional restore would silently
             // rewind that new branch to the verified sha and discard its tip.
-            var restore = await _git.RunAsync(repoPath, new[] { "update-ref", $"refs/heads/{branch}", verifiedSha, ZeroSha }, ct);
+            var restore = await _git.RunAsync(repoPath, new[] { "update-ref", $"refs/heads/{branch}", verifiedSha, ZeroSha }, CancellationToken.None);
             if (!restore.Success)
             {
                 // Two distinct outcomes hide behind a refused create: either the ref exists again
                 // (the concurrent recreation - the new branch stands, and the worktree HEAD is
                 // valid again by that very fact), or the restore genuinely failed (loud error).
-                var recreated = await _git.RunAsync(repoPath, new[] { "rev-parse", "--verify", "--quiet", $"refs/heads/{branch}" }, ct);
+                var recreated = await _git.RunAsync(repoPath, new[] { "rev-parse", "--verify", "--quiet", $"refs/heads/{branch}" }, CancellationToken.None);
                 if (recreated.Success)
                 {
                     FileLog.Write($"[GitBranchService] {branch} was recreated by another process after deletion - the new branch stands, not restored");
@@ -253,7 +265,7 @@ public sealed class GitBranchService
 
         // Config cleanup only when the ref is confirmed absent RIGHT NOW - another process may
         // have recreated the branch after our delete, and the new branch's config is not ours.
-        var refCheck = await _git.RunAsync(repoPath, new[] { "rev-parse", "--verify", "--quiet", $"refs/heads/{branch}" }, ct);
+        var refCheck = await _git.RunAsync(repoPath, new[] { "rev-parse", "--verify", "--quiet", $"refs/heads/{branch}" }, CancellationToken.None);
         if (refCheck.Success)
         {
             FileLog.Write($"[GitBranchService] {branch} was recreated after deletion - leaving the new branch's config in place");
@@ -262,7 +274,7 @@ public sealed class GitBranchService
 
         // git branch -D removes the branch's config section; update-ref does not, so clean it up.
         // A branch without any config has no section - that outcome is expected, not an error.
-        var cleanup = await _git.RunAsync(repoPath, new[] { "config", "--remove-section", $"branch.{branch}" }, ct);
+        var cleanup = await _git.RunAsync(repoPath, new[] { "config", "--remove-section", $"branch.{branch}" }, CancellationToken.None);
         if (!cleanup.Success && !cleanup.Error.Contains("no such section", StringComparison.OrdinalIgnoreCase))
             FileLog.Write($"[GitBranchService] config cleanup for {branch} reported: {cleanup.Error.Trim()}");
 
