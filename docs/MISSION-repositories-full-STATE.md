@@ -15,7 +15,7 @@ Spec: devthrottle_internal#510 · Brief: docs/MISSION-repositories-full-2026-07-
    AgentBriefTemplates (hard rules + no-attribution), MainWindow spawn+stage-brief wiring.
    Commit "phase B UI + phase E hand-off".
 
-## In progress (built, tests running, NOT yet committed)
+## Done (continued)
 4. Phase C: Gateway.Contracts RepoStatusDto/WorktreeDto/FleetWorktreeDto; RepositoryDtoMapper
    (ControlApi, folds state strings); GatewayStreamClient repoSnapshot + PushRepoSnapshot (own
    try/catch, old-Gateway safe); ControlApiHost monitor ctor param + WireRepositoryPush (3s
@@ -23,10 +23,18 @@ Spec: devthrottle_internal#510 · Brief: docs/MISSION-repositories-full-2026-07-
    ControlEndpoints /fleet/repositories + /fleet/worktrees (relay + standalone monitor fallback);
    Gateway PushedRepositoryStore + DirectorHub.PushRepoSnapshot + GET /repositories + /worktrees
    (tenant-scoped via ResolveReadTenant, streamStaleResolved); GatewayHost singletons + Map arg;
-   CLI repo_ops.py + cli.py repo/worktree list.
-   Gateway store tests written (PushedRepositoryStoreTests) - background run pending.
+   CLI repo_ops.py + cli.py repo/worktree list. All committed through db9f65d9.
 5. Phase D (partial): RecommendationEngine (Core, pure, 6 tests green) + Recommendations rail page
    in RepositoriesView (badge, cards, Show me -> detail, Hand to an agent).
+6. Live QA loop against slot-5 Director (PID 78204, port 7880): all 8 harness checks PASS
+   (scratchpad qa-mission-live.txt). Three live defects found and fixed during that loop:
+   /fleet 502 on old Gateway (404 -> local fallback), SPA-fallback route-absent detection
+   (200 text/html), CLI stringified-value bug (typed _raw/_int reads).
+7. Full Gateway suite green: 3662 passed, 0 failed, 17 skipped.
+8. INSPECTION ROUND 1 (Codex, independent): verdict BLOCK - 2 blockers, 8 majors, 2 minors,
+   1 untested-claims note. Findings + Architect rulings: docs/MISSION-repositories-full-
+   INSPECTION-1.md. A Manager is fixing all findings per ruling, one commit per finding,
+   tests included, on this branch.
 
 ## Also built (with C, awaiting the same test runs)
 - App passes RepositoryMonitor into ControlApiHost (verified in source).
@@ -44,6 +52,7 @@ Spec: devthrottle_internal#510 · Brief: docs/MISSION-repositories-full-2026-07-
 - Weekly report HTML section (the endpoint serves JSON; the report renderer integration is follow-up).
 
 ## Next
-- Verify App passes monitor to ControlApiHost; run Gateway tests; commit C+D; full three suites;
-  slot-5 build + real-machine QA harness (repo list/worktree list CLI against live Director);
-  Codex inspection; QA report artifact; notify owner.
+- Manager finishes inspection-round-1 fixes (F1-F14) and pushes.
+- Architect: final three-suite pass on the fixed branch; rebuild slot 5 and smoke the changed UI
+  (discard confirmation, provisional click block); second Codex inspection over the fix diff;
+  QA report artifact; notify owner; WAIT for approval before anything lands on origin/main.
