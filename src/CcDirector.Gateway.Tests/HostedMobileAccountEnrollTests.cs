@@ -382,6 +382,13 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
         var (app, http) = await StartHostedAsync(hosted);
         try
         {
+            // Since issue #2117 an account with no paid entitlement that is ARRIVING FOR THE FIRST TIME is
+            // granted the free Pro trial and enrolls - that is the promise on the pricing page, and it is
+            // proven in HostedProTrialTests. So the account that is genuinely NOT entitled, and the one this
+            // test is about, is one whose trial has already ended: granted thirty days ago, so its fourteen
+            // days are long gone and the trial is never re-granted.
+            hosted.Trials.GrantIfFirstArrival(SubjectAlice, alreadyKnownToGateway: false, DateTime.UtcNow.AddDays(-30));
+
             var before = RegistrySnapshot(devices);
             var resp = await PostBearerAsync(http, Token(SubjectAlice), "dev-a");
             Assert.Equal(HttpStatusCode.PaymentRequired, resp.StatusCode);

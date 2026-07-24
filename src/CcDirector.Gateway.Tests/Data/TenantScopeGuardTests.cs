@@ -122,10 +122,18 @@ public sealed class TenantScopeGuardTests : IDisposable
         //  - DeviceImportMarkerEntity is the one-time devices.json -> device_credentials import marker (MTR-14A).
         //    It guards a migration that spans every tenant's devices at once and runs before any tenant is
         //    resolved, so it is global for the same reason its table is.
+        //
+        //  - AccountTrialEntity is the free-trial ledger (issue #2117), the exact counterpart of
+        //    EntitlementEntity: keyed by account subject, read at enrollment BEFORE a tenant is minted, and
+        //    specifically in order to decide whether a tenant may be minted at all - so scoping it to a tenant
+        //    would be circular in the same way. It carries no tenant content: one subject, one start, one end.
+        //    Unlike EntitlementEntity this one IS written here, but only ever for the subject the caller has
+        //    already been verified as, so a tenant cannot reach another tenant's row through it.
         var allowedGlobalTables = new HashSet<Type>
         {
             typeof(TenantEntity),
             typeof(EntitlementEntity),
+            typeof(AccountTrialEntity),
             typeof(DeviceCredentialEntity),
             typeof(DeviceImportMarkerEntity),
         };
