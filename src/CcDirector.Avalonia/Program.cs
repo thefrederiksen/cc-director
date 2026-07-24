@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using Avalonia;
 using CcDirector.ControlApi;
+using CcDirector.Core.Instances;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Update;
 using CcDirector.Core.Utilities;
@@ -12,9 +13,20 @@ internal static class Program
     [STAThread]
     public static int Main(string[] args)
     {
+        // Resolve which named instance this process runs as BEFORE FileLog/CcStorage,
+        // so logs and the whole data tree redirect to this instance's isolated home
+        // (every instance, default included). Skipped for the hidden --apply-update
+        // relauncher, which must run outside any instance context.
+        var isApplyUpdate = args.Length >= 1 && args[0] == "--apply-update";
+        if (!isApplyUpdate)
+            ResolveInstance(args);
+
         // Start logging first so the pre-startup update steps below (which run
         // before App initializes its own logging) are actually recorded.
         FileLog.Start();
+
+        FileLog.Write($"[Program] Instance: slug={InstanceContext.Slug}, isDefault={InstanceContext.IsDefault}, " +
+                      $"explicit={InstanceContext.WasExplicitlySelected}, home={InstanceContext.InstanceHome}, port={InstanceContext.Port}");
 
         // Catch anything that escapes a background thread so a crash is at least
         // recorded to a findable file rather than vanishing silently (issue #242).
@@ -145,6 +157,70 @@ internal static class Program
                 "Director - Startup error", MB_ICONERROR);
             return 1;
         }
+    }
+
+    /// <summary>
+    /// Resolve the named instance for this process from <c>--instance &lt;slug&gt;</c> and the
+    /// registry, then redirect the whole data tree to that instance's isolated home via the
+    /// <c>CC_DIRECTOR_ROOT</c> override. Runs before FileLog/CcStorage.
+    ///
+    /// EVERY instance - default included - gets its own isolated home. There is no migration
+    /// and no shared-root fallback: we never carry old flat data forward. Never throws; on any
+    /// failure it still isolates the default home rather than dropping to the shared root.
+    /// </summary>
+    private static void ResolveInstance(string[] args)
+    {
+        try
+        {
+            var slug = ParseInstanceArg(args);
+            var wasExplicit = slug is not null;
+            InstanceContext.Initialize(slug, wasExplicit);
+
+            // Guarantee the default entry exists (seeded from the hostname) so the picker and
+            // launcher always have at least one instance to show.
+            NamedInstanceRegistry.EnsureDefault(Environment.MachineName);
+
+            // Resolve this process's instance; an unknown slug falls back to the default entry.
+            var inst = NamedInstanceRegistry.Get(InstanceContext.Slug);
+            if (inst is null)
+            {
+                wasExplicit = false;
+                inst = NamedInstanceRegistry.Get(InstanceContext.DefaultSlug);
+            }
+            if (inst is not null)
+                InstanceContext.Initialize(inst.Name, wasExplicit, inst.DisplayName, inst.Port);
+
+            // Isolate this instance's home and redirect all storage into it - default too.
+            Directory.CreateDirectory(InstanceContext.InstanceHome);
+            Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", InstanceContext.InstanceHome);
+        }
+        catch
+        {
+            // Instance resolution must never stop the app from starting - but still isolate the
+            // default home; never fall back to the shared root.
+            InstanceContext.Initialize(null, wasExplicit: false);
+            try
+            {
+                Directory.CreateDirectory(InstanceContext.InstanceHome);
+                Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", InstanceContext.InstanceHome);
+            }
+            catch { /* best effort */ }
+        }
+    }
+
+    /// <summary>Extract the value of <c>--instance &lt;slug&gt;</c> or <c>--instance=&lt;slug&gt;</c>; null if absent.</summary>
+    private static string? ParseInstanceArg(string[] args)
+    {
+        const string flag = "--instance";
+        for (var i = 0; i < args.Length; i++)
+        {
+            var a = args[i];
+            if (a.StartsWith(flag + "=", StringComparison.OrdinalIgnoreCase))
+                return a.Substring(flag.Length + 1);
+            if (string.Equals(a, flag, StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                return args[i + 1];
+        }
+        return null;
     }
 
     /// <summary>

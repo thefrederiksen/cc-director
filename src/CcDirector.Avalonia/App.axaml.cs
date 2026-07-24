@@ -13,6 +13,7 @@ using CcDirector.Core.Claude;
 using CcDirector.Core.Configuration;
 using System.Linq;
 using CcDirector.Core.Git;
+using CcDirector.Core.Instances;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Settings;
 using CcDirector.Core.Storage;
@@ -98,6 +99,15 @@ public partial class App : Application
             {
                 try
                 {
+                    // If more than one named instance exists and none was requested on the
+                    // command line, ask which one to launch. Choosing a different instance
+                    // relaunches it and shuts this (default) process down.
+                    if (await MaybePickInstanceAsync(splash))
+                    {
+                        desktop.Shutdown();
+                        return;
+                    }
+
                     await Task.Run(() => InitializeServices(splash));
 
                     // No account startup gate (issue #651): the account lives entirely on the Gateway now,
@@ -162,6 +172,55 @@ public partial class App : Application
             .Where(p => !string.IsNullOrWhiteSpace(p))
             .ToList();
         _ = System.Threading.Tasks.Task.Run(() => RepositoryMonitor.RescanAsync(roots));
+    }
+
+    /// <summary>
+    /// When multiple named instances exist and none was explicitly requested via
+    /// <c>--instance</c>, show the selection box. Returns true when this process should
+    /// abort because it relaunched a different instance; false to continue as the default.
+    /// </summary>
+    private static async Task<bool> MaybePickInstanceAsync(Window owner)
+    {
+        try
+        {
+            if (InstanceContext.WasExplicitlySelected)
+                return false;
+
+            var instances = NamedInstanceRegistry.List();
+            if (instances.Count <= 1)
+                return false;
+
+            var dlg = new SelectDirectorDialog("Which director do you want to launch?");
+            var ok = await dlg.ShowDialog<bool?>(owner);
+            if (ok != true)
+                return false; // cancelled -> continue as the default instance
+
+            if (dlg.WantsNew)
+            {
+                var create = new CreateInstanceDialog();
+                var created = await create.ShowDialog<bool?>(owner);
+                if (created == true && create.CreatedInstance is not null && create.LaunchAfter)
+                {
+                    InstanceProcess.Launch(create.CreatedInstance.Name);
+                    return true;
+                }
+                return false;
+            }
+
+            var slug = dlg.LaunchSlug;
+            if (string.IsNullOrEmpty(slug))
+                return false;
+            if (string.Equals(slug, InstanceContext.Slug, StringComparison.OrdinalIgnoreCase))
+                return false; // picked the current (default) instance -> continue
+
+            InstanceProcess.Launch(slug);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[App] MaybePickInstance FAILED: {ex.Message}");
+            return false;
+        }
     }
 
     private void InitializeServices(SplashScreen splash)
