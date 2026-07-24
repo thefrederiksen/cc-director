@@ -43,9 +43,12 @@ export interface SessionAppBarProps {
   showSwitchToVoice?: boolean;
   /** Screen-specific menu entries, rendered above Remove. Use <button className="menu-item">. */
   extraMenuItems?: ReactNode;
+  /** Router state for the Back to Sessions navigation. When supplied, the session route is replaced
+   *  by the roster route so browser Back cannot reopen the session that was just left. */
+  backState?: Record<string, unknown>;
 }
 
-export function SessionAppBar({ title, manage, showSnooze = false, showSwitchToVoice = false, extraMenuItems }: SessionAppBarProps) {
+export function SessionAppBar({ title, manage, showSnooze = false, showSwitchToVoice = false, extraMenuItems, backState }: SessionAppBarProps) {
   const navigate = useNavigate();
   const { sessionId } = useParams<{ sessionId: string }>();
   const [open, setOpen] = useState(false);
@@ -84,7 +87,9 @@ export function SessionAppBar({ title, manage, showSnooze = false, showSwitchToV
         <button
           type="button"
           className="back-link session-back"
-          onClick={() => navigate("/")}
+          onClick={() =>
+            navigate("/", backState !== undefined ? { state: backState, replace: true } : undefined)
+          }
           aria-label="Back to sessions"
         >
           &larr; Sessions

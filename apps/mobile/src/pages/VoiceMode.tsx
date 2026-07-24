@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { DictationDialog } from "@devthrottle/client-core/dictation/DictationDialog";
+import { touchQueue } from "@devthrottle/client-core/voice/queueTouch";
 import { formatClock, useVoiceMode } from "@devthrottle/client-core/voice/useVoiceMode";
 import { DictationStatusStrip } from "../components/DictationStatusStrip";
 import { SessionAppBar } from "../components/SessionAppBar";
@@ -27,10 +28,31 @@ export function VoiceMode() {
   // knows how to enter voice mode stays the one place that does it.
   const location = useLocation();
   const navigate = useNavigate();
-  const navState = location.state as { voiceMode?: boolean; switchOn?: boolean } | null;
+  const navState = location.state as {
+    voiceMode?: boolean;
+    switchOn?: boolean;
+    // Voice-mode queue flow: the auto-speak queue navigated here by itself (read from the beginning),
+    // and which roster tab to return to after Respond / Snooze.
+    autoSpeak?: boolean;
+    fromTab?: string;
+  } | null;
   const seededVoiceOn = navState?.voiceMode;
 
-  // switchOn is a ONE-SHOT COMMAND, so it is read once and then scrubbed off the history entry.
+  // Captured once at mount, like switchOn below: whether the auto-speak queue drove this entry.
+  // The mount effect below consumes this one-shot command from the history entry, so a service-worker
+  // reload cannot unexpectedly restart the same narration from the beginning.
+  const [autoSpeakEntry] = useState(() => navState?.autoSpeak === true);
+
+  // Ordinary Back preserves the roster lens the session was opened from. Completing a voice action
+  // is different: Respond and Snooze always return to the Voice queue, replace this history entry,
+  // and let Auto-speak select the next waiting session.
+  const backTab = navState?.fromTab === "all" ? "all" : "voice";
+  const goBackToList = useCallback(() => {
+    navigate("/", { replace: true, state: { tab: "voice" } });
+  }, [navigate]);
+
+  // switchOn and autoSpeak are ONE-SHOT COMMANDS, so they are read once and then scrubbed off the
+  // history entry.
   //
   // It cannot be read straight from location.state on every render: router state is persisted in the
   // history entry and survives a reload, while the hook's "already did it" guard is only a ref, which a
@@ -40,13 +62,13 @@ export function VoiceMode() {
   // #1631.
   //
   // useState's initializer captures the command exactly once, at mount; the effect then rewrites the
-  // entry with switchOn cleared, so any later remount reads a spent command and does nothing.
+  // entry with both commands cleared, so any later remount reads spent commands and does nothing.
   const [autoSwitchOn] = useState(() => navState?.switchOn === true);
   useEffect(() => {
-    if (navState?.switchOn !== true) return;
+    if (navState?.switchOn !== true && navState?.autoSpeak !== true) return;
     navigate(location.pathname + location.search, {
       replace: true,
-      state: { ...navState, switchOn: false },
+      state: { ...navState, switchOn: false, autoSpeak: false },
     });
     // Mount-only: this consumes the arriving command. Re-running it on navState changes would fight
     // the very rewrite it performs.
@@ -61,6 +83,7 @@ export function VoiceMode() {
     narrative,
     title,
     error,
+    autoPlayBlocked,
     resumed,
     playing,
     pos,
@@ -83,7 +106,14 @@ export function VoiceMode() {
     onTogglePlay,
     onRespondSend,
     onRespondSendAudio,
-  } = useVoiceMode(sessionId, { seededVoiceOn, autoSwitchOn });
+  } = useVoiceMode(sessionId, {
+    seededVoiceOn,
+    autoSwitchOn,
+    // Voice-mode queue flow: dropping into a voice session always STARTS the narration by itself.
+    // An auto-speak entry reads from the beginning (the queue reads every item out in full); a
+    // manual tap resumes from where it left off (never rewinds a half-listened clip).
+    autoPlayOnEntry: autoSpeakEntry ? "restart" : "resume",
+  });
 
   // Dumb-renderer mapping: the Gateway's voiceDisplay verdict decides which card shows. The view only
   // maps its kind to a layout and renders its label / message / actions VERBATIM - it derives no state.
@@ -97,9 +127,47 @@ export function VoiceMode() {
     voiceOn && !speaking && vd != null &&
     vd.kind !== "ready" && vd.kind !== "preparing" && vd.kind !== "working" && vd.kind !== "off";
 
-  // Snooze and Remove share this one live held-state, so the bottom bar and the overflow menu can
-  // never disagree about it.
+  // Snooze and Remove share this one live held-state, so the action buttons and the overflow menu
+  // can never disagree about it.
   const manage = useSessionManage(sessionId);
+
+  // A queue touch means LISTENED, not merely opened. Record the first real playback start so a hard
+  // reload still remembers it, then refresh the stamp on leave so a long narration receives the full
+  // cooldown and cannot immediately trap Auto-speak back in the same one-item queue.
+  const listenedRef = useRef(false);
+  const markListened = useCallback(() => {
+    if (!sessionId) return;
+    listenedRef.current = true;
+    touchQueue(sessionId);
+  }, [sessionId]);
+  useEffect(() => {
+    return () => {
+      if (listenedRef.current && sessionId) touchQueue(sessionId);
+    };
+  }, [sessionId]);
+
+  // Snooze, then BACK TO THE LIST: once the snooze is accepted there is nothing left to do on this
+  // screen, so the flow returns to the queue (owner's flow, 2026-07-24). Unsnoozing stays put - that
+  // is a "wake it back up and look at it" action, not a "done with it" action. On failure the screen
+  // stays too, so the surfaced error is actually seen.
+  const onSnoozeTap = useCallback(async () => {
+    const wasSnoozed = manage.held || manage.deferred;
+    const ok = await manage.toggleHold();
+    if (ok && !wasSnoozed) goBackToList();
+  }, [manage, goBackToList]);
+
+  // Respond sent, BACK TO THE LIST: the reply is cached and delivered in the background, so there is
+  // no reason to sit on this session's page once it is answered - the queue has the next one. The
+  // text path waits for the send to be accepted (stays put on failure, error visible); the audio
+  // path is fire-and-forget by design and its progress/failures show on the roster rows.
+  const onRespondText = useCallback(
+    (text: string) => {
+      void (async () => {
+        if (await onRespondSend(text)) goBackToList();
+      })();
+    },
+    [onRespondSend, goBackToList],
+  );
 
   return (
     <div className="terminal-screen">
@@ -108,6 +176,7 @@ export function VoiceMode() {
       <SessionAppBar
         title={title}
         manage={manage}
+        backState={{ tab: backTab }}
         extraMenuItems={
           voiceOn ? (
             <>
@@ -148,7 +217,10 @@ export function VoiceMode() {
         preload="auto"
         onLoadedMetadata={onLoadedMeta}
         onTimeUpdate={onTimeUpdate}
-        onPlay={() => setPlaying(true)}
+        onPlay={() => {
+          setPlaying(true);
+          markListened();
+        }}
         onPause={() => setPlaying(false)}
         onEnded={onEndedAudio}
         style={{ display: "none" }}
@@ -158,8 +230,42 @@ export function VoiceMode() {
           scrolls, in its own window below them (voice-body-speaking). In the other states the body
           scrolls normally. */}
       <div className={`voice-body${speaking ? " voice-body-speaking" : ""}`}>
+        {/* THE BUTTONS COME FIRST (owner's layout rule, 2026-07-24): in voice mode the buttons are
+            the important part - the text below is a nice-to-have. Two big targets at the top of the
+            screen, in the same place in every state: Respond (only while there is a narration to
+            answer, exactly when it was offered before) and Snooze, which also returns to the list -
+            the arrow says so. */}
+        <div className="voice-actions">
+          {speaking && (
+            <button type="button" className="voice-action-respond" onClick={() => setResponding(true)}>
+              Respond
+            </button>
+          )}
+          <button
+            type="button"
+            className="voice-action-snooze"
+            onClick={() => void onSnoozeTap()}
+            disabled={manage.busy || manage.onHold === null}
+          >
+            {manage.held || manage.deferred ? (
+              "Unsnooze"
+            ) : (
+              <>
+                Snooze
+                <span className="voice-back-arrow" aria-hidden="true" />
+              </>
+            )}
+          </button>
+        </div>
+
         {error !== null && (
           <div className="banner banner-error" role="alert">{error}</div>
+        )}
+
+        {autoPlayBlocked && (
+          <div className="banner" role="status">
+            Automatic playback was blocked. Tap play to continue.
+          </div>
         )}
 
         {/* TTS fallback: the Gateway folded a generic "switched to a backup voice" notice onto this turn's
@@ -309,32 +415,21 @@ export function VoiceMode() {
             onSwitchOff (ViewMode -> Text) calls. */}
       </div>
 
-      {/* The bottom bar: the two controls the owner touches most, pinned in the thumb zone and in the
-          same place on every visit. Respond appears in the speaking state only - exactly the state it
-          appeared in before this layout change, so nothing about WHEN you can reply has moved. */}
-      <div className="voice-bottom-bar">
-        <button
-          type="button"
-          className="voice-snooze-btn"
-          onClick={() => void manage.toggleHold()}
-          disabled={manage.busy || manage.onHold === null}
-        >
-          {manage.held || manage.deferred ? "Unsnooze" : "Snooze"}
-        </button>
-        {speaking && (
-          <button type="button" className="voice-respond" onClick={() => setResponding(true)}>
-            Respond
-          </button>
-        )}
-      </div>
+      {/* The old bottom bar is gone: Respond and Snooze moved to the TOP of the body as the big
+          voice-actions block (owner's layout rule - the buttons are the important part). */}
 
       {/* F. Reply: the shared dictation interface with NO Insert - Send goes straight into the
-          session. There is no hold-to-talk; you tap Respond, speak, then Send. */}
+          session. There is no hold-to-talk; you tap Respond, speak, then Send. After a successful
+          send the screen returns to the session list - the reply is cached and delivered in the
+          background, so the queue is the next stop, not this page. */}
       {responding && (
         <DictationDialog
           showInsert={false}
-          onSend={(text) => void onRespondSend(text)}
-          onSendAudio={onRespondSendAudio}
+          onSend={onRespondText}
+          onSendAudio={(captured) => {
+            onRespondSendAudio(captured);
+            goBackToList();
+          }}
           onClose={() => setResponding(false)}
         />
       )}

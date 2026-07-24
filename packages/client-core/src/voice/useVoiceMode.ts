@@ -99,6 +99,9 @@ export interface VoiceModeView {
   title: string;
   name: string | null;
   error: string | null;
+  /** The browser rejected an automatic play attempt. The clip is still ready and the visible Play
+   *  control is the recovery path. */
+  autoPlayBlocked: boolean;
   resumed: boolean;
   playing: boolean;
   pos: number;
@@ -123,13 +126,25 @@ export interface VoiceModeView {
   onSeek: (e: ChangeEvent<HTMLInputElement>) => void;
   onRestart: () => void;
   onTogglePlay: () => void;
-  onRespondSend: (text: string) => Promise<void>;
+  /** Sends the reply into the session. Resolves true when the send succeeded, false when it failed
+   *  (the error is already surfaced) - so a caller that navigates away after a reply can stay put on
+   *  failure instead of leaving the error behind on an abandoned screen. */
+  onRespondSend: (text: string) => Promise<boolean>;
   onRespondSendAudio: (captured: CapturedUtterance) => void;
 }
 
 export function useVoiceMode(
   sessionId: string | undefined,
-  opts?: { seededVoiceOn?: boolean; autoSwitchOn?: boolean },
+  opts?: {
+    seededVoiceOn?: boolean;
+    autoSwitchOn?: boolean;
+    /** Voice-mode queue flow: start the narration BY ITSELF when this screen is entered and the clip
+     *  is phone-ready, instead of waiting for a play tap. "resume" continues from the remembered
+     *  position (never rewinds a half-listened clip); "restart" always reads from the beginning (the
+     *  auto-speak queue's rule: every auto-entry is read out in full). Undefined keeps the old
+     *  behavior: only a genuinely new clip auto-plays. */
+    autoPlayOnEntry?: "resume" | "restart";
+  },
 ): VoiceModeView {
   const sid = sessionId ?? "";
 
@@ -142,12 +157,14 @@ export function useVoiceMode(
   // calls itself - onSwitchOn below is the ONE implementation of that verb, and a second copy in a menu
   // handler would be free to drift from it.
   const autoSwitchOn = opts?.autoSwitchOn;
+  const autoPlayOnEntry = opts?.autoPlayOnEntry;
 
   const [name, setName] = useState<string | null>(null);
   const [session, setSession] = useState<SessionDto | null>(null);
   // Seed the narration state + text from the on-device cache so it shows instantly (issue #1015).
   const [voice, setVoice] = useState<WingmanVoice | null>(() => getVoiceMeta(sid));
   const [error, setError] = useState<string | null>(null);
+  const [autoPlayBlocked, setAutoPlayBlocked] = useState(false);
   // Whether a real poll has resolved the true state yet. Until it has, we never paint the OFF card -
   // the screen starts blank (or ON when the roster seeded it) and only shows OFF once confirmed.
   // NOTE: this is knowledge of the SESSION only - set as soon as listSessions resolves. The Voice
@@ -280,6 +297,10 @@ export function useVoiceMode(
   // stale and must not be spoken or offered, exactly like the roster play-triangle (Home.tsx). A null
   // session (not yet loaded) is treated as not-working.
   const agentWorking = session !== null && isWorking(session);
+  // Until the first poll resolves, trust the roster's seed for rendering only. Playback itself waits
+  // for the authoritative session so a cached narration cannot speak while the real session is off
+  // or has already started working again.
+  const voiceOn = localEnabled || Boolean(session?.voiceMode) || (!pollDone && seededVoiceOn === true);
 
   // Retire a stale narration the moment the agent starts working again: stop this screen's own
   // playback and any shared roster clip. The speaking-state play-triangle is hidden below while
@@ -295,11 +316,17 @@ export function useVoiceMode(
     stopPlayback();
   }, [agentWorking]);
 
+  const entryPlayedRef = useRef(false);
+
   // Auto-play a freshly downloaded clip exactly once, and only while the voice screen is foreground
   // (decision 4: never auto-play from the list, never while the app is hidden). Never auto-play while
   // the agent is working again - that narration is stale (the same rule the roster triangle follows).
   useEffect(() => {
-    if (agentWorking) return;
+    if (!pollDone || session === null || !voiceOn || agentWorking) return;
+    // When this page was entered with an explicit resume/restart command, that entry effect owns the
+    // first play. Once it has done so, this effect resumes responsibility for genuinely new clips
+    // that arrive while the same screen stays open.
+    if (autoPlayOnEntry !== undefined && !entryPlayedRef.current) return;
     // NEVER speak while the listener is answering. This effect fires when a NEW clip finishes
     // downloading, and it had no idea the Respond dialog was open - so a turn that landed mid-dictation
     // played straight over the owner while their microphone was live, which is both maddening and an
@@ -318,11 +345,65 @@ export function useVoiceMode(
       stopPlayback(); // never overlap a roster clip with this screen's playback
       el.currentTime = 0;
       saveMark(sid, { generatedAt, pos: 0, dur: el.duration || 0, autoPlayed: true });
+      setAutoPlayBlocked(false);
       void el.play().catch(() => {
-        /* autoplay policy may require a gesture; the play-triangle covers it */
+        setAutoPlayBlocked(true);
       });
     }
-  }, [phoneReady, generatedAt, agentWorking, sid, responding]);
+  }, [
+    phoneReady,
+    generatedAt,
+    agentWorking,
+    sid,
+    responding,
+    pollDone,
+    session,
+    voiceOn,
+    autoPlayOnEntry,
+  ]);
+
+  // Voice-mode queue flow: entering this screen in voice mode STARTS THE NARRATION BY ITSELF, once
+  // per mount, the moment the clip is phone-ready. In "resume" mode (a manual tap into the session)
+  // playback continues from the remembered position - onLoadedMeta has already restored it, so play
+  // never rewinds a half-listened clip. In "restart" mode (the auto-speak queue jumped in) the clip
+  // is read from the beginning every time - the queue's rule is that an auto-entry is read out in
+  // full. Guarded by the same courtesies as the new-clip auto-play above: never over a working agent
+  // (stale narration), never while the owner is answering, never while the app is hidden.
+  useEffect(() => {
+    if (autoPlayOnEntry === undefined || entryPlayedRef.current) return;
+    if (!pollDone || session === null || !voiceOn || agentWorking || responding) return;
+    if (!phoneReady || generatedAt.length === 0) return;
+    if (typeof document !== "undefined" && document.hidden) return;
+    const el = audioRef.current;
+    if (el === null) return;
+    entryPlayedRef.current = true;
+    stopPlayback(); // never overlap a roster clip with this screen's playback
+    if (autoPlayOnEntry === "restart") {
+      // From the top, and stop onLoadedMeta from seeking back to a remembered spot afterwards.
+      restoredForRef.current = generatedAt;
+      el.currentTime = 0;
+      setPos(0);
+    }
+    // Marked autoPlayed so the new-clip effect above never fires a second, competing play. In resume
+    // mode the remembered position is preserved (this can run before metadata loads, when
+    // el.currentTime is still 0 - writing that back would erase the very position resume needs).
+    const keepPos = autoPlayOnEntry === "restart" ? 0 : Math.max(el.currentTime, positionFor(sid, generatedAt));
+    saveMark(sid, { generatedAt, pos: keepPos, dur: el.duration || 0, autoPlayed: true });
+    setAutoPlayBlocked(false);
+    void el.play().catch(() => {
+      setAutoPlayBlocked(true);
+    });
+  }, [
+    phoneReady,
+    generatedAt,
+    agentWorking,
+    responding,
+    autoPlayOnEntry,
+    sid,
+    pollDone,
+    session,
+    voiceOn,
+  ]);
 
   // Tapping Respond SILENCES whatever is already speaking, at once. The guard above stops a new clip
   // from starting, but a clip already mid-sentence when Respond is tapped would otherwise keep talking
@@ -516,6 +597,7 @@ export function useVoiceMode(
     setPos(0);
     setResumed(false);
     persist(el, { started: true });
+    setAutoPlayBlocked(false);
     void el.play().catch(() => {
       /* ignore - a tap already gestured */
     });
@@ -536,22 +618,25 @@ export function useVoiceMode(
     stopPlayback(); // never let two clips play at once
     if (el.ended || (el.duration > 0 && el.currentTime >= el.duration)) el.currentTime = 0;
     persist(el, { started: true });
+    setAutoPlayBlocked(false);
     void el.play().catch(() => {
       /* ignore - a tap already gestured */
     });
   }, [persist]);
 
   const onRespondSend = useCallback(
-    async (text: string) => {
+    async (text: string): Promise<boolean> => {
       setResponding(false);
       const trimmed = text.trim();
-      if (sid.length === 0 || trimmed.length === 0) return;
+      if (sid.length === 0 || trimmed.length === 0) return false;
       try {
         // Same write path the Send button uses; the transcript is already dictionary-corrected by
         // the Gateway and is sent verbatim (transcript integrity, CodingStyle s16).
         await sendPrompt(sid, trimmed, true);
+        return true;
       } catch (err) {
         setError(err instanceof Error ? err.message : "Send failed");
+        return false;
       }
     },
     [sid],
@@ -576,9 +661,6 @@ export function useVoiceMode(
     [sid, session],
   );
 
-  // Until the first poll resolves, trust the roster's seed so a voice session drops straight into the
-  // ON state; once the poll has spoken, the real session flag governs (a stale seed cannot stick).
-  const voiceOn = localEnabled || Boolean(session?.voiceMode) || (!pollDone && seededVoiceOn === true);
   // The speaking state (and its play-triangle) is suppressed while the agent is working again: the
   // finished-turn narration is stale, so the screen falls back to the working card instead of
   // offering a replay of it.
@@ -618,6 +700,7 @@ export function useVoiceMode(
     title,
     name,
     error,
+    autoPlayBlocked,
     resumed,
     playing,
     pos,

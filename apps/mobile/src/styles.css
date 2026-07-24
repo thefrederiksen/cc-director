@@ -1490,30 +1490,45 @@ a.banner-btn {
   margin-top: 0;
 }
 
-/* The Voice mode bottom bar (owner design review, "Option A"): the two controls used on almost every
-   turn - Snooze ("I press the snooze button a lot") and Respond ("clicked on almost every single
-   turn") - pinned in the thumb zone, in the same place on every visit.
-
-   Respond used to sit in the fixed header at the TOP of a tall phone, the hardest place to reach,
-   while rarely-used buttons (Regenerate response, Turn voice off) sat comfortably at the bottom.
-   Those two moved into the app bar's overflow menu and this bar took their place. */
-.voice-bottom-bar {
+/* Voice-mode queue flow (2026-07-24): THE BUTTONS COME FIRST. Respond and Snooze are the two verbs
+   of every voice turn, so they are the first, biggest things on the screen - stacked full-width at
+   the TOP of the body, with the narration text below them as the nice-to-have. This replaced the old
+   bottom bar (the buttons themselves and their verbs are unchanged, only bigger and at the top). */
+.voice-actions {
   flex: 0 0 auto;
   display: flex;
-  gap: 8px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 12px;
 }
 
-/* Secondary weight: frequent, but never the thing you reach for first. */
-.voice-snooze-btn {
-  flex: 0 0 auto;
-  min-width: 104px;
-  min-height: 52px;
+/* The primary verb: answer the session by voice. The biggest target on the screen. */
+.voice-action-respond {
+  width: 100%;
+  min-height: 64px;
+  border: none;
+  border-radius: 12px;
+  padding: 16px 0;
+  font-size: 19px;
+  font-weight: 800;
+  color: #ffffff;
+  background: #0e7c6b;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+/* The second verb: park it for a while - and go back to the list (the arrow says so). */
+.voice-action-snooze {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 56px;
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 13px 12px;
-  font-size: 15px;
+  border-radius: 12px;
+  padding: 13px 0;
+  font-size: 17px;
   font-weight: 700;
   color: var(--text);
   background: var(--surface-2);
@@ -1521,26 +1536,42 @@ a.banner-btn {
   touch-action: manipulation;
 }
 
-.voice-snooze-btn:disabled {
+.voice-action-snooze:disabled {
   opacity: 0.5;
   cursor: default;
 }
 
-/* The one saturated control on the screen, and the biggest target on it. When Respond is absent (any
-   state that is not "speaking"), Snooze keeps its own width rather than stretching to fill - a
-   control must not change shape depending on what happens to be beside it. */
-.voice-respond {
-  flex: 1 1 auto;
-  min-height: 52px;
-  border: none;
-  border-radius: 10px;
-  padding: 13px 0;
-  font-size: 16px;
-  font-weight: 700;
-  color: #ffffff;
-  background: #0e7c6b;
-  cursor: pointer;
-  touch-action: manipulation;
+/* CSS-only back-to-the-list arrow on the Snooze button (no unicode glyphs): a leftwards chevron with
+   a tail, saying "this also takes you back". */
+.voice-back-arrow {
+  position: relative;
+  display: inline-block;
+  width: 18px;
+  height: 12px;
+}
+
+.voice-back-arrow::before {
+  content: "";
+  position: absolute;
+  left: 1px;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  border-left: 3px solid var(--text-dim);
+  border-bottom: 3px solid var(--text-dim);
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.voice-back-arrow::after {
+  content: "";
+  position: absolute;
+  left: 2px;
+  right: 0;
+  top: 50%;
+  height: 3px;
+  margin-top: -1.5px;
+  border-radius: 2px;
+  background: var(--text-dim);
 }
 
 /* D. Waiting on a choice: option buttons (single, or multi-select with Submit). */
@@ -2161,6 +2192,44 @@ a.banner-btn {
   font-size: 13px;
   color: var(--attention);
   font-weight: 600;
+}
+
+/* Auto-speak (voice-mode queue flow): the hands-free switch under the fleet voice button. A big
+   touch row - the whole label toggles the checkbox. */
+.autospeak-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 14px 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.autospeak-row input[type="checkbox"] {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  accent-color: #0e7c6b;
+  cursor: pointer;
+}
+
+.autospeak-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.autospeak-hint {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-dim);
 }
 
 /* Machine / repo picker rows on the add screen. The row chrome reuses .row; .picker-link is the
