@@ -257,9 +257,11 @@ public partial class MainWindow : Window
         // Wire source control view file event
         SourceControlView.ViewFileRequested += OnGitViewFileRequested;
         SourceControlView.OrphanedCountChanged += OnOrphanedWorktreeCountChanged;
-        // Feed the Worktrees page the live sessions on this machine (fleet-wide across Director
-        // slots) so a session-occupied worktree is shown as "in use" and never reaped.
-        SourceControlView.LiveSessionsProvider = GetLiveSessionsOnThisMachineAsync;
+        // Feed the Worktrees page the AUTHORITATIVE live sessions on this machine (fleet-wide across
+        // Director slots) for its reaper. This is the destructive path, so it uses the fail-closed
+        // provider that refuses rather than act on a partial roster (issue 516) - not the monitor's
+        // best-effort display source.
+        SourceControlView.LiveSessionsProvider = GetAuthoritativeLiveSessionsAsync;
 
         // Keep the pinned Repositories badge (safe-to-reap worktree count) in sync with the scan.
         // (The monitor's LiveSessionsProvider itself is wired in the CONSTRUCTOR - it must be
@@ -272,8 +274,9 @@ public partial class MainWindow : Window
             UpdateRepositoriesBadge();
         }
 
-        // Repository detail: live sessions for the worktrees panel, and the hand-to-an-agent flow.
-        RepositoriesView.LiveSessionsProvider = GetLiveSessionsOnThisMachineAsync;
+        // Repository detail: authoritative (fail-closed) live sessions for the worktrees panel's
+        // reaper, and the hand-to-an-agent flow.
+        RepositoriesView.LiveSessionsProvider = GetAuthoritativeLiveSessionsAsync;
         RepositoriesView.HandToAgentRequested += OnRepositoryHandToAgent;
 
         // Pinned Browsers group (Browsers feature, slice 2): manage lands on Settings > Browsers,
@@ -4288,6 +4291,56 @@ public partial class MainWindow : Window
                 Label = vm.Session.Number is int n ? $"{vm.DisplayName} (#{n})" : vm.DisplayName,
             })
             .ToList();
+    }
+
+    /// <summary>
+    /// The AUTHORITATIVE machine-wide live-session roster for the destructive worktree reaper
+    /// (issue 516). Unlike <see cref="GetLiveSessionsOnThisMachineAsync"/> - which is best-effort for
+    /// display and silently downgrades a fleet failure to this Director's own sessions - this one
+    /// FAILS CLOSED: it requires the fleet source and lets a fleet-query failure propagate, so the
+    /// reaper aborts rather than act on a partial roster that omits sessions in other Director slots
+    /// on this machine. This Director's own sessions are always included as a floor, because they are
+    /// known-alive and in use even if fleet registration lags.
+    /// </summary>
+    private async Task<IReadOnlyList<Core.Git.LiveSessionRef>> GetAuthoritativeLiveSessionsAsync(CancellationToken ct)
+    {
+        var machine = Environment.MachineName;
+
+        // This Director's own sessions - always known and always in use. Keyed by normalized path.
+        var byPath = new Dictionary<string, Core.Git.LiveSessionRef>(StringComparer.OrdinalIgnoreCase);
+        foreach (var vm in _sessions)
+        {
+            if (string.IsNullOrWhiteSpace(vm.Session.RepoPath))
+                continue;
+            var key = Core.Git.WorktreeReaperService.NormalizePath(vm.Session.RepoPath);
+            byPath[key] = new Core.Git.LiveSessionRef
+            {
+                RepoPath = vm.Session.RepoPath,
+                Label = vm.Session.Number is int n ? $"{vm.DisplayName} (#{n})" : vm.DisplayName,
+            };
+        }
+
+        var app = global::Avalonia.Application.Current as App;
+        var fleetTask = app?.ControlApiHost?.ListFleetSessionsAsync(ct);
+        if (fleetTask is null)
+            throw new InvalidOperationException(
+                "cannot confirm the machine-wide session roster: no fleet source is available. " +
+                "Removing worktrees is refused until the roster can be confirmed.");
+
+        // A fleet-query failure PROPAGATES here (fail closed) - it is never downgraded to local-only.
+        var fleet = await fleetTask;
+        foreach (var s in fleet)
+        {
+            if (!IsSessionAlive(s)
+                || !string.Equals(s.MachineName, machine, StringComparison.OrdinalIgnoreCase)
+                || string.IsNullOrWhiteSpace(s.RepoPath))
+                continue;
+            var key = Core.Git.WorktreeReaperService.NormalizePath(s.RepoPath);
+            if (!byPath.ContainsKey(key))
+                byPath[key] = new Core.Git.LiveSessionRef { RepoPath = s.RepoPath, Label = FleetSessionLabel(s) };
+        }
+
+        return byPath.Values.ToList();
     }
 
     /// <summary>A session is genuinely alive when it has not exited/failed and did not crash.</summary>

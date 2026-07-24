@@ -54,9 +54,12 @@ public partial class WorktreesView : UserControl
     public event Action<int>? OrphanedCountChanged;
 
     /// <summary>
-    /// Supplies the live sessions on this machine (with their working directories), so a git-safe
-    /// worktree a session is running in is shown as "in use" and never reaped. Best-effort: set by
-    /// the host, which knows the fleet; when null or it fails, the view falls back to no session data.
+    /// Supplies the AUTHORITATIVE live sessions on this machine (with their working directories) for
+    /// the reaper. This is the destructive path's session source, so it must be fail-closed: the
+    /// host wires it to a provider that THROWS if it cannot confirm the roster (a Gateway/fleet
+    /// failure), never one that silently downgrades to a partial list. The reaper reads it right
+    /// before acting and aborts the reap if it cannot be read (issue 516). Distinct from the
+    /// monitor's best-effort session source, which only drives display classification.
     /// </summary>
     public Func<CancellationToken, Task<IReadOnlyList<LiveSessionRef>>>? LiveSessionsProvider { get; set; }
 
@@ -294,9 +297,10 @@ public partial class WorktreesView : UserControl
 
     /// <summary>
     /// Test seam: when set, replaces the real reaper call. Lets a headless test observe exactly
-    /// which repository path the reap targets without deleting anything.
+    /// which repository path the reap targets, and with which live-session source, without deleting
+    /// anything.
     /// </summary>
-    internal Func<string, IReadOnlySet<string>, Task<ReapResult>>? ReapServiceOverride { get; set; }
+    internal Func<string, Func<CancellationToken, Task<IReadOnlyList<LiveSessionRef>>>?, Task<ReapResult>>? ReapServiceOverride { get; set; }
 
     internal async Task RunReapAsync()
     {
@@ -316,13 +320,14 @@ public partial class WorktreesView : UserControl
 
         try
         {
-            // Re-fetch live sessions at the moment of acting so a session opened since the scan is
-            // still protected (belt-and-suspenders on top of the detector's classification).
-            var liveSessions = await FetchLiveSessionsAsync();
-            var protectedPaths = ToProtectedSet(liveSessions);
+            // The reaper owns the authoritative live-session lookup (issue 516): it reads the roster
+            // as late as possible, right before acting, and FAILS CLOSED - aborting the reap - if it
+            // cannot be confirmed. We hand it the provider, not a set frozen here; a failure comes
+            // back as a ReapResult error and is surfaced, never a silent deletion.
+            var provider = LiveSessionsProvider;
             var result = ReapServiceOverride is { } reap
-                ? await reap(repoPath!, protectedPaths)
-                : await Task.Run(() => _reaper.ReapAsync(repoPath!, protectedPaths));
+                ? await reap(repoPath!, provider)
+                : await Task.Run(() => _reaper.ReapAsync(repoPath!, provider));
 
             if (_repoEntryPath != repoPath)
                 return; // the view moved to another repository while the reaper ran
@@ -374,30 +379,6 @@ public partial class WorktreesView : UserControl
     {
         ResultBannerText.Text = message;
         ResultBanner.IsVisible = true;
-    }
-
-    /// <summary>Fetch live sessions from the host (best-effort). Never throws - falls back to none.</summary>
-    private async Task<IReadOnlyList<LiveSessionRef>> FetchLiveSessionsAsync()
-    {
-        try
-        {
-            if (LiveSessionsProvider is { } provider)
-                return await provider(CancellationToken.None) ?? Array.Empty<LiveSessionRef>();
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[WorktreesView] FetchLiveSessionsAsync FAILED (proceeding without session data): {ex.Message}");
-        }
-        return Array.Empty<LiveSessionRef>();
-    }
-
-    private static IReadOnlySet<string> ToProtectedSet(IReadOnlyList<LiveSessionRef> liveSessions)
-    {
-        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var s in liveSessions)
-            if (!string.IsNullOrWhiteSpace(s.RepoPath))
-                set.Add(WorktreeReaperService.NormalizePath(s.RepoPath));
-        return set;
     }
 
     // ----- pure builders (unit-tested without a UI) -----

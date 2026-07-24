@@ -75,10 +75,23 @@ public sealed class WorktreeReaperService
     }
 
     /// <summary>
-    /// Re-checks safety and removes every currently safe-to-reap worktree except those whose path
-    /// is in <paramref name="protectedPaths"/> (the working directories of live sessions).
+    /// Re-checks safety and removes every currently safe-to-reap worktree, holding back any that a
+    /// live session is running in.
+    ///
+    /// FAIL CLOSED (issue 516). Removing a worktree from under a running session is destructive, so
+    /// this boundary must positively confirm which worktrees are in use before it acts. It obtains
+    /// the authoritative live-session roster from <paramref name="liveSessionsProvider"/> AFTER the
+    /// fetch below - as late as possible before acting, so a session that started during the (slow)
+    /// fetch is still seen - and feeds it into the safety recompute so an in-use worktree is
+    /// classified out of the safe set at the destructive step, not merely caught by a set frozen
+    /// earlier. If the roster cannot be read (no provider, an exception, or a null result) the reap
+    /// ABORTS and removes nothing. There is deliberately no "best effort with no sessions" path: a
+    /// roster failure that silently became an empty protected set is exactly the hazard this closes.
     /// </summary>
-    public async Task<ReapResult> ReapAsync(string repositoryPath, IReadOnlySet<string>? protectedPaths = null, CancellationToken ct = default)
+    public async Task<ReapResult> ReapAsync(
+        string repositoryPath,
+        Func<CancellationToken, Task<IReadOnlyList<LiveSessionRef>>>? liveSessionsProvider,
+        CancellationToken ct = default)
     {
         FileLog.Write($"[WorktreeReaperService] ReapAsync: repo={repositoryPath}");
         try
@@ -86,18 +99,49 @@ public sealed class WorktreeReaperService
             if (string.IsNullOrWhiteSpace(repositoryPath) || !Directory.Exists(repositoryPath))
                 return ReapResult.Failure($"repository path not found: {repositoryPath}");
 
-            var protectedSet = BuildProtectedSet(protectedPaths);
+            if (liveSessionsProvider is null)
+                return ReapResult.Failure("cannot confirm which worktrees are in use by live sessions - reap aborted");
 
-            // Re-run the safety check immediately before acting - state can change between load and click.
-            var inventory = await _inventory.GetInventoryAsync(repositoryPath, fetchPrune: true, liveSessions: null, ct);
+            // Refresh remote-tracking refs first so the merge signals are current...
+            await _git.RunAsync(repositoryPath, new[] { "fetch", "--prune" }, ct);
+
+            // ...THEN read the authoritative live-session roster, as late as possible before acting.
+            // Any failure aborts - never a silent fall-through to "no sessions". Cancellation is the
+            // caller superseding us and propagates to the outer handler.
+            IReadOnlyList<LiveSessionRef> liveSessions;
+            try
+            {
+                liveSessions = await liveSessionsProvider(ct)
+                    ?? throw new InvalidOperationException("the live-session source returned no result");
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[WorktreeReaperService] ReapAsync aborted - could not confirm live sessions: {ex.Message}");
+                return ReapResult.Failure($"could not confirm which worktrees are in use by live sessions - reap aborted: {ex.Message}");
+            }
+
+            // Recompute safety WITH the roster in hand (never session-blind). fetchPrune is false
+            // because we already pruned above; doing so before reading the roster would have frozen
+            // it too early.
+            var inventory = await _inventory.GetInventoryAsync(repositoryPath, fetchPrune: false, liveSessions, ct);
             if (!inventory.Success)
                 return ReapResult.Failure($"could not enumerate worktrees: {inventory.Error}");
 
+            var protectedSet = BuildProtectedSet(liveSessions);
+
             var outcomes = new List<ReapOutcome>();
-            var skipped = new List<string>();
+            // Worktrees held back because a live session is running in them - reported so the user
+            // sees they were deliberately spared.
+            var skipped = inventory.InUseBySession.Select(w => NormalizePath(w.Path)).ToList();
 
             foreach (var worktree in inventory.SafeToReap)
             {
+                // Belt-and-suspenders on top of the roster classification: never remove a worktree
+                // whose path the roster protects, even if it still classified safe.
                 if (protectedSet.Contains(NormalizePath(worktree.Path)))
                 {
                     FileLog.Write($"[WorktreeReaperService] SKIP (a live session is using it): {worktree.Path}");
@@ -117,9 +161,9 @@ public sealed class WorktreeReaperService
                 Success = outcomes.All(o => o.Removed),
                 Outcomes = outcomes,
                 Leftovers = leftovers,
-                Skipped = skipped,
+                Skipped = skipped.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
             };
-            FileLog.Write($"[WorktreeReaperService] reaped {result.RemovedCount}/{outcomes.Count}, leftovers={leftovers.Count}, skipped={skipped.Count}");
+            FileLog.Write($"[WorktreeReaperService] reaped {result.RemovedCount}/{outcomes.Count}, leftovers={leftovers.Count}, skipped={result.Skipped.Count}");
             return result;
         }
         catch (Exception ex)
@@ -213,15 +257,12 @@ public sealed class WorktreeReaperService
         }
     }
 
-    private static HashSet<string> BuildProtectedSet(IReadOnlySet<string>? protectedPaths)
+    private static HashSet<string> BuildProtectedSet(IReadOnlyList<LiveSessionRef> liveSessions)
     {
         var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (protectedPaths != null)
-        {
-            foreach (var p in protectedPaths)
-                if (!string.IsNullOrWhiteSpace(p))
-                    set.Add(NormalizePath(p));
-        }
+        foreach (var s in liveSessions)
+            if (!string.IsNullOrWhiteSpace(s.RepoPath))
+                set.Add(NormalizePath(s.RepoPath));
         return set;
     }
 

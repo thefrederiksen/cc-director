@@ -109,6 +109,38 @@ public class OneBrainRegressionTests
     }
 
     // ---------------------------------------------------------------------------------------
+    // REGRESSION (issue 516, blocker: the reap must fail closed on live-session discovery). The
+    // view must hand the reaper its AUTHORITATIVE live-session provider - the reaper owns the
+    // fail-closed decision - and must not swallow it into a "no sessions" set as it did before.
+    // ---------------------------------------------------------------------------------------
+    [AvaloniaFact]
+    public async Task Reap_HandsTheAuthoritativeLiveSessionProviderToTheReaper()
+    {
+        var wt = Wt("feature", WorktreeSafety.SafeToReap, WorktreeSafetyReason.ContainedInMain);
+        var monitor = MonitorWithRepo("/repo", wt);
+        await monitor.RescanAsync(new[] { "/roots" });
+
+        var view = new WorktreesView();
+        var window = new Window { Content = view, Width = 800, Height = 600 };
+        window.Show();
+        view.Attach(monitor, "/repo");
+        Dispatcher.UIThread.RunJobs();
+
+        var provider = NoSessions;
+        view.LiveSessionsProvider = provider;
+
+        Func<System.Threading.CancellationToken, Task<IReadOnlyList<LiveSessionRef>>>? seen = null;
+        view.ReapServiceOverride = (_, p) =>
+        {
+            seen = p;
+            return Task.FromResult(new ReapResult { Success = true });
+        };
+        await view.RunReapAsync();
+
+        Assert.Same(provider, seen); // the reaper received the exact authoritative provider
+    }
+
+    // ---------------------------------------------------------------------------------------
     // REGRESSION (inspection finding F4): while the owning entry is unresolved there is nothing
     // safe to reap - the old fallback to the raw session path could hand the reaper a linked
     // worktree.
