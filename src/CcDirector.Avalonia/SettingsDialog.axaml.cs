@@ -703,9 +703,9 @@ public partial class SettingsDialog : Window
     }
 
     /// <summary>
-    /// Re-run the first-run tool-detection wizard on demand (issue #392). On accept it writes the
-    /// selected tools to config.json (legacy <c>*_path</c> keys); we reload the agent list so any
-    /// newly-added tools show up as entries.
+    /// Re-run the first-run setup wizard on demand (issue #2101, epic #2100 - the re-run hook the old
+    /// tool-detection wizard used, now pointed at the single wizard). The wizard's interim Agents step
+    /// may add agents, so we reload the agent list after it closes so any new entries show up.
     /// </summary>
     private async void BtnRunWizard_Click(object? sender, RoutedEventArgs e)
     {
@@ -714,52 +714,22 @@ public partial class SettingsDialog : Window
         try
         {
             var options = CurrentOptions();
-            var dialog = new ToolDetectionWizardDialog(options);
-            var accepted = await dialog.ShowDialog<bool?>(this);
-            if (accepted == true)
-            {
-                LoadAgentEntries();
-                ShowAgentToolsStatus(BuildWizardResultMessage(dialog.LastResult), error: false);
-                FileLog.Write("[SettingsDialog] BtnRunWizard_Click: wizard accepted; reloaded agent list");
-            }
+            var dialog = new FirstRunWizardDialog(options);
+            await dialog.ShowDialog<bool?>(this);
+
+            LoadAgentEntries();
+            ShowAgentToolsStatus("Setup wizard finished. Your agent list is up to date.", error: false);
+            FileLog.Write("[SettingsDialog] BtnRunWizard_Click: wizard closed; reloaded agent list");
         }
         catch (Exception ex)
         {
             FileLog.Write($"[SettingsDialog] BtnRunWizard_Click FAILED: {ex.Message}");
-            ShowAgentToolsStatus($"Detection wizard failed: {ex.Message}", error: true);
+            ShowAgentToolsStatus($"Setup wizard failed: {ex.Message}", error: true);
         }
         finally
         {
             RunWizardButton.IsEnabled = true;
         }
-    }
-
-    /// <summary>
-    /// Build the honest after-wizard status: name the agents that were actually added to the list
-    /// and how many selected ones were skipped because they were already present. Avoids the old
-    /// "the tools it added are shown above" message that lied when nothing new was added.
-    /// </summary>
-    private static string BuildWizardResultMessage(WizardAcceptResult? result)
-    {
-        if (result is null)
-            return "Detection wizard finished.";
-
-        var addedNames = result.AddedTools
-            .Select(t => AgentPluginRegistry.Contains(t) ? AgentPluginRegistry.Get(t).DisplayName : t.ToString())
-            .ToList();
-        var addedPart = addedNames.Count switch
-        {
-            0 => "No new agents added",
-            1 => $"Added 1 new agent: {addedNames[0]}",
-            _ => $"Added {addedNames.Count} new agents: {string.Join(", ", addedNames)}",
-        };
-
-        var skippedCount = result.SkippedTools.Count;
-        var skippedPart = skippedCount == 0
-            ? ""
-            : $" {skippedCount} selected {(skippedCount == 1 ? "tool was" : "tools were")} already in your list and left unchanged.";
-
-        return addedPart + "." + skippedPart;
     }
 
     private void ShowAgentToolsStatus(string text, bool error)

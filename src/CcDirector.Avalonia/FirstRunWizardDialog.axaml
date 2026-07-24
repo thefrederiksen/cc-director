@@ -1,0 +1,182 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="CcDirector.Avalonia.FirstRunWizardDialog"
+        Title="DevThrottle Setup"
+        Width="680" Height="620"
+        MinWidth="560" MinHeight="500"
+        WindowStartupLocation="CenterOwner"
+        CanResize="True"
+        Background="#252526">
+
+    <Window.Styles>
+        <Style Selector="TextBlock.wtitle">
+            <Setter Property="Foreground" Value="#CCCCCC" />
+            <Setter Property="FontSize" Value="24" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="TextAlignment" Value="Center" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+        <Style Selector="TextBlock.wsub">
+            <Setter Property="Foreground" Value="#AAAAAA" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="TextAlignment" Value="Center" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="MaxWidth" Value="460" />
+        </Style>
+        <Style Selector="TextBlock.hint">
+            <Setter Property="Foreground" Value="#888888" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+        <Style Selector="Button.primaryButton">
+            <Setter Property="Height" Value="34" />
+            <Setter Property="MinWidth" Value="150" />
+            <Setter Property="Padding" Value="18,0" />
+            <Setter Property="Background" Value="#007ACC" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+        <Style Selector="Button.dialogButton">
+            <Setter Property="Height" Value="30" />
+            <Setter Property="MinWidth" Value="100" />
+            <Setter Property="Padding" Value="14,0" />
+            <Setter Property="Background" Value="#3C3C3C" />
+            <Setter Property="Foreground" Value="#CCCCCC" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+        <!-- Quiet text link (faint text, not a button): the whole-wizard skip and the "take me to
+             the board" affordance. Deliberately low-emphasis per the mockup. -->
+        <Style Selector="Button.quietLink">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#888888" />
+            <Setter Property="FontSize" Value="12.5" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="4,2" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.quietLink:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="TextBlock.Foreground" Value="#CCCCCC" />
+        </Style>
+        <!-- Back link, bottom-left. -->
+        <Style Selector="Button.backLink">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#AAAAAA" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="4,2" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.backLink:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="TextBlock.Foreground" Value="#CCCCCC" />
+        </Style>
+    </Window.Styles>
+
+    <Grid Margin="28,24,28,20" RowDefinitions="Auto,*,Auto">
+
+        <!-- Progress dots: one per present step, painted done / current / upcoming by code-behind. -->
+        <StackPanel Grid.Row="0" x:Name="DotsPanel" Orientation="Horizontal"
+                    Spacing="8" HorizontalAlignment="Center" Margin="0,4,0,28" />
+
+        <!-- Step content. Exactly one child panel is visible at a time. -->
+        <Grid Grid.Row="1">
+
+            <!-- ===================== WELCOME ===================== -->
+            <StackPanel x:Name="WelcomePanel" IsVisible="False" Spacing="16"
+                        VerticalAlignment="Center">
+                <TextBlock Classes="wtitle" Text="Welcome to DevThrottle" />
+                <TextBlock Classes="wsub"
+                           Text="You are about three minutes from running your first coding agent. We will find your agents, learn where your code lives, and set up your morning report." />
+                <StackPanel Spacing="12" HorizontalAlignment="Center" Margin="0,12,0,0">
+                    <Button x:Name="WelcomeSetupButton" Classes="primaryButton"
+                            Content="Set me up" HorizontalAlignment="Center"
+                            Click="BtnPrimary_Click" />
+                    <Button x:Name="WelcomeSkipLink" Classes="quietLink"
+                            Content="Skip setup and figure it out myself"
+                            HorizontalAlignment="Center" Click="BtnWholeWizardSkip_Click" />
+                </StackPanel>
+            </StackPanel>
+
+            <!-- ===================== AGENTS (interim: reuses the tool-detection scan) ===================== -->
+            <Grid x:Name="AgentsPanel" IsVisible="False" RowDefinitions="Auto,Auto,*,Auto">
+                <TextBlock Grid.Row="0" x:Name="AgentsTitle" Classes="wtitle"
+                           Text="Your agents" Margin="0,0,0,8" />
+                <TextBlock Grid.Row="1" x:Name="AgentsStatusText" Classes="wsub"
+                           Text="Scanning this machine for coding agents..." Margin="0,0,0,16" />
+                <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
+                    <StackPanel x:Name="AgentsListPanel" Spacing="8" />
+                </ScrollViewer>
+                <!-- Install guidance, shown only when zero agents are found (the unskippable case). -->
+                <StackPanel Grid.Row="3" x:Name="AgentsInstallGuidance" Spacing="8"
+                            IsVisible="False" Margin="0,12,0,0">
+                    <TextBlock Classes="hint"
+                               Text="DevThrottle runs command-line coding agents. We did not find one on this machine - install one, then re-check. This step cannot be skipped: nothing works without an agent." />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="AgentsInstallButton" Classes="dialogButton"
+                                Content="Open install guide" Click="BtnInstallAgent_Click" />
+                        <Button x:Name="AgentsRecheckButton" Classes="dialogButton"
+                                Content="Re-check" Click="BtnRecheckAgents_Click" />
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+
+            <!-- ===================== GATEWAY (interim: reuses GatewayConnectionPanel) ===================== -->
+            <Grid x:Name="GatewayPanel" IsVisible="False" RowDefinitions="Auto,*">
+                <TextBlock Grid.Row="0" Classes="wtitle" Text="Connect your gateway" Margin="0,0,0,16" />
+                <Border Grid.Row="1" x:Name="GatewayHost" />
+            </Grid>
+
+            <!-- ===================== DONE ===================== -->
+            <StackPanel x:Name="DonePanel" IsVisible="False" Spacing="16"
+                        VerticalAlignment="Center">
+                <TextBlock Classes="wtitle" Text="You are ready" />
+                <TextBlock Classes="wsub"
+                           Text="Everything is set. Start an agent on one of your repos - give it a small task and watch the card, not the terminal." />
+                <Border Background="#1E1E1E" BorderBrush="#3C3C3C" BorderThickness="1"
+                        CornerRadius="8" Padding="4" MaxWidth="460" HorizontalAlignment="Center"
+                        Margin="0,4,0,0">
+                    <StackPanel x:Name="DoneReceiptPanel" />
+                </Border>
+                <StackPanel Spacing="12" HorizontalAlignment="Center" Margin="0,8,0,0">
+                    <Button x:Name="DoneStartButton" Classes="primaryButton"
+                            Content="Start my first agent" HorizontalAlignment="Center"
+                            Click="BtnStartFirstAgent_Click" />
+                    <Button x:Name="DoneBoardLink" Classes="quietLink"
+                            Content="Take me to the board" HorizontalAlignment="Center"
+                            Click="BtnPrimary_Click" />
+                </StackPanel>
+            </StackPanel>
+        </Grid>
+
+        <!-- Footer: Back link (bottom-left), a faint note, a per-step skip link, and the primary CTA. -->
+        <Grid Grid.Row="2" ColumnDefinitions="Auto,*,Auto,Auto" Margin="0,20,0,0">
+            <Button x:Name="BackButton" Grid.Column="0" Classes="backLink"
+                    Content="Back" Click="BtnBack_Click" IsVisible="False"
+                    VerticalAlignment="Center" />
+
+            <TextBlock x:Name="FooterNote" Grid.Column="1"
+                       Foreground="#888888" FontSize="12" TextWrapping="Wrap"
+                       HorizontalAlignment="Right" VerticalAlignment="Center"
+                       Margin="0,0,12,0" IsVisible="False" />
+
+            <Button x:Name="StepSkipLink" Grid.Column="2" Classes="quietLink"
+                    Content="Skip this step" Click="BtnStepSkip_Click" IsVisible="False"
+                    VerticalAlignment="Center" Margin="0,0,10,0" />
+
+            <Button x:Name="PrimaryButton" Grid.Column="3" Classes="primaryButton"
+                    Content="Continue" Click="BtnPrimary_Click" IsDefault="True"
+                    IsVisible="False" />
+        </Grid>
+    </Grid>
+</Window>
