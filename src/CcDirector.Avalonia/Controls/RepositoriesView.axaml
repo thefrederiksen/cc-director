@@ -42,6 +42,7 @@
 
         <Panel Grid.Column="2">
             <controls:RepositoryListView x:Name="ReposPage" IsVisible="True" />
+            <controls:RepositoryDetailView x:Name="DetailPage" IsVisible="False" />
 
             <ScrollViewer x:Name="RootsPage" IsVisible="False" VerticalScrollBarVisibility="Auto">
                 <StackPanel Margin="16" Spacing="12">

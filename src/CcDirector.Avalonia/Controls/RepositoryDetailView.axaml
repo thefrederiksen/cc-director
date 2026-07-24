@@ -1,0 +1,149 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:CcDirector.Avalonia.Controls"
+             x:Class="CcDirector.Avalonia.Controls.RepositoryDetailView"
+             Background="#1E1E1E">
+
+    <UserControl.DataTemplates>
+        <!-- Branch row -->
+        <DataTemplate DataType="controls:BranchRowItem">
+            <Border Background="#252526" BorderBrush="#3C3C3C" BorderThickness="1" CornerRadius="4"
+                    Padding="11,8" Margin="0,0,0,6">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                        <Border CornerRadius="6" Padding="7,2" Background="{Binding ChipBg}" BorderBrush="{Binding ChipBr}" BorderThickness="1">
+                            <TextBlock Text="{Binding Chip}" Foreground="{Binding ChipFg}" FontSize="10" FontFamily="Cascadia Mono, Consolas" />
+                        </Border>
+                        <Button Content="Delete" Background="#5A2A2A" Foreground="#F0A6A6" FontSize="11" Padding="10,3"
+                                IsVisible="{Binding CanDelete}" Click="DeleteBranch_Click" />
+                    </StackPanel>
+                    <StackPanel Spacing="2">
+                        <StackPanel Orientation="Horizontal" Spacing="7">
+                            <TextBlock Text="{Binding Name}" Foreground="#CCCCCC" FontSize="12.5" FontWeight="SemiBold"
+                                       FontFamily="Cascadia Mono, Consolas" />
+                            <Border Background="#0E639C" CornerRadius="4" Padding="6,0" VerticalAlignment="Center"
+                                    IsVisible="{Binding IsCurrent}">
+                                <TextBlock Text="current" Foreground="White" FontSize="9" />
+                            </Border>
+                        </StackPanel>
+                        <TextBlock Text="{Binding Meta}" Foreground="#8A8A8A" FontSize="10.5" FontFamily="Cascadia Mono, Consolas" />
+                    </StackPanel>
+                </DockPanel>
+            </Border>
+        </DataTemplate>
+
+        <!-- Pull request row -->
+        <DataTemplate DataType="controls:PullRequestRowItem">
+            <Border Background="#252526" BorderBrush="#3C3C3C" BorderThickness="1" CornerRadius="4"
+                    Padding="11,8" Margin="0,0,0,6">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                        <Border CornerRadius="6" Padding="7,2" Background="{Binding ChipBg}" BorderBrush="{Binding ChipBr}" BorderThickness="1"
+                                IsVisible="{Binding HasChip}">
+                            <TextBlock Text="{Binding Chip}" Foreground="{Binding ChipFg}" FontSize="10" FontFamily="Cascadia Mono, Consolas" />
+                        </Border>
+                        <Button Content="Open" Background="#3C3C3C" Foreground="#CCCCCC" FontSize="11" Padding="10,3"
+                                Click="OpenPullRequest_Click" />
+                    </StackPanel>
+                    <StackPanel Spacing="2">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBlock Text="{Binding ChecksGlyph}" Foreground="{Binding ChecksBrush}" FontSize="12" FontWeight="Bold" />
+                            <TextBlock Text="{Binding Title}" Foreground="#CCCCCC" FontSize="12.5" FontWeight="SemiBold"
+                                       TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                        <TextBlock Text="{Binding Meta}" Foreground="#8A8A8A" FontSize="10.5" FontFamily="Cascadia Mono, Consolas" />
+                    </StackPanel>
+                </DockPanel>
+            </Border>
+        </DataTemplate>
+
+        <!-- Commit row -->
+        <DataTemplate DataType="controls:CommitRowItem">
+            <Border Padding="10,5" Background="Transparent">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Left" Text="{Binding Hash}" Foreground="#4A9EFF" FontSize="11"
+                               FontFamily="Cascadia Mono, Consolas" Width="70" />
+                    <TextBlock DockPanel.Dock="Right" Text="{Binding When}" Foreground="#6B6B6B" FontSize="10.5"
+                               FontFamily="Cascadia Mono, Consolas" Margin="10,0,0,0" />
+                    <TextBlock Text="{Binding Subject}" Foreground="#CCCCCC" FontSize="11.5" TextTrimming="CharacterEllipsis" />
+                </DockPanel>
+            </Border>
+        </DataTemplate>
+    </UserControl.DataTemplates>
+
+    <Grid RowDefinitions="Auto,Auto,*">
+        <!-- Header -->
+        <Border Grid.Row="0" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1" Padding="14,10">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                    <Button x:Name="OpenVsCodeButton" Content="Open in VS Code" Background="#3C3C3C" Foreground="#CCCCCC"
+                            FontSize="11" Padding="10,4" Click="OpenVsCodeButton_Click" />
+                    <Button x:Name="HandToAgentButton" Content="Hand to an agent" Background="#0E639C" Foreground="White"
+                            FontSize="11" FontWeight="SemiBold" Padding="10,4" Click="HandToAgentButton_Click" />
+                </StackPanel>
+                <StackPanel Spacing="2">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="BackButton" Content="&#8592;" Background="Transparent" Foreground="#8A8A8A"
+                                FontSize="14" Padding="4,0" BorderThickness="0" Click="BackButton_Click"
+                                ToolTip.Tip="Back to all repositories" />
+                        <TextBlock x:Name="RepoName" Text="" Foreground="#CCCCCC" FontSize="16" FontWeight="SemiBold" />
+                    </StackPanel>
+                    <TextBlock x:Name="RepoUrl" Text="" Foreground="#4A9EFF" FontSize="10.5" FontFamily="Cascadia Mono, Consolas" />
+                    <TextBlock x:Name="RepoStats" Text="" Foreground="#8A8A8A" FontSize="10.5" FontFamily="Cascadia Mono, Consolas" />
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- Tab strip -->
+        <Border Grid.Row="1" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1" Padding="8,0">
+            <StackPanel Orientation="Horizontal" Spacing="2">
+                <Button x:Name="TabChanges" Content="Changes" Classes="detailTab" Click="TabChanges_Click" />
+                <Button x:Name="TabWorktrees" Content="Worktrees" Classes="detailTab" Click="TabWorktrees_Click" />
+                <Button x:Name="TabBranches" Content="Branches" Classes="detailTab" Click="TabBranches_Click" />
+                <Button x:Name="TabPullRequests" Content="Pull requests" Classes="detailTab" Click="TabPullRequests_Click" />
+                <Button x:Name="TabHistory" Content="History" Classes="detailTab" Click="TabHistory_Click" />
+            </StackPanel>
+        </Border>
+
+        <!-- Panels -->
+        <Panel Grid.Row="2">
+            <controls:ChangesDiffView x:Name="ChangesPanel" IsVisible="True" />
+            <controls:WorktreesView x:Name="WorktreesPanel" IsVisible="False" />
+            <ScrollViewer x:Name="BranchesPanel" IsVisible="False" VerticalScrollBarVisibility="Auto">
+                <StackPanel Margin="12" Spacing="8">
+                    <TextBlock x:Name="BranchesStatus" Text="Loading branches..." Foreground="#888888" FontSize="12" FontStyle="Italic" />
+                    <ItemsControl x:Name="BranchesList" />
+                    <Button x:Name="DeleteSafeBranchesButton" Content="Delete safe branches" Background="#8B2E2E" Foreground="White"
+                            FontSize="11.5" Padding="12,5" IsVisible="False" Click="DeleteSafeBranchesButton_Click" />
+                </StackPanel>
+            </ScrollViewer>
+            <ScrollViewer x:Name="PullRequestsPanel" IsVisible="False" VerticalScrollBarVisibility="Auto">
+                <StackPanel Margin="12" Spacing="8">
+                    <TextBlock x:Name="PullRequestsStatus" Text="Loading pull requests..." Foreground="#888888" FontSize="12" FontStyle="Italic" />
+                    <ItemsControl x:Name="PullRequestsList" />
+                </StackPanel>
+            </ScrollViewer>
+            <ScrollViewer x:Name="HistoryPanel" IsVisible="False" VerticalScrollBarVisibility="Auto">
+                <StackPanel Margin="12,8">
+                    <TextBlock x:Name="HistoryStatus" Text="Loading history..." Foreground="#888888" FontSize="12" FontStyle="Italic" />
+                    <ItemsControl x:Name="HistoryList" />
+                </StackPanel>
+            </ScrollViewer>
+        </Panel>
+    </Grid>
+
+    <UserControl.Styles>
+        <Style Selector="Button.detailTab">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#8A8A8A" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Padding" Value="12,7" />
+            <Setter Property="CornerRadius" Value="0" />
+        </Style>
+        <Style Selector="Button.detailTab.active">
+            <Setter Property="Foreground" Value="#FFFFFF" />
+            <Setter Property="BorderBrush" Value="#007ACC" />
+            <Setter Property="BorderThickness" Value="0,0,0,2" />
+        </Style>
+    </UserControl.Styles>
+</UserControl>

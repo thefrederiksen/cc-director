@@ -25,8 +25,19 @@ public partial class RepositoriesView : UserControl
     private static readonly FontFamily Mono = new("Cascadia Mono, Consolas");
 
     private bool _attached;
+    private RepositoryMonitor? _monitor;
     private RootDirectoryStore? _store;
     private Action? _onRefresh;
+
+    /// <summary>The owner chose a hand-off on a repo; the host spawns a session with the brief staged.</summary>
+    public event Action<string, string>? HandToAgentRequested;
+
+    /// <summary>Live sessions provider, forwarded to the detail's worktrees panel.</summary>
+    public Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<LiveSessionRef>>>? LiveSessionsProvider
+    {
+        get => DetailPage.LiveSessionsProvider;
+        set => DetailPage.LiveSessionsProvider = value;
+    }
 
     public RepositoriesView()
     {
@@ -39,16 +50,38 @@ public partial class RepositoriesView : UserControl
     /// </summary>
     public void Attach(RepositoryMonitor monitor, RootDirectoryStore store, Action onRefreshRequested)
     {
+        _monitor = monitor;
         _store = store;
         _onRefresh = onRefreshRequested;
         if (!_attached)
         {
             FileLog.Write("[RepositoriesView] Attach");
             ReposPage.RefreshRequested += onRefreshRequested;
+            ReposPage.RepoOpenRequested += OpenDetail;
+            DetailPage.BackRequested += CloseDetail;
+            DetailPage.HandToAgentRequested += (path, brief) => HandToAgentRequested?.Invoke(path, brief);
             ReposPage.Attach(monitor);
             _attached = true;
         }
         RenderRoots();
+    }
+
+    /// <summary>Drill into one repository's detail screen.</summary>
+    private void OpenDetail(string repoPath)
+    {
+        if (_monitor is null)
+            return;
+        ReposPage.IsVisible = false;
+        RootsPage.IsVisible = false;
+        DetailPage.IsVisible = true;
+        DetailPage.Attach(_monitor, repoPath);
+    }
+
+    private void CloseDetail()
+    {
+        DetailPage.Detach();
+        DetailPage.IsVisible = false;
+        ShowRoots(false);
     }
 
     private void ReposRailButton_Click(object? sender, RoutedEventArgs e) => ShowRoots(false);
@@ -56,6 +89,7 @@ public partial class RepositoriesView : UserControl
 
     private void ShowRoots(bool roots)
     {
+        DetailPage.IsVisible = false;
         ReposPage.IsVisible = !roots;
         RootsPage.IsVisible = roots;
         SetActive(ReposRailButton, !roots);

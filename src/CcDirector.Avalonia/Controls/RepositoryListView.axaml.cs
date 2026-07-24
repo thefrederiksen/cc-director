@@ -58,6 +58,18 @@ public partial class RepositoryListView : UserControl
     /// <summary>Raised when the user clicks Refresh; the host triggers the monitor to rescan.</summary>
     public event Action? RefreshRequested;
 
+    /// <summary>Raised when a repository row is clicked - the host opens its detail screen.</summary>
+    public event Action<string>? RepoOpenRequested;
+
+    private void RepoRow_PointerPressed(object? sender, global::Avalonia.Input.PointerPressedEventArgs e)
+    {
+        if ((sender as Control)?.DataContext is RepoRowItem row && row.Path.Length > 0)
+        {
+            FileLog.Write($"[RepositoryListView] open repo: {row.Path}");
+            RepoOpenRequested?.Invoke(row.Path);
+        }
+    }
+
     public RepositoryListView()
     {
         InitializeComponent();

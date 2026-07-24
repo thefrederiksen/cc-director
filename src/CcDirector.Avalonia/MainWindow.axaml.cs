@@ -257,6 +257,10 @@ public partial class MainWindow : Window
             UpdateRepositoriesBadge();
         }
 
+        // Repository detail: live sessions for the worktrees panel, and the hand-to-an-agent flow.
+        RepositoriesView.LiveSessionsProvider = GetLiveSessionsOnThisMachineAsync;
+        RepositoriesView.HandToAgentRequested += OnRepositoryHandToAgent;
+
         // Wire prompt input text changes for slash command autocomplete
         PromptInput.TextChanged += PromptInput_TextChanged;
         PromptInput.LostFocus += (_, _) => SlashCommandPopup.IsOpen = false;
@@ -4090,6 +4094,25 @@ public partial class MainWindow : Window
     {
         BtnRepositories.Background = new global::Avalonia.Media.SolidColorBrush(
             global::Avalonia.Media.Color.Parse(active ? "#094771" : "#2A2A2A"));
+    }
+
+    /// <summary>
+    /// The hand-off: spawn a session in the repository and stage the brief in its prompt box, so
+    /// the owner reads exactly what the agent will be told and presses send themselves.
+    /// </summary>
+    private void OnRepositoryHandToAgent(string repoPath, string brief)
+    {
+        FileLog.Write($"[MainWindow] hand to agent: {repoPath}");
+        RepositoriesOverlay.IsVisible = false;
+        SetRepositoriesActive(false);
+        var vm = CreateSession(repoPath);
+        if (vm is null)
+            return;
+        vm.Session.PendingPromptText = brief;
+        if (_activeSession == vm)
+            PromptInput.Text = brief; // already selected - stage it into the visible prompt box now
+        SaveSessionToHistory(vm);
+        SwitchLeftTab("Terminal");
     }
 
     /// <summary>Show the safe-to-reap worktree count on the pinned Repositories entry.</summary>

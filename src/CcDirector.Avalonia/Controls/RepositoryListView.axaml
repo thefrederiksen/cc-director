@@ -12,7 +12,9 @@
                     CornerRadius="4"
                     Padding="12,9"
                     Margin="0,0,0,7"
-                    Opacity="{Binding RowOpacity}">
+                    Opacity="{Binding RowOpacity}"
+                    Cursor="Hand"
+                    PointerPressed="RepoRow_PointerPressed">
                 <Grid ColumnDefinitions="*,Auto,Auto,Auto">
                     <!-- Identity -->
                     <StackPanel Grid.Column="0" Spacing="3" VerticalAlignment="Center">
