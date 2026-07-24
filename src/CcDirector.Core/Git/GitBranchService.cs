@@ -282,11 +282,11 @@ public sealed class GitBranchService
             var restore = await _git.RunAsync(repoPath, new[] { "update-ref", $"refs/heads/{branch}", verifiedSha, ZeroSha }, CancellationToken.None);
             SafeLog(restore.Success
                 ? $"[GitBranchService] restore-on-the-way-out: {branch} restored at {verifiedSha} after: {SafeMessage(cause)}"
-                : $"[GitBranchService] restore-on-the-way-out for {branch} was refused (the ref may already exist again): {restore.Error.Trim()}");
+                : $"[GitBranchService] restore-on-the-way-out for {branch} was refused (the ref may already exist again): {restore.Error.Trim()} - initiating failure: {SafeMessage(cause)}");
         }
         catch (Exception restoreEx)
         {
-            SafeLog($"[GitBranchService] restore-on-the-way-out for {branch} itself failed - recreate the ref with: git update-ref refs/heads/{branch} {verifiedSha}: {SafeMessage(restoreEx)}");
+            SafeLog($"[GitBranchService] restore-on-the-way-out for {branch} itself failed - recreate the ref with: git update-ref refs/heads/{branch} {verifiedSha}: {SafeMessage(restoreEx)} - initiating failure: {SafeMessage(cause)}");
         }
     }
 

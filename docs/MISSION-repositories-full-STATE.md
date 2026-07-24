@@ -73,13 +73,17 @@ Spec: devthrottle_internal#510 · Brief: docs/MISSION-repositories-full-2026-07-
 - Round 4 (BLOCK): create-only restore, startup wiring, tombstone basics CLOSED. Remaining
   fixed by Manager round 4 through ef85357f (suites: Core 3448 / Avalonia 290 / Gateway 3680,
   0 failed). Rulings + outcomes: docs/MISSION-repositories-full-INSPECTION-4.md.
-- Round 5 (BLOCK): four of five areas CLOSED. Three findings in the round-4 fix code (delete
-  command outside the recovery boundary; recovery-path logging able to defeat the restore;
-  throwing progress subscriber skips the drain) - fixed directly by the Architect in
-  804eb3ee + e4fc3870, tests watched failing first, Core 3450 / Avalonia 290 green.
-  Record: docs/MISSION-repositories-full-INSPECTION-5.md. Round-6 inspection in progress;
-  final Gateway suite rerun in progress; slot 5 live at ef85357f with harness 8/8 (needs one
-  final rebuild at the tip once round 6 passes).
+- Round 5 (BLOCK): four of five areas CLOSED; three findings fixed by the Architect in
+  804eb3ee + e4fc3870. Record: docs/MISSION-repositories-full-INSPECTION-5.md.
+- Rounds 6-8: round 6 BLOCK (refusal-path reroute R6-1 fixed 35f83481; drain exception
+  ordering R6-2 fixed 1fa7bb1e); round 7 BLOCK (throwing Message getter R7-1 fixed
+  2a0f6188); round 8 **PASS** - nothing above MINOR; the one MINOR (log the initiating
+  exception in the refused/failed restore arms) fixed as prescribed. Record:
+  docs/MISSION-repositories-full-INSPECTION-6.md. Core 3451 green post-round-6; branch
+  service class green post-round-7/8 changes; clean full Gateway rerun in progress (the
+  first attempt hung under machine contention and was killed - own test process).
+- Remaining: Gateway rerun green -> final slot-5 rebuild at tip + live harness -> QA report
+  artifact -> owner approval -> slice and land on origin/main.
 
 ## Next
 - Manager round 2 finishes R2-1..R2-12 and pushes.
