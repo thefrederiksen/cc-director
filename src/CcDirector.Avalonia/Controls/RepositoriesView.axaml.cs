@@ -91,11 +91,20 @@ public partial class RepositoriesView : UserControl
         RenderRoots();
     }
 
-    /// <summary>Drill into one repository's detail screen.</summary>
-    private void OpenDetail(string repoPath)
+    /// <summary>
+    /// Drill into one repository's detail screen. A provisional (still verifying) entry never
+    /// opens it, whatever the route in - the detail screen is an acting surface (stage, commit,
+    /// discard, branch delete) and cached, unverified data must not receive actions.
+    /// </summary>
+    internal void OpenDetail(string repoPath)
     {
         if (_monitor is null)
             return;
+        if (_monitor.FindForPath(repoPath) is { Provisional: true })
+        {
+            FileLog.Write($"[RepositoriesView] detail refused - entry still verifying: {repoPath}");
+            return;
+        }
         ReposPage.IsVisible = false;
         RootsPage.IsVisible = false;
         DetailPage.IsVisible = true;

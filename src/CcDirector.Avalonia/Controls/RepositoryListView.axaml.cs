@@ -63,12 +63,23 @@ public partial class RepositoryListView : UserControl
 
     private void RepoRow_PointerPressed(object? sender, global::Avalonia.Input.PointerPressedEventArgs e)
     {
-        if ((sender as Control)?.DataContext is RepoRowItem row && row.Path.Length > 0)
+        if ((sender as Control)?.DataContext is not RepoRowItem row)
+            return;
+        if (!ShouldOpenRow(row))
         {
-            FileLog.Write($"[RepositoryListView] open repo: {row.Path}");
-            RepoOpenRequested?.Invoke(row.Path);
+            FileLog.Write($"[RepositoryListView] row click ignored - entry still verifying: {row.Path}");
+            return;
         }
+        FileLog.Write($"[RepositoryListView] open repo: {row.Path}");
+        RepoOpenRequested?.Invoke(row.Path);
     }
+
+    /// <summary>
+    /// A provisional (still verifying) entry never opens the detail screen - the detail screen is
+    /// an acting surface (stage, commit, discard, branch delete) and cached, unverified data must
+    /// not receive actions. The row's "verifying" chip already explains the wait.
+    /// </summary>
+    internal static bool ShouldOpenRow(RepoRowItem row) => row.Path.Length > 0 && !row.Verifying;
 
     public RepositoryListView()
     {
