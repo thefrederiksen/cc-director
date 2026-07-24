@@ -80,6 +80,33 @@ public sealed class WorkflowStore
         return library.Workflows.AsNoTracking().Any(h => h.Id == key && h.IsBuiltIn);
     }
 
+    /// <summary>The ambient tenant's on/off choice for a built-in, or null when the tenant has made
+    /// none (the workflow serves with the library's shipped state). Phase 2 of the shared library:
+    /// the choice lives in the TENANT's partition because the shared head row is read-only to tenants.</summary>
+    private bool? TenantChoiceFor(string key)
+    {
+        using var ctx = _db.CreateContext();
+        return ctx.WorkflowTenantOverrides.AsNoTracking()
+            .Where(o => o.WorkflowId == key)
+            .Select(o => (bool?)o.Enabled)
+            .FirstOrDefault();
+    }
+
+    /// <summary>The ambient tenant's on/off choices for a set of built-in ids, absent ids omitted.</summary>
+    private Dictionary<string, bool> TenantChoicesFor(IReadOnlyCollection<string> keys)
+    {
+        using var ctx = _db.CreateContext();
+        return ctx.WorkflowTenantOverrides.AsNoTracking()
+            .Where(o => keys.Contains(o.WorkflowId))
+            .ToList()
+            .ToDictionary(o => o.WorkflowId, o => o.Enabled, StringComparer.Ordinal);
+    }
+
+    /// <summary>A built-in head's enabled state as THIS tenant sees it: the tenant's own choice when
+    /// one exists, else the library's state. User-owned heads keep their head-row switch untouched.</summary>
+    private bool EffectiveEnabled(WorkflowEntity head) =>
+        head.IsBuiltIn ? TenantChoiceFor(head.Id) ?? head.Enabled : head.Enabled;
+
     /// <summary>
     /// Every workflow with a published version, projected from that published version, in stable
     /// catalog order (creation order; the seeder stamps the built-ins so they keep their shipped
@@ -103,6 +130,15 @@ public sealed class WorkflowStore
                     builtInIds.Add(dto.Id);
                     result.Add(dto);
                 }
+            }
+
+            // Fold this tenant's own on/off choices over the library's shipped state (phase 2): at
+            // this point the result holds ONLY the built-ins, so the stamp cannot touch a user row.
+            var choices = TenantChoicesFor(builtInIds);
+            foreach (var dto in result)
+            {
+                if (choices.TryGetValue(dto.Id, out var chosen))
+                    dto.Enabled = chosen;
             }
 
             using (var ctx = _db.CreateContext())
@@ -173,7 +209,10 @@ public sealed class WorkflowStore
 
             var hasDraft = ctx.WorkflowVersions.AsNoTracking().Any(
                 v => v.WorkflowId == head.Id && v.Status == WorkflowVersionStatus.Draft);
-            return ToDto(head, version, hasDraft);
+            var dto = ToDto(head, version, hasDraft);
+            if (head.IsBuiltIn)
+                dto.Enabled = EffectiveEnabled(head); // fold the tenant's own choice (phase 2)
+            return dto;
         }
     }
 
@@ -453,7 +492,7 @@ public sealed class WorkflowStore
             if (version is null)
             {
                 var head = ctx.Workflows.AsNoTracking().FirstOrDefault(h => h.Id == key);
-                if (head is { Archived: false, Enabled: false })
+                if (head is { Archived: false } && !EffectiveEnabled(head))
                     throw new WorkflowValidationException(
                         $"Workflow '{key}' is turned OFF on this fleet. The owner disabled it; its " +
                         "history remains readable by explicit version, and it can be re-enabled in " +
@@ -639,18 +678,46 @@ public sealed class WorkflowStore
         var key = NormalizeId(id);
         lock (_gate)
         {
-            using var ctx = _db.CreateContext();
-            var head = ctx.Workflows.FirstOrDefault(h => h.Id == key);
-            if (head is null || head.Archived)
-                return false;
+            // A BUILT-IN's switch is per tenant (phase 2): the shared library head row is read-only
+            // to tenants, so the choice upserts into the tenant's own override row and the read
+            // paths fold it. One authority per id: the override for library workflows, the head row
+            // (below) for tenant-owned ones.
+            if (IsLibraryBuiltIn(key))
+            {
+                using var ctx = _db.CreateContext();
+                var choice = ctx.WorkflowTenantOverrides.FirstOrDefault(o => o.WorkflowId == key);
+                if (choice is null)
+                {
+                    choice = new WorkflowTenantOverrideEntity
+                    {
+                        TenantId = ctx.ActiveTenant!,
+                        WorkflowId = key,
+                    };
+                    ctx.WorkflowTenantOverrides.Add(choice);
+                }
+                choice.Enabled = enabled;
+                choice.UpdatedBy = by.Trim();
+                choice.UpdatedAtUtc = DateTime.UtcNow;
+                ctx.SaveChanges();
+                FileLog.Write($"[WorkflowStore] SetEnabled: id={key}, enabled={enabled}, by={by.Trim()} " +
+                              "(built-in - per-tenant override)");
+                return true;
+            }
 
-            head.Enabled = enabled;
-            head.UpdatedUtc = DateTime.UtcNow;
-            ctx.SaveChanges();
-            // Attribution is log-based for now; the durable audit trail is governance's append-only
-            // event ledger (#1771), which will hang off these same ids.
-            FileLog.Write($"[WorkflowStore] SetEnabled: id={key}, enabled={enabled}, by={by.Trim()}");
-            return true;
+            using (var ctx = _db.CreateContext())
+            {
+                var head = ctx.Workflows.FirstOrDefault(h => h.Id == key);
+                if (head is null || head.Archived)
+                    return false;
+
+                head.Enabled = enabled;
+                head.UpdatedUtc = DateTime.UtcNow;
+                ctx.SaveChanges();
+                // Attribution is log-based for now; the durable audit trail is governance's append-only
+                // event ledger (#1771), which will hang off these same ids.
+                FileLog.Write($"[WorkflowStore] SetEnabled: id={key}, enabled={enabled}, by={by.Trim()}");
+                return true;
+            }
         }
     }
 }

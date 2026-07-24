@@ -105,6 +105,12 @@ public sealed class GatewayDbContext : DbContext
     /// default, never another tenant's value.</summary>
     public DbSet<TenantSettingEntity> TenantSettings => Set<TenantSettingEntity>();
 
+    /// <summary>Per-tenant on/off choices for BUILT-IN workflows (<c>workflow_tenant_overrides</c>, the Shared
+    /// Workflow Library phase 2). The built-ins live once in the shared library partition and are read-only to
+    /// tenants, so a tenant's switch flip lands here and the read paths fold it over the library value. An
+    /// absent row means "no choice made" - the workflow serves with the library's shipped state.</summary>
+    public DbSet<WorkflowTenantOverrideEntity> WorkflowTenantOverrides => Set<WorkflowTenantOverrideEntity>();
+
     /// <summary>The account-to-tenant mapping (<c>tenants</c>), keyed by the verified Supabase subject. This
     /// is the GLOBAL mapping table (Hosted Multi-Tenancy increment 1) - deliberately NOT tenant-scoped, so it
     /// has no <c>tenant_id</c> column and no query filter; it is the table the filter's tenant values come
@@ -358,6 +364,16 @@ public sealed class GatewayDbContext : DbContext
             b.HasKey(e => new { e.TenantId, e.Key });
         });
 
+        modelBuilder.Entity<WorkflowTenantOverrideEntity>(b =>
+        {
+            b.ToTable("workflow_tenant_overrides");
+            // COMPOSITE primary key (tenant_id, WorkflowId) - the Shared Workflow Library phase 2, mirroring
+            // tenant_settings. The workflow id is namespaced per tenant (every tenant may hold a choice for
+            // the same built-in), so scoping the key by tenant is what keeps two tenants' choices for
+            // "mission" from colliding at the database.
+            b.HasKey(e => new { e.TenantId, e.WorkflowId });
+        });
+
         modelBuilder.Entity<GovernanceAuditEventEntity>(b =>
         {
             b.ToTable("governance_audit_events");
@@ -464,6 +480,7 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<GovernanceAuditEventEntity>(modelBuilder);
         ApplyTenantScope<TenantSettingEntity>(modelBuilder);
         ApplyTenantScope<DictationTranscriptEntity>(modelBuilder);
+        ApplyTenantScope<WorkflowTenantOverrideEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
 
@@ -497,6 +514,9 @@ public sealed class GatewayDbContext : DbContext
             // tenant_settings.Key is a fixed ordinally-compared identifier (issue #2017), same byte-ordinal
             // equality requirement as mission_notes.Key - pin it to "C" so both providers agree exactly.
             modelBuilder.Entity<TenantSettingEntity>().Property(e => e.Key).UseCollation("C");
+            // workflow_tenant_overrides.WorkflowId is a workflow slug compared ordinally everywhere else
+            // (the stores normalize to lower-case and compare Ordinal), so pin it to "C" the same way.
+            modelBuilder.Entity<WorkflowTenantOverrideEntity>().Property(e => e.WorkflowId).UseCollation("C");
             // The tenants mapping table's natural-key string columns (the tenant id primary key and the
             // account_subject unique index) rely on byte-ordinal equality/uniqueness, same as the keys above,
             // so pin them to "C" too - the account subject in particular must match EXACTLY on both providers.

@@ -93,6 +93,21 @@ public sealed class WorkflowRunStore
         return _db.CreateContext();
     }
 
+    /// <summary>The ambient tenant's on/off choice for a built-in (phase 2), or null when none.</summary>
+    private bool? TenantChoiceFor(string key)
+    {
+        using var ctx = _db.CreateContext();
+        return ctx.WorkflowTenantOverrides.AsNoTracking()
+            .Where(o => o.WorkflowId == key)
+            .Select(o => (bool?)o.Enabled)
+            .FirstOrDefault();
+    }
+
+    /// <summary>A head's enabled state as THIS tenant sees it: for a built-in the tenant's own
+    /// choice wins over the library's state; a user-owned head keeps its head-row switch.</summary>
+    private bool EffectiveEnabled(WorkflowEntity head) =>
+        head.IsBuiltIn ? TenantChoiceFor(head.Id) ?? head.Enabled : head.Enabled;
+
     /// <summary>
     /// Open a run of a workflow, pinned to its currently published version, with criteria seeded
     /// pending from that version's declared outcome criteria.
@@ -121,7 +136,7 @@ public sealed class WorkflowRunStore
                 if (head is null || head.Archived || head.PublishedVersion is null)
                     throw new WorkflowValidationException(
                         $"Workflow '{key}' has no published version to run.");
-                if (!head.Enabled)
+                if (!EffectiveEnabled(head))
                     throw new WorkflowValidationException(
                         $"Workflow '{key}' is turned OFF on this fleet - no new runs while the owner has " +
                         "it disabled. Re-enable it in the cockpit or with: cc-devthrottle workflow enable " + key);
@@ -228,7 +243,7 @@ public sealed class WorkflowRunStore
             if (head is null || head.Archived || head.PublishedVersion is null)
                 throw new WorkflowValidationException(
                     $"Workflow '{key}' has no published version to run.");
-            if (!head.Enabled)
+            if (!EffectiveEnabled(head))
                 throw new WorkflowValidationException(
                     $"Workflow '{key}' is turned OFF on this fleet - no new runs while the owner has " +
                     "it disabled.");
@@ -257,20 +272,16 @@ public sealed class WorkflowRunStore
         lock (_gate)
         {
             using var ctx = OpenOwningWorkflowContext(key);
-            return ctx.Workflows.AsNoTracking()
-                .Where(h => h.Id == key && !h.Archived)
-                .Select(h => (bool?)h.Enabled)
-                .FirstOrDefault();
+            var head = ctx.Workflows.AsNoTracking().FirstOrDefault(h => h.Id == key && !h.Archived);
+            return head is null ? null : EffectiveEnabled(head);
         }
     }
 
     private bool WorkflowEnabledFor(string workflowId)
     {
         using var ctx = OpenOwningWorkflowContext(workflowId);
-        return ctx.Workflows.AsNoTracking()
-            .Where(h => h.Id == workflowId && !h.Archived)
-            .Select(h => (bool?)h.Enabled)
-            .FirstOrDefault() ?? false;
+        var head = ctx.Workflows.AsNoTracking().FirstOrDefault(h => h.Id == workflowId && !h.Archived);
+        return head is not null && EffectiveEnabled(head);
     }
 
     /// <summary>Enabled flags for a page of runs' workflow ids: the ambient tenant's own heads first,
@@ -288,13 +299,26 @@ public sealed class WorkflowRunStore
                          .ToList())
                 map[h.Id] = h.Enabled;
         }
+        var builtInIds = new List<string>();
         using (var library = _db.CreateContext(new TenantId(_libraryTenant)))
         {
             foreach (var h in library.Workflows.AsNoTracking()
                          .Where(h => ids.Contains(h.Id) && h.IsBuiltIn && !h.Archived)
                          .Select(h => new { h.Id, h.Enabled })
                          .ToList())
+            {
                 map[h.Id] = h.Enabled;
+                builtInIds.Add(h.Id);
+            }
+        }
+        // Fold the ambient tenant's own choices over the library state for the built-ins (phase 2).
+        if (builtInIds.Count > 0)
+        {
+            using var ctx = _db.CreateContext();
+            foreach (var choice in ctx.WorkflowTenantOverrides.AsNoTracking()
+                         .Where(o => builtInIds.Contains(o.WorkflowId))
+                         .ToList())
+                map[choice.WorkflowId] = choice.Enabled;
         }
         return map;
     }
