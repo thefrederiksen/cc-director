@@ -27,20 +27,22 @@ public static class RepositoryDtoMapper
         BehindCount = s.BehindCount,
         BehindMainCount = s.BehindMainCount,
         WorktreeCount = s.WorktreeCount,
-        WorktreesSafeToReap = s.WorktreesSafeToReap,
+        // Fail closed for a provisional (still-verifying) entry: cached data never advertises a
+        // safe count, and its worktrees fold to "verifying" - never "safe-to-reap".
+        WorktreesSafeToReap = s.Provisional ? 0 : s.WorktreesSafeToReap,
         WorktreesInUse = s.WorktreesInUse,
         WorktreesNeedAttention = s.WorktreesNeedAttention,
         WorktreeBytes = s.WorktreeBytes,
         Provisional = s.Provisional,
-        Worktrees = s.Worktrees.Select(Map).ToList(),
+        Worktrees = s.Worktrees.Select(w => Map(w, s.Provisional)).ToList(),
     };
 
-    public static WorktreeDto Map(WorktreeInfo w) => new()
+    public static WorktreeDto Map(WorktreeInfo w, bool provisional = false) => new()
     {
         Path = w.Path,
         Branch = w.Branch,
-        State = StateString(w.Safety),
-        Reason = w.Explanation,
+        State = provisional ? FleetWorktreeFold.VerifyingState : StateString(w.Safety),
+        Reason = provisional ? "Still verifying this repository - cached data is never acted on." : w.Explanation,
         SessionLabels = w.OpenSessions.ToList(),
         SizeBytes = w.SizeBytes,
         LastActivityUtc = w.LastActivityUtc,
@@ -58,23 +60,10 @@ public static class RepositoryDtoMapper
         _ => "needs-attention",
     };
 
-    /// <summary>Flattens repository DTOs into fleet worktree rows (GET /worktrees).</summary>
+    /// <summary>
+    /// Flattens repository DTOs into fleet worktree rows (GET /worktrees). Delegates to the one
+    /// shared fold in the contracts assembly, which fails closed for provisional repositories.
+    /// </summary>
     public static List<FleetWorktreeDto> Flatten(IEnumerable<RepoStatusDto> repositories, double dataAgeSeconds = 0)
-        => repositories
-            .SelectMany(r => r.Worktrees.Select(w => new FleetWorktreeDto
-            {
-                RepoName = r.Name,
-                RepoPath = r.Path,
-                MachineName = r.MachineName,
-                DirectorId = r.DirectorId,
-                Path = w.Path,
-                Branch = w.Branch,
-                State = w.State,
-                Reason = w.Reason,
-                SessionLabels = w.SessionLabels,
-                SizeBytes = w.SizeBytes,
-                LastActivityUtc = w.LastActivityUtc,
-                DataAgeSeconds = dataAgeSeconds,
-            }))
-            .ToList();
+        => FleetWorktreeFold.Flatten(repositories, dataAgeSeconds);
 }

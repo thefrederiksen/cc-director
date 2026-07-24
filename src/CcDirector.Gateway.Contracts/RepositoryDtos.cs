@@ -81,4 +81,40 @@ public class FleetWorktreeDto
 
     /// <summary>How old the pushing Director's data is, in seconds, at serve time.</summary>
     public double DataAgeSeconds { get; set; }
+
+    /// <summary>True when the owning repository entry is still verifying (warm-start cache).</summary>
+    public bool Provisional { get; set; }
+}
+
+/// <summary>
+/// The one flatten fold for GET /worktrees rows, shared by the Gateway and the Director's local
+/// relay so no surface can flatten its own way. Fail closed: a worktree of a PROVISIONAL
+/// (still-verifying) repository is served as "verifying" - never "safe-to-reap" - because its
+/// verdict is cached, unverified data. Clients and the CLI key off the folded state string and
+/// need no logic of their own (the dumb-client rule).
+/// </summary>
+public static class FleetWorktreeFold
+{
+    /// <summary>The folded state for a worktree whose repository has not been re-verified yet.</summary>
+    public const string VerifyingState = "verifying";
+
+    public static List<FleetWorktreeDto> Flatten(IEnumerable<RepoStatusDto> repositories, double dataAgeSeconds = 0)
+        => repositories
+            .SelectMany(r => r.Worktrees.Select(w => new FleetWorktreeDto
+            {
+                RepoName = r.Name,
+                RepoPath = r.Path,
+                MachineName = r.MachineName,
+                DirectorId = r.DirectorId,
+                Path = w.Path,
+                Branch = w.Branch,
+                State = r.Provisional ? VerifyingState : w.State,
+                Reason = r.Provisional ? "Still verifying this repository - cached data is never acted on." : w.Reason,
+                SessionLabels = w.SessionLabels,
+                SizeBytes = w.SizeBytes,
+                LastActivityUtc = w.LastActivityUtc,
+                DataAgeSeconds = dataAgeSeconds,
+                Provisional = r.Provisional,
+            }))
+            .ToList();
 }

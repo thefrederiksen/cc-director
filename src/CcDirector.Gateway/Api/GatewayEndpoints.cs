@@ -794,23 +794,9 @@ internal static class GatewayEndpoints
                 var fresh = pushedRepositories.TryGetFresh(reqTenant.Value, directorId, streamStaleResolved);
                 if (fresh is null)
                     continue;
-                foreach (var r in fresh.Value.Repositories)
-                    foreach (var w in r.Worktrees)
-                        rows.Add(new FleetWorktreeDto
-                        {
-                            RepoName = r.Name,
-                            RepoPath = r.Path,
-                            MachineName = r.MachineName,
-                            DirectorId = r.DirectorId,
-                            Path = w.Path,
-                            Branch = w.Branch,
-                            State = w.State,
-                            Reason = w.Reason,
-                            SessionLabels = w.SessionLabels,
-                            SizeBytes = w.SizeBytes,
-                            LastActivityUtc = w.LastActivityUtc,
-                            DataAgeSeconds = fresh.Value.DataAgeSeconds,
-                        });
+                // The one shared flatten fold: a provisional repository's worktrees are served as
+                // "verifying" - never "safe-to-reap" - whatever the pushing Director sent.
+                rows.AddRange(FleetWorktreeFold.Flatten(fresh.Value.Repositories, fresh.Value.DataAgeSeconds));
             }
             if (!string.IsNullOrWhiteSpace(machine))
                 rows = rows.Where(w => string.Equals(w.MachineName, machine, StringComparison.OrdinalIgnoreCase)).ToList();
