@@ -334,10 +334,11 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Run the first-run wizards in order on the UI thread after the main window is shown: first the
-    /// onboarding wizard (issue #370) when onboarding has not been completed, then the tool-detection
-    /// wizard (issue #392) when no agent is configured. Both are gated so a returning user sees
-    /// neither. Posted to Background priority so they open after the first render, never blocking it.
+    /// Run the first-run setup wizard on the UI thread after the main window is shown (issue #2101,
+    /// epic #2100): one guided wizard replacing the retired chain of two dialogs (onboarding then
+    /// tool-detection). Gated so a returning user - or a machine that finished the OLD onboarding -
+    /// sees nothing. Posted to Background priority so it opens after the first render, never blocking
+    /// it.
     /// </summary>
     private void MaybeShowFirstRunWizards()
     {
@@ -346,8 +347,7 @@ public partial class MainWindow : Window
         {
             try
             {
-                await MaybeShowOnboardingWizardAsync();
-                await MaybeShowToolDetectionWizardAsync();
+                await MaybeShowFirstRunWizardAsync();
             }
             catch (Exception ex)
             {
@@ -357,67 +357,38 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// On first launch (no gateway.url configured and no onboarding-complete marker, issue #370),
-    /// open the onboarding wizard that walks the user from launch to a working agent. Once completed
-    /// or dismissed it never auto-opens again. If the user chooses "Create first session" on the
-    /// final step, route them straight to the New Session dialog.
+    /// On first launch (the completion marker is absent, issue #2101), open the single first-run
+    /// wizard that walks a fresh user from launch to a working agent. Once completed or skipped it
+    /// writes the marker and never auto-opens again. If the user chooses "Start my first agent" on the
+    /// Done screen, route them straight to the New Session dialog.
     /// </summary>
-    private async Task MaybeShowOnboardingWizardAsync()
+    private async Task MaybeShowFirstRunWizardAsync()
     {
-        FileLog.Write("[MainWindow] MaybeShowOnboardingWizardAsync");
-        if (!OnboardingModel.ShouldShowOnboarding())
+        FileLog.Write("[MainWindow] MaybeShowFirstRunWizardAsync");
+        if (!FirstRunWizardModel.ShouldShow())
         {
-            FileLog.Write("[MainWindow] MaybeShowOnboardingWizardAsync: onboarding already complete; not auto-opening");
+            FileLog.Write("[MainWindow] MaybeShowFirstRunWizardAsync: first-run already complete; not auto-opening");
             return;
         }
 
-        var wantsNewSession = await OpenOnboardingWizardAsync();
+        var wantsNewSession = await OpenFirstRunWizardAsync();
         if (wantsNewSession)
         {
-            FileLog.Write("[MainWindow] MaybeShowOnboardingWizardAsync: user chose to create first session");
+            FileLog.Write("[MainWindow] MaybeShowFirstRunWizardAsync: user chose to start their first agent");
             await ShowNewSessionDialog();
         }
     }
 
-    /// <summary>Open the onboarding wizard modally; returns true when the user asked to create a session.</summary>
-    internal async Task<bool> OpenOnboardingWizardAsync()
+    /// <summary>Open the first-run wizard modally; returns true when the user asked to start a session.</summary>
+    internal async Task<bool> OpenFirstRunWizardAsync()
     {
-        FileLog.Write("[MainWindow] OpenOnboardingWizardAsync");
+        FileLog.Write("[MainWindow] OpenFirstRunWizardAsync");
         var app = global::Avalonia.Application.Current as App;
         var options = app?.SessionManager?.Options ?? app?.Options
             ?? throw new InvalidOperationException("AgentOptions not loaded.");
-        var dialog = new OnboardingWizardDialog(options);
+        var dialog = new FirstRunWizardDialog(options);
         await dialog.ShowDialog<bool?>(this);
         return dialog.WantsNewSession;
-    }
-
-    /// <summary>
-    /// On first run (no agent tools configured yet, issue #392), auto-open the tool-detection
-    /// wizard so a new user gets a near-zero-effort setup. Once any tool is configured the
-    /// wizard never auto-opens again - it can still be re-run on demand from Settings &gt; Agents.
-    /// Runs after the onboarding wizard (issue #370) in the first-run chain.
-    /// </summary>
-    private async Task MaybeShowToolDetectionWizardAsync()
-    {
-        FileLog.Write("[MainWindow] MaybeShowToolDetectionWizardAsync");
-        if (!ToolDetectionWizardModel.IsFirstRun())
-        {
-            FileLog.Write("[MainWindow] MaybeShowToolDetectionWizardAsync: tools already configured; not auto-opening");
-            return;
-        }
-
-        await OpenToolDetectionWizardAsync();
-    }
-
-    /// <summary>Open the first-run tool-detection wizard modally over the main window.</summary>
-    internal async Task OpenToolDetectionWizardAsync()
-    {
-        FileLog.Write("[MainWindow] OpenToolDetectionWizardAsync");
-        var app = global::Avalonia.Application.Current as App;
-        var options = app?.SessionManager?.Options ?? app?.Options
-            ?? throw new InvalidOperationException("AgentOptions not loaded.");
-        var dialog = new ToolDetectionWizardDialog(options);
-        await dialog.ShowDialog<bool?>(this);
     }
 
     private global::Avalonia.Threading.DispatcherTimer? _directorInfoTimer;

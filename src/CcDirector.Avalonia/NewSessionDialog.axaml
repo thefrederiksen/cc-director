@@ -190,6 +190,32 @@
                         </Grid>
                     </Border>
 
+                    <!-- Empty state: shown instead of the list while NO repository is registered yet
+                         (first run). Explains what a session needs and puts the Browse action right
+                         where the user is looking; the first browsed folder lands in the registry and
+                         the normal list takes over. -->
+                    <Border x:Name="RepoEmptyState" Grid.Row="4" IsVisible="False"
+                            Background="#1E1E1E" BorderBrush="#3C3C3C" BorderThickness="1,0,1,1">
+                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center"
+                                    Spacing="10" MaxWidth="460" Margin="24">
+                            <TextBlock Text="No repositories yet"
+                                       Foreground="#CCCCCC" FontSize="18" FontWeight="SemiBold"
+                                       HorizontalAlignment="Center" />
+                            <TextBlock Foreground="#999999" FontSize="13" TextWrapping="Wrap"
+                                       TextAlignment="Center"
+                                       Text="A session runs your coding agent inside one repository. Browse to the folder that holds your code to get started." />
+                            <Button Content="Browse for a repository..."
+                                    Click="BtnBrowse_Click" Cursor="Hand"
+                                    Background="#007ACC" Foreground="White"
+                                    FontSize="13" Padding="18,8" CornerRadius="4"
+                                    BorderThickness="0" HorizontalAlignment="Center"
+                                    Margin="0,6,0,0" />
+                            <TextBlock Foreground="#777777" FontSize="11.5" TextWrapping="Wrap"
+                                       TextAlignment="Center" Margin="0,6,0,0"
+                                       Text="Repositories you have used appear in this list so next time it is one click." />
+                        </StackPanel>
+                    </Border>
+
                     <!-- Repository list with columns -->
                     <ListBox x:Name="RepoList" Grid.Row="4"
                              Background="#1E1E1E" Foreground="#CCCCCC"
