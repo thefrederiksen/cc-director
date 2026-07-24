@@ -135,7 +135,11 @@ jobs:
 
           # Poll the STAGING hostname until it answers 200 with the new commit, sustained 3 times: proof the
           # new image booted and migrated cleanly. No user is on staging, so this costs no outage.
+          # up_since marks when staging first started answering 200. If it serves 200 but never reports the
+          # shipped commit, that is not a slow boot - it is the wrong image or a missing COCKPIT_COMMIT in the
+          # runtime image, so fail FAST with that diagnosis instead of burning the whole boot timeout.
           streak=0
+          up_since=""
           deadline=$(( $(date +%s) + 600 ))
           while [ "$(date +%s)" -lt "$deadline" ]; do
             body=$(curl -s -m 10 -w '\n%{http_code}' "${STAGING_URL}/healthz" 2>/dev/null || printf '\n000')
@@ -146,6 +150,16 @@ jobs:
               [ "$streak" -ge 3 ] && break
             else
               streak=0; echo "staging HTTP $code commit=${commit:-<none>} (warming)"
+              if [ "$code" = "200" ]; then
+                [ -z "$up_since" ] && up_since=$(date +%s)
+                if [ $(( $(date +%s) - up_since )) -gt 150 ]; then
+                  echo "ERROR: staging has served 200 for over 150s but never reports commit $TARGET (got"
+                  echo "       '${commit:-<none>}'). The running image is not the shipped build, or the runtime"
+                  echo "       image does not carry COCKPIT_COMMIT. Aborting before the swap; production untouched."
+                  echo "outcome=failed" >> "$GITHUB_OUTPUT"
+                  exit 1
+                fi
+              fi
             fi
             sleep 3
           done

@@ -134,6 +134,16 @@ ENV CC_DIRECTOR_ROOT=/home/gateway/cc-director
 # environment-specific values / credentials, so they stay App Service settings and are NOT baked here. The
 # Gateway refuses to start (HostedStartupContract) if any of the three is missing.
 ENV CC_GATEWAY_HOSTED=1
+
+# Bake the source commit into the RUNTIME image so the Gateway process can report it at /healthz. ARG does
+# not cross stage boundaries, so the build-stage COCKPIT_COMMIT (used to stamp the cockpit assets) is not
+# visible here - it must be re-declared. The deploy pipeline reads /healthz .commit to tell the old
+# container apart from the new one during a slot swap; without this the field is null at run time and the
+# warmed-swap deploy cannot confirm the new image is serving. Like CC_GATEWAY_HOSTED above, baking it into
+# the image (rather than an App Service setting) means a slot swap or config restore cannot drop it.
+ARG COCKPIT_COMMIT
+ENV COCKPIT_COMMIT=${COCKPIT_COMMIT}
+
 USER gateway
 
 # The Gateway binds to loopback (127.0.0.1:7878) by design - it is reached over the tunnel, not a public
