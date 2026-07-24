@@ -26,9 +26,9 @@ Durable Architect state. Any reseat continues from here. Keep current.
 |-----|---------|-------------------------|----------------------------------------------------------|--------|
 | F01 | MAJOR   | PR CLI pipe deadlock    | Core/Git/PullRequestService.cs                           | TODO   |
 | F02 | BLOCKER | remote-gone = merge     | Core/Git/GitBranchService, WorktreeSafetyEvaluator, WorktreeInventoryService; Avalonia/RepositoryDetailView | COMMITTED f00705d9 |
-| F03 | BLOCKER | worktree remove -> rmdir| Core/Git/WorktreeReaperService.cs                        | TODO   |
+| F03 | BLOCKER | worktree remove -> rmdir| Core/Git/WorktreeReaperService.cs                        | COMMITTED f2507264 |
 | F04 | MAJOR   | watcher blind + no recov| Core/Git/RepositoryWatcher.cs; Avalonia/App.axaml.cs     | TODO   |
-| F05 | BLOCKER | reap fails open         | Avalonia/WorktreesView; Core/Git/WorktreeReaperService   | TODO   |
+| F05 | BLOCKER | reap fails open         | Avalonia/WorktreesView; Core/Git/WorktreeReaperService   | COMMITTED 90ead86a |
 | F06 | MAJOR   | probe fail = clean      | Core/Git/GitStatusProvider, RepositoryStatusService      | TODO   |
 | F07 | MAJOR   | history non-atomic write| Gateway/Streaming/RepoHistoryStore.cs                    | TODO   |
 | F08 | MINOR   | snapshot no reconcile   | Gateway/Streaming/RepoHistoryStore.cs                    | TODO   |
