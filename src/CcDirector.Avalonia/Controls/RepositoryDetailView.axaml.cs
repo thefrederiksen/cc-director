@@ -118,6 +118,9 @@ public partial class RepositoryDetailView : UserControl
         _current = null;
     }
 
+    /// <summary>Test probe: true while the view holds live monitor subscriptions.</summary>
+    internal bool IsAttached => _monitor != null;
+
     private void OnUpserted(RepositoryStatus s)
     {
         if (_repoPath != null && string.Equals(

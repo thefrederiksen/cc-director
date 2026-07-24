@@ -124,8 +124,11 @@ public partial class RepositoriesView : UserControl
 
     private void ShowRoots(bool roots) => ShowPage(roots ? "roots" : "repos");
 
-    private void ShowPage(string page)
+    internal void ShowPage(string page)
     {
+        // Leaving the detail page through ANY path - rail buttons included - releases its monitor
+        // subscriptions; hiding it while subscribed would keep it rendering forever (finding F12).
+        DetailPage.Detach();
         DetailPage.IsVisible = false;
         ReposPage.IsVisible = page == "repos";
         RootsPage.IsVisible = page == "roots";

@@ -51,6 +51,38 @@ public class RepositoriesViewRenderTests
         Assert.True(view.DetailPage.IsVisible);
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection finding F12): leaving the detail page through ANY path - the rail
+    // buttons included - releases its monitor subscriptions, not just the back button.
+    // ---------------------------------------------------------------------------------------
+    [AvaloniaFact]
+    public async Task RailNavigation_AwayFromDetail_DetachesTheDetailPage()
+    {
+        var monitor = new RepositoryMonitor(
+            enumerate: _ => new[] { "/repo" },
+            compute: (p, _, _) => Task.FromResult(new RepositoryStatus { Path = p, Name = "repo", IsClean = true, Success = true }));
+        await monitor.RescanAsync(new[] { "/roots" });
+
+        var store = new RootDirectoryStore(
+            Path.Combine(Path.GetTempPath(), "ccd-railroots-" + Guid.NewGuid().ToString("N") + ".json"));
+        var view = new RepositoriesView();
+        var window = new Window { Content = view, Width = 900, Height = 600 };
+        window.Show();
+        view.Attach(monitor, store, () => { });
+        Dispatcher.UIThread.RunJobs();
+
+        view.OpenDetail("/repo");
+        Dispatcher.UIThread.RunJobs();
+        Assert.True(view.DetailPage.IsVisible);
+        Assert.True(view.DetailPage.IsAttached);
+
+        view.ShowPage("repos"); // what the rail's Repositories button invokes
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.False(view.DetailPage.IsVisible);
+        Assert.False(view.DetailPage.IsAttached); // hidden AND detached - no live subscriptions remain
+    }
+
     [AvaloniaFact]
     public void RepositoriesView_LoadsAndAttachesToMonitorAndRoots()
     {
