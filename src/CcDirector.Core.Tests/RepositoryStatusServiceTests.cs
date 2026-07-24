@@ -71,6 +71,47 @@ public sealed class WorktreeSizeMeasurementTests : IDisposable
         // Second call with the same stamp hits the cache, cancellation not consulted before it.
         Assert.Equal(50, RepositoryStatusService.MeasureWorktreeBytes(w, CancellationToken.None));
     }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection finding F8): a completed scan evicts cached sizes for worktrees
+    // the scan did not see, so reaped, moved, and deleted worktrees do not grow the
+    // process-wide cache forever.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task CompletedScan_EvictsCachedSizes_ForWorktreesNoLongerPresent()
+    {
+        var goneDir = Path.Combine(Path.GetTempPath(), "ccd-size-gone-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(goneDir);
+        File.WriteAllText(Path.Combine(goneDir, "g.txt"), "gone");
+        try
+        {
+            var stamp = new DateTime(2026, 07, 23, 12, 0, 0, DateTimeKind.Utc);
+            RepositoryStatusService.MeasureWorktreeBytes(new WorktreeInfo { Path = _dir, Branch = "b", LastActivityUtc = stamp }, CancellationToken.None);
+            RepositoryStatusService.MeasureWorktreeBytes(new WorktreeInfo { Path = goneDir, Branch = "g", LastActivityUtc = stamp }, CancellationToken.None);
+            Assert.True(RepositoryStatusService.SizeCacheContains(_dir));
+            Assert.True(RepositoryStatusService.SizeCacheContains(goneDir));
+
+            // A scan whose model only contains the surviving worktree.
+            var monitor = new RepositoryMonitor(
+                enumerate: _ => new[] { "/r/a" },
+                compute: (p, _, _) => Task.FromResult(new RepositoryStatus
+                {
+                    Path = p,
+                    Name = "a",
+                    IsClean = true,
+                    Success = true,
+                    Worktrees = new[] { new WorktreeInfo { Path = _dir, Branch = "b" } },
+                }));
+            await monitor.RescanAsync(new[] { "/r" });
+
+            Assert.True(RepositoryStatusService.SizeCacheContains(_dir));    // still present - kept
+            Assert.False(RepositoryStatusService.SizeCacheContains(goneDir)); // unseen - evicted
+        }
+        finally
+        {
+            try { Directory.Delete(goneDir, recursive: true); } catch { }
+        }
+    }
 }
 
 /// <summary>

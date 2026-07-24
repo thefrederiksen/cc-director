@@ -219,6 +219,10 @@ public sealed class RepositoryMonitor
 
             // Persist the verified model so the next launch warm-starts.
             SaveCache();
+
+            // The size cache only stays meaningful for worktrees that still exist: evict entries
+            // this completed scan did not see (reaped, moved, or deleted worktrees).
+            RepositoryStatusService.EvictSizeCacheExcept(CurrentWorktreePaths());
         }
         catch (OperationCanceledException)
         {
@@ -330,6 +334,12 @@ public sealed class RepositoryMonitor
 
     private async Task<IReadOnlyList<LiveSessionRef>?> FetchLiveSessionsAsync(CancellationToken ct)
         => LiveSessionsProvider is { } provider ? await provider(ct) : null;
+
+    private IReadOnlyList<string> CurrentWorktreePaths()
+    {
+        lock (_gate)
+            return _byPath.Values.SelectMany(s => s.Worktrees).Select(w => w.Path).ToList();
+    }
 
     private async Task DrainDeferredRecomputesAsync(CancellationToken ct)
     {

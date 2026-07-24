@@ -178,6 +178,30 @@ public sealed class RepositoryStatusService
         }
     }
 
+    /// <summary>
+    /// Evicts every cached size whose worktree path is not in <paramref name="worktreePathsSeen"/>.
+    /// Called by the monitor after each completed scan, so entries for reaped, moved, or deleted
+    /// worktrees do not accumulate forever in the process-wide cache.
+    /// </summary>
+    internal static void EvictSizeCacheExcept(IEnumerable<string> worktreePathsSeen)
+    {
+        var keep = new HashSet<string>(
+            worktreePathsSeen.Select(WorktreeReaperService.NormalizePath),
+            StringComparer.OrdinalIgnoreCase);
+        int evicted = 0;
+        foreach (var key in SizeCache.Keys)
+        {
+            if (!keep.Contains(key) && SizeCache.TryRemove(key, out _))
+                evicted++;
+        }
+        if (evicted > 0)
+            FileLog.Write($"[RepositoryStatusService] size cache: evicted {evicted} entr{(evicted == 1 ? "y" : "ies")} for worktrees no longer present");
+    }
+
+    /// <summary>Test probe: whether a size measurement is cached for this worktree path.</summary>
+    internal static bool SizeCacheContains(string worktreePath)
+        => SizeCache.ContainsKey(WorktreeReaperService.NormalizePath(worktreePath));
+
     /// <summary>Classifies an origin remote URL into a provider and its owner/org. Pure and testable.</summary>
     internal static (RepoProvider Provider, string? Org) ClassifyRemote(string? remoteUrl)
     {
