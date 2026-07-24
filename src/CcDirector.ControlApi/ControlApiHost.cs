@@ -494,6 +494,11 @@ public sealed class ControlApiHost : IAsyncDisposable
 
         ControlEndpoints.Map(_app, _sessionManager, DirectorId, _version, _requestShutdownAsync, _authEnabled, _repositoryRegistry, _turnSummaryCache, gatewayUrl, _proactiveExplain, GatewayMonitor, resolveTailnetEndpoint, () => _gatewayClient, messageSteward, _missionStore, ct => signedInUserProvider.ResolveAsync(ct));
 
+        // DevThrottle's automation browsers (the drivable, signed-in-once Chromium instances). Loopback,
+        // machine-local surface backed by AutomationBrowserService; the CLI 'browser' verbs and the
+        // desktop rail both read these.
+        BrowserEndpoints.Map(_app);
+
         // Gateway Cleanup mission: the Director floor's tunnel-bounce. An operator/launcher can force
         // this Director to re-establish its OUTBOUND tunnel without a full restart. Loopback floor route.
         _app.MapPost("/reconnect", async (HttpContext ctx) =>

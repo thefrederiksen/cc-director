@@ -110,14 +110,24 @@ features:
     summary: Tree of uncommitted git changes per session with file status indicators and a right-click menu (View File, Copy Path, Add to .gitignore).
 
   - id: repository-manager
-    title: Repository Manager
+    title: Repositories
     category: source-control
     status: implemented
-    screen: dialog
+    screen: view
     source:
-      - src/CcDirector.Avalonia/RepositoryManagerDialog.axaml
+      - src/CcDirector.Avalonia/Controls/RepositoriesView.axaml
     screenshot: repository-manager.png
-    summary: Manage known repositories and quick-launch sessions from them.
+    summary: Repositories and worktrees across the machine, opened from the pinned Repositories entry in the left rail (replaced the old Repository Manager dialog).
+
+  - id: browsers
+    title: Browsers
+    category: automation
+    status: implemented
+    screen: view
+    source:
+      - src/CcDirector.Avalonia/Controls/BrowsersRailGroup.axaml
+      - src/CcDirector.Avalonia/Controls/BrowserSettingsView.axaml
+    summary: Drivable, signed-in-once automation browsers - a pinned rail group with status dots and one-click Start / Sign in / Attach, plus a Settings tab to create, sign in, rename, and remove them. Agents attach through Browser Harness.
 
   - id: clone-repo
     title: Clone Repository

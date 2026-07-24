@@ -39,11 +39,15 @@ public sealed record GatewayStatusLine(GatewayCheckState Marker, string Text);
 /// <param name="Connected">The "Connected" (Gateway reachable) check line.</param>
 /// <param name="SignedIn">The "Signed in" (account) check line.</param>
 /// <param name="Tooltip">The hover text summarizing the current state and the click action.</param>
+/// <param name="ChipText">The two-or-three-word verdict the compact chip renders next to its status
+/// dot. The chip is the box's slim form: the dot carries the visual state, this text names it, and
+/// the two full check lines live on in <paramref name="Tooltip"/>.</param>
 public sealed record GatewayStatusBoxContent(
     GatewayStatusBoxVisual Visual,
     GatewayStatusLine Connected,
     GatewayStatusLine SignedIn,
-    string Tooltip);
+    string Tooltip,
+    string ChipText);
 
 /// <summary>
 /// Turns a resolved Gateway connection snapshot into the single status box's content (design spec section
@@ -82,8 +86,25 @@ public static class GatewayStatusBoxPresenter
         var connected = ConnectedLine(resolved, inputs.GatewayConfigured, gatewayHost);
         var signedIn = SignedInLine(resolved.SignedInCheck, accountEmail);
         var tooltip = Tooltip(resolved.State, inputs.FailedLeg, gatewayHost, accountEmail);
-        return new GatewayStatusBoxContent(visual, connected, signedIn, tooltip);
+        var chipText = ChipText(resolved.State);
+        return new GatewayStatusBoxContent(visual, connected, signedIn, tooltip, chipText);
     }
+
+    /// <summary>
+    /// The compact chip's verdict, one short phrase per resolver state. Folded here - not in the
+    /// surface - so the slim chip can never invent a wording of its own: green earns "Connected",
+    /// connected-but-signed-out nudges "Sign in", and the failure states name the failure.
+    /// </summary>
+    public static string ChipText(GatewayConnectionState state) => state switch
+    {
+        GatewayConnectionState.NotConfigured => "No Gateway",
+        GatewayConnectionState.Connecting => "Connecting...",
+        GatewayConnectionState.ConnectFailed => "Connection failed",
+        GatewayConnectionState.WasConnectedNowUnreachable => "Unreachable",
+        GatewayConnectionState.ConnectedNotSignedIn => "Sign in",
+        GatewayConnectionState.AllGreen => "Connected",
+        _ => throw new ArgumentOutOfRangeException(nameof(state), state, "Unknown gateway connection state"),
+    };
 
     /// <summary>Collapse the six resolver states to the box's four visual states (spec section 6 table).</summary>
     public static GatewayStatusBoxVisual VisualFor(GatewayConnectionState state) => state switch

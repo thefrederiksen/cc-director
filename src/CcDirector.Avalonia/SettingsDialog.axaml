@@ -264,6 +264,13 @@
                 </Grid>
             </TabItem>
 
+            <TabItem Header="Browsers">
+                <!-- Browsers feature (slice 2): the workshop for drivable automation browsers -
+                     create, sign in once, rename, remove. The rail's pinned Browsers group is the
+                     launch surface; this tab is where they are set up. All logic lives in the view. -->
+                <controls:BrowserSettingsView x:Name="BrowsersView" />
+            </TabItem>
+
             <TabItem Header="Directories">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,14,0">
                     <StackPanel Spacing="8" Margin="0,4,0,0">

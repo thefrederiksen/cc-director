@@ -59,6 +59,16 @@ public static class CcStorage
     public static string Config() => Path.Combine(Base(), "config");
 
     /// <summary>
+    /// DevThrottle's OWN automation-browser root: browsers/. Holds the registry.json describing each
+    /// agent-drivable browser and, beside it, one <c>&lt;id&gt;/</c> sub-directory per browser that is that
+    /// browser's dedicated Chromium <c>--user-data-dir</c>. This is intentionally NOT the personal
+    /// bh-profiles location and NOT cc-director\connections - DevThrottle owns this tree so its
+    /// browsers are per-machine state the local Director alone manages. Resolved through the root so
+    /// CC_DIRECTOR_ROOT redirects it for tests.
+    /// </summary>
+    public static string Browsers() => Path.Combine(Base(), "browsers");
+
+    /// <summary>
     /// Director instance-discovery directory: config/director/instances/. Each running Director writes
     /// a <c>{directorId}.json</c> here and the Gateway watches it. Honors the
     /// <c>CC_DIRECTOR_INSTANCES_DIR</c> override (issue #322) so tests can pin JUST this directory to a

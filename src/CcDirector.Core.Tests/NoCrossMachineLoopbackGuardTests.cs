@@ -51,6 +51,12 @@ public sealed class NoCrossMachineLoopbackGuardTests
         ["src/CcDirector.Launcher/LauncherHost.cs"] = "Local launcher loopback bind.",
         ["src/CcDirector.Launcher/Program.cs"] = "Self-update helper POSTs /shutdown + probes /healthz on the launcher's own loopback (same machine).",
         ["src/CcDirector.Core/Account/LoopbackLoginListener.cs"] = "Binds an HttpListener on 127.0.0.1 only (operating-system-assigned ephemeral port) to receive the first-run browser sign-in hand-back; same-machine loopback trust boundary (security rule DT-07, issue #581).",
+        // Browsers feature: an automation browser's Chrome remote-debugging port is bound by Chrome on
+        // loopback, so machine-locality is the feature's designed security property - only an agent on
+        // THIS machine can attach (handover 2026-07-23). These three carry the loopback literal on purpose.
+        ["src/CcDirector.Core/Browsers/AutomationBrowser.cs"] = "Doc comment: BU_CDP_URL is http://127.0.0.1:<port> - the debug port is loopback by design (machine-local browsers).",
+        ["src/CcDirector.Core/Browsers/AutomationBrowserRegistry.cs"] = "AttachInfoFor builds the same-machine BU_CDP_URL (http://127.0.0.1:{port}); Chrome binds the debug port on loopback, and the loopback port probe binds 127.0.0.1 to test freeness.",
+        ["src/CcDirector.Core/Browsers/AutomationBrowserService.cs"] = "Probes and CDP-closes the browser over its own loopback debug port (http://127.0.0.1:{port}/json/version); same machine by construction.",
 
         // --- Loopback DETECTION / classification / labelling (the no-loopback policy itself) ---
         ["src/CcDirector.Core/Network/TailscaleIdentity.cs"] = "Formats a CLEARLY-LABELLED local-only fallback string; never advertised cross-machine.",
