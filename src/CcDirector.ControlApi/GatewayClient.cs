@@ -228,6 +228,18 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         return list;
     }
 
+
+    /// <summary>
+    /// True when the Gateway does not actually serve this route: an explicit 404, or the Cockpit
+    /// single-page-app fallback answering an unknown GET with 200 text/html. Either way the route
+    /// is absent on that Gateway version and the caller serves its own local model. A JSON error
+    /// or a 5xx is a REAL failure and is never mistaken for absence.
+    /// </summary>
+    private static bool RouteAbsent(HttpResponseMessage resp)
+        => resp.StatusCode == HttpStatusCode.NotFound
+           || (resp.IsSuccessStatusCode
+               && !string.Equals(resp.Content.Headers.ContentType?.MediaType, "application/json", StringComparison.OrdinalIgnoreCase));
+
     /// <summary>
     /// The fleet's repositories (GET /repositories). Returns NULL when the Gateway answers 404 -
     /// an older Gateway that does not know the route yet (version tolerance, the same posture as
@@ -240,9 +252,9 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
             throw new InvalidOperationException("Gateway is not configured; cannot list fleet repositories.");
         FileLog.Write("[GatewayClient] ListFleetRepositoriesAsync: GET /repositories");
         using var resp = await _http.GetAsync("repositories", ct);
-        if (resp.StatusCode == HttpStatusCode.NotFound)
+        if (RouteAbsent(resp))
         {
-            FileLog.Write("[GatewayClient] GET /repositories: 404 (older Gateway) - caller serves local");
+            FileLog.Write("[GatewayClient] GET /repositories: route absent on this Gateway (404 or non-JSON fallback) - caller serves local");
             return null;
         }
         if (!resp.IsSuccessStatusCode)
@@ -263,9 +275,9 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
             throw new InvalidOperationException("Gateway is not configured; cannot list fleet worktrees.");
         FileLog.Write("[GatewayClient] ListFleetWorktreesAsync: GET /worktrees");
         using var resp = await _http.GetAsync("worktrees", ct);
-        if (resp.StatusCode == HttpStatusCode.NotFound)
+        if (RouteAbsent(resp))
         {
-            FileLog.Write("[GatewayClient] GET /worktrees: 404 (older Gateway) - caller serves local");
+            FileLog.Write("[GatewayClient] GET /worktrees: route absent on this Gateway (404 or non-JSON fallback) - caller serves local");
             return null;
         }
         if (!resp.IsSuccessStatusCode)
