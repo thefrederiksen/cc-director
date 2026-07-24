@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
+  cloneWorkflow,
   createWorkflow,
+  getWorkflowInstructions,
   getWorkflowRuns,
   getWorkflows,
   setWorkflowEnabled,
@@ -10,6 +12,7 @@ import {
   type WorkflowRunSummary,
 } from "@devthrottle/client-core/workflows/workflowsClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
+import { markdownToHtml } from "@devthrottle/client-core/history/historyMarkdown";
 import { Button, ConfirmDialog, ErrorBanner, LoadingState } from "../components";
 
 // The Workflows REGISTER (register redesign, approved mockup direction A). Workflows are the rules
@@ -28,6 +31,12 @@ export function WorkflowsView() {
   const [adding, setAdding] = useState(false);
   const [pendingOff, setPendingOff] = useState<WorkflowDefinition | null>(null);
   const [explainerOpen, setExplainerOpen] = useState(false);
+  // Preview + clone straight from the register (owner ask, 2026-07-24): reading a workflow's actual
+  // conduct and taking a copy of it are the two acts the register exists to invite, so both live on
+  // every row - built-ins included, because cloning IS the way to customize a built-in.
+  const [preview, setPreview] = useState<WorkflowDefinition | null>(null);
+  const [pendingClone, setPendingClone] = useState<WorkflowDefinition | null>(null);
+  const navigate = useNavigate();
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -119,6 +128,7 @@ export function WorkflowsView() {
             <div>State</div>
             <div>Provenance</div>
             <div>Recent activity</div>
+            <div>Actions</div>
           </div>
           {workflows.map((wf) => (
             <RegisterRow
@@ -130,6 +140,8 @@ export function WorkflowsView() {
                 if (!enabled) setPendingOff(wf);
                 else void flip(wf, true);
               }}
+              onPreview={() => setPreview(wf)}
+              onClone={() => setPendingClone(wf)}
             />
           ))}
           <div className="wf-reg-foot">
@@ -171,6 +183,129 @@ export function WorkflowsView() {
         }}
         onClose={() => setPendingOff(null)}
       />
+
+      {preview !== null ? (
+        <WorkflowPreviewDialog
+          workflow={preview}
+          onClose={() => setPreview(null)}
+          onClone={() => {
+            setPendingClone(preview);
+            setPreview(null);
+          }}
+        />
+      ) : null}
+
+      <ConfirmDialog
+        open={pendingClone !== null}
+        title={`Clone '${pendingClone?.name ?? ""}' as '${pendingClone?.id ?? ""}-copy'?`}
+        message={
+          <>
+            The published content - steps, instructions, helper files - is copied into a new
+            workflow <code>{pendingClone?.id}-copy</code> that is yours: published, fully editable,
+            and independent of the original.
+          </>
+        }
+        confirmLabel="Clone"
+        danger={false}
+        onConfirm={async () => {
+          if (pendingClone === null) return;
+          try {
+            const clone = await cloneWorkflow(pendingClone.id, `${pendingClone.id}-copy`, "cockpit");
+            navigate(`/workflows/${encodeURIComponent(clone.id)}`);
+          } catch (err) {
+            setError(gatewayErrorMessage(err));
+          }
+        }}
+        onClose={() => setPendingClone(null)}
+      />
+    </div>
+  );
+}
+
+// The conduct preview (owner ask, 2026-07-24): the popup that answers "what does this workflow
+// actually say" without leaving the register - the shape up top (badges, when to use, steps), then
+// the full instruction markdown, scrollable, through the same sanitized renderer the detail page
+// trusts. It is not a dead end: the clone decision happens right here, and the full page is one
+// click away. The conduct is fetched PINNED to the version the row reported, matching the detail
+// page's torn-read discipline (an unpinned read racing a publish could pair v1 steps with v2 text -
+// and the pinned read also keeps the preview working for an OFF workflow, whose unversioned read
+// the Gateway refuses).
+function WorkflowPreviewDialog({
+  workflow,
+  onClose,
+  onClone,
+}: {
+  workflow: WorkflowDefinition;
+  onClose: () => void;
+  onClone: () => void;
+}) {
+  const [instructions, setInstructions] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    getWorkflowInstructions(workflow.id, workflow.version, ctrl.signal).then(
+      (md) => setInstructions(md),
+      (err) => {
+        if (!ctrl.signal.aborted) setError(gatewayErrorMessage(err));
+      },
+    );
+    return () => ctrl.abort();
+  }, [workflow.id, workflow.version]);
+
+  return (
+    <div className="wf-dialog-backdrop" role="presentation" onClick={onClose}>
+      <div
+        className="wf-dialog wf-preview"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Preview of ${workflow.name}`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="wf-dialog-title">
+          {workflow.name}
+          {workflow.isBuiltIn === true ? <span className="wf-badge wf-badge-builtin">Built-in</span> : null}
+          {typeof workflow.version === "number" ? <span className="wf-badge">v{workflow.version}</span> : null}
+        </h2>
+        <p className="wf-dialog-hint">{workflow.summary}</p>
+        {workflow.whenToUse !== undefined && workflow.whenToUse !== "" ? (
+          <p className="wf-preview-fact"><b>When to use it:</b> {workflow.whenToUse}</p>
+        ) : null}
+        {workflow.humanCheckpoint !== undefined && workflow.humanCheckpoint !== "" ? (
+          <p className="wf-preview-fact"><b>You are asked:</b> {workflow.humanCheckpoint}</p>
+        ) : null}
+        {workflow.steps !== undefined && workflow.steps.length > 0 ? (
+          <ol className="wf-preview-steps">
+            {workflow.steps.map((step, i) => (
+              <li key={step.name}>
+                <span className="wf-detail-step-num">{i + 1}.</span> <strong>{step.name}</strong> - {step.doer}
+                {step.reviewer !== null && step.reviewer !== undefined
+                  ? `, reviewed by ${step.reviewer}`
+                  : ", no review"}
+              </li>
+            ))}
+          </ol>
+        ) : null}
+        <div className="wf-preview-body">
+          {error !== null ? (
+            <p className="wf-dialog-error">{error}</p>
+          ) : instructions === null ? (
+            <LoadingState message="Loading the conduct..." />
+          ) : (
+            <div
+              className="wf-conduct-body"
+              dangerouslySetInnerHTML={{ __html: markdownToHtml(instructions) }}
+            />
+          )}
+        </div>
+        <div className="wf-dialog-actions">
+          <Link className="wf-preview-full-link" to={`/workflows/${encodeURIComponent(workflow.id)}`}>
+            Open full page
+          </Link>
+          <Button variant="secondary" onClick={onClose}>Close</Button>
+          <Button variant="primary" onClick={onClone}>Clone</Button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -180,11 +315,15 @@ function RegisterRow({
   activity,
   runsLoaded,
   onFlip,
+  onPreview,
+  onClone,
 }: {
   workflow: WorkflowDefinition;
   activity: { count: number; newestUtc: string } | undefined;
   runsLoaded: boolean;
   onFlip: (enabled: boolean) => void;
+  onPreview: () => void;
+  onClone: () => void;
 }) {
   const off = workflow.enabled === false;
   const spine = off ? "wf-spine-off" : workflow.hasDraft === true ? "wf-spine-draft" : "wf-spine-on";
@@ -240,6 +379,14 @@ function RegisterRow({
         ) : (
           <span className="wf-off-note">activity unavailable</span>
         )}
+      </div>
+      <div className="wf-cell-actions">
+        <button className="wf-linklike" onClick={onPreview} aria-label={`Preview ${workflow.name}`}>
+          Preview
+        </button>
+        <button className="wf-linklike" onClick={onClone} aria-label={`Clone ${workflow.name}`}>
+          Clone
+        </button>
       </div>
     </div>
   );
