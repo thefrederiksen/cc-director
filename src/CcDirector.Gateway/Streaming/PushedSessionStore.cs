@@ -126,6 +126,13 @@ public sealed class PushedSessionStore
             entry.ActiveConnectionId = connectionId;
             entry.CurrentEpoch = epoch;
             entry.LastSequence = -1;
+            // Treat the cache as STALE until THIS new connection pushes its own snapshot (inspection
+            // round 5). The previous connection's sessions are kept for reconnect continuity, but if we
+            // left the old ReceivedAtUtc in place TryGetFresh would serve the PRIOR connection's roster
+            // as fresh under the new active connection - a stale set that could omit a live session the
+            // new connection knows about, which the destructive reaper would then act on. Resetting it
+            // makes the register-to-first-snapshot interval fail closed: reads fall back to pull.
+            entry.ReceivedAtUtc = DateTime.MinValue;
         }
         FileLog.Write($"[PushedSessionStore] RegisterConnection: tenant={tenant.ToLogString()}, director={directorId}, conn={Short(connectionId)} is now the active connection");
     }
