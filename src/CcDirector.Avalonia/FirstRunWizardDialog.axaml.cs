@@ -2,9 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Controls.Shapes;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
@@ -14,6 +16,7 @@ using CcDirector.Core.GatewayConnection;
 using CcDirector.Core.Onboarding;
 using CcDirector.Core.Settings;
 using CcDirector.Core.Utilities;
+using CcDirector.Setup.Engine;
 
 namespace CcDirector.Avalonia;
 
@@ -43,6 +46,15 @@ public partial class FirstRunWizardDialog : Window
     private HashSet<AgentKind> _existingAgentTypes = new();
     private bool _agentScanRan;
 
+    // The gateway step's three-way choice. Hosted is the recommended default, pre-selected per the
+    // mockup: most users should sign in and be done. Self-host and Not-now are the quiet minority paths.
+    private enum GatewayChoice { Hosted, SelfHost, NotNow }
+
+    private GatewayChoice _gatewayChoice = GatewayChoice.Hosted;
+    private bool _gatewayConnected;
+    private CancellationTokenSource? _hostedEnrollCts;
+
+    // The existing join-an-existing-gateway flow, embedded only behind the self-hosted advanced path.
     private Controls.GatewayConnectionPanel? _gatewayPanel;
 
     // True once the completion marker has been written, so OnClosed does not write it twice.
@@ -87,8 +99,8 @@ public partial class FirstRunWizardDialog : Window
         {
             var dot = new Ellipse
             {
-                Width = 9,
-                Height = 9,
+                Width = 8,
+                Height = 8,
                 VerticalAlignment = VerticalAlignment.Center,
             };
             _dots.Add(dot);
@@ -104,9 +116,9 @@ public partial class FirstRunWizardDialog : Window
         {
             _dots[i].Fill = _model.DotStateAt(i) switch
             {
-                WizardDotState.Current => Brush("#007ACC"),
-                WizardDotState.Past => Brush("#3B6EA5"),
-                _ => Brush("#3C3C3C"),
+                WizardDotState.Current => Brush("#0066B8"),
+                WizardDotState.Past => Brush("#9FC4E3"),
+                _ => Brush("#E6E8EC"),
             };
         }
     }
@@ -152,10 +164,9 @@ public partial class FirstRunWizardDialog : Window
                 break;
 
             case WizardStep.Gateway:
-                PrimaryButton.Content = "Continue";
                 PrimaryButton.IsVisible = true;
                 ConfigureStepSkip();
-                EnsureGatewayPanel();
+                RefreshGatewayChoiceUi();
                 break;
 
             case WizardStep.Done:
@@ -187,6 +198,15 @@ public partial class FirstRunWizardDialog : Window
                 case WizardStep.Agents:
                     await AcceptAgentsAsync();
                     Advance();
+                    break;
+
+                case WizardStep.Gateway:
+                    if (_gatewayConnected || _gatewayChoice == GatewayChoice.NotNow)
+                        Advance();
+                    else if (_gatewayChoice == GatewayChoice.SelfHost)
+                        ShowGatewayAdvanced();
+                    else
+                        await StartHostedEnrollAsync();
                     break;
 
                 case WizardStep.Done:
@@ -337,14 +357,14 @@ public partial class FirstRunWizardDialog : Window
     {
         var pill = new Border
         {
-            Background = Brush(ready ? "#1B3A2A" : "#3A2A1B"),
+            Background = Brush(ready ? "#E5F3E9" : "#F5F6F8"),
             CornerRadius = new global::Avalonia.CornerRadius(999),
             Padding = new global::Avalonia.Thickness(10, 3),
             VerticalAlignment = VerticalAlignment.Center,
             Child = new TextBlock
             {
                 Text = pillText,
-                Foreground = Brush(ready ? "#22C55E" : "#888888"),
+                Foreground = Brush(ready ? "#1A7F37" : "#8A909A"),
                 FontSize = 11,
                 FontWeight = FontWeight.SemiBold,
             },
@@ -354,7 +374,7 @@ public partial class FirstRunWizardDialog : Window
         text.Children.Add(new TextBlock
         {
             Text = name,
-            Foreground = Brush(ready ? "#CCCCCC" : "#888888"),
+            Foreground = Brush(ready ? "#16181D" : "#8A909A"),
             FontSize = 14,
             FontWeight = FontWeight.SemiBold,
             TextWrapping = TextWrapping.Wrap,
@@ -362,7 +382,7 @@ public partial class FirstRunWizardDialog : Window
         text.Children.Add(new TextBlock
         {
             Text = sub,
-            Foreground = Brush("#888888"),
+            Foreground = Brush("#8A909A"),
             FontSize = 11,
             TextWrapping = TextWrapping.Wrap,
         });
@@ -375,11 +395,11 @@ public partial class FirstRunWizardDialog : Window
 
         return new Border
         {
-            Background = Brush("#1E1E1E"),
-            BorderBrush = Brush("#3C3C3C"),
+            Background = Brush("#FFFFFF"),
+            BorderBrush = Brush("#E6E8EC"),
             BorderThickness = new global::Avalonia.Thickness(1),
-            CornerRadius = new global::Avalonia.CornerRadius(6),
-            Padding = new global::Avalonia.Thickness(14, 12),
+            CornerRadius = new global::Avalonia.CornerRadius(10),
+            Padding = new global::Avalonia.Thickness(16, 13),
             Child = grid,
         };
     }
@@ -425,26 +445,165 @@ public partial class FirstRunWizardDialog : Window
         _ = ScanAgentsAsync();
     }
 
-    // ---- Gateway step (interim: reuses the shared connection panel) --------------------------------
+    // ---- Gateway step (native, hosted-first) -------------------------------------------------------
 
-    private void EnsureGatewayPanel()
+    /// <summary>Paint the three choice cards and the primary CTA from the current selection.</summary>
+    private void RefreshGatewayChoiceUi()
     {
-        if (_gatewayPanel is not null) return;
+        // Card selection visuals: the chosen card carries the accent border + tint; the others rest.
+        StyleGatewayCard(GatewayHostedCard, _gatewayChoice == GatewayChoice.Hosted, emphasized: true);
+        StyleGatewayCard(GatewaySelfHostCard, _gatewayChoice == GatewayChoice.SelfHost, emphasized: false);
+        StyleGatewayCard(GatewayNotNowCard, _gatewayChoice == GatewayChoice.NotNow, emphasized: false);
 
-        FileLog.Write("[FirstRunWizardDialog] EnsureGatewayPanel: creating panel");
-        _gatewayPanel = Controls.GatewayConnectionPanel.CreateForCurrentState(GatewayChoiceConsumer.Onboarding);
-        _gatewayPanel.SkipRequested += (_, behavior) =>
-        {
-            // "Not now" inside the panel advances the wizard to the next step (the shell owns the
-            // whole-wizard completion, so a local-only choice here is just "move on").
-            if (behavior == GatewaySkipBehavior.CompleteOnboardingLocalOnly)
+        PrimaryButton.Content = _gatewayConnected
+            ? "Continue"
+            : _gatewayChoice switch
             {
-                FileLog.Write("[FirstRunWizardDialog] gateway panel requested local-only; advancing");
-                if (_model.Current == WizardStep.Gateway)
-                    Advance();
+                GatewayChoice.Hosted => "Sign in and connect",
+                GatewayChoice.SelfHost => "Set up self-hosted",
+                _ => "Continue without a gateway",
+            };
+        PrimaryButton.IsEnabled = true;
+    }
+
+    private static void StyleGatewayCard(Border card, bool selected, bool emphasized)
+    {
+        card.BorderBrush = Brush(selected ? "#0066B8" : "#E6E8EC");
+        card.BorderThickness = new global::Avalonia.Thickness(selected && emphasized ? 2 : selected ? 1.5 : 1);
+        card.Background = Brush(selected ? "#F2F8FD" : "#FFFFFF");
+    }
+
+    private void SelectGatewayChoice(GatewayChoice choice)
+    {
+        FileLog.Write($"[FirstRunWizardDialog] SelectGatewayChoice: {choice}");
+        _gatewayChoice = choice;
+        RefreshGatewayChoiceUi();
+    }
+
+    private void GatewayHostedCard_Pressed(object? sender, PointerPressedEventArgs e) => SelectGatewayChoice(GatewayChoice.Hosted);
+    private void GatewaySelfHostCard_Pressed(object? sender, PointerPressedEventArgs e) => SelectGatewayChoice(GatewayChoice.SelfHost);
+    private void GatewayNotNowCard_Pressed(object? sender, PointerPressedEventArgs e) => SelectGatewayChoice(GatewayChoice.NotNow);
+
+    /// <summary>Show exactly one of the gateway step's sub-views (choice / connecting / connected / failed / advanced).</summary>
+    private void ShowGatewayView(Control view)
+    {
+        GatewayChoiceView.IsVisible = view == GatewayChoiceView;
+        GatewayConnectingView.IsVisible = view == GatewayConnectingView;
+        GatewayConnectedView.IsVisible = view == GatewayConnectedView;
+        GatewayFailedView.IsVisible = view == GatewayFailedView;
+        GatewayAdvancedView.IsVisible = view == GatewayAdvancedView;
+    }
+
+    /// <summary>
+    /// The hosted sign-in + enroll: the SAME transaction the shared gateway panel and the CLI's
+    /// hosted enroll run (browser account sign-in; the hosted Gateway mints this machine's device key;
+    /// url + key persist on verified success ONLY). The wizard renders its own light-weight progress,
+    /// success, and failure states - it never embeds the old panel for this path.
+    /// </summary>
+    private async Task StartHostedEnrollAsync()
+    {
+        FileLog.Write("[FirstRunWizardDialog] StartHostedEnrollAsync");
+        ShowGatewayView(GatewayConnectingView);
+        PrimaryButton.IsEnabled = false;
+
+        var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
+        var directorId = host?.DirectorId;
+        if (host is null || directorId is null)
+        {
+            ShowGatewayFailure("The Director is still starting, so it cannot connect yet. Give it a moment, then try again.");
+            return;
+        }
+
+        _hostedEnrollCts?.Cancel();
+        _hostedEnrollCts = new CancellationTokenSource();
+        var ct = _hostedEnrollCts.Token;
+
+        try
+        {
+            var result = await new GatewayAccountEnrollRunner()
+                .SignInAndEnrollHostedAsync(directorId, Environment.MachineName, ct);
+
+            if (!result.Success)
+            {
+                FileLog.Write($"[FirstRunWizardDialog] hosted enroll failed: {result.ErrorMessage}");
+                ShowGatewayFailure(result.ErrorMessage ?? "Could not sign in and join the hosted gateway.");
+                return;
             }
-        };
-        GatewayHost.Child = _gatewayPanel;
+
+            // The verified hosted url + device key are persisted; re-apply so THIS run authenticates
+            // with the new credential immediately (not just after a restart).
+            await host.ReapplyGatewayAsync();
+
+            _gatewayConnected = true;
+            GatewayConnectedHostText.Text = $"This machine is enrolled with {GatewayConfig.Load().Url}";
+            ShowGatewayView(GatewayConnectedView);
+            FileLog.Write("[FirstRunWizardDialog] hosted enroll succeeded");
+        }
+        catch (OperationCanceledException)
+        {
+            FileLog.Write("[FirstRunWizardDialog] hosted enroll cancelled");
+            ShowGatewayView(GatewayChoiceView);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[FirstRunWizardDialog] hosted enroll error: {ex.Message}");
+            ShowGatewayFailure($"Could not sign in and join the hosted gateway: {ex.Message}");
+        }
+        finally
+        {
+            RefreshGatewayChoiceUi();
+        }
+    }
+
+    private void ShowGatewayFailure(string message)
+    {
+        GatewayFailText.Text = message;
+        ShowGatewayView(GatewayFailedView);
+        PrimaryButton.IsEnabled = true;
+    }
+
+    private void GatewayCancelSignIn_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[FirstRunWizardDialog] GatewayCancelSignIn_Click");
+        _hostedEnrollCts?.Cancel();
+    }
+
+    private void GatewayTryAgain_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[FirstRunWizardDialog] GatewayTryAgain_Click");
+        ShowGatewayView(GatewayChoiceView);
+        RefreshGatewayChoiceUi();
+    }
+
+    private void GatewayBackToOptions_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[FirstRunWizardDialog] GatewayBackToOptions_Click");
+        ShowGatewayView(GatewayChoiceView);
+        RefreshGatewayChoiceUi();
+    }
+
+    /// <summary>The advanced self-hosted path: embed the existing join-an-existing-gateway flow.</summary>
+    private void ShowGatewayAdvanced()
+    {
+        FileLog.Write("[FirstRunWizardDialog] ShowGatewayAdvanced");
+        if (_gatewayPanel is null)
+        {
+            _gatewayPanel = new Controls.GatewayConnectionPanel(GatewayPanelStep.Connect);
+            _gatewayPanel.SkipRequested += (_, behavior) =>
+            {
+                // "Not now" inside the panel advances the wizard to the next step (the shell owns the
+                // whole-wizard completion, so a local-only choice here is just "move on").
+                if (behavior == GatewaySkipBehavior.CompleteOnboardingLocalOnly)
+                {
+                    FileLog.Write("[FirstRunWizardDialog] gateway panel requested local-only; advancing");
+                    if (_model.Current == WizardStep.Gateway)
+                        Advance();
+                }
+            };
+            GatewayHost.Child = _gatewayPanel;
+        }
+        ShowGatewayView(GatewayAdvancedView);
+        PrimaryButton.Content = "Continue";
     }
 
     // ---- Done receipt ------------------------------------------------------------------------------
@@ -479,14 +638,14 @@ public partial class FirstRunWizardDialog : Window
     {
         var pill = new Border
         {
-            Background = Brush(done ? "#1B3A2A" : "#2A2A2A"),
+            Background = Brush(done ? "#E5F3E9" : "#F5F6F8"),
             CornerRadius = new global::Avalonia.CornerRadius(999),
             Padding = new global::Avalonia.Thickness(10, 3),
             VerticalAlignment = VerticalAlignment.Center,
             Child = new TextBlock
             {
                 Text = done ? "Done" : "Later",
-                Foreground = Brush(done ? "#22C55E" : "#888888"),
+                Foreground = Brush(done ? "#1A7F37" : "#8A909A"),
                 FontSize = 11,
                 FontWeight = FontWeight.SemiBold,
             },
@@ -496,7 +655,7 @@ public partial class FirstRunWizardDialog : Window
         text.Children.Add(new TextBlock
         {
             Text = name,
-            Foreground = Brush("#CCCCCC"),
+            Foreground = Brush("#16181D"),
             FontSize = 13,
             FontWeight = FontWeight.SemiBold,
             TextWrapping = TextWrapping.Wrap,
@@ -504,7 +663,7 @@ public partial class FirstRunWizardDialog : Window
         text.Children.Add(new TextBlock
         {
             Text = sub,
-            Foreground = Brush("#888888"),
+            Foreground = Brush("#8A909A"),
             FontSize = 11,
             TextWrapping = TextWrapping.Wrap,
         });
@@ -517,8 +676,8 @@ public partial class FirstRunWizardDialog : Window
 
         return new Border
         {
-            Padding = new global::Avalonia.Thickness(14, 11),
-            BorderBrush = Brush("#2D2D2D"),
+            Padding = new global::Avalonia.Thickness(16, 12),
+            BorderBrush = Brush("#E6E8EC"),
             BorderThickness = new global::Avalonia.Thickness(0, 0, 0, 1),
             Child = grid,
         };
@@ -545,6 +704,7 @@ public partial class FirstRunWizardDialog : Window
     /// </summary>
     protected override void OnClosed(EventArgs e)
     {
+        _hostedEnrollCts?.Cancel();
         if (!_marked)
         {
             FileLog.Write("[FirstRunWizardDialog] OnClosed: writing completion marker (window closed without finishing)");

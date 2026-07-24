@@ -2,102 +2,132 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="CcDirector.Avalonia.FirstRunWizardDialog"
         Title="DevThrottle Setup"
-        Width="680" Height="620"
-        MinWidth="560" MinHeight="500"
+        Width="900" Height="640"
+        MinWidth="760" MinHeight="560"
         WindowStartupLocation="CenterOwner"
         CanResize="True"
-        Background="#252526">
+        FontFamily="Inter, Segoe UI, system-ui"
+        Background="#FFFFFF">
 
+    <!--
+      Light design system, matched to the approved mockup
+      (devthrottle_internal/docs/strategy/mockups/first-run-wizard.html). Brand is light-only:
+      white paper, #16181D ink, #0066B8 accent, a Segoe UI Variable Display hero. One thing per
+      screen, one primary button per screen, a quiet skip, a bottom-left Back link.
+    -->
     <Window.Styles>
+        <!-- Big centered hero title. -->
         <Style Selector="TextBlock.wtitle">
-            <Setter Property="Foreground" Value="#CCCCCC" />
-            <Setter Property="FontSize" Value="24" />
-            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="#16181D" />
+            <Setter Property="FontFamily" Value="Segoe UI Variable Display, Segoe UI, Inter" />
+            <Setter Property="FontSize" Value="32" />
+            <Setter Property="FontWeight" Value="Bold" />
             <Setter Property="HorizontalAlignment" Value="Center" />
             <Setter Property="TextAlignment" Value="Center" />
             <Setter Property="TextWrapping" Value="Wrap" />
         </Style>
         <Style Selector="TextBlock.wsub">
-            <Setter Property="Foreground" Value="#AAAAAA" />
-            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Foreground" Value="#5A616B" />
+            <Setter Property="FontSize" Value="16" />
             <Setter Property="HorizontalAlignment" Value="Center" />
             <Setter Property="TextAlignment" Value="Center" />
             <Setter Property="TextWrapping" Value="Wrap" />
-            <Setter Property="MaxWidth" Value="460" />
+            <Setter Property="MaxWidth" Value="480" />
+            <Setter Property="LineHeight" Value="24" />
         </Style>
         <Style Selector="TextBlock.hint">
-            <Setter Property="Foreground" Value="#888888" />
-            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Foreground" Value="#8A909A" />
+            <Setter Property="FontSize" Value="12.5" />
             <Setter Property="TextWrapping" Value="Wrap" />
         </Style>
+
+        <!-- Primary accent CTA. -->
         <Style Selector="Button.primaryButton">
-            <Setter Property="Height" Value="34" />
-            <Setter Property="MinWidth" Value="150" />
-            <Setter Property="Padding" Value="18,0" />
-            <Setter Property="Background" Value="#007ACC" />
+            <Setter Property="Height" Value="44" />
+            <Setter Property="MinWidth" Value="160" />
+            <Setter Property="Padding" Value="30,0" />
+            <Setter Property="Background" Value="#0066B8" />
             <Setter Property="Foreground" Value="White" />
-            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontSize" Value="16" />
+            <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="10" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="HorizontalContentAlignment" Value="Center" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
         </Style>
+        <Style Selector="Button.primaryButton:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#005BA4" />
+        </Style>
+
+        <!-- Secondary / neutral button (install guide, re-check). -->
         <Style Selector="Button.dialogButton">
-            <Setter Property="Height" Value="30" />
-            <Setter Property="MinWidth" Value="100" />
-            <Setter Property="Padding" Value="14,0" />
-            <Setter Property="Background" Value="#3C3C3C" />
-            <Setter Property="Foreground" Value="#CCCCCC" />
-            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Height" Value="36" />
+            <Setter Property="MinWidth" Value="110" />
+            <Setter Property="Padding" Value="16,0" />
+            <Setter Property="Background" Value="#F5F6F8" />
+            <Setter Property="Foreground" Value="#16181D" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="BorderBrush" Value="#E6E8EC" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="HorizontalContentAlignment" Value="Center" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
         </Style>
+        <Style Selector="Button.dialogButton:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#ECEEF1" />
+            <Setter Property="BorderBrush" Value="#0066B8" />
+        </Style>
+
         <!-- Quiet text link (faint text, not a button): the whole-wizard skip and the "take me to
              the board" affordance. Deliberately low-emphasis per the mockup. -->
         <Style Selector="Button.quietLink">
             <Setter Property="Background" Value="Transparent" />
-            <Setter Property="Foreground" Value="#888888" />
-            <Setter Property="FontSize" Value="12.5" />
+            <Setter Property="Foreground" Value="#8A909A" />
+            <Setter Property="FontSize" Value="13.5" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Padding" Value="4,2" />
             <Setter Property="Cursor" Value="Hand" />
         </Style>
         <Style Selector="Button.quietLink:pointerover /template/ ContentPresenter">
             <Setter Property="Background" Value="Transparent" />
-            <Setter Property="TextBlock.Foreground" Value="#CCCCCC" />
+            <Setter Property="TextBlock.Foreground" Value="#5A616B" />
+            <Setter Property="TextBlock.TextDecorations" Value="Underline" />
         </Style>
+
         <!-- Back link, bottom-left. -->
         <Style Selector="Button.backLink">
             <Setter Property="Background" Value="Transparent" />
-            <Setter Property="Foreground" Value="#AAAAAA" />
-            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Foreground" Value="#5A616B" />
+            <Setter Property="FontSize" Value="14" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Padding" Value="4,2" />
             <Setter Property="Cursor" Value="Hand" />
         </Style>
         <Style Selector="Button.backLink:pointerover /template/ ContentPresenter">
             <Setter Property="Background" Value="Transparent" />
-            <Setter Property="TextBlock.Foreground" Value="#CCCCCC" />
+            <Setter Property="TextBlock.Foreground" Value="#16181D" />
+            <Setter Property="TextBlock.TextDecorations" Value="Underline" />
         </Style>
     </Window.Styles>
 
-    <Grid Margin="28,24,28,20" RowDefinitions="Auto,*,Auto">
+    <Grid Margin="44,32,44,24" RowDefinitions="Auto,*,Auto">
 
         <!-- Progress dots: one per present step, painted done / current / upcoming by code-behind. -->
         <StackPanel Grid.Row="0" x:Name="DotsPanel" Orientation="Horizontal"
-                    Spacing="8" HorizontalAlignment="Center" Margin="0,4,0,28" />
+                    Spacing="8" HorizontalAlignment="Center" Margin="0,4,0,36" />
 
         <!-- Step content. Exactly one child panel is visible at a time. -->
         <Grid Grid.Row="1">
 
             <!-- ===================== WELCOME ===================== -->
-            <StackPanel x:Name="WelcomePanel" IsVisible="False" Spacing="16"
+            <StackPanel x:Name="WelcomePanel" IsVisible="False" Spacing="18"
                         VerticalAlignment="Center">
                 <TextBlock Classes="wtitle" Text="Welcome to DevThrottle" />
                 <TextBlock Classes="wsub"
                            Text="You are about three minutes from running your first coding agent. We will find your agents, learn where your code lives, and set up your morning report." />
-                <StackPanel Spacing="12" HorizontalAlignment="Center" Margin="0,12,0,0">
+                <StackPanel Spacing="16" HorizontalAlignment="Center" Margin="0,20,0,0">
                     <Button x:Name="WelcomeSetupButton" Classes="primaryButton"
                             Content="Set me up" HorizontalAlignment="Center"
                             Click="BtnPrimary_Click" />
@@ -110,19 +140,21 @@
             <!-- ===================== AGENTS (interim: reuses the tool-detection scan) ===================== -->
             <Grid x:Name="AgentsPanel" IsVisible="False" RowDefinitions="Auto,Auto,*,Auto">
                 <TextBlock Grid.Row="0" x:Name="AgentsTitle" Classes="wtitle"
-                           Text="Your agents" Margin="0,0,0,8" />
+                           Text="Your agents" Margin="0,0,0,10" />
                 <TextBlock Grid.Row="1" x:Name="AgentsStatusText" Classes="wsub"
-                           Text="Scanning this machine for coding agents..." Margin="0,0,0,16" />
+                           Text="Scanning this machine for coding agents..." Margin="0,0,0,20" />
                 <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto"
                               HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
-                    <StackPanel x:Name="AgentsListPanel" Spacing="8" />
+                    <StackPanel x:Name="AgentsListPanel" Spacing="8" MaxWidth="560"
+                                HorizontalAlignment="Stretch" />
                 </ScrollViewer>
                 <!-- Install guidance, shown only when zero agents are found (the unskippable case). -->
-                <StackPanel Grid.Row="3" x:Name="AgentsInstallGuidance" Spacing="8"
-                            IsVisible="False" Margin="0,12,0,0">
-                    <TextBlock Classes="hint"
+                <StackPanel Grid.Row="3" x:Name="AgentsInstallGuidance" Spacing="10"
+                            IsVisible="False" Margin="0,14,0,0">
+                    <TextBlock Classes="hint" HorizontalAlignment="Center" TextAlignment="Center"
+                               MaxWidth="520"
                                Text="DevThrottle runs command-line coding agents. We did not find one on this machine - install one, then re-check. This step cannot be skipped: nothing works without an agent." />
-                    <StackPanel Orientation="Horizontal" Spacing="8">
+                    <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Center">
                         <Button x:Name="AgentsInstallButton" Classes="dialogButton"
                                 Content="Open install guide" Click="BtnInstallAgent_Click" />
                         <Button x:Name="AgentsRecheckButton" Classes="dialogButton"
@@ -131,24 +163,116 @@
                 </StackPanel>
             </Grid>
 
-            <!-- ===================== GATEWAY (interim: reuses GatewayConnectionPanel) ===================== -->
-            <Grid x:Name="GatewayPanel" IsVisible="False" RowDefinitions="Auto,*">
-                <TextBlock Grid.Row="0" Classes="wtitle" Text="Connect your gateway" Margin="0,0,0,16" />
-                <Border Grid.Row="1" x:Name="GatewayHost" />
+            <!-- ===================== GATEWAY (native, hosted-first per the mockup) ===================== -->
+            <Grid x:Name="GatewayPanel" IsVisible="False" RowDefinitions="Auto,Auto,*">
+                <TextBlock Grid.Row="0" Classes="wtitle" Text="Connect your gateway" Margin="0,0,0,10" />
+                <TextBlock Grid.Row="1" Classes="wsub" Margin="0,0,0,24"
+                           Text="The gateway is what lets you check on your agents from your phone, use voice, and get your morning report. Signing in takes seconds." />
+                <Grid Grid.Row="2">
+
+                    <!-- Choice view: one dominant hosted card (pre-selected), two quiet alternatives. -->
+                    <StackPanel x:Name="GatewayChoiceView" MaxWidth="600" Spacing="14"
+                                VerticalAlignment="Top" HorizontalAlignment="Stretch">
+                        <Border x:Name="GatewayHostedCard" Cursor="Hand"
+                                Background="#F2F8FD" BorderBrush="#0066B8" BorderThickness="2"
+                                CornerRadius="12" Padding="22,20"
+                                PointerPressed="GatewayHostedCard_Pressed">
+                            <StackPanel Spacing="6">
+                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                    <TextBlock Text="Hosted gateway" FontSize="17" FontWeight="Bold"
+                                               Foreground="#16181D" VerticalAlignment="Center" />
+                                    <Border Background="#0066B8" CornerRadius="999" Padding="9,2"
+                                            VerticalAlignment="Center">
+                                        <TextBlock Text="RECOMMENDED" FontSize="10" FontWeight="Bold"
+                                                   Foreground="White" />
+                                    </Border>
+                                </StackPanel>
+                                <TextBlock TextWrapping="Wrap" FontSize="13.5" Foreground="#5A616B"
+                                           Text="We run it for you. Sign in and this machine is enrolled - phone access, voice, and the morning report work immediately." />
+                                <TextBlock FontSize="12.5" Foreground="#8A909A"
+                                           Text="Included with your subscription" />
+                            </StackPanel>
+                        </Border>
+
+                        <Grid ColumnDefinitions="*,14,*">
+                            <Border Grid.Column="0" x:Name="GatewaySelfHostCard" Cursor="Hand"
+                                    Background="#FFFFFF" BorderBrush="#E6E8EC" BorderThickness="1"
+                                    CornerRadius="10" Padding="16,13"
+                                    PointerPressed="GatewaySelfHostCard_Pressed">
+                                <StackPanel Spacing="3">
+                                    <TextBlock Text="Self-hosted gateway" FontSize="13.5" FontWeight="SemiBold"
+                                               Foreground="#16181D" />
+                                    <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#8A909A"
+                                               Text="Run your own gateway and join it. For advanced setups." />
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Column="2" x:Name="GatewayNotNowCard" Cursor="Hand"
+                                    Background="#FFFFFF" BorderBrush="#E6E8EC" BorderThickness="1"
+                                    CornerRadius="10" Padding="16,13"
+                                    PointerPressed="GatewayNotNowCard_Pressed">
+                                <StackPanel Spacing="3">
+                                    <TextBlock Text="Not now" FontSize="13.5" FontWeight="SemiBold"
+                                               Foreground="#16181D" />
+                                    <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#8A909A"
+                                               Text="Local-only on this machine. Connect any time from Settings." />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                    </StackPanel>
+
+                    <!-- Connecting view: browser sign-in is in flight. -->
+                    <StackPanel x:Name="GatewayConnectingView" IsVisible="False" Spacing="12"
+                                VerticalAlignment="Center" HorizontalAlignment="Center">
+                        <TextBlock Text="Finish signing in in your browser" FontSize="18" FontWeight="SemiBold"
+                                   Foreground="#16181D" HorizontalAlignment="Center" />
+                        <TextBlock Classes="hint" HorizontalAlignment="Center" TextAlignment="Center" MaxWidth="440"
+                                   Text="We opened your browser to sign you in with Google, GitHub, or email. This window continues automatically when you are done." />
+                        <Button Classes="quietLink" Content="Cancel sign-in" HorizontalAlignment="Center"
+                                Click="GatewayCancelSignIn_Click" />
+                    </StackPanel>
+
+                    <!-- Connected view: the earned success state. -->
+                    <StackPanel x:Name="GatewayConnectedView" IsVisible="False" Spacing="10"
+                                VerticalAlignment="Center" HorizontalAlignment="Center">
+                        <Border Background="#E5F3E9" CornerRadius="999" Padding="14,5"
+                                HorizontalAlignment="Center">
+                            <TextBlock Text="Connected" FontSize="13" FontWeight="Bold" Foreground="#1A7F37" />
+                        </Border>
+                        <TextBlock x:Name="GatewayConnectedHostText" FontSize="13.5" Foreground="#5A616B"
+                                   HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" />
+                    </StackPanel>
+
+                    <!-- Failure view: plain-English reason, readable on white, with a retry. -->
+                    <StackPanel x:Name="GatewayFailedView" IsVisible="False" Spacing="12"
+                                VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="480">
+                        <TextBlock x:Name="GatewayFailText" FontSize="14" Foreground="#DC2626"
+                                   TextWrapping="Wrap" TextAlignment="Center" />
+                        <Button Classes="dialogButton" Content="Try again" HorizontalAlignment="Center"
+                                Click="GatewayTryAgain_Click" />
+                    </StackPanel>
+
+                    <!-- Advanced view: the existing join-an-existing-gateway flow, for self-hosters. -->
+                    <Grid x:Name="GatewayAdvancedView" IsVisible="False" RowDefinitions="Auto,*">
+                        <Button Grid.Row="0" Classes="quietLink" Content="Back to gateway options"
+                                HorizontalAlignment="Left" Margin="0,0,0,8"
+                                Click="GatewayBackToOptions_Click" />
+                        <Border Grid.Row="1" x:Name="GatewayHost" />
+                    </Grid>
+                </Grid>
             </Grid>
 
             <!-- ===================== DONE ===================== -->
-            <StackPanel x:Name="DonePanel" IsVisible="False" Spacing="16"
+            <StackPanel x:Name="DonePanel" IsVisible="False" Spacing="18"
                         VerticalAlignment="Center">
                 <TextBlock Classes="wtitle" Text="You are ready" />
                 <TextBlock Classes="wsub"
                            Text="Everything is set. Start an agent on one of your repos - give it a small task and watch the card, not the terminal." />
-                <Border Background="#1E1E1E" BorderBrush="#3C3C3C" BorderThickness="1"
-                        CornerRadius="8" Padding="4" MaxWidth="460" HorizontalAlignment="Center"
-                        Margin="0,4,0,0">
+                <Border Background="#FFFFFF" BorderBrush="#E6E8EC" BorderThickness="1"
+                        CornerRadius="12" Padding="4" MaxWidth="520" HorizontalAlignment="Center"
+                        Margin="0,6,0,0">
                     <StackPanel x:Name="DoneReceiptPanel" />
                 </Border>
-                <StackPanel Spacing="12" HorizontalAlignment="Center" Margin="0,8,0,0">
+                <StackPanel Spacing="16" HorizontalAlignment="Center" Margin="0,10,0,0">
                     <Button x:Name="DoneStartButton" Classes="primaryButton"
                             Content="Start my first agent" HorizontalAlignment="Center"
                             Click="BtnStartFirstAgent_Click" />
@@ -160,13 +284,16 @@
         </Grid>
 
         <!-- Footer: Back link (bottom-left), a faint note, a per-step skip link, and the primary CTA. -->
-        <Grid Grid.Row="2" ColumnDefinitions="Auto,*,Auto,Auto" Margin="0,20,0,0">
+        <Grid Grid.Row="2" ColumnDefinitions="Auto,*,Auto,Auto" Margin="0,24,0,0">
+            <Border Grid.Column="0" Grid.ColumnSpan="4" Height="1" Background="#E6E8EC"
+                    VerticalAlignment="Top" Margin="0,-12,0,0" />
+
             <Button x:Name="BackButton" Grid.Column="0" Classes="backLink"
                     Content="Back" Click="BtnBack_Click" IsVisible="False"
                     VerticalAlignment="Center" />
 
             <TextBlock x:Name="FooterNote" Grid.Column="1"
-                       Foreground="#888888" FontSize="12" TextWrapping="Wrap"
+                       Foreground="#8A909A" FontSize="12.5" TextWrapping="Wrap"
                        HorizontalAlignment="Right" VerticalAlignment="Center"
                        Margin="0,0,12,0" IsVisible="False" />
 

@@ -560,6 +560,7 @@ public partial class NewSessionDialog : Window
         {
             _allRepos = new List<RepositoryConfig>();
         }
+        UpdateRepoEmptyState();
 
         // Named sessions (issue #508): show the saved items and reflect them against the
         // currently registered agents so a removed agent reads as unavailable.
@@ -1120,6 +1121,19 @@ public partial class NewSessionDialog : Window
         UpdateActionButton();
     }
 
+    /// <summary>
+    /// Swap the repository list for its first-run empty state while NO repository is registered.
+    /// The empty state explains what a session needs and offers Browse right where the user is
+    /// looking; the first browsed folder registers and the normal list takes over. A filter with
+    /// no matches is NOT the empty state - the list stays (this reads the full set, not the filter).
+    /// </summary>
+    private void UpdateRepoEmptyState()
+    {
+        var empty = _allRepos == null || _allRepos.Count == 0;
+        RepoEmptyState.IsVisible = empty;
+        RepoList.IsVisible = !empty;
+    }
+
     private async void BtnBrowse_Click(object? sender, RoutedEventArgs e)
     {
         FileLog.Write("[NewSessionDialog] BtnBrowse_Click");
@@ -1146,6 +1160,7 @@ public partial class NewSessionDialog : Window
                 _allRepos = _registry.Repositories.ToList();
                 ApplyRepoSort();
                 ApplyRepoFilter();
+                UpdateRepoEmptyState();
             }
 
             UpdateActionButton();
@@ -1166,6 +1181,7 @@ public partial class NewSessionDialog : Window
             _allRepos = _registry.Repositories.ToList();
             ApplyRepoSort();
             ApplyRepoFilter();
+            UpdateRepoEmptyState();
 
             if (PathInput.Text == path)
             {
