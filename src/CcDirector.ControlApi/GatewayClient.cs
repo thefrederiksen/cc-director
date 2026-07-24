@@ -429,6 +429,43 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     }
 
     /// <summary>
+    /// Push this Director's repo-state snapshots to the Gateway (issue #2118) - the branches and worktrees
+    /// of its registered repositories, which is the one git-hygiene fact the Gateway cannot observe for
+    /// itself. Returns the Gateway's acknowledgement, or NULL when the push did not land (Gateway disabled,
+    /// HTTP failure, transport fault).
+    ///
+    /// FAIL-SAFE, exactly like <see cref="PushActivityEventsAsync"/>: a failed push is logged and returns
+    /// null, and the caller simply tries again on its next cycle. It never throws into the Director, because
+    /// a hygiene feed for a morning email must not be able to disturb the sessions a person is working in.
+    /// There is no outbox and no retry queue: this pushes the CURRENT state of the repositories, so a lost
+    /// push is not lost data - the next cycle's snapshot supersedes it entirely.
+    /// </summary>
+    public async Task<RepoStatePushResponse?> PushRepoStateAsync(
+        RepoStatePushRequest request, CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled) return null;
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.Repositories.Count == 0) return new RepoStatePushResponse { Stored = 0 };
+
+        try
+        {
+            using var resp = await _http.PostAsJsonAsync("gateway/repostate", request, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                FileLog.Write($"[GatewayClient] PushRepoStateAsync: POST /gateway/repostate returned HTTP {(int)resp.StatusCode}");
+                return null;
+            }
+
+            return await resp.Content.ReadFromJsonAsync<RepoStatePushResponse>(ct);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayClient] PushRepoStateAsync FAILED: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Rename a session anywhere in the fleet via the Gateway's PATCH /sessions/{sid}, which routes the
     /// rename to the owning Director over the tunnel and returns the updated <see cref="SessionDto"/>.
     /// Issue #1490: the Director's loopback POST /fleet/rename relays here for a non-local target. Throws

@@ -95,6 +95,11 @@ public sealed class GatewayDbContext : DbContext
     /// transcript per utterance, per tenant, write-only, for later mistranscription mining (devthrottle #2075).</summary>
     public DbSet<DictationTranscriptEntity> DictationTranscripts => Set<DictationTranscriptEntity>();
 
+    /// <summary>The latest repo-state snapshot per (tenant, director, repository) (<c>repo_state</c>, issue
+    /// #2118) - the branches and worktrees the morning report's hygiene recommendations read. Overwritten on
+    /// each push; never appended.</summary>
+    public DbSet<RepoStateEntity> RepoState => Set<RepoStateEntity>();
+
     /// <summary>Dismissed dictionary suggestions (<c>dictation_suggestion_dismissals</c>, devthrottle #2075) -
     /// one row per term the tenant told us to stop suggesting, with a snapshot of the evidence so the
     /// "Dismissed terms" screen can still explain why it was once offered. Tenant-scoped.</summary>
@@ -374,6 +379,20 @@ public sealed class GatewayDbContext : DbContext
             b.HasIndex(e => new { e.TenantId, e.TimestampUtc });
         });
 
+        modelBuilder.Entity<RepoStateEntity>(b =>
+        {
+            b.ToTable("repo_state");
+            // COMPOSITE primary key (tenant_id, DirectorId, RepoPath): both parts of the natural key are
+            // CALLER-SUPPLIED, so the tenant must be in the key. Two accounts can genuinely register the same
+            // repository path on identically-named machines; without tenant_id in the key one account's push
+            // would fail to insert over the other's row and learn from the failure that it exists.
+            b.HasKey(e => new { e.TenantId, e.DirectorId, e.RepoPath });
+            // The report reads one tenant's whole repo-state set at once, ordered by freshness; index the
+            // tenant-leading path so it rides the global query filter's "tenant_id = @t" prefix rather than
+            // forcing a cross-tenant scan.
+            b.HasIndex(e => new { e.TenantId, e.ReceivedAtUtc });
+        });
+
         modelBuilder.Entity<DictationSuggestionDismissalEntity>(b =>
         {
             b.ToTable("dictation_suggestion_dismissals");
@@ -555,6 +574,7 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<DictationSuggestionVerdictEntity>(modelBuilder);
         ApplyTenantScope<DictationSuggestionScanEntity>(modelBuilder);
         ApplyTenantScope<ActivityEventEntity>(modelBuilder);
+        ApplyTenantScope<RepoStateEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
 

@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Net;
 using System.Text.Json;
 using CcDirector.Core;
@@ -336,6 +336,7 @@ public sealed class GatewayHost : IAsyncDisposable
     // re-snooze), bounded by the live-session prune paths.
     private readonly Snooze.SnoozeRegistry _snoozeRegistry;
     private readonly Activity.ActivityEventStore _activityEvents;
+    private readonly Reports.RepoStateStore _repoState;
     private Activity.ActivityRetentionSweep? _activityRetentionSweep;
     // Fills account_hosted_ai_spend by periodically mirroring the cloud credit-debit ledger (issue #1771).
     private Governance.HostedAiSpendSweep? _hostedAiSpendSweep;
@@ -865,7 +866,14 @@ public sealed class GatewayHost : IAsyncDisposable
         // the stores above. The pushed-session cache is passed for LABELS ONLY (a waiting row's friendly name
         // and repository path); the waiting fact itself comes from the durable governance ledger, so a
         // Director that happens to be offline at 07:00 costs a row its name, never its place in the email.
-        _morningReport = new Reports.MorningReportBuilder(_gatewayDb, PushedSessions, _streamStaleAfter);
+        // The repo-state feed (issue #2118): the latest branches and worktrees each Director reports for
+        // each repository - the one git-hygiene fact the Gateway cannot observe for itself, and the source
+        // of the morning report's stale-worktree and unmerged-branch recommendations.
+        _repoState = new Reports.RepoStateStore(_gatewayDb);
+        _morningReport = new Reports.MorningReportBuilder(_gatewayDb, PushedSessions, _streamStaleAfter,
+            // The repo-state store (issue #2118) is the hygiene rows' source. Passed here rather than
+            // resolved inside the builder so the report reads the SAME store the push endpoint writes.
+            repoState: _repoState);
         // Snooze Length mission: the persisted snooze registry (sessionId -> SnoozeUntilUtc), now in the
         // snoozes table of the EF data layer - a Gateway restart re-arms every pending snooze from the
         // database; an entry already past its time simply fires on the first sweep. The path argument is the
@@ -2500,6 +2508,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // activity/snooze evidence to POST /activity-events/batch (idempotent by producer-minted event id),
         // and diagnosis reads GET /activity-events. Tenant-scoped exactly like the prompt log.
         Activity.ActivityEventEndpoints.Map(_app, _activityEvents, _tenantBoundary);
+
+        // The repo-state feed (issue #2118): POST /gateway/repostate, where a Director pushes its
+        // repositories' branches and worktrees. Device-authenticated and tenant-scoped from the caller's
+        // own key; write-only, because the sole consumer (the morning report) reads the store in-process.
+        Api.RepoStateEndpoints.Map(_app, _repoState, _tenantBoundary);
 
         Mobile.MobileApp.Map(_app, Token);
         // The legacy /m mount: 301 to the canonical /mobile equivalent so installed phone PWAs and

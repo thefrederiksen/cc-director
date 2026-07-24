@@ -661,6 +661,58 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.ToTable("push_subscriptions", "gateway");
                 });
 
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.RepoStateEntity", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("DirectorId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("RepoPath")
+                        .HasColumnType("text");
+
+                    b.Property<string>("BranchesJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CollectedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CurrentBranch")
+                        .HasColumnType("text");
+
+                    b.Property<string>("DefaultBranch")
+                        .HasColumnType("text");
+
+                    b.Property<bool>("IsDirty")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("MachineName")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("ReceivedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("WorktreesJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("TenantId", "DirectorId", "RepoPath");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "ReceivedAtUtc");
+
+                    b.ToTable("repo_state", "gateway");
+                });
+
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SessionSpendEntity", b =>
                 {
                     b.Property<string>("TenantId")

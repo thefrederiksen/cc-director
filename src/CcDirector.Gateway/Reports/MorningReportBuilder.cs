@@ -32,6 +32,7 @@ public sealed class MorningReportBuilder
 {
     private readonly GatewayDatabase _db;
     private readonly Streaming.PushedSessionStore? _pushedSessions;
+    private readonly RepoStateStore? _repoState;
     private readonly TimeSpan _streamStale;
     private readonly Func<DateTime> _utcNow;
 
@@ -43,6 +44,24 @@ public sealed class MorningReportBuilder
     public const int WaitingLookbackDays = 30;
 
     /// <summary>
+    /// How recently a wait must have BEGUN for the report to say a session is waiting on you.
+    ///
+    /// This exists because of what the first real hosted call returned: nine waiting rows aged 69 to 129
+    /// hours, for sessions that had been gone for days, shown as raw identifiers because no Director was
+    /// connected to name them. Every one was a true statement ABOUT THE LEDGER - the last transition
+    /// recorded really was a wait - and every one was a false statement about the owner's morning.
+    ///
+    /// The ledger only records what it was told. A session that stops without an exit event leaves its
+    /// wait open forever, so "waiting since" ages without bound and never resolves. After two days of
+    /// silence the honest position is that the Gateway does not know what became of that session, and it
+    /// has no business asserting the session is waiting on a person today. So it says nothing about it.
+    ///
+    /// Deliberately a REPORTING bar, not a data change: the ledger keeps every transition, and
+    /// <see cref="WaitingLookbackDays"/> still bounds the scan. This only decides what the email claims.
+    /// </summary>
+    public static readonly TimeSpan WaitingReportMaxAge = TimeSpan.FromHours(48);
+
+    /// <summary>
     /// The hard ceiling on ledger rows the waiting scan materializes. Reaching it is LOGGED (never silent):
     /// a truncated scan can only under-report waiting sessions, and the log says so, so a short list is
     /// never mistaken for a quiet fleet.
@@ -51,6 +70,14 @@ public sealed class MorningReportBuilder
 
     /// <summary>Micro-dollars per cent - the ceil-rounding divisor for hosted-AI spend.</summary>
     private const long MicrosPerCent = 10_000;
+
+    /// <summary>
+    /// How old a Director's repo-state snapshot may be and still inform a hygiene recommendation. The
+    /// Director pushes every six hours, so this is four missed cycles: long enough that one restart or
+    /// one offline evening does not blank the section, short enough that the report never recommends
+    /// deleting a worktree from a picture of the machine taken last week.
+    /// </summary>
+    public static readonly TimeSpan RepoStateMaxAge = TimeSpan.FromHours(24);
 
     /// <param name="db">The Gateway EF database.</param>
     /// <param name="pushedSessions">The live pushed-session cache, used ONLY to put a friendly name and a
@@ -62,10 +89,12 @@ public sealed class MorningReportBuilder
         GatewayDatabase db,
         Streaming.PushedSessionStore? pushedSessions = null,
         TimeSpan? streamStale = null,
-        Func<DateTime>? utcNow = null)
+        Func<DateTime>? utcNow = null,
+        RepoStateStore? repoState = null)
     {
         _db = db ?? throw new ArgumentNullException(nameof(db));
         _pushedSessions = pushedSessions;
+        _repoState = repoState;
         _streamStale = streamStale ?? TimeSpan.FromMinutes(5);
         _utcNow = utcNow ?? (() => DateTime.UtcNow);
     }
@@ -100,10 +129,40 @@ public sealed class MorningReportBuilder
             Attention = WaitingSessions(ctx, tenant, now),
         };
 
+        // The hygiene rows (issue #2118): stale worktrees and unmerged branches, from the repo-state
+        // snapshots this tenant's Directors pushed. THE HONESTY RULE APPLIES HERE TOO, AND IT IS WHY THE
+        // ENDPOINT COULD SHIP BEFORE THIS FEED EXISTED: no repo-state store, or no fresh snapshot for this
+        // tenant, means NO hygiene rows at all - not empty ones. "We have never been told about your
+        // repositories" and "your repositories are tidy" are different statements, and only one of them
+        // has been measured.
+        report.Attention.AddRange(HygieneItems(tenant, now));
+
         FileLog.Write($"[MorningReportBuilder] Build: tenant={tenant.ToLogString()} window={window.StartUtc:o}..{window.EndUtc:o} " +
                       $"sessionsRan={Describe(report.Stats.SessionsRan)} workDelivered={Describe(report.Stats.WorkDelivered)} " +
                       $"spendUsd={Describe(report.Stats.HostedAiSpendUsd)} attention={report.Attention.Count}");
         return report;
+    }
+
+    /// <summary>
+    /// The stale-worktree and unmerged-branch rows, or NOTHING when this Gateway holds no fresh
+    /// repo-state for the tenant. A stale snapshot is excluded by the store rather than aged into a
+    /// recommendation.
+    /// </summary>
+    private List<MorningAttentionItemDto> HygieneItems(TenantId tenant, DateTime now)
+    {
+        if (_repoState is null)
+            return new List<MorningAttentionItemDto>();
+
+        var repositories = _repoState.ReadFresh(tenant, RepoStateMaxAge, now);
+        if (repositories.Count == 0)
+        {
+            FileLog.Write("[MorningReportBuilder] HygieneItems: no repo-state fresher than " +
+                          $"{RepoStateMaxAge.TotalHours:0}h for tenant={tenant.ToLogString()} - the hygiene " +
+                          "rows are OMITTED, not emptied");
+            return new List<MorningAttentionItemDto>();
+        }
+
+        return RepoHygieneFold.Items(repositories, now);
     }
 
     /// <summary>Distinct sessions with at least one recorded transition in the window, or null when this
@@ -194,6 +253,8 @@ public sealed class MorningReportBuilder
         var live = LiveSessionsById(tenant);
         var items = new List<MorningAttentionItemDto>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
+        // Counted and logged, never silently dropped: a short waiting list must be explainable.
+        var staleWaits = 0;
 
         foreach (var row in rows)
         {
@@ -204,6 +265,15 @@ public sealed class MorningReportBuilder
             if (row.State != GovernanceEventState.WaitingOnHuman &&
                 row.State != GovernanceEventState.WaitingOnPermission)
                 continue;
+
+            // The silence bar. An open wait older than this is not reported at all - see
+            // WaitingReportMaxAge for why a true statement about the ledger is the wrong thing to put
+            // in a person's inbox.
+            if (now - DateTime.SpecifyKind(row.OccurredUtc, DateTimeKind.Utc) > WaitingReportMaxAge)
+            {
+                staleWaits++;
+                continue;
+            }
 
             // A session the Gateway can currently see is judged on what it can see: one that is HELD
             // (snoozed) was deliberately parked by the owner and is not "waiting on you" this morning, and
@@ -226,6 +296,11 @@ public sealed class MorningReportBuilder
                 AgeHours = Math.Round(Math.Max(0, (now - since).TotalHours), 1),
             });
         }
+
+        if (staleWaits > 0)
+            FileLog.Write($"[MorningReportBuilder] WaitingSessions: {staleWaits} open wait(s) older than " +
+                          $"{WaitingReportMaxAge.TotalHours:0}h were NOT reported for tenant={tenant.ToLogString()} - " +
+                          "the Gateway has not heard about those sessions since, so it does not claim they are waiting.");
 
         // Longest wait first - the row the owner most needs to see is the one at the top of the email.
         items.Sort((a, b) => ((WaitingSessionAttentionDto)b).AgeHours.CompareTo(((WaitingSessionAttentionDto)a).AgeHours));

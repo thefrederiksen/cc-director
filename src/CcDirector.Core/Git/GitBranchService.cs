@@ -21,6 +21,37 @@ public sealed record BranchInfo
 
     public bool SafeToDelete { get; init; }
     public string Explanation { get; init; } = "";
+
+    /// <summary>
+    /// Whether every commit on this branch is already contained in the default branch (issue #2118).
+    /// NULL means NOT DETERMINED - there was no detectable default branch, or the containment inspection
+    /// failed - and it must never be read as either true or false.
+    ///
+    /// DELIBERATELY NARROWER THAN <see cref="SafeToDelete"/>, and the two must not be substituted for one
+    /// another. Safe-to-delete is a DISPOSAL verdict that also accepts "the origin branch is gone" and "the
+    /// pull request merged", and refuses whenever the branch is checked out. Containment is a plain
+    /// statement about commits. The morning report needs the plain statement - a branch checked out in a
+    /// worktree is exactly the case it wants to report on, and safe-to-delete says false about it for a
+    /// reason that has nothing to do with whether the work is merged.
+    /// </summary>
+    public bool? MergedIntoDefault { get; init; }
+}
+
+/// <summary>
+/// A repository's branch inventory plus the default branch every verdict in it was measured against
+/// (issue #2118). The default branch is carried WITH the branches, rather than resolved a second time by
+/// the caller, because a caller that resolved it independently could disagree with the service that
+/// computed the containment - and a "merged into main" claim measured against a different ref than the
+/// caller believes is exactly the kind of confidently-wrong statement the morning report must not make.
+/// A NULL <see cref="DefaultBranch"/> means it was undetectable, and then every branch's
+/// <see cref="BranchInfo.MergedIntoDefault"/> is null too.
+/// </summary>
+public sealed record BranchInventory
+{
+    /// <summary>The ref every containment verdict was measured against (e.g. "origin/main"), or null.</summary>
+    public string? DefaultBranch { get; init; }
+
+    public IReadOnlyList<BranchInfo> Branches { get; init; } = Array.Empty<BranchInfo>();
 }
 
 /// <summary>
@@ -86,8 +117,15 @@ public sealed class GitBranchService
     }
 
     public async Task<IReadOnlyList<BranchInfo>> ListAsync(string repoPath, CancellationToken ct = default)
+        => (await ListInventoryAsync(repoPath, ct)).Branches;
+
+    /// <summary>
+    /// The branch list AND the default branch it was measured against (issue #2118). <see cref="ListAsync"/>
+    /// is this method's branches; nothing computes a branch verdict twice.
+    /// </summary>
+    public async Task<BranchInventory> ListInventoryAsync(string repoPath, CancellationToken ct = default)
     {
-        FileLog.Write($"[GitBranchService] ListAsync: {repoPath}");
+        FileLog.Write($"[GitBranchService] ListInventoryAsync: {repoPath}");
         var results = new List<BranchInfo>();
 
         var mainRef = await ResolveMainRefAsync(repoPath, ct);
@@ -99,7 +137,7 @@ public sealed class GitBranchService
             "--format=%(HEAD)%09%(refname:short)%09%(committerdate:unix)%09%(objectname)"
         }, ct);
         if (!list.Success)
-            return results;
+            return new BranchInventory { DefaultBranch = mainRef, Branches = results };
 
         // Branches held by linked worktrees (never deletable from under them).
         var worktreeBranches = await BranchesCheckedOutInWorktreesAsync(repoPath, ct);
@@ -119,6 +157,10 @@ public sealed class GitBranchService
             bool inspectionOk = mainRef != null;
             bool originGone = false, containedInMain = false, prMerged = false;
             int ahead = 0, behind = 0;
+            // Null until the containment inspection actually succeeds (issue #2118). With no default branch
+            // there is nothing to be contained in, and a failed `git cherry` proves nothing either way - so
+            // both stay "not determined" rather than collapsing to the false that `containedInMain` holds.
+            bool? mergedIntoDefault = null;
 
             if (mainRef != null)
             {
@@ -135,6 +177,8 @@ public sealed class GitBranchService
                 containedInMain = cherry.Success && !cherry.Output
                     .Split('\n', StringSplitOptions.RemoveEmptyEntries)
                     .Any(l => l.TrimStart().StartsWith('+'));
+                if (cherry.Success)
+                    mergedIntoDefault = containedInMain;
 
                 var counts = await _git.RunAsync(repoPath, new[] { "rev-list", "--left-right", "--count", $"{mainRef}...{name}" }, ct);
                 var nums = counts.Output.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
@@ -159,10 +203,11 @@ public sealed class GitBranchService
                 LastCommitUtc = lastCommit,
                 SafeToDelete = safe,
                 Explanation = why,
+                MergedIntoDefault = mergedIntoDefault,
             });
         }
 
-        return results;
+        return new BranchInventory { DefaultBranch = mainRef, Branches = results };
     }
 
     /// <summary>
