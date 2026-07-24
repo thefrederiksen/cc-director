@@ -337,6 +337,64 @@ public class RepositoryMonitorTests
     }
 
     // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 5): a THROWING ProgressChanged subscriber must not skip the
+    // deferred-recompute drain. The exit invoke fires after IsScanning is already cleared, so
+    // a skipped drain would strand the deferred requests until some later scan happened to
+    // complete. The drain sits in a finally; the subscriber's exception still propagates.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Rescan_ProgressSubscriberThrowsAtExit_StillDrainsTheDeferredRecomputes()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ccd-progthrow-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(System.IO.Path.Combine(dir, ".git"));
+        try
+        {
+            int computeCalls = 0;
+            var scanComputeEntered = new TaskCompletionSource();
+            var releaseScanCompute = new TaskCompletionSource();
+            var monitor = new RepositoryMonitor(
+                enumerate: _ => new[] { dir },
+                compute: async (p, _, _) =>
+                {
+                    int call = Interlocked.Increment(ref computeCalls);
+                    if (call == 1)
+                    {
+                        scanComputeEntered.SetResult();
+                        await releaseScanCompute.Task;
+                    }
+                    return Status(p) with { UncommittedCount = call, IsClean = false };
+                }) { LiveSessionsProvider = NoSessions };
+
+            // Throws ONLY on the exit invoke - the one raised after IsScanning was cleared.
+            // Mid-scan progress invokes pass through so the scan itself proceeds normally.
+            monitor.ProgressChanged += () =>
+            {
+                if (!monitor.IsScanning)
+                    throw new InvalidOperationException("injected progress subscriber failure");
+            };
+
+            var scanTask = monitor.RescanAsync(new[] { "/r" });
+            await scanComputeEntered.Task;
+
+            // A watcher recompute arrives during the scan and is deferred.
+            await monitor.RecomputeOneAsync(dir);
+            Assert.Equal(1, Volatile.Read(ref computeCalls));
+
+            releaseScanCompute.SetResult();
+            // The subscriber's exception escapes the scan LOUDLY...
+            await Assert.ThrowsAsync<InvalidOperationException>(() => scanTask);
+
+            // ...but the deferred recompute was drained anyway, not stranded.
+            Assert.Equal(2, Volatile.Read(ref computeCalls));
+            Assert.Equal(2, Assert.Single(monitor.Snapshot()).UncommittedCount);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
     // REGRESSION (inspection finding F6): two recomputes for the same repository are single-
     // flight - the slower, OLDER compute can never publish after (and thereby overwrite) the
     // newer one.

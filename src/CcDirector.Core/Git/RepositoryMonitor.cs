@@ -372,7 +372,6 @@ public sealed class RepositoryMonitor
             }
             if (owner)
             {
-                ProgressChanged?.Invoke();
                 // Deferred requests are drained on EVERY exit path of the OWNING scan (ruling
                 // R3-6) - completed, externally cancelled, or faulted - so a cancelled scan with
                 // no successor never strands them. Each deferred request kept its ORIGINAL
@@ -380,8 +379,18 @@ public sealed class RepositoryMonitor
                 // newer scan owns the drain: every one of ITS exit paths runs this same block.
                 // Each drained request goes back through RecomputeOneAsync's own deferral check
                 // (ruling R4-4): when a newer scan has meanwhile started, it re-defers to that
-                // scan instead of running concurrently with it.
-                await DrainDeferredRecomputesAsync();
+                // scan instead of running concurrently with it. The drain sits in a finally
+                // (round-5 finding): a THROWING ProgressChanged subscriber must not skip it -
+                // IsScanning is already cleared at this point, so a skipped drain would strand
+                // the deferred requests until some later scan happened to complete.
+                try
+                {
+                    ProgressChanged?.Invoke();
+                }
+                finally
+                {
+                    await DrainDeferredRecomputesAsync();
+                }
             }
             if (raiseCompleted)
             {
