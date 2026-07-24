@@ -2033,6 +2033,7 @@ public sealed class Session : IDisposable
             // session the owner parked. See IsOwnerDriven for the same rule on the text path.
             if (origin is not null)
                 StampOwnerTurn();
+            StampSubmission(source: null, origin);
             SetActivityState(ActivityState.Working);
         }
     }
@@ -2163,6 +2164,33 @@ public sealed class Session : IDisposable
         FileLog.Write($"[Session] Owner drove a turn: session={Id}, atUtc={LastOwnerTurnAtUtc:O}");
     }
 
+    /// <summary>
+    /// When ANY successful submission last entered this session - typed Enter, Cockpit, voice, a queue
+    /// drain, an agent-to-agent prompt - or null if none has. A FACT, like <see cref="LastOwnerTurnAtUtc"/>,
+    /// but answering a different question: that one says whether the OWNER drove a turn (it gates holds);
+    /// this one says whether A TURN EXISTS AT ALL, whoever drove it. The activity shadow classifier
+    /// (docs/PLAN-trustworthy-working-start-2026-07-24.md) reads it to tell a submission-explained Working
+    /// start from one explained only by terminal output. Do not conflate the two.
+    /// </summary>
+    public DateTime? LastSubmissionAtUtc { get; private set; }
+
+    /// <summary>
+    /// Fires when a submission enters this session, at the same choke points that set
+    /// <see cref="LastSubmissionAtUtc"/>. Args: the send source (null on the raw-byte path -
+    /// <see cref="SendInput"/> carries no <see cref="SendSource"/>) and the input origin (null when no
+    /// human surface tagged it). The activity producer subscribes to record turn-submitted evidence.
+    /// </summary>
+    public event Action<SendSource?, InputOrigin?>? OnTurnSubmitted;
+
+    /// <summary>Stamp the submission fact and notify observers. An observer's fault must never break the
+    /// submission that already happened, so the fan-out is guarded like every other session event.</summary>
+    private void StampSubmission(SendSource? source, InputOrigin? origin)
+    {
+        LastSubmissionAtUtc = DateTime.UtcNow;
+        try { OnTurnSubmitted?.Invoke(source, origin); }
+        catch (Exception ex) { FileLog.Write($"[Session] OnTurnSubmitted handler failed: session={Id}, {ex.Message}"); }
+    }
+
     public async Task SendTextAsync(string text, SendSource source = SendSource.UserInput, InputOrigin? origin = null)
     {
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
@@ -2190,6 +2218,7 @@ public sealed class Session : IDisposable
         // hold die 90 seconds later when another agent messaged it. See IsOwnerDriven.
         if (IsOwnerDriven(source, origin))
             StampOwnerTurn();
+        StampSubmission(source, origin);
         SetActivityState(ActivityState.Working);
         // DevThrottle Stats: a SendTextAsync is exactly one submitted turn. Count it (plus its character
         // volume) for the tagged origin. Null origin = not a human turn - either another agent (counted on

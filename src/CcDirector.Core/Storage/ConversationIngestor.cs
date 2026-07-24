@@ -75,11 +75,19 @@ public sealed class ConversationIngestor : IDisposable
 
     /// <param name="sessionManager">The sessions to watch.</param>
     /// <param name="sink">Where captured messages go - the Gateway in production.</param>
-    public ConversationIngestor(SessionManager sessionManager, IPromptSink sink)
+    /// <param name="activityProducer">The activity-evidence producer (docs/PLAN-trustworthy-working-start-
+    /// 2026-07-24.md): each NEW assistant reply detected here is also recorded as a
+    /// turn-observed-in-transcript event - the ground truth that a real turn happened, which the shadow
+    /// Working classifier is judged against. Optional; null means no evidence is recorded.</param>
+    public ConversationIngestor(SessionManager sessionManager, IPromptSink sink,
+        Activity.ActivityEventProducer? activityProducer = null)
     {
         _sessionManager = sessionManager;
         _sink = sink;
+        _activityProducer = activityProducer;
     }
+
+    private readonly Activity.ActivityEventProducer? _activityProducer;
 
     public void Start()
     {
@@ -202,6 +210,15 @@ public sealed class ConversationIngestor : IDisposable
                 Text = text,
             });
             pushed.Add((ts, message.Role, text, fromAgent));
+
+            // Ground truth for the shadow Working classifier: a NEW assistant reply proves a real turn
+            // happened. Recorded at DETECTION time, not after the prompt push - the event id derives
+            // deterministically from the same content identity this loop dedupes on, so a re-detection
+            // (an earlier prompt push failed and the message comes around again) replays the same
+            // identity and the Gateway acknowledges a duplicate instead of storing a second observation.
+            if (!isUser)
+                _activityProducer?.RecordTurnObserved(session, ts, ContextIdFor(session, message),
+                    $"{scope}|{(fromAgent ? ts.ToString("O") : "no-ts")}|{text}");
         }
 
         if (toPush.Count == 0) return;
