@@ -270,6 +270,34 @@ public sealed class RepositoryWatcherIntegrationTests : IDisposable
         }
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection): a working-tree change must recompute from the CURRENT tree, not the
+    // GitStatusProvider's 10-second cache. Right after a scan populates the cache with a clean
+    // count, dirtying the tree and letting the watcher recompute must publish the dirty state -
+    // before the fix the recompute read the cached clean count and stayed wrong.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task WorkingTreeChange_RecomputesFromFreshStatus_NotTheStaleCache()
+    {
+        var a = MakeRepo("cache-repo"); // clean, and this scan populates the status cache as clean
+        var monitor = new RepositoryMonitor(enumerate: _ => new[] { a }) { LiveSessionsProvider = NoSessions };
+        await monitor.RescanAsync(new[] { _root });
+        Assert.True(monitor.Snapshot().Single().IsClean);
+
+        using var watcher = new RepositoryWatcher(monitor);
+        var recomputed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        watcher.Recomputed += _ => recomputed.TrySetResult();
+        watcher.SyncWatches(new[] { _root }, new[] { a });
+
+        // Dirty the tree well within the 10-second cache window.
+        File.WriteAllText(Path.Combine(a, "dirty.txt"), "work in progress\n");
+
+        await WaitUntilAsync(() => recomputed.Task.IsCompleted, TimeSpan.FromSeconds(15));
+        await WaitUntilAsync(() => !monitor.Snapshot().Single().IsClean, TimeSpan.FromSeconds(10));
+
+        Assert.False(monitor.Snapshot().Single().IsClean, "the recompute must reflect the new dirty state, not the cached clean count");
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
     {
         var sw = Stopwatch.StartNew();

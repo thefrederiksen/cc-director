@@ -228,6 +228,11 @@ public sealed class RepositoryWatcher : IDisposable
         try
         {
             FileLog.Write($"[RepositoryWatcher] change settled - recomputing {repoPath}");
+            // Drop the 10-second status cache for this repository FIRST (inspection): a working-tree
+            // change that lands right after a scan populated the cache would otherwise recompute from
+            // the stale "clean" count and republish clean, staying wrong until the periodic
+            // reconciliation. Invalidating here makes the recompute read the tree as it is now.
+            GitStatusProvider.InvalidateCache(repoPath);
             await _monitor.RecomputeOneAsync(repoPath);
             Recomputed?.Invoke(repoPath);
         }
