@@ -29,11 +29,23 @@ export async function assistantTurn(text: string, idempotencyKey?: string, signa
     if (res.status === 402) throw creditsErrorFrom(body);
     throw new GatewayError(res.status, body.error ?? `Assistant turn failed: ${res.status}`);
   }
-  const body = (await res.json().catch(() => ({}))) as Partial<CarModeTurnResult>;
+  // Codex review finding 7: a 2xx that does not carry the turn contract is a PROTOCOL failure and
+  // must throw specifically - synthesizing defaults would render a blank assistant answer and hide a
+  // broken Gateway. The brain never returns an empty spoken string, so empty is malformed too.
+  let body: Partial<CarModeTurnResult>;
+  try {
+    body = (await res.json()) as Partial<CarModeTurnResult>;
+  } catch {
+    throw new GatewayError(res.status, "The Assistant turn response was not JSON - Gateway and cockpit are out of step. Redeploy them together.");
+  }
+  const spoken = typeof body.spoken === "string" ? body.spoken.trim() : "";
+  if (typeof body.turnId !== "string" || body.turnId.length === 0 || spoken.length === 0 || !Array.isArray(body.actions)) {
+    throw new GatewayError(res.status, "The Assistant turn response was missing turnId, spoken, or actions - Gateway and cockpit are out of step. Redeploy them together.");
+  }
   return {
-    turnId: typeof body.turnId === "string" ? body.turnId : "",
-    spoken: (body.spoken ?? "").trim(),
-    actions: Array.isArray(body.actions) ? body.actions : [],
+    turnId: body.turnId,
+    spoken,
+    actions: body.actions,
     pendingConfirmation: Boolean(body.pendingConfirmation),
     timing: body.timing ?? null,
   };

@@ -89,9 +89,22 @@ internal static class CarModeEndpoint
         MapDiagnosticsRoutes(app, diagnostics);
     }
 
+    /// <summary>
+    /// One gate per authenticated device, held for the WHOLE brain turn (Codex review of the Assistant
+    /// build, finding 5). A turn mutates ordered per-device state - the conversation history, the current
+    /// subject, and the armed-destructive-confirmation slot - and the confirmation consume is a get-then-
+    /// clear, so two turns entering the brain concurrently for the SAME device (two cockpit tabs, or a
+    /// phone and a desk at once) could both observe one armed delete and execute it twice, or interleave
+    /// their history writes. The turn cache only single-flights the SAME Idempotency-Key; this gate
+    /// serializes DIFFERENT turns of one device. Devices are few (each is an enrolled credential), so the
+    /// dictionary stays small; different devices are never queued behind each other.
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> TurnGates = new();
+
     /// <summary>Map one turn route over the given brain. Identical mechanics for every surface: tenant
-    ///  resolution, the authenticated-credential conversation key, Idempotency-Key single-flight, the shared
-    ///  402 money refusal, and the loud 502 failure whose message names the surface.</summary>
+    ///  resolution, the authenticated-credential conversation key, per-device turn serialization,
+    ///  Idempotency-Key single-flight, the shared 402 money refusal, and the loud 502 failure whose
+    ///  message names the surface.</summary>
     private static void MapTurnRoute(IEndpointRouteBuilder app, string pattern, string surfaceLabel,
         CarModeBrain brain, CarModeTurnCache turnCache, HostedTenantBoundary tenantBoundary)
     {
@@ -120,18 +133,35 @@ internal static class CarModeEndpoint
             try
             {
                 CarModeTurnResponse result;
-                if (string.IsNullOrEmpty(idemKey))
+                // Serialize this device's turns end-to-end (see TurnGates). The wait honors the request
+                // token, so a caller that gives up while queued does not hold a slot; the shared "" bucket
+                // (auth gate off in local debug) serializes anonymous callers together, matching how the
+                // conversation store already buckets them. Known residual window: on the Idempotency-Key
+                // path the brain runs detached (CancellationToken.None) so a client that DISCONNECTS
+                // mid-turn releases the gate while that detached work finishes - a deliberate trade, since
+                // holding the gate from a continuation could double-release on a same-key retry. The gate
+                // closes the two-tabs / double-confirm race, which never involves a disconnect.
+                var gate = TurnGates.GetOrAdd(deviceKey, static _ => new SemaphoreSlim(1, 1));
+                await gate.WaitAsync(ct);
+                try
                 {
-                    result = await brain.RunTurnAsync(tenant.Value, deviceKey, text, ct);
+                    if (string.IsNullOrEmpty(idemKey))
+                    {
+                        result = await brain.RunTurnAsync(tenant.Value, deviceKey, text, ct);
+                    }
+                    else
+                    {
+                        // Run the brain on CancellationToken.None (NOT the request token) inside the single-flight
+                        // cache, so a client that drops mid-turn does NOT abort the work - it completes and caches,
+                        // and the client's retry gets the cached result instead of re-acting. Await with the request
+                        // token so a disconnected client still returns promptly (the underlying work continues).
+                        var work = turnCache.GetOrRunAsync(deviceKey, idemKey, () => brain.RunTurnAsync(tenant.Value, deviceKey, text, CancellationToken.None));
+                        result = await work.WaitAsync(ct);
+                    }
                 }
-                else
+                finally
                 {
-                    // Run the brain on CancellationToken.None (NOT the request token) inside the single-flight
-                    // cache, so a client that drops mid-turn does NOT abort the work - it completes and caches,
-                    // and the client's retry gets the cached result instead of re-acting. Await with the request
-                    // token so a disconnected client still returns promptly (the underlying work continues).
-                    var work = turnCache.GetOrRunAsync(deviceKey, idemKey, () => brain.RunTurnAsync(tenant.Value, deviceKey, text, CancellationToken.None));
-                    result = await work.WaitAsync(ct);
+                    gate.Release();
                 }
                 return Results.Json(new
                 {

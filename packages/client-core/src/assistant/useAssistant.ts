@@ -25,6 +25,14 @@ export type AssistantPhase = "idle" | "listening" | "transcribing" | "thinking" 
 /** Chat mode types (replies stay silent); voice mode talks and reads every reply aloud. */
 export type AssistantMode = "chat" | "voice";
 
+/** The one in-flight microphone capture: its recorder, its generation (stale-settle detection),
+ *  and the start() promise every teardown path must let settle before disposing. */
+interface TalkCapture {
+  recorder: MicRecorder;
+  generation: number;
+  started: Promise<void>;
+}
+
 export interface UseAssistant {
   entries: AssistantEntry[];
   phase: AssistantPhase;
@@ -57,23 +65,38 @@ export function useAssistant(audioRef: RefObject<HTMLAudioElement | null>): UseA
   const [phase, setPhase] = useState<AssistantPhase>("idle");
   const [mode, setMode] = useState<AssistantMode>("chat");
 
-  const recorderRef = useRef<MicRecorder | null>(null);
+  // One capture in flight, identified by its generation number (Codex review finding 3). The
+  // microphone permission prompt makes MicRecorder.start() genuinely asynchronous: a cancel, a
+  // quick second tap, or an unmount can all arrive while getUserMedia is still pending, and a
+  // recorder disposed at that moment would come alive afterwards as an invisible open microphone.
+  // Every settle path therefore checks its generation against the current one and disposes the
+  // recorder AFTER its start() promise settles - never before.
+  const talkRef = useRef<TalkCapture | null>(null);
+  const generationRef = useRef(0);
+
   const stopPlaybackRef = useRef<() => void>(() => {});
   // The mode at the moment a turn RUNS decides whether its reply is read aloud; a ref avoids the
   // stale-closure trap when the owner flips the toggle mid-turn.
   const modeRef = useRef<AssistantMode>("chat");
   modeRef.current = mode;
 
+  /** Abandon the in-flight capture, disposing the recorder only after its start() settles. */
+  const abandonCapture = useCallback(() => {
+    const talk = talkRef.current;
+    if (talk === null) return;
+    talkRef.current = null;
+    void talk.started.catch(() => {}).then(() => talk.recorder.dispose());
+  }, []);
+
   // Warm the hosted model + text-to-speech the moment the screen opens, so the first question does
   // not pay the cold start (the same keep-warm door Car Mode uses; best-effort, never throws).
   useEffect(() => {
     void postCarModeWarmup();
     return () => {
-      recorderRef.current?.dispose();
-      recorderRef.current = null;
+      abandonCapture();
       stopPlaybackRef.current();
     };
-  }, []);
+  }, [abandonCapture]);
 
   const push = useCallback((entry: AssistantEntry) => {
     setEntries((cur) => appendEntry(cur, entry));
@@ -87,7 +110,13 @@ export function useAssistant(audioRef: RefObject<HTMLAudioElement | null>): UseA
     const url = URL.createObjectURL(clip);
     try {
       await playClip(audio, url, (stop) => {
-        stopPlaybackRef.current = stop;
+        // Codex review finding 4: playClip's stop resolves the play promise but does NOT silence the
+        // element - pausing here is what actually stops the sound. Both halves belong to the one
+        // registered stop so every caller (the Stop reading button, a mode switch, unmount) gets both.
+        stopPlaybackRef.current = () => {
+          audio.pause();
+          stop();
+        };
       });
     } finally {
       URL.revokeObjectURL(url);
@@ -129,25 +158,39 @@ export function useAssistant(audioRef: RefObject<HTMLAudioElement | null>): UseA
   }, [phase, runTurn]);
 
   const startTalk = useCallback(() => {
-    if (phase !== "idle") return;
+    if (phase !== "idle" || talkRef.current !== null) return;
+    const generation = ++generationRef.current;
     const recorder = new MicRecorder();
-    recorderRef.current = recorder;
+    const started = recorder.start();
+    talkRef.current = { recorder, generation, started };
     setPhase("listening");
-    void recorder.start().catch((err: unknown) => {
-      recorderRef.current = null;
+    started.catch((err: unknown) => {
+      // Settle path for a start that failed (permission denied, no device). Act only if THIS capture
+      // is still the current one - endTalk/cancelTalk may have claimed it already, and their own
+      // settle handling owns the outcome then. A stale failure only disposes its own recorder.
+      if (talkRef.current?.generation !== generation) {
+        recorder.dispose();
+        return;
+      }
+      talkRef.current = null;
       setPhase("idle");
       push({ role: "error", text: err instanceof Error ? err.message : "The microphone could not be opened." });
     });
   }, [phase, push]);
 
   const endTalk = useCallback(() => {
-    const recorder = recorderRef.current;
-    if (recorder === null || phase !== "listening") return;
-    recorderRef.current = null;
+    const talk = talkRef.current;
+    if (talk === null || phase !== "listening") return;
+    // Claim the capture: from here the start-failure handler above sees a stale generation and
+    // stands down, so this path owns every outcome exactly once.
+    talkRef.current = null;
     setPhase("transcribing");
     void (async () => {
       try {
-        const captured = await recorder.stop();
+        // Let start() finish before stopping - stop() on a recorder whose getUserMedia is still
+        // pending would throw AND leave the microphone to open later, unowned (finding 3).
+        await talk.started;
+        const captured = await talk.recorder.stop();
         const { wav } = await blobToWav16kMono(captured);
         const transcript = await transcribeCarModeAudio(wav);
         if (transcript.length === 0) {
@@ -157,6 +200,7 @@ export function useAssistant(audioRef: RefObject<HTMLAudioElement | null>): UseA
         }
         await runTurn(transcript);
       } catch (err) {
+        talk.recorder.dispose();
         setPhase("idle");
         push({ role: "error", text: gatewayErrorMessage(err) });
       }
@@ -165,20 +209,26 @@ export function useAssistant(audioRef: RefObject<HTMLAudioElement | null>): UseA
 
   const cancelTalk = useCallback(() => {
     if (phase !== "listening") return;
-    recorderRef.current?.dispose();
-    recorderRef.current = null;
+    abandonCapture();
     setPhase("idle");
-  }, [phase]);
+  }, [abandonCapture, phase]);
 
   const stopSpeaking = useCallback(() => {
     stopPlaybackRef.current();
+  }, []);
+
+  // Leaving voice mode mid-readback removes the Stop reading button, so the mode switch itself
+  // must stop the audio (finding 4) - otherwise the reply keeps sounding with no way to silence it.
+  const setModeStopping = useCallback((next: AssistantMode) => {
+    if (next === "chat") stopPlaybackRef.current();
+    setMode(next);
   }, []);
 
   return {
     entries,
     phase,
     mode,
-    setMode,
+    setMode: setModeStopping,
     busy: phase !== "idle",
     confirmOffered: awaitingConfirmation(entries) && phase === "idle",
     sendText,
