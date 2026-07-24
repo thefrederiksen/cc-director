@@ -56,6 +56,11 @@ public sealed class RepoHistoryStore
 {
     public const int DirtyThresholdDays = 7;
 
+    /// <summary>How long a daily row is kept. The only reader caps its window at 26 weeks, so rows
+    /// older than that (plus a week of margin) are pruned - otherwise the file and the in-memory
+    /// dictionary grow forever and every push rewrites all of history (issue 516).</summary>
+    public const int RetentionDays = 26 * 7 + 7;
+
     private readonly string _path;
     private readonly object _gate = new();
     private Dictionary<string, RepoDailySnapshot>? _rows; // key: tenant|date|machine|repo
@@ -85,6 +90,12 @@ public sealed class RepoHistoryStore
             var directorsInScope = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             if (!string.IsNullOrWhiteSpace(reconcileDirectorId))
                 directorsInScope.Add(reconcileDirectorId);
+
+            // Change detection (issue 516): every accepted push re-pushes the FULL snapshot, and on a
+            // hosted Gateway this happens on a periodic cadence for every tenant. Rewriting the whole
+            // global file when nothing actually changed is pure noisy-neighbour cost, so the disk
+            // write is skipped unless this observation added, changed, removed, or pruned a row.
+            bool changed = false;
 
             foreach (var r in repositories)
             {
@@ -119,6 +130,8 @@ public sealed class RepoHistoryStore
                     WorktreeBytes = r.WorktreeBytes,
                 };
                 var key = Key(row);
+                if (!_rows!.TryGetValue(key, out var existing) || !existing.Equals(row))
+                    changed = true;
                 _rows![key] = row;
                 presentKeys.Add(key);
                 directorsInScope.Add(r.DirectorId);
@@ -137,9 +150,25 @@ public sealed class RepoHistoryStore
                     .ToList();
                 foreach (var row in stale)
                     _rows!.Remove(Key(row));
+                if (stale.Count > 0)
+                    changed = true;
             }
 
-            Save();
+            // Retention (issue 516): age out rows past the read window across ALL tenants, so the
+            // file and dictionary do not grow without bound and write cost does not grow with all
+            // past tenants/Directors/repositories.
+            var cutoff = date.AddDays(-RetentionDays);
+            var expired = _rows!.Values.Where(row => row.Date < cutoff).ToList();
+            foreach (var row in expired)
+                _rows!.Remove(Key(row));
+            if (expired.Count > 0)
+            {
+                changed = true;
+                FileLog.Write($"[RepoHistoryStore] pruned {expired.Count} row(s) older than {RetentionDays} days");
+            }
+
+            if (changed)
+                Save();
         }
     }
 

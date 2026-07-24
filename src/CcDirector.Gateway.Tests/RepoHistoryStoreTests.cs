@@ -339,6 +339,67 @@ public sealed class RepoHistoryStoreTests : IDisposable
         Assert.Equal(3, store.WeeklyTrends(tenant, 1, day)[^1].MaxWorktrees);
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (issue 516): an accepted push whose values did not change must NOT rewrite the
+    // whole global history file. Every Director re-pushes its full snapshot on a periodic cadence,
+    // and the old observe rewrote every historical row for every tenant on each one.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public void RepeatedIdenticalSnapshot_DoesNotRewriteTheFile()
+    {
+        var tenant = TenantId.Local;
+        var day = new DateOnly(2026, 07, 24);
+        var store = new RepoHistoryStore(_path);
+
+        store.ObserveSnapshot(tenant, new[] { Repo("a", worktrees: 5) }, day);
+        Assert.True(File.Exists(_path));
+        var firstWrite = File.GetLastWriteTimeUtc(_path);
+
+        Thread.Sleep(80);
+        store.ObserveSnapshot(tenant, new[] { Repo("a", worktrees: 5) }, day); // identical values
+
+        Assert.Equal(firstWrite, File.GetLastWriteTimeUtc(_path)); // no rewrite for an unchanged observation
+    }
+
+    // A genuinely changed value still rewrites (the change-detection is not too eager).
+    [Fact]
+    public void ChangedSnapshot_DoesRewriteTheFile()
+    {
+        var tenant = TenantId.Local;
+        var day = new DateOnly(2026, 07, 24);
+        var store = new RepoHistoryStore(_path);
+
+        store.ObserveSnapshot(tenant, new[] { Repo("a", worktrees: 5) }, day);
+        var firstWrite = File.GetLastWriteTimeUtc(_path);
+
+        Thread.Sleep(80);
+        store.ObserveSnapshot(tenant, new[] { Repo("a", worktrees: 6) }, day); // a real change
+
+        Assert.True(File.GetLastWriteTimeUtc(_path) > firstWrite);
+        Assert.Equal(6, store.WeeklyTrends(tenant, 1, day)[^1].MaxWorktrees);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (issue 516): rows older than the retention window are pruned, so the file and
+    // the in-memory dictionary do not grow forever. The old store never aged anything out.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public void Observe_PrunesRowsOlderThanTheRetentionWindow()
+    {
+        var tenant = TenantId.Local;
+        var store = new RepoHistoryStore(_path);
+        var today = new DateOnly(2026, 07, 24);
+        var ancient = today.AddDays(-(RepoHistoryStore.RetentionDays + 10)); // safely outside the window
+
+        store.ObserveSnapshot(tenant, new[] { Repo("ancient", worktrees: 9) }, ancient);
+        store.ObserveSnapshot(tenant, new[] { Repo("recent", worktrees: 2) }, today); // prunes on this push
+
+        // Persisted: the ancient row is gone; the recent one stays.
+        var reloaded = new RepoHistoryStore(_path);
+        Assert.Equal(0, reloaded.WeeklyTrends(tenant, 1, ancient)[^1].MaxWorktrees);
+        Assert.Equal(2, reloaded.WeeklyTrends(tenant, 1, today)[^1].MaxWorktrees);
+    }
+
     [Fact]
     public void TenantPartition_TrendsNeverMix()
     {
