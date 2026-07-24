@@ -1,0 +1,63 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:CcDirector.Avalonia.Controls"
+             x:Class="CcDirector.Avalonia.Controls.RepositoriesView"
+             Background="#1E1E1E">
+
+    <UserControl.Styles>
+        <Style Selector="Button.railItem">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#AAAAAA" />
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="Padding" Value="12,7" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="CornerRadius" Value="0" />
+        </Style>
+        <Style Selector="Button.railItem:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#2A2D2E" />
+        </Style>
+        <Style Selector="Button.railItem.active">
+            <Setter Property="Background" Value="#094771" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
+        </Style>
+        <Style Selector="Button.railItem.active /template/ ContentPresenter">
+            <Setter Property="Background" Value="#094771" />
+        </Style>
+    </UserControl.Styles>
+
+    <Grid ColumnDefinitions="Auto,1,*">
+        <Border Grid.Column="0" Background="#252526" MinWidth="150">
+            <StackPanel Spacing="1" Margin="0,8,0,0">
+                <Button x:Name="ReposRailButton" Classes="railItem active" Click="ReposRailButton_Click">
+                    <TextBlock Text="Local repositories" VerticalAlignment="Center" />
+                </Button>
+                <Button x:Name="RootsRailButton" Classes="railItem" Click="RootsRailButton_Click">
+                    <TextBlock Text="Root folders" VerticalAlignment="Center" />
+                </Button>
+            </StackPanel>
+        </Border>
+
+        <Border Grid.Column="1" Background="#3C3C3C" />
+
+        <Panel Grid.Column="2">
+            <controls:RepositoryListView x:Name="ReposPage" IsVisible="True" />
+
+            <ScrollViewer x:Name="RootsPage" IsVisible="False" VerticalScrollBarVisibility="Auto">
+                <StackPanel Margin="16" Spacing="12">
+                    <Grid ColumnDefinitions="*,Auto">
+                        <StackPanel Grid.Column="0" Spacing="3" VerticalAlignment="Center">
+                            <TextBlock Text="Root folders" Foreground="#CCCCCC" FontSize="14" FontWeight="SemiBold" />
+                            <TextBlock Text="The directories scanned for repositories. GitHub uses the gh login; Azure DevOps uses az."
+                                       Foreground="#888888" FontSize="11" TextWrapping="Wrap" MaxWidth="560" />
+                        </StackPanel>
+                        <Button Grid.Column="1" x:Name="AddRootButton" Content="+ Add root folder"
+                                Background="#0E639C" Foreground="White" Padding="12,6" FontSize="12"
+                                VerticalAlignment="Top" Click="AddRootButton_Click" />
+                    </Grid>
+                    <StackPanel x:Name="RootsContainer" Spacing="6" />
+                </StackPanel>
+            </ScrollViewer>
+        </Panel>
+    </Grid>
+</UserControl>

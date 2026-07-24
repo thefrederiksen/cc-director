@@ -120,9 +120,10 @@ public sealed class HostedTranscriptionServeTests : IAsyncLifetime
         Assert.Equal("application/json", resp.Content.Headers.ContentType?.MediaType);
     }
 
-    /// <summary>FAIL CLOSED: a device with no bound tenant is refused 403, never served the Local partition.</summary>
-    // MTR-14B: an unbound device on hosted is an invalid credential, denied at the auth gate (401) before it
-    // can reach the route's tenant-boundary 403. Refused either way; no cross-tenant/Local read.
+    /// <summary>FAIL CLOSED: a device with no bound tenant is refused, never served the Local partition.
+    /// MTR-14B (#2020): an unbound device on hosted is an invalid credential, so it is now denied at the auth
+    /// gate with 401 before reaching the route's tenant-boundary 403 - the isolation is unchanged, only the
+    /// denial layer moved earlier.</summary>
     [Theory]
     [InlineData("transcription/stats")]
     [InlineData("transcription/turns")]

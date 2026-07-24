@@ -389,6 +389,32 @@
                 <!-- Communications / Connections moved to the top toolbar
                      (their pending-count badge rides along with them). -->
 
+                <!-- Pinned Repositories entry: opens the non-modal Repositories view over the
+                     center content, just above the connection indicators (issue #507, phase 4). -->
+                <Button x:Name="BtnRepositories" DockPanel.Dock="Bottom"
+                        Click="BtnRepositories_Click"
+                        Background="#2A2A2A" BorderBrush="#3C3C3C" BorderThickness="1"
+                        Margin="8,4,8,6" Padding="10,8" CornerRadius="4"
+                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Cursor="Hand"
+                        ToolTip.Tip="Repositories and worktrees across your machine">
+                    <DockPanel LastChildFill="True">
+                        <!-- Orphaned-worktree count: the reap opportunity, visible without opening. -->
+                        <Border x:Name="RepositoriesBadge" DockPanel.Dock="Right"
+                                Background="#EF4444" CornerRadius="8" Padding="6,1"
+                                VerticalAlignment="Center" IsVisible="False"
+                                ToolTip.Tip="Worktrees safe to reap">
+                            <TextBlock x:Name="RepositoriesBadgeText" Text="0" Foreground="White"
+                                       FontSize="9" FontWeight="SemiBold" />
+                        </Border>
+                        <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                            <TextBlock Text="[R]" Foreground="#4A9EFF" FontFamily="Cascadia Mono, Consolas"
+                                       FontSize="12" VerticalAlignment="Center" />
+                            <TextBlock Text="Repositories" Foreground="#CCCCCC" FontSize="12"
+                                       FontWeight="SemiBold" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </DockPanel>
+                </Button>
+
                 <!-- Session list -->
                 <ListBox x:Name="SessionList"
                          Background="Transparent"
@@ -1533,6 +1559,40 @@
 
                 <!-- ConnectionsView fills the rest -->
                 <controls:ConnectionsView x:Name="ConnectionsView" />
+            </DockPanel>
+        </Border>
+
+        <!-- Repositories overlay: the pinned, non-modal repository/worktree home over the center
+             content (issue #507, phase 4). Leaves the session rail (column 0) clickable. -->
+        <Border x:Name="RepositoriesOverlay"
+                Grid.Row="0" Grid.RowSpan="2" Grid.Column="2"
+                Background="{DynamicResource PanelBackground}"
+                ZIndex="10"
+                IsVisible="False">
+            <DockPanel>
+                <Border DockPanel.Dock="Top"
+                        Background="{DynamicResource SidebarBackground}"
+                        BorderBrush="#3C3C3C" BorderThickness="0,0,0,1"
+                        Padding="12,8">
+                    <DockPanel>
+                        <Button x:Name="BtnRepositoriesClose"
+                                DockPanel.Dock="Right"
+                                Content="[x] Close"
+                                Click="BtnRepositoriesClose_Click"
+                                Background="Transparent"
+                                Foreground="#888888"
+                                BorderThickness="0"
+                                Cursor="Hand"
+                                Padding="8,4"
+                                FontSize="12" />
+                        <TextBlock Text="Repositories"
+                                   Foreground="{DynamicResource TextForeground}"
+                                   FontSize="16" FontWeight="Bold"
+                                   VerticalAlignment="Center" />
+                    </DockPanel>
+                </Border>
+
+                <controls:RepositoriesView x:Name="RepositoriesView" />
             </DockPanel>
         </Border>
 

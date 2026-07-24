@@ -78,6 +78,39 @@ public class RepositoryMonitorTests
     }
 
     [Fact]
+    public async Task Cache_WarmStart_ShowsLastRunInstantly_ThenReconciles()
+    {
+        var cachePath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ccd-monitor-cache-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            // First monitor: scan finds a, b, c and persists the cache.
+            var m1 = new RepositoryMonitor(
+                enumerate: _ => new[] { "/r/a", "/r/b", "/r/c" },
+                compute: (p, _, _) => Task.FromResult(Status(p)),
+                cachePath: cachePath);
+            await m1.RescanAsync(new[] { "/r" });
+            Assert.True(File.Exists(cachePath));
+
+            // Second monitor (next launch): warm-start shows all three BEFORE any scan.
+            var m2 = new RepositoryMonitor(
+                enumerate: _ => new[] { "/r/a", "/r/b" }, // "c" is gone now
+                compute: (p, _, _) => Task.FromResult(Status(p)),
+                cachePath: cachePath);
+            m2.LoadCache();
+            Assert.Equal(3, m2.Snapshot().Count); // instant content, no scan yet
+
+            // The scan then reconciles - "c" drops.
+            await m2.RescanAsync(new[] { "/r" });
+            Assert.Equal(2, m2.Snapshot().Count);
+            Assert.DoesNotContain(m2.Snapshot(), s => s.Name == "c");
+        }
+        finally
+        {
+            if (File.Exists(cachePath)) File.Delete(cachePath);
+        }
+    }
+
+    [Fact]
     public async Task Rescan_Upsert_UpdatesExistingEntryInPlace()
     {
         var dirty = false;

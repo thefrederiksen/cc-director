@@ -1,3 +1,4 @@
+using System.Text.Json;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Git;
@@ -24,6 +25,7 @@ public sealed class RepositoryMonitor
     private readonly object _gate = new();
     private readonly Dictionary<string, RepositoryStatus> _byPath = new(StringComparer.OrdinalIgnoreCase);
     private CancellationTokenSource? _cts;
+    private readonly string? _cachePath;
 
     /// <summary>True while a scan is in progress.</summary>
     public bool IsScanning { get; private set; }
@@ -48,10 +50,60 @@ public sealed class RepositoryMonitor
 
     public RepositoryMonitor(
         Func<IEnumerable<string>, IReadOnlyList<string>>? enumerate = null,
-        Func<string, IReadOnlyList<LiveSessionRef>?, CancellationToken, Task<RepositoryStatus>>? compute = null)
+        Func<string, IReadOnlyList<LiveSessionRef>?, CancellationToken, Task<RepositoryStatus>>? compute = null,
+        string? cachePath = null)
     {
         _enumerate = enumerate ?? DefaultEnumerate;
         _compute = compute ?? DefaultCompute;
+        _cachePath = cachePath;
+    }
+
+    /// <summary>
+    /// Warm start: load the last run's repositories from the JSON cache into the model, so a screen
+    /// opened before the first scan finishes shows content immediately. The scan then re-verifies and
+    /// reconciles. Best-effort and silent - a bad or missing cache just means an empty warm start.
+    /// </summary>
+    public void LoadCache()
+    {
+        if (string.IsNullOrEmpty(_cachePath) || !File.Exists(_cachePath))
+            return;
+        try
+        {
+            var cached = JsonSerializer.Deserialize<List<RepositoryStatus>>(File.ReadAllText(_cachePath));
+            if (cached == null)
+                return;
+            lock (_gate)
+            {
+                foreach (var s in cached)
+                    if (!string.IsNullOrWhiteSpace(s.Path))
+                        _byPath[WorktreeReaperService.NormalizePath(s.Path)] = s;
+            }
+            FileLog.Write($"[RepositoryMonitor] warm-start: loaded {cached.Count} repositories from cache");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[RepositoryMonitor] LoadCache failed: {ex.Message}");
+        }
+    }
+
+    private void SaveCache()
+    {
+        if (string.IsNullOrEmpty(_cachePath))
+            return;
+        try
+        {
+            List<RepositoryStatus> snapshot;
+            lock (_gate)
+                snapshot = _byPath.Values.ToList();
+            var dir = Path.GetDirectoryName(_cachePath);
+            if (dir != null)
+                Directory.CreateDirectory(dir);
+            File.WriteAllText(_cachePath, JsonSerializer.Serialize(snapshot));
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[RepositoryMonitor] SaveCache failed: {ex.Message}");
+        }
     }
 
     /// <summary>A thread-safe copy of the current model.</summary>
@@ -106,6 +158,9 @@ public sealed class RepositoryMonitor
             }
             foreach (var r in removed)
                 Removed?.Invoke(r);
+
+            // Persist the verified model so the next launch warm-starts.
+            SaveCache();
         }
         catch (OperationCanceledException)
         {

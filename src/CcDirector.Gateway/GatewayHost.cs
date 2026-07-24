@@ -2217,7 +2217,8 @@ public sealed class GatewayHost : IAsyncDisposable
         // registry GET /devices (issue #469), which is left unchanged. Inherits the host-wide token
         // middleware above, exactly like the other /account routes.
         var accountDevicesClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-        AccountDevicesEndpoint.Map(_app, Account, new Core.Account.DeviceRegistryClient(accountDevicesClient), Environment.MachineName);
+        AccountDevicesEndpoint.Map(_app, Account, new Core.Account.DeviceRegistryClient(accountDevicesClient), Environment.MachineName,
+            Devices, _tenantBoundary);
 
         // Account credit-balance proxy (issue #884): GET /account/credits. Same proxy shape as the device
         // list - the Gateway reads the balance from the cloud with its own stored account token (JWT) and

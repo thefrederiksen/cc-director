@@ -248,6 +248,15 @@ public partial class MainWindow : Window
         // slots) so a session-occupied worktree is shown as "in use" and never reaped.
         SourceControlView.LiveSessionsProvider = GetLiveSessionsOnThisMachineAsync;
 
+        // Keep the pinned Repositories badge (safe-to-reap worktree count) in sync with the scan.
+        if (global::Avalonia.Application.Current is App appForRepo)
+        {
+            appForRepo.RepositoryMonitor.Upserted += _ => Dispatcher.UIThread.Post(UpdateRepositoriesBadge);
+            appForRepo.RepositoryMonitor.Removed += _ => Dispatcher.UIThread.Post(UpdateRepositoriesBadge);
+            appForRepo.RepositoryMonitor.ProgressChanged += () => Dispatcher.UIThread.Post(UpdateRepositoriesBadge);
+            UpdateRepositoriesBadge();
+        }
+
         // Wire prompt input text changes for slash command autocomplete
         PromptInput.TextChanged += PromptInput_TextChanged;
         PromptInput.LostFocus += (_, _) => SlashCommandPopup.IsOpen = false;
@@ -934,7 +943,8 @@ public partial class MainWindow : Window
     /// </summary>
     private bool IsContentOverlayOpen()
         => CommsOverlay.IsVisible
-           || ConnectionsOverlay.IsVisible;
+           || ConnectionsOverlay.IsVisible
+           || RepositoriesOverlay.IsVisible;
 
     /// <summary>
     /// Show the full-screen home page exactly when this Director has zero sessions - it is
@@ -1758,6 +1768,11 @@ public partial class MainWindow : Window
             ConnectionsOverlay.IsVisible = false;
             if (_connectionsInitialized)
                 ConnectionsView.StopPolling();
+        }
+        if (RepositoriesOverlay.IsVisible)
+        {
+            RepositoriesOverlay.IsVisible = false;
+            SetRepositoriesActive(false);
         }
 
         if (vm == _activeSession) return;
@@ -3674,49 +3689,28 @@ public partial class MainWindow : Window
         file.Menu.Items.Add(Item("Exit", Close));
         menu.Items.Add(file);
 
-        // ===== Session =====
-        var session = new NativeMenuItem("Session") { Menu = new NativeMenu() };
-        session.Menu.Items.Add(Item("Repositories...", async () =>
-        {
-            FileLog.Write("[MainWindow] Menu: Repositories");
-            var dialog = new RepositoryManagerDialog(AppRef().RootDirectoryStore);
-            var result = await dialog.ShowDialog<bool?>(this);
-            if (result == true && dialog.LaunchSessionPath != null)
-            {
-                var vm = CreateSession(dialog.LaunchSessionPath);
-                if (vm != null)
-                {
-                    ShowRenameDialog(vm);
-                    SaveSessionToHistory(vm);
-                    SwitchLeftTab("Terminal");
-                }
-            }
-        }));
-        session.Menu.Items.Add(Item("Repository status...", async () =>
-        {
-            FileLog.Write("[MainWindow] Menu: Repository status");
-            var app = AppRef();
-            var window = new RepositoryScreenWindow(app.RepositoryMonitor, app.StartRepositoryRescan);
-            await window.ShowDialog(this);
-        }));
+        // ===== Developer (alpha only) =====
+        // The "Session" menu was retired: Repositories moved to the pinned sidebar entry (#507),
+        // which left only alpha developer tools. Those now live under a Developer menu, so the
+        // normal menu bar is just File / View / Help.
         if (alpha)
         {
-            session.Menu.Items.Add(new NativeMenuItemSeparator());
-            session.Menu.Items.Add(Item("Start FIFO", () => BtnFifo_Click(this, new RoutedEventArgs())));
-            session.Menu.Items.Add(Item("Accounts...", async () =>
+            var dev = new NativeMenuItem("Developer") { Menu = new NativeMenu() };
+            dev.Menu.Items.Add(Item("Start FIFO", () => BtnFifo_Click(this, new RoutedEventArgs())));
+            dev.Menu.Items.Add(Item("Accounts...", async () =>
             {
                 FileLog.Write("[MainWindow] Menu: Accounts");
                 var dialog = new AccountsDialog(AppRef().ClaudeAccountStore);
                 await dialog.ShowDialog<bool?>(this);
             }));
-            session.Menu.Items.Add(Item("Show Reviews", async () =>
+            dev.Menu.Items.Add(Item("Show Reviews", async () =>
             {
                 FileLog.Write("[MainWindow] Menu: Show Reviews");
                 var dialog = new TurnReviewDialog();
                 await dialog.ShowDialog(this);
             }));
+            menu.Items.Add(dev);
         }
-        menu.Items.Add(session);
 
         // ===== View =====
         var view = new NativeMenuItem("View") { Menu = new NativeMenu() };
@@ -4052,6 +4046,59 @@ public partial class MainWindow : Window
         if (_connectionsInitialized)
             ConnectionsView.StopPolling();
         UpdateHomeVisibility(); // restore Home if still at zero sessions (#447)
+    }
+
+    private void BtnRepositories_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnRepositories_Click: opening Repositories view");
+
+        // Close other center overlays first.
+        if (CommsOverlay.IsVisible)
+        {
+            CommsOverlay.IsVisible = false;
+            if (_commsInitialized)
+                CommManagerView.StopPolling();
+        }
+        if (ConnectionsOverlay.IsVisible)
+        {
+            ConnectionsOverlay.IsVisible = false;
+            if (_connectionsInitialized)
+                ConnectionsView.StopPolling();
+        }
+
+        if (global::Avalonia.Application.Current is App app)
+        {
+            RepositoriesView.Attach(app.RepositoryMonitor, app.RootDirectoryStore, app.StartRepositoryRescan);
+            RepositoriesOverlay.IsVisible = true;
+            SetRepositoriesActive(true);
+        }
+        UpdateHomeVisibility(); // hide Home so the overlay is not buried behind it
+    }
+
+    private void BtnRepositoriesClose_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnRepositoriesClose_Click: closing Repositories view");
+        RepositoriesOverlay.IsVisible = false;
+        SetRepositoriesActive(false);
+        UpdateHomeVisibility();
+    }
+
+    /// <summary>Highlight the pinned Repositories entry while its view is open.</summary>
+    private void SetRepositoriesActive(bool active)
+    {
+        BtnRepositories.Background = new global::Avalonia.Media.SolidColorBrush(
+            global::Avalonia.Media.Color.Parse(active ? "#094771" : "#2A2A2A"));
+    }
+
+    /// <summary>Show the safe-to-reap worktree count on the pinned Repositories entry.</summary>
+    private void UpdateRepositoriesBadge()
+    {
+        var monitor = (global::Avalonia.Application.Current as App)?.RepositoryMonitor;
+        if (monitor is null)
+            return;
+        int reap = monitor.Snapshot().Sum(s => s.WorktreesSafeToReap);
+        RepositoriesBadgeText.Text = reap.ToString();
+        RepositoriesBadge.IsVisible = reap > 0;
     }
 
     private void SwitchLeftTab(string tab)
