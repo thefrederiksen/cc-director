@@ -31,6 +31,8 @@ const devProxy = proxyTarget
       "/carmode": { target: proxyTarget, changeOrigin: true },
       // The Assistant screen: its turn calls POST /assistant/turn (keep-warm reuses /carmode/warmup above).
       "/assistant": { target: proxyTarget, changeOrigin: true },
+      // The client error channel: on-screen and uncaught errors report to the Gateway log.
+      "/client-errors": { target: proxyTarget, changeOrigin: true },
       "/stats": { target: proxyTarget, changeOrigin: true },
       "/healthz": { target: proxyTarget, changeOrigin: true },
       "/diag": { target: proxyTarget, changeOrigin: true },

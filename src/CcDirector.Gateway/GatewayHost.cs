@@ -2232,6 +2232,11 @@ public sealed class GatewayHost : IAsyncDisposable
                 return (tts.BaseUrl, _tenantSettingsResolver.TtsVoice(tenant, mode), _tenantSettingsResolver.TtsModel(tenant, mode), key);
             });
         Api.CarModeEndpoint.Map(_app, carModeBrain, assistantBrain, _carModeTurnCache, _carModeDiagnostics, carModeWarmup, _tenantBoundary);
+
+        // The browser error channel (client error logging build): every error a browser app shows the
+        // user is also reported here and lands in the Gateway log, tenant-partitioned, with a queryable
+        // recent ring - no on-screen error exists only on the user's screen.
+        Api.ClientErrorEndpoints.Map(_app, _tenantBoundary);
         // Editable/versioned wingman instructions settings surface (issue #537), incl. A/B test
         // over saved training sessions (reads the shared training store; uses the hosted wingman brain).
         WingmanInstructionsEndpoint.Map(_app, _instructionsStore, WingmanBrainAsync);

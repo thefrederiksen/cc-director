@@ -55,6 +55,8 @@ const devProxy = proxyTarget
       // keep-warm ping reuses Car Mode's POST /carmode/warmup.
       "/assistant": { target: proxyTarget, changeOrigin: true },
       "/carmode": { target: proxyTarget, changeOrigin: true },
+      // The client error channel: on-screen and uncaught errors report to the Gateway log.
+      "/client-errors": { target: proxyTarget, changeOrigin: true },
       "/lists": { target: proxyTarget, changeOrigin: true },
       "/account": { target: proxyTarget, changeOrigin: true },
       "/gateway": { target: proxyTarget, changeOrigin: true },

@@ -20,6 +20,7 @@ import { DeviceCallback } from "@devthrottle/client-core/auth/DeviceCallback";
 import { hasDeviceKey } from "@devthrottle/client-core/auth/deviceKey";
 import { ensureGatewayCookie, configureUnauthorizedRedirect, mobileSignInRedirect } from "@devthrottle/client-core/api/client";
 import { ensurePushSubscribed } from "@devthrottle/client-core/push/register";
+import { installGlobalErrorReporting } from "@devthrottle/client-core/errors/reportClientError";
 import { CreditsNotice } from "./components/CreditsNotice";
 import { ConnectionBanner } from "./components/ConnectionBanner";
 import { useVisibleViewportHeight } from "./hooks/useVisibleViewportHeight";
@@ -99,6 +100,11 @@ ensureGatewayCookie();
 // so the desktop Cockpit can install its own /signin flow instead (issues #1024/#1088); installing it
 // here explicitly keeps the mobile shell self-documenting about its own re-gate entry.
 configureUnauthorizedRedirect(mobileSignInRedirect);
+
+// The client error channel: uncaught browser errors and un-awaited promise failures are reported to
+// the Gateway (POST /client-errors) so they land in the server log - no error exists only on the
+// phone's screen. Pages that handle and render errors report those explicitly at their call sites.
+installGlobalErrorReporting("mobile");
 
 // If the user already granted notification permission on a previous visit, silently refresh the push
 // subscription so the Gateway's record stays current (subscriptions can rotate). Never prompts here -
