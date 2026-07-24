@@ -106,3 +106,22 @@ build green; RUN pending a clear window (heavy Gateway-suite contention from oth
 - Inspection round 2 now runs as a VISIBLE Director session "Repositories cleanup fixes - Inspector"
   (id dbe3e897), writing its verdict to docs/reviews/codex-inspection-round2.md. (Owner corrected:
   run agents as visible sessions, not background CLI - memory saved.)
+
+## Codex round 2 = FAIL (both visible session + background) -> tractable fixes landed, 2 residuals escalated (2026-07-24)
+Round-2 inspection (visible Director session "Inspector" dbe3e897 + background cross-check) found ~7
+unique issues. FIXED (commit aa01eced, build-verified, affected Core suites green 49):
+- fetch origin by name (reaper/branch/inventory) - a bare fetch follows the branch's upstream, not origin.
+- GitSyncStatusProvider fails closed when the behind-main sub-probe fails (no false zero).
+- RepoHistoryStore load recovers lost rows from the backup (fill-gaps) - corrupt live no longer
+  suppresses/destroys the good backup.
+- History reconciliation runs only on a COMPLETE non-provisional push (mixed startup can't erase).
+- Reaper protects a worktree when a session is in it OR a subdirectory; roster re-read per worktree.
+RESIDUALS ESCALATED TO OWNER (architectural, out of a fix mission - genuine decision, LAW 1):
+  (a) roster-to-removal TOCTOU not atomically closed -> needs a session-start lease shared with the reaper.
+  (b) authoritative roster can be silently PARTIAL when a Director tunnel is stale (GET /sessions omits
+      offline directors, still 200) -> needs a completeness-aware roster / enveloped endpoint + fail-closed.
+  (c) junction/symlink path alias not resolved (minor).
+  Note: reapable worktrees are CLEAN+MERGED, so no commits are lost - the race cost is a disrupted
+  session + a rebuildable directory. Recommended: merge the safety fixes now + keep the destructive
+  reap / delete-branches actions GATED until (a)+(b) land. Awaiting owner's choice (merge+gate vs.
+  build the plumbing now). Regression tests for the round-2 fixes pending that decision.
