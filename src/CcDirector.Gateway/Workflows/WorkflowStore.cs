@@ -108,6 +108,22 @@ public sealed class WorkflowStore
         head.IsBuiltIn ? TenantChoiceFor(head.Id) ?? head.Enabled : head.Enabled;
 
     /// <summary>
+    /// Built-ins are READ-ONLY (Shared Workflow Library phase 3, owner ruling 2026-07-24, reversing
+    /// the 2026-07-17 editable-with-reset ruling): they are DevThrottle's, maintained by shipping a
+    /// new binary, and the only writer of their content is the boot-time seeder. Every authoring
+    /// write refuses a built-in id with the pointer at the sanctioned customization path - clone.
+    /// </summary>
+    private void RefuseBuiltInEdit(string key, string verb)
+    {
+        if (IsLibraryBuiltIn(key))
+            throw new WorkflowValidationException(
+                $"'{key}' is a built-in DevThrottle workflow and cannot be {verb}. Built-ins are " +
+                "maintained by DevThrottle and update with the Gateway itself. To customize the " +
+                "conduct, clone it into your own workflow: cc-devthrottle workflow clone " + key +
+                " <new-id>");
+    }
+
+    /// <summary>
     /// Every workflow with a published version, projected from that published version, in stable
     /// catalog order (creation order; the seeder stamps the built-ins so they keep their shipped
     /// order). Draft-only and archived workflows are omitted - the catalog lists what the fleet can
@@ -281,6 +297,7 @@ public sealed class WorkflowStore
 
         lock (_gate)
         {
+            RefuseBuiltInEdit(key, "edited");
             using var ctx = _db.CreateContext();
             var head = ctx.Workflows.FirstOrDefault(h => h.Id == key);
             if (head is null)
@@ -332,6 +349,7 @@ public sealed class WorkflowStore
         var key = NormalizeId(id);
         lock (_gate)
         {
+            RefuseBuiltInEdit(key, "published over");
             using var ctx = _db.CreateContext();
             var head = ctx.Workflows.FirstOrDefault(h => h.Id == key);
             if (head is null)
@@ -363,46 +381,9 @@ public sealed class WorkflowStore
         }
     }
 
-    /// <summary>Built-ins only: publish the shipped content of the RUNNING binary as a new version
-    /// (the "reset to shipped" the ours/yours trade promises). Null when no such workflow exists.</summary>
-    public WorkflowDto? ResetToShipped(string id)
-    {
-        var key = NormalizeId(id);
-        lock (_gate)
-        {
-            using var ctx = _db.CreateContext();
-            var head = ctx.Workflows.FirstOrDefault(h => h.Id == key);
-            if (head is null)
-                return null;
-            if (!head.IsBuiltIn)
-                throw new WorkflowValidationException(
-                    $"Workflow '{key}' is not built in; reset-to-shipped only applies to built-ins.");
-
-            var definition = BuiltInWorkflows.All().FirstOrDefault(d => d.Id == key)
-                ?? throw new InvalidOperationException(
-                    $"Built-in workflow '{key}' is not shipped by this binary; cannot reset.");
-            var shippedRow = BuiltInWorkflowSeeder.BuildShippedVersion(ctx, definition,
-                versionNumber: head.LatestVersion + 1, DateTime.UtcNow);
-            shippedRow.AuthoredBy = "gateway:reset";
-            shippedRow.ChangeNote = "Reset to the shipped built-in content.";
-
-            var previous = ctx.WorkflowVersions.FirstOrDefault(
-                v => v.WorkflowId == key && v.Status == WorkflowVersionStatus.Published);
-            if (previous is not null)
-                previous.Status = WorkflowVersionStatus.Superseded;
-            ctx.WorkflowVersions.Add(shippedRow);
-            head.LatestVersion = shippedRow.Version;
-            head.PublishedVersion = shippedRow.Version;
-            head.ShippedContentHash = shippedRow.ContentHash;
-            head.UpdatedUtc = shippedRow.CreatedUtc;
-            ctx.SaveChanges();
-
-            FileLog.Write($"[WorkflowStore] ResetToShipped: id={key}, v{shippedRow.Version} published from shipped content");
-            var hasDraft = ctx.WorkflowVersions.Any(
-                v => v.WorkflowId == key && v.Status == WorkflowVersionStatus.Draft);
-            return ToDto(head, shippedRow, hasDraft);
-        }
-    }
+    // Reset-to-shipped was RETIRED in the Shared Workflow Library phase 3 (owner ruling 2026-07-24):
+    // built-ins are read-only, so they can never diverge from shipped content and there is nothing to
+    // reset. The seeder always republishes the running binary's content on a hash change.
 
     /// <summary>Archive (soft-delete) a user-defined workflow. Its versions remain - a run that
     /// pinned one must always resolve. False when no such workflow exists.</summary>
@@ -411,6 +392,10 @@ public sealed class WorkflowStore
         var key = NormalizeId(id);
         lock (_gate)
         {
+            if (IsLibraryBuiltIn(key))
+                throw new WorkflowValidationException(
+                    $"Workflow '{key}' is built in and can never be deleted.");
+
             using var ctx = _db.CreateContext();
             var head = ctx.Workflows.FirstOrDefault(h => h.Id == key);
             if (head is null)
@@ -659,6 +644,9 @@ public sealed class WorkflowStore
         HasDraft = hasDraft,
         ContentHash = version.ContentHash,
         Enabled = head.Enabled,
+        // The Gateway's editability verdict (phase 3): built-ins are read-only, tenant-owned
+        // workflows are the caller's to edit. Clients render this verbatim.
+        Editable = !head.IsBuiltIn,
     };
 
     /// <summary>

@@ -8,7 +8,7 @@ namespace CcDirector.Gateway.Tests;
 /// <summary>
 /// Store-level tests for workflow authoring (Workflows mission, phase 2): create-as-draft, the
 /// full-replacement draft write with If-Match concurrency, the strict publish gate, versioned reads
-/// (pinned history must resolve forever), reset-to-shipped on built-ins, and archive semantics.
+/// (pinned history must resolve forever), the read-only built-ins refusals, and archive semantics.
 /// </summary>
 public sealed class WorkflowAuthoringTests : IDisposable
 {
@@ -213,15 +213,14 @@ public sealed class WorkflowAuthoringTests : IDisposable
             store.GetInstructions("release-train", version: 2));
     }
 
-    // ---- built-ins: customize + reset --------------------------------------------------------------
+    // ---- built-ins: READ-ONLY (Shared Workflow Library phase 3, owner ruling 2026-07-24) ----------
 
     [Fact]
-    public void A_built_in_can_be_customized_and_then_reset_to_shipped()
+    public void A_built_in_refuses_every_authoring_write_with_the_clone_pointer()
     {
         var store = NewStore();
         var shipped = store.GetPublished("mission")!;
 
-        // Customize: draft from the published baseline, edit, publish.
         var edit = new WorkflowContentRequest
         {
             Name = "Mission",
@@ -232,28 +231,29 @@ public sealed class WorkflowAuthoringTests : IDisposable
             InstructionsMarkdown = "# Custom mission conduct",
             AuthoredBy = "test-session",
         };
-        store.UpdateDraft("mission", edit, ifMatchHash: shipped.ContentHash);
-        var customized = store.Publish("mission")!;
-        Assert.Equal(2, customized.Version);
-        Assert.Equal("# Custom mission conduct", store.GetInstructions("mission", null));
 
-        // Reset: the shipped conduct comes back as a NEW version; nothing is rewritten.
-        var reset = store.ResetToShipped("mission")!;
-        Assert.Equal(3, reset.Version);
+        var draftRefusal = Assert.Throws<WorkflowValidationException>(
+            () => store.UpdateDraft("mission", edit, ifMatchHash: shipped.ContentHash));
+        Assert.Contains("clone", draftRefusal.Message);
+        var publishRefusal = Assert.Throws<WorkflowValidationException>(() => store.Publish("mission"));
+        Assert.Contains("clone", publishRefusal.Message);
+        Assert.Throws<WorkflowValidationException>(() => store.Archive("mission"));
+
+        // Nothing changed: the shipped conduct still serves, at the shipped version.
         Assert.Equal(BuiltInWorkflows.InstructionsFor("mission"), store.GetInstructions("mission", null));
-        // The customized version remains pinned history.
-        Assert.Equal("# Custom mission conduct", store.GetInstructions("mission", version: 2));
+        Assert.Equal(shipped.Version, store.GetPublished("mission")!.Version);
     }
 
     [Fact]
-    public void Reset_only_applies_to_built_ins()
+    public void The_editability_verdict_is_stamped_on_the_catalog()
     {
         var store = NewStore();
         store.CreateDraft(Complete());
         store.Publish("release-train");
 
-        Assert.Throws<WorkflowValidationException>(() => store.ResetToShipped("release-train"));
-        Assert.Null(store.ResetToShipped("no-such-workflow"));
+        Assert.False(store.GetPublished("mission")!.Editable);
+        Assert.True(store.GetPublished("release-train")!.Editable);
+        Assert.All(store.ListPublished().Where(w => w.IsBuiltIn), w => Assert.False(w.Editable));
     }
 
     // ---- archive -----------------------------------------------------------------------------------

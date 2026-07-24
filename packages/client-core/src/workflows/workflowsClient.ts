@@ -35,7 +35,7 @@ export interface WorkflowDefinition {
    *  reading an older Gateway that serves only the legacy shape. */
   /** The published version number this projection reflects. */
   version?: number;
-  /** True for the workflows the Gateway ships (mission, standalone, ...). Editable, never deletable. */
+  /** True for the workflows the Gateway ships (mission, standalone, ...). Read-only, never deletable. */
   isBuiltIn?: boolean;
   /** True when an unpublished draft exists beside the published version. */
   hasDraft?: boolean;
@@ -46,6 +46,10 @@ export interface WorkflowDefinition {
   /** The owner's switch: false = OFF (hidden from agents' briefings, no new runs or seats).
    *  Absent on an older Gateway, which means enabled. */
   enabled?: boolean;
+  /** The Gateway's verdict on whether this workflow's content can be changed by the caller (the
+   *  client renders this verbatim, never derives it): false for the built-in DevThrottle workflows,
+   *  true for tenant-owned ones. Absent on an older Gateway - treat as not editable. */
+  editable?: boolean;
 }
 
 /** The response of creating a workflow: the new draft's snapshot (subset this client reads). */
@@ -176,16 +180,8 @@ export async function setWorkflowEnabled(
   if (!res.ok) throw await gatewayErrorFrom(res, `POST /gateway/workflows/${id}/${verb}`);
 }
 
-// POST /gateway/workflows/{id}/reset - built-ins only: republish the shipped content as a new
-// version. The customized versions stay as history.
-export async function resetWorkflow(id: string, signal?: AbortSignal): Promise<void> {
-  const res = await fetch(`/gateway/workflows/${encodeURIComponent(id)}/reset`, {
-    method: "POST",
-    headers: { Accept: "application/json", ...authHeaders() },
-    signal,
-  });
-  if (!res.ok) throw await gatewayErrorFrom(res, `POST /gateway/workflows/${id}/reset`);
-}
+// resetWorkflow was RETIRED with the Shared Workflow Library phase 3: built-ins are read-only,
+// can never diverge from the shipped content, and have nothing to reset.
 
 /** A workflow id slug from a display name: "Release Train" -> "release-train". The Gateway enforces
  *  the same shape server-side; this just makes the dialog's default id readable. */

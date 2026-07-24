@@ -34,7 +34,6 @@ namespace CcDirector.Gateway.Api;
 ///   PUT    /gateway/workflows/{id}/draft             body WorkflowContentRequest, optional If-Match
 ///                                                    (content hash) -> 200 detail | 400 | 404 | 409
 ///   POST   /gateway/workflows/{id}/publish           -> 200 WorkflowDto | 400 | 404
-///   POST   /gateway/workflows/{id}/reset             built-ins: republish shipped -> 200 | 400 | 404
 ///   DELETE /gateway/workflows/{id}                   archive (never a built-in) -> 200 | 400 | 404
 ///   GET    /gateway/workflows/{id}/versions          -> { versions: [...] } | 404
 ///   GET    /gateway/workflows/{id}/versions/{n}      -> full content snapshot | 404
@@ -111,14 +110,8 @@ internal static class WorkflowEndpoints
             return Results.Json(published);
         }));
 
-        app.MapPost("/gateway/workflows/{id}/reset", (string id) => Guard(() =>
-        {
-            var reset = store.ResetToShipped(id);
-            if (reset is null)
-                return NotFound(id);
-            FileLog.Write($"[WorkflowEndpoints] reset to shipped: id={id}, v{reset.Version}");
-            return Results.Json(reset);
-        }));
+        // POST /gateway/workflows/{id}/reset was RETIRED in the Shared Workflow Library phase 3:
+        // built-ins are read-only, can never diverge from shipped content, and have nothing to reset.
 
         app.MapDelete("/gateway/workflows/{id}", (string id) => Guard(() =>
         {

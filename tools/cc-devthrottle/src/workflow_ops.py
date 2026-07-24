@@ -203,11 +203,6 @@ class WorkflowClient:
             self._request("POST", f"/gateway/workflows/{workflow_id}/publish")
         )
 
-    def reset(self, workflow_id: str) -> Dict[str, Any]:
-        return self._json_or_raise(
-            self._request("POST", f"/gateway/workflows/{workflow_id}/reset")
-        )
-
     def delete(self, workflow_id: str) -> Dict[str, Any]:
         return self._json_or_raise(
             self._request("DELETE", f"/gateway/workflows/{workflow_id}")
@@ -574,16 +569,8 @@ def publish_workflow(workflow_id: str) -> None:
     )
 
 
-def reset_workflow(workflow_id: str) -> None:
-    try:
-        result = _client().reset(workflow_id)
-    except GatewayError as ex:
-        _fail(str(ex))
-        return
-    console.print(
-        f"Reset '{workflow_id}' to the shipped content as v{result.get('version')}. "
-        "Earlier versions remain as history."
-    )
+# reset_workflow was retired with the Shared Workflow Library phase 3: built-ins are read-only,
+# can never diverge from the shipped content, and have nothing to reset.
 
 
 def set_workflow_enabled(workflow_id: str, enabled: bool) -> None:
