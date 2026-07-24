@@ -175,6 +175,54 @@ public sealed class GitBranchServiceTests : IDisposable
         Assert.Contains("keep", names);
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection finding F2): C2 must test the CONFIGURED upstream, not
+    // origin/<local-name>. A branch tracking a differently named upstream ref that still
+    // exists must NOT be ruled origin-gone (before the fix it was, and was deletable).
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Branch_TrackingDifferentlyNamedUpstream_ThatStillExists_IsNotSafe()
+    {
+        RunGit(_repo, "checkout", "-b", "local-name");
+        WriteFile("x.txt", "x\n");
+        RunGit(_repo, "add", "-A");
+        RunGit(_repo, "commit", "-m", "unmerged work tracked under a different upstream name");
+        RunGit(_repo, "push", "origin", "local-name:refs/heads/remote-name");
+        RunGit(_repo, "config", "branch.local-name.remote", "origin");
+        RunGit(_repo, "config", "branch.local-name.merge", "refs/heads/remote-name");
+        RunGit(_repo, "checkout", "main");
+
+        var branches = await new GitBranchService().ListAsync(_repo);
+        var branch = Assert.Single(branches, b => b.Name == "local-name");
+        Assert.False(branch.SafeToDelete, branch.Explanation);
+
+        var (deleted, _) = await new GitBranchService().DeleteIfSafeAsync(_repo, "local-name");
+        Assert.False(deleted);
+        Assert.Contains("local-name", (await new GitBranchService().ListAsync(_repo)).Select(b => b.Name));
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // The counterpart: when the CONFIGURED upstream (a differently named ref) genuinely was
+    // deleted on the remote, the branch IS safe via the upstream-gone signal.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Branch_WhoseConfiguredUpstreamWasDeleted_IsSafe()
+    {
+        RunGit(_repo, "checkout", "-b", "was-merged");
+        WriteFile("y.txt", "y\n");
+        RunGit(_repo, "add", "-A");
+        RunGit(_repo, "commit", "-m", "work later squash merged and its upstream deleted");
+        RunGit(_repo, "push", "origin", "was-merged:refs/heads/upstream-name");
+        RunGit(_repo, "config", "branch.was-merged.remote", "origin");
+        RunGit(_repo, "config", "branch.was-merged.merge", "refs/heads/upstream-name");
+        RunGit(_repo, "checkout", "main");
+        RunGit(_repo, "push", "origin", "--delete", "upstream-name");
+
+        var branches = await new GitBranchService().ListAsync(_repo);
+        var branch = Assert.Single(branches, b => b.Name == "was-merged");
+        Assert.True(branch.SafeToDelete, branch.Explanation);
+    }
+
     private void WriteFile(string rel, string content)
         => File.WriteAllText(Path.Combine(_repo, rel), content);
 

@@ -104,14 +104,13 @@ public sealed class GitBranchService
 
             if (mainRef != null)
             {
-                // "Origin gone" only proves a merge when the branch WAS on origin (had an upstream) -
-                // a never-pushed branch's absence from origin proves nothing (same rule as worktrees).
-                var upstream = await _git.RunAsync(repoPath, new[] { "config", "--get", $"branch.{name}.merge" }, ct);
-                bool hadUpstream = upstream.Success && !string.IsNullOrWhiteSpace(upstream.Output);
-
-                var lsRemote = await _git.RunAsync(repoPath, new[] { "ls-remote", "--heads", "origin", name }, ct);
-                inspectionOk &= lsRemote.Success;
-                originGone = hadUpstream && lsRemote.Success && string.IsNullOrWhiteSpace(lsRemote.Output);
+                // "Upstream gone" only proves a merge when the branch HAD a configured upstream -
+                // a never-pushed branch's absence from the remote proves nothing (same rule as
+                // worktrees). The probe asks the configured remote for the configured ref name,
+                // both of which can differ from origin/<local-name>.
+                var upstream = await ConfiguredUpstreamProbe.ProbeAsync(_git, repoPath, name, ct);
+                inspectionOk &= upstream.InspectionSucceeded;
+                originGone = upstream.HasConfiguredUpstream && upstream.UpstreamGone;
 
                 var cherry = await _git.RunAsync(repoPath, new[] { "cherry", mainRef, name }, ct);
                 inspectionOk &= cherry.Success;

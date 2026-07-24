@@ -105,16 +105,14 @@ public sealed class WorktreeInventoryService
             }
             else if (entry.Branch != null)
             {
-                // C2: has the origin branch been deleted (after the prune above)? "Gone" only means
-                // "merged" when the branch was ON origin in the first place - a never-pushed branch
-                // has no origin branch, and treating that absence as proof-of-merge would mark
-                // unpushed work safe to delete. Require a configured upstream before C2 counts.
-                var upstream = await _git.RunAsync(repositoryPath, new[] { "config", "--get", $"branch.{entry.Branch}.merge" }, ct);
-                bool hadUpstream = upstream.Success && !string.IsNullOrWhiteSpace(upstream.Output);
-
-                var lsRemote = await _git.RunAsync(repositoryPath, new[] { "ls-remote", "--heads", "origin", entry.Branch }, ct);
-                inspectionOk &= lsRemote.Success;
-                originGone = hadUpstream && lsRemote.Success && string.IsNullOrWhiteSpace(lsRemote.Output);
+                // C2: has the CONFIGURED upstream been deleted (after the prune above)? "Gone" only
+                // means "merged" when the branch had a configured upstream in the first place - a
+                // never-pushed branch has no upstream, and treating that absence as proof-of-merge
+                // would mark unpushed work safe to delete. The probe asks the configured remote for
+                // the configured ref name, both of which can differ from origin/<local-name>.
+                var upstream = await ConfiguredUpstreamProbe.ProbeAsync(_git, repositoryPath, entry.Branch, ct);
+                inspectionOk &= upstream.InspectionSucceeded;
+                originGone = upstream.HasConfiguredUpstream && upstream.UpstreamGone;
 
                 // C3: does the branch add anything origin/main lacks? git cherry marks such commits with '+'.
                 var cherry = await _git.RunAsync(repositoryPath, new[] { "cherry", mainRef, entry.Branch }, ct);

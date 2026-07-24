@@ -337,6 +337,35 @@ public sealed class WorktreeInventoryIntegrationTests : IDisposable
         Assert.DoesNotContain(inventory.SafeToReap, x => x.Branch == "neverpushed");
     }
 
+    // -------------------------------------------------------------------------------------------
+    // REGRESSION (inspection finding F2): C2 must test the CONFIGURED upstream on the CONFIGURED
+    // remote. A worktree branch that tracks a SECOND remote (its ref alive there) has no branch
+    // on origin at all - before the fix that absence read as "deleted after merge" and the
+    // worktree, holding unmerged work, was marked safe to reap.
+    // -------------------------------------------------------------------------------------------
+    [Fact]
+    public async Task WorktreeBranch_TrackingASecondRemote_WhoseRefStillExists_IsNotSafe()
+    {
+        var secondOrigin = Path.Combine(_root, "second.git");
+        RunGit(_root, "-c", "init.defaultBranch=main", "init", "--bare", secondOrigin);
+        RunGit(_primary, "remote", "add", "second", secondOrigin);
+
+        var wt = Path.Combine(_root, "wt-second-remote");
+        RunGit(_primary, "worktree", "add", "-b", "elsewhere", wt, "main");
+        WriteFile(wt, "e.txt", "unmerged work pushed only to the second remote\n");
+        RunGit(wt, "add", "-A");
+        RunGit(wt, "commit", "-m", "work on the second remote only");
+        RunGit(wt, "push", "-u", "second", "elsewhere");
+
+        var inventory = await new WorktreeInventoryService().GetInventoryAsync(_primary);
+
+        Assert.True(inventory.Success, inventory.Error);
+        var w = Assert.Single(inventory.Worktrees, x => x.Branch == "elsewhere");
+        Assert.Equal(WorktreeSafety.NeedsAttention, w.Safety);
+        Assert.Equal(WorktreeSafetyReason.NotProvenMerged, w.Reason);
+        Assert.DoesNotContain(inventory.SafeToReap, x => x.Branch == "elsewhere");
+    }
+
     // ----- helpers -----
 
     private void ConfigureIdentity(string repo)
