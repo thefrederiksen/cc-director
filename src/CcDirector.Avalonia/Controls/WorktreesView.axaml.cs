@@ -50,6 +50,10 @@ public partial class WorktreesView : UserControl
     private WorktreeInventory? _lastInventory;
     private bool _isReaping;
 
+    /// <summary>The exact worktree paths the owner approved at the confirmation, so a worktree that
+    /// becomes safe AFTER the dialog opened is not swept up in the reap (issue 516).</summary>
+    private IReadOnlySet<string>? _approvedReapPaths;
+
     /// <summary>Raised (on the UI thread) whenever the safe-to-reap count changes, so the host can badge the tab.</summary>
     public event Action<int>? OrphanedCountChanged;
 
@@ -278,6 +282,11 @@ public partial class WorktreesView : UserControl
             return;
 
         var toRemove = inventory.SafeToReap.ToList();
+        // Bind the reap to exactly these paths: the owner is approving THIS list, not "whatever is
+        // safe when the button is finally pressed" (issue 516).
+        _approvedReapPaths = toRemove
+            .Select(w => WorktreeReaperService.NormalizePath(w.Path))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         ConfirmTitle.Text = $"Remove {toRemove.Count} orphaned worktree{(toRemove.Count == 1 ? "" : "s")}?";
         ConfirmList.Text = string.Join(Environment.NewLine,
             toRemove.Select(w => $"{(w.Branch ?? "(detached HEAD)")}  ->  {w.Path}"));
@@ -325,9 +334,10 @@ public partial class WorktreesView : UserControl
             // cannot be confirmed. We hand it the provider, not a set frozen here; a failure comes
             // back as a ReapResult error and is surfaced, never a silent deletion.
             var provider = LiveSessionsProvider;
+            var approved = _approvedReapPaths;
             var result = ReapServiceOverride is { } reap
                 ? await reap(repoPath!, provider)
-                : await Task.Run(() => _reaper.ReapAsync(repoPath!, provider));
+                : await Task.Run(() => _reaper.ReapAsync(repoPath!, provider, approved));
 
             if (_repoEntryPath != repoPath)
                 return; // the view moved to another repository while the reaper ran

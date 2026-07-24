@@ -91,6 +91,7 @@ public sealed class WorktreeReaperService
     public async Task<ReapResult> ReapAsync(
         string repositoryPath,
         Func<CancellationToken, Task<IReadOnlyList<LiveSessionRef>>>? liveSessionsProvider,
+        IReadOnlySet<string>? approvedPaths = null,
         CancellationToken ct = default)
     {
         FileLog.Write($"[WorktreeReaperService] ReapAsync: repo={repositoryPath}");
@@ -133,6 +134,12 @@ public sealed class WorktreeReaperService
 
             var protectedSet = BuildProtectedSet(liveSessions);
 
+            // The owner-approved set from the confirmation, normalized for comparison. Null means
+            // no confirmation gate (a non-interactive caller reaps every currently-safe worktree).
+            var approvedNormalized = approvedPaths is null
+                ? null
+                : new HashSet<string>(approvedPaths.Select(NormalizePath), StringComparer.OrdinalIgnoreCase);
+
             var outcomes = new List<ReapOutcome>();
             // Worktrees held back because a live session is running in them - reported so the user
             // sees they were deliberately spared.
@@ -140,12 +147,24 @@ public sealed class WorktreeReaperService
 
             foreach (var worktree in inventory.SafeToReap)
             {
+                var normalized = NormalizePath(worktree.Path);
+
+                // Act ONLY on worktrees the owner approved at the confirmation (issue 516). A
+                // worktree that became safe AFTER the confirmation opened was never shown or
+                // approved, so it must not be removed here - it appears on the next refresh for the
+                // owner to approve deliberately.
+                if (approvedNormalized != null && !approvedNormalized.Contains(normalized))
+                {
+                    FileLog.Write($"[WorktreeReaperService] SKIP (not in the owner-approved set): {worktree.Path}");
+                    continue;
+                }
+
                 // Belt-and-suspenders on top of the roster classification: never remove a worktree
                 // whose path the roster protects, even if it still classified safe.
-                if (protectedSet.Contains(NormalizePath(worktree.Path)))
+                if (protectedSet.Contains(normalized))
                 {
                     FileLog.Write($"[WorktreeReaperService] SKIP (a live session is using it): {worktree.Path}");
-                    skipped.Add(NormalizePath(worktree.Path));
+                    skipped.Add(normalized);
                     continue;
                 }
 

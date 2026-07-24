@@ -196,6 +196,25 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         Assert.True(Directory.Exists(safe), "no worktree may be removed when the session roster is unknown");
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (issue 516, minor: the reap must be bound to the worktrees the owner approved).
+    // A second worktree that becomes safe AFTER the confirmation opened was never shown or
+    // approved, so it must not be swept up. Only the approved path is removed.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Reap_OnlyRemovesTheOwnerApprovedWorktrees_NotOnesThatBecameSafeLater()
+    {
+        var approved = AddSafeWorktree("approved");
+        var appearedAfter = AddSafeWorktree("appeared-after"); // also safe, but NOT approved
+
+        var approvedSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { approved };
+        var result = await new WorktreeReaperService().ReapAsync(_primary, NoSessions, approvedSet);
+
+        Assert.Equal(1, result.RemovedCount);
+        Assert.False(Directory.Exists(approved), "the approved worktree is removed");
+        Assert.True(Directory.Exists(appearedAfter), "a worktree that became safe after approval must not be removed");
+    }
+
     [Fact]
     public async Task Reap_WithNoLiveSessionProvider_AbortsAndRemovesNothing()
     {
