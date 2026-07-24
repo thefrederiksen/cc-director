@@ -165,6 +165,31 @@ public sealed class TranscriptStore
     }
 
     /// <summary>
+    /// This tenant's raw transcripts, newest first, capped at <paramref name="limit"/> - the read the
+    /// mistranscription miner runs over (devthrottle #2075). Returns just the raw text (what the model heard),
+    /// not the whole row, so the miner is handed exactly what it needs. Scoped to <paramref name="tenant"/> by
+    /// the global query filter, so it can only ever see that tenant's transcripts.
+    /// </summary>
+    /// <param name="tenant">The tenant to mine. Required and valid.</param>
+    /// <param name="limit">The most-recent this-many transcripts to return (bounds the mining cost).</param>
+    /// <exception cref="ArgumentException">The tenant is invalid.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The limit is not positive.</exception>
+    public IReadOnlyList<string> RawTexts(TenantId tenant, int limit)
+    {
+        if (limit <= 0) throw new ArgumentOutOfRangeException(nameof(limit), "limit must be positive");
+        lock (_gate)
+        {
+            using var ctx = _db.CreateContext(tenant);
+            return ctx.DictationTranscripts.AsNoTracking()
+                .OrderByDescending(e => e.TimestampUtc)
+                .ThenByDescending(e => e.Id)
+                .Take(limit)
+                .Select(e => e.RawText)
+                .ToList();
+        }
+    }
+
+    /// <summary>
     /// The retention core, run inside the write lock against a tenant-scoped context: age-trim then count-trim,
     /// both committed in ONE SaveChanges. The context's global query filter already scopes every query to the
     /// active tenant, so this only ever touches that tenant's rows.

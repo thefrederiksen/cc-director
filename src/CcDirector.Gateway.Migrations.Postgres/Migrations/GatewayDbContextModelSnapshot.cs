@@ -244,6 +244,42 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.ToTable("device_import_markers", "gateway");
                 });
 
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.DictationSuggestionDismissalEntity", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("Term")
+                        .HasColumnType("text")
+                        .UseCollation("C");
+
+                    b.Property<DateTime>("DismissedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("DisplayTerm")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("TotalCount")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("VariantsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("WrongCount")
+                        .HasColumnType("integer");
+
+                    b.HasKey("TenantId", "Term");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "DismissedAtUtc");
+
+                    b.ToTable("dictation_suggestion_dismissals", "gateway");
+                });
+
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.DictationTranscriptEntity", b =>
                 {
                     b.Property<string>("TenantId")
