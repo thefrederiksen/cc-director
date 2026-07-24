@@ -8,6 +8,7 @@ import { Chat } from "./pages/Chat";
 import { FileView } from "./pages/FileView";
 import { VoiceMode } from "./pages/VoiceMode";
 import { CarMode } from "./pages/CarMode";
+import { Assistant } from "./pages/Assistant";
 import { EndWordTest } from "./pages/EndWordTest";
 import { AiSettings } from "./pages/AiSettings";
 import { About } from "./pages/About";
@@ -145,6 +146,10 @@ const router = createBrowserRouter(
             // Car Mode (Car Mode mission): its own chrome-less, full-screen route, NOT nested in any
             // tabbed session view. Hands-free voice control of the whole fleet with a screen wake-lock.
             { path: "/car", element: <CarMode /> },
+            // The Assistant (fleet assistant build): fleet-level chat + voice, not tied to any
+            // session - the phone view of the same client-core turn machine the cockpit mounts.
+            // Distinct from Car Mode: button turns (tap to talk), no auto turn taking, hands-on.
+            { path: "/assistant", element: <Assistant /> },
             // Car Mode End Word Test (harness for the spoken end-of-turn phrase): set a configurable
             // phrase and test detecting it live. Standalone for now; folds into the Cockpit Car Mode
             // settings tab once the approach is proven.
