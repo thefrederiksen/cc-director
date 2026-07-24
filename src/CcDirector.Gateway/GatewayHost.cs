@@ -450,6 +450,16 @@ public sealed class GatewayHost : IAsyncDisposable
     private static readonly TimeSpan ActivityRetentionInterval = TimeSpan.FromHours(6);
     private static readonly TimeSpan ActivityRetentionStartupDelay = TimeSpan.FromMinutes(5);
 
+    // The daily dictionary-suggestion scan (devthrottle #2115): the timer ticks every few minutes; the sweep
+    // decides PER TENANT whether that tenant's local 00:05 has passed since its last stored scan, so each
+    // tenant scans at its own midnight from one timer. Cheap when nothing is due (one stored-row read per
+    // tenant per tick). Guarded against overlap like the cron sweep. Created in StartAsync, disposed in
+    // StopAsync.
+    private System.Threading.Timer? _suggestionSweepTimer;
+    private int _suggestionSweepInFlight;
+    private static readonly TimeSpan SuggestionSweepInterval = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan SuggestionSweepStartupDelay = TimeSpan.FromMinutes(2);
+
     // Scheduled-run auto-dismiss (issue #1200): wakes ~every 15s and closes automated runs that declared
     // themselves done, over the Director stream. Created in StartAsync only when stream mode is on (the
     // feature has no REST fallback), disposed in StopAsync. Freshness matches the aggregation's pushed-cache
@@ -565,7 +575,10 @@ public sealed class GatewayHost : IAsyncDisposable
     // devthrottle #2075: the dismissed-suggestions store and the suggestions engine that mines the stored
     // transcripts per tenant. Both are tenant-scoped and constructed after _transcripts / _gatewayDb below.
     private readonly Transcription.DictionarySuggestionDismissalStore _dictionaryDismissals;
+    private readonly Transcription.DictionarySuggestionVerdictStore _dictionaryVerdicts;
+    private readonly Transcription.DictionarySuggestionScanStore _dictionaryScans;
     private readonly Transcription.DictionarySuggestionService _dictionarySuggestions;
+    private Transcription.DictionarySuggestionDailySweep? _suggestionDailySweep;
     // The voice-turn staging root, likewise bound to an explicitly-named partition. This path stages a clip
     // for the duration of one turn and then deletes it; it writes no delivery record and performs no
     // cross-request lookup by upload id, so it is unchanged by the dictation partition work. Per-tenant
@@ -982,13 +995,34 @@ public sealed class GatewayHost : IAsyncDisposable
         // no IsHosted branch; self-host is just the single Local tenant. No legacy file to import here (the old
         // flat dictation/sessions/*.jsonl log is retired, not migrated - it had no readers).
         _transcripts = new Transcription.TranscriptStore(_gatewayDb);
-        // devthrottle #2075: the dictionary-suggestions engine. It mines the tenant's stored transcripts
-        // (_transcripts) against that tenant's glossary (TenantGlossary.Load) and its dismissed terms
-        // (_dictionaryDismissals) to produce ranked, evidence-carrying suggestions. Tenant-scoped throughout;
-        // same store on SQLite (self-host) and Postgres (hosted), no IsHosted branch.
+        // devthrottle #2075 / #2115: the dictionary-suggestions engine. A SCAN (daily per tenant, or the
+        // page's "Scan now") mines the tenant's stored transcripts (_transcripts) against that tenant's
+        // glossary (TenantGlossary.Load) and its dismissed terms (_dictionaryDismissals), sends never-judged
+        // candidates to the screening model (the same hosted inference path as Wingman's fast leg, resolved
+        // at call time so a settings change is honored without restart), persists the verdicts
+        // (_dictionaryVerdicts - a term is judged at most once per tenant, ever), and stores the approved
+        // result (_dictionaryScans - what the page and the badge read). Tenant-scoped throughout; same
+        // stores on SQLite (self-host) and Postgres (hosted), no IsHosted branch.
         _dictionaryDismissals = new Transcription.DictionarySuggestionDismissalStore(_gatewayDb);
+        _dictionaryVerdicts = new Transcription.DictionarySuggestionVerdictStore(_gatewayDb);
+        _dictionaryScans = new Transcription.DictionarySuggestionScanStore(_gatewayDb);
         _dictionarySuggestions = new Transcription.DictionarySuggestionService(
-            _transcripts, _dictionaryDismissals, Transcription.TenantGlossary.Load);
+            _transcripts, _dictionaryDismissals, _dictionaryVerdicts, _dictionaryScans,
+            Transcription.TenantGlossary.Load,
+            (tenant, ct) =>
+            {
+                // The screening brain: the same endpoint as Wingman, on the tenant's THINKING model (the
+                // fast model was measured approving inflection clusters like "issue heard as issues" on the
+                // owner's real corpus - judgment quality decides this feature, and a nightly background scan
+                // does not care about speed), with a longer per-call deadline than a voice turn.
+                var mode = Core.Configuration.TranscriptionModeConfig.Get();
+                var ep = Core.Configuration.TranscriptionEndpointResolver.ResolveWingman(mode);
+                var key = _keyVault.Get(ep.KeyName) ?? "";
+                var model = _tenantSettingsResolver.WingmanModel(tenant, mode, Core.Configuration.WingmanModelRole.Thinking);
+                CcDirector.AgentBrain.IAgentBrain brain = new Wingman.HostedInferenceBrain(
+                    ep.BaseUrl, key, model, log: FileLog.Write, callTimeout: TimeSpan.FromMinutes(3));
+                return Task.FromResult((brain, model));
+            });
         // Cron-job definitions persist across a Gateway restart (epic #479, #482) in the cron_jobs table
         // (next-run times recomputed on load). The path argument is the LEGACY cronjobs.json, imported once
         // on first upgrade then renamed aside. Tests MUST pass an isolated path so they never touch the real
@@ -1089,6 +1123,12 @@ public sealed class GatewayHost : IAsyncDisposable
 
         // The activity ledger's 30-day retention, on the same per-tenant worker seam.
         _activityRetentionSweep = new Activity.ActivityRetentionSweep(_tenantBoundary, TenantRegistry, _activityEvents);
+
+        // The daily dictionary-suggestion scan (devthrottle #2115), on the same per-tenant worker seam. The
+        // per-tenant body reads the tenant the seam entered from _tenantContext (the seam's sanctioned
+        // pattern) and the tenant's time zone from the settings resolver.
+        _suggestionDailySweep = new Transcription.DictionarySuggestionDailySweep(
+            _tenantBoundary, TenantRegistry, _tenantContext, _dictionarySuggestions, _tenantSettingsResolver);
 
         // Web Push (mobile app-icon "needs you" dot): load (or generate on first run) the VAPID key
         // pair and the set of subscribed devices. The notifier that fans out to these is built and
@@ -2489,6 +2529,14 @@ public sealed class GatewayHost : IAsyncDisposable
             ActivityRetentionStartupDelay, ActivityRetentionInterval);
         FileLog.Write($"[GatewayHost] activity retention sweep started: every {ActivityRetentionInterval.TotalHours:0}h, retention {Activity.ActivityRetentionSweep.RetentionPeriod.TotalDays:0} days");
 
+        // The daily dictionary-suggestion scan (devthrottle #2115): each tick asks, per tenant, whether that
+        // tenant's local 00:05 has passed since its last stored scan; only then does it mine and screen. The
+        // first pass is delayed so startup is never contended, and a tenant with no stored scan yet is seeded
+        // on that first pass.
+        _suggestionSweepTimer = new System.Threading.Timer(_ => SweepSuggestions(), null,
+            SuggestionSweepStartupDelay, SuggestionSweepInterval);
+        FileLog.Write($"[GatewayHost] dictionary-suggestion sweep started: tick every {SuggestionSweepInterval.TotalMinutes:0}m, daily per tenant at local 00:05");
+
         // MTR-15 cancellation cutoff: the hosted active-tenant entitlement sweep. Forces a fresh entitlement
         // read for every tenant with a live lease every ~60s and revokes any that has become NotEntitled, so a
         // cancelled tenant loses access within roughly one sweep cycle (never past the paid period end).
@@ -2763,6 +2811,35 @@ public sealed class GatewayHost : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// The dictionary-suggestion timer callback (a boundary - it owns the overlap guard and the try/catch so
+    /// a scan failure never crashes the timer thread). One sweep at a time; a skipped tick simply checks on
+    /// the next one, which a daily schedule is indifferent to.
+    /// </summary>
+    private void SweepSuggestions()
+    {
+        if (Interlocked.CompareExchange(ref _suggestionSweepInFlight, 1, 0) != 0)
+            return;
+        _ = RunSuggestionSweepAsync();
+    }
+
+    private async Task RunSuggestionSweepAsync()
+    {
+        try
+        {
+            if (_suggestionDailySweep is not null)
+                await _suggestionDailySweep.SweepAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayHost] dictionary-suggestion sweep FAILED: {ex.Message}");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _suggestionSweepInFlight, 0);
+        }
+    }
+
     private void SweepEntitlementLeases()
     {
         // Skip this tick if the previous entitlement sweep is still running (many active tenants). One at a
@@ -2930,6 +3007,7 @@ public sealed class GatewayHost : IAsyncDisposable
         try { _cronTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] cron timer dispose error: {ex.Message}"); }
         _cronTimer = null;
         try { _activityRetentionTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] activity retention timer dispose error: {ex.Message}"); }
+        try { _suggestionSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] dictionary-suggestion timer dispose error: {ex.Message}"); }
         _activityRetentionTimer = null;
         try { _leaseSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] lease sweep timer dispose error: {ex.Message}"); }
         _leaseSweepTimer = null;

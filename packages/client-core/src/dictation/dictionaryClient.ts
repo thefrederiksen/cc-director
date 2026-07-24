@@ -81,11 +81,13 @@ export async function saveDictionary(dict: Dictionary, signal?: AbortSignal): Pr
   return normalize((await res.json()) as Partial<Dictionary>);
 }
 
-// ===== Dictionary suggestions (devthrottle #2075) =========================================
-// The server mines this tenant's stored dictation transcripts for terms the speech model keeps
-// getting wrong that are not yet in the glossary, and offers them for one-press addition. The
-// client is DUMB here: it renders the ranked list, the evidence, and the count exactly as the
-// Gateway computed them, and never re-derives which terms to suggest or how many are pending.
+// ===== Dictionary suggestions (devthrottle #2075, redesigned in #2115) ====================
+// The server SCANS this tenant's stored dictation transcripts - daily just after midnight in the
+// tenant's own time zone, or on the page's explicit "Scan now" - mines candidate terms, has a
+// language model screen out ordinary vocabulary (in any language), and stores the approved
+// result. Reads serve that STORED result; they never mine and never call the model. The client
+// is DUMB here: it renders the list, the evidence, the count, the scan time, and the screening
+// state exactly as the Gateway computed them, and never re-derives any of them.
 
 /** One wrong spelling and how many times it was seen - the "heard as X (n)" evidence. */
 export interface SuggestionVariant {
@@ -102,10 +104,15 @@ export interface DictionarySuggestion {
   totalCount: number;
 }
 
-/** GET /ingest/dictionary/suggestions - the ranked pending suggestions and their count. */
+/** GET /ingest/dictionary/suggestions and POST .../scan - the stored scan's approved suggestions,
+ *  their count, when the scan ran (null = never scanned), and the Gateway-ruled screening state
+ *  (screeningOk false = the screening model was unreachable; screeningError says why). */
 export interface SuggestionsResult {
   suggestions: DictionarySuggestion[];
   count: number;
+  scannedAtUtc: string | null;
+  screeningOk: boolean;
+  screeningError: string;
 }
 
 /** A dismissed term with its snapshotted evidence and when it was dismissed. */
@@ -119,10 +126,16 @@ export interface DismissedTerm {
 
 function normalizeSuggestions(body: Partial<SuggestionsResult> | null | undefined): SuggestionsResult {
   const suggestions = body?.suggestions ?? [];
-  return { suggestions, count: body?.count ?? suggestions.length };
+  return {
+    suggestions,
+    count: body?.count ?? suggestions.length,
+    scannedAtUtc: body?.scannedAtUtc ?? null,
+    screeningOk: body?.screeningOk ?? true,
+    screeningError: body?.screeningError ?? "",
+  };
 }
 
-// GET /ingest/dictionary/suggestions - the ranked pending suggestions with evidence.
+// GET /ingest/dictionary/suggestions - the stored scan's suggestions with evidence.
 export async function getSuggestions(signal?: AbortSignal): Promise<SuggestionsResult> {
   const res = await fetch("/ingest/dictionary/suggestions", {
     method: "GET",
@@ -130,6 +143,19 @@ export async function getSuggestions(signal?: AbortSignal): Promise<SuggestionsR
     signal,
   });
   if (!res.ok) throw await gatewayErrorFrom(res, "GET /ingest/dictionary/suggestions");
+  return normalizeSuggestions((await res.json()) as Partial<SuggestionsResult>);
+}
+
+// POST /ingest/dictionary/suggestions/scan - run a scan NOW (the page's "Scan now" button). May take
+// seconds when there are new candidates to screen (one model call); instant when there is nothing
+// new. Throws on failure so the button can show the real reason.
+export async function scanSuggestions(signal?: AbortSignal): Promise<SuggestionsResult> {
+  const res = await fetch("/ingest/dictionary/suggestions/scan", {
+    method: "POST",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) throw await gatewayErrorFrom(res, "POST /ingest/dictionary/suggestions/scan");
   return normalizeSuggestions((await res.json()) as Partial<SuggestionsResult>);
 }
 

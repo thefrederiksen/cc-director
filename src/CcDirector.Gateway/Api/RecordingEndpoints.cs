@@ -481,11 +481,14 @@ internal static class RecordingEndpoints
     /// the same tenant idiom as the glossary routes above:
     ///   GET  /dictionary/suggestions          the ranked pending suggestions with evidence, plus the count
     ///   GET  /dictionary/suggestions/count     just the count (the nav-badge poll)
+    ///   POST /dictionary/suggestions/scan      run a scan NOW (mine + model-screen; the page's button)
     ///   POST /dictionary/suggestions/apply     add the chosen terms to the glossary (term + wrong spellings)
     ///   POST /dictionary/suggestions/dismiss   stop suggesting a term (remembered, evidence snapshotted)
     ///   GET  /dictionary/dismissed             the dismissed terms with their evidence, for the Restore screen
     ///   POST /dictionary/dismissed/restore     make a dismissed term eligible again
-    /// Every write invalidates this tenant's cached suggestions so the next read reflects the change at once.
+    /// Reads serve the STORED result of the latest scan (daily per tenant, or scan-now) - they never mine and
+    /// never call the screening model (devthrottle #2115). Apply and dismiss edit the stored result in place
+    /// so the page and the badge reflect the action at once; a restored term reappears on the next scan.
     /// </summary>
     private static void MapSuggestionRoutes(
         IEndpointRouteBuilder app,
@@ -497,8 +500,7 @@ internal static class RecordingEndpoints
         {
             var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
             if (t is null) return TenantRequired();
-            var list = suggestions.GetSuggestions(t.Value);
-            return Results.Json(new SuggestionsResponse(list.Select(ToSuggestionDto).ToList(), list.Count));
+            return Results.Json(ToSuggestionsResponse(suggestions.GetStored(t.Value)));
         });
 
         app.MapGet("/dictionary/suggestions/count", (HttpContext ctx) =>
@@ -506,6 +508,17 @@ internal static class RecordingEndpoints
             var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
             if (t is null) return TenantRequired();
             return Results.Json(new { count = suggestions.GetSuggestionCount(t.Value) });
+        });
+
+        // The Dictionary page's "Scan now" button: run the full scan (mine + screen the never-judged
+        // candidates) for this tenant and return the fresh stored result. May take seconds when there are
+        // new candidates (one model call); instant when there is nothing new to judge.
+        app.MapPost("/dictionary/suggestions/scan", async (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
+            var result = await suggestions.RunScanAsync(t.Value, ctx.RequestAborted);
+            return Results.Json(ToSuggestionsResponse(result));
         });
 
         app.MapPost("/dictionary/suggestions/apply", async (HttpContext ctx) =>
@@ -542,7 +555,8 @@ internal static class RecordingEndpoints
             }
 
             var updated = TenantGlossary.AddTerms(t.Value, vocab, mistranscriptions);
-            suggestions.Invalidate(t.Value); // the glossary changed, so the pending set changed
+            foreach (var term in applied)
+                suggestions.RemoveFromStored(t.Value, term); // reflect the apply at once, no rescan
             var remaining = suggestions.GetSuggestions(t.Value);
             return Results.Json(new SuggestionApplyResponse(
                 ToDto(updated), applied, remaining.Select(ToSuggestionDto).ToList(), remaining.Count));
@@ -572,7 +586,7 @@ internal static class RecordingEndpoints
             var match = suggestions.FindSuggestion(t.Value, req.Term)
                 ?? new MistranscriptionSuggestion(req.Term.Trim(), Array.Empty<MistranscriptionVariant>(), 0, 0);
             dismissals.Dismiss(t.Value, match, DateTime.UtcNow);
-            suggestions.Invalidate(t.Value);
+            suggestions.RemoveFromStored(t.Value, match.Term); // reflect the dismissal at once, no rescan
             return Results.Json(new { ok = true, dismissed = match.Term, count = suggestions.GetSuggestionCount(t.Value) });
         });
 
@@ -603,7 +617,8 @@ internal static class RecordingEndpoints
                 return Results.BadRequest(new { error = "provide 'term' (the term to restore)" });
 
             var restored = dismissals.Restore(t.Value, req.Term);
-            suggestions.Invalidate(t.Value); // the term is eligible again, so recompute on next read
+            // The term is eligible again on the NEXT scan (daily, or the page's "Scan now"); the stored
+            // result is not edited here because a restored term has no fresh mining evidence to show yet.
             return Results.Json(new { ok = true, restored });
         });
     }
@@ -613,6 +628,15 @@ internal static class RecordingEndpoints
         s.Variants.Select(v => new VariantDto(v.Heard, v.Count)).ToList(),
         s.WrongCount,
         s.TotalCount);
+
+    /// <summary>Fold a stored scan (or null = never scanned) into the wire response. Null folds to an empty
+    /// list with ScreeningOk true and no timestamp - the page's "no scan yet" state, not an error.</summary>
+    private static SuggestionsResponse ToSuggestionsResponse(DictionarySuggestionScanStore.ScanResult? scan)
+        => scan is null
+            ? new SuggestionsResponse(new List<SuggestionDto>(), 0, null, true, "")
+            : new SuggestionsResponse(
+                scan.Suggestions.Select(ToSuggestionDto).ToList(), scan.Suggestions.Count,
+                scan.ScannedAtUtc, scan.ScreeningOk, scan.ScreeningError);
 
     private static DismissedTermDto ToDismissedDto(DismissedTerm d) => new(
         d.Term,
@@ -841,9 +865,13 @@ internal sealed record VariantDto(string Heard, int Count);
 /// "wrong 53 of 97 times".</summary>
 internal sealed record SuggestionDto(string Term, List<VariantDto> Variants, int WrongCount, int TotalCount);
 
-/// <summary>GET /ingest/dictionary/suggestions - the ranked pending suggestions plus their count (the count
-/// the nav badge renders; the client never re-derives it).</summary>
-internal sealed record SuggestionsResponse(List<SuggestionDto> Suggestions, int Count);
+/// <summary>GET /ingest/dictionary/suggestions and POST .../scan - the stored scan's approved suggestions
+/// plus their count (the count the nav badge renders; the client never re-derives it), when the scan ran
+/// (null = never scanned), and the Gateway-ruled screening state the page renders VERBATIM (rule 7 - the
+/// client never derives a verdict): ScreeningOk false means the screening model was unreachable, the shown
+/// list is previously-screened only, and ScreeningError says why.</summary>
+internal sealed record SuggestionsResponse(
+    List<SuggestionDto> Suggestions, int Count, DateTime? ScannedAtUtc, bool ScreeningOk, string ScreeningError);
 
 /// <summary>POST /ingest/dictionary/suggestions/apply request: the canonical terms the customer chose to add.</summary>
 internal sealed record SuggestionApplyRequest(List<string>? Terms);

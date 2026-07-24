@@ -310,6 +310,14 @@
   font-size: 12px;
 }
 
+/* The "Last scan: ... / Scan now" row under the suggestions hint (devthrottle #2115). */
+.dc-scanrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
 /* Zero state: one quiet reassuring line, no badge, no nag. */
 .dc-quiet-line {
   display: flex;
