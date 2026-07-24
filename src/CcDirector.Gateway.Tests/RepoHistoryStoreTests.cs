@@ -11,7 +11,8 @@ public sealed class RepoHistoryStoreTests : IDisposable
 
     public void Dispose()
     {
-        if (File.Exists(_path)) File.Delete(_path);
+        foreach (var p in new[] { _path, _path + ".bak", _path + ".tmp" })
+            if (File.Exists(p)) File.Delete(p);
     }
 
     private static RepoStatusDto Repo(string name, int worktrees = 0, int safe = 0, long bytes = 0,
@@ -216,6 +217,49 @@ public sealed class RepoHistoryStoreTests : IDisposable
 
         var store = new RepoHistoryStore(_path);
         Assert.Equal(0, store.WeeklyTrends(TenantId.Local, 1, day)[^1].MaxWorktrees);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (issue 516): a single corrupt line in the middle of the history file must NOT
+    // erase the good rows AFTER it. The old load caught the first malformed line OUTSIDE the loop,
+    // so every row past the damage was dropped, and the next save rewrote the file from the
+    // truncated result - permanently erasing that history.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public void Load_WithACorruptMiddleLine_KeepsTheGoodRowsAfterIt()
+    {
+        var day = new DateOnly(2026, 07, 24);
+        File.WriteAllLines(_path, new[]
+        {
+            "{\"Tenant\":\"local\",\"Date\":\"2026-07-24\",\"MachineName\":\"M1\",\"DirectorId\":\"d1\",\"Path\":\"D:\\\\repos\\\\a\",\"Name\":\"a\",\"WorktreeCount\":5}",
+            "{ this line is a torn, unparseable write",
+            "{\"Tenant\":\"local\",\"Date\":\"2026-07-24\",\"MachineName\":\"M1\",\"DirectorId\":\"d1\",\"Path\":\"D:\\\\repos\\\\b\",\"Name\":\"b\",\"WorktreeCount\":3}",
+        });
+
+        var store = new RepoHistoryStore(_path);
+        // Both good rows survive: the same-day fleet total sums them (5 + 3), rather than the row
+        // after the corruption being lost.
+        Assert.Equal(8, store.WeeklyTrends(TenantId.Local, 1, day)[^1].MaxWorktrees);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (issue 516): the file is written atomically (temp + swap) and the previous file is
+    // kept as a .bak, so an interrupted write cannot truncate the live history. After a second
+    // save the .bak exists; the old in-place File.WriteAllLines produced no backup at all.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public void Save_WritesAtomically_AndKeepsABackup()
+    {
+        var tenant = TenantId.Local;
+        var day = new DateOnly(2026, 07, 24);
+        var store = new RepoHistoryStore(_path);
+
+        store.ObserveSnapshot(tenant, new[] { Repo("a", worktrees: 5) }, day);
+        store.ObserveSnapshot(tenant, new[] { Repo("a", worktrees: 6) }, day); // second save swaps in a new file
+
+        Assert.True(File.Exists(_path));
+        Assert.True(File.Exists(_path + ".bak"), "the atomic swap must keep the previous file as a backup");
+        Assert.False(File.Exists(_path + ".tmp"), "the temp file must be gone after the swap");
     }
 
     [Fact]

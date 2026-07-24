@@ -187,25 +187,56 @@ public sealed class RepoHistoryStore
         if (_rows != null)
             return;
         _rows = new Dictionary<string, RepoDailySnapshot>(StringComparer.Ordinal);
+
+        // Read the live file; if it is missing or unreadable AS A WHOLE, fall back to the
+        // last-known-good backup so a torn or truncated write never erases the accumulated history
+        // (issue 516). A single corrupt LINE inside a readable file is skipped, not fatal.
+        if (!TryLoadFrom(_path))
+            TryLoadFrom(_path + ".bak");
+    }
+
+    private bool TryLoadFrom(string path)
+    {
+        if (!File.Exists(path))
+            return false;
+
+        string[] lines;
         try
         {
-            if (!File.Exists(_path))
-                return;
-            foreach (var line in File.ReadAllLines(_path))
-            {
-                if (string.IsNullOrWhiteSpace(line))
-                    continue;
-                var row = JsonSerializer.Deserialize<RepoDailySnapshot>(line);
-                // Rows without a path or without a Director id predate the current key format
-                // (days old, unreleased) and cannot be keyed - ignored rather than migrated.
-                if (row != null && !string.IsNullOrWhiteSpace(row.Path) && !string.IsNullOrWhiteSpace(row.DirectorId))
-                    _rows[Key(row)] = row;
-            }
+            lines = File.ReadAllLines(path);
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[RepoHistoryStore] load failed (starting empty): {ex.Message}");
+            FileLog.Write($"[RepoHistoryStore] could not read {path} (will try the backup): {ex.Message}");
+            return false;
         }
+
+        int skipped = 0;
+        foreach (var line in lines)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+                continue;
+            RepoDailySnapshot? row;
+            try
+            {
+                row = JsonSerializer.Deserialize<RepoDailySnapshot>(line);
+            }
+            catch (Exception)
+            {
+                // A single corrupt line (a torn write) must NOT drop every good line after it -
+                // skip this one and keep the rest (issue 516). Previously the first bad line ended
+                // the whole load, and the next save rewrote the file from the truncated result.
+                skipped++;
+                continue;
+            }
+            // Rows without a path or without a Director id predate the current key format
+            // (days old, unreleased) and cannot be keyed - ignored rather than migrated.
+            if (row != null && !string.IsNullOrWhiteSpace(row.Path) && !string.IsNullOrWhiteSpace(row.DirectorId))
+                _rows![Key(row)] = row;
+        }
+        if (skipped > 0)
+            FileLog.Write($"[RepoHistoryStore] skipped {skipped} unparseable line(s) in {path}");
+        return true;
     }
 
     private void Save()
@@ -215,7 +246,24 @@ public sealed class RepoHistoryStore
             var dir = Path.GetDirectoryName(_path);
             if (dir != null)
                 Directory.CreateDirectory(dir);
-            File.WriteAllLines(_path, _rows!.Values.Select(r => JsonSerializer.Serialize(r)));
+
+            // Write the whole file to a temp, flush it to disk, then swap it in atomically - so a
+            // crash, a full disk, or an interrupted write can never truncate the live history
+            // (issue 516). File.Replace keeps the previous file as a .bak for the load-time fallback.
+            var tmp = _path + ".tmp";
+            using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+            using (var writer = new StreamWriter(fs))
+            {
+                foreach (var r in _rows!.Values)
+                    writer.WriteLine(JsonSerializer.Serialize(r));
+                writer.Flush();
+                fs.Flush(flushToDisk: true);
+            }
+
+            if (File.Exists(_path))
+                File.Replace(tmp, _path, _path + ".bak");
+            else
+                File.Move(tmp, _path);
         }
         catch (Exception ex)
         {
