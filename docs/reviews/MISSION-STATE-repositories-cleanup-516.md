@@ -157,3 +157,28 @@ worktrees (activity-producer, dict-scan) hold it; my Gateway runs wait. Killed m
 (ba8on8jex); re-running with the latest #3/#5 tests (bmqi66un1, waiting on the lock).
 IN FLIGHT: round-4 inspector session 89598394 -> docs/reviews/codex-inspection-round4.md; Gateway unit
 re-run bmqi66un1; then full Gateway suite (needs the lock). Then Codex PASS + three-suite green -> MERGE.
+
+## Codex round 4 = FAIL -> fixed (2026-07-24)
+Round 4 found 3 (docs/reviews/codex-inspection-round4.md). ALL FIXED:
+- #2 (BLOCKER) session roster still had the OLD unconditional connection-ownership rule, so a
+  superseded Director connection re-Helloing could reclaim and push a stale session set while the
+  Director still read Online. FIX (commit bba84800): PushedSessionStore now carries the same
+  monotonic connection-epoch discipline the repository store already had (assign epoch on first
+  sight; same-connection re-Hello keeps baseline; below-current epoch cannot reclaim; reset when the
+  active connection disconnects). Test: PushedSessionStoreConnectionEpochTests.
+- #1 (BLOCKER) the OS-handle backstop does NOT protect a running session's worktree CONTENTS - git
+  deletes the tracked files and deregisters BEFORE Windows refuses the final root-dir delete, so the
+  session is left in a gutted, deregistered folder. The round-3 test only proved the ROOT survived.
+  Reproduced. FIX (commit c61cd2fa): a machine-local session reservation written AT LAUNCH (owner
+  Director pid + start-time), read by the reaper in any slot, which refuses to remove a worktree a
+  live reservation covers (incl. a subdir session). No propagation delay, no partial-fleet window.
+  Stale (dead-Director) reservations are pruned so they cannot wedge reaping shut. Tests:
+  WorktreeReservationStoreTests + 3 reaper regression tests (reserved never reaped / subdir protects
+  whole worktree / stale reservation does not block).
+- #3 (MAJOR) a deregistered locked-file leftover was reported "will be retried" but git no longer
+  lists it, so no inventory rediscovers it - it leaked forever. FIX (commit d4195ff8): leftovers are
+  persisted to a machine-local store; every reap first retries the physical delete of each recorded
+  leftover (drops it when gone/cleared, leaves it when a reservation covers it, keeps it when still
+  locked). Banner text corrected to the true promise. Test: Reap_RetriesAPersistedLeftover.
+All three fail-on-purpose verified (guard neutered -> red -> restored -> green). Pushed at d4195ff8.
+Core+Avalonia full suites running; Gateway suite next (machine-wide lock). Then Codex round 5 -> MERGE.
