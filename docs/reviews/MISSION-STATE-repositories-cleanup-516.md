@@ -209,3 +209,10 @@ Also fixed a real guard failure the full Core suite caught: the two new stores c
 by hand (StorageRootGuardTests) -> routed both through CcStorage.WorktreeReservations/WorktreeLeftovers.
 Core reaper+reservation+guard suite 31 green. Avalonia 294 green (round-4). Full Core re-running; Gateway
 suite blocked on the machine-wide lock (other worktrees). Round-6 Codex inspection next -> then MERGE.
+
+## Three suites GREEN after round 5 (2026-07-24)
+- Core: 3537 passed, 8 skipped, 0 failed.
+- Avalonia: 294 passed, 0 failed.
+- Gateway: 3734 passed, 17 skipped, 0 failed (full suite, machine-wide lock).
+Round-6 Codex inspection running as VISIBLE session e81e3c8e -> docs/reviews/codex-inspection-round6.md
+(prompt round6-prompt.md). PASS -> squash-merge to origin/main, delete branch, remove worktree, notify owner.
