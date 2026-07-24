@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { setVoiceModeAllSessions, type SessionDto } from "@devthrottle/client-core/api/client";
 import { getAutoSpeak, inVoiceQueueOrder, queueTouchMs, setAutoSpeak } from "@devthrottle/client-core/voice/queueTouch";
-import { sessionsNeedingVoice } from "@devthrottle/client-core/voice/voiceAllSweep";
 import { getSessionsEnvelope } from "@devthrottle/client-core/fleet/fleetClient";
 import { emptyRetentionCache, mergeRosterRetention, type RosterSessionMark } from "@devthrottle/client-core/fleet/rosterRetention";
 import { classify, contextLine, deletionReason, dotHex, inBucket, inDesktopOrder, inWaitingOrder, isWorking, pendingDeletion, repoLeaf, snoozeCountdown, snoozeExpired } from "@devthrottle/client-core/sessions/ordering";
@@ -190,76 +189,6 @@ export function Home() {
   const shownTotal = filtered ? filtered.length : 0;
   const active = filterIsActive(filter);
 
-  // THE VOICE TAB PUTS THE WHOLE GATEWAY ON VOICE (owner, 2026-07-24). Opening this tab IS the
-  // decision "read my fleet to me", so every session on the Gateway is switched into voice mode on
-  // arrival - including the ones created after you got here. It used to be a button you had to
-  // remember to press, and worse, that button read the roster to pick its own direction: the moment
-  // ONE session was on voice it flipped to "Turn voice off for all sessions", so a session created
-  // afterwards could never be switched on from this screen at all. That is why sessions went missing
-  // from the queue - not a bug in the queue, they were simply never voice sessions.
-  //
-  // The Gateway's one fan-out endpoint walks the whole roster itself, so this is a single call, and
-  // it is only made when at least one session is actually still off. Ids already attempted are
-  // remembered for the visit so a session whose computer is offline (permanently skipped, so
-  // permanently still "off") cannot make this fire on every 5-second poll. Leaving the tab forgets
-  // them, so coming back re-arms the sweep.
-  const voiceAllAttempted = useRef<Set<string>>(new Set());
-  const [voiceAllBusy, setVoiceAllBusy] = useState(false);
-  const [voiceAllNote, setVoiceAllNote] = useState<string | null>(null);
-  const [voiceAllError, setVoiceAllError] = useState<string | null>(null);
-  useEffect(() => {
-    if (tab === "voice") return;
-    voiceAllAttempted.current.clear();
-    setVoiceAllNote(null);
-    setVoiceAllError(null);
-  }, [tab]);
-  useEffect(() => {
-    if (tab !== "voice" || sessions === null || sessions.length === 0) return;
-    const fresh = sessionsNeedingVoice(sessions, voiceAllAttempted.current);
-    if (fresh.length === 0) return;
-    for (const sid of fresh) voiceAllAttempted.current.add(sid);
-    setVoiceAllBusy(true);
-    void (async () => {
-      try {
-        const result = await setVoiceModeAllSessions(true);
-        setVoiceAllError(null);
-        // Fail loud, the mobile rule: name what was passed over rather than quietly leaving a session
-        // out of the queue. Silence here is exactly the failure that started this.
-        setVoiceAllNote(
-          result.skipped > 0
-            ? `${result.changed} ${result.changed === 1 ? "session" : "sessions"} switched into voice mode, ${result.skipped} skipped (computer offline)`
-            : `${result.changed} ${result.changed === 1 ? "session" : "sessions"} switched into voice mode`,
-        );
-      } catch (err) {
-        setVoiceAllError(
-          err instanceof Error ? err.message : "Could not put every session into voice mode",
-        );
-      } finally {
-        setVoiceAllBusy(false);
-      }
-    })();
-  }, [tab, sessions]);
-
-  // The way back out: turn the whole fleet off and leave the voice lens in one action. It has to do
-  // both - turning voice off while standing on the tab that turns voice on would be undone by the
-  // sweep above on the very next poll.
-  const turnVoiceAllOff = useCallback(async () => {
-    setVoiceAllBusy(true);
-    setVoiceAllError(null);
-    setVoiceAllNote(null);
-    try {
-      await setVoiceModeAllSessions(false);
-      voiceAllAttempted.current.clear();
-      selectTab("all");
-    } catch (err) {
-      setVoiceAllError(
-        err instanceof Error ? err.message : "Could not turn voice off for all sessions",
-      );
-    } finally {
-      setVoiceAllBusy(false);
-    }
-  }, [selectTab]);
-
   // AUTO-SPEAK (voice-mode queue flow): with the box checked and the Voice tab open, the roster
   // jumps into the next session in the queue BY ITSELF and reads it aloud - hands-free driving mode.
   // The next session is the oldest waiting one not listened to in the last few seconds (a session
@@ -368,7 +297,11 @@ export function Home() {
           className={`view-tab${tab === "voice" ? " active" : ""}`}
           onClick={() => selectTab("voice")}
         >
-          Voice mode
+          {/* "Voice sessions", NOT "Voice mode" (owner, 2026-07-24). This tab is a LENS - the sessions
+              that can speak to you right now. Voice mode is a state of the fleet, and auto-speak is a
+              state of this phone; naming the lens after one of them made all three read as the same
+              thing, which is exactly the confusion this screen has to stop causing. */}
+          Voice sessions
         </button>
       </div>
 
@@ -394,38 +327,31 @@ export function Home() {
         <p className="status-line">No sessions running.</p>
       )}
 
-      {/* The fleet-wide voice state, stated plainly (owner, 2026-07-24). Being on this tab IS the
-          fleet-wide switch - the sweep above has already put every session on the Gateway into voice
-          mode - so there is nothing left to turn ON, and the old "turn all on / turn all off" button
-          (issue #1765) is now one direction only: the way back out. */}
+      {/* The one-tap fleet-wide voice switch (issue #1765): "as I leave the house, put my whole fleet on
+          voice; when I get home, take it all off". It reads the roster to decide its own action - offer
+          "turn all on" while no session is a voice session, "turn all off" once any is - so the same
+          button covers both halves of the walk-out / come-home round trip.
+
+          VOICE MODE AND AUTO-SPEAK ARE TWO DIFFERENT THINGS (owner, 2026-07-24), and this is the first
+          of them: voice mode is about the FLEET - every session narrates its turns. Auto-speak, below,
+          is about THIS PHONE - it also plays them to you one after another without a tap. Voice mode on
+          with auto-speak off is the ordinary case: your sessions all speak, and you choose which one to
+          listen to. That is why they are two separate controls and never one. */}
       {tab === "voice" && sessions !== null && total > 0 && (
-        <div className="voice-all">
-          <p className="voice-all-line" role="status">
-            {voiceAllBusy
-              ? "Putting every session on the Gateway into voice mode..."
-              : "Every session on the Gateway is in voice mode, so all of them come through this queue."}
-          </p>
-          {voiceAllNote && <p className="voice-all-note" role="status">{voiceAllNote}</p>}
-          {voiceAllError && <p className="voice-all-error" role="alert">{voiceAllError}</p>}
-          <button
-            type="button"
-            className="voice-all-btn voice-all-btn-off"
-            onClick={() => void turnVoiceAllOff()}
-            disabled={voiceAllBusy}
-          >
-            Turn voice off for all sessions
-          </button>
-        </div>
+        <VoiceAllControl sessions={sessions} />
       )}
 
-      {/* Auto-speak (voice-mode queue flow): the hands-free switch. One checkbox; when on, the queue
-          below is read to you session by session without a single tap on a row. */}
+      {/* Auto-speak (voice-mode queue flow): the hands-free switch, and a PHONE setting, not a fleet
+          one. One checkbox; when on, the queue below is read to you session by session without a
+          single tap on a row. */}
       {tab === "voice" && sessions !== null && total > 0 && (
         <label className="autospeak-row">
           <input type="checkbox" checked={autoSpeak} onChange={toggleAutoSpeak} />
           <span className="autospeak-label">
             Auto-speak
-            <span className="autospeak-hint">Jump into the next waiting session and read it aloud</span>
+            <span className="autospeak-hint">
+              This phone only - open each waiting voice session in turn and play it without a tap
+            </span>
           </span>
         </label>
       )}
@@ -541,10 +467,69 @@ function EnableAlerts() {
   );
 }
 
-// The fleet-wide voice switch used to be a component here (issue #1765) - one button that read the
-// roster and picked its own direction. It is gone: the ON half now happens by itself whenever the
-// Voice tab is open (see the sweep in Home), and the OFF half is the one plain button rendered
-// there. The Gateway endpoint it calls is unchanged.
+// The fleet-wide voice switch shown at the top of the Voice sessions tab (issue #1765). One control for
+// the whole round trip: while no session is in voice mode it offers "Turn on voice for all N sessions";
+// the moment any session is a voice session it offers "Turn voice off for all sessions". Tapping calls
+// the Gateway's one fan-out endpoint, which walks the roster itself, and shows a fail-loud summary of
+// what changed and what was skipped (the mobile rule: never fail silently - name the offline sessions
+// that were passed over). The next roster poll (5s) repaints each row's voice state, so the button flips
+// to its opposite.
+//
+// KNOWN LIMIT, being fixed properly next (owner, 2026-07-24): this button decides its own direction by
+// reading the roster, so once ONE session is on voice it only ever offers OFF - a session created after
+// that cannot be switched on from here, and quietly never joins the voice queue. The real fix is for the
+// GATEWAY to hold "this tenant is in voice mode" and apply it to a session at birth, with a banner on
+// every screen of the app showing that state and carrying the off switch. That is a Gateway change and
+// its own piece of work; this button stays exactly as it was until then.
+function VoiceAllControl({ sessions }: { sessions: SessionDto[] }) {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const anyOn = sessions.some((s) => Boolean(s.voiceMode));
+  // No session on voice yet -> the action is to turn the whole fleet ON; otherwise turn it all OFF.
+  const enable = !anyOn;
+  const count = sessions.length;
+
+  const onClick = async () => {
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    try {
+      const result = await setVoiceModeAllSessions(enable);
+      const changedLabel = `${result.changed} ${result.changed === 1 ? "session" : "sessions"} ${enable ? "on" : "off"}`;
+      setNote(result.skipped > 0 ? `${changedLabel}, ${result.skipped} skipped (computer offline)` : changedLabel);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not change voice mode for all sessions");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const label = enable
+    ? `Turn on voice for all ${count} ${count === 1 ? "session" : "sessions"}`
+    : "Turn voice off for all sessions";
+  const busyLabel = enable ? "Turning voice on..." : "Turning voice off...";
+
+  return (
+    <div className="voice-all">
+      <p className="voice-all-line">
+        Voice mode is about the fleet: every session narrates its turns. Auto-speak, below, is about this
+        phone.
+      </p>
+      <button
+        type="button"
+        className={`voice-all-btn${enable ? "" : " voice-all-btn-off"}`}
+        onClick={() => void onClick()}
+        disabled={busy}
+      >
+        {busy ? busyLabel : label}
+      </button>
+      {note && <p className="voice-all-note" role="status">{note}</p>}
+      {error && <p className="voice-all-error" role="alert">{error}</p>}
+    </div>
+  );
+}
 
 // The plain-English note under an unreachable card, naming the machine and (when known) how long ago it
 // was last seen. Wobbly reads as a soft "reconnecting"; offline as a firm "unreachable" - both honest.
