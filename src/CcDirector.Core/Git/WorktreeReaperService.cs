@@ -78,17 +78,20 @@ public sealed class WorktreeReaperService
     private readonly GitCommandRunner _git;
     private readonly Func<DateTime> _utcNow;
     private readonly WorktreeReservationStore _reservations;
+    private readonly WorktreeLeftoverStore _leftovers;
 
     public WorktreeReaperService(
         WorktreeInventoryService? inventory = null,
         GitCommandRunner? git = null,
         Func<DateTime>? utcNow = null,
-        WorktreeReservationStore? reservations = null)
+        WorktreeReservationStore? reservations = null,
+        WorktreeLeftoverStore? leftovers = null)
     {
         _git = git ?? new GitCommandRunner();
         _inventory = inventory ?? new WorktreeInventoryService(_git);
         _utcNow = utcNow ?? (() => DateTime.UtcNow);
         _reservations = reservations ?? new WorktreeReservationStore();
+        _leftovers = leftovers ?? new WorktreeLeftoverStore();
     }
 
     /// <summary>
@@ -176,6 +179,11 @@ public sealed class WorktreeReaperService
             // it is written at launch, so it has no propagation delay and no partial-fleet window, and
             // it protects the whole worktree even when the session sits in a subdirectory.
             var reservedPaths = _reservations.LiveReservedPaths();
+
+            // Retry folders a PAST reap deregistered but could not physically delete (a locked build
+            // output). git no longer lists them as worktrees, so no inventory can rediscover them -
+            // without this they leak forever despite the UI promising a retry (inspection round 4).
+            RetryPersistedLeftovers(reservedPaths, ct);
 
             var outcomes = new List<ReapOutcome>();
             // Worktrees held back because a live session is running in them - reported so the user
@@ -346,7 +354,43 @@ public sealed class WorktreeReaperService
             return ReapOutcome.RemovedOk(worktree);
 
         FileLog.Write($"[WorktreeReaperService] LEFTOVER (locked files remain): {worktree.Path}");
+        // Persist it so a later reap can finish the delete once the lock is released - git has already
+        // deregistered it, so no future inventory would ever surface it again (inspection round 4).
+        _leftovers.Add(NormalizePath(worktree.Path));
         return ReapOutcome.LeftBehind(worktree);
+    }
+
+    /// <summary>
+    /// Retry the physical delete of folders a past reap deregistered but could not fully remove. A
+    /// leftover whose folder is already gone (finished by a prior retry, or removed by hand) is
+    /// dropped; one a live reservation now covers is left strictly alone; one that deletes cleanly is
+    /// dropped; one still locked stays for the next attempt. These folders are already deregistered
+    /// from git and hold only ignored/build outputs, so finishing the delete loses nothing tracked.
+    /// </summary>
+    private void RetryPersistedLeftovers(IReadOnlySet<string> reservedPaths, CancellationToken ct)
+    {
+        foreach (var path in _leftovers.All())
+        {
+            ct.ThrowIfCancellationRequested();
+
+            // Never touch a folder a live session has (re)reserved - the safe direction.
+            if (reservedPaths.Any(p => PathCoversWorktree(path, p)))
+                continue;
+
+            if (!Directory.Exists(path))
+            {
+                _leftovers.Remove(path); // already gone - a prior retry finished it, or the owner did
+                continue;
+            }
+
+            TryDeleteDirectory(path);
+            if (!Directory.Exists(path))
+            {
+                FileLog.Write($"[WorktreeReaperService] retried leftover deleted (lock cleared): {path}");
+                _leftovers.Remove(path);
+            }
+            // else: still locked - keep it persisted and retry on the next reap.
+        }
     }
 
     private static void TryDeleteDirectory(string path)

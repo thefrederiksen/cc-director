@@ -14,11 +14,15 @@ public sealed class WorktreeReaperServiceTests : IDisposable
     private readonly string _root;
     private readonly string _origin;
     private readonly string _primary;
+    // A leftover store scoped to this test's temp dir - so no test ever reads or deletes real
+    // leftovers under the user's %LOCALAPPDATA%.
+    private readonly WorktreeLeftoverStore _leftovers;
 
     public WorktreeReaperServiceTests()
     {
         _root = Path.Combine(Path.GetTempPath(), "ccd-reaper-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_root);
+        _leftovers = new WorktreeLeftoverStore(Path.Combine(_root, "leftovers"));
         _origin = Path.Combine(_root, "origin.git");
         _primary = Path.Combine(_root, "primary");
 
@@ -89,7 +93,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         var safe = AddSafeWorktree("safe");
         var stranded = AddStrandedWorktree("stranded");
 
-        var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, NoSessions);
+        var result = await new WorktreeReaperService(leftovers: _leftovers, utcNow: Later).ReapAsync(_primary, NoSessions);
 
         Assert.True(result.Success, result.Error);
         Assert.Equal(1, result.RemovedCount);
@@ -106,7 +110,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
     {
         var safe = AddSafeWorktree("busy");
 
-        var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, SessionsIn(safe));
+        var result = await new WorktreeReaperService(leftovers: _leftovers, utcNow: Later).ReapAsync(_primary, SessionsIn(safe));
 
         Assert.Equal(0, result.RemovedCount);
         Assert.Contains(safe, result.Skipped);
@@ -118,7 +122,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
     {
         var safe = AddSafeWorktree("case");
 
-        var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(
+        var result = await new WorktreeReaperService(leftovers: _leftovers, utcNow: Later).ReapAsync(
             _primary, SessionsIn(safe.ToUpperInvariant() + Path.DirectorySeparatorChar));
 
         Assert.Equal(0, result.RemovedCount);
@@ -130,7 +134,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
     {
         AddSafeWorktree("x");
 
-        await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, NoSessions);
+        await new WorktreeReaperService(leftovers: _leftovers, utcNow: Later).ReapAsync(_primary, NoSessions);
 
         Assert.True(Directory.Exists(_primary), "the primary checkout must always survive");
         Assert.True(Directory.Exists(Path.Combine(_primary, ".git")));
@@ -156,7 +160,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
 
         using (var _ = new FileStream(lockedFile, FileMode.Open, FileAccess.Read, FileShare.Read))
         {
-            var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, NoSessions);
+            var result = await new WorktreeReaperService(leftovers: _leftovers, utcNow: Later).ReapAsync(_primary, NoSessions);
 
             Assert.False(result.Success, "a folder that could not be deleted must not be reported as success");
             Assert.Contains(safe, result.Leftovers);
@@ -170,7 +174,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
     [Fact]
     public async Task Reap_EmptyRepo_NoWorktrees_IsANoOpSuccess()
     {
-        var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, NoSessions);
+        var result = await new WorktreeReaperService(leftovers: _leftovers, utcNow: Later).ReapAsync(_primary, NoSessions);
 
         Assert.True(result.Success);
         Assert.Equal(0, result.RemovedCount);
@@ -188,7 +192,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
     {
         var safe = AddSafeWorktree("just-touched");
 
-        var result = await new WorktreeReaperService().ReapAsync(_primary, NoSessions); // default clock = now
+        var result = await new WorktreeReaperService(leftovers: _leftovers).ReapAsync(_primary, NoSessions); // default clock = now
 
         Assert.Equal(0, result.RemovedCount);
         Assert.Contains(safe, result.Skipped);
@@ -210,7 +214,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         Func<CancellationToken, Task<IReadOnlyList<LiveSessionRef>>> throwing =
             _ => throw new InvalidOperationException("fleet query failed");
 
-        var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, throwing);
+        var result = await new WorktreeReaperService(leftovers: _leftovers, utcNow: Later).ReapAsync(_primary, throwing);
 
         Assert.False(result.Success);
         Assert.Contains("reap aborted", result.Error ?? "");
@@ -230,7 +234,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         var appearedAfter = AddSafeWorktree("appeared-after"); // also safe, but NOT approved
 
         var approvedSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { approved };
-        var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, NoSessions, approvedSet);
+        var result = await new WorktreeReaperService(leftovers: _leftovers, utcNow: Later).ReapAsync(_primary, NoSessions, approvedSet);
 
         Assert.Equal(1, result.RemovedCount);
         Assert.False(Directory.Exists(approved), "the approved worktree is removed");
@@ -242,7 +246,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
     {
         var safe = AddSafeWorktree("also-would-be-reaped");
 
-        var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, liveSessionsProvider: null);
+        var result = await new WorktreeReaperService(leftovers: _leftovers, utcNow: Later).ReapAsync(_primary, liveSessionsProvider: null);
 
         Assert.False(result.Success);
         Assert.Equal(0, result.RemovedCount);
@@ -268,7 +272,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         // "git worktree remove" runs, so real git refuses the removal - exactly the race the
         // finding describes.
         var git = new DirtyBeforeRemoveGitRunner(safe, surprise);
-        var result = await new WorktreeReaperService(git: git, utcNow: Later).ReapAsync(_primary, NoSessions);
+        var result = await new WorktreeReaperService(leftovers: _leftovers, git: git, utcNow: Later).ReapAsync(_primary, NoSessions);
 
         Assert.False(result.Success, "a worktree git refused to remove must not be reported as a clean success");
         Assert.True(Directory.Exists(safe), "the worktree git refused to remove must still be present");
@@ -290,7 +294,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         var safe = AddSafeWorktree("locked-wt");
         RunGit(_primary, "worktree", "lock", safe); // an explicit user protection
 
-        var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, NoSessions);
+        var result = await new WorktreeReaperService(leftovers: _leftovers, utcNow: Later).ReapAsync(_primary, NoSessions);
 
         Assert.True(Directory.Exists(safe), "a git-locked worktree must never be force-deleted");
         Assert.False(result.Success, "git refused to remove the locked worktree - not a clean success");
@@ -313,7 +317,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         var safe = AddSafeWorktree("fetch-fails");
 
         var git = new FailFetchGitRunner();
-        var result = await new WorktreeReaperService(git: git, utcNow: Later).ReapAsync(_primary, NoSessions);
+        var result = await new WorktreeReaperService(leftovers: _leftovers, git: git, utcNow: Later).ReapAsync(_primary, NoSessions);
 
         Assert.False(result.Success);
         Assert.Contains("reap aborted", result.Error ?? "");
@@ -349,7 +353,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         {
             // Empty roster (session not propagated) AND a future clock (past the cooling-off): both
             // heuristics miss it - only the OS file lock protects it.
-            var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, NoSessions);
+            var result = await new WorktreeReaperService(leftovers: _leftovers, utcNow: Later).ReapAsync(_primary, NoSessions);
 
             Assert.True(Directory.Exists(safe), "a worktree with an open file is never physically deleted");
             Assert.DoesNotContain(result.Outcomes, o => o.Removed
@@ -377,7 +381,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
             return Task.FromResult<IReadOnlyList<LiveSessionRef>>(Array.Empty<LiveSessionRef>());
         };
 
-        var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, provider);
+        var result = await new WorktreeReaperService(leftovers: _leftovers, utcNow: Later).ReapAsync(_primary, provider);
 
         Assert.False(result.Success);
         Assert.Contains("aborted after removing", result.Error ?? "");
@@ -395,7 +399,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         var safe = AddSafeWorktree("subdir-session");
         var subdir = Path.Combine(safe, "src", "app");
 
-        var result = await new WorktreeReaperService(utcNow: Later).ReapAsync(_primary, SessionsIn(subdir));
+        var result = await new WorktreeReaperService(leftovers: _leftovers, utcNow: Later).ReapAsync(_primary, SessionsIn(subdir));
 
         Assert.Equal(0, result.RemovedCount);
         Assert.True(Directory.Exists(safe), "a session in a subdirectory must protect the whole worktree");
@@ -412,7 +416,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         AddSafeWorktree("fetch-name");
         var git = new CaptureFetchGitRunner();
 
-        await new WorktreeReaperService(git: git, utcNow: Later).ReapAsync(_primary, NoSessions);
+        await new WorktreeReaperService(leftovers: _leftovers, git: git, utcNow: Later).ReapAsync(_primary, NoSessions);
 
         Assert.Contains(git.Fetches, f => f.Length >= 1 && f[0] == "fetch" && f.Contains("origin"));
     }
@@ -433,7 +437,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         var store = LiveReservationStore(Path.Combine(_root, "reservations"));
         store.Reserve(safe, "sess-reserved");
 
-        var result = await new WorktreeReaperService(utcNow: Later, reservations: store)
+        var result = await new WorktreeReaperService(leftovers: _leftovers, utcNow: Later, reservations: store)
             .ReapAsync(_primary, NoSessions);
 
         Assert.Equal(0, result.RemovedCount);
@@ -452,7 +456,7 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         var store = LiveReservationStore(Path.Combine(_root, "reservations-sub"));
         store.Reserve(subdir, "sess-sub");
 
-        var result = await new WorktreeReaperService(utcNow: Later, reservations: store)
+        var result = await new WorktreeReaperService(leftovers: _leftovers, utcNow: Later, reservations: store)
             .ReapAsync(_primary, NoSessions);
 
         Assert.Equal(0, result.RemovedCount);
@@ -475,11 +479,55 @@ public sealed class WorktreeReaperServiceTests : IDisposable
             dir: resvDir, ownerPid: 7777, ownerStartUtc: ReservationOwnerStart,
             processStartUtc: _ => (DateTime?)null);
 
-        var result = await new WorktreeReaperService(utcNow: Later, reservations: deadOwnerStore)
+        var result = await new WorktreeReaperService(leftovers: _leftovers, utcNow: Later, reservations: deadOwnerStore)
             .ReapAsync(_primary, NoSessions);
 
         Assert.Equal(1, result.RemovedCount);
         Assert.False(Directory.Exists(safe), "a stale reservation from a gone Director must not block reaping");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 4): a locked-file leftover the reap could not physically delete
+    // must actually be retried later. git DEREGISTERS the worktree before it fails on the locked
+    // build output, so no future inventory can rediscover the folder - without a persisted retry it
+    // leaks forever, contradicting the UI's "will be retried" promise. Here the first reap leaves a
+    // persisted leftover behind a lock; once the lock releases a later reap - with nothing new to
+    // remove - finishes the delete and clears the record.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Reap_RetriesAPersistedLeftover_AndClearsItOnceTheLockIsReleased()
+    {
+        var safe = AddSafeWorktree("leftover-retry");
+        WriteFile(safe, ".gitignore", "locked/\n");
+        RunGit(safe, "add", ".gitignore");
+        RunGit(safe, "commit", "-m", "ignore locked dir");
+        RunGit(safe, "push", "origin", "leftover-retry");
+        RunGit(_primary, "merge", "--ff-only", "leftover-retry");
+        RunGit(_primary, "push", "origin", "main");
+
+        var lockedDir = Path.Combine(safe, "locked");
+        Directory.CreateDirectory(lockedDir);
+        var lockedFile = Path.Combine(lockedDir, "held.bin");
+        File.WriteAllText(lockedFile, "output\n");
+
+        var normalizedSafe = WorktreeReaperService.NormalizePath(safe);
+
+        // First reap while the file is locked: git deregisters the worktree but the folder cannot be
+        // fully deleted, so it is recorded as a persisted leftover.
+        using (var _ = new FileStream(lockedFile, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            var first = await new WorktreeReaperService(leftovers: _leftovers, utcNow: Later).ReapAsync(_primary, NoSessions);
+            Assert.Contains(safe, first.Leftovers);
+            Assert.True(Directory.Exists(safe), "the locked folder remains after the first reap");
+        }
+        Assert.Contains(normalizedSafe, _leftovers.All());
+
+        // Lock released. A later reap - even with nothing new to remove - retries the persisted
+        // leftover, finishes the delete, and drops the record.
+        var second = await new WorktreeReaperService(leftovers: _leftovers, utcNow: Later).ReapAsync(_primary, NoSessions);
+
+        Assert.False(Directory.Exists(safe), "the persisted leftover is retried and removed once unlocked");
+        Assert.DoesNotContain(normalizedSafe, _leftovers.All());
     }
 
     private static readonly DateTime ReservationOwnerStart = new(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
