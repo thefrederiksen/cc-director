@@ -416,6 +416,7 @@ public sealed class GatewayHost : IAsyncDisposable
     // The weekly Outcome Ledger reporter (issue #1771, spine item 4): a read-only assembly over the run
     // tables, event ledger, spend, and audit trail - the first governance report that pays rent.
     private readonly Governance.OutcomeLedgerReporter _outcomeLedger;
+    private readonly Reports.MorningReportBuilder _morningReport;
     private readonly CronJobStore _cronJobs;
     private readonly CronRunHistoryStore _cronRuns;
     private readonly Running.CronEngine _cronEngine;
@@ -860,6 +861,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // The weekly Outcome Ledger reporter (issue #1771, spine item 4): read-only over the run tables +
         // event ledger + spend + audit trail. No store of its own.
         _outcomeLedger = new Governance.OutcomeLedgerReporter(_gatewayDb);
+        // The morning report (issue #2119): one honest report per account per day, assembled read-only from
+        // the stores above. The pushed-session cache is passed for LABELS ONLY (a waiting row's friendly name
+        // and repository path); the waiting fact itself comes from the durable governance ledger, so a
+        // Director that happens to be offline at 07:00 costs a row its name, never its place in the email.
+        _morningReport = new Reports.MorningReportBuilder(_gatewayDb, PushedSessions, _streamStaleAfter);
         // Snooze Length mission: the persisted snooze registry (sessionId -> SnoozeUntilUtc), now in the
         // snoozes table of the EF data layer - a Gateway restart re-arms every pending snooze from the
         // database; an entry already past its time simply fires on the first sweep. The path argument is the
@@ -2277,6 +2283,12 @@ public sealed class GatewayHost : IAsyncDisposable
         // The weekly Outcome Ledger (issue #1771, spine item 4): the first report that pays rent - verified
         // yield, aging WIP, and high-effort/no-outcome runs with cost + attention-burden. Read-only.
         Api.GovernanceReportEndpoints.Map(_app, _outcomeLedger);
+
+        // The morning report (issue #2119, slice 2 of #2096): GET /gateway/reports/morning - the JSON the
+        // website's 07:00 cron renders into the daily email. Does NOT inherit the host-wide token middleware
+        // (the caller is a server with no device key); it carries its own bearer service token from
+        // REPORT_SERVICE_TOKEN and resolves the named account to exactly one tenant. Read-only.
+        Api.MorningReportEndpoint.Map(_app, _morningReport, TenantRegistry, _tenantBoundary);
 
         // Gateway Centralization Phase 2 (issue #638): GET /account/status answers "is the Gateway
         // signed in to DevThrottle, and as whom?" computed ENTIRELY LOCALLY from the Gateway-hosted

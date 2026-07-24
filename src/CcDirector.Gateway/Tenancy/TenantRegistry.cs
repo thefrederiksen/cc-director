@@ -55,9 +55,25 @@ public sealed class TenantRegistry
         {
             using var ctx = _db.CreateUnscopedContext();
 
-            var existing = ctx.Tenants.AsNoTracking().FirstOrDefault(t => t.AccountSubject == subject);
+            var existing = ctx.Tenants.FirstOrDefault(t => t.AccountSubject == subject);
             if (existing is not null)
             {
+                // Backfill the display email when the row has none and this resolution carries one (issue
+                // #2119). The email used to be recorded on a FRESH MINT ONLY, which left every tenant minted
+                // before the email was captured - or from a token that carried none - permanently without
+                // one. That is not a cosmetic gap: the morning report resolves an account BY EMAIL, so a
+                // null here makes a real, fully enrolled account look like no such account.
+                //
+                // It is a backfill, never an overwrite: a row that already has an email keeps it, so this
+                // cannot silently re-point an account's display identity, and the mapping KEY is still the
+                // subject and only the subject. The email is personally identifying and is never logged.
+                if (string.IsNullOrWhiteSpace(existing.Email) && !string.IsNullOrWhiteSpace(email))
+                {
+                    existing.Email = email.Trim();
+                    ctx.SaveChanges();
+                    FileLog.Write("[TenantRegistry] MintOrLookupBySubject: recorded the display email on an existing tenant that had none");
+                }
+
                 FileLog.Write("[TenantRegistry] MintOrLookupBySubject: resolved an existing tenant for a known account");
                 return new TenantId(existing.Id);
             }
@@ -150,6 +166,79 @@ public sealed class TenantRegistry
         using var ctx = _db.CreateUnscopedContext();
         var row = ctx.Tenants.AsNoTracking().FirstOrDefault(t => t.Id == id);
         return string.IsNullOrWhiteSpace(row?.AccountSubject) ? null : row!.AccountSubject;
+    }
+
+    /// <summary>What <see cref="LookupByAccount"/> concluded. The three outcomes are deliberately distinct:
+    /// a caller that folded Ambiguous into NotFound would silently drop a real account, and one that folded
+    /// it into Found would have to PICK one of two tenants - which is guessing about whose data to send.</summary>
+    public enum AccountLookupOutcome
+    {
+        /// <summary>Exactly one tenant matched. <c>Tenant</c> carries it.</summary>
+        Found,
+
+        /// <summary>No tenant matched the identifier.</summary>
+        NotFound,
+
+        /// <summary>More than one tenant carries this email. There is no right answer, so there is no answer.</summary>
+        Ambiguous,
+    }
+
+    /// <summary>
+    /// Resolve the tenant an ACCOUNT identifier names, for a server-to-server caller that has no device key
+    /// to be recognized by (the morning-report endpoint, issue #2119). The identifier is either the tenant
+    /// id itself or the account's display email; the email match is case-insensitive because a person typing
+    /// their own address does not preserve case.
+    ///
+    /// THIS IS NOT AN AUTHENTICATION PATH AND MUST NEVER BE USED AS ONE. The email is display metadata, not
+    /// a credential - it is emphatically NOT the mapping key (the stable Supabase subject is; see
+    /// <see cref="MintOrLookupBySubject"/>). A caller reaching this method has ALREADY been authorized by
+    /// its own means (the report endpoint's service token); this only turns the account it named into the
+    /// partition to read. Nothing here mints, and nothing here decides whether the caller may look.
+    ///
+    /// A duplicate email across two tenants returns <see cref="AccountLookupOutcome.Ambiguous"/> rather than
+    /// picking one. Two accounts CAN share a display email (the mint records whatever the token carried), and
+    /// sending one person's report to the other is the exact harm the tenant boundary exists to prevent.
+    /// The subject and the email are personally identifying and are never logged.
+    /// </summary>
+    public (AccountLookupOutcome Outcome, TenantId Tenant) LookupByAccount(string? account)
+    {
+        if (string.IsNullOrWhiteSpace(account))
+            return (AccountLookupOutcome.NotFound, default);
+
+        var needle = account.Trim();
+        using var ctx = _db.CreateUnscopedContext();
+
+        var byId = ctx.Tenants.AsNoTracking().FirstOrDefault(t => t.Id == needle);
+        if (byId is not null)
+        {
+            FileLog.Write("[TenantRegistry] LookupByAccount: resolved a tenant by tenant id");
+            return (AccountLookupOutcome.Found, new TenantId(byId.Id));
+        }
+
+        // Matched in memory rather than in SQL: case-insensitive string comparison is provider- and
+        // collation-dependent (SQLite's NOCASE is ASCII-only, Postgres is case-sensitive by default), and a
+        // report must not resolve to a different tenant depending on which database it runs against. The
+        // tenant census is small - it is the account table, not a data table.
+        var byEmail = ctx.Tenants.AsNoTracking()
+            .Where(t => t.Email != null)
+            .Select(t => new { t.Id, t.Email })
+            .ToList()
+            .Where(t => string.Equals(t.Email, needle, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (byEmail.Count == 1)
+        {
+            FileLog.Write("[TenantRegistry] LookupByAccount: resolved a tenant by account email");
+            return (AccountLookupOutcome.Found, new TenantId(byEmail[0].Id));
+        }
+        if (byEmail.Count > 1)
+        {
+            FileLog.Write($"[TenantRegistry] LookupByAccount: AMBIGUOUS - {byEmail.Count} tenants carry the requested email; refusing to pick one");
+            return (AccountLookupOutcome.Ambiguous, default);
+        }
+
+        FileLog.Write("[TenantRegistry] LookupByAccount: no tenant carries the requested account identifier");
+        return (AccountLookupOutcome.NotFound, default);
     }
 
     /// <summary>

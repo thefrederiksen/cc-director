@@ -157,6 +157,14 @@ internal static class AuthMiddleware
         // client-side routes the SPA fallback serves the React shell for; neither returns any data.
         CockpitSignInPath,
         CockpitDeviceCallbackPath,
+        // Issue #2119 (the morning report): the website's 7:00 cron is a SERVER, not a device - it holds no
+        // Director/phone device key and no shared machine token, so it cannot pass this gate. The route
+        // carries its OWN authorization instead: a bearer service token from REPORT_SERVICE_TOKEN, compared
+        // in fixed time, which the endpoint requires before it reads anything (an unset variable is a 503,
+        // never an open door). Exact-match, exactly like the enrollment and sign-in front doors above: only
+        // /gateway/reports/morning is exempt, and it is a read-only route that returns ONE named account's
+        // report, scoped to that account's tenant.
+        Api.MorningReportEndpoint.Path,
     };
 
     public static async Task Run(HttpContext ctx, RequireToken cfg, Func<Task> next)
