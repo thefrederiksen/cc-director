@@ -30,7 +30,7 @@ namespace CcDirector.ControlApi;
 /// </summary>
 internal static class ControlEndpoints
 {
-    public static void Map(IEndpointRouteBuilder app, SessionManager sessionManager, string directorId, string version, Func<Task> requestShutdownAsync, bool authEnabled = false, RepositoryRegistry? repositoryRegistry = null, TurnSummaryCache? turnSummaryCache = null, string? gatewayUrl = null, ProactiveExplainService? proactiveExplain = null, GatewayConnectionMonitor? gatewayMonitor = null, Func<TailnetEndpointResolution>? resolveTailnetEndpoint = null, Func<GatewayClient?>? gatewayClientProvider = null, MessageSteward? messageSteward = null, MissionStore? missionStore = null, Func<CancellationToken, Task<SignedInUser?>>? signedInUserResolver = null)
+    public static void Map(IEndpointRouteBuilder app, SessionManager sessionManager, string directorId, string version, Func<Task> requestShutdownAsync, bool authEnabled = false, RepositoryRegistry? repositoryRegistry = null, TurnSummaryCache? turnSummaryCache = null, string? gatewayUrl = null, ProactiveExplainService? proactiveExplain = null, GatewayConnectionMonitor? gatewayMonitor = null, Func<TailnetEndpointResolution>? resolveTailnetEndpoint = null, Func<GatewayClient?>? gatewayClientProvider = null, MessageSteward? messageSteward = null, MissionStore? missionStore = null, Func<CancellationToken, Task<SignedInUser?>>? signedInUserResolver = null, Core.Git.RepositoryMonitor? repositoryMonitor = null)
     {
         // ===== Healthz =====
         app.MapGet("/healthz", () => Results.Json(new HealthDto
@@ -396,6 +396,59 @@ internal static class ControlEndpoints
                 .Select(s => MapWithIdentity(s, turnSummaryCache))
                 .ToList();
             return Results.Json(local);
+        });
+
+        // GET /fleet/repositories + /fleet/worktrees - the repository/worktree directory (#510 phase C).
+        // With a Gateway, relay its fleet-wide aggregation; standalone, serve this Director's own
+        // monitor model. Read-only: reaping always runs on the owning Director with a live re-verify.
+        List<RepoStatusDto> LocalRepoDtos() =>
+            (repositoryMonitor?.Snapshot() ?? (IReadOnlyList<Core.Git.RepositoryStatus>)Array.Empty<Core.Git.RepositoryStatus>())
+                .Select(s => RepositoryDtoMapper.Map(s, directorId, Environment.MachineName))
+                .ToList();
+
+        app.MapGet("/fleet/repositories", async (CancellationToken ct) =>
+        {
+            var gw = gatewayClientProvider?.Invoke();
+            if (gw is { IsEnabled: true })
+            {
+                try
+                {
+                    var fleet = await gw.ListFleetRepositoriesAsync(ct);
+                    // null = the Gateway is older and has no /repositories yet - serve this
+                    // Director's own model (version tolerance, not outage-hiding: a DOWN Gateway
+                    // still fails loud below).
+                    if (fleet != null)
+                        return Results.Json(fleet);
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[ControlEndpoints] /fleet/repositories relay FAILED: {ex.Message}");
+                    return Results.Json(new { error = $"Cannot reach the Gateway: {ex.Message}" },
+                        statusCode: StatusCodes.Status502BadGateway);
+                }
+            }
+            return Results.Json(LocalRepoDtos());
+        });
+
+        app.MapGet("/fleet/worktrees", async (CancellationToken ct) =>
+        {
+            var gw = gatewayClientProvider?.Invoke();
+            if (gw is { IsEnabled: true })
+            {
+                try
+                {
+                    var fleet = await gw.ListFleetWorktreesAsync(ct);
+                    if (fleet != null)
+                        return Results.Json(fleet);
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[ControlEndpoints] /fleet/worktrees relay FAILED: {ex.Message}");
+                    return Results.Json(new { error = $"Cannot reach the Gateway: {ex.Message}" },
+                        statusCode: StatusCodes.Status502BadGateway);
+                }
+            }
+            return Results.Json(RepositoryDtoMapper.Flatten(LocalRepoDtos()));
         });
 
         // POST /fleet/send - deliver one message. A local target is delivered directly (works with

@@ -21,6 +21,10 @@ public sealed class RepoRowItem
     public string Sync { get; init; } = "";
     public string Worktrees { get; init; } = "";
 
+    /// <summary>True for warm-start cache entries not yet re-verified - rendered dimmed.</summary>
+    public bool Verifying { get; init; }
+    public double RowOpacity => Verifying ? 0.55 : 1.0;
+
     public ISolidColorBrush WhereFg { get; init; } = Brushes.Gray;
     public ISolidColorBrush WhereBg { get; init; } = Brushes.Transparent;
     public ISolidColorBrush WhereBr { get; init; } = Brushes.Gray;
@@ -53,6 +57,29 @@ public partial class RepositoryListView : UserControl
 
     /// <summary>Raised when the user clicks Refresh; the host triggers the monitor to rescan.</summary>
     public event Action? RefreshRequested;
+
+    /// <summary>Raised when a repository row is clicked - the host opens its detail screen.</summary>
+    public event Action<string>? RepoOpenRequested;
+
+    private void RepoRow_PointerPressed(object? sender, global::Avalonia.Input.PointerPressedEventArgs e)
+    {
+        if ((sender as Control)?.DataContext is not RepoRowItem row)
+            return;
+        if (!ShouldOpenRow(row))
+        {
+            FileLog.Write($"[RepositoryListView] row click ignored - entry still verifying: {row.Path}");
+            return;
+        }
+        FileLog.Write($"[RepositoryListView] open repo: {row.Path}");
+        RepoOpenRequested?.Invoke(row.Path);
+    }
+
+    /// <summary>
+    /// A provisional (still verifying) entry never opens the detail screen - the detail screen is
+    /// an acting surface (stage, commit, discard, branch delete) and cached, unverified data must
+    /// not receive actions. The row's "verifying" chip already explains the wait.
+    /// </summary>
+    internal static bool ShouldOpenRow(RepoRowItem row) => row.Path.Length > 0 && !row.Verifying;
 
     public RepositoryListView()
     {
@@ -140,6 +167,7 @@ public partial class RepositoryListView : UserControl
             Where = WhereText(s),
             Sync = SyncText(s),
             Worktrees = WorktreeText(s),
+            Verifying = s.Provisional,
             WhereFg = dirty ? Amber : Green,
             WhereBg = dirty ? AmberBg : GreenBg,
             WhereBr = dirty ? AmberBr : GreenBr,

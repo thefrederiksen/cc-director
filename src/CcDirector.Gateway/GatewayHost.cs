@@ -61,6 +61,12 @@ public sealed class GatewayHost : IAsyncDisposable
     /// </summary>
     public Streaming.PushedSessionStore PushedSessions { get; }
 
+    /// <summary>Pushed repository/worktree snapshots per Director (repositories mission, #510 phase C).</summary>
+    public Streaming.PushedRepositoryStore PushedRepositories { get; }
+
+    /// <summary>Daily repository history behind the weekly report (repositories mission, #510 phase D).</summary>
+    public Streaming.RepoHistoryStore RepoHistory { get; }
+
     /// <summary>
     /// Gateway Cleanup mission (Wave 4b): the Gateway's OWN store of Missions. Missions are a fleet-level
     /// concept (they span Directors and machines and nest), so the source of truth lives at the Gateway,
@@ -670,6 +676,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // so the release only ever touches the departed Director's own tenant partition.
         Registry.OnDirectorRemoved += removal => SessionNumbers.ReleaseForDirector(removal.Tenant, removal.DirectorId);
         PushedSessions = new Streaming.PushedSessionStore();
+        // Repositories mission (#510 phase C): the sibling store for pushed repository/worktree snapshots.
+        PushedRepositories = new Streaming.PushedRepositoryStore();
+        // Repositories mission (#510 phase D): the daily repository history behind the weekly report.
+        // File-backed v1 (see the store's remarks); Postgres is a follow-up that changes persistence, not shape.
+        RepoHistory = new Streaming.RepoHistoryStore(Path.Combine(CcStorage.Root(), "repo-history.jsonl"));
         // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store, at a Gateway-side file path
         // (CcStorage.Root(), the same location the cron and snooze stores use), NOT the Director's tool-config
         // missions.json. Reuses Core.Sessions.MissionStore unchanged.
@@ -1621,6 +1632,8 @@ public sealed class GatewayHost : IAsyncDisposable
                 o.StreamBufferCapacity = Contracts.DirectorStreamLimits.StreamBufferCapacity;
             });
         builder.Services.AddSingleton(PushedSessions);
+        builder.Services.AddSingleton(PushedRepositories);
+        builder.Services.AddSingleton(RepoHistory);
         // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store, so the mission endpoints and
         // spawn validation share the one instance.
         builder.Services.AddSingleton(Missions);
@@ -1973,6 +1986,11 @@ public sealed class GatewayHost : IAsyncDisposable
             // Issue #1176 (Phase 1a): serve /sessions from the Director-push cache when the stream is
             // fresh; null when stream mode is off, keeping /sessions byte-identical to today.
             pushedSessions: PushedSessions,
+            // Repositories mission (#510 phase C): serve GET /repositories and /worktrees from the
+            // pushed repository snapshots, tenant-scoped like everything else.
+            pushedRepositories: PushedRepositories,
+            // Repositories mission (#510 phase D): the weekly-report read.
+            repoHistory: RepoHistory,
             streamStaleAfter: _streamStaleAfter,
             // Issue #1177 (Phase 1): route per-session commands DOWN the Director's stream when stream mode
             // is on. Null when off, so every command endpoint stays on its HTTP path (byte-identical).

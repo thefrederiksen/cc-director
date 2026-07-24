@@ -22,13 +22,17 @@ public sealed class GitCommandResult
 /// Shared by the worktree inventory and reaper services so every git call is logged
 /// and its exit code is available. Uses <see cref="ProcessStartInfo.ArgumentList"/> so
 /// arguments are passed without shell quoting hazards.
+///
+/// <see cref="RunAsync"/> is virtual so tests can interleave a concurrent process action at an
+/// exact point between two git commands (the compensation races in <see cref="GitBranchService"/>
+/// are only reachable that way) - production code always uses this class directly.
 /// </summary>
-public sealed class GitCommandRunner
+public class GitCommandRunner
 {
     /// <summary>
     /// Runs <c>git &lt;args&gt;</c> in <paramref name="workingDirectory"/> and returns its result.
     /// </summary>
-    public async Task<GitCommandResult> RunAsync(string workingDirectory, string[] args, CancellationToken ct = default)
+    public virtual async Task<GitCommandResult> RunAsync(string workingDirectory, string[] args, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(workingDirectory) || !Directory.Exists(workingDirectory))
             return new GitCommandResult { Success = false, ExitCode = -1, Error = $"working directory not found: {workingDirectory}" };

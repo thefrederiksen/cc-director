@@ -172,6 +172,15 @@ public partial class MainWindow : Window
         AlphaMode.Changed += OnAlphaModeChanged;
         Closed += (_, _) => AlphaMode.Changed -= OnAlphaModeChanged;
 
+        // The monitor's live-session source is wired HERE, in the constructor, NOT in
+        // MainWindow_Loaded: App.ShowMainWindow starts the first repository rescan
+        // synchronously right after constructing this window, and the monitor refuses to
+        // scan unwired (ruling R2-8). Loaded fires asynchronously after layout, so wiring
+        // there loses the race and the first scan throws - which is exactly what happened
+        // on the first live run of the fixed build.
+        if (global::Avalonia.Application.Current is App appForMonitor)
+            appForMonitor.RepositoryMonitor.LiveSessionsProvider = GetLiveSessionsOnThisMachineAsync;
+
         BuildNativeMenu();
     }
 
@@ -253,6 +262,8 @@ public partial class MainWindow : Window
         SourceControlView.LiveSessionsProvider = GetLiveSessionsOnThisMachineAsync;
 
         // Keep the pinned Repositories badge (safe-to-reap worktree count) in sync with the scan.
+        // (The monitor's LiveSessionsProvider itself is wired in the CONSTRUCTOR - it must be
+        // in place before App.ShowMainWindow triggers the first rescan; see the ctor comment.)
         if (global::Avalonia.Application.Current is App appForRepo)
         {
             appForRepo.RepositoryMonitor.Upserted += _ => Dispatcher.UIThread.Post(UpdateRepositoriesBadge);
@@ -260,6 +271,10 @@ public partial class MainWindow : Window
             appForRepo.RepositoryMonitor.ProgressChanged += () => Dispatcher.UIThread.Post(UpdateRepositoriesBadge);
             UpdateRepositoriesBadge();
         }
+
+        // Repository detail: live sessions for the worktrees panel, and the hand-to-an-agent flow.
+        RepositoriesView.LiveSessionsProvider = GetLiveSessionsOnThisMachineAsync;
+        RepositoriesView.HandToAgentRequested += OnRepositoryHandToAgent;
 
         // Pinned Browsers group (Browsers feature, slice 2): manage lands on Settings > Browsers,
         // and its action/failure feedback rides the shared notification strip.
@@ -1831,8 +1846,10 @@ public partial class MainWindow : Window
         TerminalHost.Attach(vm.Session);
         UpdateScrollBar();
 
-        // Attach source control (hide tab if no .git)
-        SourceControlView.Attach(vm.Session.RepoPath);
+        // Attach source control (hide tab if no .git). The Worktrees page renders the background
+        // repository monitor's model - the same brain as the Repositories home.
+        if (global::Avalonia.Application.Current is App scApp)
+            SourceControlView.Attach(scApp.RepositoryMonitor, vm.Session.RepoPath);
         UpdateSourceControlTabVisibility(vm.Session.RepoPath);
 
         // Show prompt bar
@@ -4155,6 +4172,25 @@ public partial class MainWindow : Window
     {
         BtnRepositories.Background = new global::Avalonia.Media.SolidColorBrush(
             global::Avalonia.Media.Color.Parse(active ? "#094771" : "#2A2A2A"));
+    }
+
+    /// <summary>
+    /// The hand-off: spawn a session in the repository and stage the brief in its prompt box, so
+    /// the owner reads exactly what the agent will be told and presses send themselves.
+    /// </summary>
+    private void OnRepositoryHandToAgent(string repoPath, string brief)
+    {
+        FileLog.Write($"[MainWindow] hand to agent: {repoPath}");
+        RepositoriesOverlay.IsVisible = false;
+        SetRepositoriesActive(false);
+        var vm = CreateSession(repoPath);
+        if (vm is null)
+            return;
+        vm.Session.PendingPromptText = brief;
+        if (_activeSession == vm)
+            PromptInput.Text = brief; // already selected - stage it into the visible prompt box now
+        SaveSessionToHistory(vm);
+        SwitchLeftTab("Terminal");
     }
 
     /// <summary>Show the safe-to-reap worktree count on the pinned Repositories entry.</summary>

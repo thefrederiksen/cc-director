@@ -9,6 +9,31 @@ using CcDirector.Core.Utilities;
 
 namespace CcDirector.Avalonia.Controls;
 
+/// <summary>One recommendation card - display data only; the engine folded the strings.</summary>
+public sealed class RecommendationRowItem
+{
+    public string Title { get; init; } = "";
+    public string Body { get; init; } = "";
+    public string Why { get; init; } = "";
+    public string? RepoPath { get; init; }
+    public bool HasRepo => RepoPath is { Length: > 0 };
+    public IBrush StripeBrush { get; init; } = Brushes.Gray;
+
+    public static RecommendationRowItem From(Recommendation r) => new()
+    {
+        Title = r.Title,
+        Body = r.Body,
+        Why = r.Why,
+        RepoPath = r.RepoPath,
+        StripeBrush = r.Severity switch
+        {
+            1 => new SolidColorBrush(Color.Parse("#22C55E")),
+            2 => new SolidColorBrush(Color.Parse("#F59E0B")),
+            _ => new SolidColorBrush(Color.Parse("#3B82F6")),
+        },
+    };
+}
+
 /// <summary>
 /// The Repositories home: a left sub-rail hosting the live local-repository list and the root-folder
 /// registration, shown as a pinned, non-modal view inside the main window (issue #507, phase 4).
@@ -25,8 +50,19 @@ public partial class RepositoriesView : UserControl
     private static readonly FontFamily Mono = new("Cascadia Mono, Consolas");
 
     private bool _attached;
+    private RepositoryMonitor? _monitor;
     private RootDirectoryStore? _store;
     private Action? _onRefresh;
+
+    /// <summary>The owner chose a hand-off on a repo; the host spawns a session with the brief staged.</summary>
+    public event Action<string, string>? HandToAgentRequested;
+
+    /// <summary>Live sessions provider, forwarded to the detail's worktrees panel.</summary>
+    public Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<LiveSessionRef>>>? LiveSessionsProvider
+    {
+        get => DetailPage.LiveSessionsProvider;
+        set => DetailPage.LiveSessionsProvider = value;
+    }
 
     public RepositoriesView()
     {
@@ -39,27 +75,117 @@ public partial class RepositoriesView : UserControl
     /// </summary>
     public void Attach(RepositoryMonitor monitor, RootDirectoryStore store, Action onRefreshRequested)
     {
+        _monitor = monitor;
         _store = store;
         _onRefresh = onRefreshRequested;
         if (!_attached)
         {
             FileLog.Write("[RepositoriesView] Attach");
             ReposPage.RefreshRequested += onRefreshRequested;
+            ReposPage.RepoOpenRequested += OpenDetail;
+            DetailPage.BackRequested += CloseDetail;
+            DetailPage.HandToAgentRequested += (path, brief) => HandToAgentRequested?.Invoke(path, brief);
             ReposPage.Attach(monitor);
             _attached = true;
         }
         RenderRoots();
     }
 
-    private void ReposRailButton_Click(object? sender, RoutedEventArgs e) => ShowRoots(false);
-    private void RootsRailButton_Click(object? sender, RoutedEventArgs e) => ShowRoots(true);
-
-    private void ShowRoots(bool roots)
+    /// <summary>
+    /// Drill into one repository's detail screen. The guard fails CLOSED (ruling R2-6): only a
+    /// positively known, VERIFIED entry opens it - a provisional (still verifying) entry is
+    /// refused, and so is an UNKNOWN path (a stale recommendation or a queued navigation after
+    /// the monitor removed the entry). The detail screen is an acting surface (stage, commit,
+    /// discard, branch delete) and anything short of verified data must not receive actions.
+    /// </summary>
+    internal void OpenDetail(string repoPath)
     {
-        ReposPage.IsVisible = !roots;
-        RootsPage.IsVisible = roots;
-        SetActive(ReposRailButton, !roots);
-        SetActive(RootsRailButton, roots);
+        if (_monitor is null)
+            return;
+        var entry = _monitor.FindForPath(repoPath);
+        if (entry is null || entry.Provisional)
+        {
+            FileLog.Write($"[RepositoriesView] detail refused - {(entry is null ? "unknown path" : "entry still verifying")}: {repoPath}");
+            return;
+        }
+        ReposPage.IsVisible = false;
+        RootsPage.IsVisible = false;
+        DetailPage.IsVisible = true;
+        DetailPage.Attach(_monitor, repoPath);
+    }
+
+    private void CloseDetail()
+    {
+        DetailPage.Detach();
+        DetailPage.IsVisible = false;
+        ShowRoots(false);
+    }
+
+    private void ReposRailButton_Click(object? sender, RoutedEventArgs e) => ShowPage("repos");
+    private void RootsRailButton_Click(object? sender, RoutedEventArgs e) => ShowPage("roots");
+    private void RecoRailButton_Click(object? sender, RoutedEventArgs e) => ShowPage("reco");
+
+    private void ShowRoots(bool roots) => ShowPage(roots ? "roots" : "repos");
+
+    internal void ShowPage(string page)
+    {
+        // Leaving the detail page through ANY path - rail buttons included - releases its monitor
+        // subscriptions; hiding it while subscribed would keep it rendering forever (finding F12).
+        DetailPage.Detach();
+        DetailPage.IsVisible = false;
+        ReposPage.IsVisible = page == "repos";
+        RootsPage.IsVisible = page == "roots";
+        RecoPage.IsVisible = page == "reco";
+        SetActive(ReposRailButton, page == "repos");
+        SetActive(RootsRailButton, page == "roots");
+        SetActive(RecoRailButton, page == "reco");
+        if (page == "reco")
+            RenderRecommendations();
+    }
+
+    // ----- recommendations (folded by the engine; this only renders) -----
+
+    /// <summary>Recompute + render the recommendation cards and the rail badge.</summary>
+    public void RenderRecommendations()
+    {
+        if (_monitor is null)
+            return;
+        var recs = RecommendationEngine.Evaluate(_monitor.Snapshot());
+        RecoList.ItemsSource = recs.Select(RecommendationRowItem.From).ToList();
+        RecoEmptyText.IsVisible = recs.Count == 0;
+        RecoBadgeText.Text = recs.Count.ToString();
+        RecoBadge.IsVisible = recs.Count > 0;
+    }
+
+    private void RecoShow_Click(object? sender, RoutedEventArgs e)
+    {
+        if ((sender as Button)?.DataContext is not RecommendationRowItem row)
+            return;
+        if (row.RepoPath is { Length: > 0 } path)
+            OpenDetail(path);
+        else
+            ShowPage("repos"); // the fleet-wide reap summary: the list shows where the safe worktrees are
+    }
+
+    private async void RecoHandOff_Click(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (_monitor is null || (sender as Button)?.DataContext is not RecommendationRowItem row || row.RepoPath is null)
+                return;
+            var repo = _monitor.FindForPath(row.RepoPath);
+            var window = TopLevel.GetTopLevel(this) as Window;
+            if (repo is null || window is null)
+                return;
+            var dialog = new global::CcDirector.Avalonia.HandToAgentDialog(repo);
+            var brief = await dialog.ShowDialog<string?>(window);
+            if (!string.IsNullOrWhiteSpace(brief))
+                HandToAgentRequested?.Invoke(row.RepoPath, brief);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[RepositoriesView] RecoHandOff_Click FAILED: {ex.Message}");
+        }
     }
 
     private static void SetActive(Button button, bool active)

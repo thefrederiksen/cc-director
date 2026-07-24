@@ -18,10 +18,11 @@ public enum RepoProvider
 
 /// <summary>
 /// The at-a-glance state of one on-disk repository: where its remote lives, how far its branch has
-/// drifted, how much is uncommitted, and a summary of its worktrees. Composed on the service side
-/// from the existing git providers plus the worktree detector; the UI renders it.
+/// drifted, how much is uncommitted, and its worktrees. Composed on the service side from the
+/// existing git providers plus the worktree detector; the UI renders it. A record so the monitor
+/// can derive updated copies (dirty-since carry-forward, provisional marking) without mutation.
 /// </summary>
-public sealed class RepositoryStatus
+public sealed record RepositoryStatus
 {
     public string Path { get; init; } = "";
     public string Name { get; init; } = "";
@@ -55,6 +56,28 @@ public sealed class RepositoryStatus
     public int WorktreesSafeToReap { get; init; }
     public int WorktreesInUse { get; init; }
     public int WorktreesNeedAttention { get; init; }
+
+    /// <summary>
+    /// The full worktree records (verdicts, sizes, ages) so every surface - the Repositories home,
+    /// the per-session Source Control tab, the Gateway push - renders from ONE model (the one-brain
+    /// rule). Excludes the primary checkout.
+    /// </summary>
+    public IReadOnlyList<WorktreeInfo> Worktrees { get; init; } = Array.Empty<WorktreeInfo>();
+
+    /// <summary>Total bytes held by linked worktrees - the reclaim opportunity ceiling.</summary>
+    public long WorktreeBytes { get; init; }
+
+    /// <summary>
+    /// When the tree FIRST became dirty (UTC), carried forward by the monitor across scans so the
+    /// "uncommitted work sitting for N days" signal survives restarts via the cache. Null when clean.
+    /// </summary>
+    public DateTime? DirtySinceUtc { get; init; }
+
+    /// <summary>
+    /// True when this entry came from the warm-start cache and has not yet been re-verified by a
+    /// live scan. Provisional entries are shown dimmed ("verifying") and never acted on.
+    /// </summary>
+    public bool Provisional { get; init; }
 
     public bool Success { get; init; }
     public string? Error { get; init; }

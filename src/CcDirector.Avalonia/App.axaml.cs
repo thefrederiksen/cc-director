@@ -39,6 +39,8 @@ public partial class App : Application
     public RepositoryMonitor RepositoryMonitor { get; } = new(
         cachePath: System.IO.Path.Combine(
             CcDirector.Core.Storage.CcStorage.ToolConfig("director"), "repo-worktree-cache.json"));
+
+    private RepositoryWatcher? _repositoryWatcher;
     public SessionStateStore SessionStateStore { get; private set; } = null!;
 
     /// <summary>
@@ -158,6 +160,12 @@ public partial class App : Application
         mainWindow.Show();
         FileLog.Write("[CcDirector] Main window shown");
 
+        // The FIRST repository rescan starts HERE, not in InitializeServices (ruling R2-8): the
+        // MainWindow constructor above wired RepositoryMonitor.LiveSessionsProvider, and the
+        // monitor refuses to scan without it. Triggering the scan after the constructor makes
+        // the wire-before-scan ordering structural, not incidental.
+        StartRepositoryRescan();
+
         StartUpdateService(mainWindow);
     }
 
@@ -171,7 +179,13 @@ public partial class App : Application
             .Select(r => r.Path)
             .Where(p => !string.IsNullOrWhiteSpace(p))
             .ToList();
-        _ = System.Threading.Tasks.Task.Run(() => RepositoryMonitor.RescanAsync(roots));
+        // The task is observed, never orphaned: a scan that throws (for example the monitor's
+        // refuse-to-scan-unwired guard) must land in the log as an ERROR immediately, not
+        // surface minutes later as an unobserved-task finalizer message.
+        _ = System.Threading.Tasks.Task.Run(() => RepositoryMonitor.RescanAsync(roots))
+            .ContinueWith(
+                t => FileLog.Write($"[App] ERROR repository rescan FAILED: {t.Exception?.GetBaseException().Message}"),
+                System.Threading.Tasks.TaskContinuationOptions.OnlyOnFaulted);
     }
 
     /// <summary>
@@ -235,7 +249,29 @@ public partial class App : Application
         // Warm start: show the last run's repositories instantly from the cache, then scan in the
         // background to re-verify and reconcile (issue #507, phase 2).
         RepositoryMonitor.LoadCache();
-        StartRepositoryRescan();
+
+        // After each completed scan, watch the roots and every known repository's git signals so a
+        // change recomputes only the affected repo - react to change instead of re-scanning (#510 A).
+        _repositoryWatcher = new RepositoryWatcher(RepositoryMonitor);
+        RepositoryMonitor.ScanCompleted += () =>
+        {
+            try
+            {
+                var watchRoots = RootDirectoryStore.Roots
+                    .Select(r => r.Path)
+                    .Where(p => !string.IsNullOrWhiteSpace(p))
+                    .ToList();
+                _repositoryWatcher.SyncWatches(watchRoots, RepositoryMonitor.Snapshot().Select(s => s.Path));
+            }
+            catch (Exception ex)
+            {
+                CcDirector.Core.Utilities.FileLog.Write($"[App] watcher sync failed: {ex.Message}");
+            }
+        };
+
+        // NOTE: the first repository rescan is deliberately NOT started here. The monitor requires
+        // its live-session source, which the MainWindow constructor wires - ShowMainWindow starts
+        // the scan right after that wiring (ruling R2-8).
 
         SessionStateStore = new SessionStateStore();
 
@@ -577,7 +613,10 @@ public partial class App : Application
                 return Task.CompletedTask;
             };
 
-            ControlApiHost = new ControlApiHost(SessionManager, version, requestShutdown, repositoryRegistry: RepositoryRegistry);
+            ControlApiHost = new ControlApiHost(SessionManager, version, requestShutdown, repositoryRegistry: RepositoryRegistry,
+                // Repositories mission (#510 phase C): the monitor feeds the Gateway push and the
+                // /fleet/repositories - /fleet/worktrees standalone fallback.
+                repositoryMonitor: RepositoryMonitor);
 
             _ = Task.Run(async () =>
             {

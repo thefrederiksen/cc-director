@@ -104,6 +104,22 @@ public class RepositoryListViewTests
         Assert.Equal("2 worktrees · 1 safe · 1 in use", row.Worktrees);
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection finding F1): a provisional (still verifying) row must never open
+    // the detail screen - the detail screen exposes stage, commit, discard, and branch delete.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public void ShouldOpenRow_ProvisionalRow_IsNotOpenable_VerifiedRowIs()
+    {
+        var provisional = new RepoRowItem { Path = "/repo/cached", Verifying = true };
+        var verified = new RepoRowItem { Path = "/repo/live", Verifying = false };
+        var pathless = new RepoRowItem { Path = "", Verifying = false };
+
+        Assert.False(RepositoryListView.ShouldOpenRow(provisional));
+        Assert.True(RepositoryListView.ShouldOpenRow(verified));
+        Assert.False(RepositoryListView.ShouldOpenRow(pathless));
+    }
+
     [Fact]
     public void BuildSummary_CountsReposDirtyAndReapable()
     {

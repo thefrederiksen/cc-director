@@ -42,13 +42,17 @@ public partial class SourceControlView : UserControl
         WorktreesPage.OrphanedCountChanged += OnWorktreesOrphanedCountChanged;
     }
 
-    /// <summary>Point both pages at the repository. The rail resets to the default Changes page.</summary>
-    public void Attach(string repoPath)
+    /// <summary>
+    /// Point both pages at the repository. The rail resets to the default Changes page. The
+    /// Worktrees page renders the background monitor's model (one brain); the Changes page keeps
+    /// its own fast file-status poll (uncommitted files change second to second).
+    /// </summary>
+    public void Attach(RepositoryMonitor monitor, string repoPath)
     {
         FileLog.Write($"[SourceControlView] Attach: {repoPath}");
         ShowPage(worktrees: false);
         ChangesPage.Attach(repoPath);
-        WorktreesPage.Attach(repoPath);
+        WorktreesPage.Attach(monitor, repoPath);
     }
 
     /// <summary>Tear down both pages when the session context goes away.</summary>

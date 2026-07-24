@@ -228,6 +228,66 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         return list;
     }
 
+
+    /// <summary>
+    /// True when the Gateway does not actually serve this route: an explicit 404, or the Cockpit
+    /// single-page-app fallback answering an unknown GET with 200 text/html. Either way the route
+    /// is absent on that Gateway version and the caller serves its own local model. A JSON error
+    /// or a 5xx is a REAL failure and is never mistaken for absence.
+    /// </summary>
+    private static bool RouteAbsent(HttpResponseMessage resp)
+        => resp.StatusCode == HttpStatusCode.NotFound
+           || (resp.IsSuccessStatusCode
+               && !string.Equals(resp.Content.Headers.ContentType?.MediaType, "application/json", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// The fleet's repositories (GET /repositories). Returns NULL when the Gateway answers 404 -
+    /// an older Gateway that does not know the route yet (version tolerance, the same posture as
+    /// the stream push skipping on an old hub); the caller then serves its own local model.
+    /// Throws when the Gateway is disabled or genuinely fails.
+    /// </summary>
+    public async Task<List<RepoStatusDto>?> ListFleetRepositoriesAsync(CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled)
+            throw new InvalidOperationException("Gateway is not configured; cannot list fleet repositories.");
+        FileLog.Write("[GatewayClient] ListFleetRepositoriesAsync: GET /repositories");
+        using var resp = await _http.GetAsync("repositories", ct);
+        if (RouteAbsent(resp))
+        {
+            FileLog.Write("[GatewayClient] GET /repositories: route absent on this Gateway (404 or non-JSON fallback) - caller serves local");
+            return null;
+        }
+        if (!resp.IsSuccessStatusCode)
+            throw await RelayFailureAsync(resp, "GET /repositories", ct);
+        var list = await resp.Content.ReadFromJsonAsync<List<RepoStatusDto>>(ct);
+        if (list is null)
+            throw new InvalidOperationException("Gateway GET /repositories returned an unparsable body.");
+        return list;
+    }
+
+    /// <summary>
+    /// The fleet's worktrees, flattened (GET /worktrees). NULL on 404 (older Gateway - caller
+    /// serves its own local model); throws when the Gateway is disabled or genuinely fails.
+    /// </summary>
+    public async Task<List<FleetWorktreeDto>?> ListFleetWorktreesAsync(CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled)
+            throw new InvalidOperationException("Gateway is not configured; cannot list fleet worktrees.");
+        FileLog.Write("[GatewayClient] ListFleetWorktreesAsync: GET /worktrees");
+        using var resp = await _http.GetAsync("worktrees", ct);
+        if (RouteAbsent(resp))
+        {
+            FileLog.Write("[GatewayClient] GET /worktrees: route absent on this Gateway (404 or non-JSON fallback) - caller serves local");
+            return null;
+        }
+        if (!resp.IsSuccessStatusCode)
+            throw await RelayFailureAsync(resp, "GET /worktrees", ct);
+        var list = await resp.Content.ReadFromJsonAsync<List<FleetWorktreeDto>>(ct);
+        if (list is null)
+            throw new InvalidOperationException("Gateway GET /worktrees returned an unparsable body.");
+        return list;
+    }
+
     /// <summary>
     /// Relay a single message to a session anywhere in the fleet via the Gateway's
     /// POST /sessions/{sid}/prompt. Fire-and-forget (WaitForIdle=false). Throws when the

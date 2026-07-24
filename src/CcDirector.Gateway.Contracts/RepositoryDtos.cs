@@ -1,0 +1,176 @@
+namespace CcDirector.Gateway.Contracts;
+
+/// <summary>
+/// One repository on one machine, as pushed by its Director and served fleet-wide by the Gateway
+/// (GET /repositories). The verdict strings are folded on the Director side - clients and agents
+/// render them verbatim (the dumb-client rule). Read-only at the Gateway: any destructive action
+/// runs on the owning Director after a live re-verify (the trust rule).
+/// </summary>
+public class RepoStatusDto
+{
+    public string DirectorId { get; set; } = "";
+    public string MachineName { get; set; } = "";
+    public string Path { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string? RemoteUrl { get; set; }
+
+    /// <summary>"GitHub", "AzureDevOps", "Other", or "None".</summary>
+    public string Provider { get; set; } = "";
+    public string? Org { get; set; }
+
+    public string Branch { get; set; } = "";
+    public bool IsClean { get; set; }
+    public int UncommittedCount { get; set; }
+    public DateTime? DirtySinceUtc { get; set; }
+    public int AheadCount { get; set; }
+    public int BehindCount { get; set; }
+    public int BehindMainCount { get; set; }
+
+    public int WorktreeCount { get; set; }
+    public int WorktreesSafeToReap { get; set; }
+    public int WorktreesInUse { get; set; }
+    public int WorktreesNeedAttention { get; set; }
+    public long WorktreeBytes { get; set; }
+
+    /// <summary>True when the pushing Director had not yet re-verified this entry (warm-start cache).</summary>
+    public bool Provisional { get; set; }
+
+    public List<WorktreeDto> Worktrees { get; set; } = new();
+}
+
+/// <summary>One linked worktree of a repository. State strings are folded by the Director.</summary>
+public class WorktreeDto
+{
+    public string Path { get; set; } = "";
+    public string? Branch { get; set; }
+
+    /// <summary>"safe-to-reap", "in-use", or "needs-attention" - folded, rendered verbatim.</summary>
+    public string State { get; set; } = "";
+
+    /// <summary>The one-line reason for the state, folded by the Director.</summary>
+    public string Reason { get; set; } = "";
+
+    /// <summary>Labels of live sessions working in this worktree (empty when none).</summary>
+    public List<string> SessionLabels { get; set; } = new();
+
+    public long? SizeBytes { get; set; }
+    public DateTime? LastActivityUtc { get; set; }
+    public int AheadOfMain { get; set; }
+    public int BehindMain { get; set; }
+    public int DirtyFileCount { get; set; }
+    public bool IsDetachedHead { get; set; }
+}
+
+/// <summary>
+/// One flattened worktree row for GET /worktrees and `cc-devthrottle worktree list`: the whole
+/// fleet's worktrees, each carrying its repository, machine, verdict, and occupying sessions.
+/// </summary>
+public class FleetWorktreeDto
+{
+    public string RepoName { get; set; } = "";
+    public string RepoPath { get; set; } = "";
+    public string MachineName { get; set; } = "";
+    public string DirectorId { get; set; } = "";
+    public string Path { get; set; } = "";
+    public string? Branch { get; set; }
+    public string State { get; set; } = "";
+    public string Reason { get; set; } = "";
+    public List<string> SessionLabels { get; set; } = new();
+    public long? SizeBytes { get; set; }
+    public DateTime? LastActivityUtc { get; set; }
+
+    /// <summary>How old the pushing Director's data is, in seconds, at serve time.</summary>
+    public double DataAgeSeconds { get; set; }
+
+    /// <summary>True when the owning repository entry is still verifying (warm-start cache).</summary>
+    public bool Provisional { get; set; }
+}
+
+/// <summary>
+/// The one flatten fold for GET /worktrees rows, shared by the Gateway and the Director's local
+/// relay so no surface can flatten its own way. Fail closed: a worktree of a PROVISIONAL
+/// (still-verifying) repository is served as "verifying" - never "safe-to-reap" - because its
+/// verdict is cached, unverified data. Clients and the CLI key off the folded state string and
+/// need no logic of their own (the dumb-client rule).
+/// </summary>
+public static class FleetWorktreeFold
+{
+    /// <summary>The folded state for a worktree whose repository has not been re-verified yet.</summary>
+    public const string VerifyingState = "verifying";
+
+    /// <summary>The folded reason for a worktree whose repository has not been re-verified yet.</summary>
+    public const string VerifyingReason = "Still verifying this repository - cached data is never acted on.";
+
+    public static List<FleetWorktreeDto> Flatten(IEnumerable<RepoStatusDto> repositories, double dataAgeSeconds = 0)
+        => repositories
+            .SelectMany(r => r.Worktrees.Select(w => new FleetWorktreeDto
+            {
+                RepoName = r.Name,
+                RepoPath = r.Path,
+                MachineName = r.MachineName,
+                DirectorId = r.DirectorId,
+                Path = w.Path,
+                Branch = w.Branch,
+                State = r.Provisional ? VerifyingState : w.State,
+                Reason = r.Provisional ? VerifyingReason : w.Reason,
+                SessionLabels = w.SessionLabels,
+                SizeBytes = w.SizeBytes,
+                LastActivityUtc = w.LastActivityUtc,
+                DataAgeSeconds = dataAgeSeconds,
+                Provisional = r.Provisional,
+            }))
+            .ToList();
+
+    /// <summary>
+    /// The one repository-level serve fold (inspection round 2, ruling R2-3): a PROVISIONAL
+    /// repository's safe count serves as ZERO and its nested worktree states serve as
+    /// "verifying", whatever the pushing Director sent - a pre-fix Director can push
+    /// Provisional=true with a stale safe count and stale state strings, and the Gateway owns
+    /// the verdict at serve time. Used by BOTH the Gateway's GET /repositories serve path and
+    /// the Director's outgoing mapper, so no surface can fold its own way. A verified
+    /// repository passes through unchanged. Returns a copy - the cached instance is never
+    /// mutated.
+    /// </summary>
+    public static RepoStatusDto FoldRepositoryForServe(RepoStatusDto r)
+    {
+        if (!r.Provisional)
+            return r;
+        return new RepoStatusDto
+        {
+            DirectorId = r.DirectorId,
+            MachineName = r.MachineName,
+            Path = r.Path,
+            Name = r.Name,
+            RemoteUrl = r.RemoteUrl,
+            Provider = r.Provider,
+            Org = r.Org,
+            Branch = r.Branch,
+            IsClean = r.IsClean,
+            UncommittedCount = r.UncommittedCount,
+            DirtySinceUtc = r.DirtySinceUtc,
+            AheadCount = r.AheadCount,
+            BehindCount = r.BehindCount,
+            BehindMainCount = r.BehindMainCount,
+            WorktreeCount = r.WorktreeCount,
+            WorktreesSafeToReap = 0, // fail closed: unverified work is never reclaimable
+            WorktreesInUse = r.WorktreesInUse,
+            WorktreesNeedAttention = r.WorktreesNeedAttention,
+            WorktreeBytes = r.WorktreeBytes,
+            Provisional = true,
+            Worktrees = r.Worktrees.Select(w => new WorktreeDto
+            {
+                Path = w.Path,
+                Branch = w.Branch,
+                State = VerifyingState,
+                Reason = VerifyingReason,
+                SessionLabels = w.SessionLabels,
+                SizeBytes = w.SizeBytes,
+                LastActivityUtc = w.LastActivityUtc,
+                AheadOfMain = w.AheadOfMain,
+                BehindMain = w.BehindMain,
+                DirtyFileCount = w.DirtyFileCount,
+                IsDetachedHead = w.IsDetachedHead,
+            }).ToList(),
+        };
+    }
+}

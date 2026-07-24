@@ -32,6 +32,13 @@ public sealed class GatewayStreamClient : IAsyncDisposable
     private readonly string _directorId;
     private readonly string _version;
     private readonly Func<List<SessionDto>> _snapshot;
+
+    /// <summary>
+    /// The repository/worktree snapshot provider (issue devthrottle_internal#510, phase C). Null in
+    /// older callers and tests: repo pushes are then simply skipped. Pushed as full snapshots only -
+    /// repositories change slowly, so there is no delta path.
+    /// </summary>
+    private readonly Func<List<RepoStatusDto>>? _repoSnapshot;
     private readonly Func<DirectorCommand, Task<DirectorCommandResult>>? _commandDispatcher;
     private readonly TimeSpan _rePushInterval;
 
@@ -82,8 +89,10 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         Func<DirectorCommand, Task<DirectorCommandResult>>? commandDispatcher = null,
         TimeSpan? rePushInterval = null,
         SessionManager? sessionManager = null,
-        GatewayConnectionMonitor? monitor = null)
+        GatewayConnectionMonitor? monitor = null,
+        Func<List<RepoStatusDto>>? repoSnapshot = null)
     {
+        _repoSnapshot = repoSnapshot;
         _config = config ?? throw new ArgumentNullException(nameof(config));
         _directorId = string.IsNullOrWhiteSpace(directorId) ? throw new ArgumentException("directorId is required", nameof(directorId)) : directorId;
         _version = version ?? "";
@@ -349,6 +358,36 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         {
             FileLog.Write($"[GatewayStreamClient] reseed failed (auto-reconnect will retry): {ex.Message}");
         }
+
+        // The repository snapshot rides the same reseed cadence, in its OWN try/catch: an old Gateway
+        // without the PushRepoSnapshot hub method throws a HubException here, and that must never take
+        // the session reseed down with it (best-effort, no capability negotiation - see phase C notes).
+        if (_repoSnapshot != null && conn.State == HubConnectionState.Connected)
+        {
+            try
+            {
+                var repoSeq = Interlocked.Increment(ref _sequence);
+                await conn.InvokeAsync("PushRepoSnapshot", repoSeq, _repoSnapshot().ToArray());
+                FileLog.Write($"[GatewayStreamClient] reseeded repository snapshot seq={repoSeq}");
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[GatewayStreamClient] repository reseed skipped (older Gateway?): {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Push the current full repository snapshot. Fire-and-forget; callers debounce. A drop is
+    /// reconciled by the next reseed/re-push tick.
+    /// </summary>
+    public void NotifyRepoSnapshot()
+    {
+        if (_repoSnapshot is null) return;
+        var conn = _connection;
+        if (conn is null || conn.State != HubConnectionState.Connected) return;
+        var seq = Interlocked.Increment(ref _sequence);
+        _ = SendAsync(() => conn.InvokeAsync("PushRepoSnapshot", seq, _repoSnapshot().ToArray()), "PushRepoSnapshot");
     }
 
     /// <summary>Push one changed session. Fire-and-forget; a drop is reconciled by the next snapshot.</summary>

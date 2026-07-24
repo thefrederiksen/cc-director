@@ -1,0 +1,108 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:CcDirector.Avalonia.Controls"
+             x:Class="CcDirector.Avalonia.Controls.ChangesDiffView"
+             Background="#1E1E1E">
+
+    <UserControl.DataTemplates>
+        <!-- One changed file in the left list -->
+        <DataTemplate DataType="controls:DiffFileItem">
+            <Border Background="Transparent" Padding="8,4" PointerPressed="FileRow_PointerPressed">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Left" Text="{Binding StatusChar}" Foreground="{Binding StatusBrush}"
+                               FontFamily="Cascadia Mono, Consolas" FontSize="11" FontWeight="Bold" Width="14" />
+                    <TextBlock Text="{Binding Display}" Foreground="{Binding NameBrush}" FontSize="11"
+                               FontFamily="Cascadia Mono, Consolas" TextTrimming="CharacterEllipsis" />
+                </DockPanel>
+            </Border>
+        </DataTemplate>
+
+        <!-- One rendered diff row -->
+        <DataTemplate DataType="controls:DiffRowItem">
+            <Border Background="{Binding RowBg}">
+                <Grid ColumnDefinitions="42,42,*">
+                    <TextBlock Grid.Column="0" Text="{Binding OldNo}" Foreground="#5A5A5A" FontSize="11"
+                               FontFamily="Cascadia Mono, Consolas" TextAlignment="Right" Padding="0,0,8,0" />
+                    <TextBlock Grid.Column="1" Text="{Binding NewNo}" Foreground="#5A5A5A" FontSize="11"
+                               FontFamily="Cascadia Mono, Consolas" TextAlignment="Right" Padding="0,0,8,0" />
+                    <TextBlock Grid.Column="2" Text="{Binding Text}" Foreground="{Binding TextBrush}" FontSize="11.5"
+                               FontFamily="Cascadia Mono, Consolas" TextWrapping="NoWrap" />
+                </Grid>
+            </Border>
+        </DataTemplate>
+    </UserControl.DataTemplates>
+
+    <Panel>
+    <Grid ColumnDefinitions="240,1,*">
+        <!-- File list -->
+        <Grid Grid.Column="0" RowDefinitions="*,Auto" Background="#252526">
+            <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
+                <StackPanel Margin="4,6">
+                    <TextBlock x:Name="StagedHeader" Text="STAGED" Foreground="#6B6B6B" FontSize="9.5"
+                               FontWeight="SemiBold" Margin="8,2,8,4" />
+                    <ItemsControl x:Name="StagedFiles" />
+                    <TextBlock x:Name="UnstagedHeader" Text="CHANGES" Foreground="#6B6B6B" FontSize="9.5"
+                               FontWeight="SemiBold" Margin="8,10,8,4" />
+                    <ItemsControl x:Name="UnstagedFiles" />
+                    <TextBlock x:Name="NoChangesText" Text="No uncommitted changes." Foreground="#555555"
+                               FontSize="11" Margin="8,10,8,4" IsVisible="False" />
+                </StackPanel>
+            </ScrollViewer>
+            <!-- Commit box -->
+            <Border Grid.Row="1" BorderBrush="#3C3C3C" BorderThickness="0,1,0,0" Padding="8">
+                <StackPanel Spacing="6">
+                    <TextBox x:Name="CommitMessage" Watermark="Commit message" FontSize="11.5"
+                             AcceptsReturn="True" MaxHeight="64" Background="#1E1E1E" />
+                    <Button x:Name="CommitButton" Content="Commit staged" Background="#0E639C" Foreground="White"
+                            FontSize="11.5" Padding="10,5" HorizontalAlignment="Stretch"
+                            HorizontalContentAlignment="Center" Click="CommitButton_Click" />
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <Border Grid.Column="1" Background="#3C3C3C" />
+
+        <!-- Diff pane -->
+        <Grid Grid.Column="2" RowDefinitions="Auto,*">
+            <Border Grid.Row="0" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1" Padding="10,6">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6">
+                        <Button x:Name="StageButton" Content="Stage" Background="#3C3C3C" Foreground="#CCCCCC"
+                                FontSize="11" Padding="10,3" Click="StageButton_Click" IsVisible="False" />
+                        <Button x:Name="UnstageButton" Content="Unstage" Background="#3C3C3C" Foreground="#CCCCCC"
+                                FontSize="11" Padding="10,3" Click="UnstageButton_Click" IsVisible="False" />
+                        <Button x:Name="DiscardButton" Content="Discard changes" Background="#5A2A2A" Foreground="#F0A6A6"
+                                FontSize="11" Padding="10,3" Click="DiscardButton_Click" IsVisible="False" />
+                    </StackPanel>
+                    <TextBlock x:Name="DiffFileName" Text="Select a file to see its changes"
+                               Foreground="#8A8A8A" FontSize="11.5" FontFamily="Cascadia Mono, Consolas"
+                               VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                </DockPanel>
+            </Border>
+            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                          Background="#161616">
+                <ItemsControl x:Name="DiffRows" Margin="0,4" />
+            </ScrollViewer>
+        </Grid>
+    </Grid>
+
+    <!-- Discard confirmation: a destructive action states plainly what is lost before it acts. -->
+    <Border x:Name="DiscardConfirmOverlay" IsVisible="False" Background="#C0000000">
+        <Border Background="#252526" BorderBrush="#5A2A2A" BorderThickness="1" CornerRadius="6"
+                MaxWidth="560" Padding="18" HorizontalAlignment="Center" VerticalAlignment="Center">
+            <StackPanel Spacing="10">
+                <TextBlock x:Name="DiscardConfirmTitle" Foreground="#F0A6A6" FontSize="13"
+                           FontWeight="SemiBold" TextWrapping="Wrap" />
+                <TextBlock x:Name="DiscardConfirmFiles" Foreground="#CCCCCC" FontSize="11.5"
+                           FontFamily="Cascadia Mono, Consolas" TextWrapping="Wrap" />
+                <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+                    <Button x:Name="KeepChangesButton" Content="Keep changes" Background="#3C3C3C"
+                            Foreground="#CCCCCC" FontSize="11.5" Padding="12,5" Click="KeepChangesButton_Click" />
+                    <Button x:Name="DeleteChangesButton" Content="Delete changes" Background="#7A2E2E"
+                            Foreground="White" FontSize="11.5" Padding="12,5" Click="DeleteChangesButton_Click" />
+                </StackPanel>
+            </StackPanel>
+        </Border>
+    </Border>
+    </Panel>
+</UserControl>

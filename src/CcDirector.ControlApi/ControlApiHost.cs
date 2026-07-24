@@ -214,8 +214,9 @@ public sealed class ControlApiHost : IAsyncDisposable
     /// If true, bearer-token or cookie auth is required for all routes except /healthz/login/logout.
     /// If false (default), the Director is completely open. The Tailscale tailnet is the trust boundary.
     /// </param>
-    public ControlApiHost(SessionManager sessionManager, string version, Func<Task> requestShutdownAsync, bool useEphemeralPort = false, bool authEnabled = false, RepositoryRegistry? repositoryRegistry = null, string? directorId = null, string? instancesDirectory = null)
+    public ControlApiHost(SessionManager sessionManager, string version, Func<Task> requestShutdownAsync, bool useEphemeralPort = false, bool authEnabled = false, RepositoryRegistry? repositoryRegistry = null, string? directorId = null, string? instancesDirectory = null, Core.Git.RepositoryMonitor? repositoryMonitor = null)
     {
+        _repositoryMonitor = repositoryMonitor;
         _sessionManager = sessionManager ?? throw new ArgumentNullException(nameof(sessionManager));
         _version = version ?? "0.0.0";
         _requestShutdownAsync = requestShutdownAsync ?? throw new ArgumentNullException(nameof(requestShutdownAsync));
@@ -497,7 +498,7 @@ public sealed class ControlApiHost : IAsyncDisposable
         // change is picked up without a restart. Standalone/no-Gateway resolves to null (line omitted).
         var signedInUserProvider = new Core.Account.SignedInUserProvider(Core.Configuration.GatewayConfig.Load);
 
-        ControlEndpoints.Map(_app, _sessionManager, DirectorId, _version, _requestShutdownAsync, _authEnabled, _repositoryRegistry, _turnSummaryCache, gatewayUrl, _proactiveExplain, GatewayMonitor, resolveTailnetEndpoint, () => _gatewayClient, messageSteward, _missionStore, ct => signedInUserProvider.ResolveAsync(ct));
+        ControlEndpoints.Map(_app, _sessionManager, DirectorId, _version, _requestShutdownAsync, _authEnabled, _repositoryRegistry, _turnSummaryCache, gatewayUrl, _proactiveExplain, GatewayMonitor, resolveTailnetEndpoint, () => _gatewayClient, messageSteward, _missionStore, ct => signedInUserProvider.ResolveAsync(ct), _repositoryMonitor);
 
         // DevThrottle's automation browsers (the drivable, signed-in-once Chromium instances). Loopback,
         // machine-local surface backed by AutomationBrowserService; the CLI 'browser' verbs and the
@@ -633,6 +634,7 @@ public sealed class ControlApiHost : IAsyncDisposable
         _streamClient = BuildStreamClient(gatewayConfig);
         _streamClient?.Start();
         WireDoorbellPush();
+        WireRepositoryPush();
 
         IsListening = true;
         StartupError = null;
@@ -771,7 +773,10 @@ public sealed class ControlApiHost : IAsyncDisposable
             sessionManager: _sessionManager,
             // Gateway Cleanup mission (tunnel-only): the tunnel drives the desktop connectivity light directly -
             // connected = green (a live stream IS the proven two-way link), reconnecting = yellow.
-            monitor: GatewayMonitor);
+            monitor: GatewayMonitor,
+            // Repositories mission (#510 phase C): the repository/worktree snapshot rides the same
+            // tunnel; null when this host was built without a monitor (tests, older callers).
+            repoSnapshot: _repositoryMonitor is null ? null : SnapshotRepositories);
     }
 
     /// <summary>
@@ -808,6 +813,34 @@ public sealed class ControlApiHost : IAsyncDisposable
     /// </summary>
     private List<SessionDto> SnapshotFullSessions()
         => _sessionManager.ListSessions().Select(s => ControlEndpoints.Map(s, DirectorId)).ToList();
+
+    private readonly Core.Git.RepositoryMonitor? _repositoryMonitor;
+    private Timer? _repoPushDebounce;
+
+    /// <summary>The repository snapshot for the stream and the local relay (#510 phase C).</summary>
+    private List<RepoStatusDto> SnapshotRepositories()
+        => (_repositoryMonitor?.Snapshot() ?? (IReadOnlyList<Core.Git.RepositoryStatus>)Array.Empty<Core.Git.RepositoryStatus>())
+            .Select(s => RepositoryDtoMapper.Map(s, DirectorId, Environment.MachineName))
+            .ToList();
+
+    /// <summary>
+    /// Push the repository snapshot on model changes, debounced: a scan streaming thirty upserts
+    /// coalesces into one push a few seconds after it settles (plus the periodic reseed).
+    /// </summary>
+    private void WireRepositoryPush()
+    {
+        if (_repositoryMonitor is null)
+            return;
+        void Schedule()
+        {
+            _repoPushDebounce?.Dispose();
+            _repoPushDebounce = new Timer(_ => _streamClient?.NotifyRepoSnapshot(), null,
+                TimeSpan.FromSeconds(3), Timeout.InfiniteTimeSpan);
+        }
+        _repositoryMonitor.Upserted += _ => Schedule();
+        _repositoryMonitor.Removed += _ => Schedule();
+        _repositoryMonitor.ScanCompleted += Schedule;
+    }
 
     /// <summary>Per-session mechanical-state snapshot for the heartbeat body (issue #186).</summary>
     private List<SessionStateSnapshot> SnapshotSessionStates()

@@ -48,7 +48,8 @@ public sealed class DirectorHub : Hub
     public DirectorHub(PushedSessionStore store, DirectorRegistry registry, GatewayInputStatsAggregator inputStats,
         GatewayStreamRegistry streamRegistry, Snooze.SnoozeLandingObserver? snoozeLandings = null,
         Fleet.FleetRoleObserver? fleetRoles = null, Fleet.FleetDisplayStateObserver? fleetDisplayState = null,
-        HostedTenantBoundary? tenantBoundary = null, DirectorConnectionRegistry? connections = null)
+        HostedTenantBoundary? tenantBoundary = null, DirectorConnectionRegistry? connections = null,
+        PushedRepositoryStore? repositoryStore = null, RepoHistoryStore? repoHistory = null)
     {
         _store = store;
         _registry = registry;
@@ -59,6 +60,27 @@ public sealed class DirectorHub : Hub
         _fleetDisplayState = fleetDisplayState;
         _tenantBoundary = tenantBoundary;
         _connections = connections;
+        _repositoryStore = repositoryStore;
+        _repoHistory = repoHistory;
+    }
+
+    private readonly PushedRepositoryStore? _repositoryStore;
+    private readonly RepoHistoryStore? _repoHistory;
+
+    /// <summary>
+    /// A full repository/worktree snapshot from the bound Director (repositories mission, #510
+    /// phase C). Snapshots only; tenant comes from the connection binding, never the payload.
+    /// Accepted pushes also fold into the daily history (phase D) - rejected/stale ones never do.
+    /// </summary>
+    public void PushRepoSnapshot(long sequence, RepoStatusDto[] repositories)
+    {
+        var directorId = RequireBoundDirector();
+        var set = repositories ?? Array.Empty<RepoStatusDto>();
+        var accepted = _repositoryStore?.ApplySnapshot(RequireBoundTenant(), directorId, Context.ConnectionId,
+            sequence, set) ?? false;
+        if (accepted)
+            _repoHistory?.ObserveSnapshot(RequireBoundTenant(), set);
+        FileLog.Write($"[DirectorHub] PushRepoSnapshot: director={directorId} seq={sequence} repos={set.Length} accepted={accepted}");
     }
 
     /// <summary>
@@ -129,6 +151,9 @@ public sealed class DirectorHub : Hub
         Context.Items[DirectorIdItemKey] = directorId;
         Context.Items[TenantIdItemKey] = tenant;
         _store.RegisterConnection(tenant, directorId, Context.ConnectionId);
+        // The repository store follows the same ownership discipline: only this - the current -
+        // connection may push repository snapshots from now on.
+        _repositoryStore?.RegisterConnection(tenant, directorId, Context.ConnectionId);
         // MTR-15 cancellation cutoff: index this live tunnel by tenant with a server-side abort, so a revoked
         // tenant's connection is severed the moment the sweep (or a request re-read) finds it NotEntitled. The
         // durable device tombstone denies NEW auth; this ends the tunnel already up. Cleared on disconnect.
@@ -258,6 +283,7 @@ public sealed class DirectorHub : Hub
             // that stops refreshing LastSeen (HttpHeartbeatTimeout); a reconnect re-Hellos and refreshes it.
             // The tenant is the one bound at Hello (Hello sets both, so a bound director always has a tenant).
             _store.UnregisterConnection(t, directorId, Context.ConnectionId);
+            _repositoryStore?.UnregisterConnection(t, directorId, Context.ConnectionId);
         }
         // MTR-15: drop this connection's abort entry (it is gone now). Keyed by connection id, so it is cleared
         // whether or not a tenant was bound.

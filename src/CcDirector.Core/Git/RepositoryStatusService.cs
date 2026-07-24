@@ -84,6 +84,13 @@ public sealed class RepositoryStatusService
             var inUse = inventory.InUseBySession.Count;
             var needs = inventory.NeedsAttention.Count;
 
+            // Carry the full (non-primary) worktree records on the status, with measured sizes -
+            // every surface renders from this one model, and "reap N GB" is quoted from it.
+            var worktrees = inventory.Worktrees
+                .Where(w => !w.IsPrimary)
+                .Select(w => w with { SizeBytes = MeasureWorktreeBytes(w, ct) })
+                .ToList();
+
             return new RepositoryStatus
             {
                 Path = repoPath,
@@ -103,8 +110,16 @@ public sealed class RepositoryStatusService
                 WorktreesSafeToReap = safe,
                 WorktreesInUse = inUse,
                 WorktreesNeedAttention = needs,
+                Worktrees = worktrees,
+                WorktreeBytes = worktrees.Sum(w => w.SizeBytes ?? 0),
                 Success = true,
             };
+        }
+        catch (OperationCanceledException)
+        {
+            // A cancelled compute was superseded - the caller owns that outcome; never fold it
+            // into a failure status.
+            throw;
         }
         catch (Exception ex)
         {
@@ -112,6 +127,88 @@ public sealed class RepositoryStatusService
             return new RepositoryStatus { Path = repoPath, Success = false, Error = ex.Message };
         }
     }
+
+    // Size measurements are a full directory walk, so they are cached per worktree and re-measured
+    // only when the worktree's last activity changes. Process-wide: the monitor, the per-session
+    // tab, and the watcher all share one measurement.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime? Stamp, long Bytes)> SizeCache
+        = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Measures a worktree's on-disk size, honoring cancellation DURING the walk: a superseded
+    /// compute stops immediately and stores nothing. Deliberately no file caps or byte budgets -
+    /// a silently truncated size would be a lie; either the walk finishes or it is cancelled.
+    ///
+    /// KNOWN LIMITATION (inspection round 2, ruling R2-10 - accepted, no further code change):
+    /// cancellation is honored once per enumerated file, but a single blocked filesystem call
+    /// INSIDE Directory.EnumerateFiles - a stalled enumeration advancing to its next result, a
+    /// blocked metadata read - cannot be interrupted by any token. Bounding it would require a
+    /// timeout, and a timeout that silently truncates a size is exactly the lie the no-fallback
+    /// rule forbids. The compute runs on a background thread, so a blocked walk delays model
+    /// freshness for that repository; it never blocks the user interface.
+    /// </summary>
+    internal static long? MeasureWorktreeBytes(WorktreeInfo w, CancellationToken ct)
+    {
+        try
+        {
+            var key = WorktreeReaperService.NormalizePath(w.Path);
+            if (SizeCache.TryGetValue(key, out var hit) && hit.Stamp == w.LastActivityUtc)
+                return hit.Bytes;
+
+            if (!Directory.Exists(w.Path))
+                return null;
+
+            long bytes = 0;
+            var options = new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                IgnoreInaccessible = true,
+                AttributesToSkip = FileAttributes.ReparsePoint, // never follow junctions/symlinks
+            };
+            foreach (var file in Directory.EnumerateFiles(w.Path, "*", options))
+            {
+                ct.ThrowIfCancellationRequested();
+                try { bytes += new FileInfo(file).Length; }
+                catch { /* transient file - skip */ }
+            }
+
+            SizeCache[key] = (w.LastActivityUtc, bytes);
+            return bytes;
+        }
+        catch (OperationCanceledException)
+        {
+            throw; // a partial measurement is never stored or returned
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[RepositoryStatusService] MeasureWorktreeBytes failed for {w.Path}: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Evicts every cached size whose worktree path is not in <paramref name="worktreePathsSeen"/>.
+    /// Called by the monitor after each completed scan, so entries for reaped, moved, or deleted
+    /// worktrees do not accumulate forever in the process-wide cache.
+    /// </summary>
+    internal static void EvictSizeCacheExcept(IEnumerable<string> worktreePathsSeen)
+    {
+        var keep = new HashSet<string>(
+            worktreePathsSeen.Select(WorktreeReaperService.NormalizePath),
+            StringComparer.OrdinalIgnoreCase);
+        int evicted = 0;
+        foreach (var key in SizeCache.Keys)
+        {
+            if (!keep.Contains(key) && SizeCache.TryRemove(key, out _))
+                evicted++;
+        }
+        if (evicted > 0)
+            FileLog.Write($"[RepositoryStatusService] size cache: evicted {evicted} entr{(evicted == 1 ? "y" : "ies")} for worktrees no longer present");
+    }
+
+    /// <summary>Test probe: whether a size measurement is cached for this worktree path.</summary>
+    internal static bool SizeCacheContains(string worktreePath)
+        => SizeCache.ContainsKey(WorktreeReaperService.NormalizePath(worktreePath));
 
     /// <summary>Classifies an origin remote URL into a provider and its owner/org. Pure and testable.</summary>
     internal static (RepoProvider Provider, string? Org) ClassifyRemote(string? remoteUrl)

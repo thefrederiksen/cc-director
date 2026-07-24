@@ -32,6 +32,15 @@
                 <Button x:Name="ReposRailButton" Classes="railItem active" Click="ReposRailButton_Click">
                     <TextBlock Text="Local repositories" VerticalAlignment="Center" />
                 </Button>
+                <Button x:Name="RecoRailButton" Classes="railItem" Click="RecoRailButton_Click">
+                    <DockPanel LastChildFill="False">
+                        <TextBlock Text="Recommendations" VerticalAlignment="Center" />
+                        <Border DockPanel.Dock="Right" x:Name="RecoBadge" Background="#F59E0B" CornerRadius="8"
+                                Padding="6,1" Margin="8,0,0,0" VerticalAlignment="Center" IsVisible="False">
+                            <TextBlock x:Name="RecoBadgeText" Text="0" Foreground="#1E1E1E" FontSize="9" FontWeight="SemiBold" />
+                        </Border>
+                    </DockPanel>
+                </Button>
                 <Button x:Name="RootsRailButton" Classes="railItem" Click="RootsRailButton_Click">
                     <TextBlock Text="Root folders" VerticalAlignment="Center" />
                 </Button>
@@ -42,6 +51,41 @@
 
         <Panel Grid.Column="2">
             <controls:RepositoryListView x:Name="ReposPage" IsVisible="True" />
+            <controls:RepositoryDetailView x:Name="DetailPage" IsVisible="False" />
+
+            <ScrollViewer x:Name="RecoPage" IsVisible="False" VerticalScrollBarVisibility="Auto">
+                <StackPanel Margin="14" Spacing="8">
+                    <TextBlock Text="Recommendations" Foreground="#CCCCCC" FontSize="14" FontWeight="SemiBold" />
+                    <TextBlock Text="What the background scan suggests, in plain language. Nothing here happens without you."
+                               Foreground="#888888" FontSize="11" TextWrapping="Wrap" MaxWidth="560" />
+                    <TextBlock x:Name="RecoEmptyText" Text="Nothing to recommend - your repositories look tidy."
+                               Foreground="#22C55E" FontSize="12" IsVisible="False" Margin="0,6,0,0" />
+                    <ItemsControl x:Name="RecoList">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate DataType="controls:RecommendationRowItem">
+                                <Border Background="#252526" BorderBrush="#3C3C3C" BorderThickness="1" CornerRadius="6"
+                                        Padding="12,10" Margin="0,0,0,8">
+                                    <Grid ColumnDefinitions="4,12,*">
+                                        <Border Grid.Column="0" Background="{Binding StripeBrush}" CornerRadius="2" />
+                                        <StackPanel Grid.Column="2" Spacing="3">
+                                            <TextBlock Text="{Binding Title}" Foreground="#CCCCCC" FontSize="13" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                            <TextBlock Text="{Binding Body}" Foreground="#AAAAAA" FontSize="11" TextWrapping="Wrap" />
+                                            <TextBlock Text="{Binding Why}" Foreground="#6B6B6B" FontSize="10" FontStyle="Italic" TextWrapping="Wrap" />
+                                            <StackPanel Orientation="Horizontal" Spacing="7" Margin="0,6,0,0">
+                                                <Button Content="Show me" Background="#3C3C3C" Foreground="#CCCCCC"
+                                                        FontSize="11" Padding="10,3" Click="RecoShow_Click" />
+                                                <Button Content="Hand to an agent" Background="#0E639C" Foreground="White"
+                                                        FontSize="11" Padding="10,3" IsVisible="{Binding HasRepo}"
+                                                        Click="RecoHandOff_Click" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </ScrollViewer>
 
             <ScrollViewer x:Name="RootsPage" IsVisible="False" VerticalScrollBarVisibility="Auto">
                 <StackPanel Margin="16" Spacing="12">

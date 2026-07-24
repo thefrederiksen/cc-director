@@ -21,7 +21,7 @@ public class RepositoryListViewRenderTests
                 Branch = "main",
                 IsClean = true,
                 Success = true,
-            }));
+            })) { LiveSessionsProvider = OneBrainRegressionTests.NoSessions };
 
     [AvaloniaFact]
     public void RepositoryListView_LoadsAndLaysOut()
