@@ -33,6 +33,15 @@ public enum GatewayConnectionStatus
     /// ~15s of Tailscale coming up - no restart.
     /// </summary>
     NoTailnetIdentity,
+
+    /// <summary>
+    /// The hosted subscription (or device enrollment) for this Gateway has lapsed or been revoked, so the
+    /// Gateway refused the tunnel with a TERMINAL 401/402. The Director STOPPED reconnecting - there is no point
+    /// hammering a locked door - and this state names the fix on screen (renew the subscription / re-enroll)
+    /// with a link to Billing. Distinct from <see cref="Failed"/> (which keeps retrying) and from
+    /// <see cref="Connecting"/>: a red, non-retrying "your subscription lapsed" state.
+    /// </summary>
+    SubscriptionRequired,
 }
 
 /// <summary>
@@ -166,6 +175,28 @@ public sealed class GatewayConnectionMonitor
             FailureSummary = summary;
         }
         FileLog.Write($"[GatewayConnectionMonitor] Tailnet identity failure: {summary}");
+        Changed?.Invoke();
+    }
+
+    /// <summary>
+    /// The Gateway refused the tunnel with a TERMINAL 401/402 - the hosted subscription lapsed or the device
+    /// was revoked (e.g. the customer stopped paying). The Director has STOPPED its reconnect loop, so this
+    /// surfaces the reason and the fix (renew / re-enroll) instead of a forever-yellow "connecting" or a
+    /// retrying red. <see cref="LastVerifiedAt"/> survives so the UI can show "connected until HH:mm". Sticky
+    /// NotConfigured (a local-only Director never hits this). Cleared by <see cref="Reset"/> on a settings
+    /// change or a re-enrollment, which restarts the tunnel.
+    /// </summary>
+    public void MarkSubscriptionRequired(string summary)
+    {
+        lock (_lock)
+        {
+            // NotConfigured is sticky until Reset(true): a local-only Director never goes here.
+            if (Status == GatewayConnectionStatus.NotConfigured) return;
+            if (Status == GatewayConnectionStatus.SubscriptionRequired && FailureSummary == summary) return; // no churn
+            Status = GatewayConnectionStatus.SubscriptionRequired;
+            FailureSummary = summary;
+        }
+        FileLog.Write("[GatewayConnectionMonitor] subscription required - tunnel refused (terminal 401/402); reconnect stopped");
         Changed?.Invoke();
     }
 

@@ -192,7 +192,8 @@ public partial class GatewayConnectionPanel : UserControl
         // A prior failure (or a lost tailnet identity) opens Step 1 in REPAIR mode (Phase 5): the failing
         // leg is named, diagnostics render inline, and the rediscovery scan offers the new address. Repair
         // reconnects a known Gateway, so it skips the choice.
-        if (status is GatewayConnectionStatus.Failed or GatewayConnectionStatus.NoTailnetIdentity)
+        if (status is GatewayConnectionStatus.Failed or GatewayConnectionStatus.NoTailnetIdentity
+            or GatewayConnectionStatus.SubscriptionRequired)
             return new GatewayConnectionPanel(GatewayPanelStep.Connect, repairMode: true, consumer, showChoiceFirst: false);
 
         // Otherwise a fresh connect: open on the gateway CHOICE step (#1808a).
@@ -674,6 +675,7 @@ public partial class GatewayConnectionPanel : UserControl
         GatewayConnectionStatus.Connected => "CONNECTED - this Director's tunnel to the Gateway is up, which is what lets the two reach each other.",
         GatewayConnectionStatus.Failed => $"NOT CONNECTED - {m.FailureSummary}",
         GatewayConnectionStatus.NoTailnetIdentity => $"No tailnet identity - {m.FailureSummary}",
+        GatewayConnectionStatus.SubscriptionRequired => $"SUBSCRIPTION REQUIRED - {m.FailureSummary}",
         GatewayConnectionStatus.Connecting => "Connecting - the tunnel is dialing. Re-open diagnostics in a few seconds.",
         _ => "No Gateway is configured.",
     };
