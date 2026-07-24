@@ -82,8 +82,13 @@ Spec: devthrottle_internal#510 · Brief: docs/MISSION-repositories-full-2026-07-
   docs/MISSION-repositories-full-INSPECTION-6.md. Core 3451 green post-round-6; branch
   service class green post-round-7/8 changes; clean full Gateway rerun in progress (the
   first attempt hung under machine contention and was killed - own test process).
-- Remaining: Gateway rerun green -> final slot-5 rebuild at tip + live harness -> QA report
-  artifact -> owner approval -> slice and land on origin/main.
+- FINAL STATE (2026-07-24): all three suites green at the tip a89617f3 - Core 3452 /
+  Avalonia 290 / Gateway 3680, 0 failed (7,422 passing). Slot 5 live at the tip, harness
+  8 of 8. Inspection verdict: PASS (round 8). QA report published:
+  https://claude.ai/code/artifact/89592685-99f5-459a-86b0-999bf536651d
+- WAITING ON THE OWNER: approval to merge. On approval, slice the branch into pull requests
+  in build order (model+monitor, git services, screens, Gateway push+endpoints,
+  history+recommendations, hand-off) and drive each to merged on origin/main.
 
 ## Next
 - Manager round 2 finishes R2-1..R2-12 and pushes.
