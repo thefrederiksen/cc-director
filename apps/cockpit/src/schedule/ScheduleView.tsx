@@ -18,6 +18,7 @@ import {
 } from "@devthrottle/client-core/fleet/fleetClient";
 import type { SessionDto } from "@devthrottle/client-core/api/client";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
+import { getGatewaySettings } from "@devthrottle/client-core/settings/settingsClient";
 import { classify, dotHex, stateLabel } from "@devthrottle/client-core/sessions/ordering";
 import { useVisiblePolling } from "@devthrottle/client-core/polling/useVisiblePolling";
 import { clockLabel, relativeTime, repoBasename } from "../fleet/format";
@@ -206,9 +207,27 @@ export function ScheduleView() {
     [loadDirectors],
   );
 
+  // The account's time zone (the Settings page value), read once so a NEW job's time zone defaults to
+  // it instead of starting empty - the account setting is the one place time zone lives (issue #2115).
+  // Editing an existing job keeps that job's own stored zone.
+  const [accountTimeZone, setAccountTimeZone] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    void getGatewaySettings()
+      .then((s) => {
+        if (!cancelled) setAccountTimeZone(s.timeZone);
+      })
+      .catch(() => {
+        /* the form simply starts with an empty zone when settings cannot be read */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const openCreate = useCallback(() => {
-    openForm(EMPTY_FORM);
-  }, [openForm]);
+    openForm({ ...EMPTY_FORM, timeZone: accountTimeZone });
+  }, [openForm, accountTimeZone]);
 
   const openEdit = useCallback(
     (job: CronJob) => {

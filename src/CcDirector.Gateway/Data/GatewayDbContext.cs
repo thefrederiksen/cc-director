@@ -100,6 +100,16 @@ public sealed class GatewayDbContext : DbContext
     /// "Dismissed terms" screen can still explain why it was once offered. Tenant-scoped.</summary>
     public DbSet<DictationSuggestionDismissalEntity> DictationSuggestionDismissals => Set<DictationSuggestionDismissalEntity>();
 
+    /// <summary>Model verdicts on mined dictionary-suggestion candidates (<c>dictation_suggestion_verdicts</c>,
+    /// devthrottle #2115) - one row per tenant per term, judged at most once ever; scans read stored verdicts
+    /// instead of re-asking the screening model. Tenant-scoped.</summary>
+    public DbSet<DictationSuggestionVerdictEntity> DictationSuggestionVerdicts => Set<DictationSuggestionVerdictEntity>();
+
+    /// <summary>The stored result of each tenant's most recent dictionary-suggestion scan
+    /// (<c>dictation_suggestion_scans</c>, devthrottle #2115) - one row per tenant; the badge and the
+    /// Dictionary page read this row instead of triggering mining. Tenant-scoped.</summary>
+    public DbSet<DictationSuggestionScanEntity> DictationSuggestionScans => Set<DictationSuggestionScanEntity>();
+
     /// <summary>The append-only governance audit trail (<c>governance_audit_events</c>) - structured
     /// intervention and permission/sandbox decisions, never inferred from transcripts (issue #1771).</summary>
     public DbSet<GovernanceAuditEventEntity> GovernanceAuditEvents => Set<GovernanceAuditEventEntity>();
@@ -379,6 +389,23 @@ public sealed class GatewayDbContext : DbContext
             b.HasIndex(e => new { e.TenantId, e.DismissedAtUtc });
         });
 
+        modelBuilder.Entity<DictationSuggestionVerdictEntity>(b =>
+        {
+            b.ToTable("dictation_suggestion_verdicts");
+            // COMPOSITE primary key (tenant_id, Term) - the per-tenant key pattern, mirroring the dismissal
+            // table exactly: Term is the NORMALIZED canonical spelling (lower-cased alphanumerics), derived
+            // not caller-supplied, compared ordinally (SQLite BINARY / Postgres "C"). One verdict per tenant
+            // per term is the whole point - the upsert reads through the tenant query filter.
+            b.HasKey(e => new { e.TenantId, e.Term });
+        });
+
+        modelBuilder.Entity<DictationSuggestionScanEntity>(b =>
+        {
+            b.ToTable("dictation_suggestion_scans");
+            // ONE row per tenant (the latest scan result), so the tenant id alone is the primary key.
+            b.HasKey(e => e.TenantId);
+        });
+
         modelBuilder.Entity<ActivityEventEntity>(b =>
         {
             b.ToTable("activity_events");
@@ -525,6 +552,8 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<DictationTranscriptEntity>(modelBuilder);
         ApplyTenantScope<WorkflowTenantOverrideEntity>(modelBuilder);
         ApplyTenantScope<DictationSuggestionDismissalEntity>(modelBuilder);
+        ApplyTenantScope<DictationSuggestionVerdictEntity>(modelBuilder);
+        ApplyTenantScope<DictationSuggestionScanEntity>(modelBuilder);
         ApplyTenantScope<ActivityEventEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
@@ -566,6 +595,9 @@ public sealed class GatewayDbContext : DbContext
             // like the keys above (the miner folds a spelling and compares exactly), so pin it to "C" so both
             // providers agree on uniqueness and the miner's dismissed-exclusion check matches identically.
             modelBuilder.Entity<DictationSuggestionDismissalEntity>().Property(e => e.Term).UseCollation("C");
+            // dictation_suggestion_verdicts.Term is the same normalized canonical spelling as the dismissal
+            // Term above, with the same byte-ordinal equality requirement - pin it to "C" identically.
+            modelBuilder.Entity<DictationSuggestionVerdictEntity>().Property(e => e.Term).UseCollation("C");
             // The tenants mapping table's natural-key string columns (the tenant id primary key and the
             // account_subject unique index) rely on byte-ordinal equality/uniqueness, same as the keys above,
             // so pin them to "C" too - the account subject in particular must match EXACTLY on both providers.

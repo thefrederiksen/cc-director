@@ -4,6 +4,7 @@ import {
   getDictionary,
   saveDictionary,
   getSuggestions,
+  scanSuggestions,
   applySuggestions,
   dismissSuggestion,
   getDismissed,
@@ -11,6 +12,7 @@ import {
   type Dictionary,
   type DictionarySuggestion,
   type DismissedTerm,
+  type SuggestionsResult,
 } from "@devthrottle/client-core/dictation/dictionaryClient";
 import {
   addMistranscriptionTerm,
@@ -28,6 +30,14 @@ import { ConfirmDialog } from "../components";
 //
 // The Gateway is the single source of truth for this glossary: it is used by phone-recording
 // transcription and by live dictation/Speak on every Director connected to this Gateway.
+// The "Last scan: ..." label, in the viewer's local time. Null means no scan has ever run.
+function scanLabel(scannedAtUtc: string | null): string {
+  if (scannedAtUtc === null) return "Never scanned";
+  const when = new Date(scannedAtUtc);
+  if (Number.isNaN(when.getTime())) return "Never scanned";
+  return `Last scan: ${when.toLocaleString()}`;
+}
+
 export function DictionaryView() {
   const [dict, setDict] = useState<Dictionary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -46,13 +56,19 @@ export function DictionaryView() {
   const [termNotice, setTermNotice] = useState("");
   const [variantNotices, setVariantNotices] = useState<Record<string, string>>({});
 
-  // ---- suggestions (devthrottle #2075) ----
-  // The server-mined terms the model keeps getting wrong that are not yet in the glossary. The client is
-  // dumb: it renders the ranked list, the evidence, and the count exactly as the Gateway computed them.
+  // ---- suggestions (devthrottle #2075, redesigned in #2115) ----
+  // The stored result of the latest scan (daily per tenant, or the Scan-now button). The client is dumb:
+  // it renders the list, the evidence, the count, the scan time, and the screening state exactly as the
+  // Gateway computed them.
   const [suggestions, setSuggestions] = useState<DictionarySuggestion[]>([]);
-  // Which suggested terms are ticked (pre-ticked, since the ranked list is already high-confidence).
+  // When the latest scan ran (null = no scan has ever run), and the Gateway-ruled screening state.
+  const [scannedAtUtc, setScannedAtUtc] = useState<string | null>(null);
+  const [screeningOk, setScreeningOk] = useState(true);
+  const [screeningError, setScreeningError] = useState("");
+  // Which suggested terms are ticked (pre-ticked, since the screened list is already high-confidence).
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [suggestBusy, setSuggestBusy] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const [suggestMsg, setSuggestMsg] = useState("");
   // The dismissed terms and whether the (initially collapsed) Dismissed section is open.
   const [dismissed, setDismissed] = useState<DismissedTerm[]>([]);
@@ -97,23 +113,30 @@ export function DictionaryView() {
     };
   }, []);
 
-  // Load the suggestions and dismissed terms separately from the glossary (devthrottle #2075). A failure
-  // here must not break the glossary editor - the panel just stays empty - so it is swallowed.
+  // Fold one scan result (a fresh read or a Scan-now response) into the panel state. Pre-tick every
+  // suggested term - the screened list is already high-confidence, so the happy path is one press -
+  // while preserving any explicit user un-ticks for terms still present.
+  const applyScanResult = useCallback((result: SuggestionsResult) => {
+    setSuggestions(result.suggestions);
+    setScannedAtUtc(result.scannedAtUtc);
+    setScreeningOk(result.screeningOk);
+    setScreeningError(result.screeningError);
+    setSelected((prev) => {
+      const next: Record<string, boolean> = {};
+      for (const s of result.suggestions) next[s.term] = prev[s.term] ?? true;
+      return next;
+    });
+  }, []);
+
+  // Load the stored suggestions and dismissed terms separately from the glossary (devthrottle #2075).
+  // A failure here must not break the glossary editor - the panel just stays empty - so it is swallowed.
   const refreshSuggestions = useCallback(async () => {
     try {
-      const result = await getSuggestions();
-      setSuggestions(result.suggestions);
-      // Pre-tick every suggested term: the ranked list is already filtered to high-confidence terms, so
-      // the happy path is one press. Preserve any explicit user un-ticks for terms still present.
-      setSelected((prev) => {
-        const next: Record<string, boolean> = {};
-        for (const s of result.suggestions) next[s.term] = prev[s.term] ?? true;
-        return next;
-      });
+      applyScanResult(await getSuggestions());
     } catch {
       /* leave the panel empty if suggestions cannot be loaded */
     }
-  }, []);
+  }, [applyScanResult]);
 
   const refreshDismissed = useCallback(async () => {
     try {
@@ -233,8 +256,24 @@ export function DictionaryView() {
     markDirty();
   };
 
-  // ---- suggestions (devthrottle #2075) ----
+  // ---- suggestions (devthrottle #2075 / #2115) ----
   const selectedCount = suggestions.filter((s) => selected[s.term]).length;
+
+  // Run a scan NOW: mine the stored transcripts and have the screening model judge any new candidates.
+  // The scheduled scan runs daily just after midnight in this account's time zone; this button is for
+  // "I just dictated new vocabulary all day and want the suggestions now".
+  const scanNow = async () => {
+    setScanning(true);
+    setSuggestMsg("Scanning your recent dictations...");
+    try {
+      applyScanResult(await scanSuggestions());
+      setSuggestMsg("");
+    } catch (err) {
+      setSuggestMsg(`scan failed: ${gatewayErrorMessage(err)}`);
+    } finally {
+      setScanning(false);
+    }
+  };
 
   const toggleSelected = (term: string) =>
     setSelected((prev) => ({ ...prev, [term]: !prev[term] }));
@@ -354,9 +393,28 @@ export function DictionaryView() {
                   </h2>
                 </div>
                 <p className="dc-hint">
-                  We compared what the model heard against your corrected text. These terms keep coming out
-                  wrong and are not in your dictionary yet. Nothing changes until you press Add.
+                  We scanned your recent dictations for distinctive terms the speech model keeps
+                  misspelling, and screened out ordinary words. Nothing changes until you press Add.
                 </p>
+
+                <div className="dc-scanrow">
+                  <span className="dc-fineprint">{scanLabel(scannedAtUtc)}</span>
+                  <button
+                    className="dc-textlink"
+                    type="button"
+                    disabled={scanning || suggestBusy}
+                    onClick={() => void scanNow()}
+                  >
+                    {scanning ? "Scanning..." : "Scan now"}
+                  </button>
+                </div>
+
+                {!screeningOk && (
+                  <p className="dc-notice" role="status">
+                    The screening service could not be reached on the last scan, so new candidates are not
+                    shown yet ({screeningError}). The terms below were screened earlier.
+                  </p>
+                )}
 
                 {suggestions.map((s) => (
                   <div className="dc-srow" key={s.term}>
@@ -413,10 +471,20 @@ export function DictionaryView() {
                 <div className="dc-quiet-line">
                   <span className="dc-tick">OK</span>
                   <span>
-                    No suggestions right now. We keep comparing your dictations against your dictionary and
-                    will flag terms the model keeps getting wrong.
+                    {scannedAtUtc === null
+                      ? "No scan has run yet. A scan runs every night, or press Scan now."
+                      : "No suggestions right now. We scan your dictations nightly for distinctive terms the model keeps getting wrong."}
                   </span>
                   <div className="dc-spacer" />
+                  <span className="dc-fineprint">{scanLabel(scannedAtUtc)}</span>
+                  <button
+                    className="dc-textlink"
+                    type="button"
+                    disabled={scanning}
+                    onClick={() => void scanNow()}
+                  >
+                    {scanning ? "Scanning..." : "Scan now"}
+                  </button>
                   {dismissed.length > 0 && (
                     <button
                       className="dc-textlink"
@@ -427,6 +495,12 @@ export function DictionaryView() {
                     </button>
                   )}
                 </div>
+                {!screeningOk && (
+                  <p className="dc-notice" role="status">
+                    The screening service could not be reached on the last scan, so new candidates are not
+                    shown yet ({screeningError}).
+                  </p>
+                )}
                 {suggestMsg !== "" && (
                   <p className="dc-notice" role="status">
                     {suggestMsg}

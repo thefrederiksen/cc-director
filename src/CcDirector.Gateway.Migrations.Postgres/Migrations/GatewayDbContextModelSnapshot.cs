@@ -369,6 +369,68 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.ToTable("dictation_suggestion_dismissals", "gateway");
                 });
 
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.DictationSuggestionScanEntity", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime>("ScannedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ScreeningError")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<bool>("ScreeningOk")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("SuggestionsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("TenantId");
+
+                    b.HasIndex("TenantId");
+
+                    b.ToTable("dictation_suggestion_scans", "gateway");
+                });
+
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.DictationSuggestionVerdictEntity", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("Term")
+                        .HasColumnType("text")
+                        .UseCollation("C");
+
+                    b.Property<bool>("Approved")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("DisplayTerm")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("JudgedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Model")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("TenantId", "Term");
+
+                    b.HasIndex("TenantId");
+
+                    b.ToTable("dictation_suggestion_verdicts", "gateway");
+                });
+
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.DictationTranscriptEntity", b =>
                 {
                     b.Property<string>("TenantId")
