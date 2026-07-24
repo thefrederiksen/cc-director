@@ -6,12 +6,18 @@ name: Deploy hosted Gateway
 # only when someone runs this workflow. Start it from the GitHub Actions UI ("Run workflow") or with
 # `gh workflow run deploy-hosted-gateway.yml`; both are the same manual trigger.
 #
-# It REDEPLOYS only (rebuild image -> repin the App Service to the new immutable digest -> restart ->
-# verify /healthz); it does NOT provision resources or set app settings (the resource group, ACR,
-# plan, storage mount and the CC_GATEWAY_DB_CONNECTION are already provisioned by
-# docs/architecture/step3-azure-deploy in devthrottle_internal and persist across deploys), so this
-# workflow needs NO stored secrets - only an Azure OIDC federated login as the
-# devthrottle-hosted-gateway service principal.
+# It REDEPLOYS via a WARMED SLOT SWAP: rebuild the image -> pin it on the STAGING slot and fully warm it
+# (boot + EF migrations + JIT, with no user on it) -> swap staging into production behind the platform
+# warmup gate -> measure the true external outage -> stop staging. The old instance keeps serving until
+# the new one is proven healthy, so the user-facing outage is a few seconds of hand-off, not the ~95s of
+# an in-place stop-start restart. It does NOT provision resources or set app settings (the resource group,
+# ACR, plan, storage mount, the staging slot and the CC_GATEWAY_DB_CONNECTION are already provisioned - see
+# provision-hosted-gateway-slots.yml and docs/architecture/step3-azure-deploy in devthrottle_internal - and
+# persist across deploys), so this workflow needs NO stored secrets - only an Azure OIDC federated login as
+# the devthrottle-hosted-gateway service principal.
+#
+# Requires the staging slot to exist (run provision-hosted-gateway-slots.yml once). If a swap ships bad
+# code, rollback-hosted-gateway.yml swaps the previous instance back in seconds.
 #
 # Auth is OIDC (workload identity federation): no client secret is stored in this PUBLIC repo. The
 # service principal (Contributor on the subscription) trusts a federated credential scoped to this
@@ -44,11 +50,13 @@ env:
   ACR: crdevthrottlehg
   APP: devthrottle-gw
   IMAGE_NAME: devthrottle-gateway
+  SLOT: staging
   GATEWAY_URL: https://devthrottle-gw.azurewebsites.net
+  STAGING_URL: https://devthrottle-gw-staging.azurewebsites.net
 
 jobs:
   deploy:
-    name: Build image and redeploy
+    name: Build image and deploy via warmed slot swap
     runs-on: ubuntu-latest
     environment: hosted-gateway-production
 
@@ -96,7 +104,7 @@ jobs:
           esac
           echo "Built digest: $DIGEST"
 
-      # Read the commit the LIVE service is running BEFORE we repin - this is the OUTGOING build, and the
+      # Read the commit the LIVE service is running BEFORE the swap - this is the OUTGOING build, and the
       # /healthz .commit field (added alongside this workflow) is what makes it readable. Used for two
       # things: the honest-readiness poll below tells "the new image is serving" apart from "the old
       # container is still answering 200" by commit, and the migration-delta step diffs OUTGOING..target.
@@ -109,76 +117,99 @@ jobs:
           echo "commit=$OUT" >> "$GITHUB_OUTPUT"
           echo "Outgoing live commit: ${OUT:-<unknown - image predates the /healthz commit field>}"
 
-      - name: Repin the App Service to the new digest
-        run: |
-          REF="${ACR}.azurecr.io/${IMAGE_NAME}@${{ steps.digest.outputs.digest }}"
-          az webapp config container set \
-            --resource-group "$AZURE_RG" \
-            --name "$APP" \
-            --docker-custom-image-name "$REF" \
-            --output none
-          echo "Pinned $APP to $REF"
-
-      # Restart, then measure the TRUE external outage the way an outside user experiences it. The previous
-      # "Verify /healthz" step was blind: `az webapp restart` is fire-and-forget, so its first curl hit the
-      # STILL-RUNNING old container, got a 200, and declared success ~77s before the new image actually
-      # served traffic (deploy-ledger baseline: pipeline believed outage ~0, reality ~95s). This step polls
-      # the PUBLIC url every 2s and does not accept a 200 until /healthz reports the commit we just shipped,
-      # sustained 3 times. It records:
-      #   - last_serving: last 200 that was NOT yet the new commit (the old container up, or a bare 200 from
-      #     an image predating the .commit field) - i.e. the last moment traffic was still being served.
-      #   - first_ready: first of the sustained run of 200s on the NEW commit - the moment the new image took
-      #     over external traffic.
-      # external outage = first_ready - last_serving (the dead window), time-to-healthy = first_ready -
-      # t_deploy. The same logic reports a near-zero outage for a warmed slot swap, so it stays honest when
-      # this pipeline moves to slots.
-      - name: Restart and measure true external readiness
-        id: readiness
+      # Deploy the new image to the STAGING slot and fully warm it BEFORE any user sees it. Staging shares
+      # the production configuration (same Supabase database, same storage) but has its own hostname, so
+      # this is where the new image boots, runs its EF migrations, and JIT-warms with zero user impact. If
+      # anything here fails, production is untouched and still serving the old image - the deploy aborts
+      # safely. Staging is normally STOPPED (steady state is one instance writing the shared mount), so we
+      # point it at the new digest and start it.
+      - name: Deploy the new image to the staging slot and warm it
+        id: warm
         run: |
           TARGET="${{ steps.short.outputs.short }}"
-          t_deploy=$(date +%s)
-          az webapp restart --resource-group "$AZURE_RG" --name "$APP" --output none
+          REF="${ACR}.azurecr.io/${IMAGE_NAME}@${{ steps.digest.outputs.digest }}"
+          az webapp config container set --resource-group "$AZURE_RG" --name "$APP" --slot "$SLOT" \
+            --docker-custom-image-name "$REF" --output none
+          az webapp start --resource-group "$AZURE_RG" --name "$APP" --slot "$SLOT" --output none
+          echo "Staging pinned to $REF and started; warming until it serves commit $TARGET..."
 
-          last_serving=""
-          first_ready=""
+          # Poll the STAGING hostname until it answers 200 with the new commit, sustained 3 times: proof the
+          # new image booted and migrated cleanly. No user is on staging, so this costs no outage.
           streak=0
-          deadline=$(( t_deploy + 600 ))
+          deadline=$(( $(date +%s) + 600 ))
           while [ "$(date +%s)" -lt "$deadline" ]; do
-            now=$(date +%s)
-            body=$(curl -s -m 10 -w '\n%{http_code}' "${GATEWAY_URL}/healthz" 2>/dev/null || printf '\n000')
+            body=$(curl -s -m 10 -w '\n%{http_code}' "${STAGING_URL}/healthz" 2>/dev/null || printf '\n000')
             code=$(printf '%s' "$body" | tail -n1)
-            json=$(printf '%s' "$body" | sed '$d')
-            commit=$(printf '%s' "$json" | jq -r '.commit // empty' 2>/dev/null || echo "")
+            commit=$(printf '%s' "$body" | sed '$d' | jq -r '.commit // empty' 2>/dev/null || echo "")
             if [ "$code" = "200" ] && [ "$commit" = "$TARGET" ]; then
-              streak=$(( streak + 1 ))
-              [ -z "$first_ready" ] && first_ready=$now
-              echo "$(date -u +%H:%M:%SZ) HTTP 200 commit=$commit (new, streak $streak)"
+              streak=$(( streak + 1 )); echo "staging 200 commit=$commit (streak $streak)"
               [ "$streak" -ge 3 ] && break
             else
-              streak=0
-              first_ready=""
-              if [ "$code" = "200" ]; then
-                last_serving=$now
-                echo "$(date -u +%H:%M:%SZ) HTTP 200 commit=${commit:-<none>} (old container still serving)"
-              else
-                echo "$(date -u +%H:%M:%SZ) HTTP $code (outage)"
-              fi
+              streak=0; echo "staging HTTP $code commit=${commit:-<none>} (warming)"
             fi
-            sleep 2
+            sleep 3
           done
-
-          if [ -z "$first_ready" ]; then
-            echo "ERROR: new commit $TARGET never served a sustained 200 within the timeout"
+          if [ "$streak" -lt 3 ]; then
+            echo "ERROR: staging never served a sustained 200 on commit $TARGET - aborting before the swap."
             echo "outcome=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          if [ -n "$last_serving" ]; then outage=$(( first_ready - last_serving )); else outage=0; fi
-          tth=$(( first_ready - t_deploy ))
+          echo "Staging warm and healthy on $TARGET."
+
+      # Swap the warmed staging instance into production, MEASURING the true external outage the way a user
+      # experiences it. The swap is a warmed hand-off: the old instance keeps serving until the platform's
+      # warmup gate (WEBSITE_SWAP_WARMUP_PING_PATH=/healthz) confirms the incoming instance is healthy, then
+      # the front door cuts over. `az ... slot swap` BLOCKS until the swap completes, so we start a
+      # background poller on the PRODUCTION url FIRST and let it run across the cutover, then measure the gap
+      # between the last 200 on the old commit and the first 200 on the new commit. This is the number that
+      # should now be seconds instead of ~95.
+      - name: Swap into production and measure the external outage
+        id: readiness
+        run: |
+          TARGET="${{ steps.short.outputs.short }}"
+          LOG=/tmp/swap-poll.log; : > "$LOG"
+          ( while :; do
+              t=$(date +%s.%N)
+              body=$(curl -s -m 5 -w '\n%{http_code}' "${GATEWAY_URL}/healthz" 2>/dev/null || printf '\n000')
+              code=$(printf '%s' "$body" | tail -n1)
+              commit=$(printf '%s' "$body" | sed '$d' | jq -r '.commit // empty' 2>/dev/null || echo "")
+              echo "$t $code ${commit:-none}" >> "$LOG"
+              sleep 1
+            done ) & POLL=$!
+
+          t_deploy=$(date +%s)
+          az webapp deployment slot swap --resource-group "$AZURE_RG" --name "$APP" \
+            --slot "$SLOT" --target-slot production --output none
+          echo "Swap complete; sampling a few more seconds to catch the first sustained new-commit..."
+          sleep 8
+          kill "$POLL" 2>/dev/null || true
+
+          echo "--- production poll across the swap ---"; cat "$LOG"
+          # last 200 whose commit is NOT the new one (old instance serving), and first 200 on the new commit.
+          last_old=$(awk -v t="$TARGET" '$2=="200" && $3!=t {print $1}' "$LOG" | tail -n1)
+          first_new=$(awk -v t="$TARGET" '$2=="200" && $3==t {print $1; exit}' "$LOG")
+          if [ -z "$first_new" ]; then
+            echo "ERROR: production never served the new commit $TARGET after the swap."
+            echo "outcome=failed" >> "$GITHUB_OUTPUT"; exit 1
+          fi
+          if [ -n "$last_old" ]; then
+            outage=$(awk -v a="$last_old" -v b="$first_new" 'BEGIN{d=b-a; if(d<0)d=0; printf "%.1f", d}')
+          else
+            outage=0
+          fi
+          tth=$(( $(printf '%.0f' "$first_new") - t_deploy ))
           echo "outage_seconds=$outage" >> "$GITHUB_OUTPUT"
           echo "time_to_healthy_seconds=$tth" >> "$GITHUB_OUTPUT"
           echo "outcome=healthy" >> "$GITHUB_OUTPUT"
-          echo "New image ${TARGET} serving. External outage ~${outage}s, time-to-healthy ~${tth}s."
+          echo "New image ${TARGET} live in production. External outage ~${outage}s (warmed swap)."
           curl -s -m 15 "${GATEWAY_URL}/healthz"; echo
+
+      # Return to steady state: one running instance. The staging slot now holds the OLD instance (the swap
+      # exchanged them); stopping it means only production writes the shared file mount between deploys, and
+      # it is still there to swap back instantly if this release turns out bad (rollback-hosted-gateway).
+      - name: Stop the staging slot
+        if: always()
+        run: az webapp stop --resource-group "$AZURE_RG" --name "$APP" --slot "$SLOT" --output none || true
 
       # Does this deploy carry a schema change to the LIVE Supabase Postgres? Diff the Postgres migration set
       # (the one Database.Migrate() applies on hosted) between the outgoing live commit and the shipped one.
