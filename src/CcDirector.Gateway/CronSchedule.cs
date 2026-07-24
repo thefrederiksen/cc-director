@@ -98,6 +98,25 @@ public static class CronSchedule
         return TimeZoneInfo.ConvertTimeToUtc(unspecified, zone);
     }
 
+    /// <summary>
+    /// Format a UTC instant as a short wall-clock label ("yyyy-MM-dd HH:mm") in the job's own time
+    /// zone, for naming the session a fire spawns after the schedule and when it ran (e.g.
+    /// "Daily Error Triage - 2026-07-24 05:00"). A job's time zone is validated at create time
+    /// (<see cref="Validate"/>), so it resolves here; a job whose stored id no longer resolves on this
+    /// host labels in UTC so a display string is always produced - the label is cosmetic and must
+    /// never throw and break a fire.
+    /// </summary>
+    public static string LocalRunLabel(CronJobDto job, DateTime utc)
+    {
+        if (job is null)
+            throw new ArgumentNullException(nameof(job));
+
+        var zone = TryFindTimeZone(job.TimeZoneId);
+        var utcKind = DateTime.SpecifyKind(utc, DateTimeKind.Utc);
+        var local = zone is null ? utcKind : TimeZoneInfo.ConvertTimeFromUtc(utcKind, zone);
+        return local.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+    }
+
     private static bool IsRecurring(string? kind) =>
         string.Equals(kind?.Trim(), KindRecurring, StringComparison.OrdinalIgnoreCase);
 

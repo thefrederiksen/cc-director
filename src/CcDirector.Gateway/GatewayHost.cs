@@ -1032,9 +1032,10 @@ public sealed class GatewayHost : IAsyncDisposable
             // MTR-01 (Codex round 1): file the run-complete event into the current cron pass's OWN tenant ring,
             // the same per-tenant seam the deep-link resolver above reads. On self-host this is always Local.
             resolveTenant: () => _tenantPass.Current);
+        var cronClock = new Running.SystemClock();
         _cronEngine = new Running.CronEngine(
-            _cronJobs, _cronRuns, new Running.DirectorCronSessionStarter(_machineSessionSpawner),
-            cronWorkListRunner, cronNotifier, new Running.SystemClock(),
+            _cronJobs, _cronRuns, new Running.DirectorCronSessionStarter(_machineSessionSpawner, cronClock),
+            cronWorkListRunner, cronNotifier, cronClock,
             // MTR (audit MED): partition the overlap guard by the tenant of the CURRENT unit of work - the
             // run-now request scope on hosted, the single Local scope on self-host - the same seam the notifier
             // reads. A run-now for tenant A's cj_ id must never be refused by tenant B's in-flight same-id job.

@@ -15,10 +15,12 @@ namespace CcDirector.Gateway.Running;
 public sealed class DirectorCronSessionStarter : ICronSessionStarter
 {
     private readonly MachineSessionSpawner _spawner;
+    private readonly IClock _clock;
 
-    public DirectorCronSessionStarter(MachineSessionSpawner spawner)
+    public DirectorCronSessionStarter(MachineSessionSpawner spawner, IClock clock)
     {
         _spawner = spawner ?? throw new ArgumentNullException(nameof(spawner));
+        _clock = clock ?? throw new ArgumentNullException(nameof(clock));
     }
 
     public async Task<(string? sessionId, string? directorId, string? error)> StartAsync(CronJobDto job, CancellationToken ct)
@@ -30,6 +32,13 @@ public sealed class DirectorCronSessionStarter : ICronSessionStarter
         {
             RepoPath = job.Action.RepoPath,
             Agent = "ClaudeCode",
+            // Name the spawned session after the SCHEDULE plus when it ran (e.g.
+            // "Daily Error Triage - 2026-07-24 05:00"), so a fired job reads as itself in the rail
+            // instead of the generic auto-name. The Gateway owns this naming (CLAUDE.md rule 7) - the
+            // scheduler knows the name and the fire time, so it stamps them rather than asking the
+            // seeded agent to rename itself. A job always has a name (required by CronSchedule.Validate),
+            // so this is never the bare-folder name the Director would reject.
+            Name = $"{job.Name} - {CronSchedule.LocalRunLabel(job, _clock.UtcNow)}",
             PrePrompt = job.Action.Seed,
             // Scheduled-run auto-dismiss (issue #1200): a seed run defaults to closing itself when it
             // finishes with nothing needing a human, so an hourly job stops piling leftover sessions into
