@@ -34,6 +34,13 @@ export interface NewSessionDialogProps {
   onClose: () => void;
   /** A session was created; the parent refreshes the roster and opens it. */
   onCreated: (sessionId: string) => void;
+  /**
+   * The Director to pre-select (issue: Fleet Map "new session" button). When set and that Director is
+   * present in the loaded list, machine step 1 opens on it instead of the newest-started Director, so
+   * the Fleet Map card the owner clicked is already the target. When absent, or the id is not in the
+   * list, the dialog falls back to the newest-started Director exactly as before.
+   */
+  initialDirectorId?: string;
 }
 
 // Permission choices, mapped to the desktop dialog's "Bypass permission prompts" checkbox. "Skip
@@ -104,7 +111,7 @@ function launchSummary(agent: AgentChoice | null, bypass: boolean): string {
   return `${agent.displayName} . ${model} . ${permission}`;
 }
 
-export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) {
+export function NewSessionDialog({ onClose, onCreated, initialDirectorId }: NewSessionDialogProps) {
   const [directors, setDirectors] = useState<DirectorInfo[] | null>(null);
   const [directorsError, setDirectorsError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -149,7 +156,12 @@ export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) 
       .then((list) => {
         setDirectors(list);
         setDirectorsError(null);
-        const pick = newestDirector(list);
+        // Pre-select the Director the caller asked for (the Fleet Map card that was clicked), but only
+        // when it is actually in the list; otherwise fall back to the newest-started Director.
+        const requested = (initialDirectorId ?? "").trim();
+        const preselected =
+          requested.length > 0 ? list.find((d) => d.directorId === requested) ?? null : null;
+        const pick = preselected ?? newestDirector(list);
         if (pick) setSelectedId(pick.directorId);
       })
       .catch((err) => {
@@ -157,7 +169,7 @@ export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) 
         setDirectorsError(gatewayErrorMessage(err));
       });
     return () => controller.abort();
-  }, []);
+  }, [initialDirectorId]);
 
   // Step 2: whenever the selected machine changes, load THAT machine's recent repos.
   useEffect(() => {

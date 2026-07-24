@@ -20,6 +20,7 @@ import {
   shortDir,
 } from "./fleetMapFormat";
 import { MissionsBoard, missionCounts } from "../missions/MissionsBoard";
+import { NewSessionDialog } from "../sessions/NewSessionDialog";
 
 // Per-Director reachability for the Online / Wobbly / Offline node rendering (issue #1215), provided at
 // the Fleet Map root and read by each NodeCard so the cards dim in place without prop-drilling.
@@ -127,6 +128,19 @@ export function FleetMapView() {
   // non-matches and NEVER reorders what remains (see the lanes memo below). Not persisted across
   // reloads.
   const [query, setQuery] = useState("");
+
+  // The Fleet Map "new session" button (top-right of each Director sub-header on the machine pivot):
+  // holds the Director id to pre-target while the shared New Session dialog is open, or null when it is
+  // closed. It reuses the EXACT same dialog the Sessions tab opens - the only difference is that the
+  // clicked Director is already selected.
+  const [newSessionDirectorId, setNewSessionDirectorId] = useState<string | null>(null);
+  const onCreated = useCallback(
+    (sessionId: string) => {
+      setNewSessionDirectorId(null);
+      navigate(`/session/${encodeURIComponent(sessionId)}`);
+    },
+    [navigate],
+  );
 
   const list = useMemo(() => sessions ?? [], [sessions]);
   // Build the lanes from the WHOLE fleet first, so lane order and each card's slot are fixed. The title
@@ -308,6 +322,7 @@ export function FleetMapView() {
               sessionCount={query.trim().length > 0 ? matchCount : list.length}
               machineCount={machineCount}
               onOpen={(sid) => navigate(`/session/${encodeURIComponent(sid)}`)}
+              onNewSession={(directorId) => setNewSessionDirectorId(directorId)}
             />
           )}
 
@@ -320,6 +335,14 @@ export function FleetMapView() {
         <LegendDot color="supporting" label="Sub-agent" />
         <LegendDot color="grey" label="Snoozed" />
       </div>
+
+      {newSessionDirectorId !== null && (
+        <NewSessionDialog
+          initialDirectorId={newSessionDirectorId}
+          onClose={() => setNewSessionDirectorId(null)}
+          onCreated={onCreated}
+        />
+      )}
     </div>
     </ReachabilityContext.Provider>
   );
@@ -340,13 +363,15 @@ interface CanvasProps {
   sessionCount: number;
   machineCount: number;
   onOpen: (sessionId: string) => void;
+  // Start a new session on a specific Director (the machine-pivot sub-header "+ New session" button).
+  onNewSession: (directorId: string) => void;
 }
 
 // The node canvas: a root node above a horizontal row of lane panels, joined by SVG elbow connectors
 // measured from the live DOM (so the wiring tracks whatever width the panels lay out at). The lanes
 // scroll horizontally inside their own container; the SVG is sized to the scrollable content so the
 // wires stay attached when the row is wider than the pane.
-function Canvas({ lanes, pivot, sessionCount, machineCount, onOpen }: CanvasProps) {
+function Canvas({ lanes, pivot, sessionCount, machineCount, onOpen, onNewSession }: CanvasProps) {
   const innerRef = useRef<HTMLDivElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const headRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -416,6 +441,7 @@ function Canvas({ lanes, pivot, sessionCount, machineCount, onOpen }: CanvasProp
                 lane={lane}
                 pivot={pivot}
                 onOpen={onOpen}
+                onNewSession={onNewSession}
                 headRef={(el) => {
                   if (el === null) headRefs.current.delete(lane.key);
                   else headRefs.current.set(lane.key, el);
@@ -433,10 +459,11 @@ interface LanePanelProps {
   lane: Lane;
   pivot: Pivot;
   onOpen: (sessionId: string) => void;
+  onNewSession: (directorId: string) => void;
   headRef: (el: HTMLDivElement | null) => void;
 }
 
-function LanePanel({ lane, pivot, onOpen, headRef }: LanePanelProps) {
+function LanePanel({ lane, pivot, onOpen, onNewSession, headRef }: LanePanelProps) {
   const agg = aggregateColors(lane.sessions);
 
   // Machine pivot: sub-group the lane's sessions by Director so the panel reads machine -> Director ->
@@ -461,7 +488,23 @@ function LanePanel({ lane, pivot, onOpen, headRef }: LanePanelProps) {
         {directorGroups !== null
           ? directorGroups.map((dg) => (
               <div key={dg.key} className="fmap-dgroup">
-                <div className="fmap-subhead">{dg.label}</div>
+                <div className="fmap-subhead">
+                  <span className="fmap-subhead-label">{dg.label}</span>
+                  {/* Start a new session on THIS Director, using the same dialog the Sessions tab opens
+                      (only pre-targeted here). Hidden for an unidentified Director - it is not an
+                      addressable slot, so there is nothing to start a session on. */}
+                  {dg.key !== "(unknown)" && (
+                    <button
+                      type="button"
+                      className="fmap-subhead-new"
+                      title="Start a new session on this Director"
+                      aria-label={`Start a new session on ${dg.label}`}
+                      onClick={() => onNewSession(dg.key)}
+                    >
+                      + New session
+                    </button>
+                  )}
+                </div>
                 {dg.sessions.length > 0 ? (
                   <LaneCards sessions={dg.sessions} pivot={pivot} onOpen={onOpen} />
                 ) : (

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import type { SessionDto } from "@devthrottle/client-core/api/client";
 import type { DirectorReachability } from "@devthrottle/client-core/fleet/fleetClient";
 import type { SharedRoster } from "@devthrottle/client-core/fleet/rosterStore";
@@ -20,6 +20,20 @@ vi.mock("@devthrottle/client-core/fleet/rosterStore", () => ({
   useSharedRoster: () => rosterValue.current,
 }));
 vi.mock("react-router-dom", () => ({ useNavigate: () => vi.fn() }));
+
+// The Fleet Map "+ New session" button opens the SAME NewSessionDialog the Sessions tab uses, which
+// loads its machine / repo / agent pickers from the Gateway. Mock those data calls so the dialog renders
+// against a fixed fleet without a real Gateway. getDirectors is what proves the pre-selection: the dialog
+// default-selects the NEWEST-started Director, so we make "soren-1" newest and assert the CLICKED
+// "north-1" is selected instead - which can only happen if the Fleet Map passed it through.
+const getDirectorsMock = vi.fn();
+vi.mock("@devthrottle/client-core/api/client", () => ({
+  getDirectors: (...args: unknown[]) => getDirectorsMock(...args),
+  getRepos: () => Promise.resolve([]),
+  getAgents: () => Promise.resolve([]),
+  createSession: () => Promise.resolve({ sessionId: "new" }),
+  gatewayErrorMessage: (e: unknown) => String(e),
+}));
 
 import { FleetMapView } from "./FleetMapView";
 
@@ -129,5 +143,52 @@ describe("FleetMapView - By machine free slots", () => {
     expect(screen.queryByText(/free slot/i)).toBeNull();
     // Only the one reachable machine is counted; the offline one is not "available capacity".
     expect(screen.getAllByText(/\b1 machine\b/).length).toBeGreaterThan(0);
+  });
+});
+
+describe("FleetMapView - Director sub-header new-session button", () => {
+  it("opens the shared dialog pre-targeted to the clicked Director, not the newest one", async () => {
+    // The dialog would otherwise default to the NEWEST-started Director. Make "soren-bbb" newest, so if
+    // the Fleet Map failed to pass the clicked Director through, the dialog would select SOREN_SOUTH.
+    getDirectorsMock.mockResolvedValue([
+      {
+        directorId: "north-aaa",
+        machineName: "SOREN_NORTH",
+        version: "1",
+        startedAt: "2026-07-20T00:00:00Z",
+        lastSeen: "",
+        controlEndpoint: "http://127.0.0.1:7880",
+      },
+      {
+        directorId: "soren-bbb",
+        machineName: "SOREN_SOUTH",
+        version: "1",
+        startedAt: "2026-07-24T00:00:00Z", // newest -> the dialog's default pick
+        lastSeen: "",
+        controlEndpoint: "http://127.0.0.1:7990",
+      },
+    ]);
+
+    rosterValue.current = {
+      sessions: [session({ directorId: "north-aaa", machineName: "SOREN_NORTH" })],
+      machineErrors: [],
+      directors: [director({ directorId: "north-aaa", machineName: "SOREN_NORTH", state: "online" })],
+      error: null,
+      refreshNow: () => {},
+    };
+
+    render(<FleetMapView />);
+
+    // The machine pivot renders a "+ New session" button on the Director sub-header (top-right).
+    const newBtn = screen.getByRole("button", { name: /Start a new session on Director/ });
+    fireEvent.click(newBtn);
+
+    // The SAME dialog the Sessions tab opens appears, and it default-selects the clicked Director's
+    // machine (SOREN_NORTH) rather than the newest-started one (SOREN_SOUTH).
+    const dialog = await screen.findByRole("dialog", { name: /Start a new session/ });
+    await waitFor(() => {
+      const north = dialog.querySelector("button.newsess-machine.sel");
+      expect(north?.textContent).toContain("SOREN_NORTH");
+    });
   });
 });
