@@ -224,6 +224,31 @@ public sealed class TenantGateArchitectureTests
     }
 
     /// <summary>
+    /// The shared workflow library read (devthrottle_internal issue 514) is a deliberate cross-tenant
+    /// capability and must stay NAMED on the allowlist, bound to its real mechanism: the workflow
+    /// stores resolve a workflow id's owning partition through a library-scoped context (the private
+    /// owning-context resolver), never by entering the System scope. If either half disappears - the
+    /// name or the mechanism - this test goes red and the reach is no longer review-visible.
+    /// </summary>
+    [Fact]
+    public void System_capability_allowlist_names_the_shared_workflow_library_read()
+    {
+        Assert.Contains(SystemCapabilityAllowlist.SharedWorkflowLibraryRead, SystemCapabilityAllowlist.Names);
+
+        var catalogResolver = typeof(Workflows.WorkflowStore).GetMethod(
+            "OpenOwningContext", BindingFlags.NonPublic | BindingFlags.Instance);
+        var runResolver = typeof(Workflows.WorkflowRunStore).GetMethod(
+            "OpenOwningWorkflowContext", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.True(catalogResolver is not null,
+            "The 'shared-workflow-library-read' capability names WorkflowStore's owning-partition " +
+            "resolver (OpenOwningContext); that mechanism must exist for the allowlist entry to mean anything.");
+        Assert.True(runResolver is not null,
+            "The 'shared-workflow-library-read' capability names WorkflowRunStore's owning-partition " +
+            "resolver (OpenOwningWorkflowContext); that mechanism must exist for the allowlist entry to mean anything.");
+    }
+
+    /// <summary>
     /// The reserved <see cref="TenantId.System"/> scope may be ENTERED only at the sanctioned composition-root
     /// startup-seeding site (GatewayHost). System scope is reached ONLY by code that explicitly enters it and
     /// is NEVER the answer to "no tenant resolved"; a new site that enters it is a new cross-tenant reach that

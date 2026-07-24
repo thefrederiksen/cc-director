@@ -37,10 +37,23 @@ public static class SystemCapabilityAllowlist
     /// </summary>
     public const string StartupSystemSeeding = "startup-system-seeding";
 
+    /// <summary>
+    /// The shared workflow library read (devthrottle_internal issue 514, phase 1): every tenant's
+    /// workflow catalog serves the DevThrottle-maintained BUILT-IN workflows from the shared library
+    /// partition (the reserved System tenant, where <see cref="StartupSystemSeeding"/> put them) in
+    /// UNION with the tenant's own workflows. The mechanism is <c>WorkflowStore</c> /
+    /// <c>WorkflowRunStore</c> resolving a workflow id's OWNING partition through an explicitly
+    /// library-scoped context captured at construction - never by entering the System scope. The
+    /// reach is deliberately narrow: exactly one foreign partition, built-in rows only, and
+    /// READ-ONLY on every request path (the boot-time seeder remains the sole library writer).
+    /// </summary>
+    public const string SharedWorkflowLibraryRead = "shared-workflow-library-read";
+
     private static readonly HashSet<string> _names = new(StringComparer.Ordinal)
     {
         FleetDirectorList,
         StartupSystemSeeding,
+        SharedWorkflowLibraryRead,
     };
 
     /// <summary>Every named cross-tenant / System-scope capability, in one review-gated place.</summary>

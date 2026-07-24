@@ -1,3 +1,4 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Data;
@@ -19,6 +20,13 @@ namespace CcDirector.Gateway.Workflows;
 /// abandoned; a terminal status is FINAL. Acceptance never gates lifecycle and lifecycle never
 /// implies acceptance.
 ///
+/// THE SHARED WORKFLOW LIBRARY (devthrottle_internal issue 514, phase 1): the WORKFLOW a run
+/// executes may be a built-in living in the shared library partition (System on hosted), while the
+/// RUN itself is tenant data and always lands in the ambient tenant's partition. Workflow lookups
+/// here therefore resolve the owning partition exactly as <see cref="WorkflowStore"/> does (the
+/// library wins by id), which is what lets a hosted tenant seat sessions on the built-in "mission"
+/// conduct. Library reads are read-only - this store never writes a workflow row anywhere.
+///
 /// Threading: the Gateway is a single writer. Every operation runs under this store's write lock
 /// over a fresh pooled context.
 /// </summary>
@@ -26,6 +34,10 @@ public sealed class WorkflowRunStore
 {
     private readonly object _gate = new();
     private readonly GatewayDatabase _db;
+
+    /// <summary>The shared library partition - the tenant ambient at construction (System on hosted,
+    /// Local on self-host), mirroring <see cref="WorkflowStore"/>.</summary>
+    private readonly string _libraryTenant;
 
     private static readonly Dictionary<string, string[]> LegalTransitions = new(StringComparer.Ordinal)
     {
@@ -60,6 +72,25 @@ public sealed class WorkflowRunStore
     public WorkflowRunStore(GatewayDatabase db)
     {
         _db = db ?? throw new ArgumentNullException(nameof(db));
+
+        // Capture the library partition from the construction-time ambient tenant, exactly as
+        // WorkflowStore does (the composition root constructs both inside the startup System scope).
+        using var ctx = _db.CreateContext();
+        _libraryTenant = ctx.ActiveTenant!;
+    }
+
+    /// <summary>
+    /// Open the context for the partition that OWNS workflow <paramref name="key"/>: the shared
+    /// library when the id is a built-in there (the library wins by id), otherwise the ambient
+    /// tenant's partition. On self-host both are the same partition. Caller disposes.
+    /// </summary>
+    private GatewayDbContext OpenOwningWorkflowContext(string key)
+    {
+        var library = _db.CreateContext(new TenantId(_libraryTenant));
+        if (library.Workflows.AsNoTracking().Any(h => h.Id == key && h.IsBuiltIn))
+            return library;
+        library.Dispose();
+        return _db.CreateContext();
     }
 
     /// <summary>
@@ -80,18 +111,25 @@ public sealed class WorkflowRunStore
 
         lock (_gate)
         {
-            using var ctx = _db.CreateContext();
-            var head = ctx.Workflows.AsNoTracking().FirstOrDefault(h => h.Id == key);
-            if (head is null || head.Archived || head.PublishedVersion is null)
-                throw new WorkflowValidationException(
-                    $"Workflow '{key}' has no published version to run.");
-            if (!head.Enabled)
-                throw new WorkflowValidationException(
-                    $"Workflow '{key}' is turned OFF on this fleet - no new runs while the owner has " +
-                    "it disabled. Re-enable it in the cockpit or with: cc-devthrottle workflow enable " + key);
-            var version = ctx.WorkflowVersions.AsNoTracking().First(
-                v => v.WorkflowId == key && v.Status == WorkflowVersionStatus.Published);
+            // The WORKFLOW may live in the shared library partition; the RUN always lands in the
+            // ambient tenant's partition. Two contexts, deliberately: the workflow read resolves the
+            // owning partition, the run write stays tenant data.
+            WorkflowVersionEntity version;
+            using (var wfCtx = OpenOwningWorkflowContext(key))
+            {
+                var head = wfCtx.Workflows.AsNoTracking().FirstOrDefault(h => h.Id == key);
+                if (head is null || head.Archived || head.PublishedVersion is null)
+                    throw new WorkflowValidationException(
+                        $"Workflow '{key}' has no published version to run.");
+                if (!head.Enabled)
+                    throw new WorkflowValidationException(
+                        $"Workflow '{key}' is turned OFF on this fleet - no new runs while the owner has " +
+                        "it disabled. Re-enable it in the cockpit or with: cc-devthrottle workflow enable " + key);
+                version = wfCtx.WorkflowVersions.AsNoTracking().First(
+                    v => v.WorkflowId == key && v.Status == WorkflowVersionStatus.Published);
+            }
 
+            using var ctx = _db.CreateContext();
             var now = DateTime.UtcNow;
             var entity = new WorkflowRunEntity
             {
@@ -129,7 +167,7 @@ public sealed class WorkflowRunStore
         {
             using var ctx = _db.CreateContext();
             var entity = ctx.WorkflowRuns.AsNoTracking().FirstOrDefault(r => r.Id == id);
-            return entity is null ? null : ToDto(entity, WorkflowEnabledFor(ctx, entity.WorkflowId));
+            return entity is null ? null : ToDto(entity, WorkflowEnabledFor(entity.WorkflowId));
         }
     }
 
@@ -165,7 +203,7 @@ public sealed class WorkflowRunStore
                 .OrderByDescending(r => r.CreatedUtc)
                 .Take(take)
                 .ToList();
-            var enabledByWorkflow = WorkflowEnabledMap(ctx, page.Select(r => r.WorkflowId));
+            var enabledByWorkflow = WorkflowEnabledMap(page.Select(r => r.WorkflowId));
             return page
                 .Select(r => ToDto(r, enabledByWorkflow.GetValueOrDefault(r.WorkflowId, false)))
                 .ToList();
@@ -185,7 +223,7 @@ public sealed class WorkflowRunStore
         var key = workflowId.Trim().ToLowerInvariant();
         lock (_gate)
         {
-            using var ctx = _db.CreateContext();
+            using var ctx = OpenOwningWorkflowContext(key);
             var head = ctx.Workflows.AsNoTracking().FirstOrDefault(h => h.Id == key);
             if (head is null || head.Archived || head.PublishedVersion is null)
                 throw new WorkflowValidationException(
@@ -218,7 +256,7 @@ public sealed class WorkflowRunStore
         var key = workflowId.Trim().ToLowerInvariant();
         lock (_gate)
         {
-            using var ctx = _db.CreateContext();
+            using var ctx = OpenOwningWorkflowContext(key);
             return ctx.Workflows.AsNoTracking()
                 .Where(h => h.Id == key && !h.Archived)
                 .Select(h => (bool?)h.Enabled)
@@ -226,21 +264,39 @@ public sealed class WorkflowRunStore
         }
     }
 
-    private static bool WorkflowEnabledFor(GatewayDbContext ctx, string workflowId) =>
-        ctx.Workflows.AsNoTracking()
+    private bool WorkflowEnabledFor(string workflowId)
+    {
+        using var ctx = OpenOwningWorkflowContext(workflowId);
+        return ctx.Workflows.AsNoTracking()
             .Where(h => h.Id == workflowId && !h.Archived)
             .Select(h => (bool?)h.Enabled)
             .FirstOrDefault() ?? false;
+    }
 
-    private static Dictionary<string, bool> WorkflowEnabledMap(
-        GatewayDbContext ctx, IEnumerable<string> workflowIds)
+    /// <summary>Enabled flags for a page of runs' workflow ids: the ambient tenant's own heads first,
+    /// then the shared library's built-ins OVERRIDE by id (the library wins, matching the id-scoped
+    /// resolution everywhere else). On self-host both reads hit the same partition and agree.</summary>
+    private Dictionary<string, bool> WorkflowEnabledMap(IEnumerable<string> workflowIds)
     {
         var ids = workflowIds.Distinct(StringComparer.Ordinal).ToList();
-        return ctx.Workflows.AsNoTracking()
-            .Where(h => ids.Contains(h.Id) && !h.Archived)
-            .Select(h => new { h.Id, h.Enabled })
-            .ToList()
-            .ToDictionary(h => h.Id, h => h.Enabled, StringComparer.Ordinal);
+        var map = new Dictionary<string, bool>(StringComparer.Ordinal);
+        using (var ctx = _db.CreateContext())
+        {
+            foreach (var h in ctx.Workflows.AsNoTracking()
+                         .Where(h => ids.Contains(h.Id) && !h.Archived)
+                         .Select(h => new { h.Id, h.Enabled })
+                         .ToList())
+                map[h.Id] = h.Enabled;
+        }
+        using (var library = _db.CreateContext(new TenantId(_libraryTenant)))
+        {
+            foreach (var h in library.Workflows.AsNoTracking()
+                         .Where(h => ids.Contains(h.Id) && h.IsBuiltIn && !h.Archived)
+                         .Select(h => new { h.Id, h.Enabled })
+                         .ToList())
+                map[h.Id] = h.Enabled;
+        }
+        return map;
     }
 
     /// <summary>
@@ -306,7 +362,7 @@ public sealed class WorkflowRunStore
             ctx.SaveChanges();
             FileLog.Write($"[WorkflowRunStore] Patch: run={id}, status={entity.Status}, " +
                           $"acceptance={entity.AcceptanceStatus}");
-            return ToDto(entity, WorkflowEnabledFor(ctx, entity.WorkflowId));
+            return ToDto(entity, WorkflowEnabledFor(entity.WorkflowId));
         }
     }
 

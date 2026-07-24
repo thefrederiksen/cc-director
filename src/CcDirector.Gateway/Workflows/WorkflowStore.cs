@@ -1,3 +1,4 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Data;
@@ -12,8 +13,17 @@ namespace CcDirector.Gateway.Workflows;
 /// literals: the head row is identity/lifecycle, every piece of content is an immutable version row,
 /// and the built-in set (<see cref="BuiltInWorkflows"/>) is written in by
 /// <see cref="BuiltInWorkflowSeeder"/> at construction. The read surface serves the exact legacy
-/// catalog shape (issue #1617) plus additive fields; authoring (drafts, publish, files) is the next
-/// phase on this store.
+/// catalog shape (issue #1617) plus additive fields.
+///
+/// THE SHARED WORKFLOW LIBRARY (devthrottle_internal issue 514). The built-ins are DevThrottle's:
+/// seeded once into the partition that is ambient at CONSTRUCTION (the reserved System tenant on the
+/// hosted Gateway, Local on self-host) and served READ-ONLY to every tenant from there. A tenant's
+/// catalog is the shared built-ins UNION the tenant's own workflows; id-scoped reads resolve the
+/// owning partition (the library always wins - it can never be shadowed by a tenant workflow, and
+/// creating a workflow under a built-in id is refused). This is the deliberate cross-tenant read
+/// named <see cref="Tenancy.SystemCapabilityAllowlist.SharedWorkflowLibraryRead"/>: it reaches
+/// exactly one foreign partition (the library), for built-in rows only, and never writes there on a
+/// request path - the ONLY writer of library content is the boot-time seeder.
 ///
 /// Threading: the Gateway is a single writer. Every operation runs under this store's write lock over
 /// a fresh pooled context, preserving the single-writer invariant.
@@ -22,6 +32,13 @@ public sealed class WorkflowStore
 {
     private readonly object _gate = new();
     private readonly GatewayDatabase _db;
+
+    /// <summary>The partition the built-in library lives in: the tenant that was ambient when this
+    /// store was constructed (System on hosted, Local on self-host). Captured rather than hard-coded
+    /// so self-host - where the single-tenant context answers Local for everything - keeps reading
+    /// the exact rows it always read, and the reserved System id never appears outside the hosted
+    /// composition root.</summary>
+    private readonly string _libraryTenant;
 
     /// <param name="db">The Gateway EF database this store reads and writes through.</param>
     /// <exception cref="ArgumentNullException">The database is null.</exception>
@@ -32,8 +49,35 @@ public sealed class WorkflowStore
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
+            _libraryTenant = ctx.ActiveTenant!;
             BuiltInWorkflowSeeder.Seed(ctx);
         }
+    }
+
+    /// <summary>A fresh context scoped to the shared library partition. Read-only by contract on
+    /// request paths (the seeder is the only library writer); caller disposes.</summary>
+    private GatewayDbContext CreateLibraryContext() => _db.CreateContext(new TenantId(_libraryTenant));
+
+    /// <summary>
+    /// Open the context for the partition that OWNS workflow <paramref name="key"/>: the shared
+    /// library when the id is a built-in there (the library always wins, so it can never be shadowed),
+    /// otherwise the ambient tenant's own partition. On self-host both are the same partition and this
+    /// degenerates to today's single read. Caller disposes.
+    /// </summary>
+    private GatewayDbContext OpenOwningContext(string key)
+    {
+        var library = CreateLibraryContext();
+        if (library.Workflows.AsNoTracking().Any(h => h.Id == key && h.IsBuiltIn))
+            return library;
+        library.Dispose();
+        return _db.CreateContext();
+    }
+
+    /// <summary>True when <paramref name="key"/> is a built-in living in the shared library.</summary>
+    private bool IsLibraryBuiltIn(string key)
+    {
+        using var library = CreateLibraryContext();
+        return library.Workflows.AsNoTracking().Any(h => h.Id == key && h.IsBuiltIn);
     }
 
     /// <summary>
@@ -46,30 +90,60 @@ public sealed class WorkflowStore
     {
         lock (_gate)
         {
-            using var ctx = _db.CreateContext();
-            var heads = ctx.Workflows.AsNoTracking()
-                .Where(h => !h.Archived && h.PublishedVersion != null)
-                .ToList()
-                .OrderBy(h => h.CreatedUtc)
-                .ThenBy(h => h.Id, StringComparer.Ordinal)
-                .ToList();
-            if (heads.Count == 0)
-                return Array.Empty<WorkflowDto>();
+            // The shared library first (built-ins, in their shipped creation order), then the ambient
+            // tenant's own workflows. On self-host both passes read the same partition, split by
+            // IsBuiltIn, so the served set and order are exactly what the single read served before.
+            var result = new List<WorkflowDto>();
+            var builtInIds = new HashSet<string>(StringComparer.Ordinal);
 
-            var ids = heads.Select(h => h.Id).ToList();
-            var versions = ctx.WorkflowVersions.AsNoTracking()
-                .Where(v => ids.Contains(v.WorkflowId) && v.Status == WorkflowVersionStatus.Published)
-                .ToList()
-                .ToDictionary(v => v.WorkflowId, StringComparer.Ordinal);
-            var draftIds = ctx.WorkflowVersions.AsNoTracking()
-                .Where(v => v.Status == WorkflowVersionStatus.Draft)
-                .Select(v => v.WorkflowId)
-                .ToHashSet(StringComparer.Ordinal);
+            using (var library = CreateLibraryContext())
+            {
+                foreach (var dto in ReadPublished(library, builtIns: true, exclude: null))
+                {
+                    builtInIds.Add(dto.Id);
+                    result.Add(dto);
+                }
+            }
 
-            return heads
-                .Select(h => ToDto(h, versions[h.Id], draftIds.Contains(h.Id)))
-                .ToList();
+            using (var ctx = _db.CreateContext())
+            {
+                // The exclusion is the shadow guard's belt-and-suspenders: a tenant row that somehow
+                // shares a built-in id (created before the refusal existed) must not double-list.
+                result.AddRange(ReadPublished(ctx, builtIns: false, exclude: builtInIds));
+            }
+
+            return result;
         }
+    }
+
+    /// <summary>One catalog pass over one partition: published heads (built-ins or user workflows),
+    /// projected from their published versions, in creation order.</summary>
+    private static IReadOnlyList<WorkflowDto> ReadPublished(
+        GatewayDbContext ctx, bool builtIns, HashSet<string>? exclude)
+    {
+        var heads = ctx.Workflows.AsNoTracking()
+            .Where(h => h.IsBuiltIn == builtIns && !h.Archived && h.PublishedVersion != null)
+            .ToList()
+            .Where(h => exclude is null || !exclude.Contains(h.Id))
+            .OrderBy(h => h.CreatedUtc)
+            .ThenBy(h => h.Id, StringComparer.Ordinal)
+            .ToList();
+        if (heads.Count == 0)
+            return Array.Empty<WorkflowDto>();
+
+        var ids = heads.Select(h => h.Id).ToList();
+        var versions = ctx.WorkflowVersions.AsNoTracking()
+            .Where(v => ids.Contains(v.WorkflowId) && v.Status == WorkflowVersionStatus.Published)
+            .ToList()
+            .ToDictionary(v => v.WorkflowId, StringComparer.Ordinal);
+        var draftIds = ctx.WorkflowVersions.AsNoTracking()
+            .Where(v => v.Status == WorkflowVersionStatus.Draft)
+            .Select(v => v.WorkflowId)
+            .ToHashSet(StringComparer.Ordinal);
+
+        return heads
+            .Select(h => ToDto(h, versions[h.Id], draftIds.Contains(h.Id)))
+            .ToList();
     }
 
     /// <summary>
@@ -84,7 +158,7 @@ public sealed class WorkflowStore
 
         lock (_gate)
         {
-            using var ctx = _db.CreateContext();
+            using var ctx = OpenOwningContext(key);
             var head = ctx.Workflows.AsNoTracking().FirstOrDefault(h => h.Id == key);
             if (head is null || head.Archived || head.PublishedVersion is null)
                 return null;
@@ -119,6 +193,13 @@ public sealed class WorkflowStore
 
         lock (_gate)
         {
+            // The library can never be shadowed: a tenant creating "mission" would otherwise mint a
+            // workflow the resolution rules could not serve (the built-in always wins by id).
+            if (IsLibraryBuiltIn(id))
+                throw new WorkflowConflictException(
+                    $"'{id}' is a built-in DevThrottle workflow; its id is reserved. Create your " +
+                    "workflow under a different id.");
+
             using var ctx = _db.CreateContext();
             if (ctx.Workflows.Any(h => h.Id == id))
                 throw new WorkflowConflictException($"A workflow with id '{id}' already exists.");
@@ -313,7 +394,7 @@ public sealed class WorkflowStore
         var key = NormalizeId(id);
         lock (_gate)
         {
-            using var ctx = _db.CreateContext();
+            using var ctx = OpenOwningContext(key);
             if (!ctx.Workflows.Any(h => h.Id == key))
                 return null;
             return ctx.WorkflowVersions.AsNoTracking()
@@ -340,7 +421,7 @@ public sealed class WorkflowStore
         var key = NormalizeId(id);
         lock (_gate)
         {
-            using var ctx = _db.CreateContext();
+            using var ctx = OpenOwningContext(key);
             var row = ctx.WorkflowVersions.AsNoTracking().FirstOrDefault(
                 v => v.WorkflowId == key && v.Version == version);
             if (row is null)
@@ -368,7 +449,7 @@ public sealed class WorkflowStore
         var key = NormalizeId(id);
         lock (_gate)
         {
-            using var ctx = _db.CreateContext();
+            using var ctx = OpenOwningContext(key);
             if (version is null)
             {
                 var head = ctx.Workflows.AsNoTracking().FirstOrDefault(h => h.Id == key);
@@ -391,7 +472,7 @@ public sealed class WorkflowStore
         var key = NormalizeId(id);
         lock (_gate)
         {
-            using var ctx = _db.CreateContext();
+            using var ctx = OpenOwningContext(key);
             var row = ResolveVersionRow(ctx, key, version);
             if (row is null)
                 return null;
