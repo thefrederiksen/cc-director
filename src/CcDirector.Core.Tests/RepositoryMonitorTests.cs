@@ -375,6 +375,112 @@ public class RepositoryMonitorTests
         }
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 2, ruling R2-5, boundary ordering 1): a single-repository
+    // recompute that started BEFORE a newer scan can only publish AFTER that scan removed the
+    // repository from the model. Newest compute wins at the publish: the older recompute's
+    // late publish is dropped - it must not resurrect the removed repository.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task RecomputeOne_StartedBeforeAScanThatRemovedTheRepository_CannotResurrectIt()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ccd-stale-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(System.IO.Path.Combine(dir, ".git"));
+        try
+        {
+            var paths = new List<string> { dir };
+            var recomputeEntered = new TaskCompletionSource();
+            var releaseRecompute = new TaskCompletionSource();
+            bool blockNextCompute = false;
+            var monitor = new RepositoryMonitor(
+                enumerate: _ => paths.ToList(),
+                compute: async (p, _, _) =>
+                {
+                    if (blockNextCompute)
+                    {
+                        blockNextCompute = false;
+                        recomputeEntered.SetResult();
+                        await releaseRecompute.Task; // the OLD recompute is slow
+                    }
+                    return Status(p);
+                });
+
+            await monitor.RescanAsync(new[] { "/r" }); // the model holds the repository
+            Assert.Single(monitor.Snapshot());
+
+            // The old recompute starts (it passed the IsScanning check - no scan is running yet)
+            // and blocks inside its compute.
+            blockNextCompute = true;
+            var oldRecompute = monitor.RecomputeOneAsync(dir);
+            await recomputeEntered.Task;
+
+            // A NEWER scan runs with roots that no longer contain the repository and removes it.
+            paths.Clear();
+            await monitor.RescanAsync(new[] { "/r" });
+            Assert.Empty(monitor.Snapshot());
+
+            // The old recompute finally returns and tries to publish - it must be dropped.
+            releaseRecompute.SetResult();
+            await oldRecompute;
+
+            Assert.Empty(monitor.Snapshot()); // not resurrected - the newer removal stands
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 2, ruling R2-5, boundary ordering 2 / deferral semantics):
+    // a recompute deferred during a scan keeps its ORIGINAL requester's token. When that
+    // requester cancels before the scan completes, the drain SKIPS the request instead of
+    // running it under the scan's token.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task RecomputeOne_DeferredThenCancelledByItsRequester_IsSkippedAtDrain()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ccd-defertok-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(System.IO.Path.Combine(dir, ".git"));
+        try
+        {
+            int computeCalls = 0;
+            var scanComputeEntered = new TaskCompletionSource();
+            var releaseScanCompute = new TaskCompletionSource();
+            var monitor = new RepositoryMonitor(
+                enumerate: _ => new[] { dir },
+                compute: async (p, _, _) =>
+                {
+                    int call = Interlocked.Increment(ref computeCalls);
+                    if (call == 1)
+                    {
+                        scanComputeEntered.SetResult();
+                        await releaseScanCompute.Task;
+                    }
+                    return Status(p);
+                });
+
+            var scanTask = monitor.RescanAsync(new[] { "/r" });
+            await scanComputeEntered.Task; // the scan is mid-compute
+
+            // The watcher defers a recompute, then its requester gives up before the scan ends.
+            using var requester = new CancellationTokenSource();
+            await monitor.RecomputeOneAsync(dir, requester.Token); // deferred - returns at once
+            requester.Cancel();
+
+            releaseScanCompute.SetResult();
+            await scanTask;
+
+            // The drain must SKIP the cancelled request - only the scan's one compute ran.
+            Assert.Equal(1, Volatile.Read(ref computeCalls));
+            Assert.Single(monitor.Snapshot()); // the scan's result stands untouched
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     private static string RunGit(string workingDir, params string[] args)
     {
         var psi = new System.Diagnostics.ProcessStartInfo

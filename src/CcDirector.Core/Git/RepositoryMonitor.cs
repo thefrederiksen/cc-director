@@ -16,9 +16,11 @@ namespace CcDirector.Core.Git;
 /// Consistency rules (issue devthrottle_internal#510, inspection round 1):
 /// - The monitor owns the live-session source (<see cref="LiveSessionsProvider"/>) and consults it
 ///   on EVERY compute, so no compute path can erase the in-use-by-session classification.
-/// - Computes are single-flight per repository, and a single-repository recompute requested while a
-///   full scan runs is deferred until the scan completes - so an older result can never overwrite a
-///   newer one.
+/// - Newest compute wins, enforced AT THE PUBLISH (inspection round 2, ruling R2-5): every compute
+///   takes a monotonically increasing start stamp, and a publish whose stamp is older than the one
+///   the model already recorded for that key - including a removal - is dropped. The per-repository
+///   semaphore (single-flight) and the defer-during-scan rule remain as efficiency devices; the
+///   stamp rule is the correctness device. Deferred recomputes keep their requester's own token.
 /// - A linked-worktree path is canonicalized to its PRIMARY checkout before computing, so a
 ///   worktree path never becomes its own model entry.
 /// </summary>
@@ -31,9 +33,25 @@ public sealed class RepositoryMonitor
     private readonly object _gate = new();
     private readonly Dictionary<string, RepositoryStatus> _byPath = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, SemaphoreSlim> _repoLocks = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, string> _deferredRecomputes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DeferredRecompute> _deferredRecomputes = new(StringComparer.OrdinalIgnoreCase);
     private CancellationTokenSource? _cts;
     private readonly string? _cachePath;
+
+    /// <summary>A single-repository recompute parked while a full scan runs - it keeps the
+    /// ORIGINAL requester's token, so a request whose requester gave up is skipped at drain.</summary>
+    private readonly record struct DeferredRecompute(string Path, CancellationToken Token);
+
+    /// <summary>
+    /// Monotonically increasing compute-start stamps (ruling R2-5): every compute - scan or
+    /// single recompute - takes a stamp when it STARTS, and the model records per key the stamp
+    /// of the newest accepted publish (a removal counts as a publish of "absent"). A publish
+    /// whose stamp is older than the recorded one is dropped, so an older compute can never
+    /// overwrite - or resurrect - a newer result, whatever order the publishes arrive in. The
+    /// per-repository semaphore remains an efficiency device (it avoids duplicate concurrent
+    /// walks); THIS rule is the correctness device.
+    /// </summary>
+    private long _computeStampCounter;
+    private readonly Dictionary<string, long> _publishStamps = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>True while a scan is in progress.</summary>
     public bool IsScanning { get; private set; }
@@ -184,17 +202,17 @@ public sealed class RepositoryMonitor
                 ct.ThrowIfCancellationRequested();
                 var repoLock = GetRepoLock(WorktreeReaperService.NormalizePath(path));
                 await repoLock.WaitAsync(ct);
-                RepositoryStatus enriched;
+                RepositoryStatus? published;
                 try
                 {
+                    var computeStamp = NextComputeStamp();
                     var sessions = await FetchLiveSessionsAsync(ct);
                     var status = await _compute(path, sessions, ct);
                     var key = WorktreeReaperService.NormalizePath(status.Path);
                     seen.Add(key);
                     lock (_gate)
                     {
-                        enriched = Enrich(status, _byPath.TryGetValue(key, out var prev) ? prev : null);
-                        _byPath[key] = enriched;
+                        published = PublishIfNewestLocked(key, status, computeStamp);
                         ScanDone++;
                     }
                 }
@@ -202,7 +220,8 @@ public sealed class RepositoryMonitor
                 {
                     repoLock.Release();
                 }
-                Upserted?.Invoke(enriched);
+                if (published != null)
+                    Upserted?.Invoke(published);
                 ProgressChanged?.Invoke();
             }
 
@@ -212,7 +231,13 @@ public sealed class RepositoryMonitor
             {
                 removed = _byPath.Where(kv => !seen.Contains(kv.Key)).Select(kv => kv.Value).ToList();
                 foreach (var r in removed)
-                    _byPath.Remove(WorktreeReaperService.NormalizePath(r.Path));
+                {
+                    var removedKey = WorktreeReaperService.NormalizePath(r.Path);
+                    _byPath.Remove(removedKey);
+                    // A removal is a publish of "absent" (ruling R2-5): stamp it, so an older
+                    // compute still in flight cannot publish late and resurrect the repository.
+                    _publishStamps[removedKey] = NextComputeStampLocked();
+                }
             }
             foreach (var r in removed)
                 Removed?.Invoke(r);
@@ -238,7 +263,8 @@ public sealed class RepositoryMonitor
         FileLog.Write($"[RepositoryMonitor] rescan completed: {ScanDone}/{ScanTotal}");
 
         // Run the single-repository recomputes that arrived while this scan held the model.
-        await DrainDeferredRecomputesAsync(externalCt);
+        // Each deferred request kept its ORIGINAL requester's token (ruling R2-5).
+        await DrainDeferredRecomputesAsync();
 
         ScanCompleted?.Invoke();
     }
@@ -256,7 +282,10 @@ public sealed class RepositoryMonitor
         {
             if (IsScanning)
             {
-                _deferredRecomputes[WorktreeReaperService.NormalizePath(repoPath)] = repoPath;
+                // The deferred request keeps ITS OWN token (ruling R2-5): if the requester gives
+                // up before the scan completes, the drain skips this request instead of running
+                // it under someone else's token.
+                _deferredRecomputes[WorktreeReaperService.NormalizePath(repoPath)] = new DeferredRecompute(repoPath, ct);
                 FileLog.Write($"[RepositoryMonitor] recompute deferred until the running scan completes: {repoPath}");
                 return;
             }
@@ -274,7 +303,12 @@ public sealed class RepositoryMonitor
             lock (_gate)
             {
                 if (_byPath.TryGetValue(key, out gone))
+                {
                     _byPath.Remove(key);
+                    // A removal is a publish of "absent" (ruling R2-5): stamp it so an older
+                    // compute still in flight cannot publish late and resurrect the entry.
+                    _publishStamps[key] = NextComputeStampLocked();
+                }
             }
             if (gone != null)
             {
@@ -301,27 +335,31 @@ public sealed class RepositoryMonitor
         var targetKey = WorktreeReaperService.NormalizePath(targetPath);
         var repoLock = GetRepoLock(targetKey);
         await repoLock.WaitAsync(ct);
-        RepositoryStatus enriched;
+        RepositoryStatus? published;
         try
         {
+            var computeStamp = NextComputeStamp();
             var sessions = await FetchLiveSessionsAsync(ct);
             var status = await _compute(targetPath, sessions, ct);
             lock (_gate)
-            {
-                enriched = Enrich(status, _byPath.TryGetValue(targetKey, out var prev) ? prev : null);
-                _byPath[targetKey] = enriched;
-            }
+                published = PublishIfNewestLocked(targetKey, status, computeStamp);
         }
         finally
         {
             repoLock.Release();
         }
-        FileLog.Write($"[RepositoryMonitor] recomputed one: {enriched.Name}");
-        Upserted?.Invoke(enriched);
+        if (published == null)
+            return; // a newer compute (or a newer removal) already ruled this key - dropped
+        FileLog.Write($"[RepositoryMonitor] recomputed one: {published.Name}");
+        Upserted?.Invoke(published);
         SaveCache();
     }
 
-    /// <summary>One compute at a time per repository - publishes can never land out of order.</summary>
+    /// <summary>
+    /// One compute at a time per repository. An EFFICIENCY device only (it avoids duplicate
+    /// concurrent walks of the same working tree) - publish ordering is guaranteed by the
+    /// compute-start stamps in <see cref="PublishIfNewestLocked"/>, not by this lock.
+    /// </summary>
     private SemaphoreSlim GetRepoLock(string key)
     {
         lock (_gate)
@@ -330,6 +368,36 @@ public sealed class RepositoryMonitor
                 _repoLocks[key] = sem = new SemaphoreSlim(1, 1);
             return sem;
         }
+    }
+
+    /// <summary>The next compute-start stamp. Callers must NOT hold <see cref="_gate"/>.</summary>
+    private long NextComputeStamp()
+    {
+        lock (_gate)
+            return NextComputeStampLocked();
+    }
+
+    /// <summary>The next compute-start stamp. Callers MUST hold <see cref="_gate"/>.</summary>
+    private long NextComputeStampLocked() => ++_computeStampCounter;
+
+    /// <summary>
+    /// THE one guarded publish path (ruling R2-5) - every write of a computed status into the
+    /// model, from the full scan and from single recomputes alike, goes through here. Newest
+    /// compute start wins: when the key already carries a newer stamp (a newer compute
+    /// published, or a newer scan removed the key), this publish is DROPPED and null is
+    /// returned. Callers must hold <see cref="_gate"/>.
+    /// </summary>
+    private RepositoryStatus? PublishIfNewestLocked(string key, RepositoryStatus status, long computeStamp)
+    {
+        if (_publishStamps.TryGetValue(key, out var newest) && newest > computeStamp)
+        {
+            FileLog.Write($"[RepositoryMonitor] publish dropped for {status.Path}: a newer compute (stamp {newest}) already ruled this key (this compute started at stamp {computeStamp})");
+            return null;
+        }
+        _publishStamps[key] = computeStamp;
+        var enriched = Enrich(status, _byPath.TryGetValue(key, out var prev) ? prev : null);
+        _byPath[key] = enriched;
+        return enriched;
     }
 
     private async Task<IReadOnlyList<LiveSessionRef>?> FetchLiveSessionsAsync(CancellationToken ct)
@@ -341,9 +409,9 @@ public sealed class RepositoryMonitor
             return _byPath.Values.SelectMany(s => s.Worktrees).Select(w => w.Path).ToList();
     }
 
-    private async Task DrainDeferredRecomputesAsync(CancellationToken ct)
+    private async Task DrainDeferredRecomputesAsync()
     {
-        List<string> deferred;
+        List<DeferredRecompute> deferred;
         lock (_gate)
         {
             if (_deferredRecomputes.Count == 0)
@@ -352,15 +420,28 @@ public sealed class RepositoryMonitor
             _deferredRecomputes.Clear();
         }
         FileLog.Write($"[RepositoryMonitor] running {deferred.Count} recompute(s) deferred during the scan");
-        foreach (var path in deferred)
+        foreach (var request in deferred)
         {
+            // The request runs under ITS OWN requester's token (ruling R2-5) - never the
+            // scan's. A requester that already gave up is skipped, not run on its behalf.
+            if (request.Token.IsCancellationRequested)
+            {
+                FileLog.Write($"[RepositoryMonitor] deferred recompute skipped - its requester cancelled: {request.Path}");
+                continue;
+            }
             try
             {
-                await RecomputeOneAsync(path, ct);
+                await RecomputeOneAsync(request.Path, request.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                FileLog.Write($"[RepositoryMonitor] deferred recompute cancelled by its requester: {request.Path}");
             }
             catch (Exception ex)
             {
-                FileLog.Write($"[RepositoryMonitor] deferred recompute FAILED for {path}: {ex.Message}");
+                // A deferred failure is an ERROR - the requester cannot observe it, so the log
+                // is the only place it can surface. Never absorbed into a success path.
+                FileLog.Write($"[RepositoryMonitor] ERROR: deferred recompute failed for {request.Path}: {ex}");
             }
         }
     }
