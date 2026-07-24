@@ -65,13 +65,27 @@ public sealed class RepoHistoryStore
         _path = path;
     }
 
-    /// <summary>Fold a pushed snapshot into today's rows. Idempotent per day; cheap on every push.</summary>
-    public void ObserveSnapshot(TenantId tenant, IReadOnlyList<RepoStatusDto> repositories, DateOnly? today = null)
+    /// <summary>
+    /// Fold a pushed snapshot into today's rows. Idempotent per day; cheap on every push.
+    ///
+    /// The snapshot is a Director's FULL current view, so it also RECONCILES: rows for a Director
+    /// whose repository disappeared from the snapshot (removed, moved, or renamed) are dropped for
+    /// today, rather than left in the dirty callouts and double-counted (issue 516). An empty
+    /// snapshot cannot name its Director from the rows, so <paramref name="reconcileDirectorId"/>
+    /// (the connection's bound Director) lets an all-removed day still be cleared.
+    /// </summary>
+    public void ObserveSnapshot(TenantId tenant, IReadOnlyList<RepoStatusDto> repositories, DateOnly? today = null, string? reconcileDirectorId = null)
     {
         var date = today ?? DateOnly.FromDateTime(DateTime.UtcNow);
         lock (_gate)
         {
             Load();
+
+            var presentKeys = new HashSet<string>(StringComparer.Ordinal);
+            var directorsInScope = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (!string.IsNullOrWhiteSpace(reconcileDirectorId))
+                directorsInScope.Add(reconcileDirectorId);
+
             foreach (var r in repositories)
             {
                 if (r.Provisional)
@@ -104,8 +118,27 @@ public sealed class RepoHistoryStore
                     WorktreesSafeToReap = r.WorktreesSafeToReap,
                     WorktreeBytes = r.WorktreeBytes,
                 };
-                _rows![Key(row)] = row;
+                var key = Key(row);
+                _rows![key] = row;
+                presentKeys.Add(key);
+                directorsInScope.Add(r.DirectorId);
             }
+
+            // Reconcile: drop THIS day's rows for the Directors we just heard from whose repository
+            // is no longer in the snapshot. Scoped to (tenant, today, Director) and to the Directors
+            // present here, so another Director's rows and other days are untouched.
+            if (directorsInScope.Count > 0)
+            {
+                var stale = _rows!.Values
+                    .Where(row => row.Tenant == tenant.Value
+                                  && row.Date == date
+                                  && directorsInScope.Contains(row.DirectorId)
+                                  && !presentKeys.Contains(Key(row)))
+                    .ToList();
+                foreach (var row in stale)
+                    _rows!.Remove(Key(row));
+            }
+
             Save();
         }
     }

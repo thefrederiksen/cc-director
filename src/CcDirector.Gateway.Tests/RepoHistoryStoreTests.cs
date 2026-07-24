@@ -262,6 +262,83 @@ public sealed class RepoHistoryStoreTests : IDisposable
         Assert.False(File.Exists(_path + ".tmp"), "the temp file must be gone after the swap");
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (issue 516): a full snapshot that no longer contains a repository must remove
+    // its row from today, not leave it in the dirty callouts and double-counted. The old observe
+    // only upserted the rows present and never reconciled the ones that disappeared.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public void Snapshot_ThatDropsARepo_RemovesItsRowFromToday()
+    {
+        var tenant = TenantId.Local;
+        var day = new DateOnly(2026, 07, 24);
+        var store = new RepoHistoryStore(_path);
+
+        store.ObserveSnapshot(tenant, new[] { Repo("a", worktrees: 5), Repo("b", worktrees: 3) }, day);
+        // The next push from the same Director no longer includes "b" (removed or moved).
+        store.ObserveSnapshot(tenant, new[] { Repo("a", worktrees: 5) }, day);
+
+        // Today's fleet total reflects only "a"; "b" is gone rather than double-counted.
+        Assert.Equal(5, store.WeeklyTrends(tenant, 1, day)[^1].MaxWorktrees);
+        Assert.Empty(store.DirtyOverThreshold(tenant, day)); // and not lingering as a callout
+    }
+
+    // A renamed/moved repository: the old path's row is dropped and only the new path counts.
+    [Fact]
+    public void Snapshot_RenamingARepo_DropsTheOldPathRow()
+    {
+        var tenant = TenantId.Local;
+        var day = new DateOnly(2026, 07, 24);
+        var store = new RepoHistoryStore(_path);
+
+        var oldPath = Repo("widget", worktrees: 5);
+        oldPath.Path = @"D:\repos\widget";
+        store.ObserveSnapshot(tenant, new[] { oldPath }, day);
+
+        var newPath = Repo("widget", worktrees: 5);
+        newPath.Path = @"D:\repos\widget-renamed";
+        store.ObserveSnapshot(tenant, new[] { newPath }, day);
+
+        // Only the new path counts - the old path is not left behind doubling the total.
+        Assert.Equal(5, store.WeeklyTrends(tenant, 1, day)[^1].MaxWorktrees);
+    }
+
+    // The all-removed case: an EMPTY snapshot carries no Director, so the bound Director id is
+    // passed explicitly to clear that Director's rows for the day.
+    [Fact]
+    public void EmptySnapshot_ClearsThatDirectorsRowsForTheDay()
+    {
+        var tenant = TenantId.Local;
+        var day = new DateOnly(2026, 07, 24);
+        var store = new RepoHistoryStore(_path);
+
+        store.ObserveSnapshot(tenant, new[] { Repo("a", worktrees: 5) }, day, reconcileDirectorId: "d1");
+        store.ObserveSnapshot(tenant, Array.Empty<RepoStatusDto>(), day, reconcileDirectorId: "d1");
+
+        Assert.Equal(0, store.WeeklyTrends(tenant, 1, day)[^1].MaxWorktrees);
+    }
+
+    // Reconciliation is scoped to the pushing Director: one Director dropping a repo never removes
+    // another Director's same-path row.
+    [Fact]
+    public void Reconciliation_DoesNotTouchAnotherDirectorsRows()
+    {
+        var tenant = TenantId.Local;
+        var day = new DateOnly(2026, 07, 24);
+        var store = new RepoHistoryStore(_path);
+
+        var fromD1 = Repo("widget", worktrees: 5);
+        var fromD2 = Repo("widget", worktrees: 3);
+        fromD2.DirectorId = "d2"; // same machine and path, different Director
+
+        store.ObserveSnapshot(tenant, new[] { fromD1 }, day, reconcileDirectorId: "d1");
+        store.ObserveSnapshot(tenant, new[] { fromD2 }, day, reconcileDirectorId: "d2");
+        // d1 pushes again without the repo - only d1's row clears; d2's survives.
+        store.ObserveSnapshot(tenant, Array.Empty<RepoStatusDto>(), day, reconcileDirectorId: "d1");
+
+        Assert.Equal(3, store.WeeklyTrends(tenant, 1, day)[^1].MaxWorktrees);
+    }
+
     [Fact]
     public void TenantPartition_TrendsNeverMix()
     {
