@@ -98,3 +98,11 @@ All new fixes have regression tests; Core-side ones revert-proofed and green. Ga
 build green; RUN pending a clear window (heavy Gateway-suite contention from other worktrees).
 - Re-running Codex on the updated diff (brescn4ph). Full Core+Avalonia suites (bt4c1ufal). Patient
   Gateway verification (ba8on8jex). Iterate Codex to PASS, then three-suite green, then merge.
+
+## Suite results on final tree (2026-07-24)
+- Core FULL: 3521 passed, 8 skipped, 0 failed (12m26s). GREEN.
+- Avalonia FULL: 291 passed, 0 failed. GREEN.
+- Gateway FULL: pending a contention-free window (other worktrees' Gateway suites hang concurrency).
+- Inspection round 2 now runs as a VISIBLE Director session "Repositories cleanup fixes - Inspector"
+  (id dbe3e897), writing its verdict to docs/reviews/codex-inspection-round2.md. (Owner corrected:
+  run agents as visible sessions, not background CLI - memory saved.)
