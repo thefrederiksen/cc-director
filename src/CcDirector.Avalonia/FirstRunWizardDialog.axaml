@@ -110,6 +110,18 @@
             <Setter Property="TextBlock.Foreground" Value="#16181D" />
             <Setter Property="TextBlock.TextDecorations" Value="Underline" />
         </Style>
+
+        <!-- The journey eyebrow: one short beat name above each screen's title, telling the
+             onboarding STORY (your workforce -> what we watch over -> ... -> the payoff) so every
+             ask reads as part of one narrative, not a form. -->
+        <Style Selector="TextBlock.eyebrow">
+            <Setter Property="Foreground" Value="#0066B8" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="LetterSpacing" Value="2" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="Margin" Value="0,0,0,8" />
+        </Style>
     </Window.Styles>
 
     <Grid Margin="44,32,44,24" RowDefinitions="Auto,*,Auto">
@@ -122,12 +134,34 @@
         <Grid Grid.Row="1">
 
             <!-- ===================== WELCOME ===================== -->
-            <StackPanel x:Name="WelcomePanel" IsVisible="False" Spacing="18"
+            <StackPanel x:Name="WelcomePanel" IsVisible="False" Spacing="16"
                         VerticalAlignment="Center">
                 <TextBlock Classes="wtitle" Text="Welcome to DevThrottle" />
                 <TextBlock Classes="wsub"
-                           Text="You are about three minutes from running your first coding agent. We will find your agents, learn where your code lives, and set up your morning report." />
-                <StackPanel Spacing="16" HorizontalAlignment="Center" Margin="0,20,0,0">
+                           Text="You are about three minutes from running your first coding agent. We will find your agents, learn where your code lives, and set up your morning report - the daily email that keeps your week honest." />
+
+                <!-- Founder note: two sentences collapsed, one quiet Read more. It must never
+                     delay the "Set me up" click - short by design. -->
+                <Border Background="#F5F6F8" BorderBrush="#E6E8EC" BorderThickness="1"
+                        CornerRadius="12" Padding="20,16" MaxWidth="540"
+                        HorizontalAlignment="Center" Margin="0,6,0,0">
+                    <StackPanel Spacing="8">
+                        <TextBlock FontSize="13.5" Foreground="#5A616B" TextWrapping="Wrap"
+                                   LineHeight="21"
+                                   Text="I built DevThrottle because running agents was never the hard part. The hard part was getting to Friday and realizing the week went to the wrong things. DevThrottle keeps the books - so that stops happening." />
+                        <TextBlock x:Name="FounderMoreText" FontSize="13.5" Foreground="#5A616B"
+                                   TextWrapping="Wrap" LineHeight="21" IsVisible="False"
+                                   Text="Agents multiply what you can build, and they multiply the bookkeeping with it: branches, worktrees, half-finished work, sessions waiting on you. DevThrottle carries that administration for you and reports back every morning with what happened and what needs your attention. Give it one small task today, then read tomorrow's report. That is the whole loop." />
+                        <Grid ColumnDefinitions="*,Auto">
+                            <TextBlock Grid.Column="0" FontSize="12.5" Foreground="#8A909A"
+                                       Text="- Soren, founder" VerticalAlignment="Center" />
+                            <Button Grid.Column="1" x:Name="FounderMoreLink" Classes="quietLink"
+                                    Content="Read more" Click="BtnFounderMore_Click" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <StackPanel Spacing="16" HorizontalAlignment="Center" Margin="0,10,0,0">
                     <Button x:Name="WelcomeSetupButton" Classes="primaryButton"
                             Content="Set me up" HorizontalAlignment="Center"
                             Click="BtnPrimary_Click" />
@@ -137,20 +171,21 @@
                 </StackPanel>
             </StackPanel>
 
-            <!-- ===================== AGENTS (interim: reuses the tool-detection scan) ===================== -->
-            <Grid x:Name="AgentsPanel" IsVisible="False" RowDefinitions="Auto,Auto,*,Auto">
-                <TextBlock Grid.Row="0" x:Name="AgentsTitle" Classes="wtitle"
+            <!-- ===================== AGENTS ===================== -->
+            <Grid x:Name="AgentsPanel" IsVisible="False" RowDefinitions="Auto,Auto,Auto,*,Auto">
+                <TextBlock Grid.Row="0" Classes="eyebrow" Text="YOUR WORKFORCE" />
+                <TextBlock Grid.Row="1" x:Name="AgentsTitle" Classes="wtitle"
                            Text="Your agents" Margin="0,0,0,10" />
-                <TextBlock Grid.Row="1" x:Name="AgentsStatusText" Classes="wsub"
+                <TextBlock Grid.Row="2" x:Name="AgentsStatusText" Classes="wsub"
                            Text="Scanning this machine for coding agents..." Margin="0,0,0,20" />
-                <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto"
+                <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto"
                               HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
                     <StackPanel x:Name="AgentsListPanel" Spacing="8" MaxWidth="560"
                                 HorizontalAlignment="Stretch" />
                 </ScrollViewer>
                 <!-- Zero-agents actions: install Claude Code right here, or defer it as a carried
                      to-do. Shown only in the empty state (the step that cannot be skipped). -->
-                <StackPanel Grid.Row="3" x:Name="AgentsEmptyActions" Spacing="12"
+                <StackPanel Grid.Row="4" x:Name="AgentsEmptyActions" Spacing="12"
                             IsVisible="False" Margin="0,16,0,0">
                     <Button x:Name="AgentsInstallButton" Classes="primaryButton"
                             Content="Install Claude Code for me" HorizontalAlignment="Center"
@@ -177,12 +212,52 @@
                 </StackPanel>
             </Grid>
 
+            <!-- ===================== CODE (where your repositories live) ===================== -->
+            <Grid x:Name="CodePanel" IsVisible="False" RowDefinitions="Auto,Auto,Auto,*,Auto">
+                <TextBlock Grid.Row="0" Classes="eyebrow" Text="WHAT WE WATCH OVER" />
+                <TextBlock Grid.Row="1" Classes="wtitle" Text="Where does your code live?" Margin="0,0,0,10" />
+                <TextBlock Grid.Row="2" Classes="wsub" Margin="0,0,0,22"
+                           Text="Pick the folder (or folders) where you keep your repositories. This is what DevThrottle keeps the books on - branches, worktrees, unmerged work - and where it offers you repos when you start an agent." />
+                <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
+                    <StackPanel MaxWidth="600" HorizontalAlignment="Stretch" Spacing="8">
+                        <StackPanel x:Name="CodeSuggestionsPanel" Spacing="8" />
+                        <TextBlock x:Name="CodeScanStatusText" Classes="hint"
+                                   HorizontalAlignment="Center" TextAlignment="Center"
+                                   Text="Checking the usual places for git repositories..." />
+                        <!-- The manual path: always present, works the same on Windows and macOS. -->
+                        <Border Background="#FFFFFF" BorderBrush="#E6E8EC" BorderThickness="1"
+                                CornerRadius="10" Padding="16,13">
+                            <Grid ColumnDefinitions="*,Auto">
+                                <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center">
+                                    <TextBlock Text="Somewhere else" FontSize="14" FontWeight="SemiBold"
+                                               Foreground="#16181D" />
+                                    <TextBlock Text="Add another base folder" FontSize="11"
+                                               Foreground="#8A909A" />
+                                </StackPanel>
+                                <Button Grid.Column="1" Classes="dialogButton" Content="Browse..."
+                                        Click="BtnBrowseCodeFolder_Click" VerticalAlignment="Center" />
+                            </Grid>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+                <!-- The proof number: how many repositories the added folders will surface. -->
+                <StackPanel Grid.Row="4" x:Name="CodeTotalPanel" IsVisible="False" Margin="0,14,0,0">
+                    <TextBlock x:Name="CodeTotalCount" FontSize="34" FontWeight="Bold"
+                               Foreground="#16181D" HorizontalAlignment="Center"
+                               FontFamily="Segoe UI Variable Display, Segoe UI, Inter" />
+                    <TextBlock Text="repositories will be available when you start an agent"
+                               FontSize="12.5" Foreground="#8A909A" HorizontalAlignment="Center" />
+                </StackPanel>
+            </Grid>
+
             <!-- ===================== SCREENSHOTS ===================== -->
-            <Grid x:Name="ScreenshotsPanel" IsVisible="False" RowDefinitions="Auto,Auto,*">
-                <TextBlock Grid.Row="0" Classes="wtitle" Text="Where do your screenshots go?" Margin="0,0,0,10" />
-                <TextBlock Grid.Row="1" Classes="wsub" Margin="0,0,0,26"
+            <Grid x:Name="ScreenshotsPanel" IsVisible="False" RowDefinitions="Auto,Auto,Auto,*">
+                <TextBlock Grid.Row="0" Classes="eyebrow" Text="SHOW, DON'T TYPE" />
+                <TextBlock Grid.Row="1" Classes="wtitle" Text="Where do your screenshots go?" Margin="0,0,0,10" />
+                <TextBlock Grid.Row="2" Classes="wsub" Margin="0,0,0,26"
                            Text="Snap a screen, then drag the screenshot straight onto an agent - the fastest way to show it exactly what you mean. DevThrottle watches one folder for new screenshots." />
-                <StackPanel Grid.Row="2" MaxWidth="600" Spacing="14" VerticalAlignment="Top"
+                <StackPanel Grid.Row="3" MaxWidth="600" Spacing="14" VerticalAlignment="Top"
                             HorizontalAlignment="Stretch">
 
                     <!-- The chosen folder, with a Change (browse) escape hatch. -->
@@ -220,11 +295,12 @@
             </Grid>
 
             <!-- ===================== GATEWAY (native, hosted-first per the mockup) ===================== -->
-            <Grid x:Name="GatewayPanel" IsVisible="False" RowDefinitions="Auto,Auto,*">
-                <TextBlock Grid.Row="0" Classes="wtitle" Text="Connect your gateway" Margin="0,0,0,10" />
-                <TextBlock Grid.Row="1" Classes="wsub" Margin="0,0,0,24"
+            <Grid x:Name="GatewayPanel" IsVisible="False" RowDefinitions="Auto,Auto,Auto,*">
+                <TextBlock Grid.Row="0" Classes="eyebrow" Text="WITH YOU EVERYWHERE" />
+                <TextBlock Grid.Row="1" Classes="wtitle" Text="Connect your gateway" Margin="0,0,0,10" />
+                <TextBlock Grid.Row="2" Classes="wsub" Margin="0,0,0,24"
                            Text="The gateway is what lets you check on your agents from your phone, use voice, and get your morning report. Signing in takes seconds." />
-                <Grid Grid.Row="2">
+                <Grid Grid.Row="3">
 
                     <!-- Choice view: one dominant hosted card (pre-selected), two quiet alternatives. -->
                     <StackPanel x:Name="GatewayChoiceView" MaxWidth="600" Spacing="14"
@@ -317,12 +393,54 @@
                 </Grid>
             </Grid>
 
+            <!-- ===================== MORNING REPORT (the promise screen) ===================== -->
+            <Grid x:Name="ReportPanel" IsVisible="False" RowDefinitions="Auto,Auto,Auto,*">
+                <TextBlock Grid.Row="0" Classes="eyebrow" Text="THE PAYOFF" />
+                <TextBlock Grid.Row="1" Classes="wtitle" Text="Tomorrow morning, we report back" Margin="0,0,0,10" />
+                <TextBlock Grid.Row="2" Classes="wsub" Margin="0,0,0,24"
+                           Text="Every morning DevThrottle emails you what happened, what needs your attention, and what it recommends - stale worktrees, unmerged branches, sessions waiting on you. So Friday never surprises you." />
+                <StackPanel Grid.Row="3" MaxWidth="520" Spacing="10" VerticalAlignment="Top"
+                            HorizontalAlignment="Stretch">
+                    <Border x:Name="ReportDailyCard" Cursor="Hand"
+                            Background="#FFFFFF" BorderBrush="#E6E8EC" BorderThickness="1"
+                            CornerRadius="10" Padding="16,13"
+                            PointerPressed="ReportDailyCard_Pressed">
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="Daily" FontSize="14" FontWeight="SemiBold" Foreground="#16181D" />
+                            <TextBlock Text="Every morning at 7:00, your time" FontSize="11" Foreground="#8A909A" />
+                        </StackPanel>
+                    </Border>
+                    <Border x:Name="ReportWeeklyCard" Cursor="Hand"
+                            Background="#FFFFFF" BorderBrush="#E6E8EC" BorderThickness="1"
+                            CornerRadius="10" Padding="16,13"
+                            PointerPressed="ReportWeeklyCard_Pressed">
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="Weekly" FontSize="14" FontWeight="SemiBold" Foreground="#16181D" />
+                            <TextBlock Text="Monday mornings only" FontSize="11" Foreground="#8A909A" />
+                        </StackPanel>
+                    </Border>
+                    <Border x:Name="ReportOffCard" Cursor="Hand"
+                            Background="#FFFFFF" BorderBrush="#E6E8EC" BorderThickness="1"
+                            CornerRadius="10" Padding="16,13"
+                            PointerPressed="ReportOffCard_Pressed">
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="No report" FontSize="14" FontWeight="SemiBold" Foreground="#16181D" />
+                            <TextBlock Text="You can turn it on later in Settings" FontSize="11" Foreground="#8A909A" />
+                        </StackPanel>
+                    </Border>
+                    <TextBlock x:Name="ReportGatewayNote" Classes="hint" IsVisible="False"
+                               HorizontalAlignment="Center" TextAlignment="Center" MaxWidth="480"
+                               Margin="0,6,0,0"
+                               Text="The report travels through your gateway. Connect one on the previous step - or any time in Settings - and it starts arriving." />
+                </StackPanel>
+            </Grid>
+
             <!-- ===================== DONE ===================== -->
             <StackPanel x:Name="DonePanel" IsVisible="False" Spacing="18"
                         VerticalAlignment="Center">
                 <TextBlock Classes="wtitle" Text="You are ready" />
                 <TextBlock Classes="wsub"
-                           Text="Everything is set. Start an agent on one of your repos - give it a small task and watch the card, not the terminal." />
+                           Text="Start an agent on one of your repos - give it a small task and watch the card, not the terminal. Tomorrow morning, DevThrottle reports back on how it went." />
                 <Border Background="#FFFFFF" BorderBrush="#E6E8EC" BorderThickness="1"
                         CornerRadius="12" Padding="4" MaxWidth="520" HorizontalAlignment="Center"
                         Margin="0,6,0,0">
