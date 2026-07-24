@@ -16,6 +16,7 @@ import { blobToWav16kMono } from "../dictation/wav";
 import { playClip } from "../carmode/audioPlayback";
 import { postCarModeWarmup, speakCarModeText, transcribeCarModeAudio } from "../carmode/carModeApi";
 import { gatewayErrorMessage } from "../api/client";
+import { reportClientError } from "../errors/reportClientError";
 import { assistantTurn } from "./assistantApi";
 import { appendEntry, awaitingConfirmation, type AssistantEntry } from "./transcript";
 
@@ -99,6 +100,11 @@ export function useAssistant(audioRef: RefObject<HTMLAudioElement | null>): UseA
   }, [abandonCapture]);
 
   const push = useCallback((entry: AssistantEntry) => {
+    // Enterprise logging rule: every error this screen SHOWS is also REPORTED - the on-screen text and
+    // the Gateway log can never disagree about what the user saw, and no one has to read a screen back.
+    if (entry.role === "error") {
+      reportClientError("assistant", typeof window !== "undefined" ? window.location.pathname : "", entry.text);
+    }
     setEntries((cur) => appendEntry(cur, entry));
   }, []);
 

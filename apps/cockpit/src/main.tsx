@@ -7,6 +7,7 @@ import { DeviceCallback } from "@devthrottle/client-core/auth/DeviceCallback";
 import { hasDeviceKey } from "@devthrottle/client-core/auth/deviceKey";
 import { configureEnrollment, COCKPIT_ENROLLMENT_PROFILE } from "@devthrottle/client-core/auth/enrollRequest";
 import { ensurePushSubscribed } from "@devthrottle/client-core/push/register";
+import { installGlobalErrorReporting } from "@devthrottle/client-core/errors/reportClientError";
 import { registerCockpitServiceWorker } from "./push/registerSw";
 import { AppShell } from "./AppShell";
 import { NotFound } from "./panes/NotFound";
@@ -65,6 +66,11 @@ ensureGatewayCookie();
 // instead of the retired /login token wall (issue #1088: a revoke returns the browser to the shared
 // sign-in flow, never to login.html).
 configureUnauthorizedRedirect(cockpitSignInRedirect);
+
+// The client error channel: uncaught browser errors and un-awaited promise failures are reported to
+// the Gateway (POST /client-errors) so they land in the server log - no error exists only in a user's
+// devtools console. Pages that handle and render errors report those explicitly at their call sites.
+installGlobalErrorReporting("cockpit");
 
 // Browser notifications (issue #1257): register the Cockpit's push service worker, then - only if the
 // user already granted notification permission on a previous visit - silently refresh this browser's
