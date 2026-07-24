@@ -73,23 +73,33 @@ public sealed class RepoHistoryStore
     /// <summary>
     /// Fold a pushed snapshot into today's rows. Idempotent per day; cheap on every push.
     ///
-    /// The snapshot is a Director's FULL current view, so it also RECONCILES: rows for a Director
-    /// whose repository disappeared from the snapshot (removed, moved, or renamed) are dropped for
-    /// today, rather than left in the dirty callouts and double-counted (issue 516). An empty
-    /// snapshot cannot name its Director from the rows, so <paramref name="reconcileDirectorId"/>
-    /// (the connection's bound Director) lets an all-removed day still be cleared.
+    /// <paramref name="directorId"/> is the AUTHORITATIVE Director bound to the pushing connection
+    /// (inspection): every row is stamped with it and reconciliation is scoped to it, so a payload
+    /// DirectorId can never make one Director rewrite or reconcile another Director's history.
+    ///
+    /// The snapshot is a Director's FULL current view, so a REAL observation also RECONCILES: rows
+    /// for that Director whose repository disappeared from the snapshot (removed, moved, or renamed)
+    /// are dropped for today, rather than left in the dirty callouts and double-counted (issue 516).
+    /// Reconciliation runs ONLY when the snapshot contains at least one accepted (non-provisional)
+    /// row (inspection): an empty or all-provisional push - a cold start before the first live scan,
+    /// a warm-cache push - must never be mistaken for "all repositories removed" and erase today's
+    /// verified history. The accepted cost is that an all-removed day is not auto-cleared until the
+    /// next real observation or the retention window; keeping a stale row beats erasing a true one.
     /// </summary>
-    public void ObserveSnapshot(TenantId tenant, IReadOnlyList<RepoStatusDto> repositories, DateOnly? today = null, string? reconcileDirectorId = null)
+    public void ObserveSnapshot(TenantId tenant, string directorId, IReadOnlyList<RepoStatusDto> repositories, DateOnly? today = null)
     {
+        if (string.IsNullOrWhiteSpace(directorId))
+        {
+            FileLog.Write("[RepoHistoryStore] ObserveSnapshot ignored - no bound Director id");
+            return; // the Director id is half the identity and the reconciliation scope
+        }
+
         var date = today ?? DateOnly.FromDateTime(DateTime.UtcNow);
         lock (_gate)
         {
             Load();
 
             var presentKeys = new HashSet<string>(StringComparer.Ordinal);
-            var directorsInScope = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (!string.IsNullOrWhiteSpace(reconcileDirectorId))
-                directorsInScope.Add(reconcileDirectorId);
 
             // Change detection (issue 516): every accepted push re-pushes the FULL snapshot, and on a
             // hosted Gateway this happens on a periodic cadence for every tenant. Rewriting the whole
@@ -106,11 +116,6 @@ public sealed class RepoHistoryStore
                     FileLog.Write($"[RepoHistoryStore] snapshot row without a path ignored (name={r.Name})");
                     continue; // the path IS the identity - a pathless row cannot be keyed
                 }
-                if (string.IsNullOrWhiteSpace(r.DirectorId))
-                {
-                    FileLog.Write($"[RepoHistoryStore] snapshot row without a Director id ignored (name={r.Name})");
-                    continue; // the Director id is part of the identity (ruling R2-9)
-                }
                 int dirtyDays = r.DirtySinceUtc is { } since && !r.IsClean
                     ? (int)Math.Max(0, (DateTime.UtcNow - since).TotalDays)
                     : 0;
@@ -119,7 +124,7 @@ public sealed class RepoHistoryStore
                     Tenant = tenant.Value,
                     Date = date,
                     MachineName = r.MachineName,
-                    DirectorId = r.DirectorId,
+                    DirectorId = directorId, // the BOUND Director, never the payload's r.DirectorId
                     Path = r.Path,
                     Name = r.Name,
                     UncommittedCount = r.UncommittedCount,
@@ -134,18 +139,17 @@ public sealed class RepoHistoryStore
                     changed = true;
                 _rows![key] = row;
                 presentKeys.Add(key);
-                directorsInScope.Add(r.DirectorId);
             }
 
-            // Reconcile: drop THIS day's rows for the Directors we just heard from whose repository
-            // is no longer in the snapshot. Scoped to (tenant, today, Director) and to the Directors
-            // present here, so another Director's rows and other days are untouched.
-            if (directorsInScope.Count > 0)
+            // Reconcile ONLY on a real observation (at least one accepted row). Drop THIS Director's
+            // rows for today whose repository is no longer present. Scoped to (tenant, today, bound
+            // Director), so another Director's rows and other days are untouched.
+            if (presentKeys.Count > 0)
             {
                 var stale = _rows!.Values
                     .Where(row => row.Tenant == tenant.Value
                                   && row.Date == date
-                                  && directorsInScope.Contains(row.DirectorId)
+                                  && string.Equals(row.DirectorId, directorId, StringComparison.OrdinalIgnoreCase)
                                   && !presentKeys.Contains(Key(row)))
                     .ToList();
                 foreach (var row in stale)
@@ -167,10 +171,18 @@ public sealed class RepoHistoryStore
                 FileLog.Write($"[RepoHistoryStore] pruned {expired.Count} row(s) older than {RetentionDays} days");
             }
 
-            if (changed)
-                Save();
+            // Persist when there is a logical change OR a previous save failed and is still pending
+            // (inspection): change detection compares in-memory rows, so a suppressed write failure
+            // would otherwise stay non-durable until some unrelated value changed. Retry until a save
+            // actually succeeds.
+            if (changed || _saveFailedPending)
+                _saveFailedPending = !Save();
         }
     }
+
+    /// <summary>True when the last <see cref="Save"/> failed and the in-memory state is not yet on
+    /// disk. Set under <see cref="_gate"/>; forces the next observation to retry the write.</summary>
+    private bool _saveFailedPending;
 
     /// <summary>Weekly trends for the last <paramref name="weeks"/> weeks (oldest first).</summary>
     public IReadOnlyList<RepoWeekTrend> WeeklyTrends(TenantId tenant, int weeks = 8, DateOnly? today = null)
@@ -301,7 +313,9 @@ public sealed class RepoHistoryStore
         return true;
     }
 
-    private void Save()
+    /// <summary>Persists the current rows atomically. Returns false if the write failed (the caller
+    /// keeps the state pending and retries on the next observation).</summary>
+    private bool Save()
     {
         try
         {
@@ -326,10 +340,12 @@ public sealed class RepoHistoryStore
                 File.Replace(tmp, _path, _path + ".bak");
             else
                 File.Move(tmp, _path);
+            return true;
         }
         catch (Exception ex)
         {
             FileLog.Write($"[RepoHistoryStore] save failed: {ex.Message}");
+            return false;
         }
     }
 }
