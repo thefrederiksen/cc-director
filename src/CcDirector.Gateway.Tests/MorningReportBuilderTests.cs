@@ -322,6 +322,37 @@ public sealed class MorningReportBuilderTests : IDisposable
     }
 
     [Fact]
+    public void An_open_wait_older_than_the_silence_bar_is_not_reported()
+    {
+        // The defect the first real hosted call exposed: nine rows aged 69-129 hours, every one a true
+        // statement about the ledger and a false statement about the owner's morning. A session that stops
+        // without an exit event leaves its wait open forever, so the age grows without bound and never
+        // resolves. After the bar the Gateway says nothing rather than something plausible.
+        var db = DbAs(Alice);
+        SeedSessionEvent(db, Alice, "long-gone", GovernanceEventState.WaitingOnHuman,
+            Now - MorningReportBuilder.WaitingReportMaxAge - TimeSpan.FromHours(1));
+
+        var report = NewBuilder(db).Build("alice@example.com", Alice, Window());
+
+        Assert.Empty(report.Attention);
+    }
+
+    [Fact]
+    public void A_wait_just_INSIDE_the_silence_bar_is_still_reported()
+    {
+        // The bar has two failure directions. Set it wrong the other way and every genuine multi-day wait
+        // vanishes from the email, which is the same silence dressed as tidiness.
+        var db = DbAs(Alice);
+        SeedSessionEvent(db, Alice, "still-waiting", GovernanceEventState.WaitingOnHuman,
+            Now - MorningReportBuilder.WaitingReportMaxAge + TimeSpan.FromHours(1));
+
+        var report = NewBuilder(db).Build("alice@example.com", Alice, Window());
+
+        var item = Assert.IsType<WaitingSessionAttentionDto>(Assert.Single(report.Attention));
+        Assert.Equal("still-waiting", item.Session);
+    }
+
+    [Fact]
     public void A_session_older_than_the_lookback_horizon_is_not_reported()
     {
         var db = DbAs(Alice);

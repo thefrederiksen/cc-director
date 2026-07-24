@@ -44,6 +44,24 @@ public sealed class MorningReportBuilder
     public const int WaitingLookbackDays = 30;
 
     /// <summary>
+    /// How recently a wait must have BEGUN for the report to say a session is waiting on you.
+    ///
+    /// This exists because of what the first real hosted call returned: nine waiting rows aged 69 to 129
+    /// hours, for sessions that had been gone for days, shown as raw identifiers because no Director was
+    /// connected to name them. Every one was a true statement ABOUT THE LEDGER - the last transition
+    /// recorded really was a wait - and every one was a false statement about the owner's morning.
+    ///
+    /// The ledger only records what it was told. A session that stops without an exit event leaves its
+    /// wait open forever, so "waiting since" ages without bound and never resolves. After two days of
+    /// silence the honest position is that the Gateway does not know what became of that session, and it
+    /// has no business asserting the session is waiting on a person today. So it says nothing about it.
+    ///
+    /// Deliberately a REPORTING bar, not a data change: the ledger keeps every transition, and
+    /// <see cref="WaitingLookbackDays"/> still bounds the scan. This only decides what the email claims.
+    /// </summary>
+    public static readonly TimeSpan WaitingReportMaxAge = TimeSpan.FromHours(48);
+
+    /// <summary>
     /// The hard ceiling on ledger rows the waiting scan materializes. Reaching it is LOGGED (never silent):
     /// a truncated scan can only under-report waiting sessions, and the log says so, so a short list is
     /// never mistaken for a quiet fleet.
@@ -235,6 +253,8 @@ public sealed class MorningReportBuilder
         var live = LiveSessionsById(tenant);
         var items = new List<MorningAttentionItemDto>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
+        // Counted and logged, never silently dropped: a short waiting list must be explainable.
+        var staleWaits = 0;
 
         foreach (var row in rows)
         {
@@ -245,6 +265,15 @@ public sealed class MorningReportBuilder
             if (row.State != GovernanceEventState.WaitingOnHuman &&
                 row.State != GovernanceEventState.WaitingOnPermission)
                 continue;
+
+            // The silence bar. An open wait older than this is not reported at all - see
+            // WaitingReportMaxAge for why a true statement about the ledger is the wrong thing to put
+            // in a person's inbox.
+            if (now - DateTime.SpecifyKind(row.OccurredUtc, DateTimeKind.Utc) > WaitingReportMaxAge)
+            {
+                staleWaits++;
+                continue;
+            }
 
             // A session the Gateway can currently see is judged on what it can see: one that is HELD
             // (snoozed) was deliberately parked by the owner and is not "waiting on you" this morning, and
@@ -267,6 +296,11 @@ public sealed class MorningReportBuilder
                 AgeHours = Math.Round(Math.Max(0, (now - since).TotalHours), 1),
             });
         }
+
+        if (staleWaits > 0)
+            FileLog.Write($"[MorningReportBuilder] WaitingSessions: {staleWaits} open wait(s) older than " +
+                          $"{WaitingReportMaxAge.TotalHours:0}h were NOT reported for tenant={tenant.ToLogString()} - " +
+                          "the Gateway has not heard about those sessions since, so it does not claim they are waiting.");
 
         // Longest wait first - the row the owner most needs to see is the one at the top of the email.
         items.Sort((a, b) => ((WaitingSessionAttentionDto)b).AgeHours.CompareTo(((WaitingSessionAttentionDto)a).AgeHours));
