@@ -212,6 +212,26 @@
                 </StackPanel>
             </Grid>
 
+            <!-- ===================== TOOLS (the toolbelt, maintained automatically) ===================== -->
+            <Grid x:Name="ToolsPanel" IsVisible="False" RowDefinitions="Auto,Auto,Auto,Auto,*,Auto">
+                <TextBlock Grid.Row="0" Classes="eyebrow" Text="YOUR TOOLBELT" />
+                <TextBlock Grid.Row="1" x:Name="ToolsTitle" Classes="wtitle"
+                           Text="Tools, maintained for you" Margin="0,0,0,10" />
+                <TextBlock Grid.Row="2" Classes="wsub" Margin="0,0,0,10"
+                           Text="DevThrottle ships command tools you and your agents use every day - and it installs and updates them itself. You never run an updater." />
+                <TextBlock Grid.Row="3" x:Name="ToolsStatusText" FontSize="13" FontWeight="SemiBold"
+                           Foreground="#1A7F37" HorizontalAlignment="Center" TextAlignment="Center"
+                           Margin="0,0,0,14" Text="" />
+                <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
+                    <StackPanel x:Name="ToolsListPanel" Spacing="6" MaxWidth="600"
+                                HorizontalAlignment="Stretch" />
+                </ScrollViewer>
+                <Button Grid.Row="5" Classes="quietLink" Content="What these tools can do"
+                        HorizontalAlignment="Center" Margin="0,10,0,0"
+                        Click="BtnToolsDocs_Click" />
+            </Grid>
+
             <!-- ===================== CODE (where your repositories live) ===================== -->
             <Grid x:Name="CodePanel" IsVisible="False" RowDefinitions="Auto,Auto,Auto,*,Auto">
                 <TextBlock Grid.Row="0" Classes="eyebrow" Text="WHAT WE WATCH OVER" />

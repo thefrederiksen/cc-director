@@ -123,11 +123,14 @@ public class FirstRunWizardModelTests
     }
 
     [Fact]
-    public void CreateFull_HasAllSevenStepsInCanonicalOrder()
+    public void CreateFull_HasAllEightStepsInCanonicalOrder()
     {
         var model = FirstRunWizardModel.CreateFull();
         Assert.Equal(FirstRunWizardModel.CanonicalOrder, model.Steps);
-        Assert.Equal(7, model.Count);
+        Assert.Equal(8, model.Count);
+
+        // Tools sits right after Agents: workforce first, then their toolbelt.
+        Assert.Equal(WizardStep.Tools, model.Steps[2]);
     }
 
     [Fact]

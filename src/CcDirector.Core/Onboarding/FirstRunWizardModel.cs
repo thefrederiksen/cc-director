@@ -13,6 +13,7 @@ public enum WizardStep
 {
     Welcome,
     Agents,
+    Tools,
     Code,
     Screenshots,
     Gateway,
@@ -55,6 +56,7 @@ public sealed class FirstRunWizardModel
     {
         WizardStep.Welcome,
         WizardStep.Agents,
+        WizardStep.Tools,
         WizardStep.Code,
         WizardStep.Screenshots,
         WizardStep.Gateway,
