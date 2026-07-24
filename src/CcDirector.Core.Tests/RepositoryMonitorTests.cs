@@ -643,6 +643,109 @@ public class RepositoryMonitorTests
     }
 
     // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 3, ruling R3-4a): absence is ALWAYS stamped, whether or not
+    // a model row exists. A FIRST-TIME compute in flight (the model has no row yet) must not
+    // publish a repository that a newer gone-path check already saw vanish - before the fix the
+    // gone path wrote a tombstone only when the model held the key, so the vanished repository
+    // was resurrected by the older compute's late publish.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task RecomputeOne_FirstTimeComputeInFlight_CannotPublishARepositoryANewerCheckSawVanish()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ccd-firstgone-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(System.IO.Path.Combine(dir, ".git"));
+        try
+        {
+            var computeEntered = new TaskCompletionSource();
+            var releaseCompute = new TaskCompletionSource();
+            var monitor = new RepositoryMonitor(
+                enumerate: _ => Array.Empty<string>(),
+                compute: async (p, _, _) =>
+                {
+                    computeEntered.TrySetResult();
+                    await releaseCompute.Task; // the FIRST-TIME compute is slow
+                    return Status(p);
+                }) { LiveSessionsProvider = NoSessions };
+
+            // The model is EMPTY - this is the repository's first-ever compute, and it blocks.
+            var firstCompute = monitor.RecomputeOneAsync(dir);
+            await computeEntered.Task;
+
+            // The repository vanishes, and a NEWER check observes it gone (no model row exists).
+            Directory.Delete(System.IO.Path.Combine(dir, ".git"), recursive: true);
+            await monitor.RecomputeOneAsync(dir);
+
+            // The older first-time compute finally publishes - it must be dropped.
+            releaseCompute.SetResult();
+            await firstCompute;
+
+            Assert.Empty(monitor.Snapshot()); // the vanished repository was never resurrected
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 3, ruling R3-4b): eviction never drops stamp state for a key
+    // whose semaphore is currently held - a held semaphore is proof a compute is still in
+    // flight. Before the fix the removal stamp was evicted after one further completed scan,
+    // and the still-running compute could then publish and resurrect the removed repository.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task RecomputeOne_HeldAcrossTwoCompletedScans_CannotResurrectTheRemovedRepository()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ccd-twoscan-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(System.IO.Path.Combine(dir, ".git"));
+        try
+        {
+            var paths = new List<string> { dir };
+            var recomputeEntered = new TaskCompletionSource();
+            var releaseRecompute = new TaskCompletionSource();
+            bool blockNextCompute = false;
+            var monitor = new RepositoryMonitor(
+                enumerate: _ => paths.ToList(),
+                compute: async (p, _, _) =>
+                {
+                    if (blockNextCompute)
+                    {
+                        blockNextCompute = false;
+                        recomputeEntered.SetResult();
+                        await releaseRecompute.Task; // the OLD compute stays in flight
+                    }
+                    return Status(p);
+                }) { LiveSessionsProvider = NoSessions };
+
+            await monitor.RescanAsync(new[] { "/r" }); // the model holds the repository
+            Assert.Single(monitor.Snapshot());
+
+            // The old recompute starts and blocks inside its compute, holding the semaphore.
+            blockNextCompute = true;
+            var oldRecompute = monitor.RecomputeOneAsync(dir);
+            await recomputeEntered.Task;
+
+            // Scan one removes the repository (and stamps the removal). Scan two completes with
+            // the key absent and not removed by THAT scan - the eviction sweep must still keep
+            // the removal stamp, because the key's semaphore is held.
+            paths.Clear();
+            await monitor.RescanAsync(new[] { "/r" });
+            Assert.Empty(monitor.Snapshot());
+            await monitor.RescanAsync(new[] { "/r" });
+
+            // The old compute finally publishes - it must still be dropped.
+            releaseRecompute.SetResult();
+            await oldRecompute;
+
+            Assert.Empty(monitor.Snapshot()); // absent stays absent, two scans later too
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
     // REGRESSION (inspection round 2, ruling R2-8): scanning without a live-session source is a
     // programming error and fails LOUDLY. An unwired monitor used to silently publish
     // session-blind safety classifications - an occupied worktree could be marked safe to reap.

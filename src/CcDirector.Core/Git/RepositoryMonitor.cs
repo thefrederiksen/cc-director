@@ -336,12 +336,12 @@ public sealed class RepositoryMonitor
             lock (_gate)
             {
                 if (_byPath.TryGetValue(key, out gone))
-                {
                     _byPath.Remove(key);
-                    // A removal is a publish of "absent" (ruling R2-5): stamp it so an older
-                    // compute still in flight cannot publish late and resurrect the entry.
-                    _publishStamps[key] = NextComputeStampLocked();
-                }
+                // Absence is ALWAYS stamped (ruling R3-4a) - whether or not a model row exists.
+                // A FIRST-TIME compute can be in flight for this key with no row published yet;
+                // without a tombstone its later publish would create the very repository this
+                // newer check just saw vanish. A removal is a publish of "absent" (ruling R2-5).
+                _publishStamps[key] = NextComputeStampLocked();
             }
             if (gone != null)
             {
@@ -415,7 +415,9 @@ public sealed class RepositoryMonitor
     ///
     /// Publish stamps are evicted for keys neither in the model nor removed by THIS scan: a
     /// removal stamp must survive until the next completed scan so it can still drop a late
-    /// publish from a compute that started before the removal.
+    /// publish from a compute that started before the removal. A stamp whose key's semaphore is
+    /// currently HELD is never evicted (ruling R3-4b) - the held semaphore proves a compute is
+    /// still in flight, and its tombstone must outlive that compute whatever the scan count.
     /// </summary>
     private void EvictStaleComputeState(IReadOnlySet<string> removedThisScan)
     {
@@ -434,6 +436,12 @@ public sealed class RepositoryMonitor
             foreach (var key in _publishStamps.Keys.ToList())
             {
                 if (_byPath.ContainsKey(key) || removedThisScan.Contains(key))
+                    continue;
+                // A held semaphore is proof a compute is still in flight for this key (ruling
+                // R3-4b): its stamp - a removal tombstone in particular - must survive until
+                // that compute has published and been dropped, however many scans complete in
+                // between. Eviction never removes stamp state out from under a live compute.
+                if (_repoLocks.TryGetValue(key, out var heldCheck) && heldCheck.CurrentCount == 0)
                     continue;
                 _publishStamps.Remove(key);
                 evictedStamps++;
