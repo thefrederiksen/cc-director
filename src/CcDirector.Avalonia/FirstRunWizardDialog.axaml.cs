@@ -13,8 +13,11 @@ using Avalonia.Media;
 using CcDirector.Core.Agents;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.GatewayConnection;
+using System.Text.Json.Nodes;
+using Avalonia.Platform.Storage;
 using CcDirector.Core.Onboarding;
 using CcDirector.Core.Settings;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CcDirector.Setup.Engine;
 
@@ -59,6 +62,12 @@ public partial class FirstRunWizardDialog : Window
     // The existing join-an-existing-gateway flow, embedded only behind the self-hosted advanced path.
     private Controls.GatewayConnectionPanel? _gatewayPanel;
 
+    // Screenshots step: the folder the user is about to confirm, its plain-English provenance, and
+    // the live take-a-screenshot watch.
+    private string? _shotsSelectedPath;
+    private bool _shotsDetectRan;
+    private CancellationTokenSource? _shotsWatchCts;
+
     // True once the completion marker has been written, so OnClosed does not write it twice.
     private bool _marked;
 
@@ -76,13 +85,13 @@ public partial class FirstRunWizardDialog : Window
         FileLog.Write("[FirstRunWizardDialog] Constructor: initializing");
         _options = options ?? throw new ArgumentNullException(nameof(options));
 
-        // The steps present in THIS release: the two bookends the shell ships, plus the interim
-        // Agents and Gateway steps that reuse existing controls. Code, Screenshots and Morning report
-        // are absent until their own issues land; the model tolerates the shorter list.
+        // The steps present in THIS release. Code and Morning report are absent until their own
+        // issues land; the model tolerates the shorter list.
         _model = new FirstRunWizardModel(new[]
         {
             WizardStep.Welcome,
             WizardStep.Agents,
+            WizardStep.Screenshots,
             WizardStep.Gateway,
             WizardStep.Done,
         });
@@ -136,8 +145,13 @@ public partial class FirstRunWizardDialog : Window
 
         WelcomePanel.IsVisible = step == WizardStep.Welcome;
         AgentsPanel.IsVisible = step == WizardStep.Agents;
+        ScreenshotsPanel.IsVisible = step == WizardStep.Screenshots;
         GatewayPanel.IsVisible = step == WizardStep.Gateway;
         DonePanel.IsVisible = step == WizardStep.Done;
+
+        // Leaving the Screenshots step ends any take-a-screenshot watch.
+        if (step != WizardStep.Screenshots)
+            CancelScreenshotWatch();
 
         RefreshDots();
 
@@ -163,6 +177,15 @@ public partial class FirstRunWizardDialog : Window
                 ConfigureStepSkip();
                 if (!_agentScanRan)
                     _ = ScanAgentsAsync();
+                break;
+
+            case WizardStep.Screenshots:
+                PrimaryButton.Content = "Use this folder";
+                PrimaryButton.IsVisible = true;
+                PrimaryButton.IsEnabled = _shotsSelectedPath is not null;
+                ConfigureStepSkip();
+                if (!_shotsDetectRan)
+                    _ = DetectScreenshotsForWizardAsync();
                 break;
 
             case WizardStep.Gateway:
@@ -202,6 +225,11 @@ public partial class FirstRunWizardDialog : Window
             {
                 case WizardStep.Agents:
                     await AcceptAgentsAsync();
+                    Advance();
+                    break;
+
+                case WizardStep.Screenshots:
+                    await SaveScreenshotsFolderAsync();
                     Advance();
                     break;
 
@@ -570,6 +598,158 @@ public partial class FirstRunWizardDialog : Window
         Advance();
     }
 
+    // ---- Screenshots step --------------------------------------------------------------------------
+
+    /// <summary>
+    /// Detect where this machine's screenshots land (Windows known folder / OneDrive / Pictures on
+    /// Windows 10 and 11; the screencapture setting or Desktop on macOS) and present the best
+    /// answer with its provenance and image count as proof.
+    /// </summary>
+    private async Task DetectScreenshotsForWizardAsync()
+    {
+        FileLog.Write("[FirstRunWizardDialog] DetectScreenshotsForWizardAsync");
+        _shotsDetectRan = true;
+        try
+        {
+            var best = await Task.Run(() => ScreenshotLocator.DetectCandidates().FirstOrDefault());
+            if (best is not null)
+            {
+                var count = await Task.Run(() => ScreenshotLocator.CountImages(best.Path));
+                SetScreenshotsFolder(best.Path, best.Provenance, count);
+            }
+            else
+            {
+                ShotsPathText.Text = "No screenshots folder found";
+                ShotsProvenanceText.Text =
+                    "We could not detect where your screenshots go. Browse to the folder, or take a screenshot and we'll find where it lands.";
+                if (_model.Current == WizardStep.Screenshots)
+                    PrimaryButton.IsEnabled = false;
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[FirstRunWizardDialog] DetectScreenshotsForWizardAsync FAILED: {ex.Message}");
+            ShotsPathText.Text = "No screenshots folder found";
+            ShotsProvenanceText.Text = $"Detection failed: {ex.Message}";
+        }
+    }
+
+    /// <summary>Adopt a folder as the screenshots choice and render its provenance + proof line.</summary>
+    private void SetScreenshotsFolder(string path, string provenance, int imageCount)
+    {
+        _shotsSelectedPath = path;
+        ShotsPathText.Text = path;
+        var proof = imageCount switch
+        {
+            0 => "no images in it yet",
+            1 => "1 image in it",
+            _ => $"{imageCount} images in it",
+        };
+        ShotsProvenanceText.Text = $"{provenance} - {proof}.";
+        if (_model.Current == WizardStep.Screenshots)
+            PrimaryButton.IsEnabled = true;
+    }
+
+    private async void BtnBrowseScreenshots_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[FirstRunWizardDialog] BtnBrowseScreenshots_Click");
+        try
+        {
+            var result = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+            {
+                Title = "Select your screenshots folder",
+                AllowMultiple = false,
+            });
+            if (result.Count > 0)
+            {
+                CancelScreenshotWatch();
+                var path = result[0].Path.LocalPath;
+                var count = await Task.Run(() => ScreenshotLocator.CountImages(path));
+                SetScreenshotsFolder(path, "Chosen by you", count);
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[FirstRunWizardDialog] BtnBrowseScreenshots_Click FAILED: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// The certainty trick: watch every plausible screenshot location, ask the user to press their
+    /// normal shortcut, and adopt whichever folder the new image lands in. Works the same on
+    /// Windows 10, Windows 11, and macOS because it observes the OS instead of guessing.
+    /// </summary>
+    private async void BtnWatchScreenshot_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[FirstRunWizardDialog] BtnWatchScreenshot_Click");
+        try
+        {
+            ShotsWatchIdle.IsVisible = false;
+            ShotsWatchActive.IsVisible = true;
+            ShotsWatchText.Text = OperatingSystem.IsMacOS()
+                ? "Press Shift+Cmd+3 (or your usual screenshot shortcut) now - we are watching for the new file..."
+                : "Press Win+PrtScn (or your usual screenshot shortcut) now - we are watching for the new file...";
+
+            _shotsWatchCts?.Cancel();
+            _shotsWatchCts = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+
+            var roots = await Task.Run(() => ScreenshotCaptureWatcher.WatchRoots());
+            if (roots.Count == 0)
+            {
+                ShotsWatchText.Text = "No folders to watch on this machine - browse to the folder instead.";
+                return;
+            }
+
+            var landed = await new ScreenshotCaptureWatcher().WaitForNewScreenshotAsync(roots, _shotsWatchCts.Token);
+            if (landed is not null)
+            {
+                var count = await Task.Run(() => ScreenshotLocator.CountImages(landed));
+                SetScreenshotsFolder(landed, "Detected from the screenshot you just took", count);
+            }
+            CancelScreenshotWatch();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[FirstRunWizardDialog] BtnWatchScreenshot_Click FAILED: {ex.Message}");
+            CancelScreenshotWatch();
+        }
+    }
+
+    private void BtnCancelWatchScreenshot_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[FirstRunWizardDialog] BtnCancelWatchScreenshot_Click");
+        CancelScreenshotWatch();
+    }
+
+    /// <summary>End any live watch and restore the idle affordance.</summary>
+    private void CancelScreenshotWatch()
+    {
+        _shotsWatchCts?.Cancel();
+        _shotsWatchCts = null;
+        if (ShotsWatchActive.IsVisible)
+        {
+            ShotsWatchActive.IsVisible = false;
+            ShotsWatchIdle.IsVisible = true;
+        }
+    }
+
+    /// <summary>Persist the confirmed folder as the screenshots source (same key Settings writes).</summary>
+    private async Task SaveScreenshotsFolderAsync()
+    {
+        if (_shotsSelectedPath is null)
+        {
+            FileLog.Write("[FirstRunWizardDialog] SaveScreenshotsFolderAsync: nothing selected");
+            return;
+        }
+
+        var path = _shotsSelectedPath;
+        FileLog.Write($"[FirstRunWizardDialog] SaveScreenshotsFolderAsync: {path}");
+        await Task.Run(() => CcDirectorConfigService.MergePatch(new JsonObject
+        {
+            ["screenshots"] = new JsonObject { ["source_directory"] = path },
+        }));
+    }
+
     // ---- Gateway step (native, hosted-first) -------------------------------------------------------
 
     /// <summary>Paint the three choice cards and the primary CTA from the current selection.</summary>
@@ -754,6 +934,13 @@ public partial class FirstRunWizardDialog : Window
                     : "Add one from Settings > Agents",
                 done: false));
 
+        // Screenshots row.
+        if (_shotsSelectedPath is not null)
+            DoneReceiptPanel.Children.Add(ReceiptRow("Screenshots folder set", _shotsSelectedPath, done: true));
+        else
+            DoneReceiptPanel.Children.Add(ReceiptRow(
+                "Screenshots folder", "Set it any time in Settings to drag screenshots straight to agents", done: false));
+
         // Gateway row.
         var gatewayUrl = GatewayConfig.Load().Url;
         if (!string.IsNullOrWhiteSpace(gatewayUrl))
@@ -835,6 +1022,7 @@ public partial class FirstRunWizardDialog : Window
     {
         _hostedEnrollCts?.Cancel();
         _claudeInstallCts?.Cancel();
+        _shotsWatchCts?.Cancel();
         if (!_marked)
         {
             FileLog.Write("[FirstRunWizardDialog] OnClosed: writing completion marker (window closed without finishing)");

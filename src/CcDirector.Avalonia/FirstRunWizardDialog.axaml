@@ -177,6 +177,48 @@
                 </StackPanel>
             </Grid>
 
+            <!-- ===================== SCREENSHOTS ===================== -->
+            <Grid x:Name="ScreenshotsPanel" IsVisible="False" RowDefinitions="Auto,Auto,*">
+                <TextBlock Grid.Row="0" Classes="wtitle" Text="Where do your screenshots go?" Margin="0,0,0,10" />
+                <TextBlock Grid.Row="1" Classes="wsub" Margin="0,0,0,26"
+                           Text="Snap a screen, then drag the screenshot straight onto an agent - the fastest way to show it exactly what you mean. DevThrottle watches one folder for new screenshots." />
+                <StackPanel Grid.Row="2" MaxWidth="600" Spacing="14" VerticalAlignment="Top"
+                            HorizontalAlignment="Stretch">
+
+                    <!-- The chosen folder, with a Change (browse) escape hatch. -->
+                    <Border Background="#F5F6F8" BorderBrush="#E6E8EC" BorderThickness="1"
+                            CornerRadius="12" Padding="16,13">
+                        <Grid ColumnDefinitions="*,Auto">
+                            <TextBlock Grid.Column="0" x:Name="ShotsPathText"
+                                       FontFamily="Consolas, Cascadia Mono, monospace" FontSize="13.5"
+                                       Foreground="#16181D" VerticalAlignment="Center"
+                                       TextTrimming="CharacterEllipsis"
+                                       Text="Looking for your screenshots folder..." />
+                            <Button Grid.Column="1" Classes="dialogButton" Content="Change..."
+                                    Click="BtnBrowseScreenshots_Click" Margin="12,0,0,0" />
+                        </Grid>
+                    </Border>
+
+                    <!-- Provenance + proof line: WHERE this answer came from and how many images live there. -->
+                    <TextBlock x:Name="ShotsProvenanceText" Classes="hint"
+                               HorizontalAlignment="Center" TextAlignment="Center" MaxWidth="540" />
+
+                    <!-- The certainty trick: press the normal screenshot shortcut; we watch where it lands. -->
+                    <StackPanel x:Name="ShotsWatchIdle" HorizontalAlignment="Center">
+                        <Button Classes="quietLink" Content="Not sure? Take a screenshot and we'll find it"
+                                Click="BtnWatchScreenshot_Click" />
+                    </StackPanel>
+                    <StackPanel x:Name="ShotsWatchActive" IsVisible="False" Spacing="8"
+                                HorizontalAlignment="Center">
+                        <TextBlock x:Name="ShotsWatchText" FontSize="13.5" Foreground="#0066B8"
+                                   FontWeight="SemiBold" TextAlignment="Center" TextWrapping="Wrap"
+                                   MaxWidth="480" />
+                        <Button Classes="quietLink" Content="Stop watching" HorizontalAlignment="Center"
+                                Click="BtnCancelWatchScreenshot_Click" />
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+
             <!-- ===================== GATEWAY (native, hosted-first per the mockup) ===================== -->
             <Grid x:Name="GatewayPanel" IsVisible="False" RowDefinitions="Auto,Auto,*">
                 <TextBlock Grid.Row="0" Classes="wtitle" Text="Connect your gateway" Margin="0,0,0,10" />
