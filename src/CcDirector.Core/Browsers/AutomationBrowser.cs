@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace CcDirector.Core.Browsers;
 
 /// <summary>
@@ -37,6 +39,7 @@ public sealed record AutomationBrowser(
 /// The lifecycle state of an <see cref="AutomationBrowser"/>, folded ONCE here so every reader (CLI
 /// table, and later the rail UI) renders the same verdict verbatim rather than re-deriving it.
 /// </summary>
+[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum AutomationBrowserStatus
 {
     /// <summary>The browser's debug port is not answering - the browser is not running.</summary>

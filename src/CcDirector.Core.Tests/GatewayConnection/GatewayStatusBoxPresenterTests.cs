@@ -226,6 +226,46 @@ public sealed class GatewayStatusBoxPresenterTests
         Assert.Equal(GatewayCheckState.Unknown, content.SignedIn.Marker);
     }
 
+    // ---- The compact chip verdict ----------------------------------------------------------------
+
+    [Fact]
+    public void ChipText_MapsAllSixResolverStatesToShortVerdicts()
+    {
+        // The chip is the box's slim form: one short phrase per resolver state, folded here so the
+        // surface can never invent a wording. The full check lines live on in the tooltip.
+        Assert.Equal("No Gateway", GatewayStatusBoxPresenter.ChipText(GatewayConnectionState.NotConfigured));
+        Assert.Equal("Connecting...", GatewayStatusBoxPresenter.ChipText(GatewayConnectionState.Connecting));
+        Assert.Equal("Connection failed", GatewayStatusBoxPresenter.ChipText(GatewayConnectionState.ConnectFailed));
+        Assert.Equal("Sign in", GatewayStatusBoxPresenter.ChipText(GatewayConnectionState.ConnectedNotSignedIn));
+        Assert.Equal("Connected", GatewayStatusBoxPresenter.ChipText(GatewayConnectionState.AllGreen));
+        Assert.Equal("Unreachable", GatewayStatusBoxPresenter.ChipText(GatewayConnectionState.WasConnectedNowUnreachable));
+    }
+
+    [Fact]
+    public void Describe_AllGreen_ChipSaysConnected_TooltipKeepsTheDetail()
+    {
+        var content = GatewayStatusBoxPresenter.Describe(
+            AllGreenInputs(), gatewayHost: "SOREN_NORTH", accountEmail: "soren@centerconsulting.com");
+
+        Assert.Equal("Connected", content.ChipText);
+        Assert.Contains("SOREN_NORTH", content.Tooltip);
+        Assert.Contains("soren@centerconsulting.com", content.Tooltip);
+    }
+
+    [Fact]
+    public void Describe_ConnectedNotSignedIn_ChipNudgesSignIn()
+    {
+        var inputs = AllGreenInputs() with
+        {
+            DeviceKeyPresent = false,
+            Account = GatewayAccountSignInState.SignedOut,
+        };
+
+        var content = GatewayStatusBoxPresenter.Describe(inputs, gatewayHost: "SOREN_NORTH", accountEmail: null);
+
+        Assert.Equal("Sign in", content.ChipText);
+    }
+
     [Fact]
     public void VisualFor_MapsAllSixResolverStatesToFourVisualStates()
     {

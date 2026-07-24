@@ -154,6 +154,19 @@ def attach_browser(target: str) -> None:
     print(f"export BU_CDP_URL={bu_url}")
 
 
+def stop_browser(target: str, json_output: bool) -> None:
+    """Close a running browser cleanly. Its login and folder are kept; only the process exits."""
+    browser = _resolve(target)
+    bid = director.field(browser, "id", "Id")
+    dto = director.post_json(f"browsers/{bid}/stop", {})
+    if json_output:
+        print(json.dumps(dto, indent=2))
+        return
+    bname = director.field(dto, "name", "Name")
+    status = director.field(dto, "statusLabel", "StatusLabel")
+    console.print(f'[green]Stopped[/green] "{bname}" ({status}). Its login is kept - start it again any time.')
+
+
 def rename_browser(target: str, to: str, json_output: bool) -> None:
     """Rename a browser's label (its id, port, and folder are unchanged)."""
     browser = _resolve(target)

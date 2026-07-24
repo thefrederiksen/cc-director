@@ -490,6 +490,13 @@ _ACTIONS = [
         "mutatesState": False,
         "args": [],
     },
+    {
+        "id": "browser-stop",
+        "description": "Close a running automation browser cleanly (its login is kept).",
+        "command": 'cc-devthrottle browser stop "Center Consulting"',
+        "mutatesState": True,
+        "args": [],
+    },
 ]
 
 
@@ -534,6 +541,15 @@ def browser_start(
 ) -> None:
     """Launch the browser if it is down, then print how to attach to it."""
     browser_ops.start_browser(name, json_output)
+
+
+@browser_app.command("stop")
+def browser_stop(
+    name: str = typer.Argument(..., help="Browser name or id."),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
+) -> None:
+    """Close a running browser cleanly (its login is kept; start it again any time)."""
+    browser_ops.stop_browser(name, json_output)
 
 
 @browser_app.command("attach")

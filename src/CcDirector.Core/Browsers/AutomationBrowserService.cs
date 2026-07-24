@@ -31,6 +31,15 @@ public static class AutomationBrowserService
     private static readonly TimeSpan LaunchReadyTimeout = TimeSpan.FromSeconds(20);
 
     /// <summary>
+    /// The processes THIS Director launched, by browser id. Held for the Director's lifetime so a
+    /// browser whose CDP connection wedges (up but unresponsive to <c>Browser.close</c>) can still be
+    /// stopped by killing the exact process we started - no WMI, no command-line matching, and never a
+    /// blanket kill by name. A browser launched by a previous Director has no entry here; for those the
+    /// CDP close is the only stop path and a wedge is reported, not guessed at.
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Process> LaunchedProcesses = new();
+
+    /// <summary>
     /// Register AND provision a new browser: resolves the exe for <paramref name="kind"/> via
     /// <see cref="BrowserLauncher.DetectBrowsers"/> (THROWS if that browser is not installed), then
     /// records the entry (unique name, allocated port, dedicated directory). Does not launch it.
@@ -152,17 +161,59 @@ public static class AutomationBrowserService
         => BrowserLauncher.DetectBrowsers().FirstOrDefault(b => b.Kind == kind)?.ExePath ?? string.Empty;
 
     /// <summary>
-    /// Stop the browser cleanly if it is running, by sending Chrome DevTools Protocol
-    /// <c>Browser.close</c> over the browser-level WebSocket. This is chosen over killing by process id
-    /// or command line because it is portable (Core targets a plain framework, not a Windows TFM),
-    /// needs no extra dependency, and works even for a browser this Director did not itself launch (e.g.
-    /// one left running from a previous Director). A browser that is already down is a no-op.
+    /// Stop the browser cleanly if it is running: Chrome DevTools Protocol <c>Browser.close</c> first
+    /// (portable, works even for a browser a previous Director launched), then - only when the port
+    /// stays up because the CDP connection is wedged - a <c>Process.Kill</c> of the exact process THIS
+    /// Director launched (see <see cref="LaunchedProcesses"/>). A browser that is already down is a
+    /// no-op. THROWS when the browser cannot be brought down at all (up, wedged, and not ours to kill),
+    /// naming what to do - never a silent "probably stopped".
     /// </summary>
     public static async Task StopAsync(string idOrName, CancellationToken ct = default)
     {
         var browser = AutomationBrowserRegistry.Get(idOrName);
         FileLog.Write($"[AutomationBrowserService] StopAsync: id={browser.Id}, port={browser.Port}");
+        if (!await TryShutDownAsync(browser, ct).ConfigureAwait(false))
+            throw new TimeoutException(
+                $"Browser \"{browser.Name}\" did not shut down: its debug port {browser.Port} is still answering " +
+                "after a close request and it was not launched by this Director, so there is no process to stop. " +
+                "Close the browser window by hand.");
+    }
+
+    /// <summary>
+    /// Bring the browser down: CDP <c>Browser.close</c>, wait for the port to release, and if it stays
+    /// up fall back to killing the tracked process this Director launched. Returns true when the port is
+    /// down (including "was never up"), false when the browser is still answering after every path we
+    /// legitimately have.
+    /// </summary>
+    private static async Task<bool> TryShutDownAsync(AutomationBrowser browser, CancellationToken ct)
+    {
         await CloseViaCdpAsync(browser, ct).ConfigureAwait(false);
+        if (await WaitUntilDownAsync(browser, ct).ConfigureAwait(false))
+        {
+            ForgetLaunchedProcess(browser.Id);
+            return true;
+        }
+
+        // The port is still answering after Browser.close - the wedged-CDP case. Kill the exact
+        // process we started, if this Director started it (tracked pid; never a kill by name).
+        if (LaunchedProcesses.TryGetValue(browser.Id, out var process) && !process.HasExited)
+        {
+            FileLog.Write($"[AutomationBrowserService] TryShutDownAsync: id={browser.Id} CDP close did not release port {browser.Port}, killing tracked pid={process.Id}");
+            process.Kill(entireProcessTree: true);
+            if (await WaitUntilDownAsync(browser, ct).ConfigureAwait(false))
+            {
+                ForgetLaunchedProcess(browser.Id);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static void ForgetLaunchedProcess(string browserId)
+    {
+        if (LaunchedProcesses.TryRemove(browserId, out var process))
+            process.Dispose();
     }
 
     /// <summary>
@@ -176,8 +227,10 @@ public static class AutomationBrowserService
         var browser = AutomationBrowserRegistry.Get(idOrName);
         FileLog.Write($"[AutomationBrowserService] RemoveAsync: id={browser.Id}");
 
-        await CloseViaCdpAsync(browser, ct).ConfigureAwait(false);
-        await WaitUntilDownAsync(browser, ct).ConfigureAwait(false);
+        // A shutdown that fails here is not fatal on its own: the folder delete below throws the
+        // actionable error if the browser is genuinely still holding its directory.
+        if (!await TryShutDownAsync(browser, ct).ConfigureAwait(false))
+            FileLog.Write($"[AutomationBrowserService] RemoveAsync: id={browser.Id} still up after shutdown attempts; the folder delete will report if it is locked");
 
         if (Directory.Exists(browser.UserDataDir))
         {
@@ -235,6 +288,26 @@ public static class AutomationBrowserService
         var process = Process.Start(startInfo)
             ?? throw new InvalidOperationException($"Failed to start {browser.Kind} for browser \"{browser.Name}\" ({exe}).");
         FileLog.Write($"[AutomationBrowserService] StartProcess: id={browser.Id} pid={process.Id}");
+
+        // Track the process we launched so a wedged-CDP stop can kill exactly this pid and nothing
+        // else. Only the FIRST launch per browser is the owning process: when an instance is already
+        // running, passing the same --user-data-dir makes this new process hand its URL to the running
+        // one and exit, so overwriting the tracked entry with it would lose the real pid.
+        var tracked = LaunchedProcesses.GetOrAdd(browser.Id, process);
+        if (!ReferenceEquals(tracked, process))
+        {
+            if (tracked.HasExited)
+            {
+                LaunchedProcesses[browser.Id] = process;
+                tracked.Dispose();
+            }
+            else
+            {
+                // The already-running instance owns the browser; this new process only handed it a
+                // URL and exits on its own. Release its handle (Dispose never kills the process).
+                process.Dispose();
+            }
+        }
     }
 
     private static async Task WaitUntilUpAsync(AutomationBrowser browser, CancellationToken ct)
@@ -250,28 +323,25 @@ public static class AutomationBrowserService
             $"Browser \"{browser.Name}\" was launched but its debug port {browser.Port} did not come up within {LaunchReadyTimeout.TotalSeconds:0}s.");
     }
 
-    private static async Task WaitUntilDownAsync(AutomationBrowser browser, CancellationToken ct)
+    /// <summary>True when the debug port stops answering within the timeout; false when it stays up.</summary>
+    private static async Task<bool> WaitUntilDownAsync(AutomationBrowser browser, CancellationToken ct)
     {
         var deadline = DateTime.UtcNow + LaunchReadyTimeout;
         while (DateTime.UtcNow < deadline)
         {
             if (!await IsUpAsync(browser, ct).ConfigureAwait(false))
-                return;
+                return true;
             await Task.Delay(250, ct).ConfigureAwait(false);
         }
-        // Not fatal on its own; the folder-delete step will throw the actionable error if it is still locked.
         FileLog.Write($"[AutomationBrowserService] WaitUntilDownAsync: id={browser.Id} still up after {LaunchReadyTimeout.TotalSeconds:0}s");
+        return false;
     }
 
     /// <summary>
     /// Send CDP <c>Browser.close</c> over the browser-level WebSocket advertised by <c>/json/version</c>.
     /// A down browser is a no-op. The websocket disconnecting as Chrome exits is expected, not an error.
-    ///
-    /// Slice-2 hardening (tracked for the rail UI work, not needed yet): a browser that is UP but whose
-    /// CDP connection is wedged cannot be closed this way. Since the Director already holds the launched
-    /// <see cref="Process"/> handle in memory for its lifetime, a tracked-pid <c>Process.Kill()</c> is the
-    /// portable safety net (no WMI, no command-line matching) when the CDP close does not bring the port
-    /// down within the timeout. Left out of slice 1 to keep the stop path single and simple.
+    /// A browser that is UP but whose CDP connection is wedged cannot be closed this way - that case is
+    /// handled by the tracked-pid kill in <see cref="TryShutDownAsync"/>.
     /// </summary>
     private static async Task CloseViaCdpAsync(AutomationBrowser browser, CancellationToken ct)
     {

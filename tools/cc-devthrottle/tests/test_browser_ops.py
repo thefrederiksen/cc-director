@@ -88,6 +88,26 @@ class TestResolve:
         assert resolved["id"] == "center-consulting"
 
 
+class TestStop:
+    def test_posts_stop_and_reports_the_folded_status(self, monkeypatch, capsys):
+        _stub_director(monkeypatch, SAMPLE)
+        posted = {}
+
+        def fake_post_json(path, body):
+            posted["path"] = path
+            posted["body"] = body
+            return {"id": "center-consulting", "name": "Center Consulting", "statusLabel": "Stopped"}
+
+        monkeypatch.setattr(browser_ops.director, "post_json", fake_post_json)
+
+        browser_ops.stop_browser("Center Consulting", json_output=False)
+
+        assert posted["path"] == "browsers/center-consulting/stop"
+        out = capsys.readouterr().out
+        assert "Stopped" in out
+        assert "Center Consulting" in out
+
+
 class TestList:
     def test_json_output_is_the_raw_browsers(self, monkeypatch, capsys):
         _stub_director(monkeypatch, SAMPLE)
