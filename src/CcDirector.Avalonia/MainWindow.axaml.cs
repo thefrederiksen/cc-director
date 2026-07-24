@@ -251,6 +251,10 @@ public partial class MainWindow : Window
         // Keep the pinned Repositories badge (safe-to-reap worktree count) in sync with the scan.
         if (global::Avalonia.Application.Current is App appForRepo)
         {
+            // The monitor owns the live-session source: every compute (full scan or watcher
+            // recompute) consults it, so background recomputes can never erase the
+            // in-use-by-session classification.
+            appForRepo.RepositoryMonitor.LiveSessionsProvider = GetLiveSessionsOnThisMachineAsync;
             appForRepo.RepositoryMonitor.Upserted += _ => Dispatcher.UIThread.Post(UpdateRepositoriesBadge);
             appForRepo.RepositoryMonitor.Removed += _ => Dispatcher.UIThread.Post(UpdateRepositoriesBadge);
             appForRepo.RepositoryMonitor.ProgressChanged += () => Dispatcher.UIThread.Post(UpdateRepositoriesBadge);

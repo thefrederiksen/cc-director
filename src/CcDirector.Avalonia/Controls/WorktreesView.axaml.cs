@@ -187,8 +187,9 @@ public partial class WorktreesView : UserControl
     }
 
     /// <summary>
-    /// Ask the background monitor to recompute this one repository (with fresh live-session data),
-    /// then render its updated model. The view itself never scans.
+    /// Ask the background monitor to recompute this one repository, then render its updated model.
+    /// The monitor owns the live-session source and canonicalizes a worktree path to its primary
+    /// checkout itself. The view itself never scans.
     /// </summary>
     private async Task RefreshAsync()
     {
@@ -203,8 +204,7 @@ public partial class WorktreesView : UserControl
 
         try
         {
-            var liveSessions = await FetchLiveSessionsAsync();
-            await Task.Run(() => _monitor.RecomputeOneAsync(entryPath!, liveSessions));
+            await Task.Run(() => _monitor.RecomputeOneAsync(entryPath!));
         }
         catch (Exception ex)
         {
@@ -292,11 +292,18 @@ public partial class WorktreesView : UserControl
         await RunReapAsync();
     }
 
-    private async Task RunReapAsync()
+    /// <summary>
+    /// Test seam: when set, replaces the real reaper call. Lets a headless test observe exactly
+    /// which repository path the reap targets without deleting anything.
+    /// </summary>
+    internal Func<string, IReadOnlySet<string>, Task<ReapResult>>? ReapServiceOverride { get; set; }
+
+    internal async Task RunReapAsync()
     {
-        // The reaper runs against the repository entry, not the session's own folder (which may
-        // itself be a worktree of that repository).
-        var repoPath = _repoEntryPath ?? _repoPath;
+        // The reaper runs against the repository entry ONLY - never the session's own folder,
+        // which may itself be a linked worktree of that repository. Until the monitor has resolved
+        // the owning entry there is nothing safe to reap.
+        var repoPath = _repoEntryPath;
         if (string.IsNullOrWhiteSpace(repoPath) || _isReaping || _provisional)
             return;
 
@@ -313,10 +320,12 @@ public partial class WorktreesView : UserControl
             // still protected (belt-and-suspenders on top of the detector's classification).
             var liveSessions = await FetchLiveSessionsAsync();
             var protectedPaths = ToProtectedSet(liveSessions);
-            var result = await Task.Run(() => _reaper.ReapAsync(repoPath!, protectedPaths));
+            var result = ReapServiceOverride is { } reap
+                ? await reap(repoPath!, protectedPaths)
+                : await Task.Run(() => _reaper.ReapAsync(repoPath!, protectedPaths));
 
-            if ((_repoEntryPath ?? _repoPath) != repoPath)
-                return;
+            if (_repoEntryPath != repoPath)
+                return; // the view moved to another repository while the reaper ran
 
             // Re-scan first so the counts, badge, and listing reflect what actually happened,
             // then lay the result banner on top of the refreshed view.

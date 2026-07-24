@@ -196,6 +196,206 @@ public class RepositoryMonitorTests
         }
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection finding F4): a linked-worktree path (whose .git is a FILE) handed
+    // to RecomputeOneAsync must recompute the PRIMARY repository entry - never store the
+    // worktree path as a repository entry of its own. Uses real git so the canonicalization
+    // (rev-parse --git-common-dir) is the production one.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task RecomputeOne_LinkedWorktreePath_RecomputesThePrimaryEntry()
+    {
+        var root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ccd-canon-" + Guid.NewGuid().ToString("N"));
+        var primary = System.IO.Path.Combine(root, "primary");
+        var wt = System.IO.Path.Combine(root, "wt-linked");
+        Directory.CreateDirectory(primary);
+        try
+        {
+            RunGit(primary, "-c", "init.defaultBranch=main", "init");
+            RunGit(primary, "config", "user.email", "test@cc-director.local");
+            RunGit(primary, "config", "user.name", "CC Director Test");
+            RunGit(primary, "config", "commit.gpgsign", "false");
+            File.WriteAllText(System.IO.Path.Combine(primary, "README.md"), "init\n");
+            RunGit(primary, "add", "-A");
+            RunGit(primary, "commit", "-m", "initial");
+            RunGit(primary, "worktree", "add", wt);
+
+            var computedPaths = new List<string>();
+            var monitor = new RepositoryMonitor(
+                enumerate: _ => new[] { primary },
+                compute: (p, _, _) =>
+                {
+                    lock (computedPaths) computedPaths.Add(p);
+                    return Task.FromResult(Status(p));
+                });
+            await monitor.RescanAsync(new[] { root });
+
+            await monitor.RecomputeOneAsync(wt); // the watcher hands over a linked-worktree path
+
+            lock (computedPaths)
+                Assert.All(computedPaths, p => Assert.Equal(
+                    System.IO.Path.GetFullPath(primary), System.IO.Path.GetFullPath(p)));
+            var entry = Assert.Single(monitor.Snapshot());
+            Assert.Equal(System.IO.Path.GetFullPath(primary), System.IO.Path.GetFullPath(entry.Path));
+        }
+        finally
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                try { Directory.Delete(root, recursive: true); break; }
+                catch { Thread.Sleep(100); }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection finding F5): every compute consults the monitor's own live-session
+    // provider, so a watcher-style recompute (which used to pass no sessions) can no longer
+    // erase the in-use-by-session classification.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task RecomputeOne_ConsultsTheLiveSessionsProvider_PreservingInUse()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ccd-sess-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(System.IO.Path.Combine(dir, ".git"));
+        try
+        {
+            var monitor = new RepositoryMonitor(
+                enumerate: _ => new[] { dir },
+                compute: (p, sessions, _) => Task.FromResult(Status(p) with
+                {
+                    WorktreesInUse = sessions?.Count ?? 0,
+                }));
+            monitor.LiveSessionsProvider = _ => Task.FromResult<IReadOnlyList<LiveSessionRef>>(
+                new[] { new LiveSessionRef { RepoPath = dir, Label = "Busy (#7)" } });
+
+            await monitor.RescanAsync(new[] { "/r" });
+            Assert.Equal(1, Assert.Single(monitor.Snapshot()).WorktreesInUse);
+
+            // The watcher's path: no sessions argument exists any more - the provider is the source.
+            await monitor.RecomputeOneAsync(dir);
+            Assert.Equal(1, Assert.Single(monitor.Snapshot()).WorktreesInUse);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection finding F6): a recompute requested while a full scan runs is
+    // deferred until the scan completes, then runs - so the model ends holding the NEWEST
+    // result, never the older of the two.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task RecomputeOne_DuringAScan_IsDeferred_AndRunsAfterTheScan()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ccd-defer-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(System.IO.Path.Combine(dir, ".git"));
+        try
+        {
+            int computeCalls = 0;
+            var scanComputeEntered = new TaskCompletionSource();
+            var releaseScanCompute = new TaskCompletionSource();
+            var monitor = new RepositoryMonitor(
+                enumerate: _ => new[] { dir },
+                compute: async (p, _, _) =>
+                {
+                    int call = Interlocked.Increment(ref computeCalls);
+                    if (call == 1)
+                    {
+                        scanComputeEntered.SetResult();
+                        await releaseScanCompute.Task;
+                    }
+                    return Status(p) with { UncommittedCount = call, IsClean = false };
+                });
+
+            var scanTask = monitor.RescanAsync(new[] { "/r" });
+            await scanComputeEntered.Task; // the scan is mid-compute and holds the model
+
+            // The watcher fires now: the recompute must defer, not race the scan.
+            await monitor.RecomputeOneAsync(dir);
+            Assert.Equal(1, Volatile.Read(ref computeCalls)); // deferred - no second compute yet
+
+            releaseScanCompute.SetResult();
+            await scanTask;
+
+            Assert.Equal(2, Volatile.Read(ref computeCalls)); // the deferred recompute ran after the scan
+            Assert.Equal(2, Assert.Single(monitor.Snapshot()).UncommittedCount); // newest result wins
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection finding F6): two recomputes for the same repository are single-
+    // flight - the slower, OLDER compute can never publish after (and thereby overwrite) the
+    // newer one.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task RecomputeOne_RacingRecomputes_NeverLeaveTheOlderResultLast()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ccd-race-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(System.IO.Path.Combine(dir, ".git"));
+        try
+        {
+            int computeCalls = 0;
+            var firstComputeEntered = new TaskCompletionSource();
+            var releaseFirstCompute = new TaskCompletionSource();
+            var monitor = new RepositoryMonitor(
+                enumerate: _ => new[] { dir },
+                compute: async (p, _, _) =>
+                {
+                    int call = Interlocked.Increment(ref computeCalls);
+                    if (call == 1)
+                    {
+                        firstComputeEntered.SetResult();
+                        await releaseFirstCompute.Task; // the OLD compute is slow
+                    }
+                    return Status(p) with { UncommittedCount = call, IsClean = false };
+                });
+
+            var oldRecompute = monitor.RecomputeOneAsync(dir);
+            await firstComputeEntered.Task;
+            var newRecompute = monitor.RecomputeOneAsync(dir); // must WAIT for the old one
+
+            releaseFirstCompute.SetResult();
+            await Task.WhenAll(oldRecompute, newRecompute);
+
+            // Single-flight means the second compute ran after the first published, so the model
+            // holds the newest result. Before the fix the fast second call published first and the
+            // slow OLD result landed last.
+            Assert.Equal(2, Assert.Single(monitor.Snapshot()).UncommittedCount);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    private static string RunGit(string workingDir, params string[] args)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "git",
+            WorkingDirectory = workingDir,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        using var p = System.Diagnostics.Process.Start(psi)!;
+        var stdout = p.StandardOutput.ReadToEnd();
+        var stderr = p.StandardError.ReadToEnd();
+        p.WaitForExit();
+        if (p.ExitCode != 0)
+            throw new InvalidOperationException($"git {string.Join(' ', args)} failed ({p.ExitCode}): {stderr}");
+        return stdout;
+    }
+
     [Fact]
     public async Task Rescan_Upsert_UpdatesExistingEntryInPlace()
     {

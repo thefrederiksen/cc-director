@@ -13,17 +13,25 @@ namespace CcDirector.Core.Git;
 /// removed at the end (<see cref="Removed"/>). Events fire on the scanning thread; UI subscribers
 /// marshal to their dispatcher.
 ///
-/// This is phase 1 of the background service (devthrottle_internal#507): the model + progressive
-/// streaming. The warm-start cache, the file watcher, live session occupancy, and the Gateway push
-/// are later phases.
+/// Consistency rules (issue devthrottle_internal#510, inspection round 1):
+/// - The monitor owns the live-session source (<see cref="LiveSessionsProvider"/>) and consults it
+///   on EVERY compute, so no compute path can erase the in-use-by-session classification.
+/// - Computes are single-flight per repository, and a single-repository recompute requested while a
+///   full scan runs is deferred until the scan completes - so an older result can never overwrite a
+///   newer one.
+/// - A linked-worktree path is canonicalized to its PRIMARY checkout before computing, so a
+///   worktree path never becomes its own model entry.
 /// </summary>
 public sealed class RepositoryMonitor
 {
     private readonly Func<IEnumerable<string>, IReadOnlyList<string>> _enumerate;
     private readonly Func<string, IReadOnlyList<LiveSessionRef>?, CancellationToken, Task<RepositoryStatus>> _compute;
+    private readonly Func<string, CancellationToken, Task<string?>> _resolvePrimary;
 
     private readonly object _gate = new();
     private readonly Dictionary<string, RepositoryStatus> _byPath = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, SemaphoreSlim> _repoLocks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _deferredRecomputes = new(StringComparer.OrdinalIgnoreCase);
     private CancellationTokenSource? _cts;
     private readonly string? _cachePath;
 
@@ -48,14 +56,23 @@ public sealed class RepositoryMonitor
     /// <summary>Raised once when a scan finishes (not raised when a scan is superseded/cancelled).</summary>
     public event Action? ScanCompleted;
 
+    /// <summary>
+    /// THE live-session source for every compute this monitor runs - full scans and single-repository
+    /// recomputes alike. Wired once at startup by the host (the same source the panels use). When it
+    /// is null the computes run without session data (no host wired one up yet).
+    /// </summary>
+    public Func<CancellationToken, Task<IReadOnlyList<LiveSessionRef>>>? LiveSessionsProvider { get; set; }
+
     public RepositoryMonitor(
         Func<IEnumerable<string>, IReadOnlyList<string>>? enumerate = null,
         Func<string, IReadOnlyList<LiveSessionRef>?, CancellationToken, Task<RepositoryStatus>>? compute = null,
-        string? cachePath = null)
+        string? cachePath = null,
+        Func<string, CancellationToken, Task<string?>>? resolvePrimary = null)
     {
         _enumerate = enumerate ?? DefaultEnumerate;
         _compute = compute ?? DefaultCompute;
         _cachePath = cachePath;
+        _resolvePrimary = resolvePrimary ?? DefaultResolvePrimary;
     }
 
     /// <summary>
@@ -139,9 +156,10 @@ public sealed class RepositoryMonitor
 
     /// <summary>
     /// Rescan the given roots, streaming each repository's status into the model as it is computed.
-    /// A new rescan supersedes any in-flight one.
+    /// A new rescan supersedes any in-flight one. Live sessions come from
+    /// <see cref="LiveSessionsProvider"/> on every compute.
     /// </summary>
-    public async Task RescanAsync(IEnumerable<string> roots, IReadOnlyList<LiveSessionRef>? sessions = null, CancellationToken externalCt = default)
+    public async Task RescanAsync(IEnumerable<string> roots, CancellationToken externalCt = default)
     {
         CancellationTokenSource cts;
         lock (_gate)
@@ -164,15 +182,25 @@ public sealed class RepositoryMonitor
             foreach (var path in paths)
             {
                 ct.ThrowIfCancellationRequested();
-                var status = await _compute(path, sessions, ct);
-                var key = WorktreeReaperService.NormalizePath(status.Path);
-                seen.Add(key);
+                var repoLock = GetRepoLock(WorktreeReaperService.NormalizePath(path));
+                await repoLock.WaitAsync(ct);
                 RepositoryStatus enriched;
-                lock (_gate)
+                try
                 {
-                    enriched = Enrich(status, _byPath.TryGetValue(key, out var prev) ? prev : null);
-                    _byPath[key] = enriched;
-                    ScanDone++;
+                    var sessions = await FetchLiveSessionsAsync(ct);
+                    var status = await _compute(path, sessions, ct);
+                    var key = WorktreeReaperService.NormalizePath(status.Path);
+                    seen.Add(key);
+                    lock (_gate)
+                    {
+                        enriched = Enrich(status, _byPath.TryGetValue(key, out var prev) ? prev : null);
+                        _byPath[key] = enriched;
+                        ScanDone++;
+                    }
+                }
+                finally
+                {
+                    repoLock.Release();
                 }
                 Upserted?.Invoke(enriched);
                 ProgressChanged?.Invoke();
@@ -204,23 +232,40 @@ public sealed class RepositoryMonitor
         }
 
         FileLog.Write($"[RepositoryMonitor] rescan completed: {ScanDone}/{ScanTotal}");
+
+        // Run the single-repository recomputes that arrived while this scan held the model.
+        await DrainDeferredRecomputesAsync(externalCt);
+
         ScanCompleted?.Invoke();
     }
 
     /// <summary>
     /// Recompute ONE repository and publish the result - the file watcher's path: a change under
-    /// one repo never re-scans the others. Removes the entry when the directory is gone.
+    /// one repo never re-scans the others. Removes the entry when the directory is gone. A linked
+    /// worktree path is canonicalized to its primary checkout first, so the PRIMARY entry is
+    /// recomputed and a worktree path never becomes a model entry of its own. While a full scan is
+    /// running the recompute is deferred and runs when the scan completes.
     /// </summary>
-    public async Task RecomputeOneAsync(string repoPath, IReadOnlyList<LiveSessionRef>? sessions = null, CancellationToken ct = default)
+    public async Task RecomputeOneAsync(string repoPath, CancellationToken ct = default)
     {
-        var key = WorktreeReaperService.NormalizePath(repoPath);
+        lock (_gate)
+        {
+            if (IsScanning)
+            {
+                _deferredRecomputes[WorktreeReaperService.NormalizePath(repoPath)] = repoPath;
+                FileLog.Write($"[RepositoryMonitor] recompute deferred until the running scan completes: {repoPath}");
+                return;
+            }
+        }
 
         // "Gone" means the folder disappeared OR it is no longer a git repository (a root watcher
         // fires for ANY subdirectory; a non-repo folder must never become a model entry).
+        bool gitIsFile = File.Exists(Path.Combine(repoPath, ".git"));
         bool isRepo = Directory.Exists(repoPath)
-                      && (Directory.Exists(Path.Combine(repoPath, ".git")) || File.Exists(Path.Combine(repoPath, ".git")));
+                      && (Directory.Exists(Path.Combine(repoPath, ".git")) || gitIsFile);
         if (!isRepo)
         {
+            var key = WorktreeReaperService.NormalizePath(repoPath);
             RepositoryStatus? gone = null;
             lock (_gate)
             {
@@ -236,16 +281,78 @@ public sealed class RepositoryMonitor
             return;
         }
 
-        var status = await _compute(repoPath, sessions, ct);
-        RepositoryStatus enriched;
-        lock (_gate)
+        // A .git FILE marks a linked worktree - canonicalize to the primary checkout and recompute
+        // THAT entry. Failing to resolve is a real error, not a reason to guess.
+        var targetPath = repoPath;
+        if (gitIsFile)
         {
-            enriched = Enrich(status, _byPath.TryGetValue(key, out var prev) ? prev : null);
-            _byPath[key] = enriched;
+            var primary = await _resolvePrimary(repoPath, ct);
+            if (string.IsNullOrWhiteSpace(primary))
+                throw new InvalidOperationException(
+                    $"could not resolve the primary repository for the linked worktree path: {repoPath}");
+            FileLog.Write($"[RepositoryMonitor] recompute: {repoPath} is a linked worktree of {primary}");
+            targetPath = primary;
+        }
+
+        var targetKey = WorktreeReaperService.NormalizePath(targetPath);
+        var repoLock = GetRepoLock(targetKey);
+        await repoLock.WaitAsync(ct);
+        RepositoryStatus enriched;
+        try
+        {
+            var sessions = await FetchLiveSessionsAsync(ct);
+            var status = await _compute(targetPath, sessions, ct);
+            lock (_gate)
+            {
+                enriched = Enrich(status, _byPath.TryGetValue(targetKey, out var prev) ? prev : null);
+                _byPath[targetKey] = enriched;
+            }
+        }
+        finally
+        {
+            repoLock.Release();
         }
         FileLog.Write($"[RepositoryMonitor] recomputed one: {enriched.Name}");
         Upserted?.Invoke(enriched);
         SaveCache();
+    }
+
+    /// <summary>One compute at a time per repository - publishes can never land out of order.</summary>
+    private SemaphoreSlim GetRepoLock(string key)
+    {
+        lock (_gate)
+        {
+            if (!_repoLocks.TryGetValue(key, out var sem))
+                _repoLocks[key] = sem = new SemaphoreSlim(1, 1);
+            return sem;
+        }
+    }
+
+    private async Task<IReadOnlyList<LiveSessionRef>?> FetchLiveSessionsAsync(CancellationToken ct)
+        => LiveSessionsProvider is { } provider ? await provider(ct) : null;
+
+    private async Task DrainDeferredRecomputesAsync(CancellationToken ct)
+    {
+        List<string> deferred;
+        lock (_gate)
+        {
+            if (_deferredRecomputes.Count == 0)
+                return;
+            deferred = _deferredRecomputes.Values.ToList();
+            _deferredRecomputes.Clear();
+        }
+        FileLog.Write($"[RepositoryMonitor] running {deferred.Count} recompute(s) deferred during the scan");
+        foreach (var path in deferred)
+        {
+            try
+            {
+                await RecomputeOneAsync(path, ct);
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[RepositoryMonitor] deferred recompute FAILED for {path}: {ex.Message}");
+            }
+        }
     }
 
     /// <summary>
@@ -282,4 +389,21 @@ public sealed class RepositoryMonitor
 
     private static async Task<RepositoryStatus> DefaultCompute(string path, IReadOnlyList<LiveSessionRef>? sessions, CancellationToken ct)
         => await new RepositoryStatusService().GetStatusAsync(path, sessions, fetchPrune: false, ct);
+
+    /// <summary>
+    /// The primary checkout owning a linked worktree: git names the shared .git directory via
+    /// rev-parse --git-common-dir; its parent is the primary working tree. Null when git cannot
+    /// answer (not a repository, or a bare repository with no primary checkout).
+    /// </summary>
+    private static async Task<string?> DefaultResolvePrimary(string path, CancellationToken ct)
+    {
+        var result = await new GitCommandRunner().RunAsync(
+            path, new[] { "rev-parse", "--path-format=absolute", "--git-common-dir" }, ct);
+        if (!result.Success || string.IsNullOrWhiteSpace(result.Output))
+            return null;
+        var commonDir = result.Output.Trim();
+        if (!string.Equals(Path.GetFileName(commonDir.TrimEnd('/', '\\')), ".git", StringComparison.OrdinalIgnoreCase))
+            return null; // bare repository - no primary working tree
+        return Path.GetDirectoryName(commonDir.TrimEnd('/', '\\'));
+    }
 }

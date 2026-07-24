@@ -76,6 +76,62 @@ public class OneBrainRegressionTests
         Assert.Equal(1, view.OrphanedCount); // resolved to the owning repository's entry
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection finding F4): the reaper must target the repository ENTRY path,
+    // never the session's own folder (which can be a linked worktree of that repository).
+    // ---------------------------------------------------------------------------------------
+    [AvaloniaFact]
+    public async Task Reap_FromASessionSittingInAWorktree_TargetsThePrimaryRepositoryPath()
+    {
+        var wt = Wt("feature", WorktreeSafety.SafeToReap, WorktreeSafetyReason.ContainedInMain);
+        var monitor = MonitorWithRepo("/repo", wt);
+        await monitor.RescanAsync(new[] { "/roots" });
+
+        var view = new WorktreesView();
+        var window = new Window { Content = view, Width = 800, Height = 600 };
+        window.Show();
+        view.Attach(monitor, wt.Path); // the session lives IN the worktree
+        Dispatcher.UIThread.RunJobs();
+
+        string? reapedPath = null;
+        view.ReapServiceOverride = (path, _) =>
+        {
+            reapedPath = path;
+            return Task.FromResult(new ReapResult { Success = true });
+        };
+        await view.RunReapAsync();
+
+        Assert.Equal("/repo", reapedPath); // the entry path - NOT the worktree the session sits in
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection finding F4): while the owning entry is unresolved there is nothing
+    // safe to reap - the old fallback to the raw session path could hand the reaper a linked
+    // worktree.
+    // ---------------------------------------------------------------------------------------
+    [AvaloniaFact]
+    public async Task Reap_WhenTheOwningEntryIsUnresolved_DoesNothing()
+    {
+        var monitor = MonitorWithRepo("/repo");
+        await monitor.RescanAsync(new[] { "/roots" });
+
+        var view = new WorktreesView();
+        var window = new Window { Content = view, Width = 800, Height = 600 };
+        window.Show();
+        view.Attach(monitor, "/somewhere/unrelated"); // no entry resolves for this path
+        Dispatcher.UIThread.RunJobs();
+
+        string? reapedPath = null;
+        view.ReapServiceOverride = (path, _) =>
+        {
+            reapedPath = path;
+            return Task.FromResult(new ReapResult { Success = true });
+        };
+        await view.RunReapAsync();
+
+        Assert.Null(reapedPath); // the reaper was never invoked
+    }
+
     [AvaloniaFact]
     public async Task SessionTab_UpdatesLive_WhenTheMonitorRecomputes()
     {
