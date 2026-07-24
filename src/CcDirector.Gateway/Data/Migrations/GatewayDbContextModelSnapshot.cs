@@ -235,6 +235,45 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.ToTable("device_import_markers", (string)null);
                 });
 
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.DictationTranscriptEntity", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("Id")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("CleanedText")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("CleanupApplied")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("RawText")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("TimestampUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("TurnId")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("TenantId", "Id");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "TimestampUtc");
+
+                    b.ToTable("dictation_transcripts", (string)null);
+                });
+
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.EntitlementEntity", b =>
                 {
                     b.Property<string>("Subject")

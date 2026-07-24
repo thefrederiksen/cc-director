@@ -40,6 +40,7 @@ public sealed class GatewayTranscriptionService
     private readonly string _cleanupModel;
     private readonly TranscriptionHistoryLog _history;
     private readonly TranscriptionAudioArchive _audioArchive;
+    private readonly TranscriptStore? _transcripts;
 
     /// <param name="vault">The Gateway key vault - the single store for the transcription key.</param>
     /// <param name="dictionaryProvider">Supplies the live dictation dictionary the corrector uses;
@@ -58,6 +59,11 @@ public sealed class GatewayTranscriptionService
     /// <param name="audioArchive">Rolling archive of the audio behind each turn. In production the host
     /// owns one instance and passes it here; when omitted it defaults to a fresh instance over the
     /// per-user location, and tests inject their own so they never write into the real user's archive.</param>
+    /// <param name="transcripts">The per-tenant transcript store (issue #509). In production the host owns
+    /// one instance (over the Gateway database) and passes it here, so every transcribed turn's raw and
+    /// cleaned text lands in the caller tenant's partition for later mistranscription mining. When null (tests
+    /// and any caller that does not persist) the transcript write is simply skipped - it is a write-only
+    /// diagnostic aid and never gates a turn.</param>
     public GatewayTranscriptionService(
         KeyVault vault,
         Func<DictationDictionary>? dictionaryProvider = null,
@@ -65,7 +71,8 @@ public sealed class GatewayTranscriptionService
         HttpClient? http = null,
         string? cleanupModel = null,
         TranscriptionHistoryLog? history = null,
-        TranscriptionAudioArchive? audioArchive = null)
+        TranscriptionAudioArchive? audioArchive = null,
+        TranscriptStore? transcripts = null)
     {
         _vault = vault ?? throw new ArgumentNullException(nameof(vault));
         _dictionaryProvider = dictionaryProvider ?? (() => DictionaryLoader.LoadFromDisk(DictionaryPath()));
@@ -74,6 +81,7 @@ public sealed class GatewayTranscriptionService
         _cleanupModel = string.IsNullOrWhiteSpace(cleanupModel) ? CleanupOrchestrator.DefaultModel : cleanupModel;
         _history = history ?? new TranscriptionHistoryLog();
         _audioArchive = audioArchive ?? new TranscriptionAudioArchive();
+        _transcripts = transcripts;
     }
 
     /// <summary>
@@ -103,9 +111,11 @@ public sealed class GatewayTranscriptionService
     /// <param name="contentType">The clip's MIME type (used to derive the filename when none is given).</param>
     /// <param name="applyCorrection">When true, run the validated dictionary corrector on the raw text.</param>
     /// <param name="ct">Cancellation token.</param>
+    /// <param name="source">The surface that produced the utterance (e.g. "dictation", "voice", "batch"),
+    /// stamped on the stored transcript (issue #509) for later mining. Defaults to "gateway" when blank.</param>
     public async Task<GatewayTranscriptionResult> TranscribeAsync(
         byte[] audio, string fileName, string contentType, bool applyCorrection, CancellationToken ct,
-        CcDirector.Core.Tenancy.TenantId? tenant = null)
+        CcDirector.Core.Tenancy.TenantId? tenant = null, string? source = null)
     {
         if (audio is null) throw new ArgumentNullException(nameof(audio));
 
@@ -146,7 +156,7 @@ public sealed class GatewayTranscriptionService
             swTranscribe.Stop();
             FileLog.Write($"[GatewayTranscriptionService] TranscribeAsync OUT OF CREDITS: mode={mode}, code={ex.Code}");
             RecordHistory(turnId, "out_of_credits",
-                swTranscribe.ElapsedMilliseconds, 0, applyCorrection, raw: null, cleanup: null, tenant: tenant);
+                swTranscribe.ElapsedMilliseconds, 0, applyCorrection, raw: null, cleanup: null, tenant: tenant, source: source);
             return GatewayTranscriptionResult.OutOfCredits(mode, routing.Endpoint.Model, ex.Code, ex.Message);
         }
         catch (TranscriptionPermanentException ex)
@@ -158,7 +168,7 @@ public sealed class GatewayTranscriptionService
             swTranscribe.Stop();
             FileLog.Write($"[GatewayTranscriptionService] TranscribeAsync PERMANENT: mode={mode}, code={ex.Code}, {ex.Message}");
             RecordHistory(turnId, "permanent_error",
-                swTranscribe.ElapsedMilliseconds, 0, applyCorrection, raw: null, cleanup: null, tenant: tenant);
+                swTranscribe.ElapsedMilliseconds, 0, applyCorrection, raw: null, cleanup: null, tenant: tenant, source: source);
             return GatewayTranscriptionResult.PermanentError(mode, routing.Endpoint.Model, ex.Code, ex.Message);
         }
         catch (Exception ex)
@@ -169,7 +179,7 @@ public sealed class GatewayTranscriptionService
             swTranscribe.Stop();
             FileLog.Write($"[GatewayTranscriptionService] TranscribeAsync provider FAILED: mode={mode}, {ex.Message}");
             RecordHistory(turnId, "provider_error",
-                swTranscribe.ElapsedMilliseconds, 0, applyCorrection, raw: null, cleanup: null, tenant: tenant);
+                swTranscribe.ElapsedMilliseconds, 0, applyCorrection, raw: null, cleanup: null, tenant: tenant, source: source);
             return GatewayTranscriptionResult.ProviderError(mode, routing.Endpoint.Model, ex.Message);
         }
 
@@ -183,7 +193,7 @@ public sealed class GatewayTranscriptionService
         FileLog.Write($"[GatewayTranscriptionService] TranscribeAsync OK: mode={mode}, corrected={applyCorrection}, "
                       + $"transcribeMs={swTranscribe.ElapsedMilliseconds}, cleanupMs={(applyCorrection ? swCleanup.ElapsedMilliseconds : 0)}, chars={text.Length}");
         RecordHistory(turnId, "ok", swTranscribe.ElapsedMilliseconds,
-            applyCorrection ? swCleanup.ElapsedMilliseconds : 0, applyCorrection, raw, cleanup, tenant: tenant);
+            applyCorrection ? swCleanup.ElapsedMilliseconds : 0, applyCorrection, raw, cleanup, tenant: tenant, source: source);
         return GatewayTranscriptionResult.Ok(text, mode, routing.Endpoint.Model);
     }
 
@@ -195,7 +205,8 @@ public sealed class GatewayTranscriptionService
     /// own partition and its Transcription Health page reads it back - never another tenant's.</summary>
     private void RecordHistory(
         string turnId, string outcome, long transcribeMs, long cleanupMs, bool corrected,
-        string? raw, CleanupOutcome? cleanup, CcDirector.Core.Tenancy.TenantId? tenant = null)
+        string? raw, CleanupOutcome? cleanup, CcDirector.Core.Tenancy.TenantId? tenant = null,
+        string? source = null)
     {
         var log = tenant is { } tv ? TranscriptionHistoryLog.ForTenant(tv) : _history;
         var finalText = cleanup?.Text ?? raw;
@@ -215,6 +226,30 @@ public sealed class GatewayTranscriptionService
             CharCount = finalText?.Length ?? 0,
             WordCount = CountWords(finalText),
         });
+
+        // Store the transcript itself (issue #509), beside the health write and in the SAME swallow-and-log
+        // guard so a persistence problem never fails a live turn. Only a turn that actually produced text is
+        // stored - the error outcomes pass raw=null, and an empty raw is nothing to mine - so the 10,000-row
+        // cap is spent on real transcripts, never on failures. The tenant is always concrete on the production
+        // path; it defaults to Local when absent, with no IsHosted branch (self-host is just one tenant).
+        if (_transcripts is not null && !string.IsNullOrEmpty(raw))
+        {
+            try
+            {
+                _transcripts.Append(
+                    tenant: tenant ?? CcDirector.Core.Tenancy.TenantId.Local,
+                    source: string.IsNullOrWhiteSpace(source) ? "gateway" : source,
+                    rawText: raw,
+                    cleanedText: cleanup?.Text ?? raw,
+                    cleanupApplied: cleanup?.Applied ?? false,
+                    turnId: turnId,
+                    nowUtc: DateTime.UtcNow);
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[GatewayTranscriptionService] transcript store append FAILED (swallowed): {ex.Message}");
+            }
+        }
     }
 
     private static int CountWords(string? text)

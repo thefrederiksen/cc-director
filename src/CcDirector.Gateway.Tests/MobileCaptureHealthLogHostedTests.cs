@@ -5,23 +5,19 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// MTR-10 Gap H3. <see cref="MobileCaptureHealthLog.Persist"/> is the ONE hosted write path into the
-/// dictation session log - both the Voice complete path and the durable Terminal/Chat Send complete path
-/// route through it. That log appends every record to ONE process/user file
-/// (<c>dictation/sessions/YYYY-MM-DD.jsonl</c>) under a single static lock, with no tenant in the path,
-/// no tenant in the API and no per-tenant lock. The record carries <c>CleanedTranscript</c> - the
-/// customer's spoken text - so on a multi-tenant hosted Gateway two tenants' records would mix at rest in
-/// that one file and contend on that one lock. It is a LOCAL self-host diagnostic aid - write-only, no
-/// reader, no hosted read route - so the fix mirrors the archive skip beside it (#1985): stop the write on
-/// hosted.
+/// Retirement regression for issue #509. <see cref="MobileCaptureHealthLog.Persist"/> used to append every
+/// capture-health record - INCLUDING the customer's cleaned transcript - to the host-global
+/// <c>dictation/sessions/YYYY-MM-DD.jsonl</c> flat file, which had to be SKIPPED on hosted because that one
+/// unpartitioned file mixed every tenant's transcript at rest. Issue #509 retired that flat file entirely: the
+/// transcript is now stored per-tenant in the <c>dictation_transcripts</c> table by the transcription service,
+/// and this hook is a log-only diagnostic. So the flat file must now be written on NEITHER surface - the old
+/// hosted skip-gate is gone because there is nothing left to gate.
 ///
-/// These tests pin BOTH directions of that gate, because a guard has two failure directions: under-refusing
-/// on hosted mixes cross-tenant transcript text at rest, and over-refusing on self-host silently deletes the
-/// diagnostic the log exists to provide.
+/// These pin the retirement in BOTH directions the old gate cared about: it must stay unwritten on hosted (no
+/// cross-tenant transcript text at rest) AND on self-host (the flat file is genuinely gone, not merely gated).
 ///
-/// In the <c>GatewayHostedMode</c> collection because it sets the process-wide <c>CC_GATEWAY_HOSTED</c>
-/// variable (that collection runs alone, so no other test reads the mode - or the storage root - this one is
-/// flipping).
+/// In the <c>GatewayHostedMode</c> collection because it sets the process-wide storage root and hosted-mode
+/// variables (that collection runs alone, so no other test reads the root or mode this one is flipping).
 /// </summary>
 [Collection("GatewayHostedMode")]
 public sealed class MobileCaptureHealthLogHostedTests : IDisposable
@@ -47,14 +43,11 @@ public sealed class MobileCaptureHealthLogHostedTests : IDisposable
     }
 
     [Fact]
-    public void Persist_OnHosted_TwoTenantsWriteNothingToTheSharedLog()
+    public void Persist_OnHosted_WritesNothingToTheRetiredFlatLog()
     {
-        // The Gap H3 property: on hosted, no capture-health record lands at rest, so two tenants can neither
-        // SHARE the one daily file nor contend on the one static lock. Before the fix BOTH records append to
-        // that single file, mixing tenant A's and tenant B's cleaned transcript text; after the fix the
-        // hosted write is skipped and there is nothing to mix. (The gate returns before the background
-        // append is ever queued, so the file is never created - a bounded grace still lets any stray append
-        // land before we assert.)
+        // Still true after the retirement, now because the flat file is gone entirely rather than gated: no
+        // capture-health record lands at rest, so two tenants can neither share the one daily file nor contend
+        // on the one static lock.
         Environment.SetEnvironmentVariable(GatewayHostedMode.HostedEnvVar, "1");
 
         MobileCaptureHealthLog.Persist(
@@ -69,20 +62,19 @@ public sealed class MobileCaptureHealthLogHostedTests : IDisposable
     }
 
     [Fact]
-    public void Persist_OnSelfHost_StillWritesTheDiagnostic()
+    public void Persist_OnSelfHost_AlsoWritesNothingToTheRetiredFlatLog()
     {
-        // The OTHER failure direction: the hosted gate must not become a blanket break. Self-host - and a
-        // self-host Gateway - is single-tenant, and this log is the diagnostic that catches a mobile capture
-        // silently dropping half the speech, so it must keep working exactly as before.
+        // The other direction: the flat log is RETIRED, not merely hosted-gated, so even single-tenant
+        // self-host no longer writes it. The transcript that used to justify this file is now stored
+        // per-tenant by the transcription service (dictation_transcripts), so nothing is lost.
         Environment.SetEnvironmentVariable(GatewayHostedMode.HostedEnvVar, "0");
 
         MobileCaptureHealthLog.Persist(
             uploadId: "self-host-upload", source: "mobile", recordedMs: 5_000, decodedSeconds: 4.5,
             sourceBytes: 4096, audioBytes: 8192, cleaned: "self host words");
 
-        var lines = WaitForSessionLogLines(expected: 1);
-        Assert.Single(lines);
-        Assert.Contains("self host words", lines[0]);
+        Thread.Sleep(250); // grace for any (mis)queued background append to land before we assert emptiness
+        Assert.Empty(SessionLogLines());
     }
 
     // ===== helpers =================================================================================
@@ -94,19 +86,5 @@ public sealed class MobileCaptureHealthLogHostedTests : IDisposable
     {
         var path = SessionLogPath();
         return File.Exists(path) ? File.ReadAllLines(path) : Array.Empty<string>();
-    }
-
-    // Persist appends on a background task, so the self-host write is not visible synchronously. Poll for it
-    // up to a bounded deadline rather than sleeping a fixed amount.
-    private static string[] WaitForSessionLogLines(int expected)
-    {
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
-        while (DateTime.UtcNow < deadline)
-        {
-            var lines = SessionLogLines();
-            if (lines.Length >= expected) return lines;
-            Thread.Sleep(50);
-        }
-        return SessionLogLines();
     }
 }

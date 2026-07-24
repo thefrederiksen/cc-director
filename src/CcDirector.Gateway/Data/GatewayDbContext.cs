@@ -91,6 +91,10 @@ public sealed class GatewayDbContext : DbContext
     /// <summary>Mission WHY notes (<c>mission_notes</c>), keyed by the normalized mission name.</summary>
     public DbSet<MissionNoteEntity> MissionNotes => Set<MissionNoteEntity>();
 
+    /// <summary>Stored dictation transcripts (<c>dictation_transcripts</c>, issue #509) - the raw and cleaned
+    /// transcript per utterance, per tenant, write-only, for later mistranscription mining (devthrottle #2075).</summary>
+    public DbSet<DictationTranscriptEntity> DictationTranscripts => Set<DictationTranscriptEntity>();
+
     /// <summary>The append-only governance audit trail (<c>governance_audit_events</c>) - structured
     /// intervention and permission/sandbox decisions, never inferred from transcripts (issue #1771).</summary>
     public DbSet<GovernanceAuditEventEntity> GovernanceAuditEvents => Set<GovernanceAuditEventEntity>();
@@ -330,6 +334,20 @@ public sealed class GatewayDbContext : DbContext
             b.HasKey(e => new { e.TenantId, e.Key });
         });
 
+        modelBuilder.Entity<DictationTranscriptEntity>(b =>
+        {
+            b.ToTable("dictation_transcripts");
+            // COMPOSITE primary key (tenant_id, Id) - the established per-tenant key pattern (issue #509). The
+            // store mints a random GUID Id per row, per tenant, so scoping the key by tenant lets each tenant
+            // own its own id space (and two tenants can never collide on a row id). Id is never caller-supplied.
+            b.HasKey(e => new { e.TenantId, e.Id });
+            b.Property(e => e.Id);
+            // Retention (delete rows older than 30 days, and any beyond the newest 10,000 per tenant) and any
+            // future read scan by time - both lead with tenant_id so they ride the global query filter's
+            // "tenant_id = @t" prefix rather than forcing a cross-tenant scan.
+            b.HasIndex(e => new { e.TenantId, e.TimestampUtc });
+        });
+
         modelBuilder.Entity<TenantSettingEntity>(b =>
         {
             b.ToTable("tenant_settings");
@@ -445,6 +463,7 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<MissionNoteEntity>(modelBuilder);
         ApplyTenantScope<GovernanceAuditEventEntity>(modelBuilder);
         ApplyTenantScope<TenantSettingEntity>(modelBuilder);
+        ApplyTenantScope<DictationTranscriptEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
 
