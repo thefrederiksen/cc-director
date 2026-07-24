@@ -181,6 +181,31 @@ Round 4 found 3 (docs/reviews/codex-inspection-round4.md). ALL FIXED:
   leftover (drops it when gone/cleared, leaves it when a reservation covers it, keeps it when still
   locked). Banner text corrected to the true promise. Test: Reap_RetriesAPersistedLeftover.
 All three fail-on-purpose verified (guard neutered -> red -> restored -> green). Pushed at d4195ff8.
-Avalonia full suite 294 green. Core full suite running. Gateway suite next (machine-wide lock).
-Round-5 Codex inspection running as VISIBLE session ba6c64ff -> docs/reviews/codex-inspection-round5.md
-(prompt: codex-inspection-round5-prompt.md). PASS + three-suite green -> MERGE.
+
+## Codex round 5 = FAIL -> fixed (2026-07-24)
+Round 5 (visible session ba6c64ff) found 7 (5 blocker, 2 major) in docs/reviews/codex-inspection-round5.md.
+ALL verified against the code and fixed:
+- #4 (BLOCKER) a newly active session connection served the PRIOR connection's roster as fresh+Online
+  until it pushed (RegisterConnection never reset ReceivedAtUtc). FIX (commit a67ecf50): reset it on a
+  genuine supersede -> the interval fails closed (pull). Test: NewActiveConnection_...DoesNotServe...
+- #1 (BLOCKER) the reservation was a stale snapshot, not an exclusion (read once before the loop; the
+  session process starts BEFORE its reservation is written). FIX (commit 2b8d2ca2): reserve BEFORE the
+  process starts, machine-wide lock file serialising reserve-write vs the reaper's reservation-check +
+  removal, reservation re-read INSIDE the lock per worktree. No check-to-remove gap.
+- #2 (BLOCKER) reservation create/read failed open. FIX: tri-state owner liveness (Gone=prune,
+  Unknown=keep/fail-safe, reused-pid=prune); enumeration failure THROWS -> reaper aborts. Tests:
+  Reservation_WhoseOwnerCannotBeInspected_IsKept, _PidWasReused_IsPruned, critical-section exclusion.
+- #3 (BLOCKER) leftover retry could delete a NEW worktree reusing a former leftover path. FIX: leftover
+  records its repo; retry scoped to that repo; skip+drop if git registers the path again; skip if a live
+  reservation covers it. Test: Reap_LeftoverRetry_NeverDeletesANewWorktreeReusingThePath (fail-first proven).
+- #6 (BLOCKER) junction/symlink alias bypassed roster+reservation (lexical normalize). FIX: NormalizePath
+  resolves the real path via GetFinalPathNameByHandle. Test: Reap_ResolvesAJunctionAlias (fail-first proven).
+- #5 (MAJOR) cancel discarded completed outcomes; a cancel mid-remove could leak a deregistered worktree.
+  FIX: destructive git steps non-cancellable (run to completion); cancel between worktrees returns
+  BuildResult preserving outcomes.
+- #7 (MAJOR) leftover record could be lost after git deregistered. FIX: record BEFORE the physical delete;
+  atomic (temp+move) store writes.
+Also fixed a real guard failure the full Core suite caught: the two new stores composed the storage root
+by hand (StorageRootGuardTests) -> routed both through CcStorage.WorktreeReservations/WorktreeLeftovers.
+Core reaper+reservation+guard suite 31 green. Avalonia 294 green (round-4). Full Core re-running; Gateway
+suite blocked on the machine-wide lock (other worktrees). Round-6 Codex inspection next -> then MERGE.
