@@ -11,6 +11,9 @@ public sealed record BranchInfo
     /// <summary>True when the branch is checked out in some linked worktree (never deletable).</summary>
     public bool CheckedOutInWorktree { get; init; }
 
+    /// <summary>The commit the branch pointed at when the verdict was computed - deletion binds to it.</summary>
+    public string TipCommit { get; init; } = "";
+
     public int AheadOfMain { get; init; }
     public int BehindMain { get; init; }
     public bool OriginBranchExists { get; init; }
@@ -79,7 +82,7 @@ public sealed class GitBranchService
         var list = await _git.RunAsync(repoPath, new[]
         {
             "for-each-ref", "refs/heads",
-            "--format=%(HEAD)%09%(refname:short)%09%(committerdate:unix)"
+            "--format=%(HEAD)%09%(refname:short)%09%(committerdate:unix)%09%(objectname)"
         }, ct);
         if (!list.Success)
             return results;
@@ -90,13 +93,14 @@ public sealed class GitBranchService
         foreach (var raw in list.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
             var parts = raw.Split('\t');
-            if (parts.Length < 3)
+            if (parts.Length < 4)
                 continue;
             bool isCurrent = parts[0].Trim() == "*";
             var name = parts[1].Trim();
             DateTime? lastCommit = long.TryParse(parts[2].Trim(), out var unix)
                 ? DateTimeOffset.FromUnixTimeSeconds(unix).UtcDateTime
                 : null;
+            var tip = parts[3].Trim();
 
             bool inspectionOk = mainRef != null;
             bool originGone = false, containedInMain = false, prMerged = false;
@@ -134,6 +138,7 @@ public sealed class GitBranchService
                 Name = name,
                 IsCurrent = isCurrent,
                 CheckedOutInWorktree = inWorktree,
+                TipCommit = tip,
                 AheadOfMain = ahead,
                 BehindMain = behind,
                 OriginBranchExists = !originGone && mainRef != null,
@@ -148,7 +153,9 @@ public sealed class GitBranchService
 
     /// <summary>
     /// Deletes a branch AFTER re-verifying its safe-delete verdict right now. Fail closed: any
-    /// verdict other than safe refuses, with the reason.
+    /// verdict other than safe refuses, with the reason. The deletion binds to the verified tip:
+    /// if a concurrent commit moves the branch between the verdict and the delete, git refuses
+    /// and the branch survives.
     /// </summary>
     public async Task<(bool Deleted, string Message)> DeleteIfSafeAsync(string repoPath, string branch, CancellationToken ct = default)
     {
@@ -158,11 +165,35 @@ public sealed class GitBranchService
             return (false, $"branch not found: {branch}");
         if (!current.SafeToDelete)
             return (false, current.Explanation);
+        if (string.IsNullOrWhiteSpace(current.TipCommit))
+            return (false, $"could not read the verified tip of {branch} - not deleted");
 
-        var del = await _git.RunAsync(repoPath, new[] { "branch", "-D", branch }, ct);
-        return del.Success
-            ? (true, $"deleted {branch} ({current.Explanation})")
-            : (false, del.Error);
+        return await DeleteAtVerifiedTipAsync(repoPath, branch, current.TipCommit, current.Explanation, ct);
+    }
+
+    /// <summary>
+    /// The atomic delete: <c>git update-ref -d refs/heads/&lt;name&gt; &lt;verified-sha&gt;</c>.
+    /// Git refuses when the ref no longer points at the verified commit, which closes the
+    /// time-of-check to time-of-use window a plain force delete leaves open. On success the
+    /// branch's config section is cleaned up, as <c>git branch -D</c> would have done.
+    /// </summary>
+    internal async Task<(bool Deleted, string Message)> DeleteAtVerifiedTipAsync(
+        string repoPath, string branch, string verifiedSha, string explanation, CancellationToken ct = default)
+    {
+        var del = await _git.RunAsync(repoPath, new[] { "update-ref", "-d", $"refs/heads/{branch}", verifiedSha }, ct);
+        if (!del.Success)
+        {
+            FileLog.Write($"[GitBranchService] delete refused for {branch}: ref no longer at {verifiedSha}: {del.Error.Trim()}");
+            return (false, $"branch moved since it was verified - not deleted");
+        }
+
+        // git branch -D removes the branch's config section; update-ref does not, so clean it up.
+        // A branch without any config has no section - that outcome is expected, not an error.
+        var cleanup = await _git.RunAsync(repoPath, new[] { "config", "--remove-section", $"branch.{branch}" }, ct);
+        if (!cleanup.Success && !cleanup.Error.Contains("no such section", StringComparison.OrdinalIgnoreCase))
+            FileLog.Write($"[GitBranchService] config cleanup for {branch} reported: {cleanup.Error.Trim()}");
+
+        return (true, $"deleted {branch} ({explanation})");
     }
 
     private async Task<HashSet<string>> BranchesCheckedOutInWorktreesAsync(string repoPath, CancellationToken ct)

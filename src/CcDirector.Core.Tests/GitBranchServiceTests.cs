@@ -176,6 +176,59 @@ public sealed class GitBranchServiceTests : IDisposable
     }
 
     // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection finding F3): deletion binds to the verified tip. When the branch
+    // moves between the verdict and the delete (a concurrent commit), git refuses and the
+    // branch - including the new commit - survives.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Delete_WithAStaleVerifiedTip_IsRefused_AndTheBranchSurvives()
+    {
+        RunGit(_repo, "checkout", "-b", "moving");
+        WriteFile("m1.txt", "one\n");
+        RunGit(_repo, "add", "-A");
+        RunGit(_repo, "commit", "-m", "first commit");
+        var verifiedTip = RunGit(_repo, "rev-parse", "moving").Trim();
+
+        // The concurrent commit: the branch tip moves AFTER the verdict was computed.
+        WriteFile("m2.txt", "two\n");
+        RunGit(_repo, "add", "-A");
+        RunGit(_repo, "commit", "-m", "commit that arrived after verification");
+        RunGit(_repo, "checkout", "main");
+
+        var svc = new GitBranchService();
+        var (deleted, message) = await svc.DeleteAtVerifiedTipAsync(_repo, "moving", verifiedTip, "test");
+
+        Assert.False(deleted);
+        Assert.Contains("moved since it was verified", message);
+        var branches = await svc.ListAsync(_repo);
+        var survivor = Assert.Single(branches, b => b.Name == "moving");
+        Assert.NotEqual(verifiedTip, survivor.TipCommit); // the newer commit is intact
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // The success path of the atomic delete also cleans up the branch's config section.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Delete_SafeBranch_RemovesTheBranchConfigSection()
+    {
+        RunGit(_repo, "checkout", "-b", "tidy");
+        WriteFile("t.txt", "t\n");
+        RunGit(_repo, "add", "-A");
+        RunGit(_repo, "commit", "-m", "tidy work");
+        RunGit(_repo, "push", "-u", "origin", "tidy"); // -u writes branch.tidy.remote and .merge
+        RunGit(_repo, "checkout", "main");
+        RunGit(_repo, "merge", "--ff-only", "tidy");
+        RunGit(_repo, "push", "origin", "main");
+
+        var svc = new GitBranchService();
+        var (deleted, msg) = await svc.DeleteIfSafeAsync(_repo, "tidy");
+        Assert.True(deleted, msg);
+
+        Assert.DoesNotContain("tidy", (await svc.ListAsync(_repo)).Select(b => b.Name));
+        Assert.Throws<InvalidOperationException>(() => RunGit(_repo, "config", "--get", "branch.tidy.merge"));
+    }
+
+    // ---------------------------------------------------------------------------------------
     // REGRESSION (inspection finding F2): C2 must test the CONFIGURED upstream, not
     // origin/<local-name>. A branch tracking a differently named upstream ref that still
     // exists must NOT be ruled origin-gone (before the fix it was, and was deletable).
