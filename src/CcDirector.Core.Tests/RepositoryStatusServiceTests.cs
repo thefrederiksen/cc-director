@@ -24,6 +24,56 @@ public class RepositoryStatusClassifyTests
 }
 
 /// <summary>
+/// REGRESSION (inspection finding F7): the size walk honors cancellation during enumeration and
+/// never stores a partial (lying) measurement. No file caps or byte budgets exist - the walk
+/// either finishes or is cancelled cleanly.
+/// </summary>
+public sealed class WorktreeSizeMeasurementTests : IDisposable
+{
+    private readonly string _dir;
+
+    public WorktreeSizeMeasurementTests()
+    {
+        _dir = Path.Combine(Path.GetTempPath(), "ccd-size-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_dir);
+        for (int i = 0; i < 5; i++)
+            File.WriteAllText(Path.Combine(_dir, $"f{i}.txt"), new string('x', 10));
+    }
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_dir, recursive: true); } catch { }
+    }
+
+    [Fact]
+    public void Measure_Cancelled_Throws_AndStoresNoPartialResult()
+    {
+        var stamp = new DateTime(2026, 07, 23, 10, 0, 0, DateTimeKind.Utc);
+        var w = new WorktreeInfo { Path = _dir, Branch = "b", LastActivityUtc = stamp };
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        Assert.Throws<OperationCanceledException>(
+            () => RepositoryStatusService.MeasureWorktreeBytes(w, cts.Token));
+
+        // A partial measurement must not have been cached: the uncancelled walk returns the
+        // FULL size (a cached partial with the same activity stamp would short-circuit here).
+        Assert.Equal(50, RepositoryStatusService.MeasureWorktreeBytes(w, CancellationToken.None));
+    }
+
+    [Fact]
+    public void Measure_Uncancelled_ReturnsTheFullSize_AndCachesIt()
+    {
+        var stamp = new DateTime(2026, 07, 23, 11, 0, 0, DateTimeKind.Utc);
+        var w = new WorktreeInfo { Path = _dir, Branch = "b", LastActivityUtc = stamp };
+
+        Assert.Equal(50, RepositoryStatusService.MeasureWorktreeBytes(w, CancellationToken.None));
+        // Second call with the same stamp hits the cache, cancellation not consulted before it.
+        Assert.Equal(50, RepositoryStatusService.MeasureWorktreeBytes(w, CancellationToken.None));
+    }
+}
+
+/// <summary>
 /// Integration tests over real repositories: a repo's status folds in its remote provider, its
 /// uncommitted count, and its worktree summary.
 /// </summary>

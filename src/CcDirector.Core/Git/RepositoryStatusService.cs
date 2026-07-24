@@ -88,7 +88,7 @@ public sealed class RepositoryStatusService
             // every surface renders from this one model, and "reap N GB" is quoted from it.
             var worktrees = inventory.Worktrees
                 .Where(w => !w.IsPrimary)
-                .Select(w => w with { SizeBytes = MeasureWorktreeBytes(w) })
+                .Select(w => w with { SizeBytes = MeasureWorktreeBytes(w, ct) })
                 .ToList();
 
             return new RepositoryStatus
@@ -115,6 +115,12 @@ public sealed class RepositoryStatusService
                 Success = true,
             };
         }
+        catch (OperationCanceledException)
+        {
+            // A cancelled compute was superseded - the caller owns that outcome; never fold it
+            // into a failure status.
+            throw;
+        }
         catch (Exception ex)
         {
             FileLog.Write($"[RepositoryStatusService] GetStatusAsync FAILED: {ex.Message}");
@@ -128,7 +134,12 @@ public sealed class RepositoryStatusService
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime? Stamp, long Bytes)> SizeCache
         = new(StringComparer.OrdinalIgnoreCase);
 
-    private static long? MeasureWorktreeBytes(WorktreeInfo w)
+    /// <summary>
+    /// Measures a worktree's on-disk size, honoring cancellation DURING the walk: a superseded
+    /// compute stops immediately and stores nothing. Deliberately no file caps or byte budgets -
+    /// a silently truncated size would be a lie; either the walk finishes or it is cancelled.
+    /// </summary>
+    internal static long? MeasureWorktreeBytes(WorktreeInfo w, CancellationToken ct)
     {
         try
         {
@@ -148,12 +159,17 @@ public sealed class RepositoryStatusService
             };
             foreach (var file in Directory.EnumerateFiles(w.Path, "*", options))
             {
+                ct.ThrowIfCancellationRequested();
                 try { bytes += new FileInfo(file).Length; }
                 catch { /* transient file - skip */ }
             }
 
             SizeCache[key] = (w.LastActivityUtc, bytes);
             return bytes;
+        }
+        catch (OperationCanceledException)
+        {
+            throw; // a partial measurement is never stored or returned
         }
         catch (Exception ex)
         {
