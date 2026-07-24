@@ -104,6 +104,11 @@ public sealed class GatewayDbContext : DbContext
     /// intervention and permission/sandbox decisions, never inferred from transcripts (issue #1771).</summary>
     public DbSet<GovernanceAuditEventEntity> GovernanceAuditEvents => Set<GovernanceAuditEventEntity>();
 
+    /// <summary>The append-only activity ledger (<c>activity_events</c>) - submission, terminal-output,
+    /// state-transition, transcript and snooze lifecycle evidence, per tenant, retained 30 days (the
+    /// trustworthy-Working-start plan, docs/PLAN-trustworthy-working-start-2026-07-24.md).</summary>
+    public DbSet<ActivityEventEntity> ActivityEvents => Set<ActivityEventEntity>();
+
     /// <summary>Per-tenant setting overrides (<c>tenant_settings</c>, issue #2017) - the per-tenant home the
     /// AI / voice / car-mode / notification settings needed before they could be served on the hosted Gateway.
     /// Tenant-scoped: an absent row means "no override" and the typed resolver returns the operator global
@@ -374,6 +379,24 @@ public sealed class GatewayDbContext : DbContext
             b.HasIndex(e => new { e.TenantId, e.DismissedAtUtc });
         });
 
+        modelBuilder.Entity<ActivityEventEntity>(b =>
+        {
+            b.ToTable("activity_events");
+            // COMPOSITE primary key (tenant_id, EventId): the EventId is CALLER-SUPPLIED (the producer mints
+            // it once before its outbox, so a retried batch replays the same identity and the append is
+            // idempotent). A caller-supplied key must carry the tenant in the primary key - one tenant
+            // replaying an id another tenant holds must neither collide (a squat) nor learn of the
+            // collision (an existence oracle).
+            b.HasKey(e => new { e.TenantId, e.EventId });
+            b.Property(e => e.EventId);
+            // The read paths, each tenant-leading so they ride the global filter's "tenant_id = @t" prefix:
+            // a session's timeline (diagnosis + the 30-day retention scan on OccurredUtc), a Director's
+            // sequence range (retry/reorder checks), and a shadow-analysis scan by event type over a window.
+            b.HasIndex(e => new { e.TenantId, e.SessionId, e.OccurredUtc });
+            b.HasIndex(e => new { e.TenantId, e.DirectorId, e.DirectorSequence });
+            b.HasIndex(e => new { e.TenantId, e.EventType, e.OccurredUtc });
+        });
+
         modelBuilder.Entity<TenantSettingEntity>(b =>
         {
             b.ToTable("tenant_settings");
@@ -502,6 +525,7 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<DictationTranscriptEntity>(modelBuilder);
         ApplyTenantScope<WorkflowTenantOverrideEntity>(modelBuilder);
         ApplyTenantScope<DictationSuggestionDismissalEntity>(modelBuilder);
+        ApplyTenantScope<ActivityEventEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
 

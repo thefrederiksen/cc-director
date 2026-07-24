@@ -59,13 +59,14 @@ public sealed class PostgresProviderProofTests
     /// were created. Dropping first (EnsureDeleted) makes the migrate a genuine from-nothing run so the schema
     /// creation is really exercised, not just found already present.
     /// </summary>
-    /// <summary>The 18 mapped tables, all expected under the gateway schema and NONE under public.</summary>
+    /// <summary>The 22 mapped tables, all expected under the gateway schema and NONE under public.</summary>
     private static readonly string[] MappedTables =
     {
         "cron_jobs", "cron_runs", "worklists", "worklist_items", "workflows", "workflow_versions",
         "workflow_files", "workflow_runs", "snoozes", "governance_events", "push_subscriptions",
         "wingman_instructions", "session_spend", "account_hosted_ai_spend", "mission_notes",
         "governance_audit_events", "device_credentials", "device_import_markers",
+        "dictation_transcripts", "tenant_settings", "workflow_tenant_overrides", "activity_events",
     };
 
     [RequiresPostgresFact]

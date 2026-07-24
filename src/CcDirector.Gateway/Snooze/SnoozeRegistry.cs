@@ -43,6 +43,7 @@ public sealed class SnoozeRegistry
     private readonly object _gate = new();
     private readonly GatewayDatabase _db;
     private readonly string _legacyJsonPath;
+    private readonly Activity.ActivityEventStore? _activityEvents;
 
     private static readonly JsonSerializerOptions FileJsonOptions = new()
     {
@@ -53,14 +54,19 @@ public sealed class SnoozeRegistry
     /// <param name="db">The Gateway EF database this registry reads and writes through.</param>
     /// <param name="legacyJsonPath">The legacy <c>snooze.json</c> path to import ONCE if it exists and the
     /// table is empty. REQUIRED (no silent default).</param>
+    /// <param name="activityEvents">The durable activity ledger this registry appends its snooze lifecycle
+    /// decisions to (created / landed / ended, each with the durable WHY - the July 24 requirement that a
+    /// deleted snooze be self-explanatory from structured history). Optional: null means no ledger (older
+    /// tests), and a ledger fault never fails the snooze operation it observes.</param>
     /// <exception cref="ArgumentNullException">The database is null.</exception>
     /// <exception cref="ArgumentException">The legacy path is null/empty/whitespace.</exception>
-    public SnoozeRegistry(GatewayDatabase db, string legacyJsonPath)
+    public SnoozeRegistry(GatewayDatabase db, string legacyJsonPath, Activity.ActivityEventStore? activityEvents = null)
     {
         _db = db ?? throw new ArgumentNullException(nameof(db));
         if (string.IsNullOrWhiteSpace(legacyJsonPath))
             throw new ArgumentException("legacy json path is required", nameof(legacyJsonPath));
         _legacyJsonPath = legacyJsonPath;
+        _activityEvents = activityEvents;
 
         lock (_gate)
             ImportLegacyJsonIfNeeded();
@@ -147,10 +153,17 @@ public sealed class SnoozeRegistry
 
         lock (_gate)
         {
-            using var ctx = _db.CreateContext();
-            Upsert(ctx, sessionId, untilUtc.ToUniversalTime(), directorId ?? "", null, ownerTurnBaselineUtc);
-            ctx.SaveChanges();
+            string previousState;
+            using (var ctx = _db.CreateContext())
+            {
+                previousState = StateOf(Find(ctx, sessionId, tracking: false));
+                Upsert(ctx, sessionId, untilUtc.ToUniversalTime(), directorId ?? "", null, ownerTurnBaselineUtc);
+                ctx.SaveChanges();
+            }
             FileLog.Write($"[SnoozeRegistry] Snooze: sid={sessionId}, untilUtc={untilUtc.ToUniversalTime():O}, director={directorId}");
+            RecordLifecycleEvent(Contracts.ActivityEventTypes.SnoozeCreated, sessionId, directorId,
+                Contracts.ActivityCauses.SnoozeRequested, previousState, HoldStates.Held,
+                $"until={untilUtc.ToUniversalTime():O}");
         }
     }
 
@@ -174,10 +187,17 @@ public sealed class SnoozeRegistry
 
         lock (_gate)
         {
-            using var ctx = _db.CreateContext();
-            Upsert(ctx, sessionId, null, directorId ?? "", minutes, ownerTurnBaselineUtc);
-            ctx.SaveChanges();
+            string previousState;
+            using (var ctx = _db.CreateContext())
+            {
+                previousState = StateOf(Find(ctx, sessionId, tracking: false));
+                Upsert(ctx, sessionId, null, directorId ?? "", minutes, ownerTurnBaselineUtc);
+                ctx.SaveChanges();
+            }
             FileLog.Write($"[SnoozeRegistry] SnoozeDeferred: sid={sessionId}, minutes={minutes} (clock starts when the work ends), director={directorId}");
+            RecordLifecycleEvent(Contracts.ActivityEventTypes.SnoozeCreated, sessionId, directorId,
+                Contracts.ActivityCauses.SnoozeRequested, previousState, HoldStates.DeferredHold,
+                $"minutes={minutes}");
         }
     }
 
@@ -212,8 +232,12 @@ public sealed class SnoozeRegistry
             var untilUtc = nowUtc.ToUniversalTime().AddMinutes(minutes);
             e.SnoozeUntilUtc = untilUtc;
             e.PendingMinutes = null;
+            var directorId = e.DirectorId;
             ctx.SaveChanges();
             FileLog.Write($"[SnoozeRegistry] Land: sid={sessionId}, deferred hold landed -> clock started, untilUtc={untilUtc:O} ({minutes} min)");
+            RecordLifecycleEvent(Contracts.ActivityEventTypes.SnoozeLanded, sessionId, directorId,
+                Contracts.ActivityCauses.WorkSettled, HoldStates.DeferredHold, HoldStates.Held,
+                $"until={untilUtc:O}; minutes={minutes}");
             return true;
         }
     }
@@ -222,18 +246,27 @@ public sealed class SnoozeRegistry
     /// Remove the snooze entry for <paramref name="sessionId"/>. Returns true when an entry was
     /// removed (and persisted), false when there was none. This is the ONE clear path - a manual
     /// unsnooze, the #470 early return, and the post-expiry confirm all funnel through it.
+    /// <paramref name="cause"/> is REQUIRED - the caller must say WHY the snooze is ending (an
+    /// <c>ActivityCauses</c> value, e.g. manual-release or session-exit), because "why did this snooze
+    /// end" is the durable fact the July 24 incident was missing. The registry itself records
+    /// timer-expired instead when the entry's clock had already elapsed - the timer ended that snooze,
+    /// this clear only retired the tombstone.
     /// </summary>
-    public bool Clear(string sessionId)
+    public bool Clear(string sessionId, string cause)
     {
         if (string.IsNullOrWhiteSpace(sessionId)) return false;
         lock (_gate)
         {
-            using var ctx = _db.CreateContext();
-            var e = Find(ctx, sessionId);
-            if (e is null) return false;
-            ctx.Snoozes.Remove(e);
-            ctx.SaveChanges();
-            FileLog.Write($"[SnoozeRegistry] Clear: sid={sessionId}");
+            SnoozeEntity? removed;
+            using (var ctx = _db.CreateContext())
+            {
+                removed = Find(ctx, sessionId);
+                if (removed is null) return false;
+                ctx.Snoozes.Remove(removed);
+                ctx.SaveChanges();
+            }
+            FileLog.Write($"[SnoozeRegistry] Clear: sid={sessionId}, cause={cause}");
+            RecordSnoozeEnded(removed, cause);
             return true;
         }
     }
@@ -257,13 +290,17 @@ public sealed class SnoozeRegistry
         if (string.IsNullOrWhiteSpace(sessionId)) return false;
         lock (_gate)
         {
-            using var ctx = _db.CreateContext();
-            var e = Find(ctx, sessionId);
-            if (e is null || e.SnoozeUntilUtc is null) // no entry, or DEFERRED (no deadline yet) -> spare it
-                return false;
-            ctx.Snoozes.Remove(e);
-            ctx.SaveChanges();
+            SnoozeEntity? removed;
+            using (var ctx = _db.CreateContext())
+            {
+                removed = Find(ctx, sessionId);
+                if (removed is null || removed.SnoozeUntilUtc is null) // no entry, or DEFERRED (no deadline yet) -> spare it
+                    return false;
+                ctx.Snoozes.Remove(removed);
+                ctx.SaveChanges();
+            }
             FileLog.Write($"[SnoozeRegistry] ClearIfArmed: sid={sessionId} (armed snooze deleted - the session is working again, and work ends a snooze)");
+            RecordSnoozeEnded(removed, Contracts.ActivityCauses.WorkingObservation);
             return true;
         }
     }
@@ -278,14 +315,19 @@ public sealed class SnoozeRegistry
         if (string.IsNullOrWhiteSpace(directorId)) return 0;
         lock (_gate)
         {
-            using var ctx = _db.CreateContext();
-            var gone = ctx.Snoozes.Where(e => e.DirectorId == directorId).ToList();
-            if (gone.Count > 0)
+            List<SnoozeEntity> gone;
+            using (var ctx = _db.CreateContext())
             {
-                ctx.Snoozes.RemoveRange(gone);
-                ctx.SaveChanges();
-                FileLog.Write($"[SnoozeRegistry] ClearForDirector: director={directorId}, removed={gone.Count}");
+                gone = ctx.Snoozes.Where(e => e.DirectorId == directorId).ToList();
+                if (gone.Count > 0)
+                {
+                    ctx.Snoozes.RemoveRange(gone);
+                    ctx.SaveChanges();
+                    FileLog.Write($"[SnoozeRegistry] ClearForDirector: director={directorId}, removed={gone.Count}");
+                }
             }
+            foreach (var e in gone)
+                RecordSnoozeEnded(e, Contracts.ActivityCauses.DirectorRemoved);
             return gone.Count;
         }
     }
@@ -304,16 +346,21 @@ public sealed class SnoozeRegistry
         liveSessionIds ??= new HashSet<string>(StringComparer.Ordinal);
         lock (_gate)
         {
-            using var ctx = _db.CreateContext();
-            var gone = ctx.Snoozes.Where(e => e.DirectorId == directorId).ToList()
-                .Where(e => !liveSessionIds.Contains(e.SessionId))
-                .ToList();
-            if (gone.Count > 0)
+            List<SnoozeEntity> gone;
+            using (var ctx = _db.CreateContext())
             {
-                ctx.Snoozes.RemoveRange(gone);
-                ctx.SaveChanges();
-                FileLog.Write($"[SnoozeRegistry] PruneNotLive: director={directorId}, removed={gone.Count}");
+                gone = ctx.Snoozes.Where(e => e.DirectorId == directorId).ToList()
+                    .Where(e => !liveSessionIds.Contains(e.SessionId))
+                    .ToList();
+                if (gone.Count > 0)
+                {
+                    ctx.Snoozes.RemoveRange(gone);
+                    ctx.SaveChanges();
+                    FileLog.Write($"[SnoozeRegistry] PruneNotLive: director={directorId}, removed={gone.Count}");
+                }
             }
+            foreach (var e in gone)
+                RecordSnoozeEnded(e, Contracts.ActivityCauses.SessionNotLive);
             return gone.Count;
         }
     }
@@ -405,13 +452,17 @@ public sealed class SnoozeRegistry
         if (string.IsNullOrWhiteSpace(sessionId) || lastOwnerTurnAtUtc is null) return false;
         lock (_gate)
         {
-            using var ctx = _db.CreateContext();
-            var e = Find(ctx, sessionId);
-            if (e is null) return false;
-            if (!ToRecord(e).SupersededByOwnerTurn(lastOwnerTurnAtUtc)) return false;
-            ctx.Snoozes.Remove(e);
-            ctx.SaveChanges();
-            FileLog.Write($"[SnoozeRegistry] ClearIfSupersededByOwnerTurn: sid={sessionId}, owner drove a turn at {lastOwnerTurnAtUtc:O}, past the baseline {e.OwnerTurnBaselineUtc:O} captured when the hold was set -> hold dropped");
+            SnoozeEntity? removed;
+            using (var ctx = _db.CreateContext())
+            {
+                removed = Find(ctx, sessionId);
+                if (removed is null) return false;
+                if (!ToRecord(removed).SupersededByOwnerTurn(lastOwnerTurnAtUtc)) return false;
+                ctx.Snoozes.Remove(removed);
+                ctx.SaveChanges();
+            }
+            FileLog.Write($"[SnoozeRegistry] ClearIfSupersededByOwnerTurn: sid={sessionId}, owner drove a turn at {lastOwnerTurnAtUtc:O}, past the baseline {removed.OwnerTurnBaselineUtc:O} captured when the hold was set -> hold dropped");
+            RecordSnoozeEnded(removed, Contracts.ActivityCauses.OwnerTurn);
             return true;
         }
     }
@@ -494,6 +545,70 @@ public sealed class SnoozeRegistry
     // same way). The null-forgiving operator only silences the nullable-reference warning; the value flows as-is.
     private static SnoozeEntry ToRecord(SnoozeEntity e)
         => new(e.SessionId, e.SnoozeUntilUtc, e.DirectorId!, e.PendingMinutes, e.OwnerTurnBaselineUtc);
+
+    /// <summary>The hold state an entry represents (None for no entry) - the previous/new state fields of
+    /// the lifecycle events this registry appends to the activity ledger.</summary>
+    private static string StateOf(SnoozeEntity? e)
+        => e is null ? HoldStates.None
+            : e.SnoozeUntilUtc is null ? HoldStates.DeferredHold
+            : HoldStates.Held;
+
+    /// <summary>
+    /// Record that a snooze entry was RETIRED, with the durable why. One honesty rule lives here: when the
+    /// removed entry was ARMED and its deadline had already ELAPSED, the snooze was ended by its TIMER - the
+    /// retiring edge (a working observation, an exit, a manual release) only cleaned up the tombstone - so
+    /// the recorded cause is timer-expired and the edge moves to the detail. That is exactly the distinction
+    /// the July 24 incident needed: "waiting 1h 5m" was the age of the red state, not the snooze ending
+    /// early.
+    /// </summary>
+    private void RecordSnoozeEnded(SnoozeEntity removed, string cause)
+    {
+        var previousState = StateOf(removed);
+        var effectiveCause = cause;
+        string? detail = removed.SnoozeUntilUtc is DateTime untilUtc ? $"until={untilUtc:O}" : null;
+        if (removed.SnoozeUntilUtc is DateTime deadline && DateTime.UtcNow >= deadline)
+        {
+            effectiveCause = Contracts.ActivityCauses.TimerExpired;
+            detail = $"until={deadline:O}; retired-by={cause}";
+        }
+        RecordLifecycleEvent(Contracts.ActivityEventTypes.SnoozeEnded, removed.SessionId, removed.DirectorId,
+            effectiveCause, previousState, HoldStates.None, detail);
+    }
+
+    /// <summary>
+    /// Append one snooze lifecycle event to the durable activity ledger. The ledger OBSERVES the snooze
+    /// machine, it does not participate in it: a ledger fault is logged loudly and never turns a snooze
+    /// operation that already persisted into a failure. Gateway-origin events carry sequence 0 and the
+    /// owning Director's id (or "gateway" when a legacy entry never recorded one).
+    /// </summary>
+    private void RecordLifecycleEvent(string eventType, string sessionId, string? directorId,
+        string cause, string? previousState, string newState, string? detail)
+    {
+        if (_activityEvents is null) return;
+        try
+        {
+            _activityEvents.AppendBatch(new[]
+            {
+                new Contracts.ActivityEventRecord
+                {
+                    EventId = Guid.NewGuid(),
+                    DirectorSequence = 0,
+                    OccurredUtc = DateTime.UtcNow,
+                    DirectorId = string.IsNullOrWhiteSpace(directorId) ? "gateway" : directorId,
+                    SessionId = sessionId,
+                    EventType = eventType,
+                    Cause = cause,
+                    PreviousState = previousState,
+                    NewState = newState,
+                    Detail = detail,
+                },
+            });
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[SnoozeRegistry] activity ledger append FAILED for {eventType}/{cause} sid={sessionId}: {ex.Message}");
+        }
+    }
 
     // ---- one-time legacy JSON import --------------------------------------------------------------
 

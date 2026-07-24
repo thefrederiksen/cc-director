@@ -108,7 +108,7 @@ public sealed class SnoozeLandingObserver
 
         if (string.Equals(activity, nameof(ActivityState.Exited), StringComparison.OrdinalIgnoreCase))
         {
-            if (_registry.Clear(session.SessionId))
+            if (_registry.Clear(session.SessionId, ActivityCauses.SessionExit))
                 FileLog.Write($"[SnoozeLandingObserver] sid={session.SessionId}: session exited -> hold dropped");
             return;
         }
