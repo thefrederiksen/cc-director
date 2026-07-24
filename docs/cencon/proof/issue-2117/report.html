@@ -323,6 +323,20 @@ that failed is shown too.</p>
 existing suite caught that the trial reaches it too - which is the intended behaviour, since both surfaces run
 through the one hosted mint.</p>
 
+<h3>Continuous integration on the pull request</h3>
+<pre>Build &amp; Test (.NET)   pass   31m26s
+Build &amp; Test (web)    pass    1m07s</pre>
+
+<p>The first .NET run on this branch failed on ONE test, and it is worth naming rather than hiding:
+<code>CcDirector.Core.Tests.Tenancy.TenantSessionMapTests.Contend_GetOrAddOnOneKey_HasExactlyOneWinnerPerRound</code>,
+with the message "no round ever ran the value factory more than once, so the callers never actually contended
+for the same key and this test proved nothing". That is the test's own self-check reporting that a loaded
+runner never produced real thread contention - a timing-dependent condition, not an assertion about behaviour.
+It is unrelated to this change on the evidence rather than by assertion: this branch touches no file under
+<code>src/CcDirector.Core</code> at all (<code>git diff origin/main...HEAD -- src/CcDirector.Core/</code> is
+empty), the whole class passes locally on this branch (19 of 19), and the re-run of the same commit passed.
+The Gateway suite passed in that first run too - 3910 tests, 3893 passed, 17 skipped, 0 failed.</p>
+
 <h3>Migration pair is in sync with the model</h3>
 <p>The model change and BOTH migrations are in this one pull request, and each provider's migration set is
 verified in sync with the model:</p>
