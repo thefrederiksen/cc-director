@@ -52,6 +52,35 @@ public class RepositoriesViewRenderTests
     }
 
     // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 2, ruling R2-6): the detail-screen guard fails CLOSED. An
+    // UNKNOWN path (FindForPath returns null - a stale recommendation, a queued navigation
+    // after the monitor removed the entry) must be refused exactly like a provisional one:
+    // only a positively known, verified entry may reach the destructive detail surface.
+    // ---------------------------------------------------------------------------------------
+    [AvaloniaFact]
+    public async Task OpenDetail_UnknownPath_IsRefused_FailClosed()
+    {
+        var monitor = new RepositoryMonitor(
+            enumerate: _ => new[] { "/repo/known" },
+            compute: (p, _, _) => Task.FromResult(new RepositoryStatus { Path = p, Name = "known", Success = true }));
+        await monitor.RescanAsync(new[] { "/roots" });
+
+        var store = new RootDirectoryStore(
+            Path.Combine(Path.GetTempPath(), "ccd-unknownroots-" + Guid.NewGuid().ToString("N") + ".json"));
+        var view = new RepositoriesView();
+        var window = new Window { Content = view, Width = 900, Height = 600 };
+        window.Show();
+        view.Attach(monitor, store, () => { });
+        Dispatcher.UIThread.RunJobs();
+
+        view.OpenDetail("/repo/not-in-the-model"); // the monitor knows nothing about this path
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.False(view.DetailPage.IsVisible); // refused - unknown is not verified
+        Assert.False(view.DetailPage.IsAttached);
+    }
+
+    // ---------------------------------------------------------------------------------------
     // REGRESSION (inspection finding F12): leaving the detail page through ANY path - the rail
     // buttons included - releases its monitor subscriptions, not just the back button.
     // ---------------------------------------------------------------------------------------

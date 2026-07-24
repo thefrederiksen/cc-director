@@ -92,17 +92,20 @@ public partial class RepositoriesView : UserControl
     }
 
     /// <summary>
-    /// Drill into one repository's detail screen. A provisional (still verifying) entry never
-    /// opens it, whatever the route in - the detail screen is an acting surface (stage, commit,
-    /// discard, branch delete) and cached, unverified data must not receive actions.
+    /// Drill into one repository's detail screen. The guard fails CLOSED (ruling R2-6): only a
+    /// positively known, VERIFIED entry opens it - a provisional (still verifying) entry is
+    /// refused, and so is an UNKNOWN path (a stale recommendation or a queued navigation after
+    /// the monitor removed the entry). The detail screen is an acting surface (stage, commit,
+    /// discard, branch delete) and anything short of verified data must not receive actions.
     /// </summary>
     internal void OpenDetail(string repoPath)
     {
         if (_monitor is null)
             return;
-        if (_monitor.FindForPath(repoPath) is { Provisional: true })
+        var entry = _monitor.FindForPath(repoPath);
+        if (entry is null || entry.Provisional)
         {
-            FileLog.Write($"[RepositoriesView] detail refused - entry still verifying: {repoPath}");
+            FileLog.Write($"[RepositoriesView] detail refused - {(entry is null ? "unknown path" : "entry still verifying")}: {repoPath}");
             return;
         }
         ReposPage.IsVisible = false;
