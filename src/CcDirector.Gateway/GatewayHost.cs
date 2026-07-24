@@ -866,7 +866,14 @@ public sealed class GatewayHost : IAsyncDisposable
         // the stores above. The pushed-session cache is passed for LABELS ONLY (a waiting row's friendly name
         // and repository path); the waiting fact itself comes from the durable governance ledger, so a
         // Director that happens to be offline at 07:00 costs a row its name, never its place in the email.
-        _morningReport = new Reports.MorningReportBuilder(_gatewayDb, PushedSessions, _streamStaleAfter);
+        // The repo-state feed (issue #2118): the latest branches and worktrees each Director reports for
+        // each repository - the one git-hygiene fact the Gateway cannot observe for itself, and the source
+        // of the morning report's stale-worktree and unmerged-branch recommendations.
+        _repoState = new Reports.RepoStateStore(_gatewayDb);
+        _morningReport = new Reports.MorningReportBuilder(_gatewayDb, PushedSessions, _streamStaleAfter,
+            // The repo-state store (issue #2118) is the hygiene rows' source. Passed here rather than
+            // resolved inside the builder so the report reads the SAME store the push endpoint writes.
+            repoState: _repoState);
         // Snooze Length mission: the persisted snooze registry (sessionId -> SnoozeUntilUtc), now in the
         // snoozes table of the EF data layer - a Gateway restart re-arms every pending snooze from the
         // database; an entry already past its time simply fires on the first sweep. The path argument is the
@@ -877,10 +884,6 @@ public sealed class GatewayHost : IAsyncDisposable
         // evidence of why sessions enter/leave Working and why snoozes end, retained 30 days. Constructed
         // before the snooze registry because the registry appends its lifecycle decisions to it.
         _activityEvents = new Activity.ActivityEventStore(_gatewayDb);
-        // The repo-state feed (issue #2118): the latest branches and worktrees each Director reports for
-        // each repository - the one git-hygiene fact the Gateway cannot observe for itself, and the source
-        // of the morning report's stale-worktree and unmerged-branch recommendations.
-        _repoState = new Reports.RepoStateStore(_gatewayDb);
         _snoozeRegistry = new Snooze.SnoozeRegistry(_gatewayDb, snoozePath ?? Path.Combine(CcStorage.Root(), "snooze.json"), _activityEvents);
         // Editable/versioned wingman instructions (issue #537) now persist in the wingman_instructions table
         // of the EF data layer. The path argument is the LEGACY wingman-instructions.json, imported once on

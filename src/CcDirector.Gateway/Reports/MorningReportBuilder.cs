@@ -32,6 +32,7 @@ public sealed class MorningReportBuilder
 {
     private readonly GatewayDatabase _db;
     private readonly Streaming.PushedSessionStore? _pushedSessions;
+    private readonly RepoStateStore? _repoState;
     private readonly TimeSpan _streamStale;
     private readonly Func<DateTime> _utcNow;
 
@@ -52,6 +53,14 @@ public sealed class MorningReportBuilder
     /// <summary>Micro-dollars per cent - the ceil-rounding divisor for hosted-AI spend.</summary>
     private const long MicrosPerCent = 10_000;
 
+    /// <summary>
+    /// How old a Director's repo-state snapshot may be and still inform a hygiene recommendation. The
+    /// Director pushes every six hours, so this is four missed cycles: long enough that one restart or
+    /// one offline evening does not blank the section, short enough that the report never recommends
+    /// deleting a worktree from a picture of the machine taken last week.
+    /// </summary>
+    public static readonly TimeSpan RepoStateMaxAge = TimeSpan.FromHours(24);
+
     /// <param name="db">The Gateway EF database.</param>
     /// <param name="pushedSessions">The live pushed-session cache, used ONLY to put a friendly name and a
     /// repository path on a waiting row. Null (or a session it has never seen) costs the row nothing but
@@ -62,10 +71,12 @@ public sealed class MorningReportBuilder
         GatewayDatabase db,
         Streaming.PushedSessionStore? pushedSessions = null,
         TimeSpan? streamStale = null,
-        Func<DateTime>? utcNow = null)
+        Func<DateTime>? utcNow = null,
+        RepoStateStore? repoState = null)
     {
         _db = db ?? throw new ArgumentNullException(nameof(db));
         _pushedSessions = pushedSessions;
+        _repoState = repoState;
         _streamStale = streamStale ?? TimeSpan.FromMinutes(5);
         _utcNow = utcNow ?? (() => DateTime.UtcNow);
     }
@@ -100,10 +111,40 @@ public sealed class MorningReportBuilder
             Attention = WaitingSessions(ctx, tenant, now),
         };
 
+        // The hygiene rows (issue #2118): stale worktrees and unmerged branches, from the repo-state
+        // snapshots this tenant's Directors pushed. THE HONESTY RULE APPLIES HERE TOO, AND IT IS WHY THE
+        // ENDPOINT COULD SHIP BEFORE THIS FEED EXISTED: no repo-state store, or no fresh snapshot for this
+        // tenant, means NO hygiene rows at all - not empty ones. "We have never been told about your
+        // repositories" and "your repositories are tidy" are different statements, and only one of them
+        // has been measured.
+        report.Attention.AddRange(HygieneItems(tenant, now));
+
         FileLog.Write($"[MorningReportBuilder] Build: tenant={tenant.ToLogString()} window={window.StartUtc:o}..{window.EndUtc:o} " +
                       $"sessionsRan={Describe(report.Stats.SessionsRan)} workDelivered={Describe(report.Stats.WorkDelivered)} " +
                       $"spendUsd={Describe(report.Stats.HostedAiSpendUsd)} attention={report.Attention.Count}");
         return report;
+    }
+
+    /// <summary>
+    /// The stale-worktree and unmerged-branch rows, or NOTHING when this Gateway holds no fresh
+    /// repo-state for the tenant. A stale snapshot is excluded by the store rather than aged into a
+    /// recommendation.
+    /// </summary>
+    private List<MorningAttentionItemDto> HygieneItems(TenantId tenant, DateTime now)
+    {
+        if (_repoState is null)
+            return new List<MorningAttentionItemDto>();
+
+        var repositories = _repoState.ReadFresh(tenant, RepoStateMaxAge, now);
+        if (repositories.Count == 0)
+        {
+            FileLog.Write("[MorningReportBuilder] HygieneItems: no repo-state fresher than " +
+                          $"{RepoStateMaxAge.TotalHours:0}h for tenant={tenant.ToLogString()} - the hygiene " +
+                          "rows are OMITTED, not emptied");
+            return new List<MorningAttentionItemDto>();
+        }
+
+        return RepoHygieneFold.Items(repositories, now);
     }
 
     /// <summary>Distinct sessions with at least one recorded transition in the window, or null when this
