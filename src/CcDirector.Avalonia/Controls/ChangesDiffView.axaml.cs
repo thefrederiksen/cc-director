@@ -78,6 +78,8 @@ public partial class ChangesDiffView : UserControl
     {
         _repoPath = null;
         _selected = null;
+        _pendingDiscard = null;
+        DiscardConfirmOverlay.IsVisible = false;
         StagedFiles.ItemsSource = null;
         UnstagedFiles.ItemsSource = null;
         DiffRows.ItemsSource = null;
@@ -234,8 +236,72 @@ public partial class ChangesDiffView : UserControl
     private async void UnstageButton_Click(object? sender, RoutedEventArgs e) => await WriteActionAsync(
         item => _write.UnstageAsync(_repoPath!, new[] { item.Path }));
 
-    private async void DiscardButton_Click(object? sender, RoutedEventArgs e) => await WriteActionAsync(
-        item => _write.DiscardAsync(_repoPath!, new[] { item.Path }));
+    // ----- discard, behind a plain-words confirmation (inspection finding F11) -----
+
+    private IReadOnlyList<string>? _pendingDiscard;
+
+    /// <summary>
+    /// Test seam: when set, replaces the real discard write. Lets a headless test observe whether
+    /// (and for which files) the destructive write ran, without touching a repository.
+    /// </summary>
+    internal Func<string, IReadOnlyList<string>, Task<GitWriteResult>>? DiscardServiceOverride { get; set; }
+
+    /// <summary>
+    /// Discard never acts directly: it first shows what would be permanently deleted and waits for
+    /// an explicit "Delete changes". One click must never destroy tracked work.
+    /// </summary>
+    private void DiscardButton_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_repoPath is null || _selected is null)
+            return;
+        ShowDiscardConfirmation(new[] { _selected.Path });
+    }
+
+    internal void ShowDiscardConfirmation(IReadOnlyList<string> files)
+    {
+        _pendingDiscard = files;
+        DiscardConfirmTitle.Text = DiscardWarning(files.Count);
+        DiscardConfirmFiles.Text = string.Join(Environment.NewLine, files);
+        DiscardConfirmOverlay.IsVisible = true;
+    }
+
+    /// <summary>The plain-English statement of loss shown before any discard. Pure and unit-tested.</summary>
+    internal static string DiscardWarning(int fileCount)
+        => $"This permanently deletes your changes in {fileCount} file{(fileCount == 1 ? "" : "s")}. There is no undo.";
+
+    private void KeepChangesButton_Click(object? sender, RoutedEventArgs e) => KeepChanges();
+
+    internal void KeepChanges()
+    {
+        _pendingDiscard = null;
+        DiscardConfirmOverlay.IsVisible = false;
+    }
+
+    private async void DeleteChangesButton_Click(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await DeleteChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[ChangesDiffView] DeleteChangesButton_Click FAILED: {ex.Message}");
+        }
+    }
+
+    internal async Task DeleteChangesAsync()
+    {
+        var files = _pendingDiscard;
+        KeepChanges(); // clear the pending state and hide the overlay either way
+        if (files is null || files.Count == 0 || _repoPath is null)
+            return;
+        var result = DiscardServiceOverride is { } discard
+            ? await discard(_repoPath, files)
+            : await _write.DiscardAsync(_repoPath, files);
+        if (!result.Success)
+            FileLog.Write($"[ChangesDiffView] discard failed: {result.Error}");
+        await RefreshAsync();
+    }
 
     private async Task WriteActionAsync(Func<DiffFileItem, Task<GitWriteResult>> action)
     {

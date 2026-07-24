@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
@@ -109,6 +110,78 @@ public class RepositoryDetailPureTests
         Assert.Equal("", rows[3].OldNo);
         Assert.Equal("2", rows[3].NewNo);
         Assert.Contains("binary", rows[4].Text);
+    }
+}
+
+/// <summary>
+/// REGRESSION (inspection finding F11): discard never destroys tracked work on one click - a
+/// plain-words confirmation stating exactly what is lost stands between the button and the write.
+/// </summary>
+public class DiscardConfirmationTests
+{
+    [Fact]
+    public void DiscardWarning_StatesTheLossInPlainWords()
+    {
+        Assert.Equal("This permanently deletes your changes in 1 file. There is no undo.",
+            ChangesDiffView.DiscardWarning(1));
+        Assert.Equal("This permanently deletes your changes in 3 files. There is no undo.",
+            ChangesDiffView.DiscardWarning(3));
+    }
+
+    [AvaloniaFact]
+    public void Discard_ShowsTheConfirmation_AndKeepChangesRunsNoWrite()
+    {
+        var view = new ChangesDiffView();
+        var window = new Window { Content = view, Width = 900, Height = 600 };
+        window.Show();
+        view.Attach("/repo");
+
+        bool discardRan = false;
+        view.DiscardServiceOverride = (_, _) =>
+        {
+            discardRan = true;
+            return Task.FromResult(new GitWriteResult { Success = true });
+        };
+
+        Assert.False(view.DiscardConfirmOverlay.IsVisible);
+        view.ShowDiscardConfirmation(new[] { "src/App.cs" });
+
+        Assert.True(view.DiscardConfirmOverlay.IsVisible);
+        Assert.Contains("permanently deletes", view.DiscardConfirmTitle.Text);
+        Assert.Contains("no undo", view.DiscardConfirmTitle.Text);
+        Assert.Contains("src/App.cs", view.DiscardConfirmFiles.Text); // the loss is named
+        Assert.False(discardRan); // showing the confirmation wrote NOTHING
+
+        view.KeepChanges();
+        Assert.False(view.DiscardConfirmOverlay.IsVisible);
+        Assert.False(discardRan); // keeping the changes wrote nothing either
+    }
+
+    [AvaloniaFact]
+    public async Task Discard_DeleteChanges_RunsTheWrite_ForExactlyTheNamedFiles()
+    {
+        var view = new ChangesDiffView();
+        var window = new Window { Content = view, Width = 900, Height = 600 };
+        window.Show();
+        view.Attach("/repo");
+
+        IReadOnlyList<string>? discarded = null;
+        view.DiscardServiceOverride = (_, files) =>
+        {
+            discarded = files;
+            return Task.FromResult(new GitWriteResult { Success = true });
+        };
+
+        view.ShowDiscardConfirmation(new[] { "src/App.cs" });
+        await view.DeleteChangesAsync();
+
+        Assert.Equal(new[] { "src/App.cs" }, discarded);
+        Assert.False(view.DiscardConfirmOverlay.IsVisible);
+
+        // A second confirm without a fresh confirmation is inert - the pending set was consumed.
+        discarded = null;
+        await view.DeleteChangesAsync();
+        Assert.Null(discarded);
     }
 }
 

@@ -32,6 +32,7 @@
         </DataTemplate>
     </UserControl.DataTemplates>
 
+    <Panel>
     <Grid ColumnDefinitions="240,1,*">
         <!-- File list -->
         <Grid Grid.Column="0" RowDefinitions="*,Auto" Background="#252526">
@@ -84,4 +85,24 @@
             </ScrollViewer>
         </Grid>
     </Grid>
+
+    <!-- Discard confirmation: a destructive action states plainly what is lost before it acts. -->
+    <Border x:Name="DiscardConfirmOverlay" IsVisible="False" Background="#C0000000">
+        <Border Background="#252526" BorderBrush="#5A2A2A" BorderThickness="1" CornerRadius="6"
+                MaxWidth="560" Padding="18" HorizontalAlignment="Center" VerticalAlignment="Center">
+            <StackPanel Spacing="10">
+                <TextBlock x:Name="DiscardConfirmTitle" Foreground="#F0A6A6" FontSize="13"
+                           FontWeight="SemiBold" TextWrapping="Wrap" />
+                <TextBlock x:Name="DiscardConfirmFiles" Foreground="#CCCCCC" FontSize="11.5"
+                           FontFamily="Cascadia Mono, Consolas" TextWrapping="Wrap" />
+                <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+                    <Button x:Name="KeepChangesButton" Content="Keep changes" Background="#3C3C3C"
+                            Foreground="#CCCCCC" FontSize="11.5" Padding="12,5" Click="KeepChangesButton_Click" />
+                    <Button x:Name="DeleteChangesButton" Content="Delete changes" Background="#7A2E2E"
+                            Foreground="White" FontSize="11.5" Padding="12,5" Click="DeleteChangesButton_Click" />
+                </StackPanel>
+            </StackPanel>
+        </Border>
+    </Border>
+    </Panel>
 </UserControl>
