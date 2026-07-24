@@ -273,17 +273,29 @@ public sealed class GitBranchService
     /// </summary>
     private async Task RestoreOnTheWayOutAsync(string repoPath, string branch, string verifiedSha, Exception cause)
     {
-        SafeLog($"[GitBranchService] delete or compensation for {branch} threw - attempting the create-only restore before the exception propagates: {cause.Message}");
+        // The restore attempt comes FIRST (round-7 finding): no diagnostic may precede it,
+        // because even building the log string evaluates the cause's Message property - which
+        // is VIRTUAL and can itself throw - before SafeLog could suppress anything. All
+        // logging here is best-effort and after the fact, with message extraction guarded.
         try
         {
             var restore = await _git.RunAsync(repoPath, new[] { "update-ref", $"refs/heads/{branch}", verifiedSha, ZeroSha }, CancellationToken.None);
-            if (!restore.Success)
-                SafeLog($"[GitBranchService] restore-on-the-way-out for {branch} was refused (the ref may already exist again): {restore.Error.Trim()}");
+            SafeLog(restore.Success
+                ? $"[GitBranchService] restore-on-the-way-out: {branch} restored at {verifiedSha} after: {SafeMessage(cause)}"
+                : $"[GitBranchService] restore-on-the-way-out for {branch} was refused (the ref may already exist again): {restore.Error.Trim()}");
         }
         catch (Exception restoreEx)
         {
-            SafeLog($"[GitBranchService] restore-on-the-way-out for {branch} itself failed - recreate the ref with: git update-ref refs/heads/{branch} {verifiedSha}: {restoreEx.Message}");
+            SafeLog($"[GitBranchService] restore-on-the-way-out for {branch} itself failed - recreate the ref with: git update-ref refs/heads/{branch} {verifiedSha}: {SafeMessage(restoreEx)}");
         }
+    }
+
+    /// <summary>Message extraction that cannot throw: Exception.Message is virtual, and an
+    /// override that throws must not be able to derail the recovery path it is describing.</summary>
+    private static string SafeMessage(Exception ex)
+    {
+        try { return ex.Message; }
+        catch { return ex.GetType().Name; }
     }
 
     /// <summary>

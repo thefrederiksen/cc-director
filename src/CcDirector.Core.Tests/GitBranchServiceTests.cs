@@ -608,6 +608,42 @@ public sealed class GitBranchServiceTests : IDisposable
         Assert.Throws<InvalidOperationException>(() => RunGit(_repo, "rev-parse", "--verify", "refs/heads/already-gone"));
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 7): the restore helper must be immune to an exception whose
+    // Message property ITSELF throws (Message is virtual). Building the diagnostic string
+    // before the restore attempt evaluated cause.Message, so such an exception skipped the
+    // restore and replaced itself with the Message getter's exception. The restore now comes
+    // first and message extraction is guarded, so the branch is restored and the ORIGINAL
+    // exception type still propagates.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Delete_ExceptionWithAThrowingMessageGetter_StillRestoresAndPropagatesTheOriginalType()
+    {
+        RunGit(_repo, "branch", "toxic-message");
+        var verifiedTip = RunGit(_repo, "rev-parse", "toxic-message").Trim();
+
+        var wt = Path.Combine(_root, "wt-toxic-message");
+        RunGit(_repo, "worktree", "add", wt, "toxic-message");
+
+        var git = new MutateThenThrowGitRunner(
+            args => args.Length >= 2 && args[0] == "update-ref" && args[1] == "-d",
+            () => new ThrowingMessageException());
+
+        var svc = new GitBranchService(git);
+        await Assert.ThrowsAsync<ThrowingMessageException>(
+            () => svc.DeleteAtVerifiedTipAsync(_repo, "toxic-message", verifiedTip, "test"));
+
+        // The restore ran despite the toxic Message getter, and the worktree is healthy.
+        Assert.Equal(verifiedTip, RunGit(_repo, "rev-parse", "refs/heads/toxic-message").Trim());
+        Assert.Equal(verifiedTip, RunGit(wt, "rev-parse", "HEAD").Trim());
+        RunGit(wt, "status", "--short"); // throws on a broken HEAD - a healthy worktree does not
+    }
+
+    private sealed class ThrowingMessageException : Exception
+    {
+        public override string Message => throw new InvalidOperationException("toxic Message getter");
+    }
+
     /// <summary>
     /// A git runner that runs the first command matching <c>match</c> TO COMPLETION - the
     /// mutation really happens - and then throws, exactly where a process-layer failure after
