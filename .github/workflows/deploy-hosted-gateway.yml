@@ -73,12 +73,15 @@ jobs:
       # keeps builds distinguishable; the App Service is pinned by the resulting immutable DIGEST, never
       # the tag, so a rebuild always forces a real pull.
       - name: Build image in ACR
+        id: build
         run: |
+          start=$(date +%s)
           az acr build \
             --registry "$ACR" \
             --image "${IMAGE_NAME}:ci-${{ steps.short.outputs.short }}" \
             --build-arg COCKPIT_COMMIT="${{ steps.short.outputs.short }}" \
             .
+          echo "build_seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
 
       - name: Read the built image digest
         id: digest
@@ -93,6 +96,19 @@ jobs:
           esac
           echo "Built digest: $DIGEST"
 
+      # Read the commit the LIVE service is running BEFORE we repin - this is the OUTGOING build, and the
+      # /healthz .commit field (added alongside this workflow) is what makes it readable. Used for two
+      # things: the honest-readiness poll below tells "the new image is serving" apart from "the old
+      # container is still answering 200" by commit, and the migration-delta step diffs OUTGOING..target.
+      # Empty when the currently-live image predates the .commit field (only the very first deploy of this
+      # change) - both consumers handle that honestly rather than guessing.
+      - name: Read the outgoing (currently-live) commit
+        id: outgoing
+        run: |
+          OUT=$(curl -s -m 15 "${GATEWAY_URL}/healthz" | jq -r '.commit // empty' 2>/dev/null || true)
+          echo "commit=$OUT" >> "$GITHUB_OUTPUT"
+          echo "Outgoing live commit: ${OUT:-<unknown - image predates the /healthz commit field>}"
+
       - name: Repin the App Service to the new digest
         run: |
           REF="${ACR}.azurecr.io/${IMAGE_NAME}@${{ steps.digest.outputs.digest }}"
@@ -103,22 +119,159 @@ jobs:
             --output none
           echo "Pinned $APP to $REF"
 
-      - name: Restart to pull the digest-pinned image
-        run: az webapp restart --resource-group "$AZURE_RG" --name "$APP" --output none
-
-      # The container pulls the new image, boots and runs EF migrations; expect a brief 502/no-response
-      # window first. Poll /healthz to a real 200 before declaring success.
-      - name: Verify /healthz
+      # Restart, then measure the TRUE external outage the way an outside user experiences it. The previous
+      # "Verify /healthz" step was blind: `az webapp restart` is fire-and-forget, so its first curl hit the
+      # STILL-RUNNING old container, got a 200, and declared success ~77s before the new image actually
+      # served traffic (deploy-ledger baseline: pipeline believed outage ~0, reality ~95s). This step polls
+      # the PUBLIC url every 2s and does not accept a 200 until /healthz reports the commit we just shipped,
+      # sustained 3 times. It records:
+      #   - last_serving: last 200 that was NOT yet the new commit (the old container up, or a bare 200 from
+      #     an image predating the .commit field) - i.e. the last moment traffic was still being served.
+      #   - first_ready: first of the sustained run of 200s on the NEW commit - the moment the new image took
+      #     over external traffic.
+      # external outage = first_ready - last_serving (the dead window), time-to-healthy = first_ready -
+      # t_deploy. The same logic reports a near-zero outage for a warmed slot swap, so it stays honest when
+      # this pipeline moves to slots.
+      - name: Restart and measure true external readiness
+        id: readiness
         run: |
-          for i in $(seq 1 30); do
-            code=$(curl -s -m 15 -o /dev/null -w "%{http_code}" "${GATEWAY_URL}/healthz" || true)
-            echo "attempt $i: HTTP $code"
-            if [ "$code" = "200" ]; then
-              echo "Gateway healthy at ${GATEWAY_URL}"
-              curl -s -m 15 "${GATEWAY_URL}/healthz"; echo
-              exit 0
+          TARGET="${{ steps.short.outputs.short }}"
+          t_deploy=$(date +%s)
+          az webapp restart --resource-group "$AZURE_RG" --name "$APP" --output none
+
+          last_serving=""
+          first_ready=""
+          streak=0
+          deadline=$(( t_deploy + 600 ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            now=$(date +%s)
+            body=$(curl -s -m 10 -w '\n%{http_code}' "${GATEWAY_URL}/healthz" 2>/dev/null || printf '\n000')
+            code=$(printf '%s' "$body" | tail -n1)
+            json=$(printf '%s' "$body" | sed '$d')
+            commit=$(printf '%s' "$json" | jq -r '.commit // empty' 2>/dev/null || echo "")
+            if [ "$code" = "200" ] && [ "$commit" = "$TARGET" ]; then
+              streak=$(( streak + 1 ))
+              [ -z "$first_ready" ] && first_ready=$now
+              echo "$(date -u +%H:%M:%SZ) HTTP 200 commit=$commit (new, streak $streak)"
+              [ "$streak" -ge 3 ] && break
+            else
+              streak=0
+              first_ready=""
+              if [ "$code" = "200" ]; then
+                last_serving=$now
+                echo "$(date -u +%H:%M:%SZ) HTTP 200 commit=${commit:-<none>} (old container still serving)"
+              else
+                echo "$(date -u +%H:%M:%SZ) HTTP $code (outage)"
+              fi
             fi
-            sleep 10
+            sleep 2
           done
-          echo "ERROR: /healthz did not return 200 within the timeout"
-          exit 1
+
+          if [ -z "$first_ready" ]; then
+            echo "ERROR: new commit $TARGET never served a sustained 200 within the timeout"
+            echo "outcome=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if [ -n "$last_serving" ]; then outage=$(( first_ready - last_serving )); else outage=0; fi
+          tth=$(( first_ready - t_deploy ))
+          echo "outage_seconds=$outage" >> "$GITHUB_OUTPUT"
+          echo "time_to_healthy_seconds=$tth" >> "$GITHUB_OUTPUT"
+          echo "outcome=healthy" >> "$GITHUB_OUTPUT"
+          echo "New image ${TARGET} serving. External outage ~${outage}s, time-to-healthy ~${tth}s."
+          curl -s -m 15 "${GATEWAY_URL}/healthz"; echo
+
+      # Does this deploy carry a schema change to the LIVE Supabase Postgres? Diff the Postgres migration set
+      # (the one Database.Migrate() applies on hosted) between the outgoing live commit and the shipped one.
+      # "unknown" (never a guess) when the outgoing commit is not readable - the image predated the .commit
+      # field, or the commit is not in this shallow clone.
+      - name: Detect migration delta
+        id: migration
+        if: always()
+        run: |
+          OUT="${{ steps.outgoing.outputs.commit }}"
+          if [ -z "$OUT" ]; then
+            echo "migration=unknown" >> "$GITHUB_OUTPUT"
+            echo "Outgoing commit unknown - cannot diff migrations."
+            exit 0
+          fi
+          git fetch --depth=200 origin >/dev/null 2>&1 || true
+          if git cat-file -e "${OUT}^{commit}" 2>/dev/null; then
+            n=$(git diff --name-only "$OUT" HEAD -- 'src/CcDirector.Gateway.Migrations.Postgres/Migrations/' | grep -c . || true)
+            if [ "${n:-0}" -gt 0 ]; then
+              echo "migration=yes" >> "$GITHUB_OUTPUT"
+              echo "Migration delta: $n changed Postgres migration file(s) between $OUT and HEAD."
+            else
+              echo "migration=no" >> "$GITHUB_OUTPUT"
+              echo "No Postgres migration change between $OUT and HEAD (code-only deploy)."
+            fi
+          else
+            echo "migration=unknown" >> "$GITHUB_OUTPUT"
+            echo "Outgoing commit $OUT not present in this clone - cannot diff migrations."
+          fi
+
+      # Auto-emit the per-deploy metrics so tracking is automatic, not a hand-measured after-the-fact note.
+      # Runs even on a failed readiness check so a bad deploy is recorded too. Writes a ledger-ready markdown
+      # row to the job summary AND a machine-readable deploy-metrics.json artifact. It does NOT push to the
+      # ledger in the PRIVATE devthrottle_internal repo: that would need a stored cross-repo token, and this
+      # workflow is deliberately secretless (OIDC only). Paste the row from the summary, or wire a scoped PAT
+      # later if fully-hands-off ledger commits are wanted.
+      - name: Emit deploy metrics
+        id: metrics
+        if: always()
+        run: |
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          TARGET="${{ steps.short.outputs.short }}"
+          FULL=$(git rev-parse HEAD)
+          OUTCOME="${{ steps.readiness.outputs.outcome }}"; OUTCOME="${OUTCOME:-failed}"
+          BUILD_S="${{ steps.build.outputs.build_seconds }}"; BUILD_S="${BUILD_S:-}"
+          OUTAGE_S="${{ steps.readiness.outputs.outage_seconds }}"
+          TTH_S="${{ steps.readiness.outputs.time_to_healthy_seconds }}"
+          MIG="${{ steps.migration.outputs.migration }}"; MIG="${MIG:-unknown}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          cat > deploy-metrics.json <<JSON
+          {
+            "timestamp_utc": "$NOW",
+            "commit_short": "$TARGET",
+            "commit_full": "$FULL",
+            "outgoing_commit": "${{ steps.outgoing.outputs.commit }}",
+            "run_id": "${{ github.run_id }}",
+            "run_url": "$RUN_URL",
+            "outcome": "$OUTCOME",
+            "build_seconds": "${BUILD_S}",
+            "external_outage_seconds": "${OUTAGE_S}",
+            "time_to_healthy_seconds": "${TTH_S}",
+            "migration": "$MIG",
+            "rollback": "no"
+          }
+          JSON
+
+          {
+            echo "## Hosted Gateway deploy metrics"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| time (UTC) | $NOW |"
+            echo "| commit | \`$TARGET\` |"
+            echo "| outcome | $OUTCOME |"
+            echo "| build | ${BUILD_S:-?}s |"
+            echo "| external outage | ${OUTAGE_S:-?}s |"
+            echo "| time-to-healthy | ${TTH_S:-?}s |"
+            echo "| migration | $MIG |"
+            echo "| rollback | no |"
+            echo "| run | $RUN_URL |"
+            echo ""
+            echo "Ledger-ready row (paste into deploy-ledger.md):"
+            echo ""
+            echo "\`\`\`"
+            echo "$NOW | \`$TARGET\` | ${{ github.run_id }} | build ${BUILD_S:-?}s | migration $MIG | external outage ${OUTAGE_S:-?}s | time-to-healthy ${TTH_S:-?}s | $OUTCOME"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload deploy metrics artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-metrics
+          path: deploy-metrics.json
+          if-no-files-found: warn

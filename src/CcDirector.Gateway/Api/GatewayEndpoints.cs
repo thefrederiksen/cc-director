@@ -361,6 +361,14 @@ internal static class GatewayEndpoints
         // ===== REST =====
         app.MapGet("/healthz", () =>
         {
+            // The exact commit this image was built from (COCKPIT_COMMIT is baked into the container as an
+            // ENV in the Dockerfile). NULL when unstamped (e.g. a local dev run) - HealthDto omits it then.
+            // The deploy pipeline polls /healthz until this equals the commit it just shipped: that is the
+            // honest "the new image is now serving" signal, because the OLD container keeps answering 200
+            // until the very moment it is recycled. Reported on both the hosted and self-host branches -
+            // build identity is the same for every tenant, so it carries no per-tenant fact.
+            var commit = Environment.GetEnvironmentVariable("COCKPIT_COMMIT");
+
             // Hosted Multi-Tenancy (session-serving PR2): /healthz is PUBLIC - it is the unauthenticated
             // liveness probe every Director and endpoint selector dials, so it carries no credential and
             // therefore has NO TENANT. On the hosted Gateway the fleet counts below are fleet-GLOBAL: an
@@ -381,6 +389,7 @@ internal static class GatewayEndpoints
                 {
                     Status = "ok",
                     Version = version,
+                    Commit = commit,
                     ServerTime = DateTime.UtcNow,
                 });
             }
@@ -402,6 +411,7 @@ internal static class GatewayEndpoints
                 Directors = directors.Count,
                 Sessions = totalSessions,
                 Version = version,
+                Commit = commit,
                 ServerTime = DateTime.UtcNow,
             });
         });
