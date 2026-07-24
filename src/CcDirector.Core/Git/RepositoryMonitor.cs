@@ -379,18 +379,30 @@ public sealed class RepositoryMonitor
                 // newer scan owns the drain: every one of ITS exit paths runs this same block.
                 // Each drained request goes back through RecomputeOneAsync's own deferral check
                 // (ruling R4-4): when a newer scan has meanwhile started, it re-defers to that
-                // scan instead of running concurrently with it. The drain sits in a finally
-                // (round-5 finding): a THROWING ProgressChanged subscriber must not skip it -
-                // IsScanning is already cleared at this point, so a skipped drain would strand
-                // the deferred requests until some later scan happened to complete.
+                // scan instead of running concurrently with it. A THROWING ProgressChanged
+                // subscriber must not skip the drain (round-5 finding) - IsScanning is already
+                // cleared here, so a skipped drain would strand the deferred requests. The
+                // subscriber's exception is CAPTURED and rethrown with its type intact after
+                // the drain (round-6 finding: an awaited drain in a finally would let a drain
+                // failure silently replace it); if BOTH throw, both surface together.
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo? progressFailure = null;
                 try
                 {
                     ProgressChanged?.Invoke();
                 }
-                finally
+                catch (Exception ex)
+                {
+                    progressFailure = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex);
+                }
+                try
                 {
                     await DrainDeferredRecomputesAsync();
                 }
+                catch (Exception drainEx) when (progressFailure != null)
+                {
+                    throw new AggregateException(progressFailure.SourceException, drainEx);
+                }
+                progressFailure?.Throw();
             }
             if (raiseCompleted)
             {
