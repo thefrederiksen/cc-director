@@ -216,43 +216,62 @@ public sealed class GitBranchService
         // process already deleted the ref, which would conceal the completed mutation and skip
         // every compensation step below.
         ct.ThrowIfCancellationRequested();
-        var del = await _git.RunAsync(repoPath, new[] { "update-ref", "-d", $"refs/heads/{branch}", verifiedSha }, CancellationToken.None);
-        if (!del.Success)
-        {
-            FileLog.Write($"[GitBranchService] delete refused for {branch}: ref no longer at {verifiedSha}: {del.Error.Trim()}");
-            return (false, $"branch moved since it was verified - not deleted");
-        }
 
-        // From here on the delete has already happened, so everything below is COMPENSATION and
-        // runs as a NON-CANCELLABLE phase (ruling R3-2): the worktree listing, the restore
-        // decision, and the config-section cleanup all use CancellationToken.None. Honoring the
-        // caller's token after the destructive step could skip the worktree check and the
-        // restore, leaving a checked-out worktree with a broken symbolic HEAD.
+        // The DELETE COMMAND ITSELF sits inside the recovery boundary (round-5 finding): the
+        // process layer or an injected runner can throw AFTER the child git process already
+        // deleted the ref, which would otherwise bypass every compensation step. The
+        // create-only restore is safe in both directions - if the delete never happened the
+        // ref still exists and git refuses the create - so the restore-on-the-way-out covers
+        // "threw before mutation" and "threw after mutation" without knowing which occurred.
+        // Everything from the delete onward is a NON-CANCELLABLE phase (rulings R3-2, R4-1):
+        // the worktree listing, the restore decision, and the config cleanup all run on
+        // CancellationToken.None, because honoring the caller's token after the destructive
+        // step could skip the worktree check and the restore.
         try
         {
+            var del = await _git.RunAsync(repoPath, new[] { "update-ref", "-d", $"refs/heads/{branch}", verifiedSha }, CancellationToken.None);
+            if (!del.Success)
+            {
+                FileLog.Write($"[GitBranchService] delete refused for {branch}: ref no longer at {verifiedSha}: {del.Error.Trim()}");
+                return (false, $"branch moved since it was verified - not deleted");
+            }
+
             return await CompensateAfterDeleteAsync(repoPath, branch, verifiedSha, explanation);
         }
         catch (Exception ex)
         {
-            // ANY exception inside compensation still attempts the create-only restore on the
-            // way out (ruling R4-1): after the delete succeeded, an escaping exception means
-            // the delete was never proven safe, so the ref must not stay missing. Create-only
-            // means a concurrently recreated branch is never overwritten. The ORIGINAL
-            // exception always propagates - the restore attempt is logged, never allowed to
-            // replace it.
-            FileLog.Write($"[GitBranchService] compensation for {branch} threw - attempting the create-only restore before the exception propagates: {ex.Message}");
+            // ANY escaping exception still attempts the create-only restore on the way out
+            // (ruling R4-1): the delete was never proven safe, so the ref must not stay
+            // missing. Create-only means a concurrently recreated branch is never
+            // overwritten. The ORIGINAL exception always propagates. Logging in this path is
+            // SafeLog on purpose (round-5 finding): FileLog.Write can throw during a
+            // concurrent logger shutdown, and a log line must never be the reason the
+            // restore is skipped or the original exception is replaced.
+            SafeLog($"[GitBranchService] delete or compensation for {branch} threw - attempting the create-only restore before the exception propagates: {ex.Message}");
             try
             {
                 var restoreOnTheWayOut = await _git.RunAsync(repoPath, new[] { "update-ref", $"refs/heads/{branch}", verifiedSha, ZeroSha }, CancellationToken.None);
                 if (!restoreOnTheWayOut.Success)
-                    FileLog.Write($"[GitBranchService] restore-on-the-way-out for {branch} was refused (the ref may already exist again): {restoreOnTheWayOut.Error.Trim()}");
+                    SafeLog($"[GitBranchService] restore-on-the-way-out for {branch} was refused (the ref may already exist again): {restoreOnTheWayOut.Error.Trim()}");
             }
             catch (Exception restoreEx)
             {
-                FileLog.Write($"[GitBranchService] restore-on-the-way-out for {branch} itself failed - recreate the ref with: git update-ref refs/heads/{branch} {verifiedSha}: {restoreEx.Message}");
+                SafeLog($"[GitBranchService] restore-on-the-way-out for {branch} itself failed - recreate the ref with: git update-ref refs/heads/{branch} {verifiedSha}: {restoreEx.Message}");
             }
             throw;
         }
+    }
+
+    /// <summary>
+    /// Logging inside the destructive-recovery path must never be the reason recovery fails:
+    /// FileLog.Write can throw during a concurrent logger shutdown, which would skip the
+    /// restore or replace the original exception with a logging failure. Best-effort by
+    /// design HERE AND ONLY HERE - everywhere else a logging failure surfaces normally.
+    /// </summary>
+    private static void SafeLog(string message)
+    {
+        try { FileLog.Write(message); }
+        catch { }
     }
 
     /// <summary>

@@ -551,6 +551,70 @@ public sealed class GitBranchServiceTests : IDisposable
         Assert.Equal("refs/heads/probe-fail", RunGit(_repo, "config", "--get", "branch.probe-fail.merge").Trim());
     }
 
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 5): an exception from the DELETE COMMAND ITSELF, thrown
+    // AFTER the child git process already deleted the ref, must not bypass restoration. The
+    // delete await sits inside the recovery boundary: the create-only restore is safe in both
+    // directions (if the delete never happened, the ref still exists and git refuses the
+    // create), so the restore-on-the-way-out covers "threw before mutation" and "threw after
+    // mutation" without knowing which occurred. The original exception still propagates.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Delete_DeleteCommandThrowsAfterItsMutation_RestoresTheRefBeforeTheExceptionPropagates()
+    {
+        RunGit(_repo, "branch", "mutate-throw");
+        var verifiedTip = RunGit(_repo, "rev-parse", "mutate-throw").Trim();
+
+        // Checked out into a worktree AFTER verification - losing the ref breaks this worktree.
+        var wt = Path.Combine(_root, "wt-mutate-throw");
+        RunGit(_repo, "worktree", "add", wt, "mutate-throw");
+
+        // The delete runs TO COMPLETION (the ref is really gone), then the process layer throws.
+        var git = new MutateThenThrowGitRunner(
+            args => args.Length >= 2 && args[0] == "update-ref" && args[1] == "-d",
+            () => new IOException("injected process-layer failure after the mutation"));
+
+        var svc = new GitBranchService(git);
+        await Assert.ThrowsAsync<IOException>(
+            () => svc.DeleteAtVerifiedTipAsync(_repo, "mutate-throw", verifiedTip, "test"));
+
+        // The exception escaped LOUDLY - but the ref was restored on the way out, so the
+        // worktree's HEAD is intact and usable.
+        Assert.Equal(verifiedTip, RunGit(_repo, "rev-parse", "refs/heads/mutate-throw").Trim());
+        Assert.Equal(verifiedTip, RunGit(wt, "rev-parse", "HEAD").Trim());
+        RunGit(wt, "status", "--short"); // throws on a broken HEAD - a healthy worktree does not
+    }
+
+    /// <summary>
+    /// A git runner that runs the first command matching <c>match</c> TO COMPLETION - the
+    /// mutation really happens - and then throws, exactly where a process-layer failure after
+    /// the child exited would surface. The plain ThrowingGitRunner throws INSTEAD of running
+    /// the command, which is the other direction of the same hazard.
+    /// </summary>
+    private sealed class MutateThenThrowGitRunner : GitCommandRunner
+    {
+        private readonly Func<string[], bool> _match;
+        private readonly Func<Exception> _exception;
+        private int _fired;
+
+        public MutateThenThrowGitRunner(Func<string[], bool> match, Func<Exception> exception)
+        {
+            _match = match;
+            _exception = exception;
+        }
+
+        public override async Task<GitCommandResult> RunAsync(
+            string workingDirectory, string[] args, CancellationToken ct = default)
+        {
+            if (_match(args) && Interlocked.Exchange(ref _fired, 1) == 0)
+            {
+                await base.RunAsync(workingDirectory, args, CancellationToken.None);
+                throw _exception();
+            }
+            return await base.RunAsync(workingDirectory, args, ct);
+        }
+    }
+
     /// <summary>
     /// A git runner that replaces the first command matching <c>match</c> with a canned
     /// result - the deterministic stand-in for a transient git failure with a specific exit
