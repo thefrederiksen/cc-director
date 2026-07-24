@@ -53,4 +53,71 @@ public class ScreenshotLocatorTests
 
         Assert.Null(ex);
     }
+
+    [Fact]
+    public void DetectCandidates_ReturnsOnlyExistingFolders_WithProvenance_NoDuplicates()
+    {
+        var candidates = ScreenshotLocator.DetectCandidates();
+
+        foreach (var c in candidates)
+        {
+            Assert.True(Directory.Exists(c.Path), $"candidate does not exist: {c.Path}");
+            Assert.False(string.IsNullOrWhiteSpace(c.Provenance));
+        }
+
+        var distinct = candidates.Select(c => c.Path.ToLowerInvariant()).Distinct().Count();
+        Assert.Equal(candidates.Count, distinct);
+    }
+
+    [Fact]
+    public void Detect_AgreesWithTheFirstCandidate()
+    {
+        // Detect() is the Settings-page entry point; it must be the wizard's best candidate, not a
+        // separately-derived answer that could drift.
+        var candidates = ScreenshotLocator.DetectCandidates();
+        Assert.Equal(candidates.FirstOrDefault()?.Path, ScreenshotLocator.Detect());
+    }
+
+    [Theory]
+    [InlineData("shot.png", true)]
+    [InlineData("shot.PNG", true)]
+    [InlineData("photo.jpg", true)]
+    [InlineData("photo.jpeg", true)]
+    [InlineData("anim.gif", true)]
+    [InlineData("old.bmp", true)]
+    [InlineData("modern.webp", true)]
+    [InlineData("clip.mp4", false)]
+    [InlineData("notes.txt", false)]
+    [InlineData("noext", false)]
+    public void IsImageFile_ClassifiesByExtension(string name, bool expected)
+    {
+        Assert.Equal(expected, ScreenshotLocator.IsImageFile(name));
+    }
+
+    [Fact]
+    public void CountImages_CountsOnlyImageFiles_TopLevel()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "shots-count-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "a.png"), "x");
+            File.WriteAllText(Path.Combine(dir, "b.jpg"), "x");
+            File.WriteAllText(Path.Combine(dir, "c.txt"), "x");
+            Directory.CreateDirectory(Path.Combine(dir, "nested"));
+            File.WriteAllText(Path.Combine(dir, "nested", "d.png"), "x");
+
+            Assert.Equal(2, ScreenshotLocator.CountImages(dir));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void CountImages_MissingFolder_ReturnsZero_NeverThrows()
+    {
+        Assert.Equal(0, ScreenshotLocator.CountImages(Path.Combine(Path.GetTempPath(), "does-not-exist-" + Guid.NewGuid().ToString("N"))));
+    }
 }
