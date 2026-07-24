@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Net;
 using System.Text.Json;
 using CcDirector.Core;
@@ -336,6 +336,7 @@ public sealed class GatewayHost : IAsyncDisposable
     // re-snooze), bounded by the live-session prune paths.
     private readonly Snooze.SnoozeRegistry _snoozeRegistry;
     private readonly Activity.ActivityEventStore _activityEvents;
+    private readonly Reports.RepoStateStore _repoState;
     private Activity.ActivityRetentionSweep? _activityRetentionSweep;
     // Fills account_hosted_ai_spend by periodically mirroring the cloud credit-debit ledger (issue #1771).
     private Governance.HostedAiSpendSweep? _hostedAiSpendSweep;
@@ -876,6 +877,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // evidence of why sessions enter/leave Working and why snoozes end, retained 30 days. Constructed
         // before the snooze registry because the registry appends its lifecycle decisions to it.
         _activityEvents = new Activity.ActivityEventStore(_gatewayDb);
+        // The repo-state feed (issue #2118): the latest branches and worktrees each Director reports for
+        // each repository - the one git-hygiene fact the Gateway cannot observe for itself, and the source
+        // of the morning report's stale-worktree and unmerged-branch recommendations.
+        _repoState = new Reports.RepoStateStore(_gatewayDb);
         _snoozeRegistry = new Snooze.SnoozeRegistry(_gatewayDb, snoozePath ?? Path.Combine(CcStorage.Root(), "snooze.json"), _activityEvents);
         // Editable/versioned wingman instructions (issue #537) now persist in the wingman_instructions table
         // of the EF data layer. The path argument is the LEGACY wingman-instructions.json, imported once on
@@ -2493,6 +2498,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // activity/snooze evidence to POST /activity-events/batch (idempotent by producer-minted event id),
         // and diagnosis reads GET /activity-events. Tenant-scoped exactly like the prompt log.
         Activity.ActivityEventEndpoints.Map(_app, _activityEvents, _tenantBoundary);
+
+        // The repo-state feed (issue #2118): POST /gateway/repostate, where a Director pushes its
+        // repositories' branches and worktrees. Device-authenticated and tenant-scoped from the caller's
+        // own key; write-only, because the sole consumer (the morning report) reads the store in-process.
+        Api.RepoStateEndpoints.Map(_app, _repoState, _tenantBoundary);
 
         Mobile.MobileApp.Map(_app, Token);
         // The legacy /m mount: 301 to the canonical /mobile equivalent so installed phone PWAs and

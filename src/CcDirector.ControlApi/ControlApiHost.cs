@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Fleet;
 using CcDirector.Core.Sessions;
@@ -196,6 +196,7 @@ public sealed class ControlApiHost : IAsyncDisposable
     private Core.Activity.ActivityEventOutbox? _activityOutbox;
     private Core.Activity.ActivityEventProducer? _activityProducer;
     private ActivityEventUploader? _activityUploader;
+    private RepoStatePusher? _repoStatePusher;
     private TransientErrorAutoResume? _transientErrorAutoResume;
     private TerminalSessionRecorder? _sessionRecorder;
     private Core.Storage.TurnReviewLogger? _turnReviewLogger;
@@ -751,6 +752,20 @@ public sealed class ControlApiHost : IAsyncDisposable
         // prompt sink's pattern) and deletes an outbox record only on the Gateway's acknowledgement.
         _activityUploader = new ActivityEventUploader(() => _gatewayClient, _activityOutbox);
         _activityUploader.Start();
+        // The repo-state feed (issue #2118): every six hours, ship this machine's branches and worktrees
+        // to the Gateway so the morning report can make its stale-worktree and unmerged-branch
+        // recommendations. Only when a repository registry exists - with none there is nothing to report.
+        // Late-binds the Gateway client per cycle, exactly like the uploader above.
+        if (_repositoryRegistry is not null)
+        {
+            _repoStatePusher = new RepoStatePusher(
+                // Late-bound per cycle: the Gateway client is created after this and can be replaced when the
+                // configuration changes. A null client is an install with no Gateway - nowhere to report to.
+                (req, ct) => _gatewayClient is { } c ? c.PushRepoStateAsync(req, ct) : Task.FromResult<RepoStatePushResponse?>(null),
+                _repositoryRegistry, DirectorId, Environment.MachineName,
+                liveSessions: LiveSessionRefs);
+            _repoStatePusher.Start();
+        }
     }
 
     /// <summary>
@@ -829,6 +844,22 @@ public sealed class ControlApiHost : IAsyncDisposable
     /// </summary>
     private List<SessionDto> SnapshotFullSessions()
         => _sessionManager.ListSessions().Select(s => ControlEndpoints.Map(s, DirectorId)).ToList();
+
+    /// <summary>
+    /// This machine's live sessions as the worktree classifier wants them (issue #2118): a worktree a
+    /// session is genuinely working in must be reported as occupied, never as abandoned work someone
+    /// could delete. Read fresh on every collection rather than captured once, so a session that started
+    /// since the last cycle still protects its worktree.
+    /// </summary>
+    private IReadOnlyList<Core.Git.LiveSessionRef> LiveSessionRefs()
+        => _sessionManager.ListSessions()
+            .Where(s => !string.IsNullOrWhiteSpace(s.RepoPath))
+            .Select(s => new Core.Git.LiveSessionRef
+            {
+                RepoPath = s.RepoPath,
+                Label = string.IsNullOrWhiteSpace(s.CustomName) ? s.Id.ToString() : s.CustomName!,
+            })
+            .ToList();
 
     private readonly Core.Git.RepositoryMonitor? _repositoryMonitor;
     private Timer? _repoPushDebounce;
@@ -1083,6 +1114,8 @@ public sealed class ControlApiHost : IAsyncDisposable
         _terminalStateDetector = null;
         _activityUploader?.Dispose();
         _activityUploader = null;
+        _repoStatePusher?.Dispose();
+        _repoStatePusher = null;
         _activityProducer?.Dispose();
         _activityProducer = null;
         _activityOutbox = null;
