@@ -25,20 +25,25 @@ public sealed class CarModeBrain
     private static readonly JsonSerializerOptions ToolResultJson = new() { WriteIndented = false };
 
     private readonly ICarModeChat _chat;
-    private readonly ICarModeFleet _fleet;
+    private readonly Func<string, ICarModeFleet> _fleetForCaller;
     private readonly CarModeConversationStore _conversations;
     private readonly CarModePendingStore _pending;
     private readonly CarModeSubjectStore _subjects;
     private readonly Action<string> _log;
     private readonly string _systemPrompt;
 
+    /// <param name="fleetForCaller">Resolves the fleet view for one authenticated caller credential
+    ///  (issue #2129, hosted tenant isolation): every fleet tool call must run AS the calling device, so
+    ///  the Gateway's own endpoints resolve the caller's tenant exactly as they do for any client. The
+    ///  factory is invoked once per turn with the same authenticated credential that keys the conversation;
+    ///  tests pass a constant fake fleet.</param>
     /// <param name="surface">Which surface this brain instance speaks to. Car (the default) keeps the
     ///  hands-free one-or-two-sentence style; Desk (the cockpit Assistant screen) appends the desk-surface
     ///  overrides. Everything else - loop, tools, stores, model - is identical.</param>
-    public CarModeBrain(ICarModeChat chat, ICarModeFleet fleet, CarModeConversationStore conversations, CarModePendingStore pending, CarModeSubjectStore subjects, Action<string>? log = null, CarModeSurface surface = CarModeSurface.Car)
+    public CarModeBrain(ICarModeChat chat, Func<string, ICarModeFleet> fleetForCaller, CarModeConversationStore conversations, CarModePendingStore pending, CarModeSubjectStore subjects, Action<string>? log = null, CarModeSurface surface = CarModeSurface.Car)
     {
         _chat = chat ?? throw new ArgumentNullException(nameof(chat));
-        _fleet = fleet ?? throw new ArgumentNullException(nameof(fleet));
+        _fleetForCaller = fleetForCaller ?? throw new ArgumentNullException(nameof(fleetForCaller));
         _conversations = conversations ?? throw new ArgumentNullException(nameof(conversations));
         _pending = pending ?? throw new ArgumentNullException(nameof(pending));
         _subjects = subjects ?? throw new ArgumentNullException(nameof(subjects));
@@ -122,6 +127,10 @@ public sealed class CarModeBrain
 
         _log($"[CarModeBrain] turn: len={userText.Length}");
 
+        // The fleet view for THIS caller: every tool call this turn runs as the calling device, so on the
+        // hosted Gateway the loopback requests resolve to the caller's own tenant (issue #2129).
+        var fleet = _fleetForCaller(deviceKey);
+
         // The confirmation gate (decision 3): if a destructive action is armed for this device, THIS turn
         // is the spoken confirmation. A clear affirmative executes it; a cancel drops it; anything else
         // disarms it (safe default - the delete never runs) and is processed as a fresh command. This is
@@ -133,7 +142,7 @@ public sealed class CarModeBrain
             _pending.Clear(deviceKey);
             if (CarModeConfirm.IsAffirmative(userText))
             {
-                var (spokenDone, action) = await ExecuteConfirmedAsync(armed, timer, ct);
+                var (spokenDone, action) = await ExecuteConfirmedAsync(fleet, armed, timer, ct);
                 _conversations.Append(deviceKey, userText, spokenDone);
                 _log($"[CarModeBrain] confirmed {armed.Tool} for {armed.TargetName}");
                 return new CarModeTurnResponse { Spoken = spokenDone, Actions = new[] { action } };
@@ -237,7 +246,7 @@ public sealed class CarModeBrain
                     messages.Add(new { role = "tool", tool_call_id = call.Id, content = "{\"status\":\"spoken\"}" });
                     continue;
                 }
-                var outcome = await ExecuteToolAsync(deviceKey, call, timer, ct);
+                var outcome = await ExecuteToolAsync(fleet, deviceKey, call, timer, ct);
                 if (outcome.Action is not null) actions.Add(outcome.Action);
                 if (outcome.ArmedConfirmation) armedThisTurn = true;
                 messages.Add(new { role = "tool", tool_call_id = call.Id, content = outcome.ResultJson });
@@ -270,16 +279,32 @@ public sealed class CarModeBrain
     ///  a tool error (the model can recover next round); a genuine fleet failure throws (a loud, specific,
     ///  spoken failure). Ordinary acts (start / message / approve) run immediately; the destructive act
     ///  (delete) is NOT run - it arms a confirmation the owner must speak next turn (decision 3).</summary>
-    private async Task<ToolOutcome> ExecuteToolAsync(string deviceKey, CarModeToolCall call, TurnTimer timer, CancellationToken ct)
+    private async Task<ToolOutcome> ExecuteToolAsync(ICarModeFleet fleet, string deviceKey, CarModeToolCall call, TurnTimer timer, CancellationToken ct)
     {
         // Log the raw arguments too: model tool arguments are the boundary where a mis-resolve (the wrong
         // session) originates, so the exact reference the model produced must be visible when diagnosing.
         _log($"[CarModeBrain] tool: {call.Name} args={call.ArgumentsJson}");
+        try
+        {
+            return await ExecuteToolCoreAsync(fleet, deviceKey, call, timer, ct);
+        }
+        catch (CarModeToolUnavailableException ex)
+        {
+            // A tool that is KNOWINGLY unavailable on this deployment (issue #2129) is a fact for the model
+            // to relay in plain words, not a turn-killing failure - the owner hears the truth, and the rest
+            // of the conversation keeps working.
+            _log($"[CarModeBrain] tool {call.Name} unavailable: {ex.Message}");
+            return Result(new { error = ex.Message });
+        }
+    }
+
+    private async Task<ToolOutcome> ExecuteToolCoreAsync(ICarModeFleet fleet, string deviceKey, CarModeToolCall call, TurnTimer timer, CancellationToken ct)
+    {
         switch (call.Name)
         {
             case "list_sessions":
             {
-                var sessions = await timer.TimeFleetAsync(() => _fleet.ListSessionsAsync(ct));
+                var sessions = await timer.TimeFleetAsync(() => fleet.ListSessionsAsync(ct));
                 return Result(new
                 {
                     needsYouCount = sessions.Count(s => s.NeedsYou),
@@ -296,7 +321,7 @@ public sealed class CarModeBrain
                 var reference = ReadStringArg(call.ArgumentsJson, "session");
                 if (string.IsNullOrWhiteSpace(reference))
                     return Result(new { error = "Provide a session name, repo, or number." });
-                var activity = await timer.TimeFleetAsync(() => _fleet.GetSessionActivityAsync(reference, ct));
+                var activity = await timer.TimeFleetAsync(() => fleet.GetSessionActivityAsync(reference, ct));
                 if (activity is null)
                     return Result(new { error = $"No session matched \"{reference}\"." });
                 // Reading a session makes it the current subject, so a follow-up "read the wingman" / "answer
@@ -308,7 +333,7 @@ public sealed class CarModeBrain
             {
                 // "The next one that needs me": focus the OLDEST-waiting needs-you session (longest wait first)
                 // as the current subject, so follow-ups ("read the wingman", "answer it", "snooze it") resolve.
-                var sessions = await timer.TimeFleetAsync(() => _fleet.ListSessionsAsync(ct));
+                var sessions = await timer.TimeFleetAsync(() => fleet.ListSessionsAsync(ct));
                 var next = sessions.Where(s => s.NeedsYou).OrderByDescending(s => s.WaitingMinutes).FirstOrDefault();
                 if (next is null)
                     return Result(new { status = "none", message = "No session is waiting on the owner right now." });
@@ -318,9 +343,9 @@ public sealed class CarModeBrain
             case "read_wingman":
             {
                 var reference = ReadStringArg(call.ArgumentsJson, "session");
-                var (target, error) = await ResolveActTargetAsync(deviceKey, reference, "read the wingman for", timer, ct);
+                var (target, error) = await ResolveActTargetAsync(fleet, deviceKey, reference, "read the wingman for", timer, ct);
                 if (target is null) return Result(new { error });
-                var explain = await timer.TimeFleetAsync(() => _fleet.ExplainSessionAsync(target.SessionId, ct));
+                var explain = await timer.TimeFleetAsync(() => fleet.ExplainSessionAsync(target.SessionId, ct));
                 // The REAL, current narration - the brain reads this aloud, never a canned "it is waiting".
                 return Result(new { session = target.Name, repo = target.Repo, narration = explain.Spoken, explain.NothingYet });
             }
@@ -329,7 +354,7 @@ public sealed class CarModeBrain
                 var repo = ReadStringArg(call.ArgumentsJson, "repo");
                 if (string.IsNullOrWhiteSpace(repo))
                     return Result(new { error = "Provide the repository name to start a session in." });
-                var summary = await timer.TimeFleetAsync(() => _fleet.StartSessionAsync(repo, ct));
+                var summary = await timer.TimeFleetAsync(() => fleet.StartSessionAsync(repo, ct));
                 return Acted(new { status = "started", summary }, new CarModeActionRecord("start_session", summary));
             }
             case "message_session":
@@ -338,43 +363,43 @@ public sealed class CarModeBrain
                 var message = ReadStringArg(call.ArgumentsJson, "message");
                 if (string.IsNullOrWhiteSpace(message))
                     return Result(new { error = "Provide the message to send into the session." });
-                var (target, error) = await ResolveActTargetAsync(deviceKey, reference, "send that to", timer, ct);
+                var (target, error) = await ResolveActTargetAsync(fleet, deviceKey, reference, "send that to", timer, ct);
                 if (target is null) return Result(new { error });
-                await timer.TimeFleetAsync(() => _fleet.MessageSessionAsync(target.SessionId, message, ct));
+                await timer.TimeFleetAsync(() => fleet.MessageSessionAsync(target.SessionId, message, ct));
                 var summary = $"Messaged {target.Name}.";
                 return Acted(new { status = "sent", session = target.Name }, new CarModeActionRecord("message_session", summary));
             }
             case "approve_session":
             {
                 var reference = ReadStringArg(call.ArgumentsJson, "session");
-                var (target, error) = await ResolveActTargetAsync(deviceKey, reference, "approve", timer, ct);
+                var (target, error) = await ResolveActTargetAsync(fleet, deviceKey, reference, "approve", timer, ct);
                 if (target is null) return Result(new { error });
-                await timer.TimeFleetAsync(() => _fleet.ApproveSessionAsync(target.SessionId, ct));
+                await timer.TimeFleetAsync(() => fleet.ApproveSessionAsync(target.SessionId, ct));
                 var summary = $"Approved {target.Name}.";
                 return Acted(new { status = "approved", session = target.Name }, new CarModeActionRecord("approve_session", summary));
             }
             case "switch_to_voice_mode":
             {
                 var reference = ReadStringArg(call.ArgumentsJson, "session");
-                var (target, error) = await ResolveActTargetAsync(deviceKey, reference, "switch to voice mode", timer, ct);
+                var (target, error) = await ResolveActTargetAsync(fleet, deviceKey, reference, "switch to voice mode", timer, ct);
                 if (target is null) return Result(new { error });
-                await timer.TimeFleetAsync(() => _fleet.SwitchVoiceModeAsync(target.SessionId, true, ct));
+                await timer.TimeFleetAsync(() => fleet.SwitchVoiceModeAsync(target.SessionId, true, ct));
                 var summary = $"Switched {target.Name} to voice mode.";
                 return Acted(new { status = "voice_on", session = target.Name }, new CarModeActionRecord("switch_to_voice_mode", summary));
             }
             case "snooze_session":
             {
                 var reference = ReadStringArg(call.ArgumentsJson, "session");
-                var (target, error) = await ResolveActTargetAsync(deviceKey, reference, "snooze", timer, ct);
+                var (target, error) = await ResolveActTargetAsync(fleet, deviceKey, reference, "snooze", timer, ct);
                 if (target is null) return Result(new { error });
-                await timer.TimeFleetAsync(() => _fleet.SnoozeSessionAsync(target.SessionId, ct));
+                await timer.TimeFleetAsync(() => fleet.SnoozeSessionAsync(target.SessionId, ct));
                 var summary = $"Snoozed {target.Name}.";
                 return Acted(new { status = "snoozed", session = target.Name }, new CarModeActionRecord("snooze_session", summary));
             }
             case "delete_session":
             {
                 var reference = ReadStringArg(call.ArgumentsJson, "session");
-                var (target, error) = await ResolveActTargetAsync(deviceKey, reference, "delete", timer, ct);
+                var (target, error) = await ResolveActTargetAsync(fleet, deviceKey, reference, "delete", timer, ct);
                 if (target is null) return Result(new { error });
                 // Destructive: do NOT delete. Arm a confirmation the owner must speak next turn. The
                 // confirmation ALWAYS names the resolved session and repo out loud, so even a stale current
@@ -393,7 +418,7 @@ public sealed class CarModeBrain
             }
             case "get_credits":
             {
-                var credits = await timer.TimeFleetAsync(() => _fleet.GetCreditsAsync(ct));
+                var credits = await timer.TimeFleetAsync(() => fleet.GetCreditsAsync(ct));
                 if (!credits.SignedIn)
                     return Result(new { signedIn = false, message = "The Gateway is not signed in to a DevThrottle account, so there is no balance to read." });
                 // The fleet guarantees a signed-in read carries a balance (it throws on a malformed
@@ -410,7 +435,7 @@ public sealed class CarModeBrain
             }
             case "list_machines":
             {
-                var machines = await timer.TimeFleetAsync(() => _fleet.ListMachinesAsync(ct));
+                var machines = await timer.TimeFleetAsync(() => fleet.ListMachinesAsync(ct));
                 return Result(new
                 {
                     count = machines.Count,
@@ -422,7 +447,7 @@ public sealed class CarModeBrain
             }
             case "list_schedules":
             {
-                var schedules = await timer.TimeFleetAsync(() => _fleet.ListSchedulesAsync(ct));
+                var schedules = await timer.TimeFleetAsync(() => fleet.ListSchedulesAsync(ct));
                 return Result(new
                 {
                     count = schedules.Count,
@@ -444,7 +469,7 @@ public sealed class CarModeBrain
                     days = 7;
                 else if (!int.TryParse(daysText, out days) || days < 1 || days > 90)
                     return Result(new { error = "days must be a whole number from 1 to 90, or omitted for the default 7." });
-                var spend = await timer.TimeFleetAsync(() => _fleet.GetSpendAsync(days, ct));
+                var spend = await timer.TimeFleetAsync(() => fleet.GetSpendAsync(days, ct));
                 return Result(new
                 {
                     days,
@@ -468,11 +493,11 @@ public sealed class CarModeBrain
     /// confirmation still names the resolved session and repo out loud.
     /// </summary>
     private async Task<(CarModeSubject? Target, string? Error)> ResolveActTargetAsync(
-        string deviceKey, string? reference, string actionPhrase, TurnTimer timer, CancellationToken ct)
+        ICarModeFleet fleet, string deviceKey, string? reference, string actionPhrase, TurnTimer timer, CancellationToken ct)
     {
         if (!string.IsNullOrWhiteSpace(reference))
         {
-            var resolved = await timer.TimeFleetAsync(() => _fleet.ResolveSessionAsync(reference, ct));
+            var resolved = await timer.TimeFleetAsync(() => fleet.ResolveSessionAsync(reference, ct));
             if (resolved is null)
                 return (null, $"No session matched \"{reference}\".");
             var subject = new CarModeSubject(resolved.SessionId, resolved.Name, resolved.Repo);
@@ -487,12 +512,12 @@ public sealed class CarModeBrain
 
     /// <summary>Execute a destructive action the owner has just confirmed out loud, returning the spoken
     ///  acknowledgement and the action record. A fleet failure throws (a loud, specific, spoken failure).</summary>
-    private async Task<(string Spoken, CarModeActionRecord Action)> ExecuteConfirmedAsync(CarModePendingAction pending, TurnTimer timer, CancellationToken ct)
+    private async Task<(string Spoken, CarModeActionRecord Action)> ExecuteConfirmedAsync(ICarModeFleet fleet, CarModePendingAction pending, TurnTimer timer, CancellationToken ct)
     {
         switch (pending.Tool)
         {
             case "delete":
-                await timer.TimeFleetAsync(() => _fleet.DeleteSessionAsync(pending.SessionId, ct));
+                await timer.TimeFleetAsync(() => fleet.DeleteSessionAsync(pending.SessionId, ct));
                 return ($"Done. I deleted {pending.TargetName}.", new CarModeActionRecord("delete_session", $"Deleted {pending.TargetName}."));
             default:
                 throw new InvalidOperationException($"Unknown pending action \"{pending.Tool}\".");

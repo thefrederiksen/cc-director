@@ -85,6 +85,17 @@ public sealed record CarModeScheduleInfo
 /// GET /gateway/governance/hosted-ai-spend/summary.</summary>
 public sealed record CarModeSpendSummary(long TotalMicros, int DebitCount, DateTime SinceUtc, DateTime UntilUtc);
 
+/// <summary>
+/// A fleet tool that is KNOWINGLY unavailable on this deployment (issue #2129: per-tenant credits and
+/// spend are not served on the hosted Gateway yet). Distinct from a genuine failure on purpose: the brain
+/// converts this into a tool-error result the model RELAYS in plain words ("credits are not available
+/// here yet"), instead of failing the whole turn - the owner hears the truth, not an error page.
+/// </summary>
+public sealed class CarModeToolUnavailableException : Exception
+{
+    public CarModeToolUnavailableException(string message) : base(message) { }
+}
+
 /// <summary>What one session is doing, for the "read me that one" / "what is X doing" read tool. For v1
 /// this is the roster's own summary fields (name + repo + short line), which already answer the mission's
 /// Phase 2 proof; a richer transcript read can be layered on later without changing the tool contract.</summary>

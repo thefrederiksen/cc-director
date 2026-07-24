@@ -58,7 +58,7 @@ public sealed class CarModeDiagnosticsEndpointPartitionTests : IAsyncLifetime
         var diagnostics = new CarModeDiagnosticsStore(_storePath, _ => { });
         var brain = new CarModeBrain(
             new UnusedChat(),
-            new UnusedFleet(),
+            _ => new UnusedFleet(),
             new CarModeConversationStore(_ => { }),
             new CarModePendingStore(_ => { }),
             new CarModeSubjectStore(_ => { }),
