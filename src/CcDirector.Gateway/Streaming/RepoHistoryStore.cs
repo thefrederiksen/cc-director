@@ -12,6 +12,11 @@ public sealed record RepoDailySnapshot
     public DateOnly Date { get; init; }
     public string MachineName { get; init; } = "";
 
+    /// <summary>The pushing Director's id - part of the identity key (ruling R2-9). Two Directors
+    /// can report the same machine name and repository path (overlapping upgrades, duplicate
+    /// registrations); only the Director id tells their rows apart.</summary>
+    public string DirectorId { get; init; } = "";
+
     /// <summary>The repository's full path - part of the identity key. Two repositories can share a
     /// leaf name on one machine; only the path tells them apart.</summary>
     public string Path { get; init; } = "";
@@ -76,6 +81,11 @@ public sealed class RepoHistoryStore
                     FileLog.Write($"[RepoHistoryStore] snapshot row without a path ignored (name={r.Name})");
                     continue; // the path IS the identity - a pathless row cannot be keyed
                 }
+                if (string.IsNullOrWhiteSpace(r.DirectorId))
+                {
+                    FileLog.Write($"[RepoHistoryStore] snapshot row without a Director id ignored (name={r.Name})");
+                    continue; // the Director id is part of the identity (ruling R2-9)
+                }
                 int dirtyDays = r.DirtySinceUtc is { } since && !r.IsClean
                     ? (int)Math.Max(0, (DateTime.UtcNow - since).TotalDays)
                     : 0;
@@ -84,6 +94,7 @@ public sealed class RepoHistoryStore
                     Tenant = tenant.Value,
                     Date = date,
                     MachineName = r.MachineName,
+                    DirectorId = r.DirectorId,
                     Path = r.Path,
                     Name = r.Name,
                     UncommittedCount = r.UncommittedCount,
@@ -159,11 +170,17 @@ public sealed class RepoHistoryStore
         => d.AddDays(-(((int)d.DayOfWeek + 6) % 7)); // Monday
 
     /// <summary>
-    /// The row identity: tenant, day, machine, and the repository PATH (lowercased). The leaf name
-    /// is display only - two repositories sharing a folder name on one machine must never
-    /// overwrite each other's snapshots (inspection finding F13).
+    /// The row identity: tenant, day, machine, DIRECTOR, and the repository PATH (trailing
+    /// separators trimmed, then lowercased). The leaf name is display only - two repositories
+    /// sharing a folder name on one machine must never overwrite each other's snapshots
+    /// (inspection finding F13), and two Directors reporting the same machine and path must
+    /// never overwrite each other's rows (ruling R2-9). The lowercasing stays deliberately: a
+    /// case-only path collision on a case-sensitive filesystem merges two history rows - an
+    /// accepted, documented inaccuracy that is never destructive (history is aggregate
+    /// reporting, not an acting surface).
     /// </summary>
-    private static string Key(RepoDailySnapshot r) => $"{r.Tenant}|{r.Date:yyyy-MM-dd}|{r.MachineName}|{r.Path}".ToLowerInvariant();
+    private static string Key(RepoDailySnapshot r)
+        => $"{r.Tenant}|{r.Date:yyyy-MM-dd}|{r.MachineName}|{r.DirectorId}|{r.Path.TrimEnd('\\', '/')}".ToLowerInvariant();
 
     private void Load()
     {
@@ -179,9 +196,9 @@ public sealed class RepoHistoryStore
                 if (string.IsNullOrWhiteSpace(line))
                     continue;
                 var row = JsonSerializer.Deserialize<RepoDailySnapshot>(line);
-                // Rows without a path predate the path-keyed format (days old, unreleased) and
-                // cannot be keyed - ignored rather than migrated.
-                if (row != null && !string.IsNullOrWhiteSpace(row.Path))
+                // Rows without a path or without a Director id predate the current key format
+                // (days old, unreleased) and cannot be keyed - ignored rather than migrated.
+                if (row != null && !string.IsNullOrWhiteSpace(row.Path) && !string.IsNullOrWhiteSpace(row.DirectorId))
                     _rows[Key(row)] = row;
             }
         }

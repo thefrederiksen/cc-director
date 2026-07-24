@@ -19,6 +19,7 @@ public sealed class RepoHistoryStoreTests : IDisposable
     {
         Name = name,
         MachineName = "M1",
+        DirectorId = "d1",
         Path = $@"D:\repos\{name}",
         WorktreeCount = worktrees,
         WorktreesSafeToReap = safe,
@@ -146,6 +147,75 @@ public sealed class RepoHistoryStoreTests : IDisposable
         store.ObserveSnapshot(tenant, new[] { pathless }, day);
 
         Assert.Equal(0, store.WeeklyTrends(tenant, 1, day)[^1].MaxWorktrees);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 2, ruling R2-9): the history key includes the DirectorId.
+    // Two Directors reporting the same machine name and repository path (overlapping upgrades,
+    // duplicate registrations) must keep separate daily rows, not overwrite each other.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public void SameMachineAndPath_TwoDirectors_KeepSeparateRows()
+    {
+        var tenant = TenantId.Local;
+        var day = new DateOnly(2026, 07, 24);
+        var store = new RepoHistoryStore(_path);
+
+        var fromDirector1 = Repo("widget", worktrees: 5, safe: 2);
+        var fromDirector2 = Repo("widget", worktrees: 3, safe: 1);
+        fromDirector2.DirectorId = "d2"; // same machine, same path, different Director
+
+        store.ObserveSnapshot(tenant, new[] { fromDirector1 }, day);
+        store.ObserveSnapshot(tenant, new[] { fromDirector2 }, day);
+
+        // Both rows survive: the day's fleet totals SUM the two Directors' rows.
+        var trends = store.WeeklyTrends(tenant, weeks: 1, today: day);
+        Assert.Equal(8, trends[^1].MaxWorktrees);
+        Assert.Equal(3, trends[^1].MaxSafeToReap);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 2, ruling R2-9): trailing path separators are trimmed
+    // before keying, so the same repository pushed as "...\widget" and "...\widget\" is ONE
+    // row (last write wins), never two rows double-counting the totals.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public void TrailingSeparator_DoesNotSplitTheRow()
+    {
+        var tenant = TenantId.Local;
+        var day = new DateOnly(2026, 07, 24);
+        var store = new RepoHistoryStore(_path);
+
+        var bare = Repo("widget", worktrees: 5, safe: 2);
+        var trailing = Repo("widget", worktrees: 4, safe: 1);
+        trailing.Path = bare.Path + @"\";
+
+        store.ObserveSnapshot(tenant, new[] { bare }, day);
+        store.ObserveSnapshot(tenant, new[] { trailing }, day);
+
+        // One row, last write wins - never a double count.
+        var trends = store.WeeklyTrends(tenant, weeks: 1, today: day);
+        Assert.Equal(4, trends[^1].MaxWorktrees);
+        Assert.Equal(1, trends[^1].MaxSafeToReap);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 2, ruling R2-9): legacy rows without a DirectorId (the
+    // pre-DirectorId file format, unreleased) cannot be keyed and are ignored on load - the
+    // same no-migration rule as the pathless rows from finding F13.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public void Load_IgnoresLegacyRowsWithoutADirectorId()
+    {
+        var day = new DateOnly(2026, 07, 24);
+        File.WriteAllLines(_path, new[]
+        {
+            // A legacy line: a Path but no DirectorId property.
+            "{\"Tenant\":\"local\",\"Date\":\"2026-07-24\",\"MachineName\":\"M1\",\"Path\":\"D:\\\\repos\\\\widget\",\"Name\":\"widget\",\"WorktreeCount\":9}",
+        });
+
+        var store = new RepoHistoryStore(_path);
+        Assert.Equal(0, store.WeeklyTrends(TenantId.Local, 1, day)[^1].MaxWorktrees);
     }
 
     [Fact]
