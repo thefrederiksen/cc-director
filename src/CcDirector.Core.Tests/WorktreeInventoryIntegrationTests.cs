@@ -313,6 +313,30 @@ public sealed class WorktreeInventoryIntegrationTests : IDisposable
         Assert.Empty(free.OpenSessions);
     }
 
+    // -------------------------------------------------------------------------------------------
+    // REGRESSION (found by the branch-service tests during the repositories mission): a branch that
+    // was NEVER pushed has no origin branch, and that absence must NOT read as "deleted after merge".
+    // Before the fix, C2 marked exactly this case SAFE TO REAP - unpushed work, one click from gone.
+    // -------------------------------------------------------------------------------------------
+    [Fact]
+    public async Task NeverPushedBranch_WithUnmergedCommit_IsStranded_NotSafe()
+    {
+        var wt = Path.Combine(_root, "wt-neverpushed");
+        RunGit(_primary, "worktree", "add", "-b", "neverpushed", wt, "main");
+        WriteFile(wt, "n.txt", "unpushed work\n");
+        RunGit(wt, "add", "-A");
+        RunGit(wt, "commit", "-m", "work that exists nowhere else");
+        // Deliberately NO push: no origin branch, no upstream config.
+
+        var inventory = await new WorktreeInventoryService().GetInventoryAsync(_primary);
+
+        Assert.True(inventory.Success, inventory.Error);
+        var w = Assert.Single(inventory.Worktrees, x => x.Branch == "neverpushed");
+        Assert.Equal(WorktreeSafety.NeedsAttention, w.Safety);
+        Assert.Equal(WorktreeSafetyReason.NotProvenMerged, w.Reason);
+        Assert.DoesNotContain(inventory.SafeToReap, x => x.Branch == "neverpushed");
+    }
+
     // ----- helpers -----
 
     private void ConfigureIdentity(string repo)
