@@ -34,6 +34,8 @@ namespace CcDirector.Gateway.Api;
 ///   PUT    /gateway/workflows/{id}/draft             body WorkflowContentRequest, optional If-Match
 ///                                                    (content hash) -> 200 detail | 400 | 404 | 409
 ///   POST   /gateway/workflows/{id}/publish           -> 200 WorkflowDto | 400 | 404
+///   POST   /gateway/workflows/{id}/clone             ?newId=&by= copy published content into a new
+///                                                    tenant-owned editable workflow -> 201 | 400 | 404 | 409
 ///   DELETE /gateway/workflows/{id}                   archive (never a built-in) -> 200 | 400 | 404
 ///   GET    /gateway/workflows/{id}/versions          -> { versions: [...] } | 404
 ///   GET    /gateway/workflows/{id}/versions/{n}      -> full content snapshot | 404
@@ -112,6 +114,18 @@ internal static class WorkflowEndpoints
 
         // POST /gateway/workflows/{id}/reset was RETIRED in the Shared Workflow Library phase 3:
         // built-ins are read-only, can never diverge from shipped content, and have nothing to reset.
+
+        // Clone (Shared Workflow Library phase 4): copy a workflow's published content into a new
+        // tenant-owned, fully editable workflow - the sanctioned customization path for the
+        // read-only built-ins. ?newId names the clone; ?by records who cloned (the authoring actor).
+        app.MapPost("/gateway/workflows/{id}/clone", (string id, string? newId, string? by) => Guard(() =>
+        {
+            var clone = store.Clone(id, newId ?? "", by ?? "");
+            if (clone is null)
+                return NotFound(id);
+            FileLog.Write($"[WorkflowEndpoints] clone: '{id}' -> '{clone.Id}' v{clone.Version}");
+            return Results.Json(clone, statusCode: StatusCodes.Status201Created);
+        }));
 
         app.MapDelete("/gateway/workflows/{id}", (string id) => Guard(() =>
         {

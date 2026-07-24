@@ -399,6 +399,13 @@ _ACTIONS = [
         "args": [{"name": "id", "required": True}],
     },
     {
+        "id": "workflow-clone",
+        "description": "Clone a Workflow's published content into a new editable Workflow you own (the way to customize a built-in).",
+        "command": "cc-devthrottle workflow clone <id> <new-id>",
+        "mutatesState": True,
+        "args": [{"name": "id", "required": True}, {"name": "new-id", "required": True}],
+    },
+    {
         "id": "workflow-delete",
         "description": "Archive a custom Workflow (built-ins can never be deleted; history remains).",
         "command": "cc-devthrottle workflow delete <id> --yes",
@@ -1135,6 +1142,20 @@ def workflow_disable(
 
 # "workflow reset" was retired with the Shared Workflow Library phase 3: built-ins are read-only,
 # can never diverge from the shipped content, and have nothing to reset.
+
+
+@workflow_app.command("clone")
+def workflow_clone(
+    workflow_id: str = typer.Argument(..., help="The source workflow id (e.g. mission)."),
+    new_id: str = typer.Argument(..., help="The id for the clone (a fresh slug, never a built-in id)."),
+) -> None:
+    """Clone a Workflow's published content into a new editable Workflow you own.
+
+    The sanctioned way to customize a built-in: the clone copies the steps, instructions, and
+    helper files into version 1 of the new id, immediately published and fully editable, with
+    where-it-came-from recorded. The built-in itself stays exactly as DevThrottle ships it.
+    """
+    workflow_ops.clone_workflow(workflow_id, new_id)
 
 
 @workflow_app.command("delete")

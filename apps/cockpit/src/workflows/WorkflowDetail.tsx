@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
+  cloneWorkflow,
   getWorkflow,
   getWorkflowInstructions,
   setWorkflowEnabled,
@@ -8,7 +9,7 @@ import {
 } from "@devthrottle/client-core/workflows/workflowsClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 import { markdownToHtml } from "@devthrottle/client-core/history/historyMarkdown";
-import { ConfirmDialog, ErrorBanner, LoadingState } from "../components";
+import { Button, ConfirmDialog, ErrorBanner, LoadingState } from "../components";
 
 // One workflow, in full (Workflows mission, phase 7). The list row answered "what exists"; this page
 // answers "what does it actually say": the metadata and step summary up top (the machine-readable
@@ -18,10 +19,12 @@ import { ConfirmDialog, ErrorBanner, LoadingState } from "../components";
 // authoring is agent-driven and a half-editable page would lie about where edits really happen.
 export function WorkflowDetail() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [workflow, setWorkflow] = useState<WorkflowDefinition | null>(null);
   const [instructions, setInstructions] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pendingOff, setPendingOff] = useState(false);
+  const [pendingClone, setPendingClone] = useState(false);
   // Every load claims a generation; a load that finishes after a newer one started (a mutation
   // refresh racing a route change to another workflow) drops its result instead of painting
   // workflow A's state under workflow B's URL.
@@ -110,6 +113,9 @@ export function WorkflowDetail() {
                 </span>
               </span>
             ) : null}
+            <Button variant="secondary" onClick={() => setPendingClone(true)}>
+              Clone
+            </Button>
           </div>
           {/* The Gateway's editability verdict, rendered verbatim (rule 7): built-ins are
               DevThrottle-maintained and read-only; the sanctioned customization path is clone. */}
@@ -174,6 +180,30 @@ export function WorkflowDetail() {
         onClose={() => setPendingOff(false)}
       />
 
+      <ConfirmDialog
+        open={pendingClone}
+        title={`Clone '${workflow?.name ?? id}' as '${id}-copy'?`}
+        message={
+          <>
+            The published content - steps, instructions, helper files - is copied into a new
+            workflow <code>{id}-copy</code> that is yours: published, fully editable, and
+            independent of the original. Agents edit it with{" "}
+            <code>cc-devthrottle workflow pull {id}-copy</code>.
+          </>
+        }
+        confirmLabel="Clone"
+        danger={false}
+        onConfirm={async () => {
+          if (id === undefined) return;
+          try {
+            const clone = await cloneWorkflow(id, `${id}-copy`, "cockpit");
+            navigate(`/workflows/${encodeURIComponent(clone.id)}`);
+          } catch (err) {
+            setError(gatewayErrorMessage(err));
+          }
+        }}
+        onClose={() => setPendingClone(false)}
+      />
     </div>
   );
 }
