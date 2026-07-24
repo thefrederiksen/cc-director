@@ -24,12 +24,12 @@ Durable Architect state. Any reseat continues from here. Keep current.
 
 | ID  | Sev     | Area                    | File(s)                                                  | Status |
 |-----|---------|-------------------------|----------------------------------------------------------|--------|
-| F01 | MAJOR   | PR CLI pipe deadlock    | Core/Git/PullRequestService.cs                           | TODO   |
+| F01 | MAJOR   | PR CLI pipe deadlock    | Core/Git/PullRequestService.cs; Core/Utilities/ProcessRunner.cs | COMMITTED 4b20cc62 |
 | F02 | BLOCKER | remote-gone = merge     | Core/Git/GitBranchService, WorktreeSafetyEvaluator, WorktreeInventoryService; Avalonia/RepositoryDetailView | COMMITTED f00705d9 |
 | F03 | BLOCKER | worktree remove -> rmdir| Core/Git/WorktreeReaperService.cs                        | COMMITTED f2507264 |
 | F04 | MAJOR   | watcher blind + no recov| Core/Git/RepositoryWatcher.cs; Avalonia/App.axaml.cs     | TODO   |
 | F05 | BLOCKER | reap fails open         | Avalonia/WorktreesView; Core/Git/WorktreeReaperService   | COMMITTED 90ead86a |
-| F06 | MAJOR   | probe fail = clean      | Core/Git/GitStatusProvider, RepositoryStatusService      | TODO   |
+| F06 | MAJOR   | probe fail = clean      | Core/Git/GitStatusProvider, RepositoryStatusService      | COMMITTED 27b042e8 |
 | F07 | MAJOR   | history non-atomic write| Gateway/Streaming/RepoHistoryStore.cs                    | TODO   |
 | F08 | MINOR   | snapshot no reconcile   | Gateway/Streaming/RepoHistoryStore.cs                    | TODO   |
 | F09 | MAJOR   | Hello reclaims ownership| Gateway/Streaming/DirectorHub, PushedRepositoryStore; ControlApi/GatewayStreamClient | TODO |
@@ -38,6 +38,11 @@ Durable Architect state. Any reseat continues from here. Keep current.
 | F12 | MINOR   | confirm not bound       | Avalonia/WorktreesView; Core/Git/WorktreeReaperService   | TODO   |
 
 ## Progress log
+- F01/F06/F11 COMMITTED. Shared ProcessRunner (concurrent drain + kill-on-cancel) introduced in
+  F01 and reused by F11 git providers. F06 GetCountAsync now returns success flag; status service
+  fails closed on any failed probe. All watched failing via temporary reverts. Core git suites green.
+- Remaining: F12 (reap confirm binding), F04 (watcher), F07/F08/F10 (RepoHistoryStore), F09 (DirectorHub Hello).
+
 - 2026-07-24: worktree cut, review committed, state file created. Starting verification.
 - F02 COMMITTED f00705d9. BranchSafetyEvaluator drops origin-branch-gone as sufficient for branch
   deletion (requires PR merged or contained-in-main). Worktree side unchanged (branch ref survives).
