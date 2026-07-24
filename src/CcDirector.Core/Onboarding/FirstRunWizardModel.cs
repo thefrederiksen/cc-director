@@ -68,6 +68,7 @@ public sealed class FirstRunWizardModel
     // Until an agent scan says otherwise, assume at least one agent exists so the Agents step does
     // not block skipping before it has been evaluated. The shell calls SetAgentsFound after its scan.
     private bool _agentsFound = true;
+    private bool _agentsDeferred;
 
     /// <summary>
     /// Build a wizard over the given present steps. The list is normalised to
@@ -163,6 +164,21 @@ public sealed class FirstRunWizardModel
 
     /// <summary>Whether the last agent scan reported at least one agent (defaults true pre-scan).</summary>
     public bool AgentsFound => _agentsFound;
+
+    /// <summary>
+    /// Record that the user chose "I'll do this later" on the zero-agents state. Deferral is the
+    /// honest alternative to a skip the rule forbids: the wizard may proceed, but the missing agent
+    /// stays a carried to-do - the Done screen leads with "install an agent" instead of "start my
+    /// first agent". Finding an agent later (a re-scan after an install) clears the deferral.
+    /// </summary>
+    public void DeferAgents()
+    {
+        _agentsDeferred = true;
+        FileLog.Write("[FirstRunWizardModel] DeferAgents");
+    }
+
+    /// <summary>True while the user has parked the zero-agents state for later and no agent has been found since.</summary>
+    public bool AgentsDeferred => _agentsDeferred && !_agentsFound;
 
     /// <summary>
     /// Whether the given step may be individually skipped. Every step is skippable EXCEPT the Agents

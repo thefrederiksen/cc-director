@@ -148,18 +148,32 @@
                     <StackPanel x:Name="AgentsListPanel" Spacing="8" MaxWidth="560"
                                 HorizontalAlignment="Stretch" />
                 </ScrollViewer>
-                <!-- Install guidance, shown only when zero agents are found (the unskippable case). -->
-                <StackPanel Grid.Row="3" x:Name="AgentsInstallGuidance" Spacing="10"
-                            IsVisible="False" Margin="0,14,0,0">
-                    <TextBlock Classes="hint" HorizontalAlignment="Center" TextAlignment="Center"
-                               MaxWidth="520"
-                               Text="DevThrottle runs command-line coding agents. We did not find one on this machine - install one, then re-check. This step cannot be skipped: nothing works without an agent." />
-                    <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Center">
-                        <Button x:Name="AgentsInstallButton" Classes="dialogButton"
-                                Content="Open install guide" Click="BtnInstallAgent_Click" />
-                        <Button x:Name="AgentsRecheckButton" Classes="dialogButton"
-                                Content="Re-check" Click="BtnRecheckAgents_Click" />
+                <!-- Zero-agents actions: install Claude Code right here, or defer it as a carried
+                     to-do. Shown only in the empty state (the step that cannot be skipped). -->
+                <StackPanel Grid.Row="3" x:Name="AgentsEmptyActions" Spacing="12"
+                            IsVisible="False" Margin="0,16,0,0">
+                    <Button x:Name="AgentsInstallButton" Classes="primaryButton"
+                            Content="Install Claude Code for me" HorizontalAlignment="Center"
+                            Click="BtnInstallClaude_Click" />
+                    <TextBlock x:Name="AgentsInstallProgressText" Classes="hint" IsVisible="False"
+                               HorizontalAlignment="Center" TextAlignment="Center" MaxWidth="540"
+                               FontFamily="Consolas, Cascadia Mono, monospace" />
+                    <StackPanel x:Name="AgentsInstallErrorPanel" Spacing="6" IsVisible="False">
+                        <TextBlock x:Name="AgentsInstallErrorText" FontSize="13" Foreground="#DC2626"
+                                   TextWrapping="Wrap" TextAlignment="Center" MaxWidth="540"
+                                   HorizontalAlignment="Center" />
+                        <Button Classes="quietLink" Content="Open the install guide instead"
+                                HorizontalAlignment="Center" Click="BtnInstallAgent_Click" />
                     </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="22" HorizontalAlignment="Center">
+                        <Button x:Name="AgentsRecheckButton" Classes="quietLink"
+                                Content="Re-check" Click="BtnRecheckAgents_Click" />
+                        <Button x:Name="AgentsDeferButton" Classes="quietLink"
+                                Content="I'll do this later" Click="BtnDeferAgents_Click" />
+                    </StackPanel>
+                    <TextBlock Classes="hint" HorizontalAlignment="Center" TextAlignment="Center"
+                               MaxWidth="480"
+                               Text="Takes about a minute. You sign in to Claude the first time an agent starts." />
                 </StackPanel>
             </Grid>
 

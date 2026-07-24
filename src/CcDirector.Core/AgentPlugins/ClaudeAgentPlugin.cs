@@ -26,6 +26,10 @@ public sealed class ClaudeAgentPlugin : IAgentPlugin
         [
             new AgentPluginDetectionCandidate("claude"),
             new AgentPluginDetectionCandidate(DefaultNpmCliPath("claude")),
+            // The official claude.ai installer scripts place the binary in ~/.local/bin. A Director
+            // launched before that install ran has a stale PATH, so probe the location directly -
+            // this is what lets the wizard's re-scan find Claude Code right after installing it.
+            new AgentPluginDetectionCandidate(LocalBinCliPath("claude")),
         ],
         "Install Claude Code and make the claude command available on PATH.");
 
@@ -82,5 +86,14 @@ public sealed class ClaudeAgentPlugin : IAgentPlugin
     {
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         return string.IsNullOrWhiteSpace(appData) ? binName : Path.Combine(appData, "npm", binName + ".cmd");
+    }
+
+    /// <summary>The official installer's target: ~/.local/bin/claude (claude.exe on Windows).</summary>
+    private static string LocalBinCliPath(string binName)
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (string.IsNullOrWhiteSpace(home)) return binName;
+        var fileName = OperatingSystem.IsWindows() ? binName + ".exe" : binName;
+        return Path.Combine(home, ".local", "bin", fileName);
     }
 }
