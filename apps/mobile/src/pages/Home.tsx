@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { setVoiceModeAllSessions, type SessionDto } from "@devthrottle/client-core/api/client";
+import { getAutoSpeak, inVoiceQueueOrder, queueTouchMs, setAutoSpeak } from "@devthrottle/client-core/voice/queueTouch";
 import { getSessionsEnvelope } from "@devthrottle/client-core/fleet/fleetClient";
 import { emptyRetentionCache, mergeRosterRetention, type RosterSessionMark } from "@devthrottle/client-core/fleet/rosterRetention";
 import { classify, contextLine, deletionReason, dotHex, inBucket, inDesktopOrder, inWaitingOrder, isWorking, pendingDeletion, repoLeaf, snoozeCountdown, snoozeExpired } from "@devthrottle/client-core/sessions/ordering";
@@ -27,6 +28,12 @@ import { enablePush, notificationPermission, pushSupported, reconcileBadge } fro
 // session and back) without churning React state.
 const POLL_INTERVAL_MS = 5000;
 
+// Voice-mode queue flow: how long the roster sits still before auto-speak jumps into the next
+// waiting session (a beat to see the list and to uncheck the box), and how recently-listened a
+// session must be to be passed over for now (it comes around again on a later pass).
+const AUTO_SPEAK_DELAY_MS = 1500;
+const AUTO_SPEAK_COOLDOWN_MS = 20000;
+
 /** The roster's two lenses: the full roster, or only the sessions that can speak to you right now. */
 type RosterTab = "all" | "voice";
 
@@ -48,7 +55,42 @@ export function Home() {
   // Transient by design: it is a lens you pick up for a minute, not a mode you can get stranded in.
   // Persisting it (as the machine/repo filter is persisted) would mean coming back to the app hours
   // later, during an outage, to an empty roster and no memory of why.
-  const [tab, setTab] = useState<RosterTab>("all");
+  //
+  // The one exception is router state: the Voice screen's Respond and Snooze return here with
+  // { tab: "voice" } so the voice queue flow lands back on the queue it is worked from, not on All.
+  // That state lives only in the navigation that carried it - a fresh open still starts on All.
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [tab, setTab] = useState<RosterTab>(() =>
+    (location.state as { tab?: string } | null)?.tab === "voice" ? "voice" : "all",
+  );
+  // Keep the selected lens on THIS history entry. A row navigation followed by browser/system Back
+  // must restore the Voice queue the owner was working, not remount the older default ("All") lens.
+  // This remains transient across a fresh app open because it is router history, not durable storage.
+  const selectTab = useCallback(
+    (next: RosterTab) => {
+      setTab(next);
+      const current = (location.state as Record<string, unknown> | null) ?? {};
+      navigate(location.pathname + location.search, {
+        replace: true,
+        state: { ...current, tab: next },
+      });
+    },
+    [location.pathname, location.search, location.state, navigate],
+  );
+  useEffect(() => {
+    const historyTab =
+      (location.state as { tab?: string } | null)?.tab === "voice" ? "voice" : "all";
+    setTab(historyTab);
+  }, [location.key, location.state]);
+  // Auto-speak (voice-mode queue flow): when checked, the Voice tab jumps into the oldest waiting
+  // voice-ready session by itself and reads it aloud - the hands-free queue. Persisted per device.
+  const [autoSpeak, setAutoSpeakState] = useState<boolean>(getAutoSpeak);
+  const toggleAutoSpeak = () => {
+    const next = !autoSpeak;
+    setAutoSpeak(next);
+    setAutoSpeakState(next);
+  };
 
   // Re-render the roster when a voice clip finishes downloading (a card flips from the yellow
   // working state to the play-triangle the moment its audio is phone-ready).
@@ -115,8 +157,19 @@ export function Home() {
   // unreachable machine keeps its last-known voiceAudioReady and its already-downloaded clip, so it
   // would otherwise sit in this tab claiming it can speak. This tab is the hands-free lens - the one
   // place a false "ready" is read out loud rather than looked at - so it must not list a dead machine.
+  //
+  // Ordered as a first-in-first-out QUEUE (voice-mode queue flow): oldest waiting at the top, new
+  // arrivals at the bottom - and a session you listened to but did not respond to or snooze drops to
+  // the BOTTOM (the device-local listened-touch counts as re-entering the line), so everything not
+  // yet heard is read first and the unhandled one comes around again.
   const voiceReady = filtered
-    ? inWaitingOrder(filtered.filter((s) => isVoiceReady(rowVoiceInputs(s, isWorking(s), !marks.has(s.sessionId ?? "")))))
+    ? inVoiceQueueOrder(
+        filtered.filter(
+          (s) =>
+            classify(s) === "needsYou" &&
+            isVoiceReady(rowVoiceInputs(s, isWorking(s), !marks.has(s.sessionId ?? ""))),
+        ),
+      )
     : [];
   // The "Needs you" group is a waiting line: the session that has been waiting for you the longest
   // sits at the top, and a session that only just started needing you drops in at the bottom
@@ -129,6 +182,27 @@ export function Home() {
   const total = sessions ? sessions.length : 0;
   const shownTotal = filtered ? filtered.length : 0;
   const active = filterIsActive(filter);
+
+  // AUTO-SPEAK (voice-mode queue flow): with the box checked and the Voice tab open, the roster
+  // jumps into the next session in the queue BY ITSELF and reads it aloud - hands-free driving mode.
+  // The next session is the oldest waiting one not listened to in the last few seconds (a session
+  // just left unhandled sits out one beat rather than instantly re-trapping the listener; with
+  // nothing else waiting it comes around on a later poll - deliberately, unhandled keeps coming
+  // back). The short delay leaves a moment to see the list, switch tabs, or uncheck the box - both
+  // of which stop the loop.
+  useEffect(() => {
+    if (tab !== "voice" || !autoSpeak || showFilter || voiceReady.length === 0) return;
+    const now = Date.now();
+    const next = voiceReady.find((s) => now - queueTouchMs(s.sessionId ?? "") > AUTO_SPEAK_COOLDOWN_MS);
+    if (!next) return;
+    const sid = encodeURIComponent(next.sessionId ?? "");
+    const timer = window.setTimeout(() => {
+      navigate(`/session/${sid}/voice`, {
+        state: { voiceMode: true, autoSpeak: true, fromTab: "voice" },
+      });
+    }, AUTO_SPEAK_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [tab, autoSpeak, showFilter, voiceReady, navigate]);
 
   return (
     <div className="screen">
@@ -191,7 +265,7 @@ export function Home() {
           role="tab"
           aria-selected={tab === "all"}
           className={`view-tab${tab === "all" ? " active" : ""}`}
-          onClick={() => setTab("all")}
+          onClick={() => selectTab("all")}
         >
           All
         </button>
@@ -200,7 +274,7 @@ export function Home() {
           role="tab"
           aria-selected={tab === "voice"}
           className={`view-tab${tab === "voice" ? " active" : ""}`}
-          onClick={() => setTab("voice")}
+          onClick={() => selectTab("voice")}
         >
           Voice mode
         </button>
@@ -237,12 +311,29 @@ export function Home() {
         <VoiceAllControl sessions={sessions} />
       )}
 
+      {/* Auto-speak (voice-mode queue flow): the hands-free switch. One checkbox; when on, the queue
+          below is read to you session by session without a single tap on a row. */}
+      {tab === "voice" && sessions !== null && total > 0 && (
+        <label className="autospeak-row">
+          <input type="checkbox" checked={autoSpeak} onChange={toggleAutoSpeak} />
+          <span className="autospeak-label">
+            Auto-speak
+            <span className="autospeak-hint">Jump into the next waiting session and read it aloud</span>
+          </span>
+        </label>
+      )}
+
+      {/* Honest feedback while auto-speak idles: the loop is armed, there is just nothing to read. */}
+      {tab === "voice" && autoSpeak && sessions !== null && total > 0 && voiceReady.length === 0 && (
+        <p className="status-line">Auto-speak is on. Waiting for a session to need you...</p>
+      )}
+
       {/* The Voice tab, empty. Said plainly and without alarm: nothing is ready to listen to yet. The
           way out is one tap, so an empty voice roster is never a dead end. */}
-      {tab === "voice" && sessions !== null && total > 0 && voiceReady.length === 0 && (
+      {tab === "voice" && !autoSpeak && sessions !== null && total > 0 && voiceReady.length === 0 && (
         <p className="status-line">
           Nothing to listen to right now.{" "}
-          <button type="button" className="link-btn" onClick={() => setTab("all")}>
+          <button type="button" className="link-btn" onClick={() => selectTab("all")}>
             Show all sessions
           </button>
         </p>
@@ -253,7 +344,7 @@ export function Home() {
           <h2 className="group-title">Ready to play</h2>
           <ul className="roster">
             {voiceReady.map((s) => (
-              <SessionRow key={`voice-${s.sessionId}`} session={s} mark={marks.get(s.sessionId ?? "")} />
+              <SessionRow key={`voice-${s.sessionId}`} session={s} mark={marks.get(s.sessionId ?? "")} fromTab="voice" />
             ))}
           </ul>
         </section>
@@ -395,7 +486,7 @@ function unreachableNote(mark: RosterSessionMark): string {
   return mark.lastSeenLabel.length > 0 ? `${base} - ${mark.lastSeenLabel}` : base;
 }
 
-function SessionRow({ session, mark }: { session: SessionDto; mark?: RosterSessionMark }) {
+function SessionRow({ session, mark, fromTab = "all" }: { session: SessionDto; mark?: RosterSessionMark; fromTab?: RosterTab }) {
   const name = session.name && session.name.trim().length > 0 ? session.name : "(unnamed session)";
   const repo = repoLeaf(session);
   const machine = machineName(session);
@@ -420,7 +511,7 @@ function SessionRow({ session, mark }: { session: SessionDto; mark?: RosterSessi
     <li className={`row${attention ? " row-attention" : ""}${unreachable ? " row-unreachable" : ""}`}>
       {/* Hand the known voice-mode state to the destination (issue #1015) so the Voice screen paints
           the right state on the first render instead of flashing OFF while its first poll resolves. */}
-      <Link className="row-link" to={to} state={{ voiceMode: Boolean(session.voiceMode) }}>
+      <Link className="row-link" to={to} state={{ voiceMode: Boolean(session.voiceMode), fromTab }}>
         {/* The dot always paints the Gateway-stamped colour - even when the owning machine is unreachable,
             the dot keeps telling the truth about the session's last-known state. Unreachability is shown by
             the row treatment (the .row-unreachable dashed border + dimming opacity + the "Unreachable" note),

@@ -44,7 +44,9 @@ export interface SessionManage {
   busy: boolean;
   error: string | null;
   setError: (message: string | null) => void;
-  toggleHold: () => Promise<void>;
+  /** Resolves true when the hold change was accepted by the Gateway, false when it failed (the error
+   *  is already surfaced) - so a caller that navigates away after a snooze can stay put on failure. */
+  toggleHold: () => Promise<boolean>;
   removeSession: () => Promise<void>;
 }
 
@@ -100,8 +102,8 @@ export function useSessionManage(sessionId: string | undefined): SessionManage {
     };
   }, [sessionId, refresh]);
 
-  const toggleHold = useCallback(async () => {
-    if (!sessionId || busy) return;
+  const toggleHold = useCallback(async (): Promise<boolean> => {
+    if (!sessionId || busy) return false;
     // The pre-tap state: both what the toggle flips FROM and what a FAILED /hold must roll back to.
     const preTap: HoldUiState = { held: onHold === true, deferred };
     const desired = !isSnoozing(preTap);
@@ -135,6 +137,7 @@ export function useSessionManage(sessionId: string | undefined): SessionManage {
     setOnHold(settled.held);
     setDeferred(settled.deferred);
     if (outcome.ok) void refresh();
+    return outcome.ok;
   }, [sessionId, busy, onHold, deferred, working, refresh]);
 
   const removeSession = useCallback(async () => {

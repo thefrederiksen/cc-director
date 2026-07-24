@@ -48,8 +48,12 @@ with `npm run lint` at the root.
 ## Local dev
 
 ```bash
-npm run dev --workspace @devthrottle/mobile   # Vite dev server; proxy /sessions to a running Gateway
+$env:MOBILE_PROXY_TARGET = "https://gateway.devthrottle.com" # PowerShell example
+npm run dev --workspace @devthrottle/mobile
 ```
+
+`MOBILE_PROXY_TARGET` is opt-in. When set, Vite forwards the Gateway API prefixes (including the
+exact `/mobile/enroll` endpoint) while continuing to serve the app itself under `/mobile`.
 
 ## Layout
 

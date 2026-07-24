@@ -2,6 +2,44 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 
+// Dev-only: the mobile shell calls the Gateway through root-relative URLs, so a local Vite run
+// needs an explicit Gateway front door for enrollment and the real app APIs. Without this proxy,
+// POST /mobile/enroll falls through to Vite's SPA shell and returns <!doctype html>; the enrollment
+// callback then tries to parse that as JSON and strands a fresh visitor on "Something went wrong".
+//
+// Opt in with MOBILE_PROXY_TARGET (for example https://gateway.devthrottle.com). Production is
+// unchanged: the Gateway serves the built app and all of these routes same-origin. /mobile/enroll is
+// intentionally exact; proxying all of /mobile would steal the local app, its assets, and its routes.
+const proxyTarget = process.env.MOBILE_PROXY_TARGET;
+const devProxy = proxyTarget
+  ? {
+      "/sessions": { target: proxyTarget, changeOrigin: true, ws: true },
+      "/directors": { target: proxyTarget, changeOrigin: true },
+      "/interrupted": { target: proxyTarget, changeOrigin: true },
+      "/fanout": { target: proxyTarget, changeOrigin: true },
+      "/cron": { target: proxyTarget, changeOrigin: true },
+      "/wingman": { target: proxyTarget, changeOrigin: true },
+      "/lists": { target: proxyTarget, changeOrigin: true },
+      "/account": { target: proxyTarget, changeOrigin: true },
+      "/gateway": { target: proxyTarget, changeOrigin: true },
+      "/ingest": { target: proxyTarget, changeOrigin: true },
+      "/dictation": { target: proxyTarget, changeOrigin: true },
+      "/transcription": { target: proxyTarget, changeOrigin: true },
+      "/turnbriefs": { target: proxyTarget, changeOrigin: true },
+      "/vault": { target: proxyTarget, changeOrigin: true },
+      "/push": { target: proxyTarget, changeOrigin: true },
+      "/carmode": { target: proxyTarget, changeOrigin: true },
+      "/stats": { target: proxyTarget, changeOrigin: true },
+      "/healthz": { target: proxyTarget, changeOrigin: true },
+      "/diag": { target: proxyTarget, changeOrigin: true },
+      // The enrollment mint shares the app's prefix, so proxy only the API leaf.
+      "/mobile/enroll": { target: proxyTarget, changeOrigin: true },
+      // The public site still returns mobile enrollment through the legacy callback path. The
+      // Gateway redirects it to /mobile/device-callback, preserving the URL fragment.
+      "/m/device-callback": { target: proxyTarget, changeOrigin: true },
+    }
+  : undefined;
+
 // The app is served by the Gateway under /mobile, so every asset URL must be /mobile-rooted.
 // (The Gateway 301-redirects the old /m mount to /mobile so installed PWAs and bookmarks keep working.)
 // The PWA service worker caches the app shell (Issue 1, AC7) so the roster opens offline
@@ -9,6 +47,9 @@ import { VitePWA } from "vite-plugin-pwa";
 // MSBuild target copies into wwwroot/mobile/.
 export default defineConfig({
   base: "/mobile/",
+  server: {
+    proxy: devProxy,
+  },
   plugins: [
     react(),
     VitePWA({
