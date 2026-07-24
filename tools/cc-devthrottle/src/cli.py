@@ -399,13 +399,6 @@ _ACTIONS = [
         "args": [{"name": "id", "required": True}],
     },
     {
-        "id": "workflow-reset",
-        "description": "Reset a built-in Workflow to the shipped content (published as a new version).",
-        "command": "cc-devthrottle workflow reset <id>",
-        "mutatesState": True,
-        "args": [{"name": "id", "required": True}],
-    },
-    {
         "id": "workflow-delete",
         "description": "Archive a custom Workflow (built-ins can never be deleted; history remains).",
         "command": "cc-devthrottle workflow delete <id> --yes",
@@ -1140,12 +1133,8 @@ def workflow_disable(
     workflow_ops.set_workflow_enabled(workflow_id, False)
 
 
-@workflow_app.command("reset")
-def workflow_reset(
-    workflow_id: str = typer.Argument(..., help="The built-in workflow id (e.g. mission)."),
-) -> None:
-    """Reset a built-in Workflow to the shipped content (published as a new version)."""
-    workflow_ops.reset_workflow(workflow_id)
+# "workflow reset" was retired with the Shared Workflow Library phase 3: built-ins are read-only,
+# can never diverge from the shipped content, and have nothing to reset.
 
 
 @workflow_app.command("delete")

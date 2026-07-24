@@ -3,13 +3,12 @@ import { Link, useParams } from "react-router-dom";
 import {
   getWorkflow,
   getWorkflowInstructions,
-  resetWorkflow,
   setWorkflowEnabled,
   type WorkflowDefinition,
 } from "@devthrottle/client-core/workflows/workflowsClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 import { markdownToHtml } from "@devthrottle/client-core/history/historyMarkdown";
-import { Button, ConfirmDialog, ErrorBanner, LoadingState } from "../components";
+import { ConfirmDialog, ErrorBanner, LoadingState } from "../components";
 
 // One workflow, in full (Workflows mission, phase 7). The list row answered "what exists"; this page
 // answers "what does it actually say": the metadata and step summary up top (the machine-readable
@@ -23,7 +22,6 @@ export function WorkflowDetail() {
   const [instructions, setInstructions] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pendingOff, setPendingOff] = useState(false);
-  const [pendingReset, setPendingReset] = useState(false);
   // Every load claims a generation; a load that finishes after a newer one started (a mutation
   // refresh racing a route change to another workflow) drops its result instead of painting
   // workflow A's state under workflow B's URL.
@@ -58,7 +56,7 @@ export function WorkflowDetail() {
     return () => ctrl.abort();
   }, [load]);
 
-  // A failed flip or reset is never silent: it lands in the page's error state (with Retry).
+  // A failed flip is never silent: it lands in the page's error state (with Retry).
   const flip = async (enabled: boolean) => {
     if (id === undefined) return;
     try {
@@ -112,12 +110,16 @@ export function WorkflowDetail() {
                 </span>
               </span>
             ) : null}
-            {workflow.isBuiltIn === true ? (
-              <Button variant="secondary" onClick={() => setPendingReset(true)}>
-                Reset to shipped
-              </Button>
-            ) : null}
           </div>
+          {/* The Gateway's editability verdict, rendered verbatim (rule 7): built-ins are
+              DevThrottle-maintained and read-only; the sanctioned customization path is clone. */}
+          {workflow.editable === false ? (
+            <p className="wf-conduct-hint">
+              This is a built-in workflow, maintained by DevThrottle and updated with the Gateway
+              itself. It cannot be edited or deleted - to customize the conduct, clone it into your
+              own workflow.
+            </p>
+          ) : null}
           {workflow.enabled === false ? (
             <p className="wf-off-banner">
               This workflow is OFF: agents will not see it in their briefings, and it cannot start
@@ -172,29 +174,6 @@ export function WorkflowDetail() {
         onClose={() => setPendingOff(false)}
       />
 
-      <ConfirmDialog
-        open={pendingReset}
-        title={`Reset '${workflow?.name ?? id}' to the shipped content?`}
-        message={
-          <>
-            The content DevThrottle ships becomes a NEW published version, in force immediately.
-            Your customized versions stay as history and remain readable by version number.
-          </>
-        }
-        confirmLabel="Reset to shipped"
-        danger={false}
-        onConfirm={async () => {
-          if (id === undefined) return;
-          try {
-            await resetWorkflow(id);
-          } catch (err) {
-            setError(gatewayErrorMessage(err));
-            return;
-          }
-          await load();
-        }}
-        onClose={() => setPendingReset(false)}
-      />
     </div>
   );
 }

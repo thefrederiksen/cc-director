@@ -118,8 +118,12 @@ public sealed class WorkflowStoreTests : IDisposable
     }
 
     [Fact]
-    public void Customized_built_in_is_left_alone_but_the_shipped_hash_is_recorded()
+    public void Previously_customized_built_in_is_republished_to_shipped_with_history_kept()
     {
+        // Built-ins are READ-ONLY (Shared Workflow Library phase 3, owner ruling 2026-07-24,
+        // reversing the 2026-07-17 editable-with-reset trade): a customization published under the
+        // OLD ruling is superseded by shipped content on the next seed - even when the binary's own
+        // content did not change - and the edit stays as forever-readable pinned history.
         var db = _h.Open();
         _ = new WorkflowStore(db);
 
@@ -129,25 +133,26 @@ public sealed class WorkflowStoreTests : IDisposable
             var head = ctx.Workflows.Single(h => h.Id == "mission");
             var published = ctx.WorkflowVersions.Single(
                 v => v.WorkflowId == "mission" && v.Status == WorkflowVersionStatus.Published);
-            // The user published an edit under an older binary: the published hash is theirs, and the
-            // head remembers the OLD shipped hash - both differ from what THIS binary ships.
             head.ShippedContentHash = "old-shipped-hash";
             published.ContentHash = customizedHash;
+            published.InstructionsMarkdown = "# The user's own conduct";
             ctx.SaveChanges();
         }
 
         var store = new WorkflowStore(_h.Open());
 
         var mission = store.GetPublished("mission")!;
-        Assert.Equal(1, mission.Version);
-        Assert.Equal(customizedHash, mission.ContentHash);
+        Assert.Equal(2, mission.Version); // shipped content took the head as a NEW version
+        Assert.Equal(BuiltInWorkflows.InstructionsFor("mission"), store.GetInstructions("mission", null));
+        // The customization is history, not gone: the pinned read still serves it.
+        Assert.Equal("# The user's own conduct", store.GetInstructions("mission", version: 1));
         using (var ctx = _h.Open().CreateContext())
         {
             var head = ctx.Workflows.Single(h => h.Id == "mission");
-            Assert.Equal(1, head.LatestVersion);
-            // The shipped hash still advances so a later reset-to-shipped knows what this binary ships.
-            Assert.NotEqual("old-shipped-hash", head.ShippedContentHash);
-            Assert.NotEqual(customizedHash, head.ShippedContentHash);
+            Assert.Equal(2, head.LatestVersion);
+            Assert.Equal(2, head.PublishedVersion);
+            Assert.Equal(head.ShippedContentHash,
+                ctx.WorkflowVersions.Single(v => v.WorkflowId == "mission" && v.Version == 2).ContentHash);
         }
     }
 

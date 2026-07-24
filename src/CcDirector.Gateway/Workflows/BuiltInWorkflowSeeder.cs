@@ -8,19 +8,18 @@ namespace CcDirector.Gateway.Workflows;
 
 /// <summary>
 /// Writes the shipped built-in workflows (<see cref="BuiltInWorkflows"/> + their embedded instruction
-/// bodies) into the persisted workflow store at startup. The rules are the injected-text ours/yours
-/// trade, applied per workflow (owner ruling, 2026-07-17: built-ins are editable with
-/// reset-to-shipped):
+/// bodies) into the persisted workflow store at startup. Built-ins are READ-ONLY (Shared Workflow
+/// Library phase 3, owner ruling 2026-07-24, reversing the 2026-07-17 editable-with-reset trade):
+/// they are DevThrottle's, this seeder is the ONLY writer of their content, and the catalog always
+/// tracks the RUNNING binary:
 ///
 ///  - Absent workflow: seeded as version 1, published, with the shipped content.
-///  - Present and UNCUSTOMIZED (its published content hash equals the shipped hash we last recorded):
-///    a binary that ships different content auto-publishes it as the next version - the user follows
-///    "ours" and the catalog tracks the RUNNING binary, in both directions. A rollback deliberately
-///    rolls the conduct back too (and mints a version recording that), exactly as the injected-text
-///    "ours" channel serves whatever the running binary carries.
-///  - Present and CUSTOMIZED (the user published their own edit): left completely alone. The newly
-///    shipped hash is still recorded on the head so a later "reset to shipped" knows what this binary
-///    ships, but no version is created and nothing the user wrote is touched.
+///  - Present with a different published hash than this binary ships: the shipped bundle is
+///    published as the next version and the previous one is superseded - in BOTH directions, so a
+///    rollback republishes the older conduct and the minted version row is the honest record of what
+///    the fleet was served. Superseded versions remain readable forever (pinned runs depend on it) -
+///    including any edit published under the OLD editable-built-ins ruling, which is preserved as
+///    history while shipped content takes over the head.
 ///
 /// Built-ins keep their shipped catalog order via deliberately staggered CreatedUtc stamps (the
 /// catalog lists in creation order).
@@ -51,8 +50,22 @@ public static class BuiltInWorkflowSeeder
                 continue;
             }
 
-            if (string.Equals(head.ShippedContentHash, shippedHash, StringComparison.Ordinal))
-                continue; // this binary ships exactly what was last recorded - nothing to do.
+            // Read-only built-ins (phase 3): the invariant is that the PUBLISHED version IS the
+            // shipped bundle. Compare the published hash - not merely the recorded shipped hash -
+            // so a customization published under the old editable-built-ins ruling is superseded by
+            // shipped content even when the binary's own content did not change across the upgrade.
+            var published = ctx.WorkflowVersions.AsNoTracking().FirstOrDefault(
+                v => v.WorkflowId == head.Id && v.Status == WorkflowVersionStatus.Published);
+            if (published is not null &&
+                string.Equals(published.ContentHash, shippedHash, StringComparison.Ordinal))
+            {
+                if (!string.Equals(head.ShippedContentHash, shippedHash, StringComparison.Ordinal))
+                {
+                    head.ShippedContentHash = shippedHash; // heal a stale record; content already right
+                    ctx.SaveChanges();
+                }
+                continue; // the fleet is already served exactly what this binary ships.
+            }
 
             UpgradeShippedContent(ctx, head, definition, shippedHash);
         }
@@ -135,34 +148,23 @@ public static class BuiltInWorkflowSeeder
         WorkflowDefinition definition,
         string shippedHash)
     {
+        // Built-ins are read-only (phase 3): the catalog always tracks the RUNNING binary, so a hash
+        // difference - in either direction - publishes this binary's bundle as the next version. Any
+        // previously published content (including an edit made under the old editable-built-ins
+        // ruling) is preserved as a superseded, forever-readable version row, never rewritten.
         var published = ctx.WorkflowVersions.FirstOrDefault(
             v => v.WorkflowId == head.Id && v.Status == WorkflowVersionStatus.Published);
-        var uncustomized = published is not null &&
-            string.Equals(published.ContentHash, head.ShippedContentHash, StringComparison.Ordinal);
 
-        if (uncustomized)
-        {
-            // The user follows the shipped content - publish THIS binary's bundle as the next version
-            // so every Director picks it up, exactly like the injected-text "ours" channel. This is
-            // direction-agnostic on purpose: a rollback republishes the older conduct, and the minted
-            // version row is the honest record of what the fleet was served.
-            var now = DateTime.UtcNow;
-            published!.Status = WorkflowVersionStatus.Superseded;
-            var nextVersion = head.LatestVersion + 1;
-            ctx.WorkflowVersions.Add(BuildShippedVersion(ctx, definition, nextVersion, now));
-            head.LatestVersion = nextVersion;
-            head.PublishedVersion = nextVersion;
-            head.UpdatedUtc = now;
-            FileLog.Write($"[BuiltInWorkflowSeeder] Upgraded built-in workflow: id={head.Id}, " +
-                          $"v{nextVersion} published from shipped content, hash={shippedHash[..12]}");
-        }
-        else
-        {
-            // Customized: the user's published edit stays untouched. Record what this binary ships so
-            // a later reset-to-shipped can restore it.
-            FileLog.Write($"[BuiltInWorkflowSeeder] Built-in workflow {head.Id} is customized; shipped " +
-                          $"content NOT applied (recorded hash={shippedHash[..12]} for reset)");
-        }
+        var now = DateTime.UtcNow;
+        if (published is not null)
+            published.Status = WorkflowVersionStatus.Superseded;
+        var nextVersion = head.LatestVersion + 1;
+        ctx.WorkflowVersions.Add(BuildShippedVersion(ctx, definition, nextVersion, now));
+        head.LatestVersion = nextVersion;
+        head.PublishedVersion = nextVersion;
+        head.UpdatedUtc = now;
+        FileLog.Write($"[BuiltInWorkflowSeeder] Upgraded built-in workflow: id={head.Id}, " +
+                      $"v{nextVersion} published from shipped content, hash={shippedHash[..12]}");
 
         head.ShippedContentHash = shippedHash;
         ctx.SaveChanges();

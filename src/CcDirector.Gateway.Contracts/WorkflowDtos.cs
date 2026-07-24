@@ -67,8 +67,16 @@ public sealed class WorkflowDto
     /// <summary>The owner's switch (register redesign): false = OFF - hidden from agents' launch
     /// briefings, default conduct reads refused, no new runs or seats; nothing deleted. The catalog
     /// still LISTS off workflows so the register can show and flip them. Defaults true so a reader
-    /// of an older Gateway that omits the field treats everything as in force.</summary>
+    /// of an older Gateway that omits the field treats everything as in force. On a built-in this is
+    /// the CALLING TENANT's effective state (the tenant's own choice folded over the library value).</summary>
     public bool Enabled { get; set; } = true;
+
+    /// <summary>The Gateway's verdict on whether this workflow's CONTENT can be changed by the caller
+    /// (Shared Workflow Library phase 3): false for the built-in DevThrottle workflows (read-only,
+    /// maintained by DevThrottle, customize by cloning), true for tenant-owned workflows. Clients
+    /// render this verbatim (rule 7 - the client is dumb) and never derive editability themselves.
+    /// Defaults false: when in doubt, offer no edit affordance.</summary>
+    public bool Editable { get; set; }
 }
 
 /// <summary>A helper file carried by a workflow version, with full content (authoring payloads).</summary>
