@@ -334,6 +334,35 @@
   background: var(--border);
 }
 
+/* The "+ New session" button on a Director sub-header (machine pivot). `order: 1` floats it to the far
+   right, AFTER the flex-1 divider rule (the ::after pseudo, order 0), so the row reads
+   label - rule - button. A quiet chip by default that brightens on hover, so it reads as an available
+   action without competing with the session cards. */
+.fmap-subhead-new {
+  order: 1;
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.fmap-subhead-new:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.fmap-subhead-new:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 /* An idle Director on the machine pivot: no sessions, so the sub-group renders this "free slot" line
    instead of cards. A dashed, muted placeholder so it reads as available capacity, not a real node. */
 .fmap-freeslot {
