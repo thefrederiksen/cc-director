@@ -86,9 +86,15 @@ Spec: devthrottle_internal#510 · Brief: docs/MISSION-repositories-full-2026-07-
   Avalonia 290 / Gateway 3680, 0 failed (7,422 passing). Slot 5 live at the tip, harness
   8 of 8. Inspection verdict: PASS (round 8). QA report published:
   https://claude.ai/code/artifact/89592685-99f5-459a-86b0-999bf536651d
-- WAITING ON THE OWNER: approval to merge. On approval, slice the branch into pull requests
-  in build order (model+monitor, git services, screens, Gateway push+endpoints,
-  history+recommendations, hand-off) and drive each to merged on origin/main.
+- APPROVED (2026-07-24): the owner approved the merge ("Approved, merge it all into origin
+  main"). Landing decision (Architect): ONE squash-merged pull request, not slices - every
+  intermediate state of the branch is known-defective (that is what the eight inspection
+  rounds proved and fixed), so only the PASS-verdict tip may exist on main; a squash lands
+  exactly that, and the whole diff was already line-level reviewed across the eight rounds
+  recorded in the INSPECTION documents. origin/main had moved 11 commits; merged in
+  (conflicts in MainWindow.axaml.cs and DirectorHub.cs, both additive, both kept both
+  sides), full solution rebuilt, all three suites rerun on the merged tree before the pull
+  request was opened. MISSION COMPLETE once the pull request is merged.
 
 ## Next
 - Manager round 2 finishes R2-1..R2-12 and pushes.

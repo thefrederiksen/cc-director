@@ -1,7 +1,11 @@
 # Mission: Repositories, handled like they matter (2026-07-23)
 
-Status: ACTIVE. Branch `mission/repositories-full`, worktree `D:\ReposFred\devthrottle-repos-mission`.
-Conduct: `.claude/skills/mission/SKILL.md`. Running state: `docs/MISSION-repositories-full-STATE.md`.
+Status: COMPLETE (2026-07-24). The owner approved the QA report and the branch was landed on
+origin/main as one squash-merged pull request; the mission worktree was removed afterwards.
+The full record - eight inspection rounds, every finding, ruling, and fix - is in
+`docs/MISSION-repositories-full-INSPECTION-1.md` through `-6.md` and the running state in
+`docs/MISSION-repositories-full-STATE.md`, all in the past tense now.
+Conduct followed: `.claude/skills/mission/SKILL.md`.
 
 ## The why
 The owner ended up with roughly 300 dangling worktrees eating 100 gigabytes because nothing watched,
