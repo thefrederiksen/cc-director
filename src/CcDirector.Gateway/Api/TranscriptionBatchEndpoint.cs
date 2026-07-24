@@ -37,7 +37,8 @@ internal static class TranscriptionBatchEndpoint
         KeyVault vault,
         TranscriptionHistoryLog? history = null,
         TranscriptionAudioArchive? audioArchive = null,
-        Tenancy.HostedTenantBoundary? tenantBoundary = null)
+        Tenancy.HostedTenantBoundary? tenantBoundary = null,
+        TranscriptStore? transcripts = null)
     {
         app.MapPost("/transcription", async (HttpContext ctx) =>
         {
@@ -64,8 +65,8 @@ internal static class TranscriptionBatchEndpoint
 
             FileLog.Write($"[TranscriptionBatchEndpoint] POST /transcription: bytes={audio.Length}, contentType={contentType}, correct={correct}");
 
-            var service = new GatewayTranscriptionService(vault, history: history, audioArchive: audioArchive);
-            var result = await service.TranscribeAsync(audio, fileName, contentType, correct, ctx.RequestAborted, tenant: reqTenant.Value);
+            var service = new GatewayTranscriptionService(vault, history: history, audioArchive: audioArchive, transcripts: transcripts);
+            var result = await service.TranscribeAsync(audio, fileName, contentType, correct, ctx.RequestAborted, tenant: reqTenant.Value, source: "batch");
 
             return result.Outcome switch
             {

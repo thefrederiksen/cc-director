@@ -40,8 +40,6 @@ namespace CcDirector.Avalonia.Voice;
 /// </summary>
 public sealed class BatchDictationRecorder : IAsyncDisposable
 {
-    private readonly AgentOptions _options;
-    private readonly DictionaryResolver _dictionaryResolver;
     private readonly int _micDeviceNumber;
 
     // Builds the audio source for a device number. Production builds a NAudio
@@ -68,11 +66,7 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
     private bool _stopped;
     private bool _disposed;
 
-    // Session-record state so the desktop path leaves the same JSONL audit trail
-    // as the other dictation surfaces (issue #190).
-    private readonly string _sessionId = Guid.NewGuid().ToString("N");
-    private string _profile = "default";
-    private DateTime _sessionStartUtc;
+    // Elapsed recording time, reported on the captured audio for the capture-health line.
     private System.Diagnostics.Stopwatch? _recordingStopwatch;
 
     /// <summary>Fires for every captured chunk with a per-band (0..1) spectrum for the UI equalizer.</summary>
@@ -119,10 +113,7 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
     /// </param>
     public BatchDictationRecorder(AgentOptions options, int micDeviceNumber = MicDevices.DefaultDeviceNumber)
     {
-        _options = options ?? throw new ArgumentNullException(nameof(options));
-        // Resolve the dictation dictionary the same way: the Gateway's shared glossary when
-        // attached, the local cache when standalone (#253). A Cockpit edit reaches this Director.
-        _dictionaryResolver = new DictionaryResolver(options);
+        if (options is null) throw new ArgumentNullException(nameof(options));
         _micDeviceNumber = micDeviceNumber;
         _audioSourceFactory = static device => new MicAudioCapture(device);
         _transcribeOverride = null;
@@ -139,8 +130,7 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
         Func<byte[], string, CancellationToken, Task<DictationResult>> transcribeOverride,
         int micDeviceNumber = MicDevices.DefaultDeviceNumber)
     {
-        _options = options ?? throw new ArgumentNullException(nameof(options));
-        _dictionaryResolver = new DictionaryResolver(options);
+        if (options is null) throw new ArgumentNullException(nameof(options));
         _micDeviceNumber = micDeviceNumber;
         _audioSourceFactory = audioSourceFactory ?? throw new ArgumentNullException(nameof(audioSourceFactory));
         _transcribeOverride = transcribeOverride ?? throw new ArgumentNullException(nameof(transcribeOverride));
@@ -184,8 +174,6 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
             throw;
         }
 
-        _profile = string.IsNullOrWhiteSpace(profile) ? "default" : profile;
-        _sessionStartUtc = DateTime.UtcNow;
         _recordingStopwatch = System.Diagnostics.Stopwatch.StartNew();
         _started = true;
 
@@ -285,10 +273,6 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
         if (_transcribeOverride is not null)
             return await _transcribeOverride(pcm, device, ct);
 
-        // Pull a local glossary snapshot for diagnostics. The Gateway applies the authoritative
-        // glossary correction during /transcription.
-        var dictionary = await _dictionaryResolver.ResolveAsync(ct);
-
         // Wrap the whole captured PCM in one WAV blob and transcribe ONCE through the
         // Gateway transcription endpoint. The dictionary corrector is the only text transform. The
         // trailing-silence run-out (dictation end-word fix) is padded onto the transcription WAV only;
@@ -316,35 +300,11 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
                 + $"maxGapMs={ch.MaxCallbackGapMs:F0}, longGaps={ch.LongGapCount}, maxHandlerMs={ch.MaxHandlerMs:F1}, "
                 + $"buffers={ch.NumberOfBuffers}x{ch.BufferMilliseconds}ms");
 
-        // Same JSONL audit record the other dictation surfaces write so a desktop
-        // dictation incident keeps its raw text for forensics. Fire-and-forget off
-        // the UI-facing path; failures are logged inside TryAppend.
-        var record = new DictationSessionRecord(
-            TimestampUtc: _sessionStartUtc.ToString("o"),
-            SessionId: _sessionId,
-            Profile: _profile,
-            VocabularyTermCount: dictionary.Vocabulary.Count,
-            MistranscriptionPatternCount: dictionary.CommonMistranscriptions.Count,
-            RecordingDurationMs: _recordingStopwatch?.ElapsedMilliseconds ?? 0,
-            StopToTranscribedMs: stopWatch.ElapsedMilliseconds,
-            StopToCleanedMs: stopWatch.ElapsedMilliseconds,
-            AudioBytesReceived: pcm.Length,
-            RawTranscript: gateway.Text,
-            CleanedTranscript: gateway.Text,
-            CleanupApplied: false,
-            CleanupReason: "gateway-owned transcription",
-            CleanupModel: _options.DictationCleanupModel,
-            RemoteIp: null,
-            ClientError: null,
-            Source: "desktop-speak",
-            ExpectedAudioBytes: captureHealth?.ExpectedBytes ?? 0,
-            CaptureCallbackCount: captureHealth?.CallbackCount ?? 0,
-            MaxCaptureCallbackGapMs: captureHealth?.MaxCallbackGapMs ?? 0,
-            LongCaptureGapCount: captureHealth?.LongGapCount ?? 0,
-            MaxCaptureHandlerMs: captureHealth?.MaxHandlerMs ?? 0,
-            CaptureBufferCount: captureHealth?.NumberOfBuffers ?? 0,
-            CaptureBufferMs: captureHealth?.BufferMilliseconds ?? 0);
-        _ = Task.Run(() => DictationSessionLog.TryAppend(record));
+        // The transcript itself is stored per-tenant on the Gateway (issue #509): this desktop path
+        // transcribes THROUGH the Gateway /transcription endpoint above, so its raw and cleaned text already
+        // lands in the caller tenant's dictation_transcripts partition via the transcription service. The old
+        // host-global dictation/sessions/*.jsonl flat log this used to also write is retired (it had no
+        // readers); the capture-health deficit stays a FileLog line above.
 
         return new DictationResult(
             RawTranscript: gateway.Text,

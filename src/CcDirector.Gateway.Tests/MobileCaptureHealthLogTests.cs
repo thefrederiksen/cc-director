@@ -4,53 +4,49 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// The one shared mobile capture-health record builder (issue #863) feeds BOTH the Voice-mode complete
-/// path and the durable Terminal/Chat Send complete path, so these guard its two behaviours: it emits
-/// nothing when the client did not measure (recordedMs null), and when it did it maps the recorded
-/// wall-clock, decoded duration, source tag, and transcribed byte count onto the record faithfully.
+/// The shared mobile capture-health hook (issue #863) feeds BOTH the Voice-mode complete path and the durable
+/// Terminal/Chat Send complete path. Issue #509 retired the host-global <c>dictation/sessions/*.jsonl</c> flat
+/// file it used to append to (the transcript is now stored per-tenant by the transcription service), so this
+/// hook is now a log-only diagnostic. These guard its two remaining behaviours at the unit level, without
+/// touching the storage root: it is a no-op when the client did not measure (recordedMs null), and it never
+/// throws when it did. The "the flat file is never written" retirement regression lives in
+/// <see cref="MobileCaptureHealthLogHostedTests"/> (which owns the storage-root flipping).
 /// </summary>
 public sealed class MobileCaptureHealthLogTests
 {
     [Fact]
-    public void BuildRecord_NoClientRecordedMs_ReturnsNull()
+    public void Persist_NoClientRecordedMs_IsANoOpAndDoesNotThrow()
     {
-        // The client did not opt in (or its on-device decode failed): there is nothing to persist, and a
-        // fabricated deficit would be worse than no record at all.
-        var record = MobileCaptureHealthLog.BuildRecord(
+        // The client did not opt in (or its on-device decode failed): there is nothing to record, and a
+        // fabricated deficit would be worse than none. It must return quietly.
+        var ex = Record.Exception(() => MobileCaptureHealthLog.Persist(
             uploadId: "u1", source: "mobile-send", recordedMs: null, decodedSeconds: 12.0,
-            sourceBytes: 4096, audioBytes: 8192, cleaned: "hello");
+            sourceBytes: 4096, audioBytes: 8192, cleaned: "hello"));
 
-        Assert.Null(record);
+        Assert.Null(ex);
     }
 
     [Fact]
-    public void BuildRecord_WithMeasurements_MapsWallClockDecodedSourceAndBytes()
+    public void Persist_WithMeasurements_DoesNotThrow()
     {
-        var record = MobileCaptureHealthLog.BuildRecord(
+        // With measurements the hook logs the deficit and returns. It never fails a turn - a capture-health
+        // problem must not surface as a transcription error.
+        var ex = Record.Exception(() => MobileCaptureHealthLog.Persist(
             uploadId: "upload-123", source: "mobile-send", recordedMs: 120_000, decodedSeconds: 108.5,
-            sourceBytes: 1_500_000, audioBytes: 3_840_000, cleaned: "the whole sentence");
+            sourceBytes: 1_500_000, audioBytes: 3_840_000, cleaned: "the whole sentence"));
 
-        Assert.NotNull(record);
-        Assert.Equal("mobile-send", record!.Source);
-        Assert.Equal(120_000, record.RecordedWallMs);
-        Assert.Equal(108.5, record.DecodedAudioSeconds);
-        Assert.Equal(120_000, record.RecordingDurationMs);
-        Assert.Equal(3_840_000, record.AudioBytesReceived);
-        Assert.Equal("upload-123", record.SessionId);
-        Assert.Equal("the whole sentence", record.CleanedTranscript);
+        Assert.Null(ex);
     }
 
     [Fact]
-    public void BuildRecord_MissingDecodedSeconds_DefaultsToZeroNotNegative()
+    public void Persist_MissingDecodedSeconds_DoesNotThrow()
     {
-        // A recorded clip whose decode duration did not come through reads as zero decoded audio (a total
-        // deficit), never a negative or fabricated value.
-        var record = MobileCaptureHealthLog.BuildRecord(
+        // A recorded clip whose decode duration did not come through still logs (as a total deficit) and never
+        // throws or fabricates a negative value.
+        var ex = Record.Exception(() => MobileCaptureHealthLog.Persist(
             uploadId: "u2", source: "mobile", recordedMs: 5_000, decodedSeconds: null,
-            sourceBytes: null, audioBytes: 1024, cleaned: null);
+            sourceBytes: null, audioBytes: 1024, cleaned: null));
 
-        Assert.NotNull(record);
-        Assert.Equal(0, record!.DecodedAudioSeconds);
-        Assert.Equal("", record.CleanedTranscript);
+        Assert.Null(ex);
     }
 }

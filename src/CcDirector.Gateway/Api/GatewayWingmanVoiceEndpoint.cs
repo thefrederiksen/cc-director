@@ -134,7 +134,8 @@ internal static class GatewayWingmanVoiceEndpoint
         Voice.VoiceUploadStore? uploadStore = null,
         Transcription.TranscriptionHistoryLog? history = null,
         Transcription.TranscriptionAudioArchive? audioArchive = null,
-        Tenancy.HostedTenantBoundary? tenantBoundary = null)
+        Tenancy.HostedTenantBoundary? tenantBoundary = null,
+        Transcription.TranscriptStore? transcripts = null)
     {
         // The speech transport: the shared static in production, an injected stub in a test. This is the
         // same seam WingmanVoiceService already exposes for its narration leg (ttsHttpClient) and it
@@ -165,7 +166,7 @@ internal static class GatewayWingmanVoiceEndpoint
         // (the resumable /wingman/utterance/complete and the one-shot /wingman/transcribe) go through
         // it, so they resolve the mode + key and pick the hosted endpoint exactly the same way every
         // other batch caller does - no second resolver.
-        var transcription = new Transcription.GatewayTranscriptionService(vault, history: history, audioArchive: audioArchive);
+        var transcription = new Transcription.GatewayTranscriptionService(vault, history: history, audioArchive: audioArchive, transcripts: transcripts);
 
         // Which voice sessions have a ready, playable spoken summary right now (the phone's list
         // shows a play button on these and can play without entering).
@@ -601,7 +602,7 @@ internal static class GatewayWingmanVoiceEndpoint
             // Transcribe WITH the validated dictionary correction applied (the SAME engine every other
             // surface uses; fails open to the raw transcript in local mode or on any cleanup error).
             var result = await transcription.TranscribeAsync(bytes, fileName, contentType, applyCorrection: true, ct,
-                tenant: GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary));
+                tenant: GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary), source: "voice");
             // Out of credits / monthly cap (issue #939): map to the shared 402 state (branch by code)
             // instead of flattening it into a generic 502 - so the client shows the consistent
             // add-credits message and keeps the recording, not "transcription failed".
@@ -857,7 +858,7 @@ internal static class GatewayWingmanVoiceEndpoint
             // SAME engine every other surface uses; fails open to raw in local mode or on any error).
             var result = await transcription.TranscribeAsync(
                 assembledAudio, "audio." + (req.Ext ?? "webm"), req.Mime ?? "audio/webm", applyCorrection: true, ct,
-                tenant: reqTenant);
+                tenant: reqTenant, source: "voice");
             uploads.Delete(uploadId);
             // Out of credits / monthly cap (issue #939): map to the shared 402 state (branch by code)
             // instead of flattening it into a generic 502 - so the client shows the consistent

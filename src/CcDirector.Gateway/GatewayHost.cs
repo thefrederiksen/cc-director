@@ -551,6 +551,7 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly Prompts.GatewayPromptLog _promptLog;
     private readonly Transcription.TranscriptionHistoryLog _transcriptionHistory = new();
     private readonly Transcription.TranscriptionAudioArchive _transcriptionAudioArchive = new();
+    private readonly Transcription.TranscriptStore _transcripts;
     // The voice-turn staging root, likewise bound to an explicitly-named partition. This path stages a clip
     // for the duration of one turn and then deletes it; it writes no delivery record and performs no
     // cross-request lookup by upload id, so it is unchanged by the dictation partition work. Per-tenant
@@ -957,6 +958,12 @@ public sealed class GatewayHost : IAsyncDisposable
         // until the owner explicitly overrides one.
         _tenantSettings = new Settings.TenantSettingsStore(_gatewayDb);
         _tenantSettingsResolver = new Settings.TenantSettingsResolver(_tenantSettings);
+        // Per-tenant dictation transcript store (issue #509): every transcribed turn's raw and cleaned text
+        // lands in the caller tenant's partition of the dictation_transcripts table, write-only, for later
+        // mistranscription mining (devthrottle #2075). Same store on SQLite (self-host) and Postgres (hosted) -
+        // no IsHosted branch; self-host is just the single Local tenant. No legacy file to import here (the old
+        // flat dictation/sessions/*.jsonl log is retired, not migrated - it had no readers).
+        _transcripts = new Transcription.TranscriptStore(_gatewayDb);
         // Cron-job definitions persist across a Gateway restart (epic #479, #482) in the cron_jobs table
         // (next-run times recomputed on load). The path argument is the LEGACY cronjobs.json, imported once
         // on first upgrade then renamed aside. Tests MUST pass an isolated path so they never touch the real
@@ -2104,7 +2111,8 @@ public sealed class GatewayHost : IAsyncDisposable
             uploadStore: _voiceTurnUploads,
             history: _transcriptionHistory,
             audioArchive: _transcriptionAudioArchive,
-            tenantBoundary: _tenantBoundary);
+            tenantBoundary: _tenantBoundary,
+            transcripts: _transcripts);
 
         // Car Mode brain (Car Mode mission, New build A): the fleet tool-calling loop behind
         // POST /carmode/turn. The chat transport resolves the fast wingman model + the vault key at CALL
@@ -2141,7 +2149,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // in resumable chunks and the Gateway assembles → transcribes → injects the turn into the
         // owning session itself, so a refresh / dropped connection cannot lose a recorded utterance.
         GatewayDictationEndpoint.Map(_app, Registry, SessionOwners, Token,
-            _dictationTranscription ?? new Transcription.GatewayTranscriptionService(_keyVault, history: _transcriptionHistory, audioArchive: _transcriptionAudioArchive), _transcribingSessions, new Api.DictationTenantGate(_dictationUploads, _tenantBoundary), Devices,
+            _dictationTranscription ?? new Transcription.GatewayTranscriptionService(_keyVault, history: _transcriptionHistory, audioArchive: _transcriptionAudioArchive, transcripts: _transcripts), _transcribingSessions, new Api.DictationTenantGate(_dictationUploads, _tenantBoundary), Devices,
             pushedSessions: PushedSessions,
             sendCommand: SendCommandAsync);
         // Durable per-upload-id dictation record (issue #1183): a PENDING upload's chunks are retained
@@ -2281,7 +2289,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // through this one endpoint - it resolves the mode + key and runs the right provider (in-process
         // Whisper, or the resolved provider-compatible batch endpoint). Optional ?correct=true also runs
         // the validated dictionary correction, keeping that out of the callers too.
-        TranscriptionBatchEndpoint.Map(_app, _keyVault, _transcriptionHistory, _transcriptionAudioArchive, _tenantBoundary);
+        TranscriptionBatchEndpoint.Map(_app, _keyVault, _transcriptionHistory, _transcriptionAudioArchive, _tenantBoundary, _transcripts);
 
         // Read-only analysis over the LOCAL minimized transcription history: latency percentiles, cleanup
         // behaviour, most-corrected terms, and word frequencies, so any agent can query the Gateway to

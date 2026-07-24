@@ -521,7 +521,7 @@ internal static class GatewayDictationEndpoint
 
             var result = await transcription.TranscribeAsync(
                 audio, "audio." + (req.Ext ?? "wav"), req.Mime ?? "audio/wav", applyCorrection: true, CancellationToken.None,
-                tenant: tenant);
+                tenant: tenant, source: "dictation");
             if (MapNonOkTranscription(result, uploadId, store) is { } nonOk)
                 return nonOk;
 
