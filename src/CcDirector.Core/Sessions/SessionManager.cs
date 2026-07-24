@@ -121,10 +121,16 @@ public sealed class SessionManager : IDisposable
     /// (<see cref="WireSessionReaper"/>), which fires off a process exit rather than a flag.</summary>
     private readonly System.Threading.Timer _deletionReaper;
 
-    public SessionManager(AgentOptions options, Action<string>? log = null)
+    /// <summary>Machine-local reservations: while a session is alive its working directory is
+    /// reserved so the worktree reaper (in this or any Director slot on this machine) never removes
+    /// it out from under the session. Injectable for tests; production uses the default machine path.</summary>
+    private readonly Git.WorktreeReservationStore _reservations;
+
+    public SessionManager(AgentOptions options, Action<string>? log = null, Git.WorktreeReservationStore? reservations = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _log = log;
+        _reservations = reservations ?? new Git.WorktreeReservationStore();
         _deletionReaper = new System.Threading.Timer(
             _ => ReapPendingDeletions(), null, DeletionReaperIntervalMs, DeletionReaperIntervalMs);
     }
@@ -139,6 +145,13 @@ public sealed class SessionManager : IDisposable
         // (the "two sessions in the desktop, one with no claude" symptom). One-shot + idempotent
         // downstream, so a duplicate announce of the same session does no harm.
         WireSessionReaper(session);
+
+        // Every creation route funnels through here, so this is also the one place to RESERVE the
+        // session's working directory (inspection): while this session is alive, the worktree reaper
+        // - in this Director slot or another on this machine - must not remove the worktree it is in.
+        // Only real local directories are reserved (a remote/label RepoPath matches no worktree).
+        if (!string.IsNullOrWhiteSpace(session.RepoPath) && Directory.Exists(session.RepoPath))
+            _reservations.Reserve(session.RepoPath, session.Id.ToString());
 
         // Issue #820: every creation route funnels through here, so this is the one place to ensure
         // the session carries a three-digit number BEFORE subscribers (the desktop UI, the web
@@ -282,6 +295,9 @@ public sealed class SessionManager : IDisposable
     private void WireSessionReaper(Session session)
     {
         session.OnExited += exitCode => OnSessionProcessExited(session, exitCode);
+        // Release the worktree reservation the moment the session's process exits (clean exit, crash,
+        // or an explicit close that kills the process), so the worktree becomes reapable again.
+        session.OnExited += _ => _reservations.Release(session.Id.ToString());
     }
 
     /// <summary>

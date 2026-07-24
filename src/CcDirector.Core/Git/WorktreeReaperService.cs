@@ -77,12 +77,18 @@ public sealed class WorktreeReaperService
     private readonly WorktreeInventoryService _inventory;
     private readonly GitCommandRunner _git;
     private readonly Func<DateTime> _utcNow;
+    private readonly WorktreeReservationStore _reservations;
 
-    public WorktreeReaperService(WorktreeInventoryService? inventory = null, GitCommandRunner? git = null, Func<DateTime>? utcNow = null)
+    public WorktreeReaperService(
+        WorktreeInventoryService? inventory = null,
+        GitCommandRunner? git = null,
+        Func<DateTime>? utcNow = null,
+        WorktreeReservationStore? reservations = null)
     {
         _git = git ?? new GitCommandRunner();
         _inventory = inventory ?? new WorktreeInventoryService(_git);
         _utcNow = utcNow ?? (() => DateTime.UtcNow);
+        _reservations = reservations ?? new WorktreeReservationStore();
     }
 
     /// <summary>
@@ -165,6 +171,12 @@ public sealed class WorktreeReaperService
                 ? null
                 : new HashSet<string>(approvedPaths.Select(NormalizePath), StringComparer.OrdinalIgnoreCase);
 
+            // The machine-local reservations: a session on ANY Director slot holds one on its working
+            // directory while alive (inspection). This is the guarantee the roster only approximates -
+            // it is written at launch, so it has no propagation delay and no partial-fleet window, and
+            // it protects the whole worktree even when the session sits in a subdirectory.
+            var reservedPaths = _reservations.LiveReservedPaths();
+
             var outcomes = new List<ReapOutcome>();
             // Worktrees held back because a live session is running in them - reported so the user
             // sees they were deliberately spared.
@@ -227,6 +239,15 @@ public sealed class WorktreeReaperService
                 if (RosterProtects(normalized, rosterNow))
                 {
                     FileLog.Write($"[WorktreeReaperService] SKIP (a live session is using it): {worktree.Path}");
+                    skipped.Add(normalized);
+                    continue;
+                }
+
+                // The hard guard: a machine-local reservation from a live session (this slot or
+                // another) protects the worktree with no roster propagation delay.
+                if (reservedPaths.Any(p => PathCoversWorktree(normalized, p)))
+                {
+                    FileLog.Write($"[WorktreeReaperService] SKIP (a live session reservation covers it): {worktree.Path}");
                     skipped.Add(normalized);
                     continue;
                 }
@@ -351,18 +372,22 @@ public sealed class WorktreeReaperService
     /// </summary>
     private static bool RosterProtects(string normalizedWorktree, IReadOnlyList<LiveSessionRef> roster)
     {
-        var prefix = normalizedWorktree + Path.DirectorySeparatorChar;
         foreach (var s in roster)
         {
             if (string.IsNullOrWhiteSpace(s.RepoPath))
                 continue;
-            var sessionPath = NormalizePath(s.RepoPath);
-            if (string.Equals(sessionPath, normalizedWorktree, StringComparison.OrdinalIgnoreCase)
-                || sessionPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            if (PathCoversWorktree(normalizedWorktree, NormalizePath(s.RepoPath)))
                 return true;
         }
         return false;
     }
+
+    /// <summary>True when a session working directory <paramref name="normalizedSessionPath"/> is the
+    /// worktree itself or any subdirectory of it - either way the session is running inside the
+    /// worktree and it must not be reaped. Both paths must already be normalized.</summary>
+    private static bool PathCoversWorktree(string normalizedWorktree, string normalizedSessionPath)
+        => string.Equals(normalizedSessionPath, normalizedWorktree, StringComparison.OrdinalIgnoreCase)
+           || normalizedSessionPath.StartsWith(normalizedWorktree + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Full-path, trailing-separator-trimmed form used to compare worktree paths across git and the OS.</summary>
     public static string NormalizePath(string path)

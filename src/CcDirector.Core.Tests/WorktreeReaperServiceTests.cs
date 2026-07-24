@@ -417,6 +417,80 @@ public sealed class WorktreeReaperServiceTests : IDisposable
         Assert.Contains(git.Fetches, f => f.Length >= 1 && f[0] == "fetch" && f.Contains("origin"));
     }
 
+    // ---------------------------------------------------------------------------------------
+    // THE HARD GUARANTEE (inspection round 4): the machine-local session reservation. Even when the
+    // Gateway roster is empty (a just-launched session has not propagated) AND the activity
+    // cooling-off is past, a live session holds a reservation on its worktree written AT LAUNCH -
+    // no propagation delay, no partial-fleet window. The reaper must refuse to remove a worktree a
+    // live reservation covers. This is the guard that closes the check-to-remove race the roster
+    // alone cannot.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Reap_NeverRemovesAWorktree_CoveredByALiveReservation_EvenWithAnEmptyRoster()
+    {
+        var safe = AddSafeWorktree("reserved");
+
+        var store = LiveReservationStore(Path.Combine(_root, "reservations"));
+        store.Reserve(safe, "sess-reserved");
+
+        var result = await new WorktreeReaperService(utcNow: Later, reservations: store)
+            .ReapAsync(_primary, NoSessions);
+
+        Assert.Equal(0, result.RemovedCount);
+        Assert.Contains(safe, result.Skipped);
+        Assert.True(Directory.Exists(safe), "a worktree with a live session reservation is never reaped");
+    }
+
+    // A reservation held by a session sitting in a SUBDIRECTORY protects the whole worktree, the
+    // same way the roster subdirectory rule does.
+    [Fact]
+    public async Task Reap_ReservationInASubdirectory_ProtectsTheWholeWorktree()
+    {
+        var safe = AddSafeWorktree("reserved-subdir");
+        var subdir = Path.Combine(safe, "src", "app");
+
+        var store = LiveReservationStore(Path.Combine(_root, "reservations-sub"));
+        store.Reserve(subdir, "sess-sub");
+
+        var result = await new WorktreeReaperService(utcNow: Later, reservations: store)
+            .ReapAsync(_primary, NoSessions);
+
+        Assert.Equal(0, result.RemovedCount);
+        Assert.True(Directory.Exists(safe), "a reservation in a subdirectory protects the whole worktree");
+    }
+
+    // A reservation whose owning Director is gone is stale, so it must NOT keep protecting the
+    // worktree - the reap proceeds. This proves the reservation guard cannot wedge reaping shut
+    // after a Director crashes without releasing.
+    [Fact]
+    public async Task Reap_AStaleReservation_WhoseDirectorIsGone_DoesNotBlockReaping()
+    {
+        var safe = AddSafeWorktree("stale-reservation");
+
+        var resvDir = Path.Combine(_root, "reservations-stale");
+        // Written by a live owner (pid 7777)...
+        LiveReservationStore(resvDir).Reserve(safe, "sess-crashed");
+        // ...but the reaper reads through a store whose owner-liveness lookup reports pid 7777 gone.
+        var deadOwnerStore = new WorktreeReservationStore(
+            dir: resvDir, ownerPid: 7777, ownerStartUtc: ReservationOwnerStart,
+            processStartUtc: _ => (DateTime?)null);
+
+        var result = await new WorktreeReaperService(utcNow: Later, reservations: deadOwnerStore)
+            .ReapAsync(_primary, NoSessions);
+
+        Assert.Equal(1, result.RemovedCount);
+        Assert.False(Directory.Exists(safe), "a stale reservation from a gone Director must not block reaping");
+    }
+
+    private static readonly DateTime ReservationOwnerStart = new(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+    /// <summary>A reservation store whose owner (pid 7777) is reported alive - the guard is active.</summary>
+    private static WorktreeReservationStore LiveReservationStore(string dir) => new(
+        dir: dir,
+        ownerPid: 7777,
+        ownerStartUtc: ReservationOwnerStart,
+        processStartUtc: pid => pid == 7777 ? ReservationOwnerStart : (DateTime?)null);
+
     // ----- helpers -----
 
     /// <summary>A git runner that records every "git fetch ..." invocation and runs it for real.</summary>
