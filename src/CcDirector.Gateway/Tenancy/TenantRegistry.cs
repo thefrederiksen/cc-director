@@ -55,9 +55,25 @@ public sealed class TenantRegistry
         {
             using var ctx = _db.CreateUnscopedContext();
 
-            var existing = ctx.Tenants.AsNoTracking().FirstOrDefault(t => t.AccountSubject == subject);
+            var existing = ctx.Tenants.FirstOrDefault(t => t.AccountSubject == subject);
             if (existing is not null)
             {
+                // Backfill the display email when the row has none and this resolution carries one (issue
+                // #2119). The email used to be recorded on a FRESH MINT ONLY, which left every tenant minted
+                // before the email was captured - or from a token that carried none - permanently without
+                // one. That is not a cosmetic gap: the morning report resolves an account BY EMAIL, so a
+                // null here makes a real, fully enrolled account look like no such account.
+                //
+                // It is a backfill, never an overwrite: a row that already has an email keeps it, so this
+                // cannot silently re-point an account's display identity, and the mapping KEY is still the
+                // subject and only the subject. The email is personally identifying and is never logged.
+                if (string.IsNullOrWhiteSpace(existing.Email) && !string.IsNullOrWhiteSpace(email))
+                {
+                    existing.Email = email.Trim();
+                    ctx.SaveChanges();
+                    FileLog.Write("[TenantRegistry] MintOrLookupBySubject: recorded the display email on an existing tenant that had none");
+                }
+
                 FileLog.Write("[TenantRegistry] MintOrLookupBySubject: resolved an existing tenant for a known account");
                 return new TenantId(existing.Id);
             }
