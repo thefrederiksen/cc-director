@@ -101,7 +101,10 @@ public sealed class WorktreeSizeMeasurementTests : IDisposable
                     IsClean = true,
                     Success = true,
                     Worktrees = new[] { new WorktreeInfo { Path = _dir, Branch = "b" } },
-                }));
+                }))
+            {
+                LiveSessionsProvider = _ => Task.FromResult<IReadOnlyList<LiveSessionRef>>(Array.Empty<LiveSessionRef>()),
+            };
             await monitor.RescanAsync(new[] { "/r" });
 
             Assert.True(RepositoryStatusService.SizeCacheContains(_dir));    // still present - kept

@@ -28,6 +28,10 @@ public class OneBrainRegressionTests
         IsClean = true,
     };
 
+    /// <summary>An explicit empty-session source: the monitor refuses to scan unwired (R2-8).</summary>
+    internal static Func<System.Threading.CancellationToken, Task<IReadOnlyList<LiveSessionRef>>> NoSessions
+        => _ => Task.FromResult<IReadOnlyList<LiveSessionRef>>(Array.Empty<LiveSessionRef>());
+
     private static RepositoryMonitor MonitorWithRepo(string repoPath, params WorktreeInfo[] worktrees)
         => new(
             enumerate: _ => new[] { repoPath },
@@ -40,7 +44,7 @@ public class OneBrainRegressionTests
                 WorktreesSafeToReap = System.Linq.Enumerable.Count(worktrees, w => w.Safety == WorktreeSafety.SafeToReap),
                 WorktreeCount = worktrees.Length,
                 Success = true,
-            }));
+            })) { LiveSessionsProvider = NoSessions };
 
     [AvaloniaFact]
     public async Task SessionTab_RendersTheMonitorsWorktrees_ForTheRepoPath()
@@ -151,7 +155,7 @@ public class OneBrainRegressionTests
                     WorktreesSafeToReap = System.Linq.Enumerable.Count(worktrees, w => w.Safety == WorktreeSafety.SafeToReap),
                     WorktreeCount = worktrees.Count,
                     Success = true,
-                }));
+                })) { LiveSessionsProvider = NoSessions };
             await monitor.RescanAsync(new[] { "/roots" });
 
             var view = new WorktreesView();

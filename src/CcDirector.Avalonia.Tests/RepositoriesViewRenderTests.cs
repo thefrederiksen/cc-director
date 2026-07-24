@@ -29,7 +29,7 @@ public class RepositoriesViewRenderTests
         var monitor = new RepositoryMonitor(
             enumerate: _ => new[] { "/repo/cached" },
             compute: (p, _, _) => Task.FromResult(new RepositoryStatus { Path = p, Name = "cached", Success = true }),
-            cachePath: cachePath);
+            cachePath: cachePath) { LiveSessionsProvider = OneBrainRegressionTests.NoSessions };
         monitor.LoadCache(); // entry is now provisional - no scan has re-verified it
 
         var store = new RootDirectoryStore(
@@ -62,7 +62,8 @@ public class RepositoriesViewRenderTests
     {
         var monitor = new RepositoryMonitor(
             enumerate: _ => new[] { "/repo/known" },
-            compute: (p, _, _) => Task.FromResult(new RepositoryStatus { Path = p, Name = "known", Success = true }));
+            compute: (p, _, _) => Task.FromResult(new RepositoryStatus { Path = p, Name = "known", Success = true }))
+        { LiveSessionsProvider = OneBrainRegressionTests.NoSessions };
         await monitor.RescanAsync(new[] { "/roots" });
 
         var store = new RootDirectoryStore(
@@ -89,7 +90,8 @@ public class RepositoriesViewRenderTests
     {
         var monitor = new RepositoryMonitor(
             enumerate: _ => new[] { "/repo" },
-            compute: (p, _, _) => Task.FromResult(new RepositoryStatus { Path = p, Name = "repo", IsClean = true, Success = true }));
+            compute: (p, _, _) => Task.FromResult(new RepositoryStatus { Path = p, Name = "repo", IsClean = true, Success = true }))
+        { LiveSessionsProvider = OneBrainRegressionTests.NoSessions };
         await monitor.RescanAsync(new[] { "/roots" });
 
         var store = new RootDirectoryStore(
@@ -117,7 +119,8 @@ public class RepositoriesViewRenderTests
     {
         var monitor = new RepositoryMonitor(
             enumerate: _ => Array.Empty<string>(),
-            compute: (p, _, _) => Task.FromResult(new RepositoryStatus { Path = p, Name = p, Success = true }));
+            compute: (p, _, _) => Task.FromResult(new RepositoryStatus { Path = p, Name = p, Success = true }))
+        { LiveSessionsProvider = OneBrainRegressionTests.NoSessions };
         var store = new RootDirectoryStore(
             Path.Combine(Path.GetTempPath(), "ccd-reposview-" + Guid.NewGuid().ToString("N") + ".json"));
 

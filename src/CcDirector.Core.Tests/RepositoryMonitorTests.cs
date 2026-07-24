@@ -16,10 +16,15 @@ public class RepositoryMonitorTests
         Success = true,
     };
 
+    /// <summary>An explicit empty-session source: the monitor refuses to scan unwired (R2-8).</summary>
+    private static Func<CancellationToken, Task<IReadOnlyList<LiveSessionRef>>> NoSessions
+        => _ => Task.FromResult<IReadOnlyList<LiveSessionRef>>(Array.Empty<LiveSessionRef>());
+
     private static RepositoryMonitor MonitorOver(IReadOnlyList<string> paths, Action? perCompute = null)
         => new(
             enumerate: _ => paths,
-            compute: (p, _, _) => { perCompute?.Invoke(); return Task.FromResult(Status(p)); });
+            compute: (p, _, _) => { perCompute?.Invoke(); return Task.FromResult(Status(p)); })
+        { LiveSessionsProvider = NoSessions };
 
     [Fact]
     public async Task Rescan_StreamsEachRepository_AndBuildsModel()
@@ -60,7 +65,8 @@ public class RepositoryMonitorTests
         var paths = new List<string>(first);
         var monitor = new RepositoryMonitor(
             enumerate: _ => paths.ToList(),
-            compute: (p, _, _) => Task.FromResult(Status(p)));
+            compute: (p, _, _) => Task.FromResult(Status(p)))
+        { LiveSessionsProvider = NoSessions };
 
         await monitor.RescanAsync(new[] { "/r" });
         Assert.Equal(3, monitor.Snapshot().Count);
@@ -87,7 +93,7 @@ public class RepositoryMonitorTests
             var m1 = new RepositoryMonitor(
                 enumerate: _ => new[] { "/r/a", "/r/b", "/r/c" },
                 compute: (p, _, _) => Task.FromResult(Status(p)),
-                cachePath: cachePath);
+                cachePath: cachePath) { LiveSessionsProvider = NoSessions };
             await m1.RescanAsync(new[] { "/r" });
             Assert.True(File.Exists(cachePath));
 
@@ -95,7 +101,7 @@ public class RepositoryMonitorTests
             var m2 = new RepositoryMonitor(
                 enumerate: _ => new[] { "/r/a", "/r/b" }, // "c" is gone now
                 compute: (p, _, _) => Task.FromResult(Status(p)),
-                cachePath: cachePath);
+                cachePath: cachePath) { LiveSessionsProvider = NoSessions };
             m2.LoadCache();
             Assert.Equal(3, m2.Snapshot().Count); // instant content, no scan yet
 
@@ -156,10 +162,10 @@ public class RepositoryMonitorTests
         var cachePath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ccd-prov-" + Guid.NewGuid().ToString("N") + ".json");
         try
         {
-            var m1 = new RepositoryMonitor(_ => new[] { "/r/a" }, (p, _, _) => Task.FromResult(Status(p)), cachePath);
+            var m1 = new RepositoryMonitor(_ => new[] { "/r/a" }, (p, _, _) => Task.FromResult(Status(p)), cachePath) { LiveSessionsProvider = NoSessions };
             await m1.RescanAsync(new[] { "/r" });
 
-            var m2 = new RepositoryMonitor(_ => new[] { "/r/a" }, (p, _, _) => Task.FromResult(Status(p)), cachePath);
+            var m2 = new RepositoryMonitor(_ => new[] { "/r/a" }, (p, _, _) => Task.FromResult(Status(p)), cachePath) { LiveSessionsProvider = NoSessions };
             m2.LoadCache();
             Assert.True(Assert.Single(m2.Snapshot()).Provisional); // cached = verifying, never acted on
 
@@ -179,7 +185,8 @@ public class RepositoryMonitorTests
         Directory.CreateDirectory(dir); // exists, but has no .git
         try
         {
-            var monitor = new RepositoryMonitor(_ => new[] { dir }, (p, _, _) => Task.FromResult(Status(p)));
+            var monitor = new RepositoryMonitor(_ => new[] { dir }, (p, _, _) => Task.FromResult(Status(p)))
+            { LiveSessionsProvider = NoSessions };
             await monitor.RescanAsync(new[] { "/r" });
             Assert.Single(monitor.Snapshot());
 
@@ -227,7 +234,7 @@ public class RepositoryMonitorTests
                 {
                     lock (computedPaths) computedPaths.Add(p);
                     return Task.FromResult(Status(p));
-                });
+                }) { LiveSessionsProvider = NoSessions };
             await monitor.RescanAsync(new[] { root });
 
             await monitor.RecomputeOneAsync(wt); // the watcher hands over a linked-worktree path
@@ -308,7 +315,7 @@ public class RepositoryMonitorTests
                         await releaseScanCompute.Task;
                     }
                     return Status(p) with { UncommittedCount = call, IsClean = false };
-                });
+                }) { LiveSessionsProvider = NoSessions };
 
             var scanTask = monitor.RescanAsync(new[] { "/r" });
             await scanComputeEntered.Task; // the scan is mid-compute and holds the model
@@ -355,7 +362,7 @@ public class RepositoryMonitorTests
                         await releaseFirstCompute.Task; // the OLD compute is slow
                     }
                     return Status(p) with { UncommittedCount = call, IsClean = false };
-                });
+                }) { LiveSessionsProvider = NoSessions };
 
             var oldRecompute = monitor.RecomputeOneAsync(dir);
             await firstComputeEntered.Task;
@@ -403,7 +410,7 @@ public class RepositoryMonitorTests
                         await releaseRecompute.Task; // the OLD recompute is slow
                     }
                     return Status(p);
-                });
+                }) { LiveSessionsProvider = NoSessions };
 
             await monitor.RescanAsync(new[] { "/r" }); // the model holds the repository
             Assert.Single(monitor.Snapshot());
@@ -450,7 +457,7 @@ public class RepositoryMonitorTests
                 computeEntered.SetResult();
                 await releaseCompute.Task; // hold the compute so cancellation lands first
                 return Status(p);
-            });
+            }) { LiveSessionsProvider = NoSessions };
 
         using var cts = new CancellationTokenSource();
         var scanTask = monitor.RescanAsync(new[] { "/r" }, cts.Token);
@@ -488,7 +495,7 @@ public class RepositoryMonitorTests
                     await releaseOldCompute.Task;
                 }
                 return Status(p);
-            });
+            }) { LiveSessionsProvider = NoSessions };
 
         await monitor.RescanAsync(new[] { "/r" }); // the model holds /r/x
         Assert.Single(monitor.Snapshot());
@@ -537,7 +544,7 @@ public class RepositoryMonitorTests
                         await releaseScanCompute.Task;
                     }
                     return Status(p);
-                });
+                }) { LiveSessionsProvider = NoSessions };
 
             var scanTask = monitor.RescanAsync(new[] { "/r" });
             await scanComputeEntered.Task; // the scan is mid-compute
@@ -558,6 +565,24 @@ public class RepositoryMonitorTests
         {
             Directory.Delete(dir, recursive: true);
         }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // REGRESSION (inspection round 2, ruling R2-8): scanning without a live-session source is a
+    // programming error and fails LOUDLY. An unwired monitor used to silently publish
+    // session-blind safety classifications - an occupied worktree could be marked safe to reap.
+    // ---------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Monitor_WithoutALiveSessionsProvider_RefusesToScanOrRecompute()
+    {
+        var monitor = new RepositoryMonitor(
+            enumerate: _ => new[] { "/r/a" },
+            compute: (p, _, _) => Task.FromResult(Status(p)));
+        // No LiveSessionsProvider wired.
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => monitor.RescanAsync(new[] { "/r" }));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => monitor.RecomputeOneAsync("/r/a"));
+        Assert.Empty(monitor.Snapshot()); // nothing was published session-blind
     }
 
     private static string RunGit(string workingDir, params string[] args)
@@ -594,7 +619,7 @@ public class RepositoryMonitorTests
                 IsClean = !dirty,
                 UncommittedCount = dirty ? 5 : 0,
                 Success = true,
-            }));
+            })) { LiveSessionsProvider = NoSessions };
 
         await monitor.RescanAsync(new[] { "/r" });
         Assert.True(monitor.Snapshot()[0].IsClean);

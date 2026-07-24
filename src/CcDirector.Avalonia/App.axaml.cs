@@ -150,6 +150,12 @@ public partial class App : Application
         mainWindow.Show();
         FileLog.Write("[CcDirector] Main window shown");
 
+        // The FIRST repository rescan starts HERE, not in InitializeServices (ruling R2-8): the
+        // MainWindow constructor above wired RepositoryMonitor.LiveSessionsProvider, and the
+        // monitor refuses to scan without it. Triggering the scan after the constructor makes
+        // the wire-before-scan ordering structural, not incidental.
+        StartRepositoryRescan();
+
         StartUpdateService(mainWindow);
     }
 
@@ -198,7 +204,9 @@ public partial class App : Application
             }
         };
 
-        StartRepositoryRescan();
+        // NOTE: the first repository rescan is deliberately NOT started here. The monitor requires
+        // its live-session source, which the MainWindow constructor wires - ShowMainWindow starts
+        // the scan right after that wiring (ruling R2-8).
 
         SessionStateStore = new SessionStateStore();
 

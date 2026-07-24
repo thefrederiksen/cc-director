@@ -76,10 +76,22 @@ public sealed class RepositoryMonitor
 
     /// <summary>
     /// THE live-session source for every compute this monitor runs - full scans and single-repository
-    /// recomputes alike. Wired once at startup by the host (the same source the panels use). When it
-    /// is null the computes run without session data (no host wired one up yet).
+    /// recomputes alike. The host MUST wire it before the first scan (ruling R2-8): scanning without
+    /// a session source would silently publish session-blind safety classifications, so
+    /// <see cref="RescanAsync"/> and <see cref="RecomputeOneAsync"/> throw while it is null - a
+    /// programming error fails loudly instead of degrading.
     /// </summary>
     public Func<CancellationToken, Task<IReadOnlyList<LiveSessionRef>>>? LiveSessionsProvider { get; set; }
+
+    /// <summary>Fails loudly when no live-session source is wired (ruling R2-8).</summary>
+    private void RequireLiveSessionsProvider(string operation)
+    {
+        if (LiveSessionsProvider is null)
+            throw new InvalidOperationException(
+                $"RepositoryMonitor.{operation} requires a LiveSessionsProvider - scanning without a " +
+                "session source would publish session-blind safety classifications. Wire the provider " +
+                "before triggering any scan or recompute.");
+    }
 
     public RepositoryMonitor(
         Func<IEnumerable<string>, IReadOnlyList<string>>? enumerate = null,
@@ -179,6 +191,7 @@ public sealed class RepositoryMonitor
     /// </summary>
     public async Task RescanAsync(IEnumerable<string> roots, CancellationToken externalCt = default)
     {
+        RequireLiveSessionsProvider(nameof(RescanAsync));
         CancellationTokenSource cts;
         lock (_gate)
         {
@@ -289,6 +302,7 @@ public sealed class RepositoryMonitor
     /// </summary>
     public async Task RecomputeOneAsync(string repoPath, CancellationToken ct = default)
     {
+        RequireLiveSessionsProvider(nameof(RecomputeOneAsync));
         lock (_gate)
         {
             if (IsScanning)
@@ -412,7 +426,13 @@ public sealed class RepositoryMonitor
     }
 
     private async Task<IReadOnlyList<LiveSessionRef>?> FetchLiveSessionsAsync(CancellationToken ct)
-        => LiveSessionsProvider is { } provider ? await provider(ct) : null;
+    {
+        // The entry points already refused to start unwired (ruling R2-8); this guard keeps the
+        // failure loud even if the provider were unset mid-flight.
+        var provider = LiveSessionsProvider
+            ?? throw new InvalidOperationException("RepositoryMonitor lost its LiveSessionsProvider mid-compute");
+        return await provider(ct);
+    }
 
     private IReadOnlyList<string> CurrentWorktreePaths()
     {

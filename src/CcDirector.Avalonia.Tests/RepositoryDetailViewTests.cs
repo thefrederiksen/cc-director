@@ -196,7 +196,7 @@ public class RepositoryDetailRenderTests
             {
                 Path = p, Name = "widget", Branch = "main", IsClean = true,
                 RemoteUrl = "https://github.com/acme/widget.git", Success = true,
-            }));
+            })) { LiveSessionsProvider = OneBrainRegressionTests.NoSessions };
         await monitor.RescanAsync(new[] { "/roots" });
 
         var view = new RepositoryDetailView();

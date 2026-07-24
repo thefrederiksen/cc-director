@@ -46,6 +46,10 @@ public sealed class RepositoryWatcherIntegrationTests : IDisposable
         }
     }
 
+    /// <summary>An explicit empty-session source: the monitor refuses to scan unwired (R2-8).</summary>
+    private static Func<CancellationToken, Task<IReadOnlyList<LiveSessionRef>>> NoSessions
+        => _ => Task.FromResult<IReadOnlyList<LiveSessionRef>>(Array.Empty<LiveSessionRef>());
+
     private string MakeRepo(string name)
     {
         var repo = Path.Combine(_root, name);
@@ -74,7 +78,7 @@ public sealed class RepositoryWatcherIntegrationTests : IDisposable
             {
                 lock (computed) computed.Add(Path.GetFileName(p));
                 return Task.FromResult(new RepositoryStatus { Path = p, Name = Path.GetFileName(p), IsClean = true, Success = true });
-            });
+            }) { LiveSessionsProvider = NoSessions };
         await monitor.RescanAsync(new[] { _root });
         lock (computed) computed.Clear(); // ignore the initial scan
 
@@ -108,7 +112,8 @@ public sealed class RepositoryWatcherIntegrationTests : IDisposable
         var a = MakeRepo("gamma");
         var monitor = new RepositoryMonitor(
             enumerate: _ => new[] { a },
-            compute: (p, _, _) => Task.FromResult(new RepositoryStatus { Path = p, Name = Path.GetFileName(p), IsClean = true, Success = true }));
+            compute: (p, _, _) => Task.FromResult(new RepositoryStatus { Path = p, Name = Path.GetFileName(p), IsClean = true, Success = true }))
+        { LiveSessionsProvider = NoSessions };
         await monitor.RescanAsync(new[] { _root });
 
         using var watcher = new RepositoryWatcher(monitor);
