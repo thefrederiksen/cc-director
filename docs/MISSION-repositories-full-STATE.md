@@ -67,8 +67,15 @@ Spec: devthrottle_internal#510 · Brief: docs/MISSION-repositories-full-2026-07-
   The round-3 inspection found the SAME defect independently - two mechanisms converged.
 - Round 3 (BLOCK): 8 of the round-2 items CLOSED. Remaining: branch-restore compensation
   unsafe (create-only restore needed; cancellation can bypass compensation) and five monitor
-  stamp/lifecycle interleavings (tombstones, reconcile-time stamps, scan ownership, stranded
-  deferrals). Rulings: docs/MISSION-repositories-full-INSPECTION-3.md. Manager round 3 seated.
+  stamp/lifecycle interleavings. Rulings: docs/MISSION-repositories-full-INSPECTION-3.md.
+  All fixed/verified by Manager round 3, pushed through efdf9baf; suites green (Core 3441 /
+  Avalonia 290 / Gateway 3680, 0 failed). Slot 5 rebuilt at efdf9baf; live harness 8/8.
+- Round 4 (BLOCK): create-only restore, startup wiring, tombstone basics CLOSED. Remaining:
+  the delete's cancellation boundary (token inside the delete's process wait can skip
+  compensation) + compensation not exception-safe; four monitor interleavings (rowless
+  in-flight computes invisible to reconciliation; stale ownership snapshot at drain;
+  enumeration outside try/finally; gone-path stamps at publication not observation time).
+  Rulings: docs/MISSION-repositories-full-INSPECTION-4.md. Manager round 4 seated.
 
 ## Next
 - Manager round 2 finishes R2-1..R2-12 and pushes.
