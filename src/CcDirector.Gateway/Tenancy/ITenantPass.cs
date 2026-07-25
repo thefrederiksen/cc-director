@@ -34,6 +34,26 @@ public interface ITenantPass
     void ForEachTenant(Action pass);
 
     /// <summary>
+    /// The AWAITABLE per-tenant pass: run <paramref name="pass"/> once per tenant and AWAIT it inside that
+    /// tenant's scope, so work that continues after an await is still scoped to the tenant it belongs to.
+    /// Same tenant set and same self-host behaviour as <see cref="ForEachTenant"/>.
+    ///
+    /// This exists because <see cref="ForEachTenant"/> takes a synchronous <see cref="Action"/>, and a sweep
+    /// that needs to await something cannot express that inside the pass. The one way out is to collect a
+    /// plan inside the pass and act on it after the pass returns - and that hands the caller a trap, because
+    /// the scope is gone by then and every scope-reading call it makes is silently DENIED. That is not
+    /// hypothetical: the voice-mode sweep did exactly this and, on hosted, dropped every command it tried to
+    /// send for its whole lifetime while logging them as an unreachable Director. Self-host never showed it,
+    /// because there the ambient tenant is always Local whether a scope was entered or not.
+    ///
+    /// So: a per-tenant sweep that awaits anything scope-reading MUST use this overload rather than planning
+    /// inside <see cref="ForEachTenant"/> and acting outside it.
+    /// </summary>
+    /// <param name="pass">The per-tenant work, awaited inside that tenant's scope.</param>
+    /// <param name="ct">Checked between tenants so a shutdown does not have to wait out the whole census.</param>
+    Task ForEachTenantAsync(Func<Task> pass, CancellationToken ct = default);
+
+    /// <summary>
     /// The tenant of the unit of work currently running: the pass <see cref="ForEachTenant"/> entered, or
     /// the request / tunnel-connection scope the caller is already inside. Null ONLY on hosted with no scope
     /// in effect, and that null is a DENY - never Local, never System.
@@ -58,6 +78,13 @@ public sealed class SingleTenantPass : ITenantPass
     {
         if (pass is null) throw new ArgumentNullException(nameof(pass));
         pass();
+    }
+
+    /// <inheritdoc />
+    public async Task ForEachTenantAsync(Func<Task> pass, CancellationToken ct = default)
+    {
+        if (pass is null) throw new ArgumentNullException(nameof(pass));
+        await pass().ConfigureAwait(false);
     }
 }
 
@@ -107,6 +134,31 @@ public sealed class TenantPass : ITenantPass
             if (!tenant.IsValid) continue;
             using (_boundary.EnterScope(tenant))
                 pass();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task ForEachTenantAsync(Func<Task> pass, CancellationToken ct = default)
+    {
+        if (pass is null) throw new ArgumentNullException(nameof(pass));
+
+        // Self-host: exactly one pass. EnterScope is inert and Current is already Local, so awaiting here is
+        // byte-identical to the single unscoped pass - there is no second tenant for the scope to protect.
+        if (!_boundary.IsHosted)
+        {
+            await pass().ConfigureAwait(false);
+            return;
+        }
+
+        foreach (var tenant in _knownTenants())
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!tenant.IsValid) continue;
+            // The scope is held ACROSS the await, not just up to it. The scope is ambient (AsyncLocal), so a
+            // continuation that resumes after an await still resolves this tenant - which is the whole reason
+            // this overload exists.
+            using (_boundary.EnterScope(tenant))
+                await pass().ConfigureAwait(false);
         }
     }
 }
