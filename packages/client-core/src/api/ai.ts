@@ -38,6 +38,22 @@ export interface AiModel {
   /** For speech models: the model's own voice list (empty for chat models). */
   voices: string[];
   defaultVoice: string | null;
+  /**
+   * For speech models: the languages this model can actually SPEAK, as BCP-47 primary subtags.
+   * The spoken-language picker filters on this. A model that publishes none is treated as
+   * English-only rather than as speaking everything - offering a language a model cannot
+   * pronounce produces confident gibberish, which is worse than not offering it.
+   */
+  languages: string[];
+}
+
+/** One language DevThrottle can speak back in (GET /gateway/ai/spoken-languages). */
+export interface SpokenLanguageOption {
+  code: string;
+  /** The English name, e.g. "Danish" - what the wingman prompt uses. */
+  name: string;
+  /** The language's own name, e.g. "dansk" - people recognise this faster than the English one. */
+  endonym: string;
 }
 
 /** The result of testing a chat model (POST /gateway/ai/test-chat). */
@@ -124,6 +140,21 @@ export function setTtsModel(model: string): Promise<{ model: string }> {
 
 export function setTtsVoice(voice: string): Promise<{ voice: string }> {
   return putJson<{ voice: string }>("/gateway/tts-voice", { voice });
+}
+
+// GET /gateway/ai/spoken-languages -> the languages on offer plus the one this account is on.
+// Served by the Gateway rather than hardcoded per app so mobile and the Cockpit cannot drift, and
+// so adding a language does not need two app releases.
+export async function getSpokenLanguages(): Promise<{ current: string; languages: SpokenLanguageOption[] }> {
+  const res = await fetch("/gateway/ai/spoken-languages", { headers: authHeaders() });
+  if (!res.ok) throw new Error(`spoken languages: ${res.status}`);
+  return res.json();
+}
+
+// PUT /gateway/ai/spoken-language { language } - the language DevThrottle SPEAKS BACK in. This does
+// NOT affect dictation, which detects the spoken language on its own. A blank value means English.
+export function setSpokenLanguage(language: string): Promise<{ language: string }> {
+  return putJson<{ language: string }>("/gateway/ai/spoken-language", { language });
 }
 
 // POST /wingman/tts { text, model, voice } -> audio bytes to play (a short "Play sample").

@@ -182,6 +182,48 @@ public sealed class WingmanTranslatorTests
         Assert.Contains("the reply", prompt);
     }
 
+    [Fact]
+    public void BuildPrompt_InEnglish_IsByteForByteWhatItWasBeforeSpokenLanguageExisted()
+    {
+        // The no-op property is the one that protects every account that never touches the setting:
+        // English must add NOTHING to the prompt, so the narration people already have cannot drift
+        // because a feature they do not use was added.
+        var withoutLanguage = WingmanTranslator.BuildPrompt(
+            WingmanTranslator.FidelityPrompt, "recent", "the reply", "A session");
+        var explicitlyEnglish = WingmanTranslator.BuildPrompt(
+            WingmanTranslator.FidelityPrompt, "recent", "the reply", "A session", "en");
+
+        Assert.Equal(withoutLanguage, explicitlyEnglish);
+        Assert.DoesNotContain("LANGUAGE.", withoutLanguage);
+    }
+
+    [Fact]
+    public void BuildPrompt_InDanish_TellsTheModelTheLanguageAndWhatNotToTranslate()
+    {
+        var prompt = WingmanTranslator.BuildPrompt(
+            WingmanTranslator.FidelityPrompt, "recent", "the reply", "A session", "da");
+
+        // Named in English, because the prompt itself is English.
+        Assert.Contains("Write the spoken version in Danish", prompt);
+        // The instruction that keeps the narration usable: a listener has to be able to type what
+        // they hear, so identifiers and paths must survive the translation untouched.
+        Assert.Contains("never translated", prompt);
+        Assert.Contains("file names and paths", prompt);
+        // The reply itself is still carried verbatim - translating is the model's job, not ours.
+        Assert.Contains("the reply", prompt);
+    }
+
+    [Fact]
+    public void BuildPrompt_WithAnUnknownLanguage_FallsBackToEnglishRatherThanNamingNonsense()
+    {
+        // A stale or hand-edited setting must not produce "Write the spoken version in zz".
+        var prompt = WingmanTranslator.BuildPrompt(
+            WingmanTranslator.FidelityPrompt, "recent", "the reply", "A session", "zz-not-a-language");
+
+        Assert.DoesNotContain("LANGUAGE.", prompt);
+        Assert.DoesNotContain("zz-not-a-language", prompt);
+    }
+
     private sealed class ThrowingBrain : IAgentBrain
     {
         public int ClearCount { get; private set; }

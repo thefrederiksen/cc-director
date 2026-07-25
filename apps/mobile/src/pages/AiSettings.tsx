@@ -10,11 +10,30 @@ import {
   setTtsModel,
   setTtsVoice,
   setWingmanModel,
+  setSpokenLanguage,
+  getSpokenLanguages,
+  type SpokenLanguageOption,
   testChat,
   ttsSample,
 } from "@devthrottle/client-core/api/ai";
 
-const SAMPLE_TEXT = "Hi, I'm your DevThrottle wingman. This is how I'll sound.";
+// The sample sentence, per language. Auditioning a Danish voice by making it read an English
+// sentence is not an audition - you cannot hear the accent you are actually buying. Falls back to
+// English for any language we have not written a line for yet.
+const SAMPLES: Record<string, string> = {
+  en: "Hi, I'm your DevThrottle wingman. This is how I'll sound.",
+  da: "Hej, jeg er din DevThrottle wingman. Sadan kommer jeg til at lyde.",
+  de: "Hallo, ich bin dein DevThrottle Wingman. So werde ich klingen.",
+  fr: "Bonjour, je suis votre wingman DevThrottle. Voici ma voix.",
+  es: "Hola, soy tu wingman de DevThrottle. Asi es como voy a sonar.",
+  pt: "Ola, eu sou o seu wingman do DevThrottle. E assim que eu vou soar.",
+  it: "Ciao, sono il tuo wingman DevThrottle. Ecco come suonero.",
+  nl: "Hallo, ik ben je DevThrottle wingman. Zo ga ik klinken.",
+  sv: "Hej, jag ar din DevThrottle wingman. Sa har kommer jag att lata.",
+  no: "Hei, jeg er din DevThrottle wingman. Slik kommer jeg til a hores ut.",
+  tr: "Merhaba, ben DevThrottle yardimcinizim. Sesim boyle olacak.",
+};
+const SAMPLE_TEXT = SAMPLES.en;
 
 // The mobile AI settings screen. Same controls as the desktop AI tab, stacked for touch: hosted
 // DevThrottle AI, the wingman model (with a live Test), the speech model, and the voice (with Play
@@ -29,11 +48,16 @@ export function AiSettings() {
   const [testMsg, setTestMsg] = useState("");
   const [fastTestMsg, setFastTestMsg] = useState("");
   const [sampleMsg, setSampleMsg] = useState("");
+  const [languages, setLanguages] = useState<SpokenLanguageOption[]>([]);
+  const [language, setLanguage] = useState("en");
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const loadModels = useCallback(async () => {
     setChatModels(await getAiModels("chat"));
     setSpeechModels(await getAiModels("speech"));
+    const spoken = await getSpokenLanguages();
+    setLanguages(spoken.languages);
+    setLanguage(spoken.current);
   }, []);
 
   const load = useCallback(async () => {
@@ -68,7 +92,56 @@ export function AiSettings() {
   }
 
   const currentSpeech = speechModels.find((m) => m.id === snap.ttsModel);
+
+  // A model can speak a language only when it SAYS so. One that publishes no list is English-only,
+  // never "speaks everything" - see the note on AiModel.languages.
+  const canSpeak = (m: AiModel, code: string) =>
+    (m.languages ?? []).length === 0 ? code === "en" : (m.languages ?? []).includes(code);
+
+  const speechForLanguage = speechModels.filter((m) => canSpeak(m, language));
+
+  // An expressive model with no preset voices is not a model with a missing voice list - there is
+  // nothing to choose. Showing an empty picker reads as broken, so the control is hidden instead.
+  const modelHasVoices = !currentSpeech || currentSpeech.voices.length > 0;
   const voiceOptions = currentSpeech && currentSpeech.voices.length ? currentSpeech.voices : snap.voices;
+
+  const chooseLanguage = async (code: string) => {
+    setBusy(true);
+    setMsg("Saving...");
+    setSampleMsg("");
+    try {
+      await setSpokenLanguage(code);
+      setLanguage(code);
+      // If the speech model in use cannot say the new language, move to one that can rather than
+      // leaving the account on an engine that would answer in English phonetics.
+      let nextSnap = snap;
+      if (currentSpeech && !canSpeak(currentSpeech, code)) {
+        const replacement = speechModels.find((m) => canSpeak(m, code));
+        if (replacement) {
+          await setTtsModel(replacement.id);
+          const voices = replacement.voices ?? [];
+          let voice = snap.ttsVoice;
+          if (voices.length > 0 && voices.indexOf(voice) < 0) {
+            voice = replacement.defaultVoice && voices.indexOf(replacement.defaultVoice) >= 0
+              ? replacement.defaultVoice
+              : voices[0];
+            await setTtsVoice(voice);
+          }
+          nextSnap = { ...snap, ttsModel: replacement.id, ttsVoice: voice };
+          setSnap(nextSnap);
+          setMsg("Spoken language set. Speech model switched to " + replacement.id + ", which can speak it.");
+          return;
+        }
+        setMsg("Spoken language set, but no speech model here can say it yet.");
+        return;
+      }
+      setMsg("Spoken language set.");
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const chooseWingman = async (model: string) => {
     setBusy(true);
@@ -169,7 +242,7 @@ export function AiSettings() {
     setBusy(true);
     setSampleMsg("Synthesizing...");
     try {
-      const blob = await ttsSample(SAMPLE_TEXT, snap.ttsModel, snap.ttsVoice);
+      const blob = await ttsSample(SAMPLES[language] ?? SAMPLE_TEXT, snap.ttsModel, snap.ttsVoice);
       if (audioRef.current === null) audioRef.current = new Audio();
       audioRef.current.src = URL.createObjectURL(blob);
       audioRef.current.onended = () => setSampleMsg("");
@@ -241,21 +314,46 @@ export function AiSettings() {
       </div>
 
       <div className="setting-block">
-        <label className="setting-label" htmlFor="ai-ttsmodel">Speech model</label>
-        <select id="ai-ttsmodel" className="setting-select" value={snap.ttsModel} disabled={busy} onChange={(e) => void chooseSpeech(e.target.value)}>
-          {ensure(snap.ttsModel, speechModels).map((id) => (
-            <option key={id} value={id}>{id}</option>
+        <label className="setting-label" htmlFor="ai-spoken-language">Spoken language</label>
+        <select id="ai-spoken-language" className="setting-select" value={language} disabled={busy} onChange={(e) => void chooseLanguage(e.target.value)}>
+          {languages.map((l) => (
+            <option key={l.code} value={l.code}>
+              {l.name === l.endonym ? l.name : l.name + " (" + l.endonym + ")"}
+            </option>
           ))}
         </select>
+        <p className="setting-hint">
+          The language DevThrottle speaks back to you in. Dictation understands every language
+          automatically, so this does not change how you talk to it. Your agents keep working in
+          whatever language they work in.
+        </p>
       </div>
 
       <div className="setting-block">
-        <label className="setting-label" htmlFor="ai-voice">Voice</label>
-        <select id="ai-voice" className="setting-select" value={snap.ttsVoice} disabled={busy} onChange={(e) => void chooseVoice(e.target.value)}>
-          {ensureStrings(snap.ttsVoice, voiceOptions).map((v) => (
-            <option key={v} value={v}>{v}</option>
+        <label className="setting-label" htmlFor="ai-ttsmodel">Speech model</label>
+        <select id="ai-ttsmodel" className="setting-select" value={snap.ttsModel} disabled={busy} onChange={(e) => void chooseSpeech(e.target.value)}>
+          {ensure(snap.ttsModel, speechForLanguage).map((id) => (
+            <option key={id} value={id}>{id}</option>
           ))}
         </select>
+        {speechForLanguage.length === 0 && (
+          <p className="setting-hint">No speech model here can say that language yet.</p>
+        )}
+      </div>
+
+      <div className="setting-block">
+        {modelHasVoices ? (
+          <>
+            <label className="setting-label" htmlFor="ai-voice">Voice</label>
+            <select id="ai-voice" className="setting-select" value={snap.ttsVoice} disabled={busy} onChange={(e) => void chooseVoice(e.target.value)}>
+              {ensureStrings(snap.ttsVoice, voiceOptions).map((v) => (
+                <option key={v} value={v}>{v}</option>
+              ))}
+            </select>
+          </>
+        ) : (
+          <p className="setting-hint">This speech model has one expressive voice - there is nothing to choose.</p>
+        )}
         <div className="setting-actions">
           <button type="button" className="setting-btn" disabled={busy} onClick={() => void playSample()}>Play sample</button>
           <span className="setting-msg">{sampleMsg}</span>

@@ -56,6 +56,12 @@ public sealed class TenantSettingsResolver
     public string TtsModel(TenantId tenant, TranscriptionMode mode)
         => NonEmptyOverride(tenant, TenantSettingKeys.TtsModel) ?? TtsModelConfig.Resolve(mode);
 
+    /// <summary>The language this tenant is spoken to in. English unless the tenant chose otherwise,
+    /// and English again if the stored value is one we no longer offer - speech must never break over
+    /// a stale setting.</summary>
+    public string SpokenLanguage(TenantId tenant)
+        => CcDirector.Core.Configuration.SpokenLanguage.Normalize(NonEmptyOverride(tenant, TenantSettingKeys.SpokenLanguage));
+
     /// <summary>The tenant's Car Mode model, or the operator global default when unset.</summary>
     public string CarModeModel(TenantId tenant)
         => NonEmptyOverride(tenant, TenantSettingKeys.CarModeModel) ?? CarModeModelConfig.Resolve();
@@ -141,6 +147,20 @@ public sealed class TenantSettingsResolver
     /// <exception cref="ArgumentException">The model is null/empty.</exception>
     public void SetTtsModel(TenantId tenant, string model, DateTime nowUtc)
         => _store.Set(tenant, TenantSettingKeys.TtsModel, RequireNonEmpty(model, nameof(model)), nowUtc);
+
+    /// <summary>Set the tenant's spoken language. English CLEARS the override rather than storing it,
+    /// so "back to default" and "never chose" are the same state on disk.</summary>
+    /// <exception cref="ArgumentException">The code is not a language we offer.</exception>
+    public void SetSpokenLanguage(TenantId tenant, string code, DateTime nowUtc)
+    {
+        var trimmed = (code ?? "").Trim();
+        if (trimmed.Length > 0 && !CcDirector.Core.Configuration.SpokenLanguage.IsSupported(trimmed))
+            throw new ArgumentException($"'{trimmed}' is not a supported spoken language.", nameof(code));
+        if (trimmed.Length == 0 || CcDirector.Core.Configuration.SpokenLanguage.IsDefault(trimmed))
+            _store.Remove(tenant, TenantSettingKeys.SpokenLanguage);
+        else
+            _store.Set(tenant, TenantSettingKeys.SpokenLanguage, trimmed.ToLowerInvariant(), nowUtc);
+    }
 
     /// <summary>Set the tenant's Car Mode model.</summary>
     /// <exception cref="ArgumentException">The model is null/empty.</exception>

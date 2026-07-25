@@ -26,6 +26,11 @@ public static class TenantSettingKeys
     /// <summary>The voice the text-to-speech engine uses (global default: <c>tts_voice</c>).</summary>
     public const string TtsVoice = "tts_voice";
 
+    /// <summary>The language DevThrottle SPEAKS BACK in - what the wingman writes and the speech
+    /// model says. Dictation is unaffected: it detects the spoken language on its own and never
+    /// reads this. BCP-47 primary subtag; unset means English.</summary>
+    public const string SpokenLanguage = "spoken_language";
+
     /// <summary>The conversational model Car Mode drives (global default: <c>car_mode_model</c>).</summary>
     public const string CarModeModel = "car_mode_model";
 
@@ -52,7 +57,7 @@ public static class TenantSettingKeys
     /// <summary>Every key this resolver serves, for validation and enumeration.</summary>
     public static readonly IReadOnlySet<string> All = new HashSet<string>(StringComparer.Ordinal)
     {
-        WingmanModel, WingmanFastModel, TtsModel, TtsVoice,
+        WingmanModel, WingmanFastModel, TtsModel, TtsVoice, SpokenLanguage,
         CarModeModel, CarModeEndPhrase, SnoozePresets, SnoozeDefaultMinutes, TimeZone, InjectedText,
     };
 }
