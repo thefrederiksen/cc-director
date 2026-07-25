@@ -24,31 +24,36 @@ public static class SpokenLanguage
     public const string Default = "en";
 
     /// <summary>
-    /// The languages we offer, code to (English name, endonym). The English name is what the
-    /// wingman prompt says; the endonym is included because naming a language in its own words
-    /// measurably helps a model commit to it, and because the settings UI should show people
-    /// their own language the way they write it.
+    /// The languages we offer, IN THE ORDER THEY ARE SHOWN. Five, not more.
     ///
-    /// This list is the OFFER, not a capability claim - whether a given speech model can actually
-    /// say one of these is the model's <c>languages</c> array, checked separately. Keep the two
-    /// apart: offering a language no model can speak produces confident gibberish.
+    /// This is the OFFER, and it is a commercial decision, not a capability list. The speech engine
+    /// can say 23 languages; we sell five, because each one we list has to be translated, supported
+    /// and kept current on a product that ships weekly. An earlier version of this file listed
+    /// twelve - everything the engine could manage - which is exactly the capability-for-offer
+    /// mistake the note below warns against. Adding a language here is a decision, not a courtesy.
+    ///
+    /// The order is deliberate: English first because it is the default and the language everything
+    /// is authored in; then the three market languages alphabetically; then Danish last, because it
+    /// is carried for testing the pipeline rather than as a market, and it should not sit above a
+    /// language somebody might actually buy in.
+    ///
+    /// Whether a given speech model can SAY one of these is a separate question, answered by the
+    /// model's own languages list. Keep the two apart: offering a language no model can speak
+    /// produces confident gibberish.
     /// </summary>
-    public static readonly IReadOnlyDictionary<string, (string English, string Endonym)> Supported =
-        new Dictionary<string, (string, string)>(StringComparer.OrdinalIgnoreCase)
+    public static readonly IReadOnlyList<(string Code, string English, string Endonym)> Offered =
+        new[]
         {
-            ["en"] = ("English", "English"),
-            ["da"] = ("Danish", "dansk"),
-            ["de"] = ("German", "Deutsch"),
-            ["fr"] = ("French", "francais"),
-            ["es"] = ("Spanish", "espanol"),
-            ["pt"] = ("Portuguese", "portugues"),
-            ["it"] = ("Italian", "italiano"),
-            ["nl"] = ("Dutch", "Nederlands"),
-            ["sv"] = ("Swedish", "svenska"),
-            ["no"] = ("Norwegian", "norsk"),
-            ["ja"] = ("Japanese", "Nihongo"),
-            ["tr"] = ("Turkish", "Turkce"),
+            ("en", "English", "English"),
+            ("fr", "French", "francais"),
+            ("de", "German", "Deutsch"),
+            ("es", "Spanish", "espanol"),
+            ("da", "Danish", "dansk"),
         };
+
+    /// <summary>The offered languages by code, for lookup. <see cref="Offered"/> holds the order.</summary>
+    public static readonly IReadOnlyDictionary<string, (string English, string Endonym)> Supported =
+        Offered.ToDictionary(l => l.Code, l => (l.English, l.Endonym), StringComparer.OrdinalIgnoreCase);
 
     /// <summary>True when <paramref name="code"/> is a language we offer.</summary>
     public static bool IsSupported(string? code) =>
@@ -89,13 +94,18 @@ public static class SpokenLanguage
     /// </summary>
     public static bool ModelCanSpeak(IEnumerable<string>? modelLanguages, string? code)
     {
-        var want = Normalize(code);
-        if (modelLanguages is null) return string.Equals(want, Default, StringComparison.Ordinal);
+        // NOT normalized. This asks a question about the MODEL, not about our offer: "can this engine
+        // say xx?" is a fact independent of whether we sell xx. Normalizing first was a real bug -
+        // it turned a question about an unoffered language into a question about English, and any
+        // model that speaks English answered yes.
+        var want = (code ?? "").Trim().ToLowerInvariant();
+        if (want.Length == 0) return false;
+        if (modelLanguages is null) return want == Default;
         var known = modelLanguages
             .Where(l => !string.IsNullOrWhiteSpace(l))
             .Select(l => l.Trim().ToLowerInvariant())
             .ToList();
-        if (known.Count == 0) return string.Equals(want, Default, StringComparison.Ordinal);
+        if (known.Count == 0) return want == Default;
         return known.Contains(want);
     }
 }

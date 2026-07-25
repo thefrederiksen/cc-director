@@ -93,13 +93,6 @@ export function AiSettings() {
 
   const currentSpeech = speechModels.find((m) => m.id === snap.ttsModel);
 
-  // A model can speak a language only when it SAYS so. One that publishes no list is English-only,
-  // never "speaks everything" - see the note on AiModel.languages.
-  const canSpeak = (m: AiModel, code: string) =>
-    (m.languages ?? []).length === 0 ? code === "en" : (m.languages ?? []).includes(code);
-
-  const speechForLanguage = speechModels.filter((m) => canSpeak(m, language));
-
   // An expressive model with no preset voices is not a model with a missing voice list - there is
   // nothing to choose. Showing an empty picker reads as broken, so the control is hidden instead.
   const modelHasVoices = !currentSpeech || currentSpeech.voices.length > 0;
@@ -110,32 +103,16 @@ export function AiSettings() {
     setMsg("Saving...");
     setSampleMsg("");
     try {
-      await setSpokenLanguage(code);
-      setLanguage(code);
-      // If the speech model in use cannot say the new language, move to one that can rather than
-      // leaving the account on an engine that would answer in English phonetics.
-      let nextSnap = snap;
-      if (currentSpeech && !canSpeak(currentSpeech, code)) {
-        const replacement = speechModels.find((m) => canSpeak(m, code));
-        if (replacement) {
-          await setTtsModel(replacement.id);
-          const voices = replacement.voices ?? [];
-          let voice = snap.ttsVoice;
-          if (voices.length > 0 && voices.indexOf(voice) < 0) {
-            voice = replacement.defaultVoice && voices.indexOf(replacement.defaultVoice) >= 0
-              ? replacement.defaultVoice
-              : voices[0];
-            await setTtsVoice(voice);
-          }
-          nextSnap = { ...snap, ttsModel: replacement.id, ttsVoice: voice };
-          setSnap(nextSnap);
-          setMsg("Spoken language set. Speech model switched to " + replacement.id + ", which can speak it.");
-          return;
-        }
-        setMsg("Spoken language set, but no speech model here can say it yet.");
-        return;
+      // The Gateway decides which speech model can say this and switches it; we only report what
+      // it did. The browser cannot make that call on hosted - the model catalog is refused there.
+      const res = await setSpokenLanguage(code);
+      setLanguage(res.language);
+      if (res.ttsModel) {
+        setSnap({ ...snap, ttsModel: res.ttsModel, ttsVoice: res.ttsVoice ?? "" });
       }
-      setMsg("Spoken language set.");
+      setMsg(res.switched
+        ? "Spoken language set. Speech model switched to " + res.ttsModel + ", which can speak it."
+        : "Spoken language set.");
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
     } finally {
@@ -332,13 +309,10 @@ export function AiSettings() {
       <div className="setting-block">
         <label className="setting-label" htmlFor="ai-ttsmodel">Speech model</label>
         <select id="ai-ttsmodel" className="setting-select" value={snap.ttsModel} disabled={busy} onChange={(e) => void chooseSpeech(e.target.value)}>
-          {ensure(snap.ttsModel, speechForLanguage).map((id) => (
+          {ensure(snap.ttsModel, speechModels).map((id) => (
             <option key={id} value={id}>{id}</option>
           ))}
         </select>
-        {speechForLanguage.length === 0 && (
-          <p className="setting-hint">No speech model here can say that language yet.</p>
-        )}
       </div>
 
       <div className="setting-block">

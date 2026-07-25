@@ -1,3 +1,4 @@
+using System.Linq;
 using CcDirector.Core.Configuration;
 using Xunit;
 
@@ -38,6 +39,26 @@ public sealed class SpokenLanguageTests
         => Assert.Equal(expected, SpokenLanguage.Normalize(input));
 
     [Fact]
+    public void Exactly_five_languages_are_offered_in_a_deliberate_order()
+    {
+        // The offer is a commercial decision, not a capability list. An earlier version listed twelve
+        // - everything the speech engine could manage - which is the mistake this test exists to catch.
+        Assert.Equal(5, SpokenLanguage.Offered.Count);
+        Assert.Equal(
+            new[] { "en", "fr", "de", "es", "da" },
+            SpokenLanguage.Offered.Select(l => l.Code).ToArray());
+    }
+
+    [Fact]
+    public void English_is_first_and_Danish_is_last()
+    {
+        // English leads because it is the default; Danish trails because it is carried for testing
+        // the pipeline, not as a market, and must not sit above a language somebody might buy in.
+        Assert.Equal("en", SpokenLanguage.Offered[0].Code);
+        Assert.Equal("da", SpokenLanguage.Offered[^1].Code);
+    }
+
+    [Fact]
     public void The_three_market_languages_and_the_test_language_are_offered()
     {
         // German, French and Spanish are the market bets; Danish is the language the pipeline is
@@ -69,6 +90,10 @@ public sealed class SpokenLanguageTests
         var multilingual = new[] { "en", "da", "de", "fr", "es" };
         Assert.True(SpokenLanguage.ModelCanSpeak(multilingual, "da"));
         Assert.True(SpokenLanguage.ModelCanSpeak(multilingual, "DE"));
+        // A language the model does not list, and one we do not offer either - both must be false.
+        // ModelCanSpeak deliberately does NOT normalize: asking "can it say Japanese?" must not
+        // quietly become "can it say English?" just because we do not sell Japanese.
+        Assert.False(SpokenLanguage.ModelCanSpeak(multilingual, "it"));
         Assert.False(SpokenLanguage.ModelCanSpeak(multilingual, "ja"));
     }
 
