@@ -220,6 +220,20 @@ internal static class GatewayWingmanVoiceEndpoint
             return Results.Json(new { stopped = true });
         });
 
+        // IS THIS TENANT IN VOICE MODE? The one place a client asks, instead of deriving it. The client is
+        // dumb by law here (CLAUDE.md rule 7): it renders this verdict, it does not compute one. Clients used
+        // to answer this question for themselves by scanning the roster for any session that happened to be
+        // marked, which is a DIFFERENT question - "is at least one session on voice" is true the moment one
+        // session is on, and stays true while nine others are off. That wrong answer is what drove the old
+        // one-button switch to offer only OFF forever, so a session created later could never be switched on.
+        app.MapGet("/sessions/voice-mode/all", (HttpContext ctx) =>
+        {
+            var reqTenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" }, statusCode: StatusCodes.Status403Forbidden);
+            return Results.Json(new { enabled = tenantSettings.VoiceModeAll(reqTenant.Value) });
+        });
+
         // Turn voice mode on or off for EVERY session at once (issue #1765). The fleet-wide counterpart
         // to the per-session pair the phone and Cockpit fire (POST /voice-mode on the owning Director,
         // plus mark/unmark here): ONE call, and the Gateway walks the whole roster so the caller never
@@ -236,6 +250,14 @@ internal static class GatewayWingmanVoiceEndpoint
         // thread and never raced. Idempotent: enabling a session already on, or disabling one already off,
         // is a harmless no-op. This endpoint sends NO prompt into any session - it only sets voice marking,
         // exactly like the single-session /voice-mode and /wingman/voice/stop it fans out to.
+        //
+        // IT IS ALSO THE SWITCH, not only the fan-out (owner, 2026-07-24). It PERSISTS the tenant's intent
+        // first, then fans it out. Without the persisted intent, "the fleet is in voice mode" was a fact
+        // nobody held: clients inferred it by checking whether any session happened to be marked, so a
+        // session created a minute later was never told and quietly never joined the voice queue - and a
+        // client could not honestly tell you which state you were in. The flag is the intent; the fan-out
+        // below and the sweep in GatewayHost are how the intent reaches sessions, the ones here now and the
+        // ones that appear later.
         app.MapPost("/sessions/voice-mode/all", async (VoiceModeAllRequest? req, HttpContext ctx, CancellationToken ct) =>
         {
             var reqTenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
@@ -243,6 +265,13 @@ internal static class GatewayWingmanVoiceEndpoint
                 return Results.Json(new { error = "no tenant is bound to this request" }, statusCode: StatusCodes.Status403Forbidden);
             var enabled = req?.Enabled ?? true;
             FileLog.Write($"[GatewayWingmanVoice] voice-mode/all requested: enabled={enabled}");
+
+            // Persist the intent BEFORE the fan-out. The fan-out can partly fail (an offline computer is
+            // skipped), and the intent must survive that - those sessions are meant to be on voice, and the
+            // sweep puts them on it when their computer comes back. Recording the intent only on a fully
+            // successful fan-out would silently downgrade "my fleet is on voice" to "the reachable part of
+            // my fleet is on voice", which is the exact class of quiet gap this change exists to close.
+            tenantSettings.SetVoiceModeAll(reqTenant.Value, enabled, DateTime.UtcNow);
 
             // The machine each Director runs on, so a skipped session names where it lives in plain English.
             // Hosted Multi-Tenancy (audit H1, gap audit-b): scope this to the caller's OWN partition, not the

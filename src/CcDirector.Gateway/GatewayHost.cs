@@ -541,6 +541,14 @@ public sealed class GatewayHost : IAsyncDisposable
     // HostedInferenceBrain (a hosted model call), not the spawned BrainSupervisor.
     private TurnEndWatcher? _turnEndWatcher;
     private Wingman.WingmanVoiceService? _voiceService;
+    // Voice mode is a standing intent, not a one-time action: a tenant that is in voice mode wants EVERY one
+    // of its sessions narrating, including the ones that do not exist yet. This timer is how that intent
+    // reaches them - it walks each tenant that has voice mode on and switches on any session that is not a
+    // voice session yet. Fifteen seconds, matching the reconcile poll beside it: a session joins the voice
+    // queue on its own within a few seconds of appearing, without the phone having to sweep anything.
+    private Timer? _voiceModeAllSweepTimer;
+    private static readonly TimeSpan VoiceModeAllSweepInterval = TimeSpan.FromSeconds(15);
+    private int _voiceModeAllSweepRunning;
 
     /// <summary>Test-only: the tenant-partitioned voice state, so an isolation test can seed a ready clip
     /// under one tenant and prove another tenant never reads it. Null until StartAsync builds it.</summary>
@@ -1492,6 +1500,81 @@ public sealed class GatewayHost : IAsyncDisposable
     }
 
     /// <summary>
+    /// Carry each tenant's standing VOICE MODE intent to the sessions that did not exist when the switch was
+    /// thrown. For every tenant with voice mode on, any session that is not yet a voice session gets the same
+    /// two effects the fleet-wide fan-out gives: the owning Director's voice-mode flag set over the tunnel,
+    /// and the Gateway voice marker set so the per-turn narration starts.
+    ///
+    /// This is what makes voice mode a switch rather than a one-time action. The fan-out at
+    /// <c>POST /sessions/voice-mode/all</c> reaches only the sessions alive at that instant; a session created
+    /// a minute later, or one whose computer was offline and has since come back, was never told - so it
+    /// quietly never joined the voice queue and looked like the queue had lost it.
+    ///
+    /// Deliberately one-directional: it only ever switches sessions ON, and only for a tenant that asked for
+    /// voice mode. Turning voice mode off is done by the endpoint's own fan-out, which unmarks every session
+    /// in one pass; a sweep that also chased the off direction would fight anyone who had deliberately put a
+    /// single session on voice while the fleet flag was off.
+    ///
+    /// Best-effort and never throws into the timer. A session whose computer is unreachable is left alone and
+    /// picked up by a later pass, which is the whole point of a standing intent.
+    /// </summary>
+    internal async Task SweepVoiceModeAllAsync()
+    {
+        // One pass at a time. A pass that runs long (many sessions, slow tunnels) must not have a second
+        // timer tick start on top of it and send the same session two voice-mode commands.
+        if (Interlocked.Exchange(ref _voiceModeAllSweepRunning, 1) == 1) return;
+        try
+        {
+            var vs = _voiceService;
+            if (vs is null) return;
+            var stale = TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
+            Api.DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = SendCommandAsync;
+
+            // Each tenant is decided and acted on inside its own scope, exactly as the voice pre-build sweep
+            // beside this one does: the flag is read for THAT tenant, the roster is that tenant's partition,
+            // and the marker is written into that tenant's voice state. Self-host runs one Local pass.
+            var passes = new List<(TenantId Tenant, IReadOnlyList<(string DirectorId, string SessionId)> Plan)>();
+            _tenantPass.ForEachTenant(() =>
+            {
+                if (_tenantPass.Current is not { } tenant) return;   // deny: no scope in effect -> sweep nothing
+                var on = _tenantSettingsResolver.VoiceModeAll(tenant);
+                // Plan returns empty immediately for a tenant that is not in voice mode, so a fleet with the
+                // switch off costs one flag read and nothing else.
+                var plan = Wingman.VoiceModeAllSweep.Plan(
+                    on,
+                    PushedSessions.SnapshotFresh(tenant, stale),
+                    sid => vs.IsVoiceSession(tenant, sid));
+                if (plan.Count > 0) passes.Add((tenant, plan));
+            });
+
+            foreach (var (tenant, plan) in passes)
+            {
+                FileLog.Write($"[GatewayHost] voice-mode sweep: {plan.Count} session(s) to switch on for tenant={tenant.ToLogString()}");
+                foreach (var (directorId, sid) in plan)
+                {
+                    var result = await Api.DirectorCommandRouter.TrySendAsync(
+                        sendCommand, directorId, "voice-mode", sid, new { enabled = true }, CancellationToken.None);
+                    if (result is { Ok: true })
+                    {
+                        // Mark only after the Director accepted. Marking a session the Director never heard
+                        // about would make the Gateway spend narration on a session whose own view mode says
+                        // it is not a voice session - the two halves must agree or the roster lies.
+                        vs.Mark(tenant, sid);
+                        FileLog.Write($"[GatewayHost] voice-mode sweep: switched on sid={sid} director={directorId} tenant={tenant.ToLogString()}");
+                    }
+                    else
+                    {
+                        // Left for a later pass on purpose - that is what a standing intent means.
+                        FileLog.Write($"[GatewayHost] voice-mode sweep: sid={sid} not reachable on director={directorId} - will retry next pass");
+                    }
+                }
+            }
+        }
+        catch (Exception ex) { FileLog.Write($"[GatewayHost] voice-mode sweep error: {ex.Message}"); }
+        finally { Interlocked.Exchange(ref _voiceModeAllSweepRunning, 0); }
+    }
+
+    /// <summary>
     /// The Gateway's warm brain (issue #184): a claude.exe this process hosts itself - no
     /// Director dependency. Dormant until first use; RestartAsync is the recovery verb.
     /// </summary>
@@ -1672,6 +1755,15 @@ public sealed class GatewayHost : IAsyncDisposable
         // First tick = the startup catch-up sweep; then the 15s reconcile poll for
         // Directors that never push (file-discovered locals, old builds).
         _turnEndWatcher.Start();
+
+        // The voice-mode sweep: carry each tenant's standing "my fleet is in voice mode" intent to the
+        // sessions that did not exist when the switch was thrown. Runs unconditionally and costs nothing on a
+        // fleet with voice mode off - VoiceModeAllSweep.Plan returns an empty plan for such a tenant, so no
+        // roster is even walked for it.
+        FileLog.Write("[GatewayHost] StartAsync: starting the voice-mode sweep (standing voice-mode intent -> new sessions)");
+        _voiceModeAllSweepTimer = new Timer(
+            _ => _ = SweepVoiceModeAllAsync(),
+            null, VoiceModeAllSweepInterval, VoiceModeAllSweepInterval);
 
         // PreventHostingStartup avoids ASP.NET Core trying to load a (nonexistent) hosting startup
         // assembly with our application name, which otherwise emits a noisy crit log line on boot.
@@ -3082,6 +3174,7 @@ public sealed class GatewayHost : IAsyncDisposable
         try { _voiceSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] voice sweep dispose error: {ex.Message}"); }
         _voiceSweepTimer = null;
         try { _turnEndWatcher?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] watcher dispose error: {ex.Message}"); }
+        try { _voiceModeAllSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] voice-mode sweep timer dispose error: {ex.Message}"); }
         _turnEndWatcher = null;
         try { Brain.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] brain dispose error: {ex.Message}"); }
 

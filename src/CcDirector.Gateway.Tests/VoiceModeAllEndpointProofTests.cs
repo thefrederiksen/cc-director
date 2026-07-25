@@ -166,6 +166,105 @@ public sealed class VoiceModeAllEndpointProofTests : IAsyncLifetime
         Assert.False(string.IsNullOrWhiteSpace(rejectedRow?["reason"]?.GetValue<string>()));
     }
 
+    // ---- voice mode as a STANDING SWITCH, not a one-time fan-out (owner, 2026-07-24) --------------------
+
+    [Fact]
+    public async Task VoiceModeAll_persistsTheIntent_soAClientCanReadWhichStateItIsIn()
+    {
+        // Before anyone asks for it, voice mode is off. This is the question clients used to answer for
+        // themselves by scanning the roster for any marked session - a DIFFERENT question, true the moment
+        // one session was on and still true while nine others were off.
+        var before = await _http.GetFromJsonAsync<JsonNode>("sessions/voice-mode/all");
+        Assert.False(before?["enabled"]?.GetValue<bool>());
+
+        await PushAsync(1L, Session(Guid.NewGuid().ToString(), "one"));
+        (await _http.PostAsJsonAsync("sessions/voice-mode/all", new { enabled = true })).EnsureSuccessStatusCode();
+
+        var after = await _http.GetFromJsonAsync<JsonNode>("sessions/voice-mode/all");
+        Assert.True(after?["enabled"]?.GetValue<bool>());
+
+        (await _http.PostAsJsonAsync("sessions/voice-mode/all", new { enabled = false })).EnsureSuccessStatusCode();
+        var off = await _http.GetFromJsonAsync<JsonNode>("sessions/voice-mode/all");
+        Assert.False(off?["enabled"]?.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task VoiceModeAll_recordsTheIntentEvenWhenTheFanOutCouldNotReachASession()
+    {
+        // The one session there is cannot be written. If the intent were recorded only on a fully successful
+        // fan-out, "my fleet is on voice" would silently downgrade to "the reachable part of it is" - and the
+        // sweep would never come back for the session that was skipped.
+        var unreachable = Guid.NewGuid().ToString();
+        _rejectSids.Add(unreachable);
+        await PushAsync(1L, Session(unreachable, "offline computer"));
+
+        var resp = await _http.PostAsJsonAsync("sessions/voice-mode/all", new { enabled = true });
+        var node = await resp.Content.ReadFromJsonAsync<JsonNode>();
+        Assert.Equal(0, node?["changed"]?.GetValue<int>());
+        Assert.Equal(1, node?["skipped"]?.GetValue<int>());
+
+        var state = await _http.GetFromJsonAsync<JsonNode>("sessions/voice-mode/all");
+        Assert.True(state?["enabled"]?.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task Sweep_switchesOnASessionThatAPPEAREDAFTERTheSwitchWasThrown()
+    {
+        // THE BUG THIS EXISTS TO KILL. The fan-out reaches the sessions alive at that instant. A session
+        // created a minute later was never told, so it quietly never joined the voice queue - which looked
+        // like the queue losing sessions rather than what it was.
+        var existing = Guid.NewGuid().ToString();
+        await PushAsync(1L, Session(existing, "was here first"));
+        (await _http.PostAsJsonAsync("sessions/voice-mode/all", new { enabled = true })).EnsureSuccessStatusCode();
+        Assert.Single(_commands, c => c.Verb == "voice-mode");
+
+        // A NEW session joins the roster. Nobody has told it anything.
+        var born = Guid.NewGuid().ToString();
+        await PushAsync(2L, Session(existing, "was here first"), Session(born, "born later"));
+
+        await _gateway.SweepVoiceModeAllAsync();
+
+        // The sweep sent the new one the voice-mode verb, and did NOT re-send it to the session that was
+        // already on - a steady fleet must produce no traffic.
+        var cmds = _commands.Where(c => c.Verb == "voice-mode").ToList();
+        Assert.Equal(2, cmds.Count);
+        Assert.Contains(cmds, c => c.SessionId == born);
+        Assert.True(JsonNode.Parse(cmds.Single(c => c.SessionId == born).PayloadJson)?["enabled"]?.GetValue<bool>());
+
+        // And it is now genuinely a voice session on the Gateway, not merely commanded.
+        Assert.True(_gateway.VoiceService?.IsVoiceSession(Core.Tenancy.TenantId.Local, born));
+    }
+
+    [Fact]
+    public async Task Sweep_doesNothingAtAllWhenVoiceModeWasNeverTurnedOn()
+    {
+        // The other direction of the guard: the sweep must never put a fleet on voice that did not ask for
+        // it. Without this, merely running the Gateway would start spending narration on every session.
+        await PushAsync(1L, Session(Guid.NewGuid().ToString(), "left alone"));
+
+        await _gateway.SweepVoiceModeAllAsync();
+
+        Assert.DoesNotContain(_commands, c => c.Verb == "voice-mode");
+    }
+
+    [Fact]
+    public async Task Sweep_doesNotSwitchSessionsBackOnAfterVoiceModeIsTurnedOff()
+    {
+        // Turning voice mode off has to STAY off. A sweep that kept reading a stale intent would switch the
+        // fleet straight back on, which is the "I turned it off and it kept coming back" failure in its
+        // purest form.
+        var sid = Guid.NewGuid().ToString();
+        await PushAsync(1L, Session(sid, "one"));
+        (await _http.PostAsJsonAsync("sessions/voice-mode/all", new { enabled = true })).EnsureSuccessStatusCode();
+        (await _http.PostAsJsonAsync("sessions/voice-mode/all", new { enabled = false })).EnsureSuccessStatusCode();
+        var beforeSweep = _commands.Count(c => c.Verb == "voice-mode");
+
+        await _gateway.SweepVoiceModeAllAsync();
+
+        Assert.Equal(beforeSweep, _commands.Count(c => c.Verb == "voice-mode"));
+        Assert.False(_gateway.VoiceService?.IsVoiceSession(Core.Tenancy.TenantId.Local, sid));
+    }
+
     private static int AllocateFreePort()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);

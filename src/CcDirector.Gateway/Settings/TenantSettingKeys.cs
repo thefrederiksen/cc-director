@@ -49,10 +49,22 @@ public static class TenantSettingKeys
     /// string.</summary>
     public const string InjectedText = "injected_text";
 
+    /// <summary>Whether this tenant is IN VOICE MODE: every one of its sessions narrates its turns, including
+    /// sessions created after the switch was thrown. Unlike every other key here there is no operator global
+    /// default to fall back to - voice mode is a per-tenant choice and its default is OFF.
+    ///
+    /// This is the flag that makes voice mode a SWITCH rather than a one-shot fan-out. Before it, nothing
+    /// anywhere held "this fleet is in voice mode": the phone inferred it by checking whether any session
+    /// happened to be marked, and made it true by walking the roster - so a session created afterwards was
+    /// never told, and quietly never joined the voice queue. The Gateway holds the intent here, and the
+    /// sweep applies it to sessions as they appear.</summary>
+    public const string VoiceModeAll = "voice_mode_all";
+
     /// <summary>Every key this resolver serves, for validation and enumeration.</summary>
     public static readonly IReadOnlySet<string> All = new HashSet<string>(StringComparer.Ordinal)
     {
         WingmanModel, WingmanFastModel, TtsModel, TtsVoice,
         CarModeModel, CarModeEndPhrase, SnoozePresets, SnoozeDefaultMinutes, TimeZone, InjectedText,
+        VoiceModeAll,
     };
 }

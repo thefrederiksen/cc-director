@@ -23,6 +23,7 @@ import { ensurePushSubscribed } from "@devthrottle/client-core/push/register";
 import { installGlobalErrorReporting } from "@devthrottle/client-core/errors/reportClientError";
 import { CreditsNotice } from "./components/CreditsNotice";
 import { ConnectionBanner } from "./components/ConnectionBanner";
+import { VoiceModeBanner } from "./components/VoiceModeBanner";
 import { useVisibleViewportHeight } from "./hooks/useVisibleViewportHeight";
 import { useScreenWakeLock } from "./hooks/useScreenWakeLock";
 import { useKeepWarm } from "@devthrottle/client-core/net/useKeepWarm";
@@ -87,6 +88,12 @@ function GatedLayout() {
   return (
     <>
       <ConnectionBanner />
+      {/* The voice-mode banner is mounted HERE, beside the connection banner, for one reason: it has to be
+          on every screen. While auto-speak is running you are on the roster for three seconds at a time and
+          inside a session the rest of the time, so an off switch that lives only on the roster is a window
+          to catch, not a way out. Here it is on the session screen auto-speak just dropped you into. It
+          renders nothing at all when voice mode is off. */}
+      <VoiceModeBanner />
       {!onSessionScreen && !onHome && !onAssistant && <StatusPill />}
       <Outlet />
     </>

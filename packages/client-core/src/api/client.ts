@@ -2058,11 +2058,32 @@ export interface VoiceModeAllResult {
   sessions: VoiceModeAllSessionResult[];
 }
 
+// GET /sessions/voice-mode/all - IS THIS FLEET IN VOICE MODE? The one place to ask.
+//
+// A client must never answer this for itself. The obvious local guess - "does any session have voiceMode
+// set?" - is a DIFFERENT question: it turns true the instant one session is on and stays true while nine
+// others are off. Clients guessing it that way is exactly why the fleet switch offered only "turn it all
+// off" forever, so a session created later could never be switched on, and why nothing on screen could
+// honestly say which state you were in. The Gateway holds the intent; this reads it.
+export async function getVoiceModeAllSessions(signal?: AbortSignal): Promise<boolean> {
+  const res = await gatewayFetch(`/sessions/voice-mode/all`, {
+    method: "GET",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) throw new GatewayError(res.status, `GET voice-mode/all failed: ${res.status}`);
+  const body = (await res.json()) as { enabled?: unknown };
+  return Boolean(body.enabled);
+}
+
 // POST /sessions/voice-mode/all { enabled } - turn voice mode on (enabled=true) or off (false) for EVERY
 // session at once (issue #1765). The Gateway walks the whole roster and fans the per-session voice-mode
 // write out itself, so this is ONE call for the caller. Sessions whose owning computer is offline are
 // skipped and reported, never failing the batch. Enabling spends per-turn narration credits on every
 // session it switches on, so a 402 (out of credits) surfaces the shared credits notice, once.
+//
+// It is the SWITCH, not just a fan-out: the Gateway persists the intent, so a session that appears
+// afterwards is switched on too, by the Gateway's own sweep, without any client doing anything.
 export async function setVoiceModeAllSessions(enabled: boolean, signal?: AbortSignal): Promise<VoiceModeAllResult> {
   const res = await gatewayFetch(`/sessions/voice-mode/all`, {
     method: "POST",
