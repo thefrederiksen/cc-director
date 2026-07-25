@@ -2577,6 +2577,11 @@ public sealed class GatewayHost : IAsyncDisposable
                 _keyVault, history: _transcriptionHistory, audioArchive: _transcriptionAudioArchive, transcripts: _transcripts),
             _tenantBoundary);
 
+        // Background microphone-quality monitoring: the browser measures every dictation it sends and
+        // posts a handful of numbers here, so the Cockpit can say WHICH microphone is letting the user
+        // down. No audio and no transcript reach this route.
+        Api.VoiceQualityEndpoint.Map(_app, _tenantBoundary);
+
         // Text-in / text-out cleanup: run ONLY the deterministic dictionary correction over supplied
         // text + a supplied term list (no audio). The engine the multilingual eval harness drives, and
         // a way for any agent to test cleanup on arbitrary text/terms.

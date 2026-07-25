@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { MicTestPanel } from "@devthrottle/client-core/dictation/MicTestPanel";
+import { MicrophoneQualityPanel } from "./MicrophoneQualityPanel";
 import { TranscriptionTestPanel } from "@devthrottle/client-core/dictation/TranscriptionTestPanel";
 import {
   clearTranscriptionHistory,
@@ -242,6 +243,11 @@ export function TranscriptionHealthView() {
           there are no stats to show - a Gateway that cannot be reached, or a first run with no
           history - because that is when the user is asking "is my microphone even working?". It
           needs nothing from the Gateway, so a load failure above must not take it down with it. */}
+      {/* The background half first: it answers "is anything wrong" without the user doing anything,
+          which is the question they arrived with. The on-demand checks below are what they reach for
+          once they know something IS wrong. */}
+      <MicrophoneQualityPanel />
+
       <div className="txh-section">
         <MicTestPanel />
       </div>

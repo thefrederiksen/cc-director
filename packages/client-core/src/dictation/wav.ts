@@ -38,6 +38,13 @@ export interface TranscodeResult {
   wav: Blob;
   decodedSeconds: number;
   sourceBytes: number;
+  /** The clip at the microphone's NATIVE rate, mono - the form the microphone-quality measurement
+   *  needs (micQuality.ts), which the 16 kHz WAV above cannot answer because resampling discards
+   *  everything above 8 kHz and with it the evidence that tells a wideband microphone from a
+   *  telephone-grade link. Handed back from the decode this function already performs so background
+   *  quality reporting costs no second decode of a multi-megabyte clip on the dictation path. */
+  nativeSamples: Float32Array;
+  nativeSampleRate: number;
 }
 
 export async function blobToWav16kMono(blob: Blob): Promise<TranscodeResult> {
@@ -71,6 +78,8 @@ export async function blobToWav16kMono(blob: Blob): Promise<TranscodeResult> {
     wav: encodeWav(padded, TARGET_SAMPLE_RATE),
     decodedSeconds: decoded.duration,
     sourceBytes,
+    nativeSamples: monoFrom(decoded),
+    nativeSampleRate: decoded.sampleRate,
   };
 }
 
@@ -102,11 +111,17 @@ export async function decodeToMono(blob: Blob): Promise<DecodedClip> {
     void decodeCtx.close();
   }
 
-  if (decoded.numberOfChannels === 1) {
-    return { samples: decoded.getChannelData(0), sampleRate: decoded.sampleRate };
-  }
-  // Average the channels rather than taking the first: a headset that feeds only one side would
-  // otherwise measure as silence on the channel we happened to pick.
+  return { samples: monoFrom(decoded), sampleRate: decoded.sampleRate };
+}
+
+/**
+ * One mono channel from a decoded buffer. A mono source is returned as-is (a view over memory that
+ * already exists, so this costs nothing on the dictation path, where capture requests one channel).
+ * Several channels are AVERAGED rather than picking the first: a headset that feeds only one side
+ * would otherwise measure as silence whenever we happened to choose the empty channel.
+ */
+function monoFrom(decoded: AudioBuffer): Float32Array {
+  if (decoded.numberOfChannels === 1) return decoded.getChannelData(0);
   const frames = decoded.length;
   const mixed = new Float32Array(frames);
   for (let ch = 0; ch < decoded.numberOfChannels; ch++) {
@@ -114,7 +129,7 @@ export async function decodeToMono(blob: Blob): Promise<DecodedClip> {
     for (let i = 0; i < frames; i++) mixed[i] += data[i];
   }
   for (let i = 0; i < frames; i++) mixed[i] /= decoded.numberOfChannels;
-  return { samples: mixed, sampleRate: decoded.sampleRate };
+  return mixed;
 }
 
 // Build a canonical 16-bit PCM WAV (RIFF) blob from mono float samples in -1..1.

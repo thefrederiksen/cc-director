@@ -3,6 +3,7 @@ import { captureLossWarning, logCaptureHealth } from "./captureHealth";
 import { deletePending, getPending, listPending, savePending, type PendingDictation } from "./pendingStore";
 import { clearDictationStatus, publishDictationStatus } from "./status";
 import { blobToWav16kMono } from "./wav";
+import { reportDictationQuality } from "./qualityReport";
 
 // The durable Send pipeline + background retry driver for the mobile Speak dialog (issue #1006,
 // strengthened for #1182). The instant the user hits Send the dialog hands the recorded audio here and
@@ -93,6 +94,9 @@ export interface CapturedUtterance {
   /** Earlier Pause/Resume dictation segments, already turned to text, joined ahead of this final
    *  segment. Empty in the common "just talk and Send" case. */
   prefixText: string;
+  /** The microphone's name, for per-device quality reporting. Optional: a caller that does not know
+   *  it still delivers its words, it just cannot say which microphone recorded them. */
+  deviceLabel?: string;
 }
 
 /** Callbacks so the host can react to the rare hard failure (durable storage unavailable). A normal send
@@ -164,6 +168,15 @@ export async function backgroundTranscribeAndSend(
     // mic DID capture should still be delivered - so instead the deficit rides along as a caution shown with
     // the delivered `done` status, and stored durably so a resumed send still carries it.
     captureWarning = captureLossWarning(health) ?? undefined;
+    // Measure the microphone in the background. Inside the try because it needs the decode, and
+    // deliberately AFTER captureWarning so a measurement problem can never cost the user the
+    // dropped-audio warning, which is about their words rather than about our analytics.
+    reportDictationQuality(
+      transcoded.nativeSamples,
+      transcoded.nativeSampleRate,
+      captured.deviceLabel ?? "",
+      "dictation-send",
+    );
   } catch (err) {
     console.warn(
       `[backgroundSend] decode failed; uploading the raw recording unpadded (delivery is unaffected): ${err instanceof Error ? err.message : String(err)}`,
