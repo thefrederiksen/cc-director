@@ -12,8 +12,8 @@
 // is kept so the screen can SHOW which words were missed rather than only scoring them.
 //
 // NOTE ON NON-ASCII TEXT: this file and languages.ts necessarily carry non-ASCII characters, because
-// the passages are in Chinese, Hindi, Arabic, Danish and so on. That is the feature. Every console
-// line, identifier and comment stays ASCII.
+// the passages are in Danish, German, French and Spanish. That is the feature. Every console line,
+// identifier and comment stays ASCII.
 
 /** How a language's text is split for comparison. */
 export type TokenMode =

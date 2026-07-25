@@ -157,13 +157,19 @@ describe("judgeAccuracy", () => {
 });
 
 describe("the language pack", () => {
-  it("offers English, the six most-spoken languages, and Danish", () => {
-    expect(TEST_LANGUAGES).toHaveLength(8);
-    const codes = TEST_LANGUAGES.map((l) => l.code);
-    expect(codes).toContain("en");
-    expect(codes).toContain("da");
-    for (const code of ["zh", "hi", "es", "fr", "ar", "pt"]) {
-      expect(codes).toContain(code);
+  // The officially supported set, and nothing wider. This test is the guard on that: offering a test
+  // in an unsupported language invites someone to measure what we never promised and read a poor
+  // score as a defect. Widening this list is a product decision, so it has to be a deliberate edit
+  // here and not a quiet append to the pack.
+  const SUPPORTED = ["en", "da", "de", "fr", "es"];
+
+  it("offers exactly the languages DevThrottle officially supports", () => {
+    expect(TEST_LANGUAGES.map((l) => l.code)).toEqual(SUPPORTED);
+  });
+
+  it("offers no language outside the supported set", () => {
+    for (const lang of TEST_LANGUAGES) {
+      expect(SUPPORTED).toContain(lang.code);
     }
   });
 
@@ -176,15 +182,12 @@ describe("the language pack", () => {
     }
   });
 
-  it("uses character scoring for Chinese and word scoring for the rest", () => {
-    expect(languageByCode("zh").tokenMode).toBe("characters");
-    expect(languageByCode("da").tokenMode).toBe("words");
-    expect(languageByCode("en").tokenMode).toBe("words");
-  });
-
-  it("marks Arabic right to left so its passage is laid out correctly", () => {
-    expect(languageByCode("ar").rightToLeft).toBe(true);
-    expect(languageByCode("en").rightToLeft).toBeUndefined();
+  it("uses word scoring for every supported language, all of which are space-delimited", () => {
+    // Character scoring exists and is tested directly above; it has no user in the supported set.
+    // If a language written without spaces is ever added, this expectation is what should fail.
+    for (const lang of TEST_LANGUAGES) {
+      expect(`${lang.code}:${lang.tokenMode}`).toBe(`${lang.code}:words`);
+    }
   });
 
   it("gives every passage enough tokens for a stable score", () => {
@@ -209,10 +212,18 @@ describe("the language pack", () => {
   });
 
   it("matches a browser language on its primary subtag, so regional variants still match", () => {
-    expect(preferredLanguage(["pt-BR"]).code).toBe("pt");
+    expect(preferredLanguage(["de-AT"]).code).toBe("de");
     expect(preferredLanguage(["fr-CH", "en"]).code).toBe("fr");
+    expect(preferredLanguage(["es-MX"]).code).toBe("es");
     expect(preferredLanguage(["da-DK"]).code).toBe("da");
-    expect(preferredLanguage(["nl-NL"]).code).toBe("en");
     expect(preferredLanguage([]).code).toBe("en");
+  });
+
+  it("offers English to a browser set to a language we do not support", () => {
+    // Not a silent nearest-match: there is no passage in Dutch or Portuguese, and pretending
+    // otherwise would score a Dutch speaker against English words.
+    expect(preferredLanguage(["nl-NL"]).code).toBe("en");
+    expect(preferredLanguage(["pt-BR"]).code).toBe("en");
+    expect(preferredLanguage(["zh-CN"]).code).toBe("en");
   });
 });

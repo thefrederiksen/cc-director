@@ -317,10 +317,17 @@
   content: " ";
 }
 
-/* Chinese and Japanese are scored per character, so the tokens must sit flush rather than being
-   separated by the space that follows every other language's word. */
+/* The layout half of character scoring: a language written without spaces between words is scored per
+   character, so its tokens must sit flush rather than each gaining the trailing space a word needs.
+   No officially supported language uses this today - every supported language is space-delimited -
+   but it is kept rather than deleted because it pairs with the tokenMode "characters" scoring path,
+   which IS exercised by tests and which the repository's evaluation methodology requires for zh/ja/th.
+   Deleting the layout while keeping the scoring would leave a language that scores correctly and
+   renders as one unreadable run. (Contrast right-to-left support, which was removed with the
+   unsupported languages precisely because it had no tested counterpart - see languages.ts.) */
 .mictest-diff[lang="zh"] .mictest-tok::after,
-.mictest-diff[lang="ja"] .mictest-tok::after {
+.mictest-diff[lang="ja"] .mictest-tok::after,
+.mictest-diff[lang="th"] .mictest-tok::after {
   content: "";
 }
 

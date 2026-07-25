@@ -1,8 +1,8 @@
 import { Link } from "react-router-dom";
 import { TranscriptionTestPanel } from "@devthrottle/client-core/dictation/TranscriptionTestPanel";
 
-// "Test transcription" on the phone: read a passage in one of eight languages and see how much of it
-// came back. The whole screen is the shared panel, the same component and the same scoring the Cockpit
+// "Test transcription" on the phone: read a passage in one of the officially supported languages and
+// see how much of it came back. The whole screen is the shared panel, the same component and the same scoring the Cockpit
 // mounts, so a phone and a desktop can never report different accuracy for the same recording.
 //
 // Its own route, beside Test microphone, because they answer different questions: one is about the
