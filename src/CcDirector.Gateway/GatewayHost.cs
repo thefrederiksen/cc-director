@@ -1605,8 +1605,12 @@ public sealed class GatewayHost : IAsyncDisposable
                     }
                     else
                     {
-                        // Left for a later pass on purpose - that is what a standing intent means.
-                        FileLog.Write($"[GatewayHost] voice-mode sweep: sid={sid} not reachable on director={directorId} - will retry next pass");
+                        // Left for a later pass on purpose - that is what a standing intent means. Says NOT
+                        // SWITCHED ON rather than "not reachable": the sweep sees only that no Ok came back,
+                        // and an unreachable Director is just one of the ways that happens. Claiming the
+                        // Director was unreachable is how this line spent a day blaming the network for a
+                        // Gateway-side deny; the preceding router line carries the outcome that was observed.
+                        FileLog.Write($"[GatewayHost] voice-mode sweep: sid={sid} NOT switched on (director={directorId}) - will retry next pass");
                     }
                 }
             }).ConfigureAwait(false);
@@ -3228,7 +3232,14 @@ public sealed class GatewayHost : IAsyncDisposable
         // No scope on hosted is a DENY: send nothing, exactly as an unconnected Director behaves.
         if (_tenantPass.Current is not { } commandTenant)
         {
-            FileLog.Write($"[GatewayHost] SendCommandAsync: DENIED (no tenant in scope) director={directorId}, verb={command.Verb}");
+            // Say plainly that this is OUR bug and that the command was destroyed, not delayed. The deny is a
+            // safety net, not a normal path: a request and a tunnel connection both arrive already scoped, so
+            // the only way here is a background loop that failed to enter a tenant scope - and the cost is a
+            // command silently dropped on every tick, forever, with nothing downstream able to tell that from
+            // an offline Director. Name the fix in the line, so whoever greps it does not have to rediscover it.
+            FileLog.Write($"[GatewayHost] SendCommandAsync: GATEWAY BUG - command DROPPED, no tenant scope in effect. " +
+                          $"director={directorId}, verb={command.Verb}. A background loop must run its work inside " +
+                          $"ITenantPass.ForEachTenant/ForEachTenantAsync; this is NOT an unreachable Director.");
             return null;
         }
         var connectionId = PushedSessions.GetActiveConnectionId(commandTenant, directorId);

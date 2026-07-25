@@ -58,8 +58,11 @@ internal static class DirectorCommandRouter
 
     /// <summary>
     /// Try to route a command down the stream, waiting at most <paramref name="timeout"/> for the Director to
-    /// answer. Returns null when the Director is not tunnel-connected (post-cut there is no HTTP fallback, so
-    /// the caller surfaces null as a 502); a <see cref="DirectorCommandStatus.Timeout"/> result when the
+    /// answer. Returns null when the command produced no result at all - either the Director is not
+    /// tunnel-connected, or the Gateway itself refused the send (the hosted no-tenant-scope deny in
+    /// <c>GatewayHost.SendCommandAsync</c>, which is always a Gateway bug: the caller failed to enter a tenant
+    /// scope). This layer cannot tell those apart, so it must not report one as the other. Post-cut there is no
+    /// HTTP fallback, so the caller surfaces null as a 502; a <see cref="DirectorCommandStatus.Timeout"/> result when the
     /// Director is connected but answers nothing in time; and a <see cref="DirectorCommandStatus.TunnelDropped"/>
     /// result when the tunnel drops mid-command. The caller's own <paramref name="ct"/> still cancels promptly -
     /// its cancellation propagates rather than being reported as a timeout.
@@ -92,7 +95,7 @@ internal static class DirectorCommandRouter
         try
         {
             var result = await sendCommand(directorId, command, timeoutSource.Token);
-            FileLog.Write($"[DirectorCommandRouter] {verb} sid={sessionId} director={directorId}: {(result is null ? "director not tunnel-connected (unroutable)" : $"stream status={result.Status}")}");
+            FileLog.Write($"[DirectorCommandRouter] {verb} sid={sessionId} director={directorId}: {DescribeSendOutcome(result)}");
             return result;
         }
         catch (Exception) when (timeoutSource.IsCancellationRequested && !ct.IsCancellationRequested)
@@ -145,6 +148,27 @@ internal static class DirectorCommandRouter
         string.IsNullOrWhiteSpace(machineName)
             ? "The connection to the Director dropped while the command was being sent. It is not known whether the command was carried out."
             : $"The connection to the Director on {machineName} dropped while the command was being sent. It is not known whether the command was carried out.";
+
+    /// <summary>
+    /// How the send went, for the log. A null result has TWO causes and THIS LAYER CANNOT SEE WHICH: the
+    /// Director is not tunnel-connected, or the Gateway refused the send before it ever left (the hosted
+    /// no-tenant-scope deny in <c>GatewayHost.SendCommandAsync</c>).
+    ///
+    /// It used to name only the first - "director not tunnel-connected (unroutable)" - which is how the
+    /// voice-mode sweep spent a day reporting a Director as unreachable while that same Director answered
+    /// other verbs in the same millisecond. A Gateway bug wearing a network error's clothes reads as an
+    /// infrastructure flake, so it gets waited out instead of fixed. The line must state what was OBSERVED
+    /// (no result came back) and point at the line that does know the cause, rather than picking the more
+    /// familiar of the two and asserting it as fact.
+    ///
+    /// Extracted as a pure function so the wording is a tested behaviour rather than an incidental string:
+    /// this message IS the diagnostic, so it is the thing worth pinning.
+    /// </summary>
+    internal static string DescribeSendOutcome(DirectorCommandResult? result) =>
+        result is null
+            ? "no result - the Director is not tunnel-connected, OR the Gateway refused the send before it left " +
+              "(the preceding [GatewayHost] line names which)"
+            : $"stream status={result.Status}";
 
     /// <summary>Deserialize a verb response DTO carried in <see cref="DirectorCommandResult.BodyJson"/>.</summary>
     public static T? ReadBody<T>(DirectorCommandResult result) where T : class =>
