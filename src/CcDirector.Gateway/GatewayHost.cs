@@ -1541,11 +1541,14 @@ public sealed class GatewayHost : IAsyncDisposable
             var stale = TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
             Api.DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = SendCommandAsync;
 
-            // Each tenant is decided and acted on inside its own scope, exactly as the voice pre-build sweep
-            // beside this one does: the flag is read for THAT tenant, the roster is that tenant's partition,
-            // and the marker is written into that tenant's voice state. Self-host runs one Local pass.
-            var passes = new List<(TenantId Tenant, IReadOnlyList<(string DirectorId, string SessionId)> Plan)>();
-            _tenantPass.ForEachTenant(() =>
+            // Each tenant is decided AND ACTED ON inside its own scope - both halves, in one awaited pass.
+            // The deciding half must be scoped because the flag, the roster and the voice marker are all that
+            // tenant's; the ACTING half must be scoped too, because SendCommandAsync resolves the Director's
+            // stream within the tenant of the current unit of work and treats no-scope as a DENY. Planning
+            // here and sending after the pass returned is what broke this sweep on hosted: every command was
+            // dropped before it reached the tunnel and logged as an unreachable Director, forever. Hence
+            // ForEachTenantAsync, which holds the scope ACROSS the await. Self-host runs one Local pass.
+            await _tenantPass.ForEachTenantAsync(async () =>
             {
                 if (_tenantPass.Current is not { } tenant) return;   // deny: no scope in effect -> sweep nothing
                 var on = _tenantSettingsResolver.VoiceModeAll(tenant);
@@ -1555,11 +1558,8 @@ public sealed class GatewayHost : IAsyncDisposable
                     on,
                     PushedSessions.SnapshotFresh(tenant, stale),
                     sid => vs.IsVoiceSession(tenant, sid));
-                if (plan.Count > 0) passes.Add((tenant, plan));
-            });
+                if (plan.Count == 0) return;
 
-            foreach (var (tenant, plan) in passes)
-            {
                 FileLog.Write($"[GatewayHost] voice-mode sweep: {plan.Count} session(s) to switch on for tenant={tenant.ToLogString()}");
                 foreach (var (directorId, sid) in plan)
                 {
@@ -1579,7 +1579,7 @@ public sealed class GatewayHost : IAsyncDisposable
                         FileLog.Write($"[GatewayHost] voice-mode sweep: sid={sid} not reachable on director={directorId} - will retry next pass");
                     }
                 }
-            }
+            }).ConfigureAwait(false);
         }
         catch (Exception ex) { FileLog.Write($"[GatewayHost] voice-mode sweep error: {ex.Message}"); }
         finally { Interlocked.Exchange(ref _voiceModeAllSweepRunning, 0); }
