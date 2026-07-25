@@ -114,9 +114,27 @@ export class MicRecorder {
   private startedAt = 0;
   private recordedMs = 0;
 
+  // The microphone's name, read once at start() and deliberately NOT cleared when the stream is
+  // released - the quality report is assembled after stop(), by which time the track is gone.
+  private capturedDeviceLabel = "";
+
   /** True while a segment is actively capturing. */
   get isRecording(): boolean {
     return this.recorder !== null && this.recorder.state === "recording";
+  }
+
+  /**
+   * The name of the microphone this segment was captured with, as the operating system reports it
+   * ("Headset (Jabra Evolve2 65)", "Microphone Array (Realtek)"). Empty when the browser withholds
+   * it, which it does until the user has granted microphone permission at least once.
+   *
+   * This is what makes quality reporting actionable rather than merely true. "Your audio is
+   * band-limited" tells someone almost nothing; "your Jabra headset is band-limited and your laptop
+   * microphone is not" tells them which one to stop using. Captured at start() and kept after the
+   * stream is released, so the label survives to be reported alongside the finished measurement.
+   */
+  get deviceLabel(): string {
+    return this.capturedDeviceLabel;
   }
 
   /** Wall-clock milliseconds the most recently stopped segment was capturing. 0 before the first stop. */
@@ -135,6 +153,11 @@ export class MicRecorder {
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
     });
+
+    // Read the device name while the track is live. A browser reports an empty label until the user
+    // has granted permission at least once, so this is best-effort by design - an unnamed microphone
+    // still reports its measurements, it just cannot be told apart from another unnamed one.
+    this.capturedDeviceLabel = this.stream.getAudioTracks()[0]?.label ?? "";
 
     // Live level meter on the captured stream (display only).
     const AudioCtor = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;

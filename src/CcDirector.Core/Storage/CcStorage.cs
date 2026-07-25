@@ -265,6 +265,11 @@ public static class CcStorage
     /// transcription quality can be compared across languages, headsets and releases.</summary>
     public static string VoiceTestClips() => Path.Combine(Base(), "voice-test-clips");
 
+    /// <summary>Per-dictation microphone measurements behind the Cockpit's microphone-quality
+    /// section: base/microphone-quality/. Numbers only - no audio and no transcript text - so it
+    /// answers "which of my microphones is bad" without keeping any record of what was said.</summary>
+    public static string MicrophoneQuality() => Path.Combine(Base(), "microphone-quality");
+
     /// <summary>Terminal screen captures: base/terminal-captures/.</summary>
     public static string TerminalCaptures() => Path.Combine(Base(), "terminal-captures");
 

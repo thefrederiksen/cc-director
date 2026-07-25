@@ -6,6 +6,7 @@ import { playReadyCue } from "./readyCue";
 import { MicRecorder } from "./recorder";
 import { joinText } from "./transcript";
 import { blobToWav16kMono } from "./wav";
+import { reportDictationQuality } from "./qualityReport";
 // The dialog carries its own styles (issue #1288): every shell that mounts this component gets the
 // dictate-* rules from one copy, so the Cockpit renders it as a centered overlay just like the phone
 // instead of unstyled elements at the page bottom. The rules formerly lived only in the mobile
@@ -191,10 +192,15 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
     let wav: Blob;
     let health;
     let lossWarning: string | null = null;
+    let nativeSamples = new Float32Array(0);
+    let nativeSampleRate = 0;
+    const deviceLabel = recorderRef.current.deviceLabel;
     try {
       const captured = await recorderRef.current.stop();
       const transcoded = await blobToWav16kMono(captured);
       wav = transcoded.wav;
+      nativeSamples = transcoded.nativeSamples;
+      nativeSampleRate = transcoded.nativeSampleRate;
       // Capture-health (issue #863): compare the recording wall-clock to the decoded audio
       // duration to detect audio dropped before transcription. Logged locally AND sent to the
       // Gateway so it persists into the same dictation session log every other surface writes.
@@ -213,6 +219,11 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
       setHint(err instanceof Error ? err.message : "Could not capture the recording.");
       return null;
     }
+    // Measure the microphone in the background. AFTER the transcode and BEFORE awaiting the
+    // transcription, so it rides the gap while the upload is being prepared and never sits between
+    // the user and their words. Fire-and-forget by contract - see qualityReport.ts.
+    reportDictationQuality(nativeSamples, nativeSampleRate, deviceLabel, "dictation-dialog");
+
     try {
       const text = await transcribeUtterance(wav, health, undefined, (uploaded, total) => {
         // A short clip uploads in one chunk (no progress line needed); a long recording uploads in
@@ -331,6 +342,7 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
       return;
     }
     onSendAudio({
+      deviceLabel: recorderRef.current.deviceLabel,
       blob: captured,
       recordedMs: recorderRef.current.lastRecordedMs,
       prefixText: accumulatedRef.current,
