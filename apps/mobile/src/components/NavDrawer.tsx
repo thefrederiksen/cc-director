@@ -48,6 +48,12 @@ export function NavDrawer() {
             <Link className="drawer-item" to="/settings" onClick={close}>
               AI settings
             </Link>
+            <Link className="drawer-item" to="/mic-test" onClick={close}>
+              Test microphone
+            </Link>
+            <Link className="drawer-item" to="/transcription-test" onClick={close}>
+              Test transcription
+            </Link>
             <Link className="drawer-item" to="/diagnostics" onClick={close}>
               Diagnostics
             </Link>

@@ -52,6 +52,43 @@ export function rmsLevel(timeDomain: Uint8Array): number {
   return Math.min(1, rms * 3.2);
 }
 
+// How long to wait for the microphone to open before giving up on it. getUserMedia is specified to
+// resolve or reject, but in practice it can do NEITHER - a contended or wedged capture device leaves
+// the promise pending forever. Without a backstop the caller sits in its "starting" state with no
+// error and no recording, which reads to the user as a dead button. The dictation dialog has carried
+// its own version of this backstop since issue #817; this is the same guard for the voice checks.
+export const MIC_OPEN_TIMEOUT_MS = 8000;
+
+/**
+ * Open the microphone, but fail LOUDLY if it does not open within the timeout instead of hanging.
+ * The recorder is disposed on timeout so a stream that arrives late cannot leave the microphone live
+ * behind a screen that has already given up on it.
+ */
+export async function startRecorderWithTimeout(recorder: MicRecorder, timeoutMs = MIC_OPEN_TIMEOUT_MS): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new Error(
+            `The microphone did not open within ${Math.round(timeoutMs / 1000)} seconds. It may be in use by ` +
+              "another application, or disconnected.",
+          ),
+        ),
+      timeoutMs,
+    );
+  });
+
+  try {
+    await Promise.race([recorder.start(), timeout]);
+  } catch (err) {
+    recorder.dispose();
+    throw err;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 export class MicRecorder {
   private stream: MediaStream | null = null;
   private recorder: MediaRecorder | null = null;

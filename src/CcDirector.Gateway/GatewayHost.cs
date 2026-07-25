@@ -2512,6 +2512,16 @@ public sealed class GatewayHost : IAsyncDisposable
         // see how fast and how good transcription is - all from data on this machine, never a server.
         Api.TranscriptionAnalysisEndpoint.Map(_app, _tenantBoundary);
 
+        // The Test microphone / Test transcription checks: a user records a passage we put on screen,
+        // hears it back, and sees how much of it came back correctly. The clips are kept per tenant so
+        // transcription quality can be compared across languages, headsets and releases - the question
+        // no single run can answer.
+        Api.VoiceTestEndpoint.Map(
+            _app,
+            _dictationTranscription ?? new Transcription.GatewayTranscriptionService(
+                _keyVault, history: _transcriptionHistory, audioArchive: _transcriptionAudioArchive, transcripts: _transcripts),
+            _tenantBoundary);
+
         // Text-in / text-out cleanup: run ONLY the deterministic dictionary correction over supplied
         // text + a supplied term list (no audio). The engine the multilingual eval harness drives, and
         // a way for any agent to test cleanup on arbitrary text/terms.

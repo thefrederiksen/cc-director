@@ -374,6 +374,12 @@ public sealed class BatchTranscriptionPipeline : IDisposable
         form.Add(audioContent, "file", string.IsNullOrEmpty(fileName) ? "audio.webm" : fileName);
         form.Add(new StringContent(routing.Model), "model");
         form.Add(new StringContent("json"), "response_format");
+        // Spoken-language hint, when the caller knows it. Only sent when set, so the provider keeps
+        // auto-detecting for every existing caller. Detection is what fails hardest on the cases this
+        // matters for - a short clip, an accent, or a language that shares vocabulary with English -
+        // and a wrong detection produces confident nonsense rather than an error.
+        if (!string.IsNullOrWhiteSpace(routing.Language))
+            form.Add(new StringContent(routing.Language), "language");
         request.Content = form;
 
         using var resp = await _http.SendAsync(request, ct);

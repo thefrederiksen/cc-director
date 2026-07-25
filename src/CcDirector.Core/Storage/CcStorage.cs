@@ -258,6 +258,13 @@ public static class CcStorage
     /// so a suspicious transcript line leads straight to the clip that produced it.</summary>
     public static string TranscriptionAudio() => Path.Combine(Base(), "transcription-audio");
 
+    /// <summary>Clips from the Test microphone / Test transcription checks, kept per tenant for later
+    /// analysis: base/voice-test-clips/. Deliberately NOT the same directory as TranscriptionAudio():
+    /// that one is a 24-hour troubleshooting buffer for ordinary dictation, whereas these are
+    /// deliberate, user-initiated recordings of a passage WE supplied, kept longer on purpose so
+    /// transcription quality can be compared across languages, headsets and releases.</summary>
+    public static string VoiceTestClips() => Path.Combine(Base(), "voice-test-clips");
+
     /// <summary>Terminal screen captures: base/terminal-captures/.</summary>
     public static string TerminalCaptures() => Path.Combine(Base(), "terminal-captures");
 

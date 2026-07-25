@@ -1,0 +1,355 @@
+/* ===== Test your microphone =====
+   Styling for MicTestPanel, the shared microphone check mounted by the Cockpit dictation health
+   page and the mobile app. Lives next to the component and is imported BY the component, so every
+   shell that mounts the panel gets its styling automatically from one copy (the same arrangement as
+   dictation.css).
+
+   Only the theme tokens BOTH shells define are used (--surface, --surface-2, --border, --text,
+   --text-dim, --accent, --attention). The two verdict colours the shells do not share are declared
+   locally below, so mounting this panel never requires a host to add a token. */
+.mictest {
+  --mictest-ok: #22c55e;
+  --mictest-warn: #f59e0b;
+
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.mictest-head h2 {
+  margin: 0;
+  font-size: 17px;
+  color: var(--text);
+}
+
+.mictest-lede {
+  margin: 8px 0 16px;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.mictest-prompt-label {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.mictest-prompt {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  font-size: 16px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+/* --- Live capture --- */
+.mictest-meter {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 44px;
+  margin-bottom: 8px;
+}
+
+.mictest-bar {
+  flex: 1;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--surface-2);
+  transition: background 60ms linear;
+}
+
+.mictest-bar-on {
+  background: var(--attention);
+}
+
+.mictest-timer {
+  font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+  font-size: 15px;
+  color: var(--text-dim);
+  margin-bottom: 14px;
+}
+
+/* --- Actions --- */
+.mictest-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.mictest-primary,
+.mictest-secondary {
+  appearance: none;
+  border-radius: 8px;
+  padding: 11px 18px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  /* Comfortably above the 44px touch target minimum on the phone. */
+  min-height: 44px;
+}
+
+.mictest-primary {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #fff;
+}
+
+.mictest-secondary {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+
+.mictest-primary:hover,
+.mictest-secondary:hover {
+  filter: brightness(1.12);
+}
+
+/* --- Transient states --- */
+.mictest-loading {
+  color: var(--text-dim);
+  font-size: 14px;
+  padding: 12px 0;
+}
+
+.mictest-error {
+  color: var(--attention);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.mictest-warn {
+  color: var(--mictest-warn);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0 0 12px;
+}
+
+/* --- Result --- */
+.mictest-banner {
+  padding: 12px 14px;
+  border-radius: 8px;
+  border-left: 4px solid var(--border);
+  background: var(--surface-2);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 14px;
+}
+
+.mictest-good {
+  border-left-color: var(--mictest-ok);
+}
+
+.mictest-fair {
+  border-left-color: var(--mictest-warn);
+}
+
+.mictest-poor {
+  border-left-color: var(--attention);
+}
+
+.mictest-playback {
+  margin-bottom: 14px;
+}
+
+.mictest-playback-label {
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.mictest-audio {
+  width: 100%;
+  /* The stock player is light-on-light in some browsers; the filter keeps it legible on the dark
+     theme without replacing the whole transport with custom controls. */
+  filter: invert(0.9) hue-rotate(180deg);
+}
+
+.mictest-issues {
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mictest-issue {
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  border-left: 3px solid var(--border);
+}
+
+.mictest-issue-poor {
+  border-left-color: var(--attention);
+}
+
+.mictest-issue-fair {
+  border-left-color: var(--mictest-warn);
+}
+
+.mictest-issue-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.mictest-issue-advice {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+/* --- The raw numbers --- */
+.mictest-details {
+  margin-bottom: 14px;
+}
+
+.mictest-details summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-dim);
+  padding: 6px 0;
+}
+
+.mictest-measurements {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 10px 0 0;
+}
+
+.mictest-measurements > div {
+  background: var(--surface-2);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.mictest-measurements dt {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 3px;
+}
+
+.mictest-measurements dd {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Test transcription --- */
+.mictest-langrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.mictest-langlabel {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.mictest-langselect {
+  flex: 1;
+  min-width: 180px;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 15px;
+  min-height: 44px;
+}
+
+/* The passage is read aloud, so it is set larger and looser than body copy - someone reading from a
+   phone at arm's length must not have to squint or lose their place. */
+.mictest-passage {
+  font-size: 17px;
+  line-height: 1.6;
+}
+
+.mictest-acc-excellent {
+  border-left-color: var(--mictest-ok);
+}
+
+.mictest-acc-good {
+  border-left-color: var(--mictest-warn);
+}
+
+.mictest-acc-poor {
+  border-left-color: var(--attention);
+}
+
+.mictest-diffblock {
+  margin-bottom: 14px;
+}
+
+.mictest-diff {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border-radius: 8px;
+  font-size: 16px;
+  line-height: 1.9;
+}
+
+/* Each token carries its own outcome. Colour is never the only signal - a substitution is also
+   underlined and a miss is struck through - so the marking still reads without colour vision. */
+.mictest-tok {
+  padding: 1px 3px;
+  border-radius: 3px;
+}
+
+.mictest-tok::after {
+  content: " ";
+}
+
+/* Chinese and Japanese are scored per character, so the tokens must sit flush rather than being
+   separated by the space that follows every other language's word. */
+.mictest-diff[lang="zh"] .mictest-tok::after,
+.mictest-diff[lang="ja"] .mictest-tok::after {
+  content: "";
+}
+
+.mictest-tok-ok {
+  color: var(--text);
+}
+
+.mictest-tok-sub {
+  color: var(--attention);
+  text-decoration: underline wavy;
+  background: rgba(241, 76, 76, 0.12);
+}
+
+.mictest-tok-del {
+  color: var(--text-dim);
+  text-decoration: line-through;
+}
+
+.mictest-tok-ins {
+  color: var(--mictest-warn);
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.mictest-rawtranscript {
+  margin: 10px 0 0;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border-radius: 8px;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}

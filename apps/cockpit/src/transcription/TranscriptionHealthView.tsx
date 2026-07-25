@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
+import { MicTestPanel } from "@devthrottle/client-core/dictation/MicTestPanel";
+import { TranscriptionTestPanel } from "@devthrottle/client-core/dictation/TranscriptionTestPanel";
 import {
   clearTranscriptionHistory,
   countFailedTurns,
@@ -235,6 +237,17 @@ export function TranscriptionHealthView() {
           </p>
         </>
       )}
+
+      {/* Outside the stats conditional on purpose: the microphone check is most useful exactly when
+          there are no stats to show - a Gateway that cannot be reached, or a first run with no
+          history - because that is when the user is asking "is my microphone even working?". It
+          needs nothing from the Gateway, so a load failure above must not take it down with it. */}
+      <div className="txh-section">
+        <MicTestPanel />
+      </div>
+      <div className="txh-section">
+        <TranscriptionTestPanel />
+      </div>
     </div>
   );
 }
