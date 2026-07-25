@@ -77,13 +77,17 @@ function GatedLayout() {
   // The roster (Home, "/") also gives the pill a real home on its header row now - an inline item in the
   // middle of the bar, the same as the session screens - so the fixed overlay stands down there too. It
   // used to sit fixed in the top-right corner and land on top of the roster's filter button.
+  // The Assistant ("/assistant") is the third such screen, for the same reason: the fixed pill landed
+  // directly on its Chat / Voice toggle - a green pill over the control that decides how the whole
+  // screen behaves. It renders <StatusPill inline /> in its own bar and its toggle now owns the middle.
   const pathname = useLocation().pathname;
   const onSessionScreen = pathname.startsWith("/session/");
   const onHome = pathname === "/";
+  const onAssistant = pathname === "/assistant";
   return (
     <>
       <ConnectionBanner />
-      {!onSessionScreen && !onHome && <StatusPill />}
+      {!onSessionScreen && !onHome && !onAssistant && <StatusPill />}
       <Outlet />
     </>
   );

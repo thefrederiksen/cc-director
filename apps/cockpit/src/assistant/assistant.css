@@ -32,6 +32,47 @@
   font-weight: 600;
 }
 
+/* The empty-state size: nothing has been asked yet, so picking how to ask is the screen's one
+   decision and it gets a real target in the middle instead of a 13px pill in the header. */
+.asst-mode-large {
+  width: 100%;
+  max-width: 320px;
+}
+
+.asst-mode-large .asst-mode-btn {
+  flex: 1 1 0;
+  min-height: 52px;
+  font-size: 17px;
+  font-weight: 600;
+  padding: 12px 24px;
+}
+
+/* The empty state's centred "how do you want to ask" block: the big toggle, what it means, then the
+   examples below. Centred within the empty column, which itself is left-aligned prose. */
+.asst-modepick {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0 26px;
+  text-align: center;
+}
+
+.asst-modepick-label {
+  margin: 0;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.asst-modepick-hint {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: 340px;
+}
+
 .asst-stage {
   flex: 1 1 auto;
   min-height: 0;
@@ -50,12 +91,17 @@
   padding: 12px 4px 12px 0;
 }
 
+/* The empty state scrolls in its own right: it now carries the big mode picker above the examples, so
+   in a short window the two together are taller than the stage. */
 .asst-empty {
   color: var(--text-dim);
   font-size: 14px;
   line-height: 1.6;
   max-width: 560px;
   padding: 24px 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .asst-empty ul {
@@ -218,11 +264,8 @@
   cursor: default;
 }
 
-.asst-round.listening {
-  background: var(--attention);
-  border-color: var(--attention);
-  color: #fff;
-}
+/* No "listening" state on these buttons: they OPEN the dictation dialog, which shows the recording
+   state itself (RECORDING, the timer, the bars). The button is never the recorder. */
 
 .asst-talkdock {
   flex: 0 0 auto;
@@ -253,11 +296,6 @@
   height: 32px;
 }
 
-.asst-talkbtn.listening {
-  background: var(--attention);
-  box-shadow: 0 0 0 10px rgba(241, 76, 76, 0.14), 0 0 0 22px rgba(241, 76, 76, 0.06);
-}
-
 .asst-talkbtn:disabled {
   opacity: 0.5;
   cursor: default;
@@ -266,6 +304,9 @@
 .asst-talkhint {
   color: var(--text-dim);
   font-size: 12px;
+  text-align: center;
+  max-width: 360px;
+  line-height: 1.45;
 }
 
 .asst-stopread {
