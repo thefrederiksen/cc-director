@@ -171,6 +171,19 @@ public sealed class FleetTargetRequest
 }
 
 /// <summary>
+/// Body of POST /fleet/compact on the Director (issue #2150): compact a session's context anywhere in
+/// the fleet and, when a continuation is given, send it once the compaction has finished.
+/// </summary>
+public sealed class FleetCompactRequest
+{
+    /// <summary>Target session GUID anywhere in the fleet.</summary>
+    public string ToSessionId { get; set; } = "";
+
+    /// <summary>The text to send once compaction finishes, or blank to compact only.</summary>
+    public string? ContinuePrompt { get; set; }
+}
+
+/// <summary>
 /// Body of POST /fleet/hold on the Director: park a session, or release it. Restores the old POST
 /// /sessions/{sid}/hold to the loopback surface.
 /// </summary>

@@ -2581,6 +2581,28 @@ internal static class GatewayEndpoints
                 : Results.Problem("recap failed", statusCode: StatusCodes.Status502BadGateway);
         });
 
+        // Compaction (issue #2150). This gets its OWN literal route rather than riding the catch-all,
+        // for one reason: the catch-all's wait is the 30-second default, and a compaction is a language
+        // model summarizing a whole conversation - it routinely outruns that. Killing a real compaction at
+        // 30 seconds and reporting a timeout would be the failure this verb exists to prevent. So it takes
+        // the documented override, the same one recap and handover take, and it sits OUTSIDE the Director's
+        // own 2-minute compaction wait so the inner bound always fires first and says what did not happen.
+        app.MapPost("/sessions/{sid}/compact-context", async (HttpContext ctx, string sid, CompactContextRequest? req) =>
+        {
+            var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
+            if (session is null || director is null)
+                return Results.NotFound(new { error = "session not found across any director" });
+
+            FileLog.Write($"[GatewayEndpoints] POST /compact-context: sid={sid}, director={director.DirectorId}, " +
+                          $"continue={(string.IsNullOrWhiteSpace(req?.ContinuePrompt) ? "no" : "yes")}");
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "compact-context", sid,
+                new CompactContextRequest { ContinuePrompt = req?.ContinuePrompt }, ctx.RequestAborted,
+                timeout: DirectorCommandRouter.LanguageModelCommandTimeout, machineName: director.MachineName);
+            return streamResult is not null && streamResult.Ok && !string.IsNullOrEmpty(streamResult.BodyJson)
+                ? Results.Content(streamResult.BodyJson, "application/json")
+                : TunnelFailure(streamResult);
+        });
+
         app.MapPost("/handover", async (HttpContext ctx, HandoverRequest req) =>
         {
             // Gateway-side /handover dispatches to whichever Director owns the source

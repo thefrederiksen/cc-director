@@ -23,11 +23,14 @@ public static class AgentDrivers
         AgentKind.Codex => new CodexDriver(),
         // Gemini wires NO current-model reader: the installed binary (0.1.11) records no model
         // anywhere readable (issue #1637) - re-probe after it is upgraded.
-        AgentKind.Gemini => new GenericDriver(k, GeminiSlashCommands.All),
+        // The compaction command each tool documents in its OWN catalog (issue #2150) - gemini alone
+        // spells it /compress, which is exactly why the command belongs to the driver and not to one
+        // shared string at the call site.
+        AgentKind.Gemini => new GenericDriver(k, GeminiSlashCommands.All, compactCommand: "/compress"),
         AgentKind.OpenCode => new GenericDriver(k, OpenCodeSlashCommands.All,
-            currentModelReader: OpenCode.OpenCodeCurrentModel.ReadForRepo),
+            currentModelReader: OpenCode.OpenCodeCurrentModel.ReadForRepo, compactCommand: "/compact"),
         AgentKind.Grok => new GenericDriver(k, GrokSlashCommands.All, emitsContinuousIdleOutput: true,
-            currentModelReader: Grok.GrokCurrentModel.ReadForRepo),
+            currentModelReader: Grok.GrokCurrentModel.ReadForRepo, compactCommand: "/compact"),
         _ => new GenericDriver(k),
     });
 }

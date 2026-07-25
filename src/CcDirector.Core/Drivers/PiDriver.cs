@@ -33,7 +33,11 @@ public sealed class PiDriver : IAgentDriver
         DriverCapabilities.Cancel
         | DriverCapabilities.ClearContext
         | DriverCapabilities.ContextUsage
-        | DriverCapabilities.ModelReport;
+        | DriverCapabilities.ModelReport
+        // pi compacts with /compact (its own catalog: "Manually compact context"). No completion
+        // report: pi transcript parsing is not implemented, so there is nothing to read a finish from,
+        // and compact-and-continue refuses for pi rather than guessing (issue #2150).
+        | DriverCapabilities.CompactContext;
 
     public IReadOnlyList<AgentSlashCommand> SlashCommands => PiSlashCommands.All;
 
@@ -84,6 +88,14 @@ public sealed class PiDriver : IAgentDriver
         ArgumentNullException.ThrowIfNull(backend);
         FileLog.Write("[PiDriver] ClearContextAsync: submitting /new");
         return backend.SendTextAsync("/new");
+    }
+
+    /// <summary>pi's in-place summarize: /compact, distinct from /new which starts over.</summary>
+    public Task CompactContextAsync(ISessionBackend backend)
+    {
+        ArgumentNullException.ThrowIfNull(backend);
+        FileLog.Write("[PiDriver] CompactContextAsync: submitting /compact");
+        return backend.SendTextAsync("/compact");
     }
 
     public List<TurnWidgetDto> ReadWidgets(string agentSessionId, string workingDirectory) =>

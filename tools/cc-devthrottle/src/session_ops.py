@@ -289,6 +289,38 @@ def hold_session(target: Optional[str], release: bool = False, minutes: Optional
     return resp if isinstance(resp, dict) else {}
 
 
+def compact_session(target: Optional[str], continue_prompt: Optional[str]) -> Dict[str, Any]:
+    """Compact a session's context and, unless asked not to, continue it. Issue #2150.
+
+    A full session cannot read anything sent to it, so this is the only rescue that works from
+    outside. The call BLOCKS until the tool reports the compaction finished - which is why the
+    timeout here is generous - and the follow-up is sent at that moment, never on a guessed delay.
+    """
+    sid = resolve_target_or_current(target)
+    body: Dict[str, Any] = {"toSessionId": sid}
+    if continue_prompt:
+        body["continuePrompt"] = continue_prompt
+    try:
+        # Outermost bound of four: this waits longer than the Gateway waits for the Director, which
+        # waits longer than the Director waits for the tool. The innermost one fires first and says
+        # what actually failed.
+        resp = director.post_json("fleet/compact", body, timeout=300)
+    except director.DirectorError as err:
+        console.print(f"[red]Error:[/red] {escape(str(err))}")
+        raise typer.Exit(1)
+
+    short = director.short_id(sid)
+    body = resp if isinstance(resp, dict) else {}
+    detail = director.field(body, "detail", "Detail")
+    # Read the flag as a BOOLEAN, not through director.field: that helper stringifies, and str(False) is
+    # "False" - a truthy string. Routed through it, a compaction nobody watched would be announced as
+    # "Compacted", which is the one thing this line must never say without evidence.
+    observed = bool(body.get("compactionObserved", body.get("CompactionObserved", False)))
+    label = "[green]Compacted[/green]" if observed else "[yellow]Compaction submitted[/yellow]"
+    console.print(f"{label} {short}. {escape(str(detail or ''))}")
+    return resp if isinstance(resp, dict) else {}
+
+
 def read_session_buffer(target: Optional[str]) -> None:
     """Print what a session's terminal is showing. Restores the old GET /sessions/{sid}/buffer."""
     sid = resolve_target_or_current(target)

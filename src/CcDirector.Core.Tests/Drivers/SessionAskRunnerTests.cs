@@ -534,4 +534,6 @@ internal sealed class FakeAskTranscriptReader : ITranscriptReader
 
     public List<(string ClaudeSessionId, DateTime LastWriteUtc)> ListTranscripts(string repoPath) =>
         _widgets.Keys.Select(k => (k, DateTime.UtcNow)).ToList();
+
+    public DateTime? LastCompactionUtc(string claudeSessionId, string repoPath) => null;
 }

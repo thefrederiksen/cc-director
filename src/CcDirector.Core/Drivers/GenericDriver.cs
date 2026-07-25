@@ -23,17 +23,28 @@ public sealed class GenericDriver : IAgentDriver
 
     private readonly IReadOnlyList<AgentSlashCommand> _slashCommands;
     private readonly Func<string, string?>? _currentModelReader;
+    private readonly string? _compactCommand;
 
+    /// <param name="compactCommand">
+    /// The command THIS tool compacts with, when it has one and we have read it from the tool's own
+    /// catalog - "/compact" for grok and opencode, "/compress" for gemini (issue #2150). Supplying it
+    /// declares <see cref="DriverCapabilities.CompactContext"/>; leaving it null keeps compaction
+    /// honestly absent, which is the right answer for a tool with no such command. It never declares
+    /// <see cref="DriverCapabilities.CompactCompletionReport"/>: typing a command is not the same as
+    /// being able to observe it finish, and these tools' records are not read here.
+    /// </param>
     public GenericDriver(
         AgentKind kind,
         IReadOnlyList<AgentSlashCommand>? slashCommands = null,
         bool emitsContinuousIdleOutput = false,
-        Func<string, string?>? currentModelReader = null)
+        Func<string, string?>? currentModelReader = null,
+        string? compactCommand = null)
     {
         Kind = kind;
         _slashCommands = slashCommands ?? [];
         EmitsContinuousIdleOutput = emitsContinuousIdleOutput;
         _currentModelReader = currentModelReader;
+        _compactCommand = string.IsNullOrWhiteSpace(compactCommand) ? null : compactCommand.Trim();
     }
 
     public AgentKind Kind { get; }
@@ -41,7 +52,8 @@ public sealed class GenericDriver : IAgentDriver
     public DriverCapabilities Capabilities =>
         DriverCapabilities.Cancel
         | DriverCapabilities.Interrupt
-        | (_currentModelReader is not null ? DriverCapabilities.ModelReport : DriverCapabilities.None);
+        | (_currentModelReader is not null ? DriverCapabilities.ModelReport : DriverCapabilities.None)
+        | (_compactCommand is not null ? DriverCapabilities.CompactContext : DriverCapabilities.None);
 
     /// <summary>
     /// Set true for Grok: its idle terminal keeps repainting an animated footer (spinner +
@@ -92,6 +104,19 @@ public sealed class GenericDriver : IAgentDriver
 
     public Task ClearContextAsync(ISessionBackend backend) =>
         throw new NotSupportedException($"[GenericDriver] {Kind} has no verified context-clear command.");
+
+    /// <summary>
+    /// Submit the compaction command this tool was constructed with. A tool constructed WITHOUT one has
+    /// no compaction we have read, and says so rather than typing a plausible guess at its composer.
+    /// </summary>
+    public Task CompactContextAsync(ISessionBackend backend)
+    {
+        ArgumentNullException.ThrowIfNull(backend);
+        if (_compactCommand is null)
+            throw new NotSupportedException($"[GenericDriver] {Kind} has no known compaction command.");
+        FileLog.Write($"[GenericDriver:{Kind}] CompactContextAsync: submitting {_compactCommand}");
+        return backend.SendTextAsync(_compactCommand);
+    }
 
     public List<TurnWidgetDto> ReadWidgets(string agentSessionId, string workingDirectory) =>
         throw new NotSupportedException($"[GenericDriver] {Kind} has no verified transcript format.");

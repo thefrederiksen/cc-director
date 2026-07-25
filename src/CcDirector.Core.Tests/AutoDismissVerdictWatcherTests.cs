@@ -93,6 +93,7 @@ public sealed class AutoDismissVerdictWatcherTests
         public List<TurnWidgetDto> ReadWidgets(string claudeSessionId, string repoPath) => _widgets;
         public SessionUsageDto? ReadUsage(string claudeSessionId, string repoPath) => null;
         public List<(string ClaudeSessionId, DateTime LastWriteUtc)> ListTranscripts(string repoPath) => new();
+        public DateTime? LastCompactionUtc(string claudeSessionId, string repoPath) => null;
     }
 
     private sealed class NullBackend : ISessionBackend

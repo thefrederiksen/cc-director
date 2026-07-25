@@ -67,6 +67,25 @@ public enum DriverCapabilities
     /// drivers implement <see cref="IAgentDriver.ReadUsage"/> as a throw, so calling it ungated would
     /// use an exception as control flow at every turn-end.</summary>
     TokenUsage = 512,
+
+    /// <summary>The tool can SUMMARIZE its own conversation in place, freeing context window while
+    /// keeping what it has learned (claude's <c>/compact</c>, gemini's <c>/compress</c>). Distinct
+    /// from <see cref="ClearContext"/>, which throws the conversation away: a compacted session
+    /// remembers what it was doing, a cleared one does not. Also distinct in a way that matters to
+    /// the host - clearing starts a NEW agent conversation and forces a transcript re-link, while
+    /// compaction continues under the SAME agent session id, so nothing is re-linked (issue #2150).
+    /// A tool with no compaction command at all (Copilot) declares this absent and throws.</summary>
+    CompactContext = 1024,
+
+    /// <summary>The driver can tell when a compaction it started has FINISHED
+    /// (<see cref="IAgentDriver.HasCompactedSince"/>), by reading the tool's own records rather than
+    /// guessing from terminal quiet. Separate from <see cref="CompactContext"/> because submitting
+    /// the command and knowing when it is done are different competences: claude has both (its
+    /// transcript gains a compaction-summary entry), while a tool we can only type at has the first
+    /// without the second. Compact-AND-CONTINUE requires this flag - without it there is no honest
+    /// moment at which to send the follow-up prompt, so the Director refuses rather than guessing a
+    /// delay and firing the prompt into a busy composer.</summary>
+    CompactCompletionReport = 2048,
 }
 
 /// <summary>
@@ -145,6 +164,30 @@ public interface IAgentDriver
     /// re-discovering the tool's new transcript id afterwards via
     /// <see cref="ListTranscripts"/>.</summary>
     Task ClearContextAsync(ISessionBackend backend);
+
+    /// <summary>
+    /// Summarize the conversation in place (capability <see cref="DriverCapabilities.CompactContext"/>):
+    /// the tool rewrites its own history down to a summary and carries on. Unlike
+    /// <see cref="ClearContextAsync"/> this keeps the tool's conversation identity, so the host must NOT
+    /// re-link a transcript afterwards. The default throws <see cref="NotSupportedException"/> so a tool
+    /// with no compaction command is honestly absent - never emulated with a clear, which would silently
+    /// destroy the very work compaction exists to preserve.
+    /// </summary>
+    Task CompactContextAsync(ISessionBackend backend) =>
+        throw new NotSupportedException(
+            $"[{GetType().Name}] {Kind} does not declare DriverCapabilities.CompactContext.");
+
+    /// <summary>
+    /// Has a compaction finished since <paramref name="sinceUtc"/> (capability
+    /// <see cref="DriverCapabilities.CompactCompletionReport"/>)? Read from the tool's own records - for
+    /// claude, a compaction-summary entry in the transcript. This is the completion signal that lets the
+    /// host wait for a compaction and only then send a follow-up prompt. The default throws
+    /// <see cref="NotSupportedException"/>: a driver that cannot observe completion says so, rather than
+    /// returning false forever (a silent never-finishes) or true immediately (a lie).
+    /// </summary>
+    bool HasCompactedSince(string agentSessionId, string workingDirectory, DateTime sinceUtc) =>
+        throw new NotSupportedException(
+            $"[{GetType().Name}] {Kind} does not declare DriverCapabilities.CompactCompletionReport.");
 
     /// <summary>Parsed conversation widgets of one transcript, chronological; empty
     /// when the transcript does not exist yet (capability TranscriptRead).</summary>
