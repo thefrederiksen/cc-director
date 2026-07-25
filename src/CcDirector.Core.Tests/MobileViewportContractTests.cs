@@ -173,6 +173,70 @@ public sealed class MobileViewportContractTests
             + string.Join("\n  ", offenders) + Why);
     }
 
+    /// <summary>
+    /// A full-height bar at the top of the app must MOVE the pinned shells down, not paint over them.
+    ///
+    /// The voice-mode banner shipped as a plain sticky bar and covered the session screen's own header -
+    /// the back arrow to the roster and the overflow menu went under it. You could Respond and Snooze on a
+    /// session, and you could not leave it. The cause is the same property this whole file exists to
+    /// protect: the shells are pinned OUT OF THE DOCUMENT FLOW, so nothing above them in the markup can
+    /// push them down. Rendering order does not move a fixed box; only its own `top` does.
+    ///
+    /// So the contract is: every pinned shell starts at the banner's height and gives up that much height.
+    /// The banner measures itself and publishes --voicemode-h (0px when it is not on screen), because the
+    /// bar wraps to two lines on a narrow phone and a hard-coded height would be right on one device.
+    /// </summary>
+    [Fact]
+    public void PinnedShells_StartBelowTheVoiceModeBanner_AndGiveUpItsHeight()
+    {
+        var root = GetRepoRoot();
+        var css = File.ReadAllText(Path.Combine(root, StylesPath));
+        var offenders = new List<string>();
+
+        foreach (var shell in FullScreenShells)
+        {
+            var block = RuleBlock(css, shell);
+            if (block is null) continue;
+
+            // Pinned to the top of the window: `top` must be the banner offset, not 0.
+            var tops = Regex.Matches(block, @"(?<!-)\btop\s*:\s*([^;]+);").Select(m => m.Groups[1].Value.Trim()).ToList();
+            if (tops.Count == 0 || !tops[^1].Contains("var(--voicemode-h", StringComparison.Ordinal))
+                offenders.Add($"{shell}: its effective `top` is `{(tops.Count == 0 ? "unset" : tops[^1])}`, not var(--voicemode-h, 0px) - the banner will paint over this screen's header, hiding its back button.");
+
+            // And the height must shrink by the same amount, or the bottom of the screen goes off-window.
+            var heights = Regex.Matches(block, @"(?<!max-|min-)\bheight\s*:\s*([^;]+);").Select(m => m.Groups[1].Value.Trim()).ToList();
+            if (heights.Count > 0 && !heights[^1].Contains("var(--voicemode-h", StringComparison.Ordinal))
+                offenders.Add($"{shell}: its effective height `{heights[^1]}` does not subtract var(--voicemode-h, 0px), so the bottom of the screen is pushed off-window while the banner is up.");
+        }
+
+        Assert.True(offenders.Count == 0,
+            "A pinned mobile shell does not make room for the top banner:\n  " + string.Join("\n  ", offenders)
+            + "\n\nWHY: these shells are position:fixed and sized to the whole visible height, so a bar rendered "
+            + "ABOVE them in the markup cannot push them down - it paints over their header. That is exactly how "
+            + "the voice-mode banner hid the session screen's back arrow and overflow menu: Respond and Snooze "
+            + "worked, and there was no way back to the roster.");
+    }
+
+    /// <summary>
+    /// The banner must MEASURE itself and publish --voicemode-h. A guard on the shells alone would pass
+    /// happily while the variable was never set - every shell would silently fall back to 0px and the
+    /// banner would be back on top of the back button.
+    /// </summary>
+    [Fact]
+    public void TheVoiceModeBanner_PublishesItsMeasuredHeight()
+    {
+        var path = Path.Combine(GetRepoRoot(), "apps", "mobile", "src", "components", "VoiceModeBanner.tsx");
+        Assert.True(File.Exists(path), "apps/mobile/src/components/VoiceModeBanner.tsx is missing. If the banner was renamed, update this test - do not delete the contract.");
+
+        var src = File.ReadAllText(path);
+        Assert.True(src.Contains("--voicemode-h", StringComparison.Ordinal),
+            "VoiceModeBanner no longer publishes --voicemode-h. Without it every pinned shell falls back to 0px and the banner covers the session screen's back arrow again.");
+        Assert.True(src.Contains("ResizeObserver", StringComparison.Ordinal),
+            "VoiceModeBanner no longer MEASURES itself. The bar wraps to two lines on a narrow phone and grows again when an error line appears - a hard-coded height is right on exactly one device.");
+        Assert.True(Regex.IsMatch(src, @"""--voicemode-h"",\s*""0px"""),
+            "VoiceModeBanner no longer resets --voicemode-h to 0px when it is not shown. A stale height pushes every screen down by a bar that is no longer on the page.");
+    }
+
     /// <summary>Returns the body of the FIRST rule whose selector list contains <paramref name="selector"/> exactly.</summary>
     private static string? RuleBlock(string css, string selector)
     {

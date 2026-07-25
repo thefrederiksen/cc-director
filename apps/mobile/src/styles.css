@@ -37,7 +37,10 @@ body {
 
 .app-bar {
   position: sticky;
-  top: 0;
+  /* Parks BELOW the voice-mode banner, not at the very top. Both are sticky, and the banner has the
+     higher stacking order, so at top: 0 the roster header would slide underneath it as you scroll and
+     take the hamburger menu with it. --voicemode-h is 0px whenever the banner is not on screen. */
+  top: var(--voicemode-h, 0px);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -842,15 +845,20 @@ a.banner-btn {
    plain 100dvh box; that test will fail and tell you why. */
 .terminal-screen {
   position: fixed;
-  top: 0;
+  /* STARTS BELOW THE VOICE-MODE BANNER, and gives up exactly its height (owner, 2026-07-25). This box
+     is pinned out of the document flow, so a bar rendered above it in the markup cannot push it down -
+     it simply painted OVER this screen's own header, hiding the back arrow to the roster and the
+     overflow menu. You could Respond and Snooze, and you could not leave. --voicemode-h is 0px
+     whenever the banner is not on screen, so nothing here changes when voice mode is off. */
+  top: var(--voicemode-h, 0px);
   left: 0;
   right: 0;
   display: flex;
   flex-direction: column;
   height: 100vh;
   height: 100dvh;
-  height: var(--app-vh, 100dvh);
-  max-height: var(--app-vh, 100dvh);
+  height: calc(var(--app-vh, 100dvh) - var(--voicemode-h, 0px));
+  max-height: calc(var(--app-vh, 100dvh) - var(--voicemode-h, 0px));
   min-height: 0;
   /* Anything that still overflows the column (a large device font scale, safe-area insets) is
      CLIPPED, never scrolled - the page must not move. */
@@ -3222,7 +3230,10 @@ a.banner-btn {
   /* Anchor top/left/right ONLY - deliberately NOT `inset: 0`. `inset: 0` sets both top:0 AND bottom:0,
      which OVER-CONSTRAINS a fixed box: its height is then derived from top+bottom (the tall, toolbar-
      hidden LAYOUT viewport) and the height below is IGNORED. Anchoring top-only lets the height win. */
-  top: 0;
+  /* Starts below the voice-mode banner and gives up exactly its height, for the same reason
+     .terminal-screen does: this box is pinned out of the flow, so the banner would otherwise paint
+     over Car Mode's own header. 0px when the banner is not on screen. */
+  top: var(--voicemode-h, 0px);
   left: 0;
   right: 0;
   display: flex;
@@ -3239,9 +3250,9 @@ a.banner-btn {
      mechanism, shared with .terminal-screen - see the session-screen shell below. */
   height: 100vh;
   height: 100dvh;
-  height: var(--app-vh, 100dvh);
+  height: calc(var(--app-vh, 100dvh) - var(--voicemode-h, 0px));
   max-height: 100dvh;
-  max-height: var(--app-vh, 100dvh);
+  max-height: calc(var(--app-vh, 100dvh) - var(--voicemode-h, 0px));
   overflow: hidden;
 }
 /* The pin only works if the column lays out as: header (natural) -> middle (absorbs + scrolls) -> footer
@@ -4168,8 +4179,12 @@ a.banner-btn {
 .assistant-screen {
   display: flex;
   flex-direction: column;
-  height: var(--app-vh, 100dvh);
-  max-height: var(--app-vh, 100dvh);
+  /* Gives up the voice-mode banner's height. This screen is in the normal flow, so the banner already
+     pushes it down - but without shrinking it too, banner + full visible height is TALLER than the
+     window and the composer at the bottom would be pushed off. No `top` offset here: the flow has
+     already done that half. 0px when the banner is not on screen. */
+  height: calc(var(--app-vh, 100dvh) - var(--voicemode-h, 0px));
+  max-height: calc(var(--app-vh, 100dvh) - var(--voicemode-h, 0px));
   overflow: hidden;
   padding: 0 12px;
   max-width: 680px;
