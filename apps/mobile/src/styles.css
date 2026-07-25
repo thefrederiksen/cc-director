@@ -50,6 +50,21 @@ body {
   z-index: 5;
 }
 
+/* ...but NOT when the header is inside a screen that has ALREADY been offset. The pinned shells set
+   their own `top` to the banner height, so their header starts below the banner by virtue of being in
+   that box. A sticky `top: var(--voicemode-h)` there means "never come closer than the banner height
+   to the TOP OF THIS BOX", which pushes the header down a SECOND time and leaves an empty strip of
+   page background exactly one banner tall. Shipped that way on 2026-07-25 and reported from the
+   phone: "there's a black space at the top... it's like it bumped it down too far".
+   Scoped by ancestor rather than by the session-header class because that is the actual rule: one
+   offset per screen, applied by whichever box owns the offsetting. The file viewer's own header is
+   inside .terminal-screen too, and is covered by the same line. */
+.terminal-screen .app-bar,
+.car-screen .app-bar,
+.assistant-screen .app-bar {
+  top: 0;
+}
+
 .app-bar h1 {
   margin: 0;
   font-size: 20px;
