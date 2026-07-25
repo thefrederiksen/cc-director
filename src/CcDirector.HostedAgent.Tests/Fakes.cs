@@ -230,6 +230,14 @@ public sealed class FakeTranscriptReader : ITranscriptReader
 
     public List<(string ClaudeSessionId, DateTime LastWriteUtc)> Transcripts { get; } = new();
 
+    /// <summary>
+    /// The newest compaction mark per transcript - the completion signal compact-and-continue waits on
+    /// (issue #2150). Dictionary-backed like the members beside it so a test can say "this session has
+    /// been compacted, at this moment" without touching disk. Absent means never compacted, which is the
+    /// same answer the real reader gives for a file with no marker.
+    /// </summary>
+    public Dictionary<string, DateTime> Compactions { get; } = new();
+
     public List<TurnWidgetDto> ReadWidgets(string claudeSessionId, string repoPath) =>
         Widgets.TryGetValue(claudeSessionId, out var w) ? new List<TurnWidgetDto>(w) : new List<TurnWidgetDto>();
 
@@ -238,4 +246,7 @@ public sealed class FakeTranscriptReader : ITranscriptReader
 
     public List<(string ClaudeSessionId, DateTime LastWriteUtc)> ListTranscripts(string repoPath) =>
         new(Transcripts);
+
+    public DateTime? LastCompactionUtc(string claudeSessionId, string repoPath) =>
+        Compactions.TryGetValue(claudeSessionId, out var at) ? at : null;
 }
