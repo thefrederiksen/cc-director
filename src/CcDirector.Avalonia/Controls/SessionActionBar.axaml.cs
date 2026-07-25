@@ -179,13 +179,81 @@ public partial class SessionActionBar : UserControl
         }
     }
 
+    /// <summary>
+    /// The question asked before a context clear. Kept as constants so the desktop and the Cockpit say the
+    /// SAME thing about the same action - the wording matches
+    /// <c>apps/cockpit/src/sessions/SessionActionBar.tsx</c>.
+    ///
+    /// It states what SURVIVES as well as what is lost. "Clear" on its own reads to some people as "kill my
+    /// session"; the useful fact is that the process keeps running and only the conversation goes.
+    /// </summary>
+    internal const string ClearContextConfirmTitle = "Clear this session's context?";
+
+    internal const string ClearContextConfirmMessage =
+        "This resets the conversation in place. The running process keeps going, but the agent loses the " +
+        "current conversation. This cannot be undone.";
+
+    /// <summary>
+    /// How the bar asks before a destructive verb. Null in the running application, where it opens the real
+    /// modal <see cref="ConfirmDialog"/>. Tests replace it: a modal cannot be answered in a headless run, so
+    /// without this seam the decision - the whole point of issue #2169 - could only be verified by hand.
+    /// </summary>
+    internal Func<string, string, Task<bool>>? ConfirmOverride { get; set; }
+
+    private async Task<bool> ConfirmAsync(string title, string message, string confirmLabel)
+    {
+        if (ConfirmOverride is not null)
+            return await ConfirmOverride(title, message);
+
+        var owner = TopLevel.GetTopLevel(this) as Window
+            ?? throw new InvalidOperationException(
+                "[SessionActionBar] No owner window, so the confirmation cannot be shown. Refusing to run a " +
+                "destructive action unasked.");
+        return await new ConfirmDialog(title, message, confirmLabel).ShowDialog<bool?>(owner) == true;
+    }
+
     private async void BtnClearContext_Click(object? sender, RoutedEventArgs e)
+    {
+        await ClearContextWithConfirmationAsync();
+    }
+
+    /// <summary>
+    /// Ask, then clear (issue #2169). Clearing destroys the session's whole conversation and cannot be
+    /// undone, and this button sits inches from Interrupt and beside a context gauge that turns red -
+    /// exactly when somebody reaches for a button. It used to fire on the first click; the Cockpit has asked
+    /// since issue #1244, so the same action behaved differently depending on which surface you were looking
+    /// at, and the surface with a real mouse was the unguarded one.
+    ///
+    /// Internal rather than private so the decision is testable: a test can decline the confirmation and
+    /// assert that NOTHING was submitted to the driver.
+    /// </summary>
+    internal async Task ClearContextWithConfirmationAsync()
     {
         var session = _session;
         if (session is null) return;
+
+        bool confirmed;
         try
         {
-            FileLog.Write($"[SessionActionBar] Clear context clicked: session={session.Id}");
+            confirmed = await ConfirmAsync(ClearContextConfirmTitle, ClearContextConfirmMessage, "Clear context");
+        }
+        catch (Exception ex)
+        {
+            // A confirmation that cannot be shown is not permission to proceed.
+            FileLog.Write($"[SessionActionBar] Clear context confirmation FAILED: {ex.Message}");
+            ShowStatus($"clear failed: {ex.Message}");
+            return;
+        }
+
+        if (!confirmed)
+        {
+            FileLog.Write($"[SessionActionBar] Clear context declined at the confirmation: session={session.Id}");
+            return;
+        }
+
+        try
+        {
+            FileLog.Write($"[SessionActionBar] Clear context confirmed: session={session.Id}");
             ShowStatus("clearing context...");
             var newId = await session.ClearContextAsync();
             if (newId is not null)
