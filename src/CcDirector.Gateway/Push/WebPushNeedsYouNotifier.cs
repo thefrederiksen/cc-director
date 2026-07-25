@@ -1,6 +1,8 @@
+using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Net;
 using System.Text.Json;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using Lib.Net.Http.WebPush;
@@ -39,6 +41,16 @@ namespace CcDirector.Gateway.Push;
 ///     buzzing on its mere presence would re-buzz every poll. Once announced it is remembered
 ///     (<see cref="DotState.Announced"/>) and folds into the silent dot/heartbeat, never buzzing again
 ///     while it lingers.
+/// ONE PASS PER TENANT. This engine holds no timer: <see cref="PushNeedsYouTenantSweep"/> drives
+/// <see cref="RunOnceAsync"/> once per tenant, inside that tenant's own scope, so the subscription store it
+/// reads holds exactly that tenant's phones and the roster it counts is exactly that tenant's fleet. That is
+/// what turned notifications ON for the hosted Gateway: the notifier used to own a bare timer, which has no
+/// tenant, so on hosted it would have read the tenant-scoped subscriptions store with no scope and failed
+/// closed every tick - and rather than fail every tick the whole notifier was skipped when hosted. Skipped
+/// means no dot ever appeared on a phone talking to the hosted Gateway, AND no falling-edge clear was ever
+/// sent, so a dot raised earlier (by a desktop Gateway) could never be cleared by the hosted one. Self-host
+/// is a single Local pass, unchanged.
+///
 /// A change from one non-zero count to another (2 -> 3 -> 4) is NOT pushed between heartbeats: the dot
 /// is already there. Keeping the volume this low is what stops the constant pinging, and in particular
 /// keeps the silent zero-clear push (a push that shows no notification, which browsers budget under the
@@ -76,39 +88,44 @@ public sealed class WebPushNeedsYouNotifier : IDisposable
     private readonly PushSubscriptionStore _store;
     private readonly Func<CancellationToken, Task<NeedsYouSnapshot>> _getSnapshot;
     private readonly IWebPushSender _sender;
+    private readonly Func<TenantId> _currentTenant;
 
-    private System.Threading.Timer? _timer;
-    private int _busy; // 0 = idle, 1 = a tick is running (reentrancy guard)
-    private readonly object _dotLock = new();
-    private DotState _dot = DotState.Initial;
+    // The dot decision, PARTITIONED PER TENANT. A single flat DotState was the reason hosted push could not
+    // be turned on at all: one tenant's zero-count pass would clear the dot the previous tenant's pass had
+    // just decided to show, and the heartbeat counters would interleave into nonsense. Each tenant's fleet
+    // has its own rising edge, its own falling edge and its own announced set, so each gets its own state.
+    // Self-host has exactly one entry (Local) and behaves as it always did.
+    private readonly ConcurrentDictionary<TenantId, DotState> _dots = new();
 
+    /// <param name="store">The subscription store. Tenant-scoped: inside a tenant's scope it holds exactly
+    /// that tenant's devices, which is what makes one pass push to one tenant's phones and no others.</param>
+    /// <param name="getSnapshot">Reads the CURRENT tenant's needs-you snapshot. Called inside the tenant
+    /// scope, so it must read the ambient tenant and never resolve a tenant of its own.</param>
+    /// <param name="sender">The Web Push transport.</param>
+    /// <param name="currentTenant">The tenant of the pass now running. Omitted means single-tenant
+    /// (<see cref="TenantId.Local"/>) - the self-host shape and the unit-test default, so leaving it out can
+    /// never accidentally produce hosted behavior.</param>
     public WebPushNeedsYouNotifier(
         PushSubscriptionStore store,
         Func<CancellationToken, Task<NeedsYouSnapshot>> getSnapshot,
-        IWebPushSender sender)
+        IWebPushSender sender,
+        Func<TenantId>? currentTenant = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _getSnapshot = getSnapshot ?? throw new ArgumentNullException(nameof(getSnapshot));
         _sender = sender ?? throw new ArgumentNullException(nameof(sender));
-    }
-
-    /// <summary>Start the background poll. Returns immediately; the first check runs after a short delay.</summary>
-    public void Start()
-    {
-        _timer = new System.Threading.Timer(_ => Tick(), null, StartupDelay, PollInterval);
-        FileLog.Write($"[WebPushNeedsYouNotifier] started: every {PollInterval.TotalSeconds:0}s (while subscribed)");
+        _currentTenant = currentTenant ?? (() => TenantId.Local);
     }
 
     /// <summary>
     /// Force the next check to re-push the dot even if the count is unchanged. Called when a new device
     /// subscribes so it receives the current dot promptly (on the next poll, if something needs you)
     /// rather than only on the next rising edge.
+    ///
+    /// Resets the SUBSCRIBING tenant only (it is called from a request, so a tenant is bound): one account
+    /// adding a phone must not re-push every other account's dot.
     /// </summary>
-    public void ResetDedupe()
-    {
-        lock (_dotLock)
-            _dot = DotState.Initial;
-    }
+    public void ResetDedupe() => _dots.TryRemove(_currentTenant(), out _);
 
     /// <summary>
     /// The count of sessions that "need you" plus the ids of those that just returned from an expired
@@ -238,13 +255,10 @@ public sealed class WebPushNeedsYouNotifier : IDisposable
             return;
         }
 
-        bool push;
-        int count;
-        bool snoozeEnded;
-        lock (_dotLock)
-        {
-            (push, count, snoozeEnded, _dot) = Decide(snapshot.Count, snapshot.ExpiredNeedsYouIds, _dot);
-        }
+        var tenant = _currentTenant();
+        var before = _dots.GetValueOrDefault(tenant, DotState.Initial);
+        var (push, count, snoozeEnded, next) = Decide(snapshot.Count, snapshot.ExpiredNeedsYouIds, before);
+        _dots[tenant] = next;
         if (!push) return;
 
         await SendToAllAsync(count, snoozeEnded, cancellationToken);
@@ -278,39 +292,7 @@ public sealed class WebPushNeedsYouNotifier : IDisposable
         }
     }
 
-    /// <summary>
-    /// The timer boundary: owns the reentrancy guard and try/catch so one slow or failing check never
-    /// stacks up or crashes the timer thread.
-    /// </summary>
-    private void Tick()
-    {
-        if (Interlocked.CompareExchange(ref _busy, 1, 0) != 0)
-            return; // a previous tick is still running - skip this one
-        _ = TickAsync();
-    }
-
-    private async Task TickAsync()
-    {
-        try
-        {
-            await RunOnceAsync(CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[WebPushNeedsYouNotifier] tick FAILED: {ex.Message}");
-        }
-        finally
-        {
-            Interlocked.Exchange(ref _busy, 0);
-        }
-    }
-
-    public void Dispose()
-    {
-        _timer?.Dispose();
-        _timer = null;
-        (_sender as IDisposable)?.Dispose();
-    }
+    public void Dispose() => (_sender as IDisposable)?.Dispose();
 
     private sealed class NeedsYouPayload
     {

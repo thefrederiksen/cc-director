@@ -488,18 +488,19 @@ function NotificationsCard() {
     setMsg("Saving...");
     try {
       if (checked) {
+        // enablePush names every outcome and carries the sentence for it, so the reason a switch-on
+        // did not take is always shown. It used to collapse three different outcomes into "this
+        // browser blocked notifications" - which is a false statement when the prompt was never
+        // shown, and said nothing at all about permission being granted while REGISTERING the
+        // device failed.
         const result = await enablePush();
         setPermission(notificationPermission());
-        if (result === "granted") {
-          setEnabled(true);
-          setMsg("On. This browser will be notified when a session needs you, even in the background.");
-        } else if (result === "denied") {
-          setEnabled(false);
-          setMsg("This browser blocked notifications. Allow them in the browser's site settings, then try again.");
-        } else {
-          setEnabled(false);
-          setMsg("This browser does not support notifications.");
-        }
+        setEnabled(result.state === "granted");
+        setMsg(
+          result.state === "granted"
+            ? "On. This browser will be notified when a session needs you, even in the background."
+            : result.message,
+        );
       } else {
         await disablePush();
         setEnabled(false);

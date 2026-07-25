@@ -167,6 +167,18 @@ body {
   cursor: default;
 }
 
+/* The answer to a tap inside an action banner - what happened, on its own line under the pitch. The
+   notifications banner is the case that needs it: "Enable notifications" has several ways to fail that
+   the phone cannot see (no prompt shown, permission granted but registration refused), and a button
+   that reports nothing reads as a broken button. */
+.banner-note {
+  display: block;
+  margin-top: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
 /* Issue #942: the app-level out-of-credits notice floats above the current screen so any surface's
    402 is covered by one consistent message + call-to-action. */
 .credits-notice {

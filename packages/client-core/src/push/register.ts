@@ -83,10 +83,41 @@ async function postUnsubscribe(endpoint: string): Promise<void> {
   if (!res.ok) throw new Error(`POST /push/unsubscribe failed: ${res.status}`);
 }
 
+/**
+ * How long to wait for a service worker to take control of this page before declaring that there is
+ * none. This is NOT a fallback - nothing degrades on expiry, the attempt FAILS with a stated reason.
+ * It exists because navigator.serviceWorker.ready never resolves AND never rejects when no worker is
+ * registered for this scope, so awaiting it bare is an infinite hang: the button that awaited it sat
+ * on "Enabling..." for ever and the user read that as "nothing happens".
+ */
+const SERVICE_WORKER_READY_TIMEOUT_MS = 8000;
+
+// Wait, with a bound, for the service worker that draws the notification. Throws with a reason on
+// expiry instead of hanging (see SERVICE_WORKER_READY_TIMEOUT_MS).
+async function serviceWorkerReady(): Promise<ServiceWorkerRegistration> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expiry = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new Error(
+            "no service worker is running for this page, so there is nothing to draw the notification",
+          ),
+        ),
+      SERVICE_WORKER_READY_TIMEOUT_MS,
+    );
+  });
+  try {
+    return await Promise.race([navigator.serviceWorker.ready, expiry]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 // Ensure the browser has a push subscription and the Gateway knows about it. Idempotent: reuses an
 // existing subscription and re-registers it (a cheap upsert on the Gateway).
 async function subscribeAndRegister(): Promise<void> {
-  const registration = await navigator.serviceWorker.ready;
+  const registration = await serviceWorkerReady();
   let subscription = await registration.pushManager.getSubscription();
   if (subscription === null) {
     const key = await getVapidPublicKey();
@@ -99,15 +130,112 @@ async function subscribeAndRegister(): Promise<void> {
 }
 
 /**
- * Prompt for permission (must be called from a user gesture) and subscribe. Returns the outcome so
- * the caller can update the UI: "granted" (subscribed), "denied" (user said no), or "unsupported".
+ * What happened when the user asked for notifications. EVERY path has a name, because the old
+ * "granted | denied | unsupported" triple could not tell the two silent failures apart from a
+ * decision the user made:
+ *
+ *  - "granted"     - permission given AND the subscription is registered with the Gateway. Done.
+ *  - "blocked"     - the browser holds a standing block for this site. The user must lift it in the
+ *                    browser's own settings; asking again cannot help.
+ *  - "dismissed"   - the prompt was dismissed, or the browser never showed one (Chrome's quiet
+ *                    permission user interface, or an in-app browser window that is not allowed to
+ *                    ask). Permission is still undecided, so asking again CAN help. This is the case
+ *                    that used to look exactly like "nothing happened": permission was unchanged, so
+ *                    the banner re-rendered identically and said nothing.
+ *  - "failed"      - permission WAS given but the subscription could not be created or registered
+ *                    (no service worker, no key from the Gateway, a rejected registration). This one
+ *                    used to be the worse silence: the banner disappeared as if it had worked, while
+ *                    no push would ever arrive.
+ *  - "unsupported" - this browser cannot do Web Push at all.
  */
-export async function enablePush(): Promise<"granted" | "denied" | "unsupported"> {
-  if (!pushSupported()) return "unsupported";
-  const permission = await Notification.requestPermission();
-  if (permission !== "granted") return "denied";
-  await subscribeAndRegister();
-  return "granted";
+export type EnablePushState = "granted" | "blocked" | "dismissed" | "failed" | "unsupported";
+
+/**
+ * The outcome plus a plain-English sentence to show the user. The message lives HERE, next to the
+ * decision that produced it, so both shells say the same true thing about the same outcome instead of
+ * each inventing wording (and, as the mobile banner did, inventing nothing at all).
+ */
+export interface EnablePushResult {
+  state: EnablePushState;
+  /** Ready to render as-is. Never empty - there is no outcome we have nothing to say about. */
+  message: string;
+}
+
+/**
+ * Prompt for permission (must be called from a user gesture) and subscribe. NEVER throws and never
+ * returns silently: every path comes back as a named state with a sentence the caller must show.
+ */
+export async function enablePush(): Promise<EnablePushResult> {
+  if (!pushSupported()) {
+    return {
+      state: "unsupported",
+      message: "This browser cannot show notifications.",
+    };
+  }
+
+  let permission: NotificationPermission;
+  try {
+    permission = await Notification.requestPermission();
+  } catch (err) {
+    // Some browsers reject rather than resolve when asking is not allowed here at all.
+    return {
+      state: "failed",
+      message: `This browser refused to ask for notification permission: ${errorText(err)}`,
+    };
+  }
+
+  if (permission === "denied") {
+    return {
+      state: "blocked",
+      message:
+        "Notifications are blocked for DevThrottle. Allow them in your browser's site settings for this site, then tap Enable notifications again.",
+    };
+  }
+
+  if (permission !== "granted") {
+    // Still "default": either the user dismissed the prompt, or no prompt was ever shown. Name the
+    // one cause that is invisible to the user and that they can actually act on - a window that is
+    // not the installed app cannot be granted notification permission on Android.
+    return {
+      state: "dismissed",
+      message: installedAsApp()
+        ? "The permission prompt was dismissed, so notifications are still off. Tap Enable notifications to be asked again."
+        : "Your browser did not ask for permission. This window is not the installed DevThrottle app - open DevThrottle from its icon on your home screen and turn notifications on there.",
+    };
+  }
+
+  try {
+    await subscribeAndRegister();
+  } catch (err) {
+    return {
+      state: "failed",
+      message: `Notifications are allowed, but this device could not be registered for them: ${errorText(err)}`,
+    };
+  }
+
+  return {
+    state: "granted",
+    message: "Notifications are on for this device.",
+  };
+}
+
+/**
+ * True when the page is running as the INSTALLED app (an installed Progressive Web App, or a desktop
+ * window) rather than inside browser chrome. Read only to explain a missing permission prompt: on
+ * Android an in-app browser window - the one with a close button and the address shown above the page,
+ * which is what a tapped link opens - is not allowed to ask, and a user staring at a button that
+ * appears to do nothing has no way to know that.
+ */
+export function installedAsApp(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+  return ["standalone", "fullscreen", "minimal-ui", "window-controls-overlay"].some(
+    (mode) => window.matchMedia(`(display-mode: ${mode})`).matches,
+  );
+}
+
+function errorText(err: unknown): string {
+  if (err instanceof Error && err.message.trim().length > 0) return err.message;
+  return String(err);
 }
 
 /**
