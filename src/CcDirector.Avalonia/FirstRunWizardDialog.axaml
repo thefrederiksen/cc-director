@@ -138,7 +138,7 @@
                         VerticalAlignment="Center">
                 <TextBlock Classes="wtitle" Text="Welcome to DevThrottle" />
                 <TextBlock Classes="wsub"
-                           Text="You are about three minutes from running your first coding agent. We will find your agents, learn where your code lives, and set up your morning report - the daily email that keeps your week honest." />
+                           Text="You are about three minutes from running your first coding agent. We will show you what comes included - your agents, your code, your morning report - and every step is a take-it-or-leave-it offer. Use what helps, breeze past what doesn't." />
 
                 <!-- Founder note: two sentences collapsed, one quiet Read more. It must never
                      delay the "Set me up" click - short by design. -->
@@ -490,10 +490,6 @@
                        Foreground="#8A909A" FontSize="12.5" TextWrapping="Wrap"
                        HorizontalAlignment="Right" VerticalAlignment="Center"
                        Margin="0,0,12,0" IsVisible="False" />
-
-            <Button x:Name="StepSkipLink" Grid.Column="2" Classes="quietLink"
-                    Content="Skip this step" Click="BtnStepSkip_Click" IsVisible="False"
-                    VerticalAlignment="Center" Margin="0,0,10,0" />
 
             <Button x:Name="PrimaryButton" Grid.Column="3" Classes="primaryButton"
                     Content="Continue" Click="BtnPrimary_Click" IsDefault="True"
