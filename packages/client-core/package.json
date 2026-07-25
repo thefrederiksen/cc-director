@@ -8,6 +8,8 @@
     "./auth/SignIn": "./src/auth/SignIn.tsx",
     "./auth/DeviceCallback": "./src/auth/DeviceCallback.tsx",
     "./dictation/DictationDialog": "./src/dictation/DictationDialog.tsx",
+    "./dictation/MicTestPanel": "./src/dictation/MicTestPanel.tsx",
+    "./dictation/TranscriptionTestPanel": "./src/dictation/TranscriptionTestPanel.tsx",
     "./*": "./src/*.ts"
   },
   "scripts": {

@@ -113,9 +113,11 @@ public sealed class GatewayTranscriptionService
     /// <param name="ct">Cancellation token.</param>
     /// <param name="source">The surface that produced the utterance (e.g. "dictation", "voice", "batch"),
     /// stamped on the stored transcript (issue #509) for later mining. Defaults to "gateway" when blank.</param>
+    /// <param name="language">Optional spoken-language hint (BCP 47 primary subtag, e.g. "da"). Null
+    /// leaves the provider to detect the language, which is what every ordinary dictation path does.</param>
     public async Task<GatewayTranscriptionResult> TranscribeAsync(
         byte[] audio, string fileName, string contentType, bool applyCorrection, CancellationToken ct,
-        CcDirector.Core.Tenancy.TenantId? tenant = null, string? source = null)
+        CcDirector.Core.Tenancy.TenantId? tenant = null, string? source = null, string? language = null)
     {
         if (audio is null) throw new ArgumentNullException(nameof(audio));
 
@@ -141,7 +143,7 @@ public sealed class GatewayTranscriptionService
         string raw;
         try
         {
-            raw = await TranscribeRawCoreAsync(routing, audio, fileName, contentType, ct);
+            raw = await TranscribeRawCoreAsync(routing, audio, fileName, contentType, ct, language);
             swTranscribe.Stop();
         }
         catch (OperationCanceledException)
@@ -298,12 +300,13 @@ public sealed class GatewayTranscriptionService
     /// real failure the caller must surface).
     /// </summary>
     private async Task<string> TranscribeRawCoreAsync(
-        GatewayTranscriptionRouting routing, byte[] audio, string fileName, string contentType, CancellationToken ct)
+        GatewayTranscriptionRouting routing, byte[] audio, string fileName, string contentType, CancellationToken ct,
+        string? language = null)
     {
         var name = string.IsNullOrWhiteSpace(fileName) ? "audio." + ExtensionFor(contentType) : fileName;
         using var pipeline = new BatchTranscriptionPipeline(httpClient: _http, cleanupModel: _cleanupModel);
-        FileLog.Write($"[GatewayTranscriptionService] transcribe remote: bytes={audio.Length}, mode={routing.Mode.ToConfigString()}, model={routing.Endpoint.Model}");
-        return await pipeline.TranscribeRawAsync(audio, name, routing.ToResolved(), ct);
+        FileLog.Write($"[GatewayTranscriptionService] transcribe remote: bytes={audio.Length}, mode={routing.Mode.ToConfigString()}, model={routing.Endpoint.Model}, language={language ?? "auto"}");
+        return await pipeline.TranscribeRawAsync(audio, name, routing.ToResolved(language), ct);
     }
 
     /// <summary>
@@ -374,7 +377,7 @@ public sealed record GatewayTranscriptionRouting
     /// Compose the <see cref="ResolvedTranscription"/> the Gateway-local batch transport consumes.
     /// Throws when no key is set - call only after checking <see cref="Key"/> is non-null.
     /// </summary>
-    public ResolvedTranscription ToResolved()
+    public ResolvedTranscription ToResolved(string? language = null)
     {
         if (string.IsNullOrWhiteSpace(Key))
             throw new InvalidOperationException($"no key set for transcription mode {Mode.ToConfigString()}");
@@ -385,6 +388,7 @@ public sealed record GatewayTranscriptionRouting
             Transport = Endpoint.Transport,
             Model = Endpoint.Model,
             Mode = Mode,
+            Language = string.IsNullOrWhiteSpace(language) ? null : language.Trim(),
         };
     }
 }
@@ -463,4 +467,13 @@ public sealed record ResolvedTranscription
 
     /// <summary>The mode this target was resolved for.</summary>
     public required TranscriptionMode Mode { get; init; }
+
+    /// <summary>
+    /// Optional spoken-language hint (a BCP 47 primary subtag such as "da" or "zh") passed to the
+    /// provider. Null means "let the provider detect it", which is the behaviour every existing caller
+    /// keeps. It lives on this record rather than on the pipeline's method signatures because a long
+    /// clip is split into several independent POSTs, and every one of them must carry the same hint -
+    /// threading it here makes that automatic instead of a parameter each chunking method could drop.
+    /// </summary>
+    public string? Language { get; init; }
 }

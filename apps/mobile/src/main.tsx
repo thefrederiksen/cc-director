@@ -11,6 +11,8 @@ import { CarMode } from "./pages/CarMode";
 import { Assistant } from "./pages/Assistant";
 import { EndWordTest } from "./pages/EndWordTest";
 import { AiSettings } from "./pages/AiSettings";
+import { MicTest } from "./pages/MicTest";
+import { TranscriptionTest } from "./pages/TranscriptionTest";
 import { About } from "./pages/About";
 import { Diagnostics } from "./pages/Diagnostics";
 import { YourThrottle } from "./pages/YourThrottle";
@@ -172,6 +174,8 @@ const router = createBrowserRouter(
             // settings tab once the approach is proven.
             { path: "/endword", element: <EndWordTest /> },
             { path: "/settings", element: <AiSettings /> },
+            { path: "/mic-test", element: <MicTest /> },
+            { path: "/transcription-test", element: <TranscriptionTest /> },
             { path: "/about", element: <About /> },
             // Diagnostics (auto-network-switching mission): a phone-side connection tester - route
             // (direct LAN vs Tailscale relay), latency, and download/upload throughput, with a verdict.

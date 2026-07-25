@@ -266,6 +266,20 @@ export function AiSettings() {
         Transcription: <span className="mono">{snap.transcriptionModel}</span>
       </div>
 
+      {/* Discovery: someone who came here because dictation is poor is looking at the transcription
+          model, when the cause is far more often the microphone. Point them at the check. */}
+      <div className="setting-block">
+        <div className="setting-label">Dictation coming out wrong?</div>
+        <div className="setting-actions">
+          <Link className="setting-btn" to="/mic-test">
+            Test microphone
+          </Link>
+          <Link className="setting-btn" to="/transcription-test">
+            Test transcription
+          </Link>
+        </div>
+      </div>
+
       {msg !== "" && <div className="setting-msg setting-msg-foot">{msg}</div>}
     </Frame>
   );

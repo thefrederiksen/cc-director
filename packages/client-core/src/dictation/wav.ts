@@ -74,6 +74,49 @@ export async function blobToWav16kMono(blob: Blob): Promise<TranscodeResult> {
   };
 }
 
+/** A captured clip decoded at the rate the MICROPHONE actually delivered, downmixed to mono. */
+export interface DecodedClip {
+  samples: Float32Array;
+  sampleRate: number;
+}
+
+/**
+ * Decode a captured blob to mono at its NATIVE sample rate, for the microphone check (micQuality.ts).
+ *
+ * Deliberately separate from blobToWav16kMono: that function resamples to 16 kHz for transcription,
+ * which throws away everything above 8 kHz - and the presence or absence of energy up there is
+ * exactly the evidence that distinguishes a wideband microphone from a Bluetooth hands-free link.
+ * Measuring the resampled clip would make every microphone look identical. This decodes once at the
+ * native rate and changes nothing on the live dictation path.
+ */
+export async function decodeToMono(blob: Blob): Promise<DecodedClip> {
+  const arrayBuffer = await blob.arrayBuffer();
+  if (arrayBuffer.byteLength === 0) throw new Error("No audio was captured.");
+
+  const AudioCtor = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+  const decodeCtx = new AudioCtor();
+  let decoded: AudioBuffer;
+  try {
+    decoded = await decodeCtx.decodeAudioData(arrayBuffer.slice(0));
+  } finally {
+    void decodeCtx.close();
+  }
+
+  if (decoded.numberOfChannels === 1) {
+    return { samples: decoded.getChannelData(0), sampleRate: decoded.sampleRate };
+  }
+  // Average the channels rather than taking the first: a headset that feeds only one side would
+  // otherwise measure as silence on the channel we happened to pick.
+  const frames = decoded.length;
+  const mixed = new Float32Array(frames);
+  for (let ch = 0; ch < decoded.numberOfChannels; ch++) {
+    const data = decoded.getChannelData(ch);
+    for (let i = 0; i < frames; i++) mixed[i] += data[i];
+  }
+  for (let i = 0; i < frames; i++) mixed[i] /= decoded.numberOfChannels;
+  return { samples: mixed, sampleRate: decoded.sampleRate };
+}
+
 // Build a canonical 16-bit PCM WAV (RIFF) blob from mono float samples in -1..1.
 function encodeWav(samples: Float32Array, sampleRate: number): Blob {
   const bytesPerSample = 2;
