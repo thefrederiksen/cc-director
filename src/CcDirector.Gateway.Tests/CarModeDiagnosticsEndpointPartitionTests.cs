@@ -71,8 +71,8 @@ public sealed class CarModeDiagnosticsEndpointPartitionTests : IAsyncLifetime
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
         _app = builder.Build();
-        var port = AllocateFreePort();
-        _app.Urls.Add($"http://127.0.0.1:{port}");
+        // Issue #2161: bind an operating-system-assigned port; the address is read back after start.
+        _app.Urls.Add($"http://127.0.0.1:{GatewayHost.OperatingSystemAssignedPort}");
 
         // The real host-wide gate, exactly as GatewayHost installs it.
         var requireToken = new AuthMiddleware.RequireToken { Token = SharedMachineToken, Devices = devices };
@@ -80,7 +80,7 @@ public sealed class CarModeDiagnosticsEndpointPartitionTests : IAsyncLifetime
 
         CarModeEndpoint.Map(_app, brain, brain, new CarModeTurnCache(_ => { }), diagnostics, warmup, null!);
         await _app.StartAsync();
-        _baseAddress = $"http://127.0.0.1:{port}";
+        _baseAddress = $"http://127.0.0.1:{BoundPort.Of(_app)}";
     }
 
     public async Task DisposeAsync()
@@ -91,14 +91,6 @@ public sealed class CarModeDiagnosticsEndpointPartitionTests : IAsyncLifetime
         if (File.Exists(_registryPath)) File.Delete(_registryPath);
     }
 
-    private static int AllocateFreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
-    }
 
     private HttpClient Client() => new() { BaseAddress = new Uri(_baseAddress) };
 

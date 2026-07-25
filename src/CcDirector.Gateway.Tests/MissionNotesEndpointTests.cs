@@ -34,7 +34,7 @@ public sealed class MissionNotesEndpointTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        _gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: InstancesDir,
             workListsPath: Path.Combine(_dir, "worklists.json"),
             missionNotesPath: MissionNotesPath);
@@ -138,7 +138,7 @@ public sealed class MissionNotesEndpointTests : IAsyncLifetime
 
         // A Gateway restart: a second host over the SAME store file re-serves the WHY - it is durable.
         await _gateway.StopAsync();
-        var restarted = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
+        var restarted = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: InstancesDir,
             workListsPath: Path.Combine(_dir, "worklists.json"),
             missionNotesPath: MissionNotesPath);
@@ -194,12 +194,4 @@ public sealed class MissionNotesEndpointTests : IAsyncLifetime
         return null;
     }
 
-    private static int FreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
-    }
 }

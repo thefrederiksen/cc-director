@@ -82,7 +82,7 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
     // disposing the first) is a genuine Gateway restart that must re-arm the persisted registry.
     private async Task<(GatewayHost, HttpClient)> StartGatewayAsync()
     {
-        var gw = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
+        var gw = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_root, "worklists", "worklists.json"),
             snoozePath: _snoozePath,
@@ -569,14 +569,6 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
         await fake.ConnectAsync(_gw, Token);
         _fakes.Add(fake);
         return fake;
-    }
-
-    private static int FreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
     }
 
     /// <summary>

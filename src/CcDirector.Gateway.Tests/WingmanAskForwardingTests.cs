@@ -36,7 +36,7 @@ public sealed class WingmanAskForwardingTests : IAsyncLifetime
             instancesDirectory: _instancesDir);
         await _director.StartAsync();
 
-        _gateway = new GatewayHost(port: AllocateFreePort(), token: "test-token", authEnabled: false,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "test-token", authEnabled: false,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
         await _gateway.StartAsync();
@@ -133,11 +133,4 @@ public sealed class WingmanAskForwardingTests : IAsyncLifetime
         }
     }
 
-    private static int AllocateFreePort()
-    {
-        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((System.Net.IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
 }

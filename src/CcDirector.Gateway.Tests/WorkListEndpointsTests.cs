@@ -30,15 +30,17 @@ public sealed class WorkListEndpointsTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        var port = AllocateFreePort();
-        var baseUrl = $"http://127.0.0.1:{port}";
+        // Issue #2161: bind an operating-system-assigned port, then learn the number it gave us. The
+        // address cannot be built up front any more - "0" is not something a client can dial.
+        var bindUrl = $"http://127.0.0.1:{GatewayHost.OperatingSystemAssignedPort}";
 
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
         _app = builder.Build();
-        _app.Urls.Add(baseUrl);
+        _app.Urls.Add(bindUrl);
         WorkListEndpoints.Map(_app, new WorkListStore(_h.Open(), _storePath));
         await _app.StartAsync();
+        var baseUrl = $"http://127.0.0.1:{BoundPort.Of(_app)}";
 
         _http = new HttpClient { BaseAddress = new Uri(baseUrl) };
     }
@@ -204,12 +206,4 @@ public sealed class WorkListEndpointsTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 
-    private static int AllocateFreePort()
-    {
-        var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
-    }
 }

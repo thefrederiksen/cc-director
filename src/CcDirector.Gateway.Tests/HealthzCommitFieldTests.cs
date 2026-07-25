@@ -61,7 +61,7 @@ public sealed class HealthzCommitFieldTests
         Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", hosted ? "1" : null);
         Environment.SetEnvironmentVariable("COCKPIT_COMMIT", commitEnv);
         var instancesDir = Path.Combine(Path.GetTempPath(), "cc-hz-commit-" + Guid.NewGuid().ToString("N"));
-        var gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
+        var gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: instancesDir,
             workListsPath: Path.Combine(instancesDir, "worklists", "worklists.json"),
             snoozePath: Path.Combine(instancesDir, "snooze", "snooze.json"),
@@ -90,11 +90,4 @@ public sealed class HealthzCommitFieldTests
         }
     }
 
-    private static int FreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
 }

@@ -204,7 +204,7 @@ public sealed class HostedOwnerSettingsDenyTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        _gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
             snoozePath: Path.Combine(_instancesDir, "snooze", "snooze.json"));
@@ -298,13 +298,6 @@ public sealed class HostedOwnerSettingsDenyTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("gateway/settings")).StatusCode);
     }
 
-    internal static int FreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
 }
 
 /// <summary>
@@ -396,7 +389,7 @@ public sealed class HostedOwnerSettingsGroupFilterTests : IAsyncLifetime
     {
         // A real, started GatewayHost, because SettingsEndpoints.Map needs one. Its own routes are not
         // driven here; the probe application maps a second copy of the family and is what the tests call.
-        _gateway = new GatewayHost(port: HostedOwnerSettingsDenyTests.FreePort(), token: "probe-token",
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "probe-token",
             authEnabled: true,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),

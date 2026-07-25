@@ -27,7 +27,7 @@ public sealed class WindowsOnlyEndpointsGatingTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        _gateway = new GatewayHost(port: FreePort(), token: "test-token", authEnabled: true,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "test-token", authEnabled: true,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
         await _gateway.StartAsync();
@@ -67,12 +67,4 @@ public sealed class WindowsOnlyEndpointsGatingTests : IAsyncLifetime
             $"expected 405 or 404 for POST /directors off Windows, got {(int)resp.StatusCode}");
     }
 
-    private static int FreePort()
-    {
-        using var l = new TcpListener(System.Net.IPAddress.Loopback, 0);
-        l.Start();
-        var port = ((IPEndPoint)l.LocalEndpoint).Port;
-        l.Stop();
-        return port;
-    }
 }

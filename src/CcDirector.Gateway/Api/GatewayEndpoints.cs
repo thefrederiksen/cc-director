@@ -147,7 +147,9 @@ internal static class GatewayEndpoints
         // Port, and run-mode label. The mode is a delegate (resolved per request) because SettingsHooks is set
         // on the host AFTER Map runs. Null/zero (older callers, bare test hosts) means "not started"/unknown.
         DateTime? gatewayStartedAtUtc = null,
-        int gatewayPort = 0,
+        // Issue #2161: a delegate, resolved per request, for the same reason the mode label is one - Map runs
+        // before the listener binds, and on an operating-system-assigned port the number does not exist yet.
+        Func<int>? gatewayPort = null,
         Func<string>? gatewayModeLabel = null,
         // devthrottle #2075: the dictionary-suggestions engine and the dismissal store, threaded into the
         // /ingest/dictionary/suggestions routes. Null (older callers, recording-only test harnesses) simply
@@ -587,7 +589,7 @@ internal static class GatewayEndpoints
                 // read-only, both surfaces. State is "Running" whenever this endpoint answers; the address is the
                 // auto-resolved public base (manual addressing was dropped).
                 State = "Running",
-                Port = gatewayPort,
+                Port = gatewayPort?.Invoke() ?? 0,
                 UptimeSeconds = gatewayStartedAtUtc is { } startedAt ? (long)(DateTime.UtcNow - startedAt).TotalSeconds : 0,
                 Directors = aboutTenant is { } t ? registry.ListDirectors(t).Count : 0,
                 Mode = gatewayModeLabel?.Invoke() ?? "unknown",

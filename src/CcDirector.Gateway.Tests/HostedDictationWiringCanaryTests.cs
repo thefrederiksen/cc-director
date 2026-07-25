@@ -95,7 +95,7 @@ public sealed class HostedDictationWiringCanaryTests : IAsyncLifetime
         _priorSweepSchedule = GatewayHost.VoiceTurnUploadSweepScheduleForTests;
         GatewayHost.VoiceTurnUploadSweepScheduleForTests = TimeSpan.FromMilliseconds(200);
 
-        _gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
             snoozePath: Path.Combine(_instancesDir, "snooze", "snooze.json"),
@@ -293,11 +293,4 @@ public sealed class HostedDictationWiringCanaryTests : IAsyncLifetime
         return http;
     }
 
-    private static int FreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
 }

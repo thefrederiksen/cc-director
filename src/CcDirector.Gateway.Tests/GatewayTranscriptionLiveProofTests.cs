@@ -46,7 +46,7 @@ public sealed class GatewayTranscriptionLiveProofTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        _gateway = new GatewayHost(port: AllocateFreePort(), token: "", authEnabled: false,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "", authEnabled: false,
             instancesDirectory: _instancesDir, keyVaultPath: _keyVaultPath,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
         await _gateway.StartAsync();
@@ -98,11 +98,4 @@ public sealed class GatewayTranscriptionLiveProofTests : IAsyncLifetime
         Assert.Equal("no audio in the request body", doc.RootElement.GetProperty("error").GetString());
     }
 
-    private static int AllocateFreePort()
-    {
-        var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
 }

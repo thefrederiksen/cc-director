@@ -39,7 +39,7 @@ public sealed class WorkListRunnerEndpointProofTests : IAsyncLifetime
     {
         Environment.SetEnvironmentVariable("CC_GATEWAY_NO_TAILSCALE", "1");
 
-        _gateway = new GatewayHost(port: AllocateFreePort(), token: Token, authEnabled: true,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
             streamMode: true);
@@ -255,14 +255,6 @@ public sealed class WorkListRunnerEndpointProofTests : IAsyncLifetime
             count += Directory.GetFiles(d, "ImplLoopTerminalSignal*.cs", SearchOption.AllDirectories).Length;
         }
         return count;
-    }
-
-    private static int AllocateFreePort()
-    {
-        var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
     }
 
     private sealed record RunDto(string ListName, string Consumer, bool ConsumerReleased, List<RunItemDto> Items);

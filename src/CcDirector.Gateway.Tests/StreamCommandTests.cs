@@ -48,7 +48,7 @@ public sealed class StreamCommandTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        _gateway = new GatewayHost(port: AllocateFreePort(), token: Token, authEnabled: true,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: _gatewayInstances,
             workListsPath: Path.Combine(_gatewayInstances, "worklists", "worklists.json"),
             streamMode: true);
@@ -390,7 +390,7 @@ public sealed class StreamCommandTests : IAsyncLifetime
     public async Task StreamModeOff_PatchEndpoint_StaysOnHttp()
     {
         var offInstances = Path.Combine(Path.GetTempPath(), "cc-streamcmd-offp-" + Guid.NewGuid().ToString("N"));
-        var off = new GatewayHost(port: AllocateFreePort(), token: "t-offp", authEnabled: true,
+        var off = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "t-offp", authEnabled: true,
             instancesDirectory: offInstances,
             workListsPath: Path.Combine(offInstances, "worklists", "worklists.json"),
             streamMode: false);
@@ -466,7 +466,7 @@ public sealed class StreamCommandTests : IAsyncLifetime
     public async Task StreamModeOff_WingmanGoalEndpoint_StaysOnHttp()
     {
         var offInstances = Path.Combine(Path.GetTempPath(), "cc-streamcmd-offg-" + Guid.NewGuid().ToString("N"));
-        var off = new GatewayHost(port: AllocateFreePort(), token: "t-offg", authEnabled: true,
+        var off = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "t-offg", authEnabled: true,
             instancesDirectory: offInstances,
             workListsPath: Path.Combine(offInstances, "worklists", "worklists.json"),
             streamMode: false);
@@ -579,7 +579,7 @@ public sealed class StreamCommandTests : IAsyncLifetime
         // the HTTP pull - which against an empty control endpoint finds nothing => 404, exactly as today. This
         // pins that the pushed-cache location is INERT when the flag is off (byte-identical behaviour).
         var offInstances = Path.Combine(Path.GetTempPath(), "cc-streamcmd-offloc-" + Guid.NewGuid().ToString("N"));
-        var off = new GatewayHost(port: AllocateFreePort(), token: "t-offloc", authEnabled: true,
+        var off = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "t-offloc", authEnabled: true,
             instancesDirectory: offInstances,
             workListsPath: Path.Combine(offInstances, "worklists", "worklists.json"),
             streamMode: false);
@@ -693,7 +693,7 @@ public sealed class StreamCommandTests : IAsyncLifetime
     public async Task StreamModeOff_CreateEndpoint_StaysOnHttp()
     {
         var offInstances = Path.Combine(Path.GetTempPath(), "cc-streamcmd-offc-" + Guid.NewGuid().ToString("N"));
-        var off = new GatewayHost(port: AllocateFreePort(), token: "t-offc", authEnabled: true,
+        var off = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "t-offc", authEnabled: true,
             instancesDirectory: offInstances,
             workListsPath: Path.Combine(offInstances, "worklists", "worklists.json"),
             streamMode: false);
@@ -734,7 +734,7 @@ public sealed class StreamCommandTests : IAsyncLifetime
     public async Task StreamModeOff_KillEndpoint_StaysOnHttp()
     {
         var offInstances = Path.Combine(Path.GetTempPath(), "cc-streamcmd-offk-" + Guid.NewGuid().ToString("N"));
-        var off = new GatewayHost(port: AllocateFreePort(), token: "t-offk", authEnabled: true,
+        var off = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "t-offk", authEnabled: true,
             instancesDirectory: offInstances,
             workListsPath: Path.Combine(offInstances, "worklists", "worklists.json"),
             streamMode: false);
@@ -769,7 +769,7 @@ public sealed class StreamCommandTests : IAsyncLifetime
     public async Task StreamModeOff_InterruptEndpoint_StaysOnHttp()
     {
         var offInstances = Path.Combine(Path.GetTempPath(), "cc-streamcmd-offi-" + Guid.NewGuid().ToString("N"));
-        var off = new GatewayHost(port: AllocateFreePort(), token: "t-offi", authEnabled: true,
+        var off = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "t-offi", authEnabled: true,
             instancesDirectory: offInstances,
             workListsPath: Path.Combine(offInstances, "worklists", "worklists.json"),
             streamMode: false);
@@ -807,7 +807,7 @@ public sealed class StreamCommandTests : IAsyncLifetime
         // so a prompt can only be attempted over HTTP - which fails - proving no stream path is used and
         // behaviour matches today's HTTP-only Gateway.
         var offInstances = Path.Combine(Path.GetTempPath(), "cc-streamcmd-off-" + Guid.NewGuid().ToString("N"));
-        var off = new GatewayHost(port: AllocateFreePort(), token: "t-off", authEnabled: true,
+        var off = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "t-off", authEnabled: true,
             instancesDirectory: offInstances,
             workListsPath: Path.Combine(offInstances, "worklists", "worklists.json"),
             streamMode: false);
@@ -929,12 +929,4 @@ public sealed class StreamCommandTests : IAsyncLifetime
         try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch (Exception) { /* best effort */ }
     }
 
-    private static int AllocateFreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
-    }
 }

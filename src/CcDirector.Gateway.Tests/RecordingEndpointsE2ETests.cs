@@ -37,15 +37,17 @@ public sealed class RecordingEndpointsE2ETests
         var clips = FindPhase0Clips();
         Assert.NotEmpty(clips);
 
-        var port = AllocateFreePort();
-        var baseUrl = $"http://127.0.0.1:{port}";
+        // Issue #2161: bind an operating-system-assigned port, then learn the number it gave us. The
+        // address cannot be built up front any more - "0" is not something a client can dial.
+        var bindUrl = $"http://127.0.0.1:{GatewayHost.OperatingSystemAssignedPort}";
 
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
         var app = builder.Build();
-        app.Urls.Add(baseUrl);
+        app.Urls.Add(bindUrl);
         RecordingEndpoints.Map(app);
         await app.StartAsync();
+        var baseUrl = $"http://127.0.0.1:{BoundPort.Of(app)}";
 
         try
         {
@@ -106,14 +108,6 @@ public sealed class RecordingEndpointsE2ETests
         {
             await app.StopAsync();
         }
-    }
-
-    private static int AllocateFreePort()
-    {
-        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((System.Net.IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
     }
 
     private static List<string> FindPhase0Clips()

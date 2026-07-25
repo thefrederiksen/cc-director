@@ -41,7 +41,7 @@ public sealed class TenantSettingsRuntimeThreadingTests : IAsyncLifetime
     public Task InitializeAsync()
     {
         _gateway = new GatewayHost(
-            port: AllocateFreePort(),
+            port: GatewayHost.OperatingSystemAssignedPort,
             token: "runtime-settings-test-token",
             authEnabled: false,
             instancesDirectory: _instances,
@@ -150,14 +150,6 @@ public sealed class TenantSettingsRuntimeThreadingTests : IAsyncLifetime
         Assert.Equal(input, json.RootElement.GetProperty("input").GetString());
     }
 
-    private static int AllocateFreePort()
-    {
-        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
-    }
 
     private sealed class RecordingSpeechHandler : HttpMessageHandler
     {

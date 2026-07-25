@@ -28,7 +28,7 @@ public sealed class FanoutAndEventsTests : IAsyncLifetime
             instancesDirectory: _instancesDir);
         await _director.StartAsync();
 
-        _gateway = new GatewayHost(port: AllocateFreePort(), token: "test-token", authEnabled: true,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "test-token", authEnabled: true,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
         await _gateway.StartAsync();
@@ -226,11 +226,4 @@ public sealed class FanoutAndEventsTests : IAsyncLifetime
         }
     }
 
-    private static int AllocateFreePort()
-    {
-        var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
 }

@@ -27,7 +27,7 @@ public sealed class MobileRedirectTests : IAsyncLifetime
     {
         // A DESKTOP navigation that falls through is served the in-process React Cockpit (shell, or the
         // 404 not-built notice in a Debug build) - the observable proof it was NOT redirected to /mobile/.
-        _gateway = new GatewayHost(port: FreePort(), token: "test-token", authEnabled: false,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "test-token", authEnabled: false,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
         await _gateway.StartAsync();
@@ -169,12 +169,4 @@ public sealed class MobileRedirectTests : IAsyncLifetime
         Assert.Contains("openapi", body);
     }
 
-    private static int FreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
-    }
 }

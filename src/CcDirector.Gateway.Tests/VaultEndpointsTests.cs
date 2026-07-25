@@ -26,15 +26,17 @@ public sealed class VaultEndpointsTests : IAsyncLifetime
     {
         _vaultPath = Path.Combine(Path.GetTempPath(), "cc-vault-ep-" + Guid.NewGuid().ToString("N") + ".json");
 
-        var port = AllocateFreePort();
-        var baseUrl = $"http://127.0.0.1:{port}";
+        // Issue #2161: bind an operating-system-assigned port, then learn the number it gave us. The
+        // address cannot be built up front any more - "0" is not something a client can dial.
+        var bindUrl = $"http://127.0.0.1:{GatewayHost.OperatingSystemAssignedPort}";
 
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
         _app = builder.Build();
-        _app.Urls.Add(baseUrl);
+        _app.Urls.Add(bindUrl);
         VaultEndpoints.Map(_app, new KeyVault(_vaultPath));
         await _app.StartAsync();
+        var baseUrl = $"http://127.0.0.1:{BoundPort.Of(_app)}";
 
         _http = new HttpClient { BaseAddress = new Uri(baseUrl) };
     }
@@ -98,12 +100,4 @@ public sealed class VaultEndpointsTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.NotFound, get.StatusCode);
     }
 
-    private static int AllocateFreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
-    }
 }

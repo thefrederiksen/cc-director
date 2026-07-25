@@ -43,7 +43,7 @@ public sealed class SessionWsProxyEndpointsTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        _gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
             streamMode: true);
@@ -159,10 +159,4 @@ public sealed class SessionWsProxyEndpointsTests : IAsyncLifetime
         ActivityState = "WaitingForInput",
     };
 
-    private static int FreePort()
-    {
-        using var l = new TcpListener(IPAddress.Loopback, 0);
-        l.Start();
-        return ((IPEndPoint)l.LocalEndpoint).Port;
-    }
 }

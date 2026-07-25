@@ -32,8 +32,9 @@ public sealed class CronRunEndpointsTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        var port = AllocateFreePort();
-        var baseUrl = $"http://127.0.0.1:{port}";
+        // Issue #2161: bind an operating-system-assigned port, then learn the number it gave us. The
+        // address cannot be built up front any more - "0" is not something a client can dial.
+        var bindUrl = $"http://127.0.0.1:{GatewayHost.OperatingSystemAssignedPort}";
 
         var db = _h.Open();
         _store = new CronJobStore(db, _jobsPath);
@@ -43,9 +44,10 @@ public sealed class CronRunEndpointsTests : IAsyncLifetime
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
         _app = builder.Build();
-        _app.Urls.Add(baseUrl);
+        _app.Urls.Add(bindUrl);
         CronRunEndpoints.Map(_app, engine, history);
         await _app.StartAsync();
+        var baseUrl = $"http://127.0.0.1:{BoundPort.Of(_app)}";
 
         _http = new HttpClient { BaseAddress = new Uri(baseUrl) };
     }
@@ -132,12 +134,4 @@ public sealed class CronRunEndpointsTests : IAsyncLifetime
             throw new InvalidOperationException("seed-job endpoint test must not trigger the work-list runner");
     }
 
-    private static int AllocateFreePort()
-    {
-        var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
-    }
 }

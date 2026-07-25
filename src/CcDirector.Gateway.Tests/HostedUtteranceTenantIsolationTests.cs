@@ -68,7 +68,7 @@ public sealed class HostedUtteranceTenantIsolationTests : IAsyncLifetime
         _priorRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
         Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _storageRoot);
 
-        _gateway = new GatewayHost(port: FreePort(), token: GatewayToken, authEnabled: true,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: GatewayToken, authEnabled: true,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
             snoozePath: Path.Combine(_instancesDir, "snooze", "snooze.json"),
@@ -199,11 +199,4 @@ public sealed class HostedUtteranceTenantIsolationTests : IAsyncLifetime
         return http;
     }
 
-    private static int FreePort()
-    {
-        var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
 }

@@ -34,7 +34,7 @@ public sealed class GatewayInterruptedTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        _gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
             streamMode: true);
@@ -246,13 +246,6 @@ public sealed class GatewayInterruptedTests : IAsyncLifetime
         fake.Director = await FakeTunnelDirector.StartAsync(_gateway, Token, fake.DirectorId, machine, fake.Dispatch);
         _fakes.Add(fake);
         return fake;
-    }
-
-    private static int FreePort()
-    {
-        var l = new TcpListener(IPAddress.Loopback, 0);
-        l.Start();
-        try { return ((IPEndPoint)l.LocalEndpoint).Port; } finally { l.Stop(); }
     }
 
     /// <summary>

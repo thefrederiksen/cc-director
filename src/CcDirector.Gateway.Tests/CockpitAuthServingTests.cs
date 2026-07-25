@@ -32,7 +32,7 @@ public sealed class CockpitAuthServingTests : IAsyncLifetime
         // The React bundle is not built into this Debug host, so a request that PASSES the gate and is
         // served the Cockpit shell answers the 404 "not built" notice - never a redirect and never 401.
         // That is itself proof the gate accepted the request and handed it to the shell path.
-        _gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
         await _gateway.StartAsync();
@@ -175,12 +175,4 @@ public sealed class CockpitAuthServingTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, health.StatusCode);
     }
 
-    private static int FreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
-    }
 }

@@ -77,7 +77,7 @@ public sealed class Issue1593FailedAttemptRebaselineTests : IAsyncLifetime
         // The key must be present or the complete path bails before it ever transcribes, let alone delivers.
         new KeyVault(_vaultPath).Set(TranscriptionEndpointResolver.DevThrottleKeyName, "dt_test_key");
 
-        _gateway = new GatewayHost(port: AllocateFreePort(), token: Token, authEnabled: true,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: _instancesDir,
             keyVaultPath: _vaultPath,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
@@ -350,11 +350,4 @@ public sealed class Issue1593FailedAttemptRebaselineTests : IAsyncLifetime
     private static string Sha256Hex(byte[] bytes)
         => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant();
 
-    private static int AllocateFreePort()
-    {
-        var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
 }

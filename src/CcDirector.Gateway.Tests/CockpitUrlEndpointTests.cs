@@ -136,7 +136,7 @@ public sealed class CockpitUrlEndpointTests
         Environment.SetEnvironmentVariable(GatewayPublicUrl.PublicBaseUrlEnvVar, configuredBase);
 
         var instancesDir = Path.Combine(Path.GetTempPath(), "cc-cockpiturl-" + Guid.NewGuid().ToString("N"));
-        var gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
+        var gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: instancesDir,
             workListsPath: Path.Combine(instancesDir, "worklists", "worklists.json"),
             snoozePath: Path.Combine(instancesDir, "snooze", "snooze.json"),
@@ -171,11 +171,4 @@ public sealed class CockpitUrlEndpointTests
                ?? throw new InvalidOperationException($"{path} returned no body");
     }
 
-    private static int FreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
 }
