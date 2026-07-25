@@ -100,12 +100,12 @@ public class DriverRegistryTests
     }
 
     [Fact]
-    public void PiDriver_DeclaresCancelClearContextContextUsageAndModelReport()
+    public void PiDriver_DeclaresCancelClearContextContextUsageModelReportAndCompactContext()
     {
         var caps = new PiDriver().Capabilities;
         Assert.Equal(
             DriverCapabilities.Cancel | DriverCapabilities.ClearContext | DriverCapabilities.ContextUsage
-            | DriverCapabilities.ModelReport,
+            | DriverCapabilities.ModelReport | DriverCapabilities.CompactContext,
             caps);
     }
 
@@ -136,13 +136,16 @@ public class DriverRegistryTests
     }
 
     [Fact]
-    public void CodexDriver_DeclaresCancelInterruptClearContextUsageAndModelReport()
+    public void CodexDriver_DeclaresCancelInterruptClearContextUsageModelReportAndCompactContext()
     {
         var caps = new CodexDriver().Capabilities;
 
+        // CompactContext but NOT CompactCompletionReport - codex's records are not readable by the
+        // Director, so it can start a compaction but cannot observe one finishing (see CodexDriver).
         Assert.Equal(
             DriverCapabilities.Cancel | DriverCapabilities.Interrupt | DriverCapabilities.ClearContext
-            | DriverCapabilities.ContextUsage | DriverCapabilities.ModelReport,
+            | DriverCapabilities.ContextUsage | DriverCapabilities.ModelReport
+            | DriverCapabilities.CompactContext,
             caps);
     }
 
