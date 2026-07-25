@@ -356,6 +356,66 @@ public sealed class HostedEntitlementGateTests : IDisposable
     }
 
     [Fact]
+    public void A_self_host_plan_is_refused_hosted_gateway_provisioning()
+    {
+        // THE NEGATIVE CONTROL for issue #2147, and it runs through the REAL provisioning path - the same
+        // Enroll call a self-host subscriber's Director would make - not through the scope table in isolation.
+        // A table that merely lacks an entry proves nothing about what the Gateway hands out; only refusing at
+        // the door does.
+        //
+        // The row here is as GOOD as a row gets: active, live money, in period. It pays. What it does not buy
+        // is hosted capacity, and this is the one line between a self-host subscriber and a tenant plus a
+        // device key - the tunnel, the cockpit, the mobile application - on a plan priced to exclude them.
+        //
+        // HOW IT FAILS ON PURPOSE: give pro_selfhost the hosted_gateway scope in EntitlementScopes (or delete
+        // the plan gate from HostedEnrollmentEndpoint.Enroll) and this test goes RED on both halves - the
+        // status becomes 200 and a tenant is minted. The paired positive below stops it passing for the wrong
+        // reason: if the gate simply refused everything, that one would red instead.
+        var db = OpenWithEntitlements(EntitlementRegistry.StatusActive, livemode: true,
+            tier: EntitlementRegistry.TierProSelfHost);
+        var (devices, tenants, validator) = Wire(db);
+
+        var result = HostedEnrollmentEndpoint.Enroll(Token(), Req(), devices, tenants, validator,
+            new EntitlementRegistry(db, requireLivemode: true), DateTime.UtcNow);
+
+        Assert.Equal(402, result.Status);
+        AssertNothingWasGivenAway(tenants);
+    }
+
+    [Fact]
+    public void A_self_host_plan_still_grants_the_artificial_intelligence_features()
+    {
+        // The POSITIVE half of the same plan, and the reason the refusal above is a plan boundary rather than
+        // a lockout. A self-host subscriber pays for exactly three things and must keep all three: dictation,
+        // text to speech, and the wingman. If a later edit "fixes" the refusal above by denying pro_selfhost
+        // everything, this reddens.
+        var granted = EntitlementScopes.ForTier(EntitlementRegistry.TierProSelfHost);
+
+        Assert.Contains(EntitlementScopes.Dictation, granted);
+        Assert.Contains(EntitlementScopes.Tts, granted);
+        Assert.Contains(EntitlementScopes.Wingman, granted);
+        Assert.DoesNotContain(EntitlementScopes.HostedGateway, granted);
+        Assert.Equal(3, granted.Count);   // EXACTLY those three - no fourth scope crept in
+    }
+
+    [Fact]
+    public void An_unknown_plan_is_refused_hosted_gateway_provisioning()
+    {
+        // The default direction. A tier string the Gateway has never been taught - a new plan the website ships
+        // before this table learns it, or a typo in the payment side - grants NOTHING, so it cannot provision
+        // hosted capacity. Refusing a plan we do not know about is visible and reversible in one line here;
+        // granting hosted capacity to one is silent and is the bypass this whole file exists to prevent.
+        var db = OpenWithEntitlements(EntitlementRegistry.StatusActive, livemode: true, tier: "enterprise_platinum");
+        var (devices, tenants, validator) = Wire(db);
+
+        var result = HostedEnrollmentEndpoint.Enroll(Token(), Req(), devices, tenants, validator,
+            new EntitlementRegistry(db, requireLivemode: true), DateTime.UtcNow);
+
+        Assert.Equal(402, result.Status);
+        AssertNothingWasGivenAway(tenants);
+    }
+
+    [Fact]
     public void Evaluate_carries_no_tier_when_the_read_fails()
     {
         // Ignorance: the read FAILS (the payment-side table is absent, as a lost SELECT grant looks from here).

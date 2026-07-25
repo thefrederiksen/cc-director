@@ -135,6 +135,30 @@ public sealed class HostedAccessLeaseService
             var decision = _entitlements.Evaluate(subject, now.UtcDateTime);
             switch (decision.Outcome)
             {
+                case EntitlementOutcome.Entitled when !EntitlementScopes.GrantsHostedGateway(decision.Tier):
+                {
+                    // PAYING, BUT NOT FOR THIS. Enrolment is not the only door into hosted capacity: an account
+                    // that already holds a tenant keeps reaching this gate on every request, so a customer who
+                    // MOVES from a hosted plan to a self-host one would otherwise go on being served hosted
+                    // service indefinitely on a plan that excludes it. The entitlement row is still active, so
+                    // the outcome above is legitimately Entitled - it is the PLAN, not the payment, that
+                    // refuses. Same table as the enrolment gate, so the two can never disagree about a plan.
+                    //
+                    // Denied, and deliberately NOT revoked. Revocation tombstones device credentials, and the
+                    // reason for this refusal is a value written by the payment side: a plan renamed or
+                    // mistyped there would destroy a paying customer's devices, which a later correction cannot
+                    // undo. The deny is re-evaluated on every request and is enough - it is the same 402 the
+                    // caller gets for a cancelled subscription.
+                    //
+                    // The lease is overwritten TERMINAL-NEGATIVE for the same reason the cancellation branch
+                    // does it: it erases any positive lease this tenant still held from its hosted days, so a
+                    // later FAILED read cannot ride that stale positive lease into an Allow.
+                    FileLog.Write("[HostedAccessLease] DENIED: the tenant's entitlement is active but its plan does " +
+                                  "not include hosted gateway capacity (denied, not revoked)");
+                    _leases[key] = new Lease(EntitlementOutcome.NotEntitled, now);
+                    return HostedAccessDecision.DenyNotEntitled;
+                }
+
                 case EntitlementOutcome.Entitled:
                 {
                     // The clip: never past the paid boundary. A null period end means the row recorded none
