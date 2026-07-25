@@ -57,6 +57,32 @@ def test_it_posts_the_target_and_the_follow_up(posted):
     assert calls[0]["body"]["continuePrompt"] == "continue"
 
 
+def test_plain_compact_sends_no_message(posted):
+    # `session compact` is the housekeeping verb: it frees room and leaves the session where it was.
+    # A continuation smuggled in here would put words into a session the caller never agreed to send -
+    # which is exactly why this is a separate verb from compact-continue rather than a default.
+    calls = posted(_ok())
+
+    session_ops.compact_session(SESSION_ID, None)
+
+    assert "continuePrompt" not in calls[0]["body"]
+
+
+def test_the_two_verbs_are_separately_discoverable(monkeypatch):
+    # An agent picks a verb by listing actions. Rolling both behaviours into one entry would hide the
+    # side-effecting one inside a flag description, and whichever became the default would be what
+    # happens when nobody thinks about it.
+    from src import cli  # noqa: E402
+
+    plain = next(a for a in cli._ACTIONS if a["id"] == "session-compact")
+    both = next(a for a in cli._ACTIONS if a["id"] == "session-compact-continue")
+
+    assert "compact-continue" not in plain["command"]
+    assert "NOTHING afterwards" in plain["description"]
+    assert "compact-continue" in both["command"]
+    assert "THEN send it a message" in both["description"]
+
+
 def test_compact_only_sends_no_follow_up(posted):
     # The caller asked for a compaction and nothing else. A continuePrompt smuggled in here would put
     # words into a session the caller never agreed to send.
@@ -140,11 +166,12 @@ def test_a_bracketed_error_does_not_crash_the_verb(posted, monkeypatch, capsys):
     assert "no session at [/tmp/x] on that Director" in capsys.readouterr().out
 
 
-def test_the_action_is_discoverable_with_its_command_line():
-    # Agents find this verb by listing actions, not by reading the source. An action missing from the
+def test_the_actions_are_discoverable_with_their_command_lines():
+    # Agents find these verbs by listing actions, not by reading the source. An action missing from the
     # catalogue does not exist as far as the fleet is concerned.
     from src import cli  # noqa: E402
 
-    action = next(a for a in cli._ACTIONS if a["id"] == "session-compact")
-    assert "session compact" in action["command"]
-    assert action["mutatesState"] is True
+    for action_id in ("session-compact", "session-compact-continue"):
+        action = next(a for a in cli._ACTIONS if a["id"] == action_id)
+        assert "session compact" in action["command"]
+        assert action["mutatesState"] is True

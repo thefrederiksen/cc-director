@@ -32,7 +32,7 @@
             Background="{DynamicResource ButtonBackground}" Foreground="{DynamicResource TextForeground}"
             BorderThickness="0" CornerRadius="3"
             Cursor="Hand"
-            ToolTip.Tip="Summarize the conversation and continue - frees context window, keeps what the session has learned" />
+            ToolTip.Tip="Summarize the conversation - frees context window, keeps what the session has learned" />
     <Button x:Name="BtnClearContext"
             Content="Clear context"
             Click="BtnClearContext_Click"

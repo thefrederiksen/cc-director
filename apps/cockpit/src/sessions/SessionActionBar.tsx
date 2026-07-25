@@ -16,7 +16,7 @@ import { ConfirmDialog } from "../components";
 //
 //   Stop (Cancel cap)          -> POST /sessions/{sid}/escape    (the driver's soft cancel - Esc)
 //   Interrupt (Interrupt cap)  -> POST /sessions/{sid}/interrupt (hard Ctrl+C, stronger than Stop)
-//   Compact (CompactContext cap) -> POST /sessions/{sid}/compact-context (summarize + continue)
+//   Compact (CompactContext cap) -> POST /sessions/{sid}/compact-context (summarize in place)
 //   Clear context (ClearContext cap) -> POST /sessions/{sid}/clear-context (/clear in place)
 //   History (History cap)      -> POST /sessions/{sid}/history-picker (the in-terminal history picker)
 
@@ -116,7 +116,7 @@ export function SessionActionBar({ sessionId, capabilities }: SessionActionBarPr
           className="act-btn"
           disabled={acting}
           onClick={() => setConfirmCompact(true)}
-          title="Summarize the conversation and continue - frees context window, keeps what the session has learned"
+          title="Summarize the conversation - frees context window, keeps what the session has learned"
         >
           {compacting ? "Compacting..." : "Compact"}
         </button>
@@ -150,8 +150,8 @@ export function SessionActionBar({ sessionId, capabilities }: SessionActionBarPr
         open={confirmCompact}
         title="Compact this session's context?"
         message={
-          "This summarizes the conversation so far and continues from the summary, freeing room in the " +
-          "context window. The session keeps what it has learned. It can take a minute or two."
+          "This summarizes the conversation so far, freeing room in the context window. The session keeps " +
+          "what it has learned, and stays where it is - nothing is sent to it. It can take a minute or two."
         }
         confirmLabel="Compact"
         busyLabel="Compacting..."
@@ -159,11 +159,12 @@ export function SessionActionBar({ sessionId, capabilities }: SessionActionBarPr
           if (sessionId === undefined) return;
           setCompacting(true);
           try {
-            // The follow-up is only sent to a driver that can report when the compaction FINISHED.
-            // Without that signal the Gateway refuses a continuation rather than firing it at a
-            // guessed moment - so read the capability here instead of discovering it as an error.
-            const continuePrompt = has("CompactCompletionReport") ? "continue" : undefined;
-            const result = await sendCompactContext(sessionId, continuePrompt);
+            // Compact ONLY - no follow-up prompt. The button frees room in the context window and
+            // stops there; deciding what the session should do next is the person's, and they are
+            // sitting right here with a composer. Compact-and-continue is a separate verb, for the
+            // command line, where a supervising agent rescuing a stuck session has nobody to type
+            // the next prompt.
+            const result = await sendCompactContext(sessionId);
             // Render the Gateway's own sentence verbatim. It is the only thing that knows whether the
             // compaction was watched to completion or merely submitted, and composing a second message
             // here is how "Compacted" ends up on screen for a compaction nobody observed.

@@ -206,11 +206,8 @@ public partial class SessionActionBar : UserControl
     internal const string CompactContextConfirmTitle = "Compact this session's context?";
 
     internal const string CompactContextConfirmMessage =
-        "This summarizes the conversation so far and continues from the summary, freeing room in the " +
-        "context window. The session keeps what it has learned. It can take a minute or two.";
-
-    /// <summary>The follow-up sent once a compaction finishes, matching the command line's default.</summary>
-    private const string CompactContinuePrompt = "continue";
+        "This summarizes the conversation so far, freeing room in the context window. The session keeps " +
+        "what it has learned, and stays where it is - nothing is sent to it. It can take a minute or two.";
 
     /// <summary>Whether the Compact button is showing - the capability gate, readable by tests.</summary>
     internal bool CompactButtonVisible => BtnCompact.IsVisible;
@@ -244,6 +241,10 @@ public partial class SessionActionBar : UserControl
     /// summarizes the conversation and carries on, where Clear context beside it would throw the
     /// conversation away.
     ///
+    /// It compacts and stops there - no follow-up prompt. A person clicking this has a composer in front of
+    /// them and can say what happens next; compact-AND-CONTINUE is a separate verb on the command line, where
+    /// an agent rescuing a stuck session has nobody to type the next prompt.
+    ///
     /// The button shows a working state for the duration and the status line reports the outcome VERBATIM
     /// from the session, because only the session knows whether the compaction was watched to completion or
     /// merely submitted. Composing a cheerful message here is how "compacted" ends up on screen for a
@@ -274,19 +275,15 @@ public partial class SessionActionBar : UserControl
             return;
         }
 
-        // A follow-up can only be timed by a driver that reports when the compaction FINISHED. Read the
-        // capability rather than sending one and catching the refusal - an exception is not control flow.
-        var continuePrompt = session.Driver.Capabilities.HasFlag(DriverCapabilities.CompactCompletionReport)
-            ? CompactContinuePrompt
-            : null;
-
         BtnCompact.Content = "Compacting...";
         try
         {
-            FileLog.Write($"[SessionActionBar] Compact confirmed: session={session.Id}, " +
-                          $"continue={(continuePrompt is null ? "no" : "yes")}");
+            FileLog.Write($"[SessionActionBar] Compact confirmed: session={session.Id}");
             ShowStatus("compacting...");
-            var outcome = await session.CompactContextAsync(continuePrompt);
+            // Compact ONLY - no follow-up. See the Cockpit's note: the person is sitting here with a
+            // composer, so what happens next is theirs to decide. Compact-and-continue is the command
+            // line's verb, for an agent rescuing a session with nobody at its keyboard.
+            var outcome = await session.CompactContextAsync(continuePrompt: null);
             ShowStatus(outcome.Detail);
         }
         catch (Exception ex)

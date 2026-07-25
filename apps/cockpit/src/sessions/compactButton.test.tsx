@@ -79,24 +79,26 @@ describe("Compact button", () => {
     expect(sendCompactContext).not.toHaveBeenCalled();
   });
 
-  it("compacts with a follow-up when the driver can report the finish", async () => {
+  // The button compacts and stops there. A person clicking it has a composer in front of them and can
+  // say what happens next; putting words into their session unasked is not the button's business.
+  // Compact-AND-CONTINUE is a separate verb on the command line, for an agent rescuing a stuck session
+  // that has nobody at its keyboard.
+  it("compacts and sends the session nothing", async () => {
     render(<SessionActionBar sessionId={SESSION} capabilities={CLAUDE_CAPS} />);
 
     await clickCompactAndConfirm();
 
-    await waitFor(() => expect(sendCompactContext).toHaveBeenCalledWith(SESSION, "continue"));
+    await waitFor(() => expect(sendCompactContext).toHaveBeenCalledWith(SESSION));
   });
 
-  // The Gateway REFUSES a continuation it cannot time. The button must know that from the declared
-  // capability rather than sending one and catching the refusal.
-  it("sends no follow-up to a driver that cannot report the finish", async () => {
-    render(
-      <SessionActionBar sessionId={SESSION} capabilities={["ClearContext", "CompactContext"]} />,
-    );
+  it("sends nothing even for a driver that could time a follow-up", async () => {
+    render(<SessionActionBar sessionId={SESSION} capabilities={CLAUDE_CAPS} />);
 
     await clickCompactAndConfirm();
 
-    await waitFor(() => expect(sendCompactContext).toHaveBeenCalledWith(SESSION, undefined));
+    await waitFor(() => expect(sendCompactContext).toHaveBeenCalled());
+    // One argument only: no continuation, whatever the driver is capable of.
+    expect(sendCompactContext.mock.calls[0]).toHaveLength(1);
   });
 
   it("never clears when asked to compact", async () => {
@@ -106,6 +108,16 @@ describe("Compact button", () => {
 
     await waitFor(() => expect(sendCompactContext).toHaveBeenCalled());
     expect(sendClearContext).not.toHaveBeenCalled();
+  });
+
+  it("says what the dialog promises - nothing is sent to the session", () => {
+    render(<SessionActionBar sessionId={SESSION} capabilities={CLAUDE_CAPS} />);
+
+    fireEvent.click(compactButton());
+
+    const dialog = document.querySelector(".ui-confirm");
+    expect(dialog?.textContent).toMatch(/nothing is sent to it/);
+    expect(dialog?.textContent).not.toMatch(/cannot be undone/);
   });
 
   it("shows the Gateway's own sentence, verbatim", async () => {

@@ -38,8 +38,14 @@ public class CompactButtonTests
         Assert.Equal(0, driver.CompactCalls);
     }
 
+    /// <summary>
+    /// The button compacts and stops there. A person clicking it has a composer in front of them and can
+    /// say what happens next; putting words into their session unasked is not the button's business.
+    /// Compact-AND-CONTINUE is a separate verb on the command line, for an agent rescuing a stuck session
+    /// with nobody at its keyboard.
+    /// </summary>
     [AvaloniaFact]
-    public async Task ConfirmingIt_CompactsAndSendsTheFollowUp()
+    public async Task ConfirmingIt_CompactsAndSendsTheSessionNothing()
     {
         var driver = new RecordingDriver();
         using var session = NewSession(driver);
@@ -49,18 +55,14 @@ public class CompactButtonTests
         await bar.CompactContextWithConfirmationAsync();
 
         Assert.Equal(1, driver.CompactCalls);
-        Assert.Equal("continue", Assert.Single(((RecordingBackend)session.Backend).SentTexts));
+        Assert.Empty(((RecordingBackend)session.Backend).SentTexts);
     }
 
-    /// <summary>
-    /// A driver that can compact but cannot report the FINISH gets no follow-up. The Gateway would refuse
-    /// one; the button must know that from the declared capability rather than discovering it as an error,
-    /// because an exception is not control flow.
-    /// </summary>
+    /// <summary>Still nothing sent, even for a driver that COULD time a follow-up.</summary>
     [AvaloniaFact]
-    public async Task ADriverThatCannotReportCompletion_IsCompactedWithoutAFollowUp()
+    public async Task ADriverThatCanTimeAFollowUp_IsStillSentNothing()
     {
-        var driver = new RecordingDriver { CanReportCompletion = false };
+        var driver = new RecordingDriver { CanReportCompletion = true };
         using var session = NewSession(driver);
         var bar = NewBar(session);
         bar.ConfirmOverride = (_, _) => Task.FromResult(true);
@@ -111,6 +113,8 @@ public class CompactButtonTests
         Assert.DoesNotContain("cannot be undone", SessionActionBar.CompactContextConfirmMessage);
         Assert.DoesNotContain("loses", SessionActionBar.CompactContextConfirmMessage);
         Assert.Contains("keeps what it has learned", SessionActionBar.CompactContextConfirmMessage);
+        // The dialog promises the session is left alone; the button must not then send it something.
+        Assert.Contains("nothing is sent to it", SessionActionBar.CompactContextConfirmMessage);
     }
 
     private static SessionActionBar NewBar(Session session)
