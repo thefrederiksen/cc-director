@@ -125,7 +125,14 @@ internal static class HostedEnrollmentEndpoint
         if (entitlements is not null)
         {
             var now = nowUtc ?? DateTime.UtcNow;
-            var outcome = entitlements.LookupBySubject(validation.Subject, now);
+
+            // Evaluate rather than LookupBySubject, because the PLAN gate below needs the tier from the SAME
+            // read the outcome came from - one read, one row, so the two questions can never disagree. Evaluate
+            // already folds a RUNNING trial (returning the Pro tier and the trial's end instant); the block
+            // below is the separate act of CREATING one on a first arrival.
+            var decision = entitlements.Evaluate(validation.Subject, now);
+            var outcome = decision.Outcome;
+            var tier = decision.Tier;
 
             // THE FREE TRIAL GRANT (issue #2117), and this is the ONLY place a trial is created. The public
             // pricing page promises every new account 14 days of Pro with no card, so an account that the
@@ -150,6 +157,12 @@ internal static class HostedEnrollmentEndpoint
                 {
                     FileLog.Write("[HostedEnrollment] enrolling on the free Pro trial (no paid entitlement; the account is inside its trial window)");
                     outcome = Tenancy.EntitlementOutcome.Entitled;
+
+                    // The trial grants the PRO plan - the same tier Evaluate returns for a running trial on
+                    // every later read - so the plan gate below sees the trial for what it is rather than
+                    // judging it on the absent paid row's null tier. Stated explicitly here so a freshly
+                    // granted trial and an already-running one are ruled on identically.
+                    tier = Tenancy.EntitlementRegistry.TierPro;
                 }
                 else if (trial.Outcome == Tenancy.TrialOutcome.Unknown)
                 {
@@ -173,6 +186,26 @@ internal static class HostedEnrollmentEndpoint
                 FileLog.Write("[HostedEnrollment] REFUSED: the entitlement read succeeded and this account has no active entitlement (no tenant minted, no device key issued)");
                 return new EnrollResult(StatusCodes.Status402PaymentRequired, null,
                     "this account does not have an active hosted subscription");
+            }
+
+            // THE PLAN GATE, and it is a SECOND question the first one cannot answer. Above we established
+            // that this account pays. Here we establish that what it pays for INCLUDES hosted capacity - which
+            // a self-host plan deliberately does not. Both refusals are a 402, but for different reasons: the
+            // first is "you have not paid", this one is "your plan does not include this".
+            //
+            // Without this, every paid plan would provision hosted capacity, because the entitlement read is
+            // tier-agnostic on purpose and passes the plan through unexamined. A self-host subscriber would
+            // then obtain a tenant and a device key - the tunnel, the cockpit, the mobile application - on a
+            // plan priced to exclude exactly that. Nothing would look wrong: enrolment would simply succeed.
+            //
+            // The verdict is not computed here. It is read from the ONE table that owns what a plan grants
+            // (EntitlementScopes), so adding a plan is one edit there and never a new branch at a call site.
+            if (!Tenancy.EntitlementScopes.GrantsHostedGateway(tier))
+            {
+                FileLog.Write("[HostedEnrollment] REFUSED: the account pays, but its plan does not include hosted " +
+                              "gateway capacity (no tenant minted, no device key issued)");
+                return new EnrollResult(StatusCodes.Status402PaymentRequired, null,
+                    "this plan does not include the hosted gateway");
             }
         }
 

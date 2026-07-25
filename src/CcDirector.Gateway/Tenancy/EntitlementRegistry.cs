@@ -322,4 +322,12 @@ public sealed class EntitlementRegistry
     /// </summary>
     public const string SubscribeMessage =
         "Your DevThrottle Pro access has ended. Subscribe to keep using the wingman, dictation and spoken replies.";
+
+    /// <summary>
+    /// The pro SELF-HOST plan tier: the artificial-intelligence features only, on a Gateway the customer runs
+    /// themselves. This reader treats it exactly like any other tier - it is passed through unexamined, because
+    /// this type answers "is there live money", not "what does the plan include". What it grants (and, load
+    /// bearing, what it does NOT) lives in <see cref="EntitlementScopes"/>.
+    /// </summary>
+    public const string TierProSelfHost = "pro_selfhost";
 }
