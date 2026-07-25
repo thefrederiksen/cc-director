@@ -533,6 +533,44 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     }
 
     /// <summary>
+    /// Compact a session anywhere in the fleet, through the Gateway's POST /sessions/{sid}/compact-context,
+    /// which routes it to the owning Director over the tunnel. Used by the local POST /fleet/compact for a
+    /// target this Director does not host (issue #2150).
+    ///
+    /// Uses a DEDICATED HttpClient: the shared <c>_http</c> gives up after 10 seconds, but a compaction
+    /// legitimately runs for minutes, and this call deliberately waits for the FINISH rather than the
+    /// submission. Its timeout sits outside the Gateway's own wait for the verb, which sits outside the
+    /// Director's compaction wait - so the innermost bound always fires first and names what failed.
+    /// </summary>
+    public async Task<CompactContextResponse> CompactFleetAsync(string toSessionId, string? continuePrompt, CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled)
+            throw new InvalidOperationException("Gateway is not configured; cannot reach a remote session.");
+        if (string.IsNullOrWhiteSpace(toSessionId))
+            throw new ArgumentException("Target session id is required", nameof(toSessionId));
+
+        FileLog.Write($"[GatewayClient] CompactFleetAsync: POST /sessions/{toSessionId}/compact-context " +
+                      $"continue={(string.IsNullOrWhiteSpace(continuePrompt) ? "no" : "yes")}");
+        using var http = new HttpClient(GatewayHttp.Handler())
+        {
+            BaseAddress = new Uri(_activeUrl.TrimEnd('/') + "/"),
+            Timeout = TimeSpan.FromMinutes(4),
+        };
+        if (!string.IsNullOrEmpty(_config.Token))
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _config.Token);
+
+        var body = new CompactContextRequest { ContinuePrompt = continuePrompt };
+        using var resp = await http.PostAsJsonAsync($"sessions/{toSessionId}/compact-context", body, ct);
+        if (!resp.IsSuccessStatusCode)
+            throw await RelayFailureAsync(resp, $"compaction of {toSessionId}", ct);
+
+        var parsed = await resp.Content.ReadFromJsonAsync<CompactContextResponse>(ct);
+        if (parsed is null)
+            throw new InvalidOperationException("Gateway compaction returned an unparsable body.");
+        return parsed;
+    }
+
+    /// <summary>
     /// Read a session's terminal buffer anywhere in the fleet, through the Gateway's GET
     /// /sessions/{sid}/buffer, which routes it to the owning Director over the tunnel. Used by the local
     /// GET /fleet/buffer for a target this Director does not host.

@@ -19,6 +19,11 @@ public interface ITranscriptReader
 
     /// <summary>The repo's transcript files, newest first.</summary>
     List<(string ClaudeSessionId, DateTime LastWriteUtc)> ListTranscripts(string repoPath);
+
+    /// <summary>The timestamp of the newest COMPACTION mark in this transcript, or null when the file
+    /// does not exist or has never been compacted. The completion signal for compact-and-continue
+    /// (issue #2150).</summary>
+    DateTime? LastCompactionUtc(string claudeSessionId, string repoPath);
 }
 
 /// <summary>Disk-backed implementation over the same Core readers the Director uses.</summary>
@@ -43,4 +48,7 @@ public sealed class ClaudeTranscriptReader : ITranscriptReader
 
     public List<(string ClaudeSessionId, DateTime LastWriteUtc)> ListTranscripts(string repoPath)
         => ClaudeSessionReader.ListTranscripts(repoPath);
+
+    public DateTime? LastCompactionUtc(string claudeSessionId, string repoPath)
+        => CompactionMarker.ReadLastCompactionUtc(ClaudeSessionReader.GetJsonlPath(claudeSessionId, repoPath));
 }

@@ -1,0 +1,150 @@
+"""Tests for `cc-devthrottle session compact`: the fleet verb that rescues a full session (issue #2150).
+
+A session whose context window is full swallows every message sent to it, so this command is the only
+way an agent gets one moving again. Two things therefore have to be right, and both are asserted here:
+what goes out on the wire (the target, and the follow-up that is sent only after compaction finishes),
+and what comes back (a report that never dresses "submitted but not watched" up as "compacted").
+"""
+
+import sys
+from pathlib import Path
+
+import pytest
+import typer
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from src import session_ops  # noqa: E402
+
+SESSION_ID = "11111111-2222-3333-4444-555555555555"
+
+
+@pytest.fixture
+def posted(monkeypatch):
+    """Capture the request the verb posts, and serve a chosen response - no real HTTP."""
+    calls = []
+
+    def serve(response):
+        monkeypatch.setenv("CC_SESSION_ID", SESSION_ID)
+        # An explicit target is resolved against the fleet roster; serve one rather than reaching for a
+        # live Director.
+        monkeypatch.setattr(session_ops, "_get_sessions",
+                            lambda: [{"sessionId": SESSION_ID, "name": "stuck", "machineName": "M", "number": 114}])
+
+        def post_json(path, body, timeout=30):
+            calls.append({"path": path, "body": body, "timeout": timeout})
+            return response
+
+        monkeypatch.setattr(session_ops.director, "post_json", post_json)
+        return calls
+
+    return serve
+
+
+def _ok(detail="Compacted in 41 seconds, then sent the follow-up.", observed=True):
+    return {"submitted": True, "compactionObserved": observed, "waitedSeconds": 41.0,
+            "continued": True, "detail": detail}
+
+
+def test_it_posts_the_target_and_the_follow_up(posted):
+    calls = posted(_ok())
+
+    session_ops.compact_session(SESSION_ID, "continue")
+
+    assert calls[0]["path"] == "fleet/compact"
+    assert calls[0]["body"]["toSessionId"] == SESSION_ID
+    assert calls[0]["body"]["continuePrompt"] == "continue"
+
+
+def test_compact_only_sends_no_follow_up(posted):
+    # The caller asked for a compaction and nothing else. A continuePrompt smuggled in here would put
+    # words into a session the caller never agreed to send.
+    calls = posted(_ok(observed=True))
+
+    session_ops.compact_session(SESSION_ID, None)
+
+    assert "continuePrompt" not in calls[0]["body"]
+
+
+def test_it_defaults_to_this_session_when_no_target_is_given(posted):
+    calls = posted(_ok())
+
+    session_ops.compact_session(None, "continue")
+
+    assert calls[0]["body"]["toSessionId"] == SESSION_ID
+
+
+def test_it_waits_far_longer_than_the_ordinary_verb(posted):
+    # Compaction routinely runs for a minute or more, and this call deliberately waits for the FINISH.
+    # At the 30-second default the client would give up on a compaction that was working perfectly and
+    # report a failure - the exact false alarm this verb exists to avoid.
+    calls = posted(_ok())
+
+    session_ops.compact_session(SESSION_ID, "continue")
+
+    assert calls[0]["timeout"] >= 240
+
+
+def test_a_watched_compaction_reports_it_as_compacted(posted, capsys):
+    posted(_ok())
+
+    session_ops.compact_session(SESSION_ID, "continue")
+
+    out = capsys.readouterr().out
+    assert "Compacted" in out
+    assert "then sent the follow-up" in out
+
+
+def test_an_unwatched_compaction_is_not_reported_as_compacted(posted, capsys):
+    # Some tools can be told to compact but cannot report finishing. Saying "Compacted" there would tell
+    # an agent the session is moving again when nobody actually checked.
+    posted({"submitted": True, "compactionObserved": False, "waitedSeconds": 0.0, "continued": False,
+            "detail": "Compaction submitted. Codex cannot report when it finishes, so this was not watched."})
+
+    session_ops.compact_session(SESSION_ID, None)
+
+    out = capsys.readouterr().out
+    assert "Compaction submitted" in out
+    assert "Compacted " not in out
+
+
+def test_a_failure_is_reported_and_exits_nonzero(posted, monkeypatch, capsys):
+    monkeypatch.setenv("CC_SESSION_ID", SESSION_ID)
+
+    def boom(path, body, timeout=30):
+        raise session_ops.director.DirectorError("director returned Timeout")
+
+    monkeypatch.setattr(session_ops.director, "post_json", boom)
+
+    with pytest.raises(typer.Exit):
+        session_ops.compact_session(None, "continue")
+
+    assert "director returned Timeout" in capsys.readouterr().out
+
+
+def test_a_bracketed_error_does_not_crash_the_verb(posted, monkeypatch, capsys):
+    # The server's error text can quote a path or a fragment of the session's own output. Interpolated
+    # raw into Rich markup, a token like [/tmp/x] raises MarkupError out of the branch whose only job is
+    # to explain a failure - the same defect already fixed for the buffer verb.
+    monkeypatch.setenv("CC_SESSION_ID", SESSION_ID)
+
+    def boom(path, body, timeout=30):
+        raise session_ops.director.DirectorError("no session at [/tmp/x] on that Director")
+
+    monkeypatch.setattr(session_ops.director, "post_json", boom)
+
+    with pytest.raises(typer.Exit):
+        session_ops.compact_session(None, "continue")
+
+    assert "no session at [/tmp/x] on that Director" in capsys.readouterr().out
+
+
+def test_the_action_is_discoverable_with_its_command_line():
+    # Agents find this verb by listing actions, not by reading the source. An action missing from the
+    # catalogue does not exist as far as the fleet is concerned.
+    from src import cli  # noqa: E402
+
+    action = next(a for a in cli._ACTIONS if a["id"] == "session-compact")
+    assert "session compact" in action["command"]
+    assert action["mutatesState"] is True

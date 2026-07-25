@@ -274,6 +274,11 @@ public sealed class DirectorCommandRouterTimeoutTests
             "recap-generate's own timeout must fire before the Gateway backstop, or its specific error is masked.");
         Assert.True(DirectorCommandRouter.LanguageModelCommandTimeout > CcDirector.Core.Wingman.WingmanService.ProcessTimeout,
             "wingman-ask's own timeout must fire before the Gateway backstop, or its specific error is masked.");
+        // compact-context (issue #2150) joined this family: it waits on a language model summarizing a whole
+        // conversation. Its inner bound must fire first so the caller is told "the tool never reported a
+        // finished compaction" - which says what to do next - instead of "the Director did not answer".
+        Assert.True(DirectorCommandRouter.LanguageModelCommandTimeout > CcDirector.Core.Sessions.Session.CompactionWaitTimeout,
+            "the Director's compaction wait must fire before the Gateway backstop, or its specific error is masked.");
     }
 
     [Fact]

@@ -33,7 +33,7 @@ internal sealed class SessionWriteExecutor : ISessionCommandArea
         // Worker W1: the remaining Director session STATE writes, moved onto the tunnel dispatch. Each core
         // below reproduces its old REST lambda's guards and effect verbatim, so the REST path and the tunnel
         // verb share one core and cannot drift.
-        "clear-context", "history-picker", "mobile-mode", "voice-mode", "wingman-enabled",
+        "clear-context", "compact-context", "history-picker", "mobile-mode", "voice-mode", "wingman-enabled",
         "relink", "request-deletion", "cancel-deletion", "execute-action",
         // Gateway Cleanup Phase 0 (wave 3): the final deferred write verbs. handover-generate is
         // director-level (creates/targets a session from a source); wingman-ask and recap-generate are
@@ -74,6 +74,7 @@ internal sealed class SessionWriteExecutor : ISessionCommandArea
             "resize" => Resize(sessionManager, command),
             "terminal-input" => TerminalInput(sessionManager, command),
             "clear-context" => await ClearContextAsync(sessionManager, command, cancellationToken),
+            "compact-context" => await CompactContextAsync(sessionManager, command, cancellationToken),
             "history-picker" => await HistoryPickerAsync(sessionManager, command),
             "mobile-mode" => MobileMode(sessionManager, command, context.Services),
             "voice-mode" => VoiceMode(sessionManager, command, context.Services),
@@ -194,6 +195,55 @@ internal sealed class SessionWriteExecutor : ISessionCommandArea
             accepted = true,
             oldAgentSessionId = oldId,
             newAgentSessionId = newId,
+        }));
+    }
+
+    /// <summary>
+    /// The <c>compact-context</c> verb (issue #2150): summarize a session's conversation IN PLACE and,
+    /// when the payload carries one, send a follow-up prompt the moment the compaction finishes. This is
+    /// the only way a full session gets moving again without a person at its keyboard.
+    ///
+    /// Unlike <see cref="ClearContextAsync"/> there is no re-link: compaction keeps the agent session id.
+    /// Invalid id -&gt; BadRequest; missing session -&gt; NotFound; a driver that declares no compaction, or
+    /// that cannot time a continuation (NotSupportedException) -&gt; Conflict; a compaction that never
+    /// reports finishing (TimeoutException) -&gt; Timeout, naming what did not happen rather than letting
+    /// the Gateway's outer wait mask it with "the Director did not answer".
+    /// </summary>
+    internal static async Task<DirectorCommandResult> CompactContextAsync(SessionManager sessionManager, DirectorCommand command, CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParse(command.SessionId, out var guid))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "invalid session id format");
+
+        var session = sessionManager.GetSession(guid);
+        if (session is null)
+            return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found");
+
+        var request = SessionCommandExecutor.Deserialize<CompactContextRequest>(command.PayloadJson);
+        CompactContextOutcome outcome;
+        try
+        {
+            outcome = await session.CompactContextAsync(request?.ContinuePrompt, cancellationToken);
+        }
+        catch (NotSupportedException ex)
+        {
+            return DirectorCommandResult.Fail(DirectorCommandStatus.Conflict, ex.Message);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return DirectorCommandResult.Fail(DirectorCommandStatus.Conflict, ex.Message);
+        }
+        catch (TimeoutException ex)
+        {
+            return DirectorCommandResult.Fail(DirectorCommandStatus.Timeout, ex.Message);
+        }
+
+        return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new CompactContextResponse
+        {
+            Submitted = outcome.Submitted,
+            CompactionObserved = outcome.CompactionObserved,
+            WaitedSeconds = Math.Round(outcome.WaitedSeconds, 1),
+            Continued = outcome.Continued,
+            Detail = outcome.Detail,
         }));
     }
 

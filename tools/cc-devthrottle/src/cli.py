@@ -20,6 +20,7 @@ from . import setup_ops
 from . import workflow_ops
 from .session_ops import (
     ask_session,
+    compact_session,
     hold_session,
     interrupt_session,
     list_sessions,
@@ -170,6 +171,25 @@ _ACTIONS = [
         "args": [
             {"name": "target", "required": False},
             {"name": "minutes", "required": False},
+        ],
+    },
+    {
+        "id": "session-compact",
+        "description": (
+            "Compact a session's context, then continue it. A session whose context window is full "
+            "cannot read anything you send it - every message is swallowed and the tool reprints its "
+            "context-limit line - so this is the only way to rescue one from outside. Compaction "
+            "SUMMARIZES the conversation, so the session keeps what it has learned; clearing would "
+            "throw it away. The call waits for the compaction to finish (up to a couple of minutes on "
+            "a full session) and only then sends the follow-up, which defaults to 'continue'. Use "
+            "--then to send something else, or --compact-only to send nothing."
+        ),
+        "command": 'cc-devthrottle session compact [target] [--then "<text>"] [--compact-only]',
+        "mutatesState": True,
+        "args": [
+            {"name": "target", "required": False},
+            {"name": "then", "required": False},
+            {"name": "compact_only", "required": False},
         ],
     },
     {
@@ -711,6 +731,37 @@ def hold(
     repainting, no longer un-holds it, so a hold you set actually lasts as long as you asked for.
     """
     hold_session(target, release=release, minutes=minutes)
+
+
+@session_app.command()
+def compact(
+    target: Optional[str] = typer.Argument(
+        None, help="Session to compact. Defaults to THIS session (CC_SESSION_ID)."
+    ),
+    then: str = typer.Option(
+        "continue",
+        "--then",
+        help="What to send once the compaction finishes. Defaults to 'continue'.",
+    ),
+    compact_only: bool = typer.Option(
+        False, "--compact-only", help="Compact and send nothing afterwards."
+    ),
+) -> None:
+    """Compact a session's context, then continue it.
+
+    A session whose context window is full cannot read anything you send it - every message is
+    swallowed and the tool just reprints its context-limit line. Compaction is the only thing that
+    gets it moving again, and this is how you do it without walking to that keyboard.
+
+    Compaction SUMMARIZES the conversation, so the session keeps what it has learned. That is the
+    difference from clearing, which throws the conversation away.
+
+    This waits for the compaction to actually finish and then sends the follow-up, so it can take a
+    couple of minutes on a full session. The tool tells us when it has finished; nothing here is
+    timed on a guess. A tool that cannot report finishing can still be compacted with
+    --compact-only, but it will not accept a follow-up.
+    """
+    compact_session(target, None if compact_only else then)
 
 
 @session_app.command()

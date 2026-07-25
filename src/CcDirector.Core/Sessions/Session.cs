@@ -2280,10 +2280,19 @@ public sealed class Session : IDisposable
     // GenericDriver (the pre-driver bytes, minimal declared capabilities). UIs and
     // endpoints read Driver.Capabilities to know which verbs this session supports.
 
+    /// <summary>
+    /// Test seam: a driver supplied directly instead of resolved from <see cref="AgentKind"/>. Null in
+    /// every real session - drivers are resolved from the kind, never assigned - and settable only from
+    /// this assembly's tests, so the verbs below can be exercised against a stub driver without a live
+    /// agent process and without reading the developer's own transcript store.
+    /// </summary>
+    internal Drivers.IAgentDriver? DriverOverride { get; set; }
+
     /// <summary>The interaction driver for this session's CLI. Stateless singleton.</summary>
-    public Drivers.IAgentDriver Driver => AgentPlugins.AgentPluginRegistry.Contains(AgentKind)
-        ? AgentPlugins.AgentPluginRegistry.Get(AgentKind).Driver
-        : Drivers.AgentDrivers.For(AgentKind);
+    public Drivers.IAgentDriver Driver => DriverOverride
+        ?? (AgentPlugins.AgentPluginRegistry.Contains(AgentKind)
+            ? AgentPlugins.AgentPluginRegistry.Get(AgentKind).Driver
+            : Drivers.AgentDrivers.For(AgentKind));
 
     /// <summary>Soft-stop the current turn (Esc for Claude and pi).</summary>
     public async Task CancelTurnAsync()
@@ -2356,6 +2365,119 @@ public sealed class Session : IDisposable
         }
         throw new InvalidOperationException(
             $"ClearContextAsync: no new transcript appeared within 60s (session={Id}, oldId={oldId})");
+    }
+
+    /// <summary>
+    /// How long a compaction is allowed to take before the Director stops waiting for it. This is the
+    /// INNER bound of the compact-and-continue call and must stay strictly shorter than the Gateway's
+    /// outer wait for the verb (DirectorCommandRouter.LanguageModelCommandTimeout, 3 minutes), so the
+    /// inner one always fires first and reports WHAT failed - "the tool never reported a finished
+    /// compaction" - instead of the outer one masking it with "the Director did not answer".
+    /// </summary>
+    public static readonly TimeSpan CompactionWaitTimeout = TimeSpan.FromMinutes(2);
+
+    /// <summary>How often the completion mark is re-read while waiting. The tool writes it once; there is
+    /// nothing to gain from a tighter loop over a file that only grows.</summary>
+    private static readonly TimeSpan CompactionPollInterval = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Compact the conversation in place and, when asked, CONTINUE it (issue #2150).
+    ///
+    /// A session whose context window is full cannot read anything sent to it - every prompt is swallowed
+    /// and the tool prints its context-limit line again - so nothing but compaction gets it moving, and
+    /// until now nothing but a person at that keyboard could compact it. This is that verb.
+    ///
+    /// Unlike <see cref="ClearContextAsync"/> there is NO transcript re-link: compaction continues under
+    /// the same agent session id (verified against live claude transcripts), so re-linking would wait for
+    /// a new transcript that is never coming.
+    ///
+    /// The continuation is timed on the tool's OWN completion signal, never on a delay: with
+    /// <paramref name="continuePrompt"/> set, the follow-up is submitted only once the driver reports the
+    /// compaction finished. A driver that cannot report completion refuses the continuation outright
+    /// rather than firing a prompt into a composer that is still summarizing.
+    /// </summary>
+    /// <param name="continuePrompt">The text to send once compaction finishes, or null/blank to compact only.</param>
+    /// <param name="ct">Cancels the wait promptly; the compaction itself is already submitted by then.</param>
+    /// <param name="waitTimeout">Overrides <see cref="CompactionWaitTimeout"/>. Tests pass a short one so the
+    /// give-up path can be proven in milliseconds instead of minutes; callers pass null.</param>
+    /// <param name="pollInterval">Overrides <see cref="CompactionPollInterval"/>, same reason.</param>
+    public async Task<CompactContextOutcome> CompactContextAsync(
+        string? continuePrompt = null,
+        CancellationToken ct = default,
+        TimeSpan? waitTimeout = null,
+        TimeSpan? pollInterval = null)
+    {
+        if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed)
+            throw new InvalidOperationException($"CompactContextAsync: session {Id} is not running (status={Status})");
+
+        var driver = Driver;
+        if (!driver.Capabilities.HasFlag(Drivers.DriverCapabilities.CompactContext))
+            throw new NotSupportedException($"CompactContextAsync: the {driver.Kind} driver declares no compaction.");
+
+        var wantsContinue = !string.IsNullOrWhiteSpace(continuePrompt);
+        var agentSessionId = ClaudeSessionId;
+        var canObserve = driver.Capabilities.HasFlag(Drivers.DriverCapabilities.CompactCompletionReport)
+                         && !string.IsNullOrEmpty(agentSessionId);
+
+        if (wantsContinue && !driver.Capabilities.HasFlag(Drivers.DriverCapabilities.CompactCompletionReport))
+            throw new NotSupportedException(
+                $"CompactContextAsync: the {driver.Kind} driver cannot report when a compaction finished, " +
+                "so a follow-up prompt cannot be timed. Compact without a continuation, then send the " +
+                "prompt yourself once the session is idle.");
+        if (wantsContinue && string.IsNullOrEmpty(agentSessionId))
+            throw new InvalidOperationException(
+                $"CompactContextAsync: session {Id} has no agent session id yet, so the compaction cannot be " +
+                "watched and a follow-up prompt cannot be timed.");
+
+        FileLog.Write($"[Session] CompactContextAsync: session={Id}, driver={driver.Kind}, " +
+                      $"agentSessionId={agentSessionId ?? "(none)"}, continue={(wantsContinue ? "yes" : "no")}");
+
+        var t0 = DateTime.UtcNow;
+        await driver.CompactContextAsync(_backend);
+        SetActivityState(ActivityState.Working);
+
+        if (!canObserve)
+        {
+            FileLog.Write($"[Session] CompactContextAsync: {driver.Kind} reports no completion signal; " +
+                          "compaction submitted, not watched");
+            return new CompactContextOutcome(
+                Submitted: true,
+                CompactionObserved: false,
+                WaitedSeconds: 0,
+                Continued: false,
+                Detail: $"Compaction submitted. {driver.Kind} cannot report when it finishes, so this was not watched.");
+        }
+
+        var allowed = waitTimeout ?? CompactionWaitTimeout;
+        var poll = pollInterval ?? CompactionPollInterval;
+        var deadline = t0 + allowed;
+        while (DateTime.UtcNow < deadline)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (driver.HasCompactedSince(agentSessionId!, WorkingDirectory, t0))
+            {
+                var waited = (DateTime.UtcNow - t0).TotalSeconds;
+                FileLog.Write($"[Session] CompactContextAsync: compaction finished after {waited:F1}s (session={Id})");
+
+                if (!wantsContinue)
+                    return new CompactContextOutcome(true, true, waited, false,
+                        $"Compacted in {waited:F0} seconds.");
+
+                // Framework, not Agent or UserInput: this text is the product's own follow-up to a
+                // compaction it ran. It must not clear the owner's hold and must not be counted as
+                // anybody's turn.
+                await SendTextAsync(continuePrompt!, SendSource.Framework);
+                FileLog.Write($"[Session] CompactContextAsync: continuation submitted (session={Id})");
+                return new CompactContextOutcome(true, true, waited, true,
+                    $"Compacted in {waited:F0} seconds, then sent the follow-up.");
+            }
+            await Task.Delay(poll, ct);
+        }
+
+        throw new TimeoutException(
+            $"CompactContextAsync: {driver.Kind} did not report a finished compaction within " +
+            $"{allowed.TotalSeconds:F0} seconds (session={Id}). The compaction command was " +
+            "submitted; no follow-up was sent.");
     }
 
     private void SetActivityState(ActivityState newState)

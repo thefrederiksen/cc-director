@@ -928,6 +928,47 @@ internal static class ControlEndpoints
             }
         });
 
+        // POST /fleet/compact - compact a session's context, and continue it (issue #2150). The rescue for a
+        // session whose window is full: it can no longer read anything sent to it, so no message, no
+        // interrupt and no amount of waiting reaches it - only compaction does. The call BLOCKS until the
+        // tool reports the compaction finished (bounded by Session.CompactionWaitTimeout) so the answer is
+        // what happened, not what was attempted; the optional continuation is submitted at that moment.
+        app.MapPost("/fleet/compact", async (FleetCompactRequest req, CancellationToken ct) =>
+        {
+            if (req is null || string.IsNullOrWhiteSpace(req.ToSessionId))
+                return Results.BadRequest(new { error = "toSessionId is required" });
+            if (!Guid.TryParse(req.ToSessionId, out var toGuid))
+                return Results.BadRequest(new { error = "invalid toSessionId format" });
+
+            if (sessionManager.GetSession(toGuid) is not null)
+            {
+                var command = new DirectorCommand
+                {
+                    Verb = "compact-context",
+                    SessionId = req.ToSessionId,
+                    PayloadJson = JsonSerializer.Serialize(new CompactContextRequest { ContinuePrompt = req.ContinuePrompt }),
+                };
+                var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command, cancellationToken: ct);
+                return CommandResultToHttp(result);
+            }
+
+            var gw = gatewayClientProvider?.Invoke();
+            if (gw is not { IsEnabled: true })
+                return Results.Json(new { error = "Session not found on this Director and no Gateway is configured." },
+                    statusCode: StatusCodes.Status404NotFound);
+            try
+            {
+                var compacted = await gw.CompactFleetAsync(req.ToSessionId, req.ContinuePrompt, ct);
+                return Results.Json(compacted);
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[ControlEndpoints] /fleet/compact relay to {toGuid} FAILED: {ex.Message}");
+                return Results.Json(new { error = $"Cannot compact the target via the Gateway: {ex.Message}" },
+                    statusCode: StatusCodes.Status502BadGateway);
+            }
+        });
+
         // POST /fleet/hold - park a session, or release it (the old POST /sessions/{sid}/hold). A hold asked
         // for mid-turn is DEFERRED and applies when the turn settles (see HoldState) - the response's pending
         // flag says so, which is why it is surfaced rather than swallowed.

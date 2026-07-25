@@ -296,5 +296,6 @@ public sealed class ContextUsageTests
         public List<TurnWidgetDto> ReadWidgets(string claudeSessionId, string repoPath) => new();
         public SessionUsageDto? ReadUsage(string claudeSessionId, string repoPath) => _usage;
         public List<(string ClaudeSessionId, DateTime LastWriteUtc)> ListTranscripts(string repoPath) => new();
+        public DateTime? LastCompactionUtc(string claudeSessionId, string repoPath) => null;
     }
 }

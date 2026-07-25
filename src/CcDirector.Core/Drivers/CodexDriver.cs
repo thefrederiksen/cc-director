@@ -22,7 +22,12 @@ public sealed class CodexDriver : IAgentDriver
         | DriverCapabilities.Interrupt
         | DriverCapabilities.ClearContext
         | DriverCapabilities.ContextUsage
-        | DriverCapabilities.ModelReport;
+        | DriverCapabilities.ModelReport
+        // Codex compacts with /compact, the same command its own catalog documents. It gets
+        // CompactContext but NOT CompactCompletionReport: the Director cannot read codex's records to
+        // learn when a compaction finished, so compact-and-continue refuses for codex rather than
+        // timing the follow-up on a guess (issue #2150).
+        | DriverCapabilities.CompactContext;
 
     public IReadOnlyList<AgentSlashCommand> SlashCommands => CodexSlashCommands.All;
 
@@ -93,6 +98,14 @@ public sealed class CodexDriver : IAgentDriver
         ArgumentNullException.ThrowIfNull(backend);
         FileLog.Write("[CodexDriver] ClearContextAsync: submitting /clear");
         return backend.SendTextAsync("/clear");
+    }
+
+    /// <summary>Codex's in-place summarize: the /compact command its own catalog documents.</summary>
+    public Task CompactContextAsync(ISessionBackend backend)
+    {
+        ArgumentNullException.ThrowIfNull(backend);
+        FileLog.Write("[CodexDriver] CompactContextAsync: submitting /compact");
+        return backend.SendTextAsync("/compact");
     }
 
     public List<TurnWidgetDto> ReadWidgets(string agentSessionId, string workingDirectory) =>

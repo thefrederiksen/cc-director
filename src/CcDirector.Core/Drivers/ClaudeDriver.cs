@@ -50,7 +50,9 @@ public sealed class ClaudeDriver : IAgentDriver
         | DriverCapabilities.ModelSelection
         | DriverCapabilities.ContextUsage
         | DriverCapabilities.ModelReport
-        | DriverCapabilities.TokenUsage;
+        | DriverCapabilities.TokenUsage
+        | DriverCapabilities.CompactContext
+        | DriverCapabilities.CompactCompletionReport;
 
     public IReadOnlyList<AgentSlashCommand> SlashCommands => BuiltInSlashCommands.All
         .Select(command => new AgentSlashCommand(
@@ -200,6 +202,32 @@ public sealed class ClaudeDriver : IAgentDriver
         ArgumentNullException.ThrowIfNull(backend);
         FileLog.Write("[ClaudeDriver] ClearContextAsync: submitting /clear");
         return backend.SendTextAsync("/clear");
+    }
+
+    /// <summary>
+    /// Claude's <c>/compact</c>: it summarizes the conversation so far and continues from the summary,
+    /// in the SAME agent session. Submitted the same way a person would type it - through the shared
+    /// composer submit, so a composer that is not accepting input fails loud rather than dropping the
+    /// command into the void.
+    /// </summary>
+    public Task CompactContextAsync(ISessionBackend backend)
+    {
+        ArgumentNullException.ThrowIfNull(backend);
+        FileLog.Write("[ClaudeDriver] CompactContextAsync: submitting /compact");
+        return backend.SendTextAsync("/compact");
+    }
+
+    /// <summary>
+    /// Has claude finished a compaction since <paramref name="sinceUtc"/>? Read from its own transcript:
+    /// a completed compaction appends an entry carrying <c>isCompactSummary</c>, stamped with the moment
+    /// it landed. The mark must be NEWER than the moment we submitted the command, so an older compaction
+    /// in the same conversation - and this session has usually compacted before - can never be mistaken
+    /// for the one we just asked for.
+    /// </summary>
+    public bool HasCompactedSince(string agentSessionId, string workingDirectory, DateTime sinceUtc)
+    {
+        var last = _transcripts.LastCompactionUtc(agentSessionId, workingDirectory);
+        return last is not null && last.Value >= sinceUtc;
     }
 
     public List<TurnWidgetDto> ReadWidgets(string agentSessionId, string workingDirectory)
