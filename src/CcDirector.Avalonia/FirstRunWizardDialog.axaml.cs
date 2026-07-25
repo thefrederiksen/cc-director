@@ -182,21 +182,24 @@ public partial class FirstRunWizardDialog : Window
 
         // Defaults: the per-step configuration below overrides what it needs.
         PrimaryButton.IsVisible = false;
-        StepSkipLink.IsVisible = false;
         FooterNote.IsVisible = false;
 
+        // The wizard is an OFFER, not a gauntlet: on every step the primary button moves you
+        // forward whether or not you took the offer (doing nothing writes nothing), so there is no
+        // separate skip link. The two deliberate exceptions: zero agents blocks Continue (the
+        // product cannot work without one - "I'll do this later" is the honest way past), and the
+        // whole-wizard skip lives on Welcome.
         switch (step)
         {
             case WizardStep.Welcome:
                 // Primary ("Set me up") and the quiet whole-wizard skip live in the content panel.
-                FooterNote.Text = "Takes about 3 minutes. You can change everything later in Settings.";
+                FooterNote.Text = "Takes about 3 minutes. Every step is optional, and everything can be changed later in Settings.";
                 FooterNote.IsVisible = true;
                 break;
 
             case WizardStep.Agents:
                 PrimaryButton.Content = "Use these agents";
                 PrimaryButton.IsVisible = true;
-                ConfigureStepSkip();
                 if (!_agentScanRan)
                     _ = ScanAgentsAsync();
                 break;
@@ -205,30 +208,28 @@ public partial class FirstRunWizardDialog : Window
                 PrimaryButton.Content = "Continue";
                 PrimaryButton.IsVisible = true;
                 PrimaryButton.IsEnabled = true;
-                ConfigureStepSkip();
                 _ = RefreshToolsScreenAsync();
                 break;
 
             case WizardStep.Code:
                 PrimaryButton.Content = _codeAddedRoots.Count > 0 ? "Looks right" : "Continue";
                 PrimaryButton.IsVisible = true;
-                ConfigureStepSkip();
                 if (!_codeScanRan)
                     _ = ScanCodeFoldersAsync();
                 break;
 
             case WizardStep.Screenshots:
-                PrimaryButton.Content = "Use this folder";
+                // Always live: with a folder chosen it confirms; without one it simply moves on
+                // and saves nothing.
+                PrimaryButton.Content = _shotsSelectedPath is not null ? "Use this folder" : "Continue";
                 PrimaryButton.IsVisible = true;
-                PrimaryButton.IsEnabled = _shotsSelectedPath is not null;
-                ConfigureStepSkip();
+                PrimaryButton.IsEnabled = true;
                 if (!_shotsDetectRan)
                     _ = DetectScreenshotsForWizardAsync();
                 break;
 
             case WizardStep.Gateway:
                 PrimaryButton.IsVisible = true;
-                ConfigureStepSkip();
                 RefreshGatewayChoiceUi();
                 break;
 
@@ -236,7 +237,6 @@ public partial class FirstRunWizardDialog : Window
                 PrimaryButton.Content = "Sounds good";
                 PrimaryButton.IsVisible = true;
                 PrimaryButton.IsEnabled = true;
-                ConfigureStepSkip();
                 RefreshReportCards();
                 // The report travels through the gateway; say so plainly when none is connected.
                 ReportGatewayNote.IsVisible = !_gatewayConnected && string.IsNullOrWhiteSpace(GatewayConfig.Load().Url);
@@ -252,12 +252,6 @@ public partial class FirstRunWizardDialog : Window
                 BuildDoneReceipt();
                 break;
         }
-    }
-
-    /// <summary>Show or hide the footer "Skip this step" link per the model's skip rule for the current step.</summary>
-    private void ConfigureStepSkip()
-    {
-        StepSkipLink.IsVisible = _model.CanSkipCurrent;
     }
 
     // ---- Navigation --------------------------------------------------------------------------------
@@ -328,17 +322,6 @@ public partial class FirstRunWizardDialog : Window
     }
 
     /// <summary>Individual per-step skip: advance past this step without acting on it.</summary>
-    private void BtnStepSkip_Click(object? sender, RoutedEventArgs e)
-    {
-        FileLog.Write($"[FirstRunWizardDialog] BtnStepSkip_Click: step={_model.Current}");
-        if (!_model.CanSkipCurrent)
-        {
-            FileLog.Write("[FirstRunWizardDialog] BtnStepSkip_Click: step is unskippable; ignoring");
-            return;
-        }
-        Advance();
-    }
-
     /// <summary>The quiet whole-wizard skip on Welcome: drop straight to the board and write the marker.</summary>
     private async void BtnWholeWizardSkip_Click(object? sender, RoutedEventArgs e)
     {
@@ -417,11 +400,10 @@ public partial class FirstRunWizardDialog : Window
                 AgentsStatusText.Text = "DevThrottle runs and supervises command-line coding agents, and we did not find any on this machine - so let's install one now.";
             }
 
-            // Zero agents: the one step the user cannot skip. Hide the skip link, block Continue, and
-            // offer the in-place install (or the deferral); otherwise allow both and hide the actions.
+            // Zero agents: the one step Continue does not pass. The product cannot work without an
+            // agent, so the in-place install (or the honest deferral) is the way forward.
             AgentsEmptyActions.IsVisible = !anyFound;
             PrimaryButton.IsEnabled = anyFound;
-            ConfigureStepSkip();
 
             FileLog.Write($"[FirstRunWizardDialog] ScanAgentsAsync: found={foundCount}, anyFound={anyFound}");
         }
@@ -983,9 +965,7 @@ public partial class FirstRunWizardDialog : Window
             {
                 ShotsPathText.Text = "No screenshots folder found";
                 ShotsProvenanceText.Text =
-                    "We could not detect where your screenshots go. Browse to the folder, or take a screenshot and we'll find where it lands.";
-                if (_model.Current == WizardStep.Screenshots)
-                    PrimaryButton.IsEnabled = false;
+                    "We could not detect where your screenshots go. Browse to the folder, take a screenshot and we'll find where it lands - or just continue; you can set this any time in Settings.";
             }
         }
         catch (Exception ex)
@@ -1009,7 +989,7 @@ public partial class FirstRunWizardDialog : Window
         };
         ShotsProvenanceText.Text = $"{provenance} - {proof}.";
         if (_model.Current == WizardStep.Screenshots)
-            PrimaryButton.IsEnabled = true;
+            PrimaryButton.Content = "Use this folder";
     }
 
     private async void BtnBrowseScreenshots_Click(object? sender, RoutedEventArgs e)
@@ -1375,6 +1355,11 @@ public partial class FirstRunWizardDialog : Window
                 ? ReceiptRow($"{_toolsTotalCount} tools ready", "Installed and kept current automatically", done: true)
                 : ReceiptRow("Tools installing", "Finishes on its own in the background", done: false));
         }
+
+        // Browsers row: a pointer, not a task. Browser setup lives in the left rail (the Browsers
+        // group above Repositories) where it is always one click away - the wizard just plants it.
+        DoneReceiptPanel.Children.Add(ReceiptRow(
+            "Browsers", "Give agents a signed-in browser any time - the Browsers group in the left rail", done: false));
 
         // Morning report row - the promise, restated on the receipt.
         DoneReceiptPanel.Children.Add(_reportCadence switch
