@@ -490,6 +490,66 @@ export async function sendClearContext(sessionId: string, signal?: AbortSignal):
   }
 }
 
+/**
+ * What POST /sessions/{sid}/compact-context answers (issue #2150). Mirrors the Gateway's
+ * CompactContextResponse; hand-declared here because the checked-in OpenAPI schema is regenerated at
+ * build time and does not carry this route yet.
+ */
+export interface CompactContextResult {
+  /** The compaction command reached the tool. */
+  submitted: boolean;
+  /**
+   * The tool's own records confirm the compaction FINISHED. False means it was submitted and not
+   * watched - a stated limit of that tool, not a failure. Never render this case as "compacted".
+   */
+  compactionObserved: boolean;
+  /** Seconds between submitting and seeing it finish; 0 when not watched. */
+  waitedSeconds: number;
+  /** The follow-up prompt was submitted after the compaction finished. */
+  continued: boolean;
+  /** One plain-English sentence describing what happened. Render it verbatim. */
+  detail: string;
+}
+
+/**
+ * How long the client waits for a compaction. A compaction is a language model summarizing a whole
+ * conversation and routinely runs past a minute; the Gateway allows three, and the Director's own wait
+ * is two. This sits OUTSIDE all of them so the innermost bound always fires first and reports what
+ * actually failed - a client that gave up sooner would report a failure over a compaction that was
+ * working perfectly, which is the exact false alarm this feature exists to remove.
+ */
+export const COMPACT_CONTEXT_TIMEOUT_MS = 4 * 60 * 1000;
+
+/**
+ * Summarize the conversation in place, freeing context window while keeping what the session has
+ * learned, and optionally send a follow-up once it FINISHES. POST /sessions/{sid}/compact-context.
+ *
+ * Distinct from sendClearContext, which throws the conversation away. Gate the button on the
+ * CompactContext capability; only pass continuePrompt when the driver also declares
+ * CompactCompletionReport, because the Gateway refuses a continuation it cannot time.
+ */
+export async function sendCompactContext(
+  sessionId: string,
+  continuePrompt?: string,
+  signal?: AbortSignal,
+): Promise<CompactContextResult> {
+  const sid = encodeURIComponent(sessionId);
+  const res = await gatewayFetch(
+    `/sessions/${sid}/compact-context`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
+      body: JSON.stringify(continuePrompt ? { continuePrompt } : {}),
+      signal,
+    },
+    { timeoutMs: COMPACT_CONTEXT_TIMEOUT_MS },
+  );
+  if (!res.ok) {
+    throw new GatewayError(res.status, `POST compact-context failed: ${res.status}`);
+  }
+  return (await res.json()) as CompactContextResult;
+}
+
 // Open the tool's in-terminal history / rewind picker (Claude's double-Esc). POST
 // /sessions/{sid}/history-picker. Gated on the History capability - a visible-terminal feature.
 export async function sendHistoryPicker(sessionId: string, signal?: AbortSignal): Promise<void> {

@@ -54,6 +54,7 @@ public partial class SessionActionBar : UserControl
         var caps = session?.Driver.Capabilities ?? DriverCapabilities.None;
         BtnStopTurn.IsVisible = caps.HasFlag(DriverCapabilities.Cancel);
         BtnInterrupt.IsVisible = caps.HasFlag(DriverCapabilities.Interrupt);
+        BtnCompact.IsVisible = caps.HasFlag(DriverCapabilities.CompactContext);
         BtnClearContext.IsVisible = caps.HasFlag(DriverCapabilities.ClearContext);
         BtnHistory.IsVisible = caps.HasFlag(DriverCapabilities.History);
         // A session switch clears any transcribing lock left over from the outgoing session; the
@@ -81,6 +82,7 @@ public partial class SessionActionBar : UserControl
     /// </summary>
     public void SetTranscribingLock(bool locked)
     {
+        BtnCompact.IsEnabled = !locked;
         BtnClearContext.IsEnabled = !locked;
         BtnHistory.IsEnabled = !locked;
         TranscribingLabel.IsVisible = locked;
@@ -194,6 +196,26 @@ public partial class SessionActionBar : UserControl
         "current conversation. This cannot be undone.";
 
     /// <summary>
+    /// The question asked before a compaction (issue #2167), matching the Cockpit's wording.
+    ///
+    /// It deliberately reads NOTHING like the clear question above. Clearing destroys the conversation and
+    /// says so; compaction preserves it, which is the entire reason it exists. Two confirmations worded
+    /// alike would teach one reflex for two opposite outcomes - and the danger runs the wrong way: somebody
+    /// who learns to click through the harmless one is being trained on the destructive one.
+    /// </summary>
+    internal const string CompactContextConfirmTitle = "Compact this session's context?";
+
+    internal const string CompactContextConfirmMessage =
+        "This summarizes the conversation so far and continues from the summary, freeing room in the " +
+        "context window. The session keeps what it has learned. It can take a minute or two.";
+
+    /// <summary>The follow-up sent once a compaction finishes, matching the command line's default.</summary>
+    private const string CompactContinuePrompt = "continue";
+
+    /// <summary>Whether the Compact button is showing - the capability gate, readable by tests.</summary>
+    internal bool CompactButtonVisible => BtnCompact.IsVisible;
+
+    /// <summary>
     /// How the bar asks before a destructive verb. Null in the running application, where it opens the real
     /// modal <see cref="ConfirmDialog"/>. Tests replace it: a modal cannot be answered in a headless run, so
     /// without this seam the decision - the whole point of issue #2169 - could only be verified by hand.
@@ -210,6 +232,72 @@ public partial class SessionActionBar : UserControl
                 "[SessionActionBar] No owner window, so the confirmation cannot be shown. Refusing to run a " +
                 "destructive action unasked.");
         return await new ConfirmDialog(title, message, confirmLabel).ShowDialog<bool?>(owner) == true;
+    }
+
+    private async void BtnCompact_Click(object? sender, RoutedEventArgs e)
+    {
+        await CompactContextWithConfirmationAsync();
+    }
+
+    /// <summary>
+    /// Ask, then compact (issue #2167). This is the safe answer to a context gauge that has gone red - it
+    /// summarizes the conversation and carries on, where Clear context beside it would throw the
+    /// conversation away.
+    ///
+    /// The button shows a working state for the duration and the status line reports the outcome VERBATIM
+    /// from the session, because only the session knows whether the compaction was watched to completion or
+    /// merely submitted. Composing a cheerful message here is how "compacted" ends up on screen for a
+    /// compaction nobody observed.
+    ///
+    /// Internal rather than private so the decision is testable, exactly as the clear path is.
+    /// </summary>
+    internal async Task CompactContextWithConfirmationAsync()
+    {
+        var session = _session;
+        if (session is null) return;
+
+        bool confirmed;
+        try
+        {
+            confirmed = await ConfirmAsync(CompactContextConfirmTitle, CompactContextConfirmMessage, "Compact");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[SessionActionBar] Compact confirmation FAILED: {ex.Message}");
+            ShowStatus($"compact failed: {ex.Message}");
+            return;
+        }
+
+        if (!confirmed)
+        {
+            FileLog.Write($"[SessionActionBar] Compact declined at the confirmation: session={session.Id}");
+            return;
+        }
+
+        // A follow-up can only be timed by a driver that reports when the compaction FINISHED. Read the
+        // capability rather than sending one and catching the refusal - an exception is not control flow.
+        var continuePrompt = session.Driver.Capabilities.HasFlag(DriverCapabilities.CompactCompletionReport)
+            ? CompactContinuePrompt
+            : null;
+
+        BtnCompact.Content = "Compacting...";
+        try
+        {
+            FileLog.Write($"[SessionActionBar] Compact confirmed: session={session.Id}, " +
+                          $"continue={(continuePrompt is null ? "no" : "yes")}");
+            ShowStatus("compacting...");
+            var outcome = await session.CompactContextAsync(continuePrompt);
+            ShowStatus(outcome.Detail);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[SessionActionBar] Compact FAILED: {ex.Message}");
+            ShowStatus($"compact failed: {ex.Message}");
+        }
+        finally
+        {
+            BtnCompact.Content = "Compact";
+        }
     }
 
     private async void BtnClearContext_Click(object? sender, RoutedEventArgs e)

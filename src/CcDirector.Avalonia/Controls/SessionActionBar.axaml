@@ -24,6 +24,15 @@
             BorderThickness="0" CornerRadius="3"
             Cursor="Hand"
             ToolTip.Tip="Hard interrupt (Ctrl+C) - stronger than Stop" />
+    <Button x:Name="BtnCompact"
+            Content="Compact"
+            Click="BtnCompact_Click"
+            IsVisible="False"
+            Height="24" Padding="10,2" FontSize="11"
+            Background="{DynamicResource ButtonBackground}" Foreground="{DynamicResource TextForeground}"
+            BorderThickness="0" CornerRadius="3"
+            Cursor="Hand"
+            ToolTip.Tip="Summarize the conversation and continue - frees context window, keeps what the session has learned" />
     <Button x:Name="BtnClearContext"
             Content="Clear context"
             Click="BtnClearContext_Click"
