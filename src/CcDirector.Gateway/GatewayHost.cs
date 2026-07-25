@@ -637,11 +637,15 @@ public sealed class GatewayHost : IAsyncDisposable
     // Web Push (mobile app-icon "needs you" dot): the VAPID key pair, the set of subscribed devices,
     // the loopback HTTP client the notifier reads /sessions with, and the background notifier itself.
     // The stores are constructed in the ctor (load-on-construct); the notifier is built and started in
-    // StartAsync (once the loopback endpoint is live) and disposed in StopAsync.
+    // StartAsync and disposed in StopAsync.
     private readonly Push.WebPushVapidStore _vapidStore;
     private readonly Push.PushSubscriptionStore _pushSubscriptions;
-    private readonly HttpClient _pushLoopbackHttp = new() { Timeout = TimeSpan.FromSeconds(20) };
     private Push.WebPushNeedsYouNotifier? _pushNotifier;
+    // The per-tenant driver for the app-icon dot, and the timer that fires it. The notifier holds no timer of
+    // its own: a bare timer has no tenant, which is exactly why hosted push had to be switched off before.
+    private Push.PushNeedsYouTenantSweep? _pushNeedsYouSweep;
+    private System.Threading.Timer? _pushNotifierTimer;
+    private int _pushNeedsYouInFlight; // 0 = idle, 1 = a sweep is fanning out (overlap guard)
     private Api.NetDiagMonitor? _netDiagMonitor;
     private Api.NetDiagRollupStore? _netDiagRollup;
     private WebApplication? _app;
@@ -2798,19 +2802,33 @@ public sealed class GatewayHost : IAsyncDisposable
         }
 
         // Web Push (mobile app-icon "needs you" dot): start the background notifier now that this
-        // Gateway's own /sessions endpoint is live on loopback. The notifier reads that endpoint (so its
-        // "needs you" verdict is byte-identical to the roster's) and pushes the count to subscribed
-        // phones. It self-gates on having at least one subscription, so it is free until a phone opts in.
-        // Skipped when HOSTED (Hosted Multi-Tenancy): the notifier reads the tenant-scoped push_subscriptions
-        // store on its timer, which has no ambient tenant and would fail closed. Per-tenant push lands in the
-        // session-serving increment (which also makes the /sessions roster it reads tenant-aware).
-        if (!GatewayHostedMode.IsHosted)
-        {
-            var pushSender = new Push.VapidWebPushSender(
-                _vapidStore.PublicKey, _vapidStore.PrivateKey, "mailto:support@devthrottle.com");
-            _pushNotifier = new Push.WebPushNeedsYouNotifier(_pushSubscriptions, GetNeedsYouCountAsync, pushSender);
-            _pushNotifier.Start();
-        }
+        // Gateway's fold is live. The notifier counts the sessions that "need you" in the tenant's OWN folded
+        // fleet and pushes the count to that tenant's subscribed phones. It self-gates on having at least one
+        // subscription, so it is free until a phone opts in.
+        //
+        // RUNS ON HOSTED TOO. It used to be skipped there, because its own bare timer had no ambient tenant and
+        // would fail closed against the tenant-scoped push_subscriptions store every tick. Skipped meant a phone
+        // talking to the hosted Gateway never got a dot when a session needed it, and never got the single
+        // falling-edge zero that CLEARS a dot. Now the per-tenant worker seam owns the fan-out
+        // (PushNeedsYouTenantSweep) and this host owns the timer, so each pass runs inside one tenant's scope:
+        // that tenant's phones, that tenant's fleet. Self-host is one Local pass, unchanged.
+        var pushSender = new Push.VapidWebPushSender(
+            _vapidStore.PublicKey, _vapidStore.PrivateKey, "mailto:support@devthrottle.com");
+        _pushNotifier = new Push.WebPushNeedsYouNotifier(
+            _pushSubscriptions,
+            GetNeedsYouCountAsync,
+            pushSender,
+            // The tenant of the pass now running - what the dot state is keyed by, so one tenant's rising edge
+            // cannot clear another's. Null is only possible on hosted with no scope entered, which cannot happen
+            // inside the seam; Local keeps the key total without inventing a partition to READ (nothing is read
+            // by tenant id here - the stores resolve the ambient scope themselves).
+            () => _tenantPass.Current ?? TenantId.Local);
+        _pushNeedsYouSweep = new Push.PushNeedsYouTenantSweep(_tenantBoundary, TenantRegistry, _pushNotifier);
+        _pushNotifierTimer = new System.Threading.Timer(
+            _ => SweepPushNeedsYou(), null,
+            Push.WebPushNeedsYouNotifier.StartupDelay,
+            Push.WebPushNeedsYouNotifier.PollInterval);
+        FileLog.Write($"[GatewayHost] push needs-you sweep started: every {Push.WebPushNeedsYouNotifier.PollInterval.TotalSeconds:0}s (while subscribed)");
 
         // Network Diagnostics monitor (Network Diagnostics mission, Phase 1): on a timer, watch each
         // connected device's direct-vs-relay path and log persistent home-relay drift QUIETLY. Alert
@@ -2848,18 +2866,54 @@ public sealed class GatewayHost : IAsyncDisposable
     /// fold, same <see cref="Contracts.SessionDto.SnoozeExpired"/> overlay. The per-machine Bearer is
     /// attached so it works whether or not global Gateway auth is on.
     /// </summary>
-    private async Task<Push.WebPushNeedsYouNotifier.NeedsYouSnapshot> GetNeedsYouCountAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// How many of the CURRENT TENANT's sessions need the user right now, for the phone's app-icon dot - read
+    /// from the fleet fold (<see cref="Fleet.FleetDisplayStateObserver.FoldedFleet"/>), the same snapshot and
+    /// the same fold that decide the colour the desktop rail paints and the roster serves. One authority for
+    /// the verdict, two readers of it.
+    ///
+    /// It used to fetch the Gateway's own <c>/sessions</c> endpoint over loopback with the host token, to be
+    /// byte-identical to the roster. That is unavailable to a background pass on the hosted Gateway: the roster
+    /// resolves its tenant from the CALLER'S authenticated device key, and a loopback request carries no device
+    /// key and starts a fresh request context that the pass's ambient tenant scope does not reach - so it would
+    /// be denied, not served the wrong tenant. Reading the fold in-process is scoped to the running pass's
+    /// tenant by construction and drops the HTTP hop entirely.
+    /// </summary>
+    private Task<Push.WebPushNeedsYouNotifier.NeedsYouSnapshot> GetNeedsYouCountAsync(CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{Port}/sessions");
-        request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {Token}");
-        using var response = await _pushLoopbackHttp.SendAsync(request, cancellationToken);
-        response.EnsureSuccessStatusCode();
-        var json = await response.Content.ReadAsStringAsync(cancellationToken);
-        var sessions = JsonSerializer.Deserialize<List<Contracts.SessionDto>>(
-            json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new();
-        return new Push.WebPushNeedsYouNotifier.NeedsYouSnapshot(
+        var sessions = FleetDisplayState.FoldedFleet();
+        return Task.FromResult(new Push.WebPushNeedsYouNotifier.NeedsYouSnapshot(
             Push.WebPushNeedsYouNotifier.CountNeedsYou(sessions),
-            Push.WebPushNeedsYouNotifier.ExpiredNeedsYouIds(sessions));
+            Push.WebPushNeedsYouNotifier.ExpiredNeedsYouIds(sessions)));
+    }
+
+    /// <summary>
+    /// The push notifier's timer callback (a boundary - it owns the overlap guard and the try/catch so one slow
+    /// or failing fan-out never stacks up or crashes the timer thread). One sweep at a time; a skipped tick
+    /// simply decides on the next one, eight seconds later, which the dot is indifferent to.
+    /// </summary>
+    private void SweepPushNeedsYou()
+    {
+        if (Interlocked.CompareExchange(ref _pushNeedsYouInFlight, 1, 0) != 0)
+            return;
+        _ = RunPushNeedsYouSweepAsync();
+    }
+
+    private async Task RunPushNeedsYouSweepAsync()
+    {
+        try
+        {
+            if (_pushNeedsYouSweep is not null)
+                await _pushNeedsYouSweep.SweepAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayHost] push needs-you sweep FAILED: {ex.Message}");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _pushNeedsYouInFlight, 0);
+        }
     }
 
     /// <summary>
@@ -3172,14 +3226,16 @@ public sealed class GatewayHost : IAsyncDisposable
         try { _deviceHeartbeat?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] device heartbeat dispose error: {ex.Message}"); }
         _deviceHeartbeat = null;
 
-        // Web Push: stop the background needs-you notifier (also disposes its VAPID push sender) and the
-        // loopback HTTP client it read /sessions with. Subscriptions are already on disk (written through
-        // on every change), so stopping loses nothing.
+        // Web Push: stop the per-tenant needs-you sweep timer, then the notifier (which also disposes its
+        // VAPID push sender). Subscriptions are already on disk (written through on every change), so stopping
+        // loses nothing.
+        try { _pushNotifierTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] push needs-you timer dispose error: {ex.Message}"); }
+        _pushNotifierTimer = null;
         try { _pushNotifier?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] push notifier dispose error: {ex.Message}"); }
         try { _netDiagMonitor?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] netdiag monitor dispose error: {ex.Message}"); }
         try { _hostedAiSpendSweep?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] hosted-ai spend sweep dispose error: {ex.Message}"); }
         _pushNotifier = null;
-        try { _pushLoopbackHttp.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] push loopback client dispose error: {ex.Message}"); }
+        _pushNeedsYouSweep = null;
 
         // Turn-end watcher + voice sweep first (they drive the brain), then the brain itself - the
         // supervisor's dispose gracefully stops the hosted claude.exe (never leaked).

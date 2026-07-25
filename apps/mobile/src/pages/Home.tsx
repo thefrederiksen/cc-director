@@ -15,7 +15,13 @@ import { NavDrawer } from "../components/NavDrawer";
 import { StatusPill } from "../components/StatusPill";
 import { SessionFilterPanel } from "../components/SessionFilterPanel";
 import { useSessionFilter } from "../hooks/useSessionFilter";
-import { enablePush, notificationPermission, pushSupported, reconcileBadge } from "@devthrottle/client-core/push/register";
+import {
+  enablePush,
+  notificationPermission,
+  pushSupported,
+  reconcileBadge,
+  type EnablePushResult,
+} from "@devthrottle/client-core/push/register";
 
 // Home / roster. A "needs you" group first (when any session wants attention), then an "other
 // sessions" group with everything that is NOT waiting on you - so a session appears in exactly one
@@ -430,39 +436,54 @@ export function Home() {
 
 // A one-time prompt to turn on the app-icon "needs you" dot. Shown only when the browser can do Web
 // Push and the user has not decided yet; tapping requests permission (the gesture iOS/Android require)
-// and subscribes. Hidden once granted, and replaced by a short hint if the user blocked notifications.
+// and subscribes.
+//
+// IT ALWAYS ANSWERS THE TAP. It used to throw the outcome away - it awaited enablePush(), swallowed any
+// failure into console.warn, and then re-read Notification.permission to decide what to show. When the
+// browser showed no prompt at all (Chrome's quiet permission user interface, or an in-app browser
+// window that is not allowed to ask) the permission was unchanged, so this banner re-rendered
+// identically and the button looked broken - the exact "I tap it and nothing happens" report. And when
+// permission WAS granted but registering the device failed, the banner disappeared as if it had
+// worked while no push could ever arrive. Now every outcome enablePush() names is rendered, with the
+// sentence that outcome carries (the mobile rule: never fail silently).
 function EnableAlerts() {
-  const [state, setState] = useState<NotificationPermission | "unsupported">(() => notificationPermission());
+  const [granted, setGranted] = useState(() => notificationPermission() === "granted");
+  const [outcome, setOutcome] = useState<EnablePushResult | null>(null);
   const [busy, setBusy] = useState(false);
 
-  if (!pushSupported() || state === "granted") return null;
+  if (!pushSupported() || granted) return null;
 
-  if (state === "denied") {
+  // A standing block is a dead end until the user lifts it in browser settings, so there is no button
+  // to offer - just the reason and where to fix it.
+  if (notificationPermission() === "denied" || outcome?.state === "blocked") {
     return (
       <div className="banner banner-info" role="status">
-        Notifications are blocked. Enable them for DevThrottle in your browser settings to see the
-        app-icon dot when a session needs you.
+        {outcome?.state === "blocked"
+          ? outcome.message
+          : "Notifications are blocked for DevThrottle. Allow them in your browser's site settings for this site to see the app-icon dot when a session needs you."}
       </div>
     );
   }
 
   const onEnable = async () => {
     setBusy(true);
-    try {
-      await enablePush();
-    } catch (err) {
-      console.warn("[push] enable failed:", err);
-    } finally {
-      setState(notificationPermission());
-      setBusy(false);
-    }
+    setOutcome(null);
+    // enablePush never throws - it returns the outcome, including its failures - so there is nothing
+    // here to swallow and no path that leaves the tap unanswered.
+    const result = await enablePush();
+    setBusy(false);
+    setOutcome(result);
+    if (result.state === "granted") setGranted(true);
   };
 
   return (
     <div className="banner banner-info banner-action" role="status">
-      <span>Get an app-icon dot when a session needs you.</span>
+      <span>
+        Get an app-icon dot when a session needs you.
+        {outcome !== null && <strong className="banner-note">{outcome.message}</strong>}
+      </span>
       <button type="button" className="banner-btn" onClick={() => void onEnable()} disabled={busy}>
-        {busy ? "Enabling..." : "Enable notifications"}
+        {busy ? "Enabling..." : outcome === null ? "Enable notifications" : "Try again"}
       </button>
     </div>
   );
