@@ -15,9 +15,11 @@ import "./mictest.css";
 // passage - so the answer is a percentage and a list of the exact words that were missed, rather than
 // an impression.
 //
-// It runs in eight languages because the answer is not the same in all of them, and we cannot know
-// where it is weak without measuring. The clip, the passage and the transcript are stored on the
-// Gateway, per tenant, so those comparisons can be made later across headsets, languages and releases.
+// It runs in the languages DevThrottle officially supports - and only those - because the answer is
+// not the same in all of them and we cannot know where it is weak without measuring. Testing a
+// language we do not ship would invite someone to read a poor score as a defect. The clip, the
+// passage and the transcript are stored on the Gateway, per tenant, so those comparisons can be made
+// later across headsets, languages and releases.
 
 const BAR_COUNT = 9;
 const MAX_SECONDS = 90;
@@ -185,7 +187,6 @@ export function TranscriptionTestPanel({ className }: TranscriptionTestPanelProp
     setStage("idle");
   }, [clearCap, stopMeter]);
 
-  const passageDir = language.rightToLeft ? "rtl" : "ltr";
   const busy = stage === "recording" || stage === "transcribing";
 
   return (
@@ -223,7 +224,7 @@ export function TranscriptionTestPanel({ className }: TranscriptionTestPanelProp
           <p className="mictest-prompt-label">
             {stage === "idle" ? "When you start, read this out loud at your normal pace:" : "Read this out loud:"}
           </p>
-          <p className="mictest-prompt mictest-passage" dir={passageDir} lang={language.code}>
+          <p className="mictest-prompt mictest-passage" lang={language.code}>
             {language.passage}
           </p>
         </>
@@ -288,7 +289,7 @@ export function TranscriptionTestPanel({ className }: TranscriptionTestPanelProp
             <div className="mictest-playback-label">
               What came back, with the differences marked:
             </div>
-            <DiffView diff={verdict.result.diff} rtl={language.rightToLeft === true} lang={language.code} />
+            <DiffView diff={verdict.result.diff} lang={language.code} />
             <dl className="mictest-measurements">
               <div>
                 <dt>Correct</dt>
@@ -311,7 +312,7 @@ export function TranscriptionTestPanel({ className }: TranscriptionTestPanelProp
 
           <details className="mictest-details">
             <summary>The raw transcript</summary>
-            <p className="mictest-rawtranscript" dir={passageDir} lang={language.code}>
+            <p className="mictest-rawtranscript" lang={language.code}>
               {transcript === "" ? "(nothing came back)" : transcript}
             </p>
           </details>
@@ -332,10 +333,10 @@ export function TranscriptionTestPanel({ className }: TranscriptionTestPanelProp
  * act on: a percentage says how bad it is, but only the specific misheard words tell you whether the
  * problem is your microphone, your accent, or a term that belongs in your dictionary.
  */
-function DiffView({ diff, rtl, lang }: { diff: DiffStep[]; rtl: boolean; lang: string }) {
+function DiffView({ diff, lang }: { diff: DiffStep[]; lang: string }) {
   if (diff.length === 0) return <p className="mictest-diff">(nothing to compare)</p>;
   return (
-    <p className="mictest-diff" dir={rtl ? "rtl" : "ltr"} lang={lang}>
+    <p className="mictest-diff" lang={lang}>
       {diff.map((step, i) => {
         if (step.op === "equal") {
           return (

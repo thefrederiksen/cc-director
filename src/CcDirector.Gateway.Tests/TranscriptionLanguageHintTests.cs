@@ -65,16 +65,13 @@ public sealed class TranscriptionLanguageHintTests
 
     [Theory]
     [InlineData("en")]
-    [InlineData("zh")]
-    [InlineData("hi")]
-    [InlineData("es")]
-    [InlineData("fr")]
-    [InlineData("ar")]
-    [InlineData("pt")]
     [InlineData("da")]
-    public async Task EveryLanguageTheCheckOffersIsCarriedThrough(string code)
+    [InlineData("de")]
+    [InlineData("fr")]
+    [InlineData("es")]
+    public async Task EveryOfficiallySupportedLanguageIsCarriedThrough(string code)
     {
-        // One per offered language, so adding a language to the picker without plumbing it is caught
+        // One per SUPPORTED language, so adding a language to the picker without plumbing it is caught
         // here rather than by a user in that language wondering why their results are poor.
         var body = await PostAndCaptureAsync(code);
 
