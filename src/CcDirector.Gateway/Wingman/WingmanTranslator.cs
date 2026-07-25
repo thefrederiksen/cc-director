@@ -198,6 +198,7 @@ public sealed class WingmanTranslator
     private readonly Func<TenantId, WingmanModelRole, CancellationToken, Task<IAgentBrain>> _brainProvider;
     private readonly Action<string> _log;
     private readonly Func<string> _instructions;
+    private readonly Func<TenantId, string> _spokenLanguage;
 
     /// <summary>
     /// Create a translator over a warm-brain provider. The provider is the same
@@ -207,11 +208,18 @@ public sealed class WingmanTranslator
     /// the ACTIVE wingman instructions at call time - the user's edited/versioned prompt when set,
     /// else the deployed <see cref="FidelityPrompt"/> default; omit it to always use the default.
     /// </summary>
-    public WingmanTranslator(Func<TenantId, WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider, Action<string>? log = null, Func<string>? instructionsProvider = null)
+    /// <param name="spokenLanguageProvider">
+    /// Returns the tenant's SPOKEN LANGUAGE at call time - the language the narration is written
+    /// in. Tenant-scoped rather than a plain <c>Func&lt;string&gt;</c> like the instructions,
+    /// because one Gateway serves many accounts and each picks its own. Omit it and every
+    /// translation is English, which is what every account gets until it chooses otherwise.
+    /// </param>
+    public WingmanTranslator(Func<TenantId, WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider, Action<string>? log = null, Func<string>? instructionsProvider = null, Func<TenantId, string>? spokenLanguageProvider = null)
     {
         _brainProvider = brainProvider ?? throw new ArgumentNullException(nameof(brainProvider));
         _log = log ?? FileLog.Write;
         _instructions = instructionsProvider ?? (() => FidelityPrompt);
+        _spokenLanguage = spokenLanguageProvider ?? (_ => SpokenLanguage.Default);
     }
 
     /// <summary>
@@ -277,9 +285,11 @@ public sealed class WingmanTranslator
         if (string.IsNullOrWhiteSpace(latestReply))
             throw new ArgumentException("Latest reply is required - there is nothing to translate.", nameof(latestReply));
 
-        _log($"[WingmanTranslator] TranslateWithAsync: instrLen={instructions?.Length ?? 0}, contextLen={recentContext?.Length ?? 0}, replyLen={latestReply.Length}, title={(string.IsNullOrWhiteSpace(sessionTitle) ? "(none)" : sessionTitle)}");
+        var language = SpokenLanguage.Normalize(_spokenLanguage(tenant));
 
-        var prompt = BuildPrompt(instructions ?? FidelityPrompt, recentContext ?? "", latestReply, sessionTitle);
+        _log($"[WingmanTranslator] TranslateWithAsync: instrLen={instructions?.Length ?? 0}, contextLen={recentContext?.Length ?? 0}, replyLen={latestReply.Length}, title={(string.IsNullOrWhiteSpace(sessionTitle) ? "(none)" : sessionTitle)}, lang={language}");
+
+        var prompt = BuildPrompt(instructions ?? FidelityPrompt, recentContext ?? "", latestReply, sessionTitle, language);
 
         var brain = await _brainProvider(tenant, WingmanModelRole.Fast, ct);
         AskResult ask;
@@ -611,10 +621,46 @@ public sealed class WingmanTranslator
     /// rule's own escape clause covers - the model is never handed an empty title to voice.
     /// </summary>
     public static string BuildPrompt(string instructions, string recentContext, string latestReply, string? sessionTitle)
+        => BuildPrompt(instructions, recentContext, latestReply, sessionTitle, SpokenLanguage.Default);
+
+    /// <summary>
+    /// As above, in the tenant's SPOKEN LANGUAGE (see <see cref="SpokenLanguage"/>).
+    ///
+    /// This is the only place the language has to be applied, and that is the whole reason the
+    /// design works: the coding agent is never asked to change language - it keeps working in
+    /// whatever language it works in - and this translator is already the single thing that turns
+    /// its reply into the words that get spoken. So a non-English account costs one extra
+    /// instruction in a prompt that was already being sent, not a translation step.
+    ///
+    /// English is a no-op: the block is omitted entirely, so the prompt is byte-for-byte what it
+    /// was before this existed and nothing changes for accounts that never touch the setting.
+    /// </summary>
+    public static string BuildPrompt(
+        string instructions, string recentContext, string latestReply, string? sessionTitle, string? spokenLanguage)
     {
         var sb = new StringBuilder();
         sb.Append(string.IsNullOrWhiteSpace(instructions) ? FidelityPrompt : instructions);
         sb.Append("\n\n");
+        if (!SpokenLanguage.IsDefault(spokenLanguage))
+        {
+            // Stated up front, right after the contract, because the model's default behaviour is
+            // to mirror the language of the reply it is given - which is nearly always English.
+            // Being specific about what must NOT be translated matters as much as the language
+            // itself: a listener has to be able to type what they hear.
+            var name = SpokenLanguage.EnglishName(spokenLanguage);
+            sb.Append("LANGUAGE. Write the spoken version in ");
+            sb.Append(name);
+            sb.Append(". The agent's reply below is in whatever language it works in, usually ");
+            sb.Append("English; you are saying it for the ear in ");
+            sb.Append(name);
+            sb.Append(". Write it the way a native speaker would say it out loud, not as a ");
+            sb.Append("word-for-word translation.\n");
+            sb.Append("Leave these EXACTLY as they appear, never translated and never spelled ");
+            sb.Append("differently: file names and paths, code identifiers, command names, branch ");
+            sb.Append("names, and error text. Everything else is spoken in ");
+            sb.Append(name);
+            sb.Append(".\n\n");
+        }
         if (!string.IsNullOrWhiteSpace(sessionTitle))
         {
             sb.Append("The title of the session this reply came from. Open the narration by saying ");

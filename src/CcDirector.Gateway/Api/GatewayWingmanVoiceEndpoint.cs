@@ -143,7 +143,12 @@ internal static class GatewayWingmanVoiceEndpoint
         // status mapping below could only be proven by calling the real provider over the internet.
         var ttsHttp = ttsHttpClient ?? SharedTtsHttp;
 
-        var translator = new WingmanTranslator(brainProvider, instructionsProvider: instructionsProvider);
+        // The tenant's spoken language is resolved per call, not captured once, because the setting can
+        // change while the Gateway is up and the next thing spoken should already be in the new language.
+        var translator = new WingmanTranslator(
+            brainProvider,
+            instructionsProvider: instructionsProvider,
+            spokenLanguageProvider: t => tenantSettings.SpokenLanguage(t));
 
         // Post-cut: resolve the owning Director once (from the push store) and reach its session verbs
         // (turns / buffer / prompt) through the tunnel-only SessionVerbClient, so the wingman voice surface

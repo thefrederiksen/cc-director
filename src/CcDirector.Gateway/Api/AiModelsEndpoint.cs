@@ -19,11 +19,13 @@ namespace CcDirector.Gateway.Api;
 /// chat model with one round-trip, and persist the chosen wingman/speech model. The browser never sees
 /// the credential - the Gateway resolves it from the vault and presents it to DevThrottle.
 ///
-///   GET  /gateway/ai/models?kind=chat|speech -> { models:[ {id, description, voices[], defaultVoice} ] }
+///   GET  /gateway/ai/models?kind=chat|speech -> { models:[ {id, description, voices[], defaultVoice, languages[]} ] }
 ///   POST /gateway/ai/test-chat  { model }    -> { ok, reply, seconds } | { error }
 ///   PUT  /gateway/ai/wingman-model      { model } -> { model }
 ///   PUT  /gateway/ai/wingman-fast-model { model } -> { model }
 ///   PUT  /gateway/ai/tts-model          { model } -> { model }
+///   GET  /gateway/ai/spoken-languages        -> { current, languages:[ {code, name, endonym} ] }
+///   PUT  /gateway/ai/spoken-language { language } -> { language }
 ///
 /// DevThrottle serves a typed catalog (GET /models?type=chat|speech) where each speech model carries
 /// its own voices.
@@ -262,6 +264,40 @@ internal static class AiModelsEndpoint
             }
             catch (JsonException) { return Results.BadRequest(new { error = "invalid JSON" }); }
         });
+
+        // The languages a caller may choose from, and which one this tenant is on. Served rather
+        // than hardcoded in each client so mobile and the Cockpit cannot drift apart, and so
+        // adding a language is a Gateway change rather than two app releases.
+        app.MapGet("/gateway/ai/spoken-languages", (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
+            var current = resolver.SpokenLanguage(t.Value);
+            var languages = SpokenLanguage.Supported
+                .Select(kv => new { code = kv.Key, name = kv.Value.English, endonym = kv.Value.Endonym })
+                .OrderBy(l => l.code == SpokenLanguage.Default ? 0 : 1)   // English first, it is the default
+                .ThenBy(l => l.name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            return Results.Json(new { current, languages });
+        });
+
+        app.MapPut("/gateway/ai/spoken-language", async (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
+            try
+            {
+                var body = await JsonSerializer.DeserializeAsync<LanguageBody>(ctx.Request.Body, JsonOpts, ctx.RequestAborted);
+                // A blank code means "back to English", which is the same stored state as never having
+                // chosen - the resolver clears the override rather than writing "en".
+                resolver.SetSpokenLanguage(t.Value, body?.Language ?? string.Empty, DateTime.UtcNow);
+                var language = resolver.SpokenLanguage(t.Value);
+                FileLog.Write($"[AiModelsEndpoint] spoken language set: {language} for tenant={t.Value.ToLogString()}");
+                return Results.Json(new { language });
+            }
+            catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (JsonException) { return Results.BadRequest(new { error = "invalid JSON" }); }
+        });
     }
 
     private static string ProviderKeyMissingMessage(TranscriptionMode mode) =>
@@ -295,14 +331,25 @@ internal static class AiModelsEndpoint
                 foreach (var voice in v.EnumerateArray())
                     if (voice.ValueKind == JsonValueKind.String) voices.Add(voice.GetString()!);
 
+            // Which languages a speech model can SPEAK (BCP-47 primary subtags). The spoken-language
+            // setting filters the model list on this, so a model that omits it is treated as
+            // English-only rather than as "speaks everything" - the safe direction, because
+            // offering a language the model cannot say produces confident gibberish.
+            var languages = new List<string>();
+            if (item.TryGetProperty("languages", out var l) && l.ValueKind == JsonValueKind.Array)
+                foreach (var lang in l.EnumerateArray())
+                    if (lang.ValueKind == JsonValueKind.String) languages.Add(lang.GetString()!);
+
             var desc = item.TryGetProperty("description", out var d) && d.ValueKind == JsonValueKind.String ? d.GetString() : "";
             var defVoice = item.TryGetProperty("defaultVoice", out var dv) && dv.ValueKind == JsonValueKind.String ? dv.GetString() : null;
-            list.Add(new ModelDto(id!, desc ?? "", voices, defVoice));
+            list.Add(new ModelDto(id!, desc ?? "", voices, defVoice, languages));
         }
         return list;
     }
 
     private sealed record ModelBody(string? Model);
+    private sealed record LanguageBody(string? Language);
     private sealed record EndPhraseBody(string? Phrase);
-    private sealed record ModelDto(string Id, string Description, List<string> Voices, string? DefaultVoice);
+    private sealed record ModelDto(
+        string Id, string Description, List<string> Voices, string? DefaultVoice, List<string> Languages);
 }
