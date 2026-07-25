@@ -70,7 +70,7 @@ public sealed class TailscaleServeProvisioner : IDisposable
     /// `serve status --json` read per tick; it only ever asserts, never sweeps.</summary>
     private static readonly TimeSpan FrontDoorWatchInterval = TimeSpan.FromSeconds(60);
 
-    private readonly int _gatewayPort;
+    private readonly Func<int> _gatewayPort;
     private readonly bool _enabled;
     private readonly object _cliGate = new();
     private Timer? _reconcileTimer;
@@ -79,10 +79,15 @@ public sealed class TailscaleServeProvisioner : IDisposable
     private int _frontDoorRunning;
     private bool _disposed;
 
-    public TailscaleServeProvisioner(DirectorRegistry registry, int gatewayPort)
+    /// <param name="gatewayPort">
+    /// Read LATE, never captured (issue #2161). This provisioner is constructed before the listener binds,
+    /// and a Gateway on an operating-system-assigned port does not know its own number until it does - an
+    /// int here would freeze the placeholder 0 and publish a front door pointing at nothing.
+    /// </param>
+    public TailscaleServeProvisioner(DirectorRegistry registry, Func<int> gatewayPort)
     {
         _ = registry; // post-cut: no per-Director mappings, so the registry is no longer consulted
-        _gatewayPort = gatewayPort;
+        _gatewayPort = gatewayPort ?? throw new ArgumentNullException(nameof(gatewayPort));
 
         // Dev/test isolation: CC_GATEWAY_NO_TAILSCALE=1 lets a second Gateway run on this machine
         // for local end-to-end testing WITHOUT touching the production Tailscale Serve mappings
@@ -106,11 +111,11 @@ public sealed class TailscaleServeProvisioner : IDisposable
     public void Start()
     {
         if (!_enabled) return;
-        FileLog.Write($"[TailscaleServeProvisioner] Start: gatewayPort={_gatewayPort}");
+        FileLog.Write($"[TailscaleServeProvisioner] Start: gatewayPort={_gatewayPort()}");
 
         // Front door: https://<tailnet>/ -> gateway. Idempotent. The Cockpit is the Gateway's own
         // in-process front door (issue #979), so it never gets its own tailnet port.
-        QueueServeOn(FrontDoorHttpsPort, _gatewayPort, "gateway");
+        QueueServeOn(FrontDoorHttpsPort, _gatewayPort(), "gateway");
 
         // One-time cleanup of the pre-one-URL world: drop the legacy direct Cockpit mapping
         // (https://<tailnet>:7470) if this machine still carries one. Idempotent and safe
@@ -169,7 +174,7 @@ public sealed class TailscaleServeProvisioner : IDisposable
                 statusJson = stdout;
             }
 
-            var actions = ComputeReconcileActions(statusJson, _gatewayPort, desired);
+            var actions = ComputeReconcileActions(statusJson, _gatewayPort(), desired);
 
             if (actions.AssertFrontDoor)
             {
@@ -177,8 +182,8 @@ public sealed class TailscaleServeProvisioner : IDisposable
                 // only forensic trace of whoever clobbered the mapping, and it evaporates the
                 // moment we heal (issue #200 - the rogue port was only identified by a live
                 // probe during the outage).
-                FileLog.Write($"[TailscaleServeProvisioner] Reconcile: 443 front door missing or wrong backend (observed: {actions.FrontDoorBackend ?? "absent"}, expected: http://localhost:{_gatewayPort}) - re-asserting (issue #179)");
-                ServeOn(FrontDoorHttpsPort, _gatewayPort, "gateway (reconcile)");
+                FileLog.Write($"[TailscaleServeProvisioner] Reconcile: 443 front door missing or wrong backend (observed: {actions.FrontDoorBackend ?? "absent"}, expected: http://localhost:{_gatewayPort()}) - re-asserting (issue #179)");
+                ServeOn(FrontDoorHttpsPort, _gatewayPort(), "gateway (reconcile)");
             }
 
             foreach (var port in actions.PortsToMap)
@@ -288,11 +293,11 @@ public sealed class TailscaleServeProvisioner : IDisposable
                 statusJson = stdout;
             }
 
-            var actions = ComputeReconcileActions(statusJson, _gatewayPort, []);
+            var actions = ComputeReconcileActions(statusJson, _gatewayPort(), []);
             if (actions.AssertFrontDoor)
             {
-                FileLog.Write($"[TailscaleServeProvisioner] FrontDoorWatch: 443 front door missing or wrong backend (observed: {actions.FrontDoorBackend ?? "absent"}, expected: http://localhost:{_gatewayPort}) - re-asserting (issue #200)");
-                ServeOn(FrontDoorHttpsPort, _gatewayPort, "gateway (front-door watch)");
+                FileLog.Write($"[TailscaleServeProvisioner] FrontDoorWatch: 443 front door missing or wrong backend (observed: {actions.FrontDoorBackend ?? "absent"}, expected: http://localhost:{_gatewayPort()}) - re-asserting (issue #200)");
+                ServeOn(FrontDoorHttpsPort, _gatewayPort(), "gateway (front-door watch)");
             }
         }
         catch (Exception ex)

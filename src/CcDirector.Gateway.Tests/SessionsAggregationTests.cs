@@ -43,7 +43,7 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        _gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
             snoozePath: Path.Combine(_instancesDir, "snooze", "snooze.json"),
@@ -852,7 +852,7 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
             User = user,
             // A plausible advertised endpoint that is NEVER dialed - the roster comes from the push store, so a
             // working result proves the tunnel (tunnel-by-construction).
-            BaseUrl = $"http://127.0.0.1:{FreePort()}",
+            BaseUrl = $"http://127.0.0.1:{GatewayHost.OperatingSystemAssignedPort}",
             Sessions = sessions,
             Connected = connected,
         };
@@ -895,14 +895,6 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
         CreatedAt = DateTime.UtcNow,
         LastActivityAt = DateTime.UtcNow,
     };
-
-    private static int FreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
 
     /// <summary>
     /// A registered Director stand-in for the aggregation. Post-cut it delivers its roster ONLY over the tunnel

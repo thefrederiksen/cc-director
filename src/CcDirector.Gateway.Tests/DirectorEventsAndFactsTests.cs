@@ -38,7 +38,7 @@ public sealed class DirectorEventsAndFactsTests : IAsyncLifetime
             instancesDirectory: _instancesDir);
         await _director.StartAsync();
 
-        _gateway = new GatewayHost(port: AllocateFreePort(), token: Token, authEnabled: true,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
             streamMode: true);
@@ -215,11 +215,4 @@ public sealed class DirectorEventsAndFactsTests : IAsyncLifetime
         Assert.Fail("condition not reached within timeout");
     }
 
-    private static int AllocateFreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
 }

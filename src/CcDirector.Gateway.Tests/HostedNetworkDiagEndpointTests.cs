@@ -129,14 +129,14 @@ public sealed class HostedNetworkDiagEndpointTests
         var priorHosted = Environment.GetEnvironmentVariable(GatewayHostedMode.HostedEnvVar);
         Environment.SetEnvironmentVariable(GatewayHostedMode.HostedEnvVar, hosted ? "1" : null);
         var instancesDirectory = Path.Combine(Path.GetTempPath(), "cc-netstatus-" + Guid.NewGuid().ToString("N"));
-        var port = FreePort();
         WebApplication? app = null;
         DirectorRegistry? registry = null;
         var started = false;
         try
         {
             var builder = WebApplication.CreateBuilder();
-            builder.WebHost.UseUrls($"http://127.0.0.1:{port}");
+            // Issue #2161: bind an operating-system-assigned port; the number is read back after start.
+            builder.WebHost.UseUrls($"http://127.0.0.1:{GatewayHost.OperatingSystemAssignedPort}");
             app = builder.Build();
             app.Use(async (context, next) =>
             {
@@ -153,6 +153,7 @@ public sealed class HostedNetworkDiagEndpointTests
                 token: "test-token",
                 collectNetworkDiagnostic: collectNetworkDiagnostic);
             await app.StartAsync();
+            var port = BoundPort.Of(app);
             started = true;
             using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
             await assertion(http);
@@ -167,20 +168,6 @@ public sealed class HostedNetworkDiagEndpointTests
             }
             registry?.Dispose();
             Environment.SetEnvironmentVariable(GatewayHostedMode.HostedEnvVar, priorHosted);
-        }
-    }
-
-    private static int FreePort()
-    {
-        var listener = new TcpListener(System.Net.IPAddress.Loopback, 0);
-        listener.Start();
-        try
-        {
-            return ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
-        }
-        finally
-        {
-            listener.Stop();
         }
     }
 }

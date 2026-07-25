@@ -101,7 +101,7 @@ public sealed class HostedProcessControlDenyTests
         var prior = Environment.GetEnvironmentVariable("CC_GATEWAY_HOSTED");
         Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", hosted ? "1" : null);
         var instancesDir = Path.Combine(Path.GetTempPath(), "cc-procctl-b2-" + Guid.NewGuid().ToString("N"));
-        var gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
+        var gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: instancesDir,
             workListsPath: Path.Combine(instancesDir, "worklists", "worklists.json"),
             snoozePath: Path.Combine(instancesDir, "snooze", "snooze.json"),
@@ -210,7 +210,7 @@ public sealed class HostedProcessControlDenyTests
         var prior = Environment.GetEnvironmentVariable("CC_GATEWAY_HOSTED");
         Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", hosted ? "1" : null);
         var instancesDir = Path.Combine(Path.GetTempPath(), "cc-procctl-b2-" + Guid.NewGuid().ToString("N"));
-        var gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
+        var gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: instancesDir,
             workListsPath: Path.Combine(instancesDir, "worklists", "worklists.json"),
             snoozePath: Path.Combine(instancesDir, "snooze", "snooze.json"),
@@ -267,11 +267,4 @@ public sealed class HostedProcessControlDenyTests
         return proc;
     }
 
-    private static int FreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
 }

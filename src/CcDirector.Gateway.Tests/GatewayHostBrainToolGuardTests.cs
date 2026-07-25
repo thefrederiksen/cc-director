@@ -23,7 +23,7 @@ public sealed class GatewayHostBrainToolGuardTests
     public void Construction_WithNonHostableBrainTool_ThrowsAtConstruction(AgentKind tool)
     {
         var ex = Assert.Throws<InvalidOperationException>(() => new GatewayHost(
-            port: FreePort(), token: "test-token", authEnabled: true,
+            port: GatewayHost.OperatingSystemAssignedPort, token: "test-token", authEnabled: true,
             instancesDirectory: InstancesDir(), brainTool: tool));
         Assert.Contains("cannot be hosted", ex.Message);
     }
@@ -33,7 +33,7 @@ public sealed class GatewayHostBrainToolGuardTests
     {
         var dir = InstancesDir();
         await using var gateway = new GatewayHost(
-            port: FreePort(), token: "test-token", authEnabled: true,
+            port: GatewayHost.OperatingSystemAssignedPort, token: "test-token", authEnabled: true,
             instancesDirectory: dir, brainTool: AgentKind.ClaudeCode);
 
         Assert.Equal(AgentKind.ClaudeCode, gateway.BrainTool);
@@ -41,12 +41,4 @@ public sealed class GatewayHostBrainToolGuardTests
         try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
     }
 
-    private static int FreePort()
-    {
-        using var l = new TcpListener(System.Net.IPAddress.Loopback, 0);
-        l.Start();
-        var port = ((System.Net.IPEndPoint)l.LocalEndpoint).Port;
-        l.Stop();
-        return port;
-    }
 }

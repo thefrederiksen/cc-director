@@ -34,7 +34,7 @@ public sealed class GatewayCronNotifier : ICronNotifier
     private readonly DirectorEventLog _events;
     private readonly Func<string, string?> _resolveDirectorEndpoint;
     private readonly Func<TenantId?> _resolveTenant;
-    private readonly string _gatewayBaseUrl;
+    private readonly Func<string> _gatewayBaseUrl;
     private readonly HttpClient _webhookHttp;
 
     /// <param name="events">The per-Director event ring this notification rides (the existing channel).</param>
@@ -59,14 +59,14 @@ public sealed class GatewayCronNotifier : ICronNotifier
     public GatewayCronNotifier(
         DirectorEventLog events,
         Func<string, string?> resolveDirectorEndpoint,
-        string gatewayBaseUrl,
+        Func<string> gatewayBaseUrl,
         HttpClient webhookHttp,
         Func<TenantId?>? resolveTenant = null)
     {
         _events = events ?? throw new ArgumentNullException(nameof(events));
         _resolveDirectorEndpoint = resolveDirectorEndpoint ?? throw new ArgumentNullException(nameof(resolveDirectorEndpoint));
         _resolveTenant = resolveTenant ?? (() => TenantId.Local);
-        _gatewayBaseUrl = (gatewayBaseUrl ?? "").TrimEnd('/');
+        _gatewayBaseUrl = gatewayBaseUrl ?? throw new ArgumentNullException(nameof(gatewayBaseUrl));
         _webhookHttp = webhookHttp ?? throw new ArgumentNullException(nameof(webhookHttp));
     }
 
@@ -80,7 +80,11 @@ public sealed class GatewayCronNotifier : ICronNotifier
         var endpoint = string.IsNullOrEmpty(directorId) ? null : _resolveDirectorEndpoint(directorId);
         if (string.IsNullOrEmpty(endpoint)) return "";
         var baseUrl = endpoint.TrimEnd('/');
-        var gw = string.IsNullOrEmpty(_gatewayBaseUrl) ? "" : $"?gw={Uri.EscapeDataString(_gatewayBaseUrl)}";
+        // Issue #2161: the Gateway's own address is resolved per notification, never captured. It carries this
+        // Gateway's port, and on an operating-system-assigned port that number does not exist until the
+        // listener binds - after this notifier is built. A captured string would put a dead port in every link.
+        var gatewayUrl = (_gatewayBaseUrl() ?? "").TrimEnd('/');
+        var gw = string.IsNullOrEmpty(gatewayUrl) ? "" : $"?gw={Uri.EscapeDataString(gatewayUrl)}";
         return $"{baseUrl}/sessions/{sessionId}/view{gw}";
     }
 

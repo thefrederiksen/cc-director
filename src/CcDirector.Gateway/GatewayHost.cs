@@ -18,6 +18,8 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.SignalR; // Issue #1176: ClientProxyExtensions.InvokeAsync (client results) for the down-channel
 using Microsoft.Extensions.DependencyInjection;
@@ -36,7 +38,26 @@ public sealed class GatewayHost : IAsyncDisposable
 {
     public const int DefaultPort = 7878;
 
-    public int Port { get; }
+    /// <summary>
+    /// Passed as the port to mean "let the operating system assign a free one" (issue #2161). The bind and
+    /// the assignment then happen in ONE step, and <see cref="Port"/> carries the assigned number the moment
+    /// <see cref="StartAsync"/> returns.
+    ///
+    /// This exists because the alternative - ask the operating system for a free port, release it, and bind
+    /// that number a moment later - leaves the port unheld in between, where any process on the machine can
+    /// take it. Tests did that 92 times over and lost the race often enough to redden whole runs with
+    /// "address already in use" in code nobody had touched.
+    /// </summary>
+    public const int OperatingSystemAssignedPort = 0;
+
+    /// <summary>
+    /// The port this Gateway listens on. Settable only from inside: when the host was constructed with
+    /// <see cref="OperatingSystemAssignedPort"/> this holds 0 until the listener binds, and the ACTUAL
+    /// assigned port from then on. Nothing may capture this value before <see cref="StartAsync"/> has
+    /// bound - read it late (the collaborators below take a delegate for exactly that reason), or a
+    /// consumer built at construction time keeps the placeholder forever.
+    /// </summary>
+    public int Port { get; private set; }
     public string Token { get; }
     public DirectorRegistry Registry { get; }
 
@@ -752,7 +773,7 @@ public sealed class GatewayHost : IAsyncDisposable
             FileLog.Write($"[GatewayHost] auth gate booted ON (enforced by default, issue #917 - a per-device key or the shared token is required, even on the tailnet; set {AuthDisabledEnvVar}=1 to disable for debugging)");
         else
             FileLog.Write($"[GatewayHost] auth gate booted OFF (disabled via override - requests are accepted without a credential; this is a debugging mode, not the shipped default)");
-        _serveProvisioner = new TailscaleServeProvisioner(Registry, Port);
+        _serveProvisioner = new TailscaleServeProvisioner(Registry, () => Port);
 
         // The Gateway's in-process warm brain (issue #184): supervisor only - the chosen tool
         // spawns lazily. Its former consumers have since moved off it: the wingman narration now
@@ -1102,7 +1123,7 @@ public sealed class GatewayHost : IAsyncDisposable
             // the drain runner read the same seam); on self-host it is always Local.
             tenant => Registry.ListDirectors(tenant),
             () => _tenantPass.Current,
-            new Running.RelayDirectorLauncher(Port, Token));
+            new Running.RelayDirectorLauncher(() => Port, Token));
         // The single resolve-then-create path shared by the cron firing engine and the interactive
         // POST /machines/{machine}/sessions relay ("start a session on another computer"). Gateway Cleanup
         // Phase 2 (PR E-B2): both the spawner and the work-list drain driver ride the tunnel. Tunnel-only:
@@ -1141,7 +1162,9 @@ public sealed class GatewayHost : IAsyncDisposable
                 var d = Registry.Get(t, directorId);
                 return d is null ? null : (d.TailnetEndpoint ?? d.ControlEndpoint);
             },
-            $"http://127.0.0.1:{Port}",
+            // Issue #2161: a delegate, not a string. This runs in the constructor, long before the listener
+            // binds, so a formatted address here would freeze the pre-bind port into every deep link.
+            () => $"http://127.0.0.1:{Port}",
             new HttpClient { Timeout = TimeSpan.FromSeconds(10) },
             // MTR-01 (Codex round 1): file the run-complete event into the current cron pass's OWN tenant ring,
             // the same per-tenant seam the deep-link resolver above reads. On self-host this is always Local.
@@ -1207,9 +1230,12 @@ public sealed class GatewayHost : IAsyncDisposable
             // heartbeat cycle; the resolvers never throw (they report an unresolved address as unresolved).
             var tailnetResolver = new Core.Network.TailnetIdentityResolver();
             var lanResolver = new Core.Network.LanIdentityResolver();
-            var gatewayPort = Port;
             Func<IReadOnlyList<string>> resolveEndpointUrls = () =>
             {
+                // Issue #2161: read the port HERE, per call. Hoisting it to a local outside this lambda captured
+                // the pre-bind value, which is 0 on an operating-system-assigned port - so every published
+                // endpoint URL would have advertised a port nothing listens on.
+                var gatewayPort = Port;
                 // Do the I/O here (probe Tailscale and the LAN), then hand the resolved pieces to the pure
                 // BuildOrderedEndpointUrls assembler so the ordering/dedup/loopback-skip logic is unit-tested
                 // without a real network. Passing no config override to the resolvers yields the PURE
@@ -1646,9 +1672,33 @@ public sealed class GatewayHost : IAsyncDisposable
         return Task.FromResult(brain);
     }
 
+    /// <summary>
+    /// The port Kestrel actually bound, read from the running server's own addresses (issue #2161). Only
+    /// called when the caller asked for an operating-system-assigned port. Throws rather than returning a
+    /// placeholder: every consumer of <see cref="Port"/> builds a URL from it, so a silent 0 here would
+    /// surface far away as an unreachable address with no trace of where it came from.
+    /// </summary>
+    private static int ReadBoundPort(WebApplication app)
+    {
+        var addresses = app.Services.GetService<IServer>()?.Features.Get<IServerAddressesFeature>()?.Addresses;
+        if (addresses is null || addresses.Count == 0)
+            throw new InvalidOperationException(
+                "[GatewayHost] The listener reported no bound address, so the operating-system-assigned port " +
+                "cannot be read back. The host is listening on an unknown port and nothing can reach it.");
+
+        foreach (var address in addresses)
+        {
+            if (Uri.TryCreate(address, UriKind.Absolute, out var uri) && uri.Port > 0)
+                return uri.Port;
+        }
+
+        throw new InvalidOperationException(
+            $"[GatewayHost] No bound address carried a usable port (addresses: {string.Join(", ", addresses)}).");
+    }
+
     public async Task StartAsync()
     {
-        FileLog.Write($"[GatewayHost] StartAsync: port={Port}");
+        FileLog.Write($"[GatewayHost] StartAsync: port={(Port == OperatingSystemAssignedPort ? "operating-system-assigned" : Port.ToString())}");
 
         // Seed the central vault from a DevThrottle account-key environment value once when present.
         // The vault is the live source of truth thereafter and SetIfAbsent never clobbers it.
@@ -2018,7 +2068,8 @@ public sealed class GatewayHost : IAsyncDisposable
             // after the machine settings left the Cockpit Settings page. The mode is a delegate resolved per
             // request because SettingsHooks is assigned on this host after Map has run.
             gatewayStartedAtUtc: StartedAtUtc,
-            gatewayPort: Port,
+            // Issue #2161: a delegate - Map runs before the listener binds.
+            gatewayPort: () => Port,
             gatewayModeLabel: () => SettingsHooks?.Mode?.Invoke() ?? "unknown",
             // Store injection points: hand the phone-recorder ingest (RecordingEndpoints) the host's single
             // key vault + transcription history + audio archive, so it stops newing its own copies.
@@ -2670,6 +2721,14 @@ public sealed class GatewayHost : IAsyncDisposable
         Tenancy.HostedRefusalRouteSpace.ValidateBeforeStart(_app);
 
         await _app.StartAsync();
+
+        // Issue #2161: when the caller asked for an operating-system-assigned port, the number only exists
+        // once Kestrel has bound - so read it back from the server itself. This is the whole point of the
+        // mode: assignment and bind are one atomic step, so there is no window in which another process can
+        // take the port out from under us. Fail loudly if the address cannot be read: a Gateway whose Port
+        // still says 0 would hand that 0 to every consumer below and produce unreachable URLs.
+        if (Port == OperatingSystemAssignedPort)
+            Port = ReadBoundPort(_app);
         FileLog.Write($"[GatewayHost] listening on http://0.0.0.0:{Port} (all interfaces, auth-gated; version {version})");
 
         // Cron firing sweep (epic #479, #483): wake ~every minute and fire due jobs. The first tick

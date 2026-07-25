@@ -94,7 +94,7 @@ public sealed class DictationSessionLockTests : IAsyncLifetime
     }
 
     private GatewayHost NewGateway() => new(
-        port: AllocateFreePort(), token: GatewayToken, authEnabled: false,
+        port: GatewayHost.OperatingSystemAssignedPort, token: GatewayToken, authEnabled: false,
         instancesDirectory: _instancesDir,
         workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
 
@@ -109,11 +109,4 @@ public sealed class DictationSessionLockTests : IAsyncLifetime
         return http;
     }
 
-    private static int AllocateFreePort()
-    {
-        var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
 }

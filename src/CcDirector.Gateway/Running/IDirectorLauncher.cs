@@ -18,12 +18,17 @@ public interface IDirectorLauncher
 /// <summary>Production launcher: posts the shipped relay on the local Gateway (#331).</summary>
 public sealed class RelayDirectorLauncher : IDirectorLauncher
 {
-    private readonly int _gatewayPort;
+    private readonly Func<int> _gatewayPort;
     private readonly string _token;
 
-    public RelayDirectorLauncher(int gatewayPort, string token)
+    /// <param name="gatewayPort">
+    /// Read LATE, never captured (issue #2161). A Gateway started on an operating-system-assigned port does
+    /// not know its own number until the listener binds, which happens after this launcher is constructed -
+    /// so an int here would freeze the placeholder 0 and every relay would dial a port nothing serves.
+    /// </param>
+    public RelayDirectorLauncher(Func<int> gatewayPort, string token)
     {
-        _gatewayPort = gatewayPort;
+        _gatewayPort = gatewayPort ?? throw new ArgumentNullException(nameof(gatewayPort));
         _token = token ?? "";
     }
 
@@ -33,7 +38,7 @@ public sealed class RelayDirectorLauncher : IDirectorLauncher
             return false;
         try
         {
-            using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gatewayPort}/"), Timeout = TimeSpan.FromSeconds(15) };
+            using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gatewayPort()}/"), Timeout = TimeSpan.FromSeconds(15) };
             if (!string.IsNullOrEmpty(_token))
                 http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _token);
             var resp = await http.PostAsync($"machines/{Uri.EscapeDataString(machine)}/director/start", content: null, ct);

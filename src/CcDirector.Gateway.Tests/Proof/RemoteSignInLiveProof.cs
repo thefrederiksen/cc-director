@@ -60,7 +60,7 @@ public sealed class RemoteSignInLiveProof
             var account = GatewayAccountFactory.Build(new InMemoryTokenStore());
 
             gateway = new GatewayHost(
-                port: FreePort(),
+                port: GatewayHost.OperatingSystemAssignedPort,
                 token: GatewayToken,
                 authEnabled: true,
                 instancesDirectory: instancesDir,
@@ -187,12 +187,4 @@ public sealed class RemoteSignInLiveProof
         public void Clear() => _tokens = null;
     }
 
-    private static int FreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
-    }
 }

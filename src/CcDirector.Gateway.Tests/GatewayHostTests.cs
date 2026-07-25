@@ -57,7 +57,7 @@ public sealed class GatewayHostTests : IAsyncLifetime
         // in-memory store so the test host never reads the developer machine's REAL Windows Data
         // Protection credential blob - without this, the signed-out assertions depend on whether the
         // machine happens to be signed in to DevThrottle.
-        _gateway = new GatewayHost(port: AllocateFreePort(), token: "test-token-12345", authEnabled: true,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "test-token-12345", authEnabled: true,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
             // Isolate the device registry to this test's temp dir. Without this the DeviceRegistry falls
@@ -359,11 +359,4 @@ public sealed class GatewayHostTests : IAsyncLifetime
         // Don't fail here - tests will fail with clearer assertions if discovery didn't work
     }
 
-    private static int AllocateFreePort()
-    {
-        var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
 }

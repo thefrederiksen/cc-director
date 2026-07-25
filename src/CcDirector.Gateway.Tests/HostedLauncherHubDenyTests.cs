@@ -74,7 +74,7 @@ public sealed class HostedLauncherHubDenyTests : IAsyncLifetime
         Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", hosted ? "1" : "0");
         Assert.Equal(hosted, GatewayHostedMode.IsHosted);
 
-        _gateway = new GatewayHost(port: AllocateFreePort(), token: Token, authEnabled: true,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
             streamMode: true);
@@ -155,12 +155,4 @@ public sealed class HostedLauncherHubDenyTests : IAsyncLifetime
         return conn;
     }
 
-    private static int AllocateFreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
-    }
 }

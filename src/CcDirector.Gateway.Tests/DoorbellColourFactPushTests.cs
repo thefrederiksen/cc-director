@@ -58,7 +58,7 @@ public sealed class DoorbellColourFactPushTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        _gateway = new GatewayHost(port: AllocateFreePort(), token: Token, authEnabled: true,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: _gatewayInstances,
             workListsPath: Path.Combine(_gatewayInstances, "worklists", "worklists.json"),
             streamMode: true);
@@ -97,14 +97,6 @@ public sealed class DoorbellColourFactPushTests : IAsyncLifetime
         TryDelete(_root);
     }
 
-    private static int AllocateFreePort()
-    {
-        var l = new TcpListener(System.Net.IPAddress.Loopback, 0);
-        l.Start();
-        var p = ((System.Net.IPEndPoint)l.LocalEndpoint).Port;
-        l.Stop();
-        return p;
-    }
 
     private static void TryDelete(string dir)
     {

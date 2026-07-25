@@ -24,7 +24,7 @@ public sealed class GatewayClientTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        _gateway = new GatewayHost(port: FreePort(), token: "", authEnabled: false,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "", authEnabled: false,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
         await _gateway.StartAsync();
@@ -58,11 +58,4 @@ public sealed class GatewayClientTests : IAsyncLifetime
         }
     }
 
-    private static int FreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
 }

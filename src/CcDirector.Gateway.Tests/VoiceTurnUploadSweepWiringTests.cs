@@ -74,7 +74,7 @@ public sealed class VoiceTurnUploadSweepWiringTests : IAsyncLifetime
         // Compress only the SCHEDULE. The age cut-off stays production's.
         GatewayHost.VoiceTurnUploadSweepScheduleForTests = TimeSpan.FromMilliseconds(150);
         _gateway = new GatewayHost(
-            port: AllocateFreePort(), token: GatewayToken, authEnabled: false,
+            port: GatewayHost.OperatingSystemAssignedPort, token: GatewayToken, authEnabled: false,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
         await _gateway.StartAsync();
@@ -111,11 +111,4 @@ public sealed class VoiceTurnUploadSweepWiringTests : IAsyncLifetime
         return !Directory.Exists(dir);
     }
 
-    private static int AllocateFreePort()
-    {
-        var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
 }

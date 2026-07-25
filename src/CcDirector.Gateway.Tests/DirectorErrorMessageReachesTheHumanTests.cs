@@ -65,7 +65,7 @@ public sealed class DirectorErrorMessageReachesTheHumanTests
 
         public async Task InitializeAsync()
         {
-            _gateway = new GatewayHost(port: AllocateFreePort(), token: Token, authEnabled: true,
+            _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
                 instancesDirectory: _instancesDir,
                 workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
                 streamMode: true);
@@ -105,14 +105,6 @@ public sealed class DirectorErrorMessageReachesTheHumanTests
             Assert.Equal(DirectorWords, doc.RootElement.GetProperty("error").GetString());
         }
 
-        private static int AllocateFreePort()
-        {
-            var listener = new TcpListener(IPAddress.Loopback, 0);
-            listener.Start();
-            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            listener.Stop();
-            return port;
-        }
     }
 
     // ============ LEG 2: the Director's relay surfaces them instead of discarding them ============

@@ -29,7 +29,7 @@ public sealed class GatewayDirectoryRegistrationTests : IAsyncLifetime
     {
         // cockpitProxyPort: a dead port so "/" hits the interstitial, never a real
         // Cockpit that may be running on the dev machine.
-        _gateway = new GatewayHost(port: FreePort(), token: "test-token", authEnabled: true,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "test-token", authEnabled: true,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
         await _gateway.StartAsync();
@@ -242,11 +242,4 @@ public sealed class GatewayDirectoryRegistrationTests : IAsyncLifetime
             $"expected the Cockpit shell to answer text; got {mediaType}");
     }
 
-    private static int FreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
 }

@@ -105,14 +105,14 @@ public sealed class RepositoriesEndpointServeFoldTests
     private static async Task WithGateway(PushedRepositoryStore store, Func<HttpClient, Task> assertion)
     {
         var instancesDirectory = Path.Combine(Path.GetTempPath(), "cc-repofold-" + Guid.NewGuid().ToString("N"));
-        var port = FreePort();
         WebApplication? app = null;
         DirectorRegistry? registry = null;
         var started = false;
         try
         {
             var builder = WebApplication.CreateBuilder();
-            builder.WebHost.UseUrls($"http://127.0.0.1:{port}");
+            // Issue #2161: bind an operating-system-assigned port; the number is read back after start.
+            builder.WebHost.UseUrls($"http://127.0.0.1:{GatewayHost.OperatingSystemAssignedPort}");
             app = builder.Build();
             registry = new DirectorRegistry(instancesDirectory);
             GatewayEndpoints.Map(
@@ -122,6 +122,7 @@ public sealed class RepositoriesEndpointServeFoldTests
                 token: "test-token",
                 pushedRepositories: store);
             await app.StartAsync();
+            var port = BoundPort.Of(app);
             started = true;
             using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
             await assertion(http);
@@ -135,20 +136,6 @@ public sealed class RepositoriesEndpointServeFoldTests
                 await app.DisposeAsync();
             }
             registry?.Dispose();
-        }
-    }
-
-    private static int FreePort()
-    {
-        var listener = new TcpListener(System.Net.IPAddress.Loopback, 0);
-        listener.Start();
-        try
-        {
-            return ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
-        }
-        finally
-        {
-            listener.Stop();
         }
     }
 }

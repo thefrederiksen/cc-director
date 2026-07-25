@@ -26,7 +26,7 @@ public sealed class EventsFeedSelfHostedTests : IAsyncLifetime
         Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", null);
 
         _gateway = new GatewayHost(
-            port: FreePort(),
+            port: GatewayHost.OperatingSystemAssignedPort,
             token: Token,
             authEnabled: true,
             instancesDirectory: _instancesDir,
@@ -80,11 +80,4 @@ public sealed class EventsFeedSelfHostedTests : IAsyncLifetime
         throw new EndOfStreamException("The events feed closed before publishing an event.");
     }
 
-    private static int FreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
 }

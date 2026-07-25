@@ -43,7 +43,7 @@ public sealed class CockpitReactAppServingTests : IAsyncLifetime
             + "<body>" + ShellMarker + "</body></html>");
         await File.WriteAllTextAsync(Path.Combine(webRoot, "assets", "index-abc123.js"), AssetBody);
 
-        _gateway = new GatewayHost(port: FreePort(), token: "test-token", authEnabled: true,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "test-token", authEnabled: true,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
         await _gateway.StartAsync();
@@ -119,10 +119,4 @@ public sealed class CockpitReactAppServingTests : IAsyncLifetime
         Assert.DoesNotContain(ShellMarker, await resp.Content.ReadAsStringAsync());
     }
 
-    private static int FreePort()
-    {
-        using var l = new TcpListener(IPAddress.Loopback, 0);
-        l.Start();
-        return ((IPEndPoint)l.LocalEndpoint).Port;
-    }
 }

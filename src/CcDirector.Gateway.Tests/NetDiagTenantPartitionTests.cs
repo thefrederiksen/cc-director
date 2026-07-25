@@ -500,7 +500,7 @@ public sealed class NetDiagEndpointTenantIsolationTests : IAsyncLifetime
         Directory.CreateDirectory(_root);
         Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _root);
 
-        _gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: Path.Combine(_root, "instances"),
             workListsPath: Path.Combine(_root, "worklists", "worklists.json"),
             snoozePath: Path.Combine(_root, "snooze", "snooze.json"),
@@ -684,13 +684,6 @@ public sealed class NetDiagEndpointTenantIsolationTests : IAsyncLifetime
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
     }
 
-    private static int FreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
 }
 
 /// <summary>
@@ -725,7 +718,7 @@ public sealed class NetDiagSelfHostControlTests : IAsyncLifetime
         Directory.CreateDirectory(_root);
         Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _root);
 
-        _gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: Path.Combine(_root, "instances"),
             workListsPath: Path.Combine(_root, "worklists", "worklists.json"),
             snoozePath: Path.Combine(_root, "snooze", "snooze.json"),
@@ -783,11 +776,4 @@ public sealed class NetDiagSelfHostControlTests : IAsyncLifetime
         return _http.SendAsync(req);
     }
 
-    private static int FreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
 }

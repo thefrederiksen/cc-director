@@ -60,7 +60,7 @@ public sealed class PromptLogTenantIsolationTests : IAsyncLifetime
         Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", "1");
 
         // The prompt log is pinned into a throwaway directory; it otherwise defaults to the running user's real one.
-        _gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: _tempDir,
             workListsPath: Path.Combine(_tempDir, "worklists", "worklists.json"),
             snoozePath: Path.Combine(_tempDir, "snooze", "snooze.json"),
@@ -341,11 +341,4 @@ public sealed class PromptLogTenantIsolationTests : IAsyncLifetime
         return _http.SendAsync(req);
     }
 
-    private static int FreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
 }

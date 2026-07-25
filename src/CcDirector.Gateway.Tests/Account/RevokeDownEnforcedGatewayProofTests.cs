@@ -97,7 +97,7 @@ public sealed class RevokeDownEnforcedGatewayProofTests : IAsyncLifetime
         // Boot a REAL Gateway with the host-wide auth gate ENFORCED (issue #917) on an ephemeral loopback
         // port, isolated to this test's temp dir so it never touches the developer's live registry.
         _gateway = new GatewayHost(
-            port: AllocateFreePort(),
+            port: GatewayHost.OperatingSystemAssignedPort,
             token: "shared-machine-token-924-proof",
             authEnabled: true,
             instancesDirectory: Path.Combine(_tempDir, "instances"),
@@ -116,14 +116,6 @@ public sealed class RevokeDownEnforcedGatewayProofTests : IAsyncLifetime
         await _gateway.StopAsync();
         try { if (Directory.Exists(_tempDir)) Directory.Delete(_tempDir, true); }
         catch { /* best-effort temp cleanup */ }
-    }
-
-    private static int AllocateFreePort()
-    {
-        var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
     }
 
     private HttpClient NewClientWithKey() => new()

@@ -103,7 +103,7 @@ public sealed class HostedSessionCommandRouteTenancyTests : IAsyncLifetime
         const int maximumAttempts = 3;
         for (var attempt = 1; attempt <= maximumAttempts; attempt++)
         {
-            _gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
+            _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
                 instancesDirectory: _instancesDir,
                 workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
                 snoozePath: Path.Combine(_instancesDir, "snooze", "snooze.json"),
@@ -318,11 +318,4 @@ public sealed class HostedSessionCommandRouteTenancyTests : IAsyncLifetime
         LastActivityAt = DateTime.UtcNow,
     };
 
-    private static int FreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
 }

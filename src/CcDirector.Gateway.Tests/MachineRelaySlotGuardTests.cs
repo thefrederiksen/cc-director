@@ -30,7 +30,7 @@ public sealed class MachineRelaySlotGuardTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        _gateway = new GatewayHost(port: FreePort(), token: "test-token", authEnabled: true,
+        _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "test-token", authEnabled: true,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
         await _gateway.StartAsync();
@@ -140,12 +140,4 @@ public sealed class MachineRelaySlotGuardTests : IAsyncLifetime
             : await _http.PostAsJsonAsync($"machines/{Machine}/{verb}", body);
     }
 
-    private static int FreePort()
-    {
-        using var listener = new System.Net.Sockets.TcpListener(
-            System.Net.IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((System.Net.IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
 }

@@ -105,15 +105,17 @@ public sealed class DictionarySuggestionsEndpointTests : IDisposable
         SeedTerm(transcripts, Base.AddHours(1),
             new[] { ("Frederiksen", 60), ("Fredriksson", 18), ("Fredrickson", 12) });
 
-        var port = AllocateFreePort();
-        var baseUrl = $"http://127.0.0.1:{port}";
+        // Issue #2161: bind an operating-system-assigned port, then learn the number it gave us. The
+        // address cannot be built up front any more - "0" is not something a client can dial.
+        var bindUrl = $"http://127.0.0.1:{GatewayHost.OperatingSystemAssignedPort}";
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
         var app = builder.Build();
-        app.Urls.Add(baseUrl);
+        app.Urls.Add(bindUrl);
         RecordingEndpoints.Map(app, tenantBoundary: null, keyVault: null, history: null, audioArchive: null,
             suggestions: suggestions, dismissals: dismissals);
         await app.StartAsync();
+        var baseUrl = $"http://127.0.0.1:{BoundPort.Of(app)}";
 
         try
         {
@@ -195,14 +197,6 @@ public sealed class DictionarySuggestionsEndpointTests : IDisposable
         {
             await app.StopAsync();
         }
-    }
-
-    private static int AllocateFreePort()
-    {
-        var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
     }
 
     // Response shapes (camelCase from the endpoint; case-insensitive binding).
