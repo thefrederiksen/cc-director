@@ -125,7 +125,11 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
         var validator = new JwtAccessTokenValidator(
             "test-signing-secret", timeProvider: null, publicKeySetJson: _key.PublicKeySetJson(),
             expectedAudience: Audience, expectedIssuer: Issuer, allowSymmetricHs256: false);
-        var hosted = new HostedEnrollDependencies(devices, tenants, validator, new EntitlementRegistry(db, requireLivemode: false));
+        // The free-trial ledger (issue #2117) rides in the bundle. These tests seed a PAID entitlement, which
+        // wins outright, so the trial is never consulted and this wiring changes none of their outcomes - it
+        // just keeps the bundle complete, the way the host builds it.
+        var hosted = new HostedEnrollDependencies(devices, tenants, validator,
+            new EntitlementRegistry(db, requireLivemode: false), new TrialRegistry(db));
         return (devices, tenants, hosted);
     }
 
@@ -378,6 +382,13 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
         var (app, http) = await StartHostedAsync(hosted);
         try
         {
+            // Since issue #2117 an account with no paid entitlement that is ARRIVING FOR THE FIRST TIME is
+            // granted the free Pro trial and enrolls - that is the promise on the pricing page, and it is
+            // proven in HostedProTrialTests. So the account that is genuinely NOT entitled, and the one this
+            // test is about, is one whose trial has already ended: granted thirty days ago, so its fourteen
+            // days are long gone and the trial is never re-granted.
+            hosted.Trials.GrantIfFirstArrival(SubjectAlice, alreadyKnownToGateway: false, DateTime.UtcNow.AddDays(-30));
+
             var before = RegistrySnapshot(devices);
             var resp = await PostBearerAsync(http, Token(SubjectAlice), "dev-a");
             Assert.Equal(HttpStatusCode.PaymentRequired, resp.StatusCode);

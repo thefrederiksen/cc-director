@@ -131,11 +131,24 @@ internal static class MobileEnrollmentEndpoint
         };
 
         var result = HostedEnrollmentEndpoint.Enroll(BearerToken.Read(ctx), enrollReq, hosted.Devices,
-            hosted.Tenants, hosted.AccountTokenValidator, hosted.Entitlements, DateTime.UtcNow);
+            hosted.Tenants, hosted.AccountTokenValidator, hosted.Entitlements, DateTime.UtcNow, hosted.Trials);
 
         if (result.Status != StatusCodes.Status200OK || result.Response is null)
         {
             FileLog.Write($"[MobileEnrollment] POST /mobile/enroll (hosted): the hosted mint did not enroll -> {result.Status} (no cookie set)");
+
+            // A payment refusal says what to do about it (issue #2117), with the SAME sentence and address the
+            // Director enrollment route returns - one wording, owned by the Gateway, on every surface.
+            if (result.Status == StatusCodes.Status402PaymentRequired)
+            {
+                return Results.Json(new
+                {
+                    error = result.Error,
+                    message = Tenancy.EntitlementRegistry.SubscribeMessage,
+                    subscribeUrl = Tenancy.EntitlementRegistry.SubscribeUrl,
+                }, statusCode: result.Status);
+            }
+
             return Results.Json(new { error = result.Error }, statusCode: result.Status);
         }
 

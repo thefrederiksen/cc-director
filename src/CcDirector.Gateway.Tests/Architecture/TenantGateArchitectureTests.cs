@@ -59,6 +59,7 @@ public sealed class TenantGateArchitectureTests
     {
         nameof(TenantEntity),             // the account-subject -> tenant mapping (the tenant census itself)
         nameof(EntitlementEntity),        // paid entitlements owned/written by the payment side; Gateway only READs
+        nameof(AccountTrialEntity),       // free-trial ledger, keyed by account subject and read pre-tenant (#2117)
         nameof(DeviceCredentialEntity),   // per-device key records; a presented key is resolved by hash pre-tenant
         nameof(DeviceImportMarkerEntity), // one-time devices.json import idempotency markers (global, like above)
     };

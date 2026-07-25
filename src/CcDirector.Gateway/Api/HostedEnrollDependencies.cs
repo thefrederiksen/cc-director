@@ -5,7 +5,7 @@ using CcDirector.Gateway.Tenancy;
 namespace CcDirector.Gateway.Api;
 
 /// <summary>
-/// The four dependencies the ONE hosted mint - <see cref="HostedEnrollmentEndpoint.Enroll"/> - needs, bundled
+/// The five dependencies the ONE hosted mint - <see cref="HostedEnrollmentEndpoint.Enroll"/> - needs, bundled
 /// so every hosted entry point that mints a tenant-scoped device key passes the identical set. Presence of this
 /// object (non-null) is exactly what puts an entry point into hosted mode; a null bundle is the self-host case,
 /// where the entry point's existing single-owner behaviour is byte-unchanged.
@@ -20,8 +20,12 @@ namespace CcDirector.Gateway.Api;
 /// <param name="Tenants">The tenant registry that mint-or-looks-up the account's tenant.</param>
 /// <param name="AccountTokenValidator">The account access-token validator (signature, expiry, audience, issuer).</param>
 /// <param name="Entitlements">The paid-entitlement gate that sits between subject verification and tenant mint.</param>
+/// <param name="Trials">The free-trial ledger (issue #2117) - the one place a 14-day Pro trial is granted, at
+/// an account's first arrival. It rides in this bundle for the same reason the entitlement gate does: every
+/// hosted entry point that mints a device key must apply the identical grant rule, never its own.</param>
 internal sealed record HostedEnrollDependencies(
     DeviceRegistry Devices,
     TenantRegistry Tenants,
     JwtAccessTokenValidator AccountTokenValidator,
-    EntitlementRegistry Entitlements);
+    EntitlementRegistry Entitlements,
+    TrialRegistry Trials);

@@ -51,6 +51,27 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.ToTable("account_hosted_ai_spend", (string)null);
                 });
 
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.AccountTrialEntity", b =>
+                {
+                    b.Property<string>("Subject")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("subject");
+
+                    b.Property<DateTime>("ExpiresAtUtc")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("expires_at_utc");
+
+                    b.Property<DateTime>("StartedAtUtc")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("started_at_utc");
+
+                    b.HasKey("Subject");
+
+                    b.HasIndex("ExpiresAtUtc");
+
+                    b.ToTable("account_trials", (string)null);
+                });
+
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.ActivityEventEntity", b =>
                 {
                     b.Property<string>("TenantId")

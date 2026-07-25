@@ -3,6 +3,7 @@ using System;
 using CcDirector.Gateway.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace CcDirector.Gateway.Migrations.Postgres.Migrations
 {
     [DbContext(typeof(GatewayDbContext))]
-    partial class GatewayDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260724212205_AddAccountTrials")]
+    partial class AddAccountTrials
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -681,58 +684,6 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.HasIndex("TenantId");
 
                     b.ToTable("push_subscriptions", "gateway");
-                });
-
-            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.RepoStateEntity", b =>
-                {
-                    b.Property<string>("TenantId")
-                        .HasColumnType("text")
-                        .HasColumnName("tenant_id");
-
-                    b.Property<string>("DirectorId")
-                        .HasColumnType("text");
-
-                    b.Property<string>("RepoPath")
-                        .HasColumnType("text");
-
-                    b.Property<string>("BranchesJson")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<DateTime>("CollectedAtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("CurrentBranch")
-                        .HasColumnType("text");
-
-                    b.Property<string>("DefaultBranch")
-                        .HasColumnType("text");
-
-                    b.Property<bool>("IsDirty")
-                        .HasColumnType("boolean");
-
-                    b.Property<string>("MachineName")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<DateTime>("ReceivedAtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("WorktreesJson")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.HasKey("TenantId", "DirectorId", "RepoPath");
-
-                    b.HasIndex("TenantId");
-
-                    b.HasIndex("TenantId", "ReceivedAtUtc");
-
-                    b.ToTable("repo_state", "gateway");
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SessionSpendEntity", b =>

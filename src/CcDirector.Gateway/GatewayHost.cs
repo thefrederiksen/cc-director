@@ -394,6 +394,11 @@ public sealed class GatewayHost : IAsyncDisposable
     /// where the hosted enrollment route is mapped, which is hosted only.</summary>
     public Tenancy.EntitlementRegistry EntitlementRegistry { get; }
 
+    /// <summary>The free-trial ledger (issue #2117) - the 14-day Pro trial granted at an account's first
+    /// arrival at the hosted Gateway. Read through <see cref="EntitlementRegistry"/> everywhere; exposed here
+    /// because the hosted enrollment route is the one place that GRANTS a trial.</summary>
+    public Tenancy.TrialRegistry TrialRegistry { get; }
+
     // The persisted workflow catalog (Workflows mission, phase 1): built-ins seeded at startup,
     // user-defined workflows beside them, served by Api.WorkflowEndpoints.
     private readonly Workflows.WorkflowStore _workflows;
@@ -804,7 +809,13 @@ public sealed class GatewayHost : IAsyncDisposable
         // the hosted enrollment boundary (which validates the account token and stamps the resolved tenant on
         // the device) in the follow-up increment. Unused on the single-tenant local install.
         TenantRegistry = new Tenancy.TenantRegistry(_gatewayDb);
-        EntitlementRegistry = new Tenancy.EntitlementRegistry(_gatewayDb);
+        // The free-trial ledger (issue #2117): the Gateway's OWN record of the 14-day Pro trial the public
+        // pricing page promises every new account. It is passed INTO the entitlement registry rather than
+        // consulted beside it, so the enrollment gate, the request-path lease and the 60s sweep all read one
+        // decision and can never disagree about whether an account may use hosted today - which is also what
+        // makes the trial EXPIRE on the request path instead of only at enrollment.
+        TrialRegistry = new Tenancy.TrialRegistry(_gatewayDb);
+        EntitlementRegistry = new Tenancy.EntitlementRegistry(_gatewayDb, trials: TrialRegistry);
         // MTR-15 cancellation cutoff, hosted-only. Reuses the SAME EntitlementRegistry as the enrollment gate
         // so the enrollment check and the ongoing check cannot drift. The revoker calls MTR-14B's tenant-wide
         // device tombstone; the lease is the O(1) hot-path check; the monitor is the 60s sweep.
@@ -2256,7 +2267,7 @@ public sealed class GatewayHost : IAsyncDisposable
             ? new Api.HostedEnrollDependencies(
                 Devices, TenantRegistry,
                 CcDirector.Gateway.Account.GatewayAccountFactory.BuildAuthorizationValidator(),
-                EntitlementRegistry)
+                EntitlementRegistry, TrialRegistry)
             : null;
 
         // POST /devices/enroll-hosted (Hosted Multi-Tenancy increment 1): the HOSTED counterpart - a REMOTE
@@ -2269,7 +2280,8 @@ public sealed class GatewayHost : IAsyncDisposable
             // the entitlement registry means the gate is active wherever enrollment is possible - self-host
             // never maps this route at all and therefore cannot be gated by accident.
             Api.HostedEnrollmentEndpoint.Map(_app, hostedEnrollDeps.Devices, hostedEnrollDeps.Tenants,
-                hostedEnrollDeps.AccountTokenValidator, entitlements: hostedEnrollDeps.Entitlements);
+                hostedEnrollDeps.AccountTokenValidator, entitlements: hostedEnrollDeps.Entitlements,
+                trials: hostedEnrollDeps.Trials);
         }
 
         // Wingman-voice surface for the Cockpit's Voice tab (issue #531): drive one turn of a
