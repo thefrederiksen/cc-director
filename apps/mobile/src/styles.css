@@ -4128,6 +4128,18 @@ a.banner-btn {
   min-width: 0;
 }
 
+/* The Chat / Voice toggle lives in the MIDDLE, on a row of its own beneath the bar. It used to sit at
+   the right end of the bar, where the fixed network pill (.net-pill, top-right on any screen that does
+   not give it a home) landed straight on top of it - a green pill over the one control that decides how
+   this whole screen behaves. The bar now hosts the pill inline instead, and this row centres the toggle
+   clear of both corners. */
+.assistant-moderow {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: center;
+  padding: 10px 0 2px;
+}
+
 .assistant-mode {
   display: flex;
   border: 1px solid var(--border);
@@ -4143,12 +4155,56 @@ a.banner-btn {
   font-size: 13px;
   padding: 6px 14px;
   cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .assistant-mode-btn.active {
   background: var(--accent);
   color: #fff;
   font-weight: 600;
+}
+
+/* The empty-state size: nothing has been asked yet, so picking how to ask is the only thing to do on
+   the screen and it gets a real target instead of a 13px pill in the chrome. Each half is a full
+   44px-plus tap target (issue #1004's floor) and reads at a glance from arm's length. */
+.assistant-mode-large {
+  width: 100%;
+  max-width: 300px;
+}
+
+.assistant-mode-large .assistant-mode-btn {
+  flex: 1 1 0;
+  min-height: 52px;
+  font-size: 17px;
+  font-weight: 600;
+  padding: 12px 20px;
+}
+
+/* The empty state's centred "how do you want to ask" block: the big toggle, what it means, and then
+   the examples below it. */
+.assistant-modepick {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0 22px;
+  text-align: center;
+}
+
+.assistant-modepick-label {
+  margin: 0;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.assistant-modepick-hint {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: 320px;
 }
 
 .assistant-stage {
@@ -4169,11 +4225,17 @@ a.banner-btn {
   padding: 12px 2px 12px 0;
 }
 
+/* The empty state scrolls in its own right: it now carries the big mode picker above the examples, and
+   on a short phone screen the two together are taller than the stage. The screen itself is
+   overflow: hidden by law (the composer must stay on-screen), so the overflow has to be absorbed here. */
 .assistant-empty {
   color: var(--text-dim);
   font-size: 14px;
   line-height: 1.6;
   padding: 20px 4px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .assistant-empty ul {
@@ -4327,11 +4389,8 @@ a.banner-btn {
   opacity: 0.5;
 }
 
-.assistant-round.listening {
-  background: var(--attention);
-  border-color: var(--attention);
-  color: #fff;
-}
+/* No "listening" state on these buttons: they OPEN the dictation dialog, which shows the recording
+   state itself (RECORDING, the timer, the bars). The button is never the recorder. */
 
 .assistant-talkdock {
   flex: 0 0 auto;
@@ -4362,11 +4421,6 @@ a.banner-btn {
   height: 32px;
 }
 
-.assistant-talkbtn.listening {
-  background: var(--attention);
-  box-shadow: 0 0 0 10px rgba(241, 76, 76, 0.14), 0 0 0 22px rgba(241, 76, 76, 0.06);
-}
-
 .assistant-talkbtn:disabled {
   opacity: 0.5;
 }
@@ -4374,6 +4428,9 @@ a.banner-btn {
 .assistant-talkhint {
   color: var(--text-dim);
   font-size: 12px;
+  text-align: center;
+  max-width: 320px;
+  line-height: 1.45;
 }
 
 .assistant-stopread {
