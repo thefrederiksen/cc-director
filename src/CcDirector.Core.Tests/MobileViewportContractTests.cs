@@ -218,6 +218,43 @@ public sealed class MobileViewportContractTests
     }
 
     /// <summary>
+    /// ONE offset per screen. A header INSIDE a pinned shell must not take the banner offset a second time.
+    ///
+    /// The pinned shells set their own `top` to the banner height, so a header inside one is already below
+    /// the banner by virtue of being in that box. The roster's header, which shares the page with the
+    /// banner, does need the offset - and it is the SAME `.app-bar` class. Giving the class the offset
+    /// gave it to both, and a sticky `top: var(--voicemode-h)` inside an already-offset box means "never
+    /// come closer than the banner height to the top of THIS box", which pushed the session header down a
+    /// second time. Shipped 2026-07-25 and reported from the phone: "there's a black space at the top...
+    /// it's like it bumped it down too far". The strip was exactly one banner tall.
+    /// </summary>
+    [Fact]
+    public void HeadersInsideAPinnedShell_DoNotTakeTheBannerOffsetASecondTime()
+    {
+        var css = File.ReadAllText(Path.Combine(GetRepoRoot(), StylesPath));
+        var offenders = new List<string>();
+
+        foreach (var shell in FullScreenShells)
+        {
+            var block = RuleBlock(css, $"{shell} .app-bar");
+            if (block is null)
+            {
+                offenders.Add($"{shell} .app-bar: no rule resets this header's sticky `top`. It inherits the roster header's banner offset and is pushed down a SECOND time, leaving an empty strip one banner tall.");
+                continue;
+            }
+            var tops = Regex.Matches(block, @"(?<!-)\btop\s*:\s*([^;]+);").Select(m => m.Groups[1].Value.Trim()).ToList();
+            if (tops.Count == 0 || tops[^1] != "0")
+                offenders.Add($"{shell} .app-bar: its effective `top` is `{(tops.Count == 0 ? "unset" : tops[^1])}`, not 0. Inside an already-offset shell the offset must not be applied again.");
+        }
+
+        Assert.True(offenders.Count == 0,
+            "A header inside a pinned shell takes the banner offset twice:\n  " + string.Join("\n  ", offenders)
+            + "\n\nWHY: the shell has ALREADY moved itself below the banner. The roster's header needs the offset "
+            + "because it shares the page with the banner; a session header does not, and they are the same class. "
+            + "One offset per screen, applied by whichever box owns the offsetting.");
+    }
+
+    /// <summary>
     /// The banner must MEASURE itself and publish --voicemode-h. A guard on the shells alone would pass
     /// happily while the variable was never set - every shell would silently fall back to 0px and the
     /// banner would be back on top of the back button.
