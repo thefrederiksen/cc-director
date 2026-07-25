@@ -176,20 +176,33 @@ _ACTIONS = [
     {
         "id": "session-compact",
         "description": (
-            "Compact a session's context, then continue it. A session whose context window is full "
-            "cannot read anything you send it - every message is swallowed and the tool reprints its "
-            "context-limit line - so this is the only way to rescue one from outside. Compaction "
-            "SUMMARIZES the conversation, so the session keeps what it has learned; clearing would "
-            "throw it away. The call waits for the compaction to finish (up to a couple of minutes on "
-            "a full session) and only then sends the follow-up, which defaults to 'continue'. Use "
-            "--then to send something else, or --compact-only to send nothing."
+            "Compact a session's context and send it NOTHING afterwards. Compaction SUMMARIZES the "
+            "conversation, so the session keeps what it has learned - unlike clearing, which throws it "
+            "away. This is the housekeeping verb: use it on a session whose context is filling up but "
+            "which is still working fine. It frees room and leaves the session where it was. For a "
+            "session that is STUCK, use session-compact-continue instead. Waits for the compaction to "
+            "finish, so it can take a minute or two."
         ),
-        "command": 'cc-devthrottle session compact [target] [--then "<text>"] [--compact-only]',
+        "command": "cc-devthrottle session compact [target]",
+        "mutatesState": True,
+        "args": [{"name": "target", "required": False}],
+    },
+    {
+        "id": "session-compact-continue",
+        "description": (
+            "Compact a session's context and THEN send it a message - the rescue for a stuck session. A "
+            "session whose context window is full cannot read anything sent to it: every message is "
+            "swallowed and the tool reprints its context-limit line. This unblocks it and gets it moving "
+            "again, so a supervising agent can rescue a worker with nobody at its keyboard. The message "
+            "(default 'continue') is sent only once the compaction has actually FINISHED, never on a "
+            "timer. Tools that cannot report finishing are refused rather than guessed at - compact those "
+            "with session-compact and send the message yourself."
+        ),
+        "command": 'cc-devthrottle session compact-continue [target] ["<message>"]',
         "mutatesState": True,
         "args": [
             {"name": "target", "required": False},
-            {"name": "then", "required": False},
-            {"name": "compact_only", "required": False},
+            {"name": "message", "required": False},
         ],
     },
     {
@@ -738,30 +751,48 @@ def compact(
     target: Optional[str] = typer.Argument(
         None, help="Session to compact. Defaults to THIS session (CC_SESSION_ID)."
     ),
-    then: str = typer.Option(
-        "continue",
-        "--then",
-        help="What to send once the compaction finishes. Defaults to 'continue'.",
-    ),
-    compact_only: bool = typer.Option(
-        False, "--compact-only", help="Compact and send nothing afterwards."
-    ),
 ) -> None:
-    """Compact a session's context, then continue it.
-
-    A session whose context window is full cannot read anything you send it - every message is
-    swallowed and the tool just reprints its context-limit line. Compaction is the only thing that
-    gets it moving again, and this is how you do it without walking to that keyboard.
+    """Compact a session's context. Sends it nothing afterwards.
 
     Compaction SUMMARIZES the conversation, so the session keeps what it has learned. That is the
     difference from clearing, which throws the conversation away.
 
-    This waits for the compaction to actually finish and then sends the follow-up, so it can take a
-    couple of minutes on a full session. The tool tells us when it has finished; nothing here is
-    timed on a guess. A tool that cannot report finishing can still be compacted with
-    --compact-only, but it will not accept a follow-up.
+    Use this for housekeeping - a session whose context is filling up but which is still working
+    fine. It frees room and leaves the session exactly where it was.
+
+    If the session is STUCK - full, and swallowing everything you send it - use
+    `cc-devthrottle session compact-continue` instead, which also gets it moving again.
+
+    This waits for the compaction to actually finish, so it can take a minute or two.
     """
-    compact_session(target, None if compact_only else then)
+    compact_session(target, None)
+
+
+@session_app.command("compact-continue")
+def compact_continue(
+    target: Optional[str] = typer.Argument(
+        None, help="Session to compact. Defaults to THIS session (CC_SESSION_ID)."
+    ),
+    message: str = typer.Argument(
+        "continue", help="What to send once the compaction finishes. Defaults to 'continue'."
+    ),
+) -> None:
+    """Compact a session's context, then send it a message - the rescue for a STUCK session.
+
+    A session whose context window is full cannot read anything you send it: every message is
+    swallowed and the tool just reprints its context-limit line. Compaction is the only thing that
+    unblocks it, and this verb also gets it moving again afterwards, so a supervising agent can
+    rescue a worker with nobody at its keyboard.
+
+    The message is sent only once the compaction has actually FINISHED - never on a timer. A prompt
+    fired while the tool is still summarizing gets swallowed exactly like the ones that were lost
+    before it.
+
+    Some tools can be compacted but cannot report when they finished (codex, pi, gemini, grok,
+    opencode today). This verb refuses them rather than guessing a moment: compact those with
+    `cc-devthrottle session compact` and send the message yourself once the session is idle.
+    """
+    compact_session(target, message)
 
 
 @session_app.command()

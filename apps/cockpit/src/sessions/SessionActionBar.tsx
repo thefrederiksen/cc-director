@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   sendClearContext,
+  sendCompactContext,
   sendEscape,
   sendHistoryPicker,
   sendInterrupt,
@@ -15,6 +16,7 @@ import { ConfirmDialog } from "../components";
 //
 //   Stop (Cancel cap)          -> POST /sessions/{sid}/escape    (the driver's soft cancel - Esc)
 //   Interrupt (Interrupt cap)  -> POST /sessions/{sid}/interrupt (hard Ctrl+C, stronger than Stop)
+//   Compact (CompactContext cap) -> POST /sessions/{sid}/compact-context (summarize in place)
 //   Clear context (ClearContext cap) -> POST /sessions/{sid}/clear-context (/clear in place)
 //   History (History cap)      -> POST /sessions/{sid}/history-picker (the in-terminal history picker)
 
@@ -31,6 +33,14 @@ export function SessionActionBar({ sessionId, capabilities }: SessionActionBarPr
   // Clear context resets the session's whole conversation in place; it is destructive, so it asks
   // through the shared ConfirmDialog (issue #1244) instead of firing on the first click.
   const [confirmClear, setConfirmClear] = useState(false);
+  // Compaction asks too (issue #2167). Note the dialogs deliberately READ DIFFERENTLY: clearing
+  // destroys the conversation, compaction preserves it. Two confirmations worded alike would train one
+  // reflex for two opposite outcomes, which is worse than one.
+  const [confirmCompact, setConfirmCompact] = useState(false);
+  // A compaction is a language model summarizing a whole conversation - it routinely runs past a
+  // minute. The other verbs return in milliseconds, so the shared `acting` flag alone would leave the
+  // bar looking dead for the entire wait with nothing to explain it.
+  const [compacting, setCompacting] = useState(false);
   const statusTimer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -100,6 +110,17 @@ export function SessionActionBar({ sessionId, capabilities }: SessionActionBarPr
           Interrupt
         </button>
       )}
+      {has("CompactContext") && (
+        <button
+          type="button"
+          className="act-btn"
+          disabled={acting}
+          onClick={() => setConfirmCompact(true)}
+          title="Summarize the conversation - frees context window, keeps what the session has learned"
+        >
+          {compacting ? "Compacting..." : "Compact"}
+        </button>
+      )}
       {has("ClearContext") && (
         <button
           type="button"
@@ -124,6 +145,36 @@ export function SessionActionBar({ sessionId, capabilities }: SessionActionBarPr
       )}
       {status !== null && <span className="action-status">{status}</span>}
       {error !== null && <span className="action-error">{error}</span>}
+
+      <ConfirmDialog
+        open={confirmCompact}
+        title="Compact this session's context?"
+        message={
+          "This summarizes the conversation so far, freeing room in the context window. The session keeps " +
+          "what it has learned, and stays where it is - nothing is sent to it. It can take a minute or two."
+        }
+        confirmLabel="Compact"
+        busyLabel="Compacting..."
+        onConfirm={async () => {
+          if (sessionId === undefined) return;
+          setCompacting(true);
+          try {
+            // Compact ONLY - no follow-up prompt. The button frees room in the context window and
+            // stops there; deciding what the session should do next is the person's, and they are
+            // sitting right here with a composer. Compact-and-continue is a separate verb, for the
+            // command line, where a supervising agent rescuing a stuck session has nobody to type
+            // the next prompt.
+            const result = await sendCompactContext(sessionId);
+            // Render the Gateway's own sentence verbatim. It is the only thing that knows whether the
+            // compaction was watched to completion or merely submitted, and composing a second message
+            // here is how "Compacted" ends up on screen for a compaction nobody observed.
+            flash(result.detail);
+          } finally {
+            setCompacting(false);
+          }
+        }}
+        onClose={() => setConfirmCompact(false)}
+      />
 
       <ConfirmDialog
         open={confirmClear}
