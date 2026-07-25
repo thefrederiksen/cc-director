@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { setVoiceModeAllSessions, type SessionDto } from "@devthrottle/client-core/api/client";
 import { getAutoSpeak, inVoiceQueueOrder, queueTouchMs, setAutoSpeak } from "@devthrottle/client-core/voice/queueTouch";
+import { useVoiceModeAll } from "@devthrottle/client-core/voice/useVoiceModeAll";
 import { getSessionsEnvelope } from "@devthrottle/client-core/fleet/fleetClient";
 import { emptyRetentionCache, mergeRosterRetention, type RosterSessionMark } from "@devthrottle/client-core/fleet/rosterRetention";
 import { classify, contextLine, deletionReason, dotHex, inBucket, inDesktopOrder, inWaitingOrder, isWorking, pendingDeletion, repoLeaf, snoozeCountdown, snoozeExpired } from "@devthrottle/client-core/sessions/ordering";
@@ -467,66 +468,69 @@ function EnableAlerts() {
   );
 }
 
-// The fleet-wide voice switch shown at the top of the Voice sessions tab (issue #1765). One control for
-// the whole round trip: while no session is in voice mode it offers "Turn on voice for all N sessions";
-// the moment any session is a voice session it offers "Turn voice off for all sessions". Tapping calls
-// the Gateway's one fan-out endpoint, which walks the roster itself, and shows a fail-loud summary of
-// what changed and what was skipped (the mobile rule: never fail silently - name the offline sessions
-// that were passed over). The next roster poll (5s) repaints each row's voice state, so the button flips
-// to its opposite.
+// The fleet-wide voice switch at the top of the Voice sessions tab (issue #1765). It shows the state the
+// GATEWAY reports and offers the opposite of it - on when off, off when on.
 //
-// KNOWN LIMIT, being fixed properly next (owner, 2026-07-24): this button decides its own direction by
-// reading the roster, so once ONE session is on voice it only ever offers OFF - a session created after
-// that cannot be switched on from here, and quietly never joins the voice queue. The real fix is for the
-// GATEWAY to hold "this tenant is in voice mode" and apply it to a session at birth, with a banner on
-// every screen of the app showing that state and carrying the off switch. That is a Gateway change and
-// its own piece of work; this button stays exactly as it was until then.
+// It used to decide its own direction by reading the roster: "does any session have voice on?". That is a
+// different question. It turns true the moment ONE session is on and stays true while nine others are off,
+// so the button flipped permanently to "turn it all off" and a session created afterwards could never be
+// switched on from here at all - it quietly never joined the voice queue, and the queue got the blame.
+//
+// Now the Gateway holds the intent, applies it to sessions as they appear, and answers "am I in voice
+// mode?" itself. This renders that answer (CLAUDE.md rule 7: the client is dumb, the Gateway owns the
+// verdict). The banner in the app shell and this control read the SAME shared state - one value, one poll -
+// so a change made in either place shows in the other immediately rather than a poll later.
 function VoiceAllControl({ sessions }: { sessions: SessionDto[] }) {
-  const [busy, setBusy] = useState(false);
+  const voice = useVoiceModeAll();
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const anyOn = sessions.some((s) => Boolean(s.voiceMode));
-  // No session on voice yet -> the action is to turn the whole fleet ON; otherwise turn it all OFF.
-  const enable = !anyOn;
+  // The action is always the opposite of the state the Gateway reports. Before the first read lands the
+  // state is unknown, and the button says so rather than guessing a direction and acting on the guess.
+  const enable = voice.enabled !== true;
   const count = sessions.length;
 
   const onClick = async () => {
-    setBusy(true);
     setError(null);
     setNote(null);
     try {
       const result = await setVoiceModeAllSessions(enable);
+      await voice.set(enable);
       const changedLabel = `${result.changed} ${result.changed === 1 ? "session" : "sessions"} ${enable ? "on" : "off"}`;
-      setNote(result.skipped > 0 ? `${changedLabel}, ${result.skipped} skipped (computer offline)` : changedLabel);
+      // Fail loud, the mobile rule: name what was passed over. A skipped session is not lost - the
+      // Gateway's sweep picks it up when its computer comes back, because voice mode is a standing intent.
+      setNote(
+        result.skipped > 0
+          ? `${changedLabel}, ${result.skipped} skipped (computer offline - they join when it is back)`
+          : changedLabel,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not change voice mode for all sessions");
-    } finally {
-      setBusy(false);
     }
   };
 
   const label = enable
-    ? `Turn on voice for all ${count} ${count === 1 ? "session" : "sessions"}`
-    : "Turn voice off for all sessions";
-  const busyLabel = enable ? "Turning voice on..." : "Turning voice off...";
+    ? `Turn on voice mode for all ${count} ${count === 1 ? "session" : "sessions"}`
+    : "Turn voice mode off for all sessions";
+  const busyLabel = enable ? "Turning voice mode on..." : "Turning voice mode off...";
 
   return (
     <div className="voice-all">
       <p className="voice-all-line">
-        Voice mode is about the fleet: every session narrates its turns. Auto-speak, below, is about this
-        phone.
+        Voice mode is about the fleet: every session narrates its turns, including ones started later.
+        Auto-speak, below, is about this phone.
       </p>
       <button
         type="button"
         className={`voice-all-btn${enable ? "" : " voice-all-btn-off"}`}
         onClick={() => void onClick()}
-        disabled={busy}
+        disabled={voice.busy || voice.enabled === null}
       >
-        {busy ? busyLabel : label}
+        {voice.enabled === null ? "Checking voice mode..." : voice.busy ? busyLabel : label}
       </button>
       {note && <p className="voice-all-note" role="status">{note}</p>}
       {error && <p className="voice-all-error" role="alert">{error}</p>}
+      {voice.error !== null && <p className="voice-all-error" role="alert">{voice.error}</p>}
     </div>
   );
 }

@@ -2190,6 +2190,74 @@ a.banner-btn {
   opacity: 0.6;
 }
 
+/* THE VOICE MODE BANNER: on every screen while the fleet is in voice mode, carrying the off switch.
+   Sticky at the top so it survives scrolling - the way out must not be something you scroll past. Green,
+   matching Respond and the auto-speak checkbox, because voice mode is a working state and not a warning;
+   the "Turn off" button is the one solid thing on it, because that is what the bar is FOR. */
+.voicemode-banner {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid #14614f;
+  background: #0d2e28;
+}
+
+.voicemode-dot {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #24c39c;
+}
+
+.voicemode-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: #d8f5ec;
+}
+
+.voicemode-sub {
+  font-size: 11px;
+  font-weight: 400;
+  color: #8fc4b6;
+}
+
+.voicemode-error {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--attention);
+}
+
+/* A real thumb target (>= 44px tall), because this is the control someone reaches for while a voice is
+   talking over them and they are not looking at the screen. */
+.voicemode-off {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 10px 16px;
+  border: none;
+  border-radius: 10px;
+  background: #0e7c6b;
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.voicemode-off:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 /* The standing statement of what this tab does to the fleet: every session on the Gateway is a voice
    session while you are here. Quiet - it reports a fact, it is not a call to action. */
 .voice-all-line {

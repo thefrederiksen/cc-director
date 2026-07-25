@@ -116,6 +116,14 @@ public sealed class TenantSettingsResolver
         }
     }
 
+    /// <summary>Whether this tenant is in VOICE MODE - every one of its sessions narrates its turns, including
+    /// sessions created after the switch was thrown. Defaults to OFF: unlike every other setting here there is
+    /// no operator global default to fall back to, because voice mode is the tenant's own choice and spends
+    /// its own narration credits. Anything stored that is not exactly "true" reads as off - the quiet,
+    /// nothing-happens answer, which is the safe way for a corrupt value to fail.</summary>
+    public bool VoiceModeAll(TenantId tenant)
+        => string.Equals(_store.Get(tenant, TenantSettingKeys.VoiceModeAll), "true", StringComparison.Ordinal);
+
     // ---- writes: validate like the global setters, then persist a per-tenant override -------------------
 
     /// <summary>Set the tenant's wingman model for a role.</summary>
@@ -131,6 +139,12 @@ public sealed class TenantSettingsResolver
         };
         _store.Set(tenant, key, trimmed, nowUtc);
     }
+
+    /// <summary>Turn this tenant's VOICE MODE on or off. On is stored explicitly rather than by removing the
+    /// override, so "off" is a decision this tenant made and not merely the absence of one - the sweep that
+    /// applies voice mode to new sessions reads the same flag either way.</summary>
+    public void SetVoiceModeAll(TenantId tenant, bool enabled, DateTime nowUtc)
+        => _store.Set(tenant, TenantSettingKeys.VoiceModeAll, enabled ? "true" : "false", nowUtc);
 
     /// <summary>Set the tenant's text-to-speech voice.</summary>
     /// <exception cref="ArgumentException">The voice is null/empty.</exception>
