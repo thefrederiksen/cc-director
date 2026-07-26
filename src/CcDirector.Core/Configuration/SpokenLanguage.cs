@@ -82,6 +82,32 @@ public static class SpokenLanguage
             : $"{names.English} ({names.Endonym})";
     }
 
+    /// <summary>
+    /// The instruction that makes a model answer in this language, or an empty string for English.
+    ///
+    /// Lives here, in ONE place, because there is not one thing that speaks - there are several, and
+    /// they are separate generators: turn narration, the direct "talk to the wingman" reply, the
+    /// about-DevThrottle answer, and Car Mode's hands-free voice. Applying the language to only one
+    /// of them is the defect this method exists to prevent: the owner set Danish, heard English, and
+    /// was right to say the setting had not taken - narration had been translated and conversation
+    /// had not.
+    ///
+    /// Naming what must NOT be translated matters as much as naming the language. A listener has to
+    /// be able to type what they hear, so identifiers, paths, commands and error text stay verbatim.
+    /// </summary>
+    public static string PromptInstruction(string? code)
+    {
+        if (IsDefault(code)) return string.Empty;
+        var name = EnglishName(code);
+        return
+            $"LANGUAGE. Answer in {name}. Whatever language the material you are given is in - usually " +
+            $"English - your spoken answer is in {name}, written the way a native speaker would say it " +
+            "out loud rather than as a word-for-word translation.\n" +
+            "Leave these EXACTLY as they appear, never translated and never spelled differently: file " +
+            "names and paths, code identifiers, command names, branch names, and error text. Everything " +
+            $"else is spoken in {name}.\n\n";
+    }
+
     /// <summary>The English name alone - what the wingman prompt names the target language.</summary>
     public static string EnglishName(string? code) =>
         Supported.TryGetValue(Normalize(code), out var names) ? names.English : Normalize(code);

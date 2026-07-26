@@ -203,8 +203,9 @@ public sealed class WingmanTranslatorTests
         var prompt = WingmanTranslator.BuildPrompt(
             WingmanTranslator.FidelityPrompt, "recent", "the reply", "A session", "da");
 
-        // Named in English, because the prompt itself is English.
-        Assert.Contains("Write the spoken version in Danish", prompt);
+        // Named in English, because the prompt itself is English. Wording now comes from the one
+        // shared instruction every speaking path uses, so narration and conversation cannot drift.
+        Assert.Contains("Answer in Danish", prompt);
         // The instruction that keeps the narration usable: a listener has to be able to type what
         // they hear, so identifiers and paths must survive the translation untouched.
         Assert.Contains("never translated", prompt);
@@ -222,6 +223,64 @@ public sealed class WingmanTranslatorTests
 
         Assert.DoesNotContain("LANGUAGE.", prompt);
         Assert.DoesNotContain("zz-not-a-language", prompt);
+    }
+
+    // ---- EVERY speaking path carries the language, not just narration ---------------------------
+    // The original change applied the language to turn narration only. Narration is not the only thing
+    // that speaks: the direct "talk to the wingman" reply and the about-DevThrottle answer are separate
+    // generators with their own prompts, and they kept answering in English. An account set to Danish
+    // was told "it is set" and then spoken to in English, which is indistinguishable from broken.
+    // These assert each generator by itself, so adding a new one and forgetting the language shows up
+    // as a missing test rather than as a user reporting it.
+
+    [Fact]
+    public void BuildDirectPrompt_InDanish_TellsTheModelToAnswerInDanish()
+    {
+        var prompt = WingmanTranslator.BuildDirectPrompt("how many sessions are running?", "da");
+
+        Assert.Contains("Answer in Danish", prompt);
+        Assert.Contains("never translated", prompt);
+        Assert.Contains("how many sessions are running?", prompt);
+    }
+
+    [Fact]
+    public void BuildDirectPrompt_InEnglish_IsUnchanged()
+    {
+        Assert.Equal(
+            WingmanTranslator.BuildDirectPrompt("hello"),
+            WingmanTranslator.BuildDirectPrompt("hello", "en"));
+        Assert.DoesNotContain("LANGUAGE.", WingmanTranslator.BuildDirectPrompt("hello", "en"));
+    }
+
+    [Fact]
+    public void BuildDevThrottlePrompt_InDanish_TellsTheModelToAnswerInDanish()
+    {
+        var prompt = WingmanTranslator.BuildDevThrottlePrompt("what is the gateway?", "da");
+
+        Assert.Contains("Answer in Danish", prompt);
+        Assert.Contains("what is the gateway?", prompt);
+    }
+
+    [Fact]
+    public void BuildDevThrottlePrompt_InEnglish_IsUnchanged()
+    {
+        Assert.Equal(
+            WingmanTranslator.BuildDevThrottlePrompt("q"),
+            WingmanTranslator.BuildDevThrottlePrompt("q", "en"));
+    }
+
+    [Fact]
+    public void EverySpeakingPath_UsesTheSameLanguageInstruction()
+    {
+        // One instruction, one place. If a path grows its own wording, translation quality drifts
+        // between narration and conversation for no reason the user can see.
+        var expected = CcDirector.Core.Configuration.SpokenLanguage.PromptInstruction("da");
+        Assert.NotEqual(string.Empty, expected);
+
+        Assert.Contains(expected, WingmanTranslator.BuildDirectPrompt("x", "da"));
+        Assert.Contains(expected, WingmanTranslator.BuildDevThrottlePrompt("x", "da"));
+        Assert.Contains(expected, WingmanTranslator.BuildPrompt(
+            WingmanTranslator.FidelityPrompt, "ctx", "reply", "title", "da"));
     }
 
     private sealed class ThrowingBrain : IAgentBrain
