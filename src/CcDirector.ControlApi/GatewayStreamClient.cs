@@ -130,17 +130,48 @@ public sealed class GatewayStreamClient : IAsyncDisposable
 
     // Timer callback (a boundary): re-push the full snapshot so a quiet session's pushed cache stays fresh.
     // Skips when disposed, when disconnected, or when a prior re-push is still in flight (no overlap).
+    //
+    // Issue #2188: every skip and every slow push is now LOGGED. This tick is the heartbeat that keeps the
+    // Gateway's pushed cache fresh, and a missed one is what makes an entire Director's sessions read as
+    // non-existent - on 2026-07-26 two missed ticks refused every action on fourteen live sessions for about
+    // ten seconds. Both skip paths used to return in silence, so the single event that caused the outage
+    // left no trace at all and the investigation had to infer it from a thirty-second hole between two
+    // success lines. An event that can take the fleet offline must never be invisible.
     private void RePushTick()
     {
         if (_disposed) return;
         var conn = _connection;
-        if (conn is null || conn.State != HubConnectionState.Connected) return;
-        if (Interlocked.Exchange(ref _rePushInFlight, 1) == 1) return;
+        if (conn is null || conn.State != HubConnectionState.Connected)
+        {
+            // Expected while the tunnel is re-dialing; logged because it is also how a long silence begins.
+            FileLog.Write($"[GatewayStreamClient] re-push tick SKIPPED: connection state={conn?.State.ToString() ?? "none"}");
+            return;
+        }
+        if (Interlocked.Exchange(ref _rePushInFlight, 1) == 1)
+        {
+            var running = _rePushStartedUtc == DateTime.MinValue
+                ? "unknown"
+                : $"{(DateTime.UtcNow - _rePushStartedUtc).TotalSeconds:F1}s";
+            FileLog.Write($"[GatewayStreamClient] re-push tick SKIPPED: previous push still in flight after {running}");
+            return;
+        }
         _ = RePushAsync();
     }
 
+    /// <summary>When the in-flight re-push started, so a skipped tick can report how long it has been
+    ///  waiting. Written only by the single re-push allowed in flight at a time.</summary>
+    private DateTime _rePushStartedUtc = DateTime.MinValue;
+
+    /// <summary>A re-push that takes longer than this is reported. The cadence is <c>_rePushInterval</c>, so
+    ///  anything at or past one whole interval has already cost the next tick - and two lost ticks is what
+    ///  ages the Gateway's cache past its staleness cut (issue #2188).</summary>
+    private static readonly TimeSpan SlowRePushThreshold = TimeSpan.FromSeconds(
+        GatewayConfig.DefaultStreamStaleAfterSeconds / 2.0);
+
     private async Task RePushAsync()
     {
+        var startedUtc = DateTime.UtcNow;
+        _rePushStartedUtc = startedUtc;
         try
         {
             // ReseedAsync sends Hello + a full PushSnapshot with an incrementing sequence (the same path used
@@ -149,6 +180,16 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         }
         finally
         {
+            // Report a SLOW push, not only a failed one. A push that succeeds but takes a whole cadence has
+            // already eaten the following tick, which is the observed path to the cache going stale - and it
+            // is otherwise indistinguishable from a healthy push in the log.
+            var elapsed = DateTime.UtcNow - startedUtc;
+            if (elapsed >= SlowRePushThreshold)
+            {
+                FileLog.Write($"[GatewayStreamClient] re-push SLOW: took {elapsed.TotalSeconds:F1}s "
+                    + $"(cadence {SlowRePushThreshold.TotalSeconds:F0}s) - the next tick was likely skipped");
+            }
+            _rePushStartedUtc = DateTime.MinValue;
             Interlocked.Exchange(ref _rePushInFlight, 0);
         }
     }

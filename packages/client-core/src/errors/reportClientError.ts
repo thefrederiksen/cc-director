@@ -12,7 +12,7 @@
 // - The report carries what a debugging agent needs (surface, page, message, detail, stack) and nothing
 //   personal beyond it.
 
-import { authHeaders } from "../api/client";
+import { authHeaders, gatewayErrorMessage } from "../api/client";
 
 /** Client-side cap: at most this many reports per minute; the rest are counted and dropped. The server
  *  enforces its own cap too - this one exists so a render-loop error does not even leave the browser. */
@@ -94,4 +94,28 @@ export function installGlobalErrorReporting(surface: string): void {
     const message = reason instanceof Error ? reason.message : String(reason ?? "Unhandled promise rejection");
     reportClientError(`${surface}-global`, window.location.pathname, message, reason);
   });
+}
+
+/**
+ * Render AND report, in one act (issue #2189).
+ *
+ * This is the ONE way a shell turns a caught error into on-screen text. It returns the sentence to
+ * display and reports the same failure to the Gateway, so an error the user is looking at can no
+ * longer exist only on the user's screen.
+ *
+ * The reason this exists as a function rather than as a rule: the global catcher in
+ * installGlobalErrorReporting only sees errors NOBODY handled. An error a page catches and renders -
+ * which is nearly all of them - never reaches it. Before this, the whole product had exactly one
+ * explicit report call site, so a failed image attach was invisible to the server and finding it
+ * meant grepping a fifty-four megabyte Gateway log by hand. A call site that formats a message
+ * without reporting it is the bug this function exists to prevent, so the two cannot be separated.
+ *
+ * `action` names what the user was trying to do, in their terms: "attach the image", "send that to
+ * the session". It shapes the sentence AND labels the server-side record.
+ */
+export function describeAndReport(surface: string, action: string, err: unknown): string {
+  const message = gatewayErrorMessage(err, action);
+  const page = typeof window === "undefined" ? "" : window.location.pathname;
+  reportClientError(surface, page, `could not ${action}: ${message}`, err);
+  return message;
 }

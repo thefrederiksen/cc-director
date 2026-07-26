@@ -1475,7 +1475,7 @@ internal static class GatewayEndpoints
             // SessionRole null and fold a colour from it. We take our instance from the fleet instead.
             var (director, _) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, reqTenant.Value, owners);
             if (director is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
 
             // Defect 15: this route returned EffectiveColor / StateLabel / TriageBucket as NULL and left the
             // expired-snooze override unapplied, because it never ran the fold - StampFleetRolesAndFold was
@@ -1490,7 +1490,7 @@ internal static class GatewayEndpoints
             var fleet = byDirector.Values.SelectMany(x => x).ToList();
             var session = fleet.FirstOrDefault(x => string.Equals(x.SessionId, sid, StringComparison.Ordinal));
             if (session is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
 
             var baseUrl = DeriveDirectorBaseUrl(ctx, director);
             session.DirectorId = director.DirectorId;
@@ -1514,7 +1514,7 @@ internal static class GatewayEndpoints
         {
             var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
             // Post-cut: tunnel-only. A null result (Director not connected) stays 502 like a failed kill, but now
             // says so. This verb is the sharpest case for explaining itself: on a timeout or a mid-flight drop the
             // session may or may not have been killed, and a bare 502 left the user with no idea which.
@@ -1532,7 +1532,7 @@ internal static class GatewayEndpoints
         {
             var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved);
             if (session is null || director is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
             // Tunnel-only. The Ok result is success and synthesizes the { pendingDeletion } body; a null result
             // (Director not connected) collapses to 502.
             var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "request-deletion", sid, body, ct, machineName: director.MachineName);
@@ -1546,7 +1546,7 @@ internal static class GatewayEndpoints
         {
             var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved);
             if (session is null || director is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
             // Gateway Cleanup (Phase 2, PR C): tunnel-first, HTTP fallback on a null return (byte-identical).
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
             var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "cancel-deletion", sid, null, ct, machineName: director.MachineName);
@@ -1561,7 +1561,7 @@ internal static class GatewayEndpoints
         {
             var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
             // Tunnel-only. The Ok body IS the WingmanViewDto JSON, passed through exactly as the HTTP body.
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
             var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "wingman-view", sid, null, ct, machineName: director.MachineName);
@@ -1579,7 +1579,7 @@ internal static class GatewayEndpoints
                 return Results.BadRequest(new WingmanAskResult { Status = "bad_request", Error = "question is required" });
             var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
             // Gateway Cleanup (Phase 2, PR C): tunnel-first. This is a SLOW LLM call - the request ct threads
             // straight into the SignalR invocation (which has no per-invocation timeout; keep-alive pings sustain
             // the long await), so the synchronous browser contract is byte-identical to the HTTP forward. A null
@@ -1598,7 +1598,7 @@ internal static class GatewayEndpoints
         {
             var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
             var goalReq = req ?? new WingmanGoalRequest();
             // Post-cut: tunnel-only. The Ok stream body IS the { goal, goalSetAt, goalState } JSON; a null
             // result (Director not connected) or a non-Ok result collapses to 502.
@@ -1615,7 +1615,7 @@ internal static class GatewayEndpoints
         {
             var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
             var roleReq = req ?? new SetRoleRequest();
             // Post-cut: tunnel-only. The Ok stream body is the updated SessionDto JSON; a null or non-Ok result collapses to 502.
             var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "set-role", sid, roleReq, ct, machineName: director.MachineName);
@@ -1637,7 +1637,7 @@ internal static class GatewayEndpoints
         {
             var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
             var holdReq = req ?? new HoldRequest();
             // Issue #1500: an explicit per-call snooze length. Validate it BEFORE recording the hold, so a
             // bad value fails loudly (no fallback / no silent clamp) and never parks the session. Null = use
@@ -1772,7 +1772,7 @@ internal static class GatewayEndpoints
                 return Results.Json(new { error = "no tenant is bound to this request" }, statusCode: StatusCodes.Status403Forbidden);
             var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
             var transcribing = req?.Transcribing ?? false;
             if (transcribing)
                 transcribingSessions.Begin(reqTenant, sid);
@@ -1788,7 +1788,7 @@ internal static class GatewayEndpoints
 
             var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
 
             FileLog.Write($"[GatewayEndpoints] PATCH /sessions/{sid}: name=\"{req.Name}\", director={director.DirectorId}");
 
@@ -1817,10 +1817,10 @@ internal static class GatewayEndpoints
         {
             var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
 
             if (director is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
 
             // Post-cut: tunnel-only. The query params ride in a BufferRequest payload the Director's buffer
             // verb reads. A null result (Director not connected) collapses to 502.
@@ -1849,7 +1849,7 @@ internal static class GatewayEndpoints
 
             var (director, session) = await LocateSessionForRequestAsync(httpCtx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(httpCtx, tenantBoundary, pushedSessions, sid);
 
             FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid}, director={director.DirectorId}, waitForIdle={req.WaitForIdle}");
 
@@ -1914,7 +1914,7 @@ internal static class GatewayEndpoints
         {
             var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
 
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
             var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "interrupt", sid, null, CancellationToken.None, machineName: director.MachineName);
@@ -1928,7 +1928,7 @@ internal static class GatewayEndpoints
         {
             var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
 
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
             var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "escape", sid, null, CancellationToken.None, machineName: director.MachineName);
@@ -1945,7 +1945,7 @@ internal static class GatewayEndpoints
         {
             var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
 
             if (!ctx.Request.HasFormContentType)
                 return Results.BadRequest(new { error = "expected multipart/form-data with an image file field 'file'" });
@@ -1973,8 +1973,12 @@ internal static class GatewayEndpoints
                 machineName: director.MachineName);
             if (begin is not null)
             {
+                // Issue #2190: carry the Director's OWN status out, instead of flattening every rejection to
+                // 502. Uploading a file type we do not accept is the caller's request being wrong (400 with
+                // the accepted list), not a broken gateway - and a 5xx made the client retry something that
+                // could never succeed. A genuinely dropped tunnel still answers 502, through the same map.
                 if (!begin.Ok)
-                    return Results.Json(new { error = DirectorCommandRouter.DescribeFailure(begin) }, statusCode: StatusCodes.Status502BadGateway);
+                    return MapDirectorFailure(begin);
 
                 for (var off = 0; off < bytes.Length; off += DirectorStreamLimits.UploadChunkRawBytes)
                 {
@@ -1987,20 +1991,47 @@ internal static class GatewayEndpoints
                     };
                     var cr = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "upload-image-chunk", sid, chunk, ctx.RequestAborted, machineName: director.MachineName);
                     if (cr is null || !cr.Ok)
-                        return Results.Json(new { error = cr is null ? "tunnel dropped mid-upload" : DirectorCommandRouter.DescribeFailure(cr) }, statusCode: StatusCodes.Status502BadGateway);
+                    {
+                        FileLog.Write($"[GatewayEndpoints] upload-image FAILED mid-upload: sid={sid}, uploadId={uploadId}, "
+                            + $"seq={chunk.Seq}, reason={(cr is null ? "tunnel dropped" : DirectorCommandRouter.DescribeFailure(cr))}");
+                        return cr is null
+                            ? Results.Json(new { error = "The connection to the machine running this session dropped part-way through the upload. Try again.", retryable = true },
+                                statusCode: StatusCodes.Status502BadGateway)
+                            : MapDirectorFailure(cr);
+                    }
                 }
 
                 var done = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "upload-image-complete", sid,
                     new UploadImageCompleteRequest { UploadId = uploadId }, ctx.RequestAborted,
                     machineName: director.MachineName);
                 if (done is null || !done.Ok || string.IsNullOrEmpty(done.BodyJson))
-                    return Results.Json(new { error = done is null ? "tunnel dropped mid-upload" : DirectorCommandRouter.DescribeFailure(done) }, statusCode: StatusCodes.Status502BadGateway);
+                {
+                    FileLog.Write($"[GatewayEndpoints] upload-image FAILED at complete: sid={sid}, uploadId={uploadId}, "
+                        + $"reason={(done is null ? "tunnel dropped" : DirectorCommandRouter.DescribeFailure(done))}");
+                    if (done is null)
+                        return Results.Json(new { error = "The connection to the machine running this session dropped just before the upload finished. Try again.", retryable = true },
+                            statusCode: StatusCodes.Status502BadGateway);
+                    // An Ok result with an empty body is a contract breach, not a Director rejection: say so
+                    // rather than returning a bodyless status the user cannot act on.
+                    return done.Ok
+                        ? Results.Json(new { error = "The image was uploaded but the machine running this session did not report where it was saved.", retryable = true },
+                            statusCode: StatusCodes.Status502BadGateway)
+                        : MapDirectorFailure(done);
+                }
 
                 return Results.Content(done.BodyJson, "application/json"); // { path, fileName }
             }
 
-            // Post-cut: tunnel-only. A null begin means the Director is not connected -> 502.
-            return Results.Json(new { error = "director not connected to the tunnel" }, statusCode: StatusCodes.Status502BadGateway);
+            // Post-cut: tunnel-only. A null begin means the Director is not connected -> 502. Say it in words
+            // and mark it retryable (issue #2189), because a Director that just dropped is usually back
+            // within a push cycle.
+            FileLog.Write($"[GatewayEndpoints] upload-image REFUSED: sid={sid}, director={director.DirectorId} is not connected to the tunnel");
+            return Results.Json(new
+            {
+                error = $"The machine running this session ({director.MachineName}) is not connected right now, so the image could not be delivered. Try again.",
+                code = "director_not_connected",
+                retryable = true,
+            }, statusCode: StatusCodes.Status502BadGateway);
         });
 
         app.MapGet("/directors/{id}/repos", async (HttpContext ctx, string id, CancellationToken ct) =>
@@ -2489,10 +2520,10 @@ internal static class GatewayEndpoints
         {
             var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
             // Tunnel-only. The Director's summary core sets DirectorId in its body, so the pass-through matches.
             if (director is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
             var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "summary", sid, null, ct, machineName: director.MachineName);
             return streamResult is not null && streamResult.Ok && !string.IsNullOrEmpty(streamResult.BodyJson)
@@ -2516,7 +2547,7 @@ internal static class GatewayEndpoints
             // instead of a full fleet fan-out (the same fast path every other per-session route now uses).
             var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
             // Tunnel-only (verb "git-status"). The Ok body IS the GitSnapshot JSON, passed through unchanged.
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
             var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "git-status", sid, null, ctx.RequestAborted, machineName: director.MachineName);
@@ -2537,7 +2568,7 @@ internal static class GatewayEndpoints
             // Issue #1240: resolve the owner through the same cache fast path as every other per-session route.
             var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
             // Tunnel-only. The Director's handover core sets DirectorId in its body, so the pass-through matches.
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
             var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "handover", sid, null, ct, machineName: director.MachineName);
@@ -2553,7 +2584,7 @@ internal static class GatewayEndpoints
         {
             var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
             // Tunnel-only (read the cached recap). This is the READ; the slow generate (POST) is handled separately.
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
             var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "recap", sid, null, ct, machineName: director.MachineName);
@@ -2566,7 +2597,7 @@ internal static class GatewayEndpoints
         {
             var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
             var model = ctx.Request.Query["model"].ToString();
             FileLog.Write($"[GatewayEndpoints] POST /recap: sid={sid}, director={director.DirectorId}, model={model ?? "(default)"}");
             // Gateway Cleanup (Phase 2, PR C): tunnel-first. Like wingman-ask this is a SLOW LLM call, so the
@@ -2593,7 +2624,7 @@ internal static class GatewayEndpoints
         {
             var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
-                return Results.NotFound(new { error = "session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
 
             FileLog.Write($"[GatewayEndpoints] POST /compact-context: sid={sid}, director={director.DirectorId}, " +
                           $"continue={(string.IsNullOrWhiteSpace(req?.ContinuePrompt) ? "no" : "yes")}");
@@ -2622,7 +2653,7 @@ internal static class GatewayEndpoints
 
             var (sourceDirector, sourceSession) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, req.FromSessionId, pushedSessions, streamStaleResolved, owners);
             if (sourceSession is null || sourceDirector is null)
-                return Results.NotFound(new { error = "source session not found across any director" });
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, req.FromSessionId);
 
             DirectorDto? targetDirector = null;
             if (!string.IsNullOrEmpty(req.ToDirectorId)
@@ -3479,8 +3510,76 @@ internal static class GatewayEndpoints
                 statusCode: StatusCodes.Status504GatewayTimeout),
             DirectorCommandStatus.TunnelDropped => Results.Json(new { error = sr.Error ?? "The connection to the Director dropped while the command was being sent." },
                 statusCode: StatusCodes.Status502BadGateway),
-            _ => Results.StatusCode(StatusCodes.Status502BadGateway),
+            // Issue #2190: a Conflict or a Locked is the CALLER's situation, not a broken gateway, and the
+            // Director wrote a real sentence for each. Both used to land in the bodyless 502 below, which
+            // told the user the gateway was broken and gave a retry-implying 5xx for something retrying
+            // cannot fix.
+            DirectorCommandStatus.Conflict => Results.Json(new { error = sr.Error ?? "That conflicts with the session's current state." },
+                statusCode: StatusCodes.Status409Conflict),
+            DirectorCommandStatus.Locked => Results.Json(new { error = sr.Error ?? "This session is on hold." },
+                statusCode: StatusCodes.Status423Locked),
+            // Anything else really is a server-side failure - but it must still say so in words. A bodyless
+            // 502 is exactly the bare status a person cannot act on (issue #2189).
+            _ => Results.Json(new { error = sr.Error ?? "The command failed on the machine running this session." },
+                statusCode: StatusCodes.Status502BadGateway),
         };
+    }
+
+    /// <summary>
+    /// Issue #2188/#2189: the ONE answer for "we could not resolve this session", and the reason no route
+    /// hand-rolls <c>Results.NotFound(new { error = "session not found across any director" })</c> any more.
+    ///
+    /// That single line was the whole defect. It was returned for two completely different situations:
+    ///  - the session exists and its Director simply has not pushed recently (transient, retryable), and
+    ///  - no Director in this tenant has ever pushed this session id (permanent).
+    ///
+    /// A person who attached an image during a ten-second push gap was told their live session did not
+    /// exist, in a message the client then reduced to "error 404". This helper asks the store which of the
+    /// two it actually is, and answers accordingly:
+    ///  - stale Director  -> 503 + Retry-After, <c>retryable: true</c>, and a sentence that names the delay
+    ///                       and tells the user to try again.
+    ///  - unknown session -> 404, <c>retryable: false</c>, and a sentence that says the session is gone.
+    ///
+    /// Both bodies carry <c>error</c>, <c>code</c> and <c>retryable</c>, which is the shape the browser
+    /// client reads to build the sentence it shows and to decide whether to retry once on its own.
+    /// </summary>
+    private static IResult SessionUnavailable(
+        HttpContext ctx,
+        Tenancy.HostedTenantBoundary? tenantBoundary,
+        Streaming.PushedSessionStore? pushedSessions,
+        string sid)
+    {
+        var tenant = ResolveReadTenant(ctx, tenantBoundary);
+        var known = tenant is null || pushedSessions is null
+            ? null
+            : pushedSessions.TryLocateIgnoringFreshness(tenant.Value, sid);
+
+        if (known is not null)
+        {
+            var (directorId, pushAge) = known.Value;
+            var seconds = pushAge == TimeSpan.MaxValue ? -1 : (int)Math.Round(pushAge.TotalSeconds);
+            var delay = seconds < 0 ? "in a while" : $"for {seconds} seconds";
+            FileLog.Write($"[GatewayEndpoints] session {sid} UNAVAILABLE (retryable): owning director={directorId} "
+                + $"has not pushed {delay}; answering 503");
+            ctx.Response.Headers.RetryAfter = "5";
+            return Results.Json(new
+            {
+                error = $"The machine running this session has not reported in {delay}. The session is still "
+                    + "there - this usually clears within a few seconds. Try again.",
+                code = "director_stale",
+                retryable = true,
+                pushAgeSeconds = seconds,
+            }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
+        FileLog.Write($"[GatewayEndpoints] session {sid} NOT FOUND: no director in this tenant has pushed it; answering 404");
+        return Results.Json(new
+        {
+            error = "That session could not be found. It may have been closed, or it may belong to a "
+                + "machine that is no longer signed in.",
+            code = "session_not_found",
+            retryable = false,
+        }, statusCode: StatusCodes.Status404NotFound);
     }
 
     // Locate the Director that owns a session. Every session endpoint calls this first,
@@ -3523,6 +3622,28 @@ internal static class GatewayEndpoints
     // no fresh push is not connected to the tunnel, so its sessions are unreachable and location returns null -
     // the same not-found the old HTTP-pull fallback produced when a Director was down. Kept Task-returning so
     // the many `await LocateSessionAsync(...)` call sites (and SessionVerbClient.ResolveAsync) are unchanged.
+    /// <summary>
+    /// Issue #2188: how much LATER than the roster's freshness cut a session may still be acted on.
+    ///
+    /// A Director re-pushes its full snapshot every <c>staleAfterSeconds / 2</c>, so ONE missed tick is
+    /// ordinary jitter, not an outage - and it must not make a live session unusable. The observed failure
+    /// was exactly this: two pushes ten seconds apart went missing, the pushed cache aged past the twenty
+    /// second cut, and for about ten seconds every action on fourteen live sessions was refused as
+    /// "session not found across any director". The very next prompt, once a push landed, returned 200.
+    ///
+    /// This is a defined tolerance, NOT a fallback that hides an outage. The tunnel send is still the
+    /// authority: if the Director is genuinely gone, <c>DirectorCommandRouter.TrySendAsync</c> returns null
+    /// and the existing 502 answers. All this does is stop a one-cycle gap from being reported to the user
+    /// as a deleted session.
+    ///
+    /// Deliberately NOT applied to the roster read (<c>GET /sessions</c>), which has its own presentation
+    /// grace window in <see cref="Discovery.FleetRosterCache"/>. Acting on a session is allowed to be more
+    /// tolerant than presenting it, because the action itself proves reachability and a refusal costs the
+    /// user real work.
+    /// </summary>
+    internal static readonly TimeSpan LocateGrace =
+        TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds / 2.0);
+
     internal static Task<(DirectorDto? director, SessionDto? session)> LocateSessionAsync(
         DirectorRegistry registry, string sid,
         Streaming.PushedSessionStore? pushedSessions, TimeSpan streamStale,
@@ -3531,7 +3652,7 @@ internal static class GatewayEndpoints
     {
         if (pushedSessions is not null)
         {
-            var located = pushedSessions.TryLocate(tenant, sid, streamStale);
+            var located = pushedSessions.TryLocate(tenant, sid, streamStale + LocateGrace);
             if (located is not null)
             {
                 var (directorId, pushedSession) = located.Value;

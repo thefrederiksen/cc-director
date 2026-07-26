@@ -5,9 +5,13 @@ import {
   sendEscape,
   sendHistoryPicker,
   sendInterrupt,
-  gatewayErrorMessage,
 } from "@devthrottle/client-core/api/client";
 import { ConfirmDialog } from "../components";
+import { describeAndReport } from "@devthrottle/client-core/errors/reportClientError";
+
+// The surface label on every client-error report from this bar, so the Gateway log and
+// GET /client-errors/recent name where the user was standing (issue #2189).
+const SURFACE = "cockpit-session-actions";
 
 // The driver action bar (issue #972) - the React port of the Blazor Cockpit action bar / desktop
 // SessionActionBar. Each button is rendered from the SELECTED session's declared driver capabilities
@@ -55,8 +59,11 @@ export function SessionActionBar({ sessionId, capabilities }: SessionActionBarPr
     statusTimer.current = window.setTimeout(() => setStatus(null), 5000);
   }, []);
 
+  // `action` names what the user pressed, in their terms ("stop the turn"). It shapes the sentence the
+  // user reads AND labels the report that goes to the Gateway (issue #2189), so a failed button press is
+  // never a bare status number on screen and never invisible on the server.
   const act = useCallback(
-    async (verb: () => Promise<void>, done: string, failed: string) => {
+    async (verb: () => Promise<void>, done: string, action: string) => {
       if (!sessionId || acting) return;
       setActing(true);
       setError(null);
@@ -64,7 +71,7 @@ export function SessionActionBar({ sessionId, capabilities }: SessionActionBarPr
         await verb();
         flash(done);
       } catch (err) {
-        setError(err instanceof Error ? gatewayErrorMessage(err) : failed);
+        setError(describeAndReport(SURFACE, action, err));
       } finally {
         setActing(false);
       }
@@ -93,7 +100,7 @@ export function SessionActionBar({ sessionId, capabilities }: SessionActionBarPr
           type="button"
           className="act-btn act-stop"
           disabled={acting}
-          onClick={() => sessionId && void act(() => sendEscape(sessionId), "turn stopped", "Stop failed")}
+          onClick={() => sessionId && void act(() => sendEscape(sessionId), "turn stopped", "stop the turn")}
           title="Stop the current turn (the driver's soft cancel - Esc)"
         >
           Stop
@@ -104,7 +111,7 @@ export function SessionActionBar({ sessionId, capabilities }: SessionActionBarPr
           type="button"
           className="act-btn"
           disabled={acting}
-          onClick={() => sessionId && void act(() => sendInterrupt(sessionId), "interrupted", "Interrupt failed")}
+          onClick={() => sessionId && void act(() => sendInterrupt(sessionId), "interrupted", "interrupt the session")}
           title="Hard interrupt (Ctrl+C) - stronger than Stop"
         >
           Interrupt
@@ -137,7 +144,7 @@ export function SessionActionBar({ sessionId, capabilities }: SessionActionBarPr
           type="button"
           className="act-btn"
           disabled={acting}
-          onClick={() => sessionId && void act(() => sendHistoryPicker(sessionId), "history picker opened (Esc closes)", "History failed")}
+          onClick={() => sessionId && void act(() => sendHistoryPicker(sessionId), "history picker opened (Esc closes)", "open the history picker")}
           title="Open the in-terminal history picker (Claude's double-Esc)"
         >
           History

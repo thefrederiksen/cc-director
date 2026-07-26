@@ -39,12 +39,33 @@ internal sealed class SessionByteExecutor : ISessionCommandArea
             "upload-image-begin" => UploadImageBegin(context.SessionManager, command),
             "upload-image-chunk" => UploadImageChunk(command),
             "upload-image-complete" => UploadImageComplete(command),
-            _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"verb '{command.Verb}' is not handled by the byte area"),
+            _ => FailLogged("dispatch", DirectorCommandStatus.BadRequest, $"verb '{command.Verb}' is not handled by the byte area"),
         };
         return Task.FromResult(result);
     }
 
     // ---------------------------------------------------------------- chunked upload-image (Phase 2) ----
+
+    /// <summary>
+    /// Issue #2190: fail a byte verb and LOG it. Every rejection path in this file goes through here.
+    ///
+    /// Before this, only the SUCCESS paths logged. The three upload verbs returned genuinely useful
+    /// sentences - an unsupported image type, an incomplete upload with both byte counts, an out-of-order
+    /// chunk with both sequence numbers - and wrote nothing anywhere, so the reason existed for exactly as
+    /// long as the response took to travel and then vanished. During the upload investigation of
+    /// 2026-07-26 the ABSENCE of a log line was read as proof the Director had never been asked. That
+    /// happened to be true that time; on any other occasion it would have been a wrong conclusion drawn
+    /// from missing evidence.
+    ///
+    /// A bare <c>DirectorCommandResult.Fail</c> in this file is the bug this helper exists to prevent.
+    /// </summary>
+    private static DirectorCommandResult FailLogged(
+        string verb, DirectorCommandStatus status, string reason, string? context = null)
+    {
+        FileLog.Write($"[SessionByteExecutor] {verb} REJECTED: status={status}, reason={reason}"
+            + (string.IsNullOrEmpty(context) ? "" : $", {context}"));
+        return DirectorCommandResult.Fail(status, reason);
+    }
 
     /// <summary>An in-flight chunked upload's reassembly state, keyed by its upload id in <see cref="_uploads"/>.</summary>
     private sealed class UploadReassembly
@@ -73,25 +94,29 @@ internal sealed class SessionByteExecutor : ISessionCommandArea
     internal static DirectorCommandResult UploadImageBegin(SessionManager sessionManager, DirectorCommand command)
     {
         if (!Guid.TryParse(command.SessionId, out var guid))
-            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "invalid session id format");
+            return FailLogged("upload-image-begin", DirectorCommandStatus.BadRequest, "invalid session id format", $"sid={command.SessionId}");
         if (sessionManager.GetSession(guid) is null)
-            return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found");
+            return FailLogged("upload-image-begin", DirectorCommandStatus.NotFound, "session not found", $"sid={command.SessionId}");
 
         var request = SessionCommandExecutor.Deserialize<UploadImageBeginRequest>(command.PayloadJson);
         if (request is null || string.IsNullOrEmpty(request.UploadId))
-            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "upload id is required");
+            return FailLogged("upload-image-begin", DirectorCommandStatus.BadRequest, "upload id is required", $"sid={command.SessionId}");
 
         var ext = Path.GetExtension(request.FileName).ToLowerInvariant();
         if (!UploadAllowedExtensions.Contains(ext))
-            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unsupported image type '{ext}'. Allowed: {string.Join(", ", UploadAllowedExtensions)}");
+            return FailLogged("upload-image-begin", DirectorCommandStatus.BadRequest,
+                $"unsupported image type '{ext}'. Allowed: {string.Join(", ", UploadAllowedExtensions)}",
+                $"sid={command.SessionId}, file={request.FileName}");
         if (request.TotalBytes <= 0 || request.TotalBytes > MaxUploadBytes)
-            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"image size {request.TotalBytes} is out of range (max {MaxUploadBytes})");
+            return FailLogged("upload-image-begin", DirectorCommandStatus.BadRequest,
+                $"image size {request.TotalBytes} is out of range (max {MaxUploadBytes})",
+                $"sid={command.SessionId}, file={request.FileName}");
 
         SweepStaleUploads();
 
         var entry = new UploadReassembly { FileName = request.FileName, TotalBytes = request.TotalBytes };
         if (!_uploads.TryAdd(request.UploadId, entry))
-            return DirectorCommandResult.Fail(DirectorCommandStatus.Conflict, "upload id already in use");
+            return FailLogged("upload-image-begin", DirectorCommandStatus.Conflict, "upload id already in use", $"id={request.UploadId}");
 
         FileLog.Write($"[SessionByteExecutor] upload-image-begin: id={request.UploadId}, file={request.FileName}, total={request.TotalBytes}");
         return DirectorCommandResult.Success();
@@ -105,15 +130,16 @@ internal sealed class SessionByteExecutor : ISessionCommandArea
     {
         var request = SessionCommandExecutor.Deserialize<UploadImageChunkRequest>(command.PayloadJson);
         if (request is null || string.IsNullOrEmpty(request.UploadId))
-            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "upload id is required");
+            return FailLogged("upload-image-chunk", DirectorCommandStatus.BadRequest, "upload id is required", $"sid={command.SessionId}");
 
         if (!_uploads.TryGetValue(request.UploadId, out var entry))
-            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "unknown or expired upload id");
+            return FailLogged("upload-image-chunk", DirectorCommandStatus.BadRequest, "unknown or expired upload id", $"id={request.UploadId}");
 
         if (request.Seq != entry.NextSeq)
         {
             _uploads.TryRemove(request.UploadId, out _);
-            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"out-of-order chunk (expected {entry.NextSeq}, got {request.Seq})");
+            return FailLogged("upload-image-chunk", DirectorCommandStatus.BadRequest,
+                $"out-of-order chunk (expected {entry.NextSeq}, got {request.Seq})", $"id={request.UploadId}");
         }
 
         byte[] chunk;
@@ -124,13 +150,14 @@ internal sealed class SessionByteExecutor : ISessionCommandArea
         catch (FormatException)
         {
             _uploads.TryRemove(request.UploadId, out _);
-            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "chunk bytes must be base64");
+            return FailLogged("upload-image-chunk", DirectorCommandStatus.BadRequest, "chunk bytes must be base64", $"id={request.UploadId}");
         }
 
         if (entry.Buffer.Length + chunk.Length > entry.TotalBytes || entry.Buffer.Length + chunk.Length > MaxUploadBytes)
         {
             _uploads.TryRemove(request.UploadId, out _);
-            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "upload exceeded its declared size");
+            return FailLogged("upload-image-chunk", DirectorCommandStatus.BadRequest, "upload exceeded its declared size",
+                $"id={request.UploadId}, declared={entry.TotalBytes}");
         }
 
         entry.Buffer.Write(chunk, 0, chunk.Length);
@@ -147,15 +174,16 @@ internal sealed class SessionByteExecutor : ISessionCommandArea
     {
         var request = SessionCommandExecutor.Deserialize<UploadImageCompleteRequest>(command.PayloadJson);
         if (request is null || string.IsNullOrEmpty(request.UploadId))
-            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "upload id is required");
+            return FailLogged("upload-image-complete", DirectorCommandStatus.BadRequest, "upload id is required", $"sid={command.SessionId}");
 
         if (!_uploads.TryRemove(request.UploadId, out var entry))
-            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "unknown or expired upload id");
+            return FailLogged("upload-image-complete", DirectorCommandStatus.BadRequest, "unknown or expired upload id", $"id={request.UploadId}");
 
         try
         {
             if (entry.Buffer.Length != entry.TotalBytes)
-                return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"incomplete upload ({entry.Buffer.Length} of {entry.TotalBytes} bytes)");
+                return FailLogged("upload-image-complete", DirectorCommandStatus.BadRequest,
+                    $"incomplete upload ({entry.Buffer.Length} of {entry.TotalBytes} bytes)", $"id={request.UploadId}");
 
             FileLog.Write($"[SessionByteExecutor] upload-image-complete: id={request.UploadId}, bytes={entry.Buffer.Length}");
             return SaveImageBytes(entry.FileName, entry.Buffer.ToArray());
@@ -238,11 +266,11 @@ internal sealed class SessionByteExecutor : ISessionCommandArea
         FileLog.Write($"[SessionByteExecutor] upload-image: sid={command.SessionId}");
 
         if (!Guid.TryParse(command.SessionId, out var guid))
-            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "invalid session id format");
+            return FailLogged("upload-image", DirectorCommandStatus.BadRequest, "invalid session id format", $"sid={command.SessionId}");
 
         var session = sessionManager.GetSession(guid);
         if (session is null)
-            return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found");
+            return FailLogged("upload-image", DirectorCommandStatus.NotFound, "session not found", $"sid={command.SessionId}");
 
         var request = SessionCommandExecutor.Deserialize<UploadImageRequest>(command.PayloadJson);
         return SaveUploadedImage(request);
@@ -259,11 +287,12 @@ internal sealed class SessionByteExecutor : ISessionCommandArea
     internal static DirectorCommandResult SaveUploadedImage(UploadImageRequest? request)
     {
         if (request is null || string.IsNullOrEmpty(request.BytesBase64))
-            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "no image uploaded; use form field 'file'");
+            return FailLogged("upload-image", DirectorCommandStatus.BadRequest, "no image uploaded; use form field 'file'");
 
         var ext = Path.GetExtension(request.FileName).ToLowerInvariant();
         if (!UploadAllowedExtensions.Contains(ext))
-            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unsupported image type '{ext}'. Allowed: {string.Join(", ", UploadAllowedExtensions)}");
+            return FailLogged("upload-image", DirectorCommandStatus.BadRequest,
+                $"unsupported image type '{ext}'. Allowed: {string.Join(", ", UploadAllowedExtensions)}", $"file={request.FileName}");
 
         byte[] bytes;
         try
@@ -272,7 +301,7 @@ internal sealed class SessionByteExecutor : ISessionCommandArea
         }
         catch (FormatException)
         {
-            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "image bytes must be base64");
+            return FailLogged("upload-image", DirectorCommandStatus.BadRequest, "image bytes must be base64", $"file={request.FileName}");
         }
 
         return SaveImageBytes(request.FileName, bytes);
@@ -288,10 +317,11 @@ internal sealed class SessionByteExecutor : ISessionCommandArea
     {
         var ext = Path.GetExtension(fileName).ToLowerInvariant();
         if (!UploadAllowedExtensions.Contains(ext))
-            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unsupported image type '{ext}'. Allowed: {string.Join(", ", UploadAllowedExtensions)}");
+            return FailLogged("upload-image save", DirectorCommandStatus.BadRequest,
+                $"unsupported image type '{ext}'. Allowed: {string.Join(", ", UploadAllowedExtensions)}", $"file={fileName}");
 
         if (bytes.Length == 0)
-            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "no image uploaded; use form field 'file'");
+            return FailLogged("upload-image save", DirectorCommandStatus.BadRequest, "no image uploaded; use form field 'file'", $"file={fileName}");
 
         var dir = CcStorage.Screenshots();
         var name = $"upload-{DateTime.Now:yyyyMMdd-HHmmss-fff}{ext}";
@@ -322,7 +352,7 @@ internal sealed class SessionByteExecutor : ISessionCommandArea
 
         var full = ControlEndpoints.ResolveScreenshot(name);
         if (full is null)
-            return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "screenshot not found");
+            return FailLogged("screenshot-delete", DirectorCommandStatus.NotFound, "screenshot not found", $"name={name}");
 
         File.Delete(full);
         return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new ScreenshotDeleteResponse

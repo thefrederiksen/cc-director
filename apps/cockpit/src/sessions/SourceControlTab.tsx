@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getGitStatus,
-  gatewayErrorMessage,
   type GitSnapshot,
   type GitChangeEntry,
 } from "@devthrottle/client-core/api/client";
+import { describeAndReport } from "@devthrottle/client-core/errors/reportClientError";
+
+// The surface label on every client-error report from this view, so the Gateway log and
+// GET /client-errors/recent name where the user was standing (issue #2189).
+const SURFACE = "cockpit-source-control";
 
 // The Cockpit Source Control tab (issue #1266): a READ-ONLY view of the selected session's repository -
 // branch, ahead/behind, last commit, and the staged / unstaged file lists - so a browser driver can see
@@ -64,7 +68,7 @@ export function SourceControlTab({ sessionId, onInsertPath }: SourceControlTabPr
       } catch (err) {
         if (signal?.aborted === true) return;
         // No silent failure: surface the transport error so the reader knows the state is not shown.
-        setError(gatewayErrorMessage(err));
+        setError(describeAndReport(SURFACE, "read the repository status", err));
       } finally {
         busyRef.current = false;
         setLoading(false);

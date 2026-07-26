@@ -111,14 +111,19 @@ describe("WorkflowsView register actions", () => {
   });
 
   it("a failed clone lands in the page error state, never silent", async () => {
-    // A real Gateway refusal (409, id taken) - the formatter passes GatewayError statuses through
-    // as "rejected the request", and the page must SHOW it rather than swallow the failure.
+    // A real Gateway refusal (409, id taken). The page must SHOW it rather than swallow the failure.
+    //
+    // CONTRACT CHANGE (issue #2189): this used to assert the wording "rejected the request (error 409)".
+    // That phrasing is gone - it was a bare status number dressed up as a sentence. The message now says
+    // what a 409 actually means and what to do about it. The property under test is unchanged: the failure
+    // reaches the screen.
     const { GatewayError } = await import("@devthrottle/client-core/api/client");
     cloneWorkflow.mockRejectedValue(new GatewayError(409, "id taken"));
     render(<WorkflowsView />);
     fireEvent.click(await screen.findByRole("button", { name: "Clone Mission" }));
     const confirm = screen.getAllByRole("button", { name: "Clone" }).at(-1)!;
     fireEvent.click(confirm);
-    await waitFor(() => expect(screen.getByText(/rejected the request \(error 409\)/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/something else changed it first/)).toBeTruthy());
+    expect(screen.queryByText(/rejected the request/)).toBeNull();
   });
 });

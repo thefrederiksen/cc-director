@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
-  gatewayErrorMessage,
   getHandover,
   holdSession,
   killSession,
@@ -12,6 +11,11 @@ import { renameSession } from "@devthrottle/client-core/fleet/fleetClient";
 import { useSnoozeOptions } from "@devthrottle/client-core/settings/snoozeOptions";
 import { buildSnoozeMenu } from "@devthrottle/client-core/settings/snoozeMenu";
 import { useDismissOnBackdrop } from "../components";
+import { describeAndReport } from "@devthrottle/client-core/errors/reportClientError";
+
+// The surface label on every client-error report from this view, so the Gateway log and
+// GET /client-errors/recent name where the user was standing (issue #2189).
+const SURFACE = "cockpit-session-menu";
 
 // The session menu (issue #1214): a three-dot control with Rename, Snooze / Unsnooze, Handover info,
 // and Close session. It is the SAME component on the session page and on every rail card. Every action
@@ -182,7 +186,7 @@ export function SessionMenu({ session, onClosed, variant = "page" }: SessionMenu
     setBusy(true);
     getHandover(sid)
       .then((h) => setHandover(h))
-      .catch((err) => setError(gatewayErrorMessage(err)))
+      .catch((err) => setError(describeAndReport(SURFACE, "load the handover information", err)))
       .finally(() => setBusy(false));
   }, [sid]);
 
@@ -195,7 +199,7 @@ export function SessionMenu({ session, onClosed, variant = "page" }: SessionMenu
       await renameSession(sid, name);
       closeDialog();
     } catch (err) {
-      setError(gatewayErrorMessage(err));
+      setError(describeAndReport(SURFACE, "rename the session", err));
     } finally {
       setBusy(false);
     }
@@ -211,7 +215,7 @@ export function SessionMenu({ session, onClosed, variant = "page" }: SessionMenu
     try {
       await holdSession(sid, !session.onHold);
     } catch (err) {
-      setError(gatewayErrorMessage(err));
+      setError(describeAndReport(SURFACE, "snooze the session", err));
     } finally {
       setBusy(false);
     }
@@ -229,7 +233,7 @@ export function SessionMenu({ session, onClosed, variant = "page" }: SessionMenu
     try {
       await holdSession(sid, true, minutes);
     } catch (err) {
-      setError(gatewayErrorMessage(err));
+      setError(describeAndReport(SURFACE, "snooze the session", err));
     } finally {
       setBusy(false);
     }
@@ -244,7 +248,7 @@ export function SessionMenu({ session, onClosed, variant = "page" }: SessionMenu
       closeDialog();
       onClosed?.();
     } catch (err) {
-      setError(gatewayErrorMessage(err));
+      setError(describeAndReport(SURFACE, "close the session", err));
     } finally {
       setBusy(false);
     }

@@ -337,6 +337,48 @@ public sealed class PushedSessionStore
     }
 
     /// <summary>
+    /// Issue #2188: the owning Director for a session id IGNORING the freshness cut, plus how long ago that
+    /// Director's newest push landed.
+    ///
+    /// This exists so a caller can tell two very different things apart, which <see cref="TryLocate"/>
+    /// collapses into the same null:
+    ///  - the session IS known to a Director whose push has simply gone stale (retryable - the Director is
+    ///    expected back within one push cycle), and
+    ///  - no Director in this tenant has ever pushed this session id (genuinely not found).
+    ///
+    /// Collapsing them is what made a live session report "session not found across any director" during a
+    /// ten-second push gap, telling the user their session had been deleted when it was working the whole
+    /// time. This read NEVER decides reachability - the tunnel send remains the authority on that. It only
+    /// supplies the honest reason for a refusal.
+    ///
+    /// Scoped to one tenant, exactly like <see cref="TryLocate"/>, so a session id in one tenant can never
+    /// name a Director in another.
+    /// </summary>
+    public (string DirectorId, TimeSpan PushAge)? TryLocateIgnoringFreshness(TenantId tenant, string sessionId)
+    {
+        if (string.IsNullOrEmpty(sessionId))
+            return null;
+
+        var now = _utcNow();
+        foreach (var kvp in DirectorsFor(tenant))
+        {
+            var entry = kvp.Value;
+            lock (entry.Gate)
+            {
+                if (!entry.Sessions.ContainsKey(sessionId))
+                    continue;
+                // A Director that has never pushed has no meaningful age; report it as maximally stale
+                // rather than as a nonsense negative or zero age.
+                var age = entry.ReceivedAtUtc == DateTime.MinValue
+                    ? TimeSpan.MaxValue
+                    : now - entry.ReceivedAtUtc;
+                return (kvp.Key, age < TimeSpan.Zero ? TimeSpan.Zero : age);
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
     /// Issue #1200 (auto-dismiss sweep): enumerate every FRESH pushed session across <paramref name="tenant"/>'s
     /// stream-connected Directors, each paired with its owning directorId so the caller can address a command
     /// DOWN that Director's stream. Applies the same active-connection + freshness rules as

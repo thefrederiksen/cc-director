@@ -65,16 +65,24 @@ describe("getHandover", () => {
     expect(info.version).toBe("");
   });
 
-  it("throws GatewayError on a 404 (session unknown)", async () => {
-    vi.stubGlobal("fetch", mockFetch(404, { error: "session not found across any director" }));
+  // CONTRACT CHANGE (issue #2189): these used to assert the thrown message was the internal diagnostic
+  // "GET handover failed: NNN". That string was the problem - it reached the user as a bare status number and
+  // it discarded the reason the server had already written. The throw now CARRIES the server's sentence.
+  it("throws GatewayError on a 404, carrying the server's own reason", async () => {
+    vi.stubGlobal("fetch", mockFetch(404, { error: "That session could not be found." }));
 
     await expect(getHandover("missing")).rejects.toBeInstanceOf(GatewayError);
-    await expect(getHandover("missing")).rejects.toThrow(/GET handover failed: 404/);
+    await expect(getHandover("missing")).rejects.toThrow(/That session could not be found/);
+    // The internal diagnostic must not survive onto the error a surface may render.
+    await expect(getHandover("missing")).rejects.not.toThrow(/GET handover failed/);
   });
 
-  it("throws GatewayError on a 502 (owning Director offline)", async () => {
+  it("throws GatewayError on a 502 (owning Director offline), as a sentence not a number", async () => {
     vi.stubGlobal("fetch", mockFetch(502, {}));
 
-    await expect(getHandover("s1")).rejects.toThrow(/GET handover failed: 502/);
+    // No reason in the body, so the fallback names the action - still never a bare status.
+    await expect(getHandover("s1")).rejects.toBeInstanceOf(GatewayError);
+    await expect(getHandover("s1")).rejects.toThrow(/handover information/);
+    await expect(getHandover("s1")).rejects.not.toThrow(/GET handover failed/);
   });
 });

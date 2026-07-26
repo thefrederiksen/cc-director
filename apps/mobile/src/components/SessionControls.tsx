@@ -1,5 +1,5 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
-import { gatewayErrorMessage, sendEscape, sendInterrupt, sendPrompt, uploadImage } from "@devthrottle/client-core/api/client";
+import { sendEscape, sendInterrupt, sendPrompt, uploadImage } from "@devthrottle/client-core/api/client";
 import { backgroundTranscribeAndSend, type CapturedUtterance } from "@devthrottle/client-core/dictation/backgroundSend";
 import { DictationDialog } from "@devthrottle/client-core/dictation/DictationDialog";
 import { insertAt, joinText } from "@devthrottle/client-core/dictation/transcript";
@@ -10,6 +10,11 @@ import {
   KEY_ARROW_UP,
   KEY_ENTER,
 } from "@devthrottle/client-core/terminal/keys";
+import { describeAndReport } from "@devthrottle/client-core/errors/reportClientError";
+
+// The surface label on every client-error report from this view, so the Gateway log and
+// GET /client-errors/recent name where the user was standing (issue #2189).
+const SURFACE = "mobile-session-controls";
 
 // The ONE shared session control surface (issue #811): the full-width input row, the Send/Speak row
 // (Send first, Speak second, equal halves), the Enter/Esc/Stop row, and the arrow row, plus the
@@ -154,7 +159,7 @@ export function SessionControls({ sessionId, onFlash, onError, showKeyRows }: Se
         });
         onFlash(paths.length === 1 ? "Image attached" : `${paths.length} images attached`);
       } catch (err) {
-        onError(gatewayErrorMessage(err));
+        onError(describeAndReport(SURFACE, "attach the image", err));
       } finally {
         setUploading(false);
       }

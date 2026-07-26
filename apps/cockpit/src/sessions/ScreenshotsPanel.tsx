@@ -3,7 +3,6 @@ import {
   deleteScreenshot,
   getScreenshots,
   screenshotFileUrl,
-  gatewayErrorMessage,
   type ScreenshotInfo,
 } from "@devthrottle/client-core/api/client";
 import {
@@ -25,6 +24,11 @@ import { ConfirmDialog } from "../components";
 // it full-size (new tab); Insert drops the Director-side path into the composer; Delete removes the
 // file from the Director's disk.
 const FETCH_COUNT = 60;
+import { describeAndReport } from "@devthrottle/client-core/errors/reportClientError";
+
+// The surface label on every client-error report from this view, so the Gateway log and
+// GET /client-errors/recent name where the user was standing (issue #2189).
+const SURFACE = "cockpit-screenshots";
 const INITIAL_SHOWN = 12;
 const SHOW_MORE_STEP = 24;
 
@@ -63,7 +67,7 @@ export function ScreenshotsPanel({ sessionId, onInsert }: ScreenshotsPanelProps)
         setLoadedOnce(true);
       } catch (err) {
         if (signal?.aborted) return;
-        setError(gatewayErrorMessage(err));
+        setError(describeAndReport(SURFACE, "load the screenshots", err));
       } finally {
         setBusy(false);
       }
