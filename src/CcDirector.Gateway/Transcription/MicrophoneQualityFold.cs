@@ -146,6 +146,55 @@ public static class MicrophoneQualityFold
         };
     }
 
+    /// <summary>
+    /// Rank a tenant's microphones best first, so a report can say WHICH ONE to prefer rather than only
+    /// that one of them is bad. Devices with too few measurements are excluded entirely - ranking a
+    /// device on two recordings would recommend hardware on noise.
+    ///
+    /// The order is by how much each defect actually costs a transcript, which is not the order their
+    /// numbers suggest:
+    ///   1. Band-limiting first, and by a distance. It removes the consonants outright, and no amount of
+    ///      level or quiet compensates for information that is not in the signal.
+    ///   2. Distortion second. It corrupts what IS there, but the vowels usually survive it.
+    ///   3. Then how far the voice stands above the room, capped - past the target, more is not better,
+    ///      and without the cap a silent room would outrank a better microphone.
+    ///   4. Then closeness to a healthy level, as a tie-break only.
+    /// A single number is returned rather than a sort over several keys so the reason for an ordering can
+    /// be stated, and so two devices that differ only trivially do not flip places between reports.
+    /// </summary>
+    public static IReadOnlyList<MicrophoneDeviceSummary> RankBest(IReadOnlyList<MicrophoneDeviceSummary> devices)
+        => devices is null
+            ? Array.Empty<MicrophoneDeviceSummary>()
+            : devices
+                .Where(d => d.Samples >= MinSamplesForVerdict)
+                .OrderByDescending(ComparableScore)
+                .ThenByDescending(d => d.Samples)
+                .ThenBy(d => d.Device, StringComparer.Ordinal)
+                .ToList();
+
+    /// <summary>
+    /// How good a microphone is, 0..100, for ORDERING devices against each other. Deliberately not shown
+    /// to anyone: a score invites "why is it 71" and the honest answer is the four measurements it came
+    /// from, which the report shows instead.
+    /// </summary>
+    public static double ComparableScore(MicrophoneDeviceSummary d)
+    {
+        if (d is null) return 0;
+        var score = 100.0;
+        score -= 60 * d.NarrowbandShare;
+        score -= 25 * d.ClippingShare;
+
+        // Distance below the signal-to-noise target, in decibels, worth a point each. Above the target
+        // costs nothing: a quieter room stops helping once the voice is already clear of it.
+        var snrShortfall = Math.Max(0, TargetSignalToNoiseDb - d.MedianSignalToNoiseDb);
+        score -= Math.Min(10, snrShortfall);
+
+        // Level is a tie-break: it is the easiest thing for a user to fix and the least damaging when
+        // wrong, so it must never reorder two microphones that differ on anything above.
+        score -= Math.Min(5, Math.Abs(TargetSpeechLevelDb - d.MedianSpeechLevelDb) / 4);
+        return Math.Max(0, score);
+    }
+
     /// <summary>A healthy speaking level: loud enough that the encoder spends its bits on the voice.</summary>
     public const double TargetSpeechLevelDb = -20;
 

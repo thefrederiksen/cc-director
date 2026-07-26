@@ -29,6 +29,10 @@ public sealed class MorningReportDto
     /// <summary>The three headline numbers. Each is individually optional (see the honesty rule).</summary>
     public MorningReportStatsDto Stats { get; set; } = new();
 
+    /// <summary>How the account's microphones are doing, ranked best first. NULL - the whole section
+    /// absent - when nothing has been measured yet, per the honesty rule.</summary>
+    public MorningMicrophonesDto? Microphones { get; set; }
+
     /// <summary>
     /// The needs-your-attention list, one typed item per row the email renders. ALWAYS PRESENT, possibly
     /// empty: an empty list is real knowledge ("nothing is waiting on you"), unlike an absent stat.
@@ -47,6 +51,60 @@ public sealed class MorningReportDto
 }
 
 /// <summary>The resolved reporting window: the UTC range the calendar day covers in the caller's zone.</summary>
+/// <summary>
+/// How the account's microphones are doing, ranked best first, for the daily report.
+///
+/// This is a SECTION rather than an attention row on purpose. The attention list answers "what needs
+/// you today"; this answers "which of your microphones should you be using", which is worth seeing even
+/// when nothing is wrong - it is the comparison that makes the advice actionable, and a user cannot
+/// make it for themselves because the defect that matters most sounds merely dull to a human ear.
+///
+/// THE HONESTY RULE APPLIES: this whole section is ABSENT when the Gateway holds no measurements for the
+/// account, or too few for any device to be judged. "We have never measured your microphones" and "your
+/// microphones are fine" are different statements and only one of them has been established.
+/// </summary>
+public sealed class MorningMicrophonesDto
+{
+    /// <summary>One line naming the best microphone, or saying they are all fine.</summary>
+    public string Headline { get; set; } = "";
+
+    /// <summary>What to change, present ONLY when switching or fixing something would actually help.
+    /// Absent when the microphones are all good - a daily email that always has advice is one nobody
+    /// reads.</summary>
+    public string? Advice { get; set; }
+
+    /// <summary>The devices, best first. Never empty when this section is present.</summary>
+    public List<MorningMicrophoneDto> Devices { get; set; } = new();
+}
+
+/// <summary>One microphone's standing in the daily report.</summary>
+public sealed class MorningMicrophoneDto
+{
+    /// <summary>The name the operating system gave it, or "Unnamed microphone".</summary>
+    public string Device { get; set; } = "";
+
+    /// <summary>How many dictations this verdict rests on.</summary>
+    public int Samples { get; set; }
+
+    /// <summary>"good" or "bad" - the same fold the Cockpit renders.</summary>
+    public string Status { get; set; } = "";
+
+    /// <summary>A plain sentence about this device, already written. The email prints it verbatim.</summary>
+    public string Summary { get; set; } = "";
+
+    /// <summary>Share of this device's dictations that arrived band-limited (0..1).</summary>
+    public double NarrowbandShare { get; set; }
+
+    /// <summary>Share of this device's dictations that were distorting (0..1).</summary>
+    public double ClippingShare { get; set; }
+
+    /// <summary>Typical level of the voice, in dBFS.</summary>
+    public double SpeechLevelDb { get; set; }
+
+    /// <summary>Typical margin of the voice over the room, in dB.</summary>
+    public double SignalToNoiseDb { get; set; }
+}
+
 public sealed class MorningReportWindowDto
 {
     /// <summary>Inclusive start of the reported day, in UTC.</summary>

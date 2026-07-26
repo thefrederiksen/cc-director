@@ -33,6 +33,7 @@ public sealed class MorningReportBuilder
     private readonly GatewayDatabase _db;
     private readonly Streaming.PushedSessionStore? _pushedSessions;
     private readonly RepoStateStore? _repoState;
+    private readonly Func<TenantId, Transcription.MicrophoneQualityLog>? _microphoneQuality;
     private readonly TimeSpan _streamStale;
     private readonly Func<DateTime> _utcNow;
 
@@ -79,22 +80,36 @@ public sealed class MorningReportBuilder
     /// </summary>
     public static readonly TimeSpan RepoStateMaxAge = TimeSpan.FromHours(24);
 
+    /// <summary>
+    /// How far back the microphone section looks. Deliberately much wider than the report's own day: a
+    /// microphone is a property of the user's desk rather than of yesterday, so judging one on a single
+    /// day's dictation would let a quiet Tuesday erase a verdict that took a fortnight to earn and flip
+    /// the recommendation between reports. Matches the window the measurements are kept for.
+    /// </summary>
+    public static readonly TimeSpan MicrophoneWindow = TimeSpan.FromDays(30);
+
     /// <param name="db">The Gateway EF database.</param>
     /// <param name="pushedSessions">The live pushed-session cache, used ONLY to put a friendly name and a
     /// repository path on a waiting row. Null (or a session it has never seen) costs the row nothing but
     /// those two labels - the waiting fact itself comes from the durable ledger.</param>
     /// <param name="streamStale">How old a Director's pushed roster may be and still be believed.</param>
     /// <param name="utcNow">Clock seam for tests.</param>
+    /// <param name="microphoneQuality">Opens a tenant's microphone-quality log. Null omits the section
+    /// entirely, which is the honest state for a deployment that has never measured a microphone.</param>
     public MorningReportBuilder(
         GatewayDatabase db,
         Streaming.PushedSessionStore? pushedSessions = null,
         TimeSpan? streamStale = null,
         Func<DateTime>? utcNow = null,
-        RepoStateStore? repoState = null)
+        RepoStateStore? repoState = null,
+        Func<TenantId, Transcription.MicrophoneQualityLog>? microphoneQuality = null)
     {
         _db = db ?? throw new ArgumentNullException(nameof(db));
         _pushedSessions = pushedSessions;
         _repoState = repoState;
+        // Injected as a factory rather than an instance: the log is per-tenant BY PATH, so a single
+        // shared instance could only ever read one tenant's measurements into everyone's report.
+        _microphoneQuality = microphoneQuality;
         _streamStale = streamStale ?? TimeSpan.FromMinutes(5);
         _utcNow = utcNow ?? (() => DateTime.UtcNow);
     }
@@ -137,10 +152,89 @@ public sealed class MorningReportBuilder
         // has been measured.
         report.Attention.AddRange(HygieneItems(tenant, now));
 
+        // How the account's microphones are doing (background monitoring). Absent - not empty - when
+        // nothing has been measured, for the same reason the hygiene rows are: "we have never measured
+        // your microphones" and "your microphones are fine" are different statements.
+        report.Microphones = Microphones(tenant, now);
+
         FileLog.Write($"[MorningReportBuilder] Build: tenant={tenant.ToLogString()} window={window.StartUtc:o}..{window.EndUtc:o} " +
                       $"sessionsRan={Describe(report.Stats.SessionsRan)} workDelivered={Describe(report.Stats.WorkDelivered)} " +
                       $"spendUsd={Describe(report.Stats.HostedAiSpendUsd)} attention={report.Attention.Count}");
         return report;
+    }
+
+    /// <summary>
+    /// The microphone section: every device with enough measurements to be judged, ranked best first,
+    /// with the comparison already made. Returns null when there is nothing measured to report.
+    ///
+    /// The window is deliberately WIDER than the report's own day. A microphone is a property of the
+    /// user's desk, not of yesterday: judging a headset on one day's dictation would let a quiet
+    /// Tuesday erase a verdict that took a fortnight to earn, and would flip the recommendation back
+    /// and forth between reports. Thirty days is the same window the measurements are kept for.
+    /// </summary>
+    private MorningMicrophonesDto? Microphones(TenantId tenant, DateTime now)
+    {
+        if (_microphoneQuality is null) return null;
+
+        IReadOnlyList<Transcription.MicrophoneQualityRecord> records;
+        try
+        {
+            records = _microphoneQuality(tenant).Load(now - MicrophoneWindow);
+        }
+        catch (Exception ex)
+        {
+            // A report that is missing one section still helps; a report that throws helps nobody.
+            FileLog.Write($"[MorningReportBuilder] microphone section skipped: {ex.Message}");
+            return null;
+        }
+        if (records.Count == 0) return null;
+
+        var summary = Transcription.MicrophoneQualityFold.Summarize(records);
+        var ranked = Transcription.MicrophoneQualityFold.RankBest(summary.Devices);
+        if (ranked.Count == 0) return null;
+
+        var best = ranked[0];
+        var worst = ranked[^1];
+        var anyBad = ranked.Any(d => d.Status == "bad");
+
+        string headline;
+        string? advice = null;
+        if (!anyBad)
+        {
+            headline = ranked.Count == 1
+                ? $"{best.Device} is doing fine."
+                : $"All {ranked.Count} of your microphones are doing fine - {best.Device} is the best of them.";
+        }
+        else if (best.Status == "bad")
+        {
+            // Every microphone measured is bad. Naming a "best" here would recommend one of them.
+            headline = ranked.Count == 1
+                ? $"{best.Device} is holding your transcription back."
+                : "Every microphone you used is holding your transcription back.";
+            advice = worst.Advice;
+        }
+        else
+        {
+            headline = $"{best.Device} is your best microphone; {worst.Device} is holding you back.";
+            advice = $"Use {best.Device} when you can. {worst.Advice}";
+        }
+
+        return new MorningMicrophonesDto
+        {
+            Headline = headline,
+            Advice = advice,
+            Devices = ranked.Select(d => new MorningMicrophoneDto
+            {
+                Device = d.Device,
+                Samples = d.Samples,
+                Status = d.Status,
+                Summary = d.Advice,
+                NarrowbandShare = d.NarrowbandShare,
+                ClippingShare = d.ClippingShare,
+                SpeechLevelDb = d.MedianSpeechLevelDb,
+                SignalToNoiseDb = d.MedianSignalToNoiseDb,
+            }).ToList(),
+        };
     }
 
     /// <summary>
