@@ -214,6 +214,14 @@ Dispatcher.BeginInvoke(() =>
 
 **How to apply:** compute the verdict in one Gateway place (e.g. `SessionOrdering` for color/label/triage, `VoiceDisplayFold` for the voice screen), put the finished strings and booleans on the DTO, and have the client read them. If you find yourself writing a conditional in a `.tsx`/`.xaml` view that decides *what a state means* (as opposed to *how to lay out* what the Gateway already decided), move it to the Gateway. Adding a new state is one edit in the fold, never a new branch in every client.
 
+### 8. SETTINGS IS ONE PAGE ON TWO SURFACES - IT MUST STAY IN SYNC
+
+**The Cockpit and the mobile app show the same Settings: the same tabs, in the same order, with the same names, and cards that look the same.** The desktop has more room and may show MORE DETAIL within a tab; the phone may show a reduced version of the same card. Neither may have a tab, a setting, or a name the other does not.
+
+**Why:** they were allowed to drift and became two different products for one account. The Cockpit had Notifications / AI / Car Mode with the dictation checks on a separate page entirely; the phone had a single untabbed "AI settings" scroll with no notification settings, no Car Mode end phrase, and the two checks on standalone screens. Found on the phone, it read as broken. Two lists in two files drift apart by default; one list in one file cannot.
+
+**How to apply:** the tab set and every card live ONCE, in `packages/client-core/src/settings/` (`tabs.ts`, `SettingsTabs.tsx`, and the four tab components), and both shells mount them. Each shell supplies only its own frame - page heading and left rail on the desktop, back link and app bar on the phone - and its own layout tuning: the phone re-tunes the shared `settings-*` CSS for touch under a `.screen` ancestor, so LAYOUT differs and CONTENT cannot. A route that exists on one surface only (the account page, the Transcription Health report) is passed in as an optional href, never hard-coded, so no surface renders a dead link. **Adding a setting means adding it to the shared component - if you find yourself editing a settings card inside `apps/cockpit` or `apps/mobile`, stop: it belongs in client-core.**
+
 ---
 
 ## Naming Conventions
