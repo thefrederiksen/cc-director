@@ -74,7 +74,7 @@ public sealed class TerminalPromptInjectionChokepointTests
         var cockpit = File.ReadAllText(Path.Combine(root, "apps", "cockpit", "src", "sessions", "SessionComposer.tsx"));
         var mobileControls = File.ReadAllText(Path.Combine(root, "apps", "mobile", "src", "components", "SessionControls.tsx"));
         // Mobile Voice mode's submit was hoisted into the shared client-core hook (issue #1213), so the
-        // chokepoint assertion follows it there; it still funnels through sendPrompt, never raw terminal input.
+        // chokepoint assertion follows it there; it still funnels through the prompt route, never raw terminal input.
         var mobileVoice = File.ReadAllText(Path.Combine(root, "packages", "client-core", "src", "voice", "useVoiceMode.ts"));
         var interactive = File.ReadAllText(Path.Combine(root, "packages", "client-core", "src", "terminal", "interactive.ts"));
         var gateway = File.ReadAllText(Path.Combine(root, "src", "CcDirector.Gateway", "Api", "GatewayEndpoints.cs"));
@@ -87,7 +87,13 @@ public sealed class TerminalPromptInjectionChokepointTests
         Assert.Contains("await sendPrompt(sessionId, text, true);", cockpit);
         Assert.Contains("await sendPrompt(sessionId, text, true);", mobileControls);
         Assert.Contains("await sendPrompt(sessionId, combined, true);", mobileControls);
-        Assert.Contains("await sendPrompt(sid, trimmed, true);", mobileVoice);
+        // The voice reply moved to sendVoicePrompt (issue #2193). The CHOKEPOINT is unchanged and that is
+        // what this pins: it is still the prompt route with Enter appended, never raw terminal input - the
+        // only difference is that the Gateway is asked to refuse the send outright when a menu owns the
+        // screen. Both halves are pinned: the call site here, and (below) that the call it makes is the
+        // prompt route carrying menuGuard.
+        Assert.Contains("await sendVoicePrompt(sid, trimmed);", mobileVoice);
+        Assert.Contains("const body: PromptRequest & { menuGuard: boolean } = { text, appendEnter: true, menuGuard: true };", client);
 
         Assert.Contains("await sendPrompt(this.sessionId, chunk, false);", interactive);
         // Raw browser keystrokes go through the terminal-input verb, which calls SendInput (no submit/Enter).
