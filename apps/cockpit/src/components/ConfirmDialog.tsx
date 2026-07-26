@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 import { Button } from "./Button";
+import { useDismissOnBackdrop } from "./useDismissOnBackdrop";
 
 // The one confirmation dialog every destructive action in the Cockpit routes through (issue #1244).
 // Before this, destructive actions were handled three different ways: a good inline confirmation on the
@@ -77,6 +78,10 @@ export function ConfirmDialog({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [open, busy, onClose]);
 
+  // Dismissing by clicking the backdrop, but never while the action is mid-flight, and never on a
+  // drag that started inside the dialog (see useDismissOnBackdrop).
+  const dismiss = useDismissOnBackdrop(busy ? undefined : onClose);
+
   if (!open) return null;
 
   const runConfirm = async () => {
@@ -97,18 +102,12 @@ export function ConfirmDialog({
   };
 
   return (
-    <div
-      className="ui-modal-backdrop"
-      onClick={() => {
-        if (!busy) onClose();
-      }}
-    >
+    <div className="ui-modal-backdrop" {...dismiss}>
       <div
         className="ui-confirm"
         role="alertdialog"
         aria-modal="true"
         aria-label={title}
-        onClick={(event) => event.stopPropagation()}
       >
         <div className="ui-confirm-title">{title}</div>
         <div className="ui-confirm-message">{message}</div>

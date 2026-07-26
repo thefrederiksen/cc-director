@@ -11,6 +11,7 @@ import {
 import { renameSession } from "@devthrottle/client-core/fleet/fleetClient";
 import { useSnoozeOptions } from "@devthrottle/client-core/settings/snoozeOptions";
 import { buildSnoozeMenu } from "@devthrottle/client-core/settings/snoozeMenu";
+import { useDismissOnBackdrop } from "../components";
 
 // The session menu (issue #1214): a three-dot control with Rename, Snooze / Unsnooze, Handover info,
 // and Close session. It is the SAME component on the session page and on every rail card. Every action
@@ -154,6 +155,11 @@ export function SessionMenu({ session, onClosed, variant = "page" }: SessionMenu
     setError(null);
     setHandover(null);
   }, []);
+
+  // Dismissing by clicking the backdrop. It closes only on a press that STARTED on the backdrop, so
+  // highlighting the name in the rename box with the mouse and releasing past the edge of the dialog
+  // no longer throws the dialog away mid-edit (owner report) - see useDismissOnBackdrop.
+  const dismissDialog = useDismissOnBackdrop(closeDialog);
 
   const openRename = useCallback(() => {
     setOpen(false);
@@ -355,8 +361,8 @@ export function SessionMenu({ session, onClosed, variant = "page" }: SessionMenu
       {error !== null && dialog === null && <span className="session-menu-error">{error}</span>}
 
       {dialog !== null && (
-        <div className="session-dialog-overlay" onClick={closeDialog}>
-          <div className="session-dialog" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+        <div className="session-dialog-overlay" {...dismissDialog}>
+          <div className="session-dialog" role="dialog" aria-modal="true">
             {dialog === "rename" && (
               <>
                 <h3 className="session-dialog-title">Rename session</h3>

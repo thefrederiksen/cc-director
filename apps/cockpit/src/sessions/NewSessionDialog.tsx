@@ -11,6 +11,7 @@ import {
 } from "@devthrottle/client-core/api/client";
 import { directorPort } from "@devthrottle/client-core/fleet/directorEndpoint";
 import { durationLabel, useNow } from "@devthrottle/client-core/sessions/waiting";
+import { useDismissOnBackdrop } from "../components";
 
 // The desktop Cockpit "New session" dialog (issue #1023, QA sweep epic #967). The React Cockpit had
 // no way to start a session; this is the dedicated picker dialog the roster rail's "+ New session"
@@ -279,14 +280,18 @@ export function NewSessionDialog({ onClose, onCreated, initialDirectorId }: NewS
     [creating, selectedId, agents, selectedAgentType, permission.bypass, permissionKey, onCreated],
   );
 
+  // Backdrop dismissal that a mouse drag cannot trigger: highlighting the repository path with the
+  // mouse and releasing outside the panel must not throw the half-filled dialog away (see
+  // useDismissOnBackdrop).
+  const dismiss = useDismissOnBackdrop(onClose);
+
   return (
-    <div className="newsess-backdrop" onClick={onClose}>
+    <div className="newsess-backdrop" {...dismiss}>
       <div
         className="newsess-modal"
         role="dialog"
         aria-modal="true"
         aria-label="Start a new session"
-        onClick={(e) => e.stopPropagation()}
       >
         <div className="newsess-head">Start a new session</div>
 

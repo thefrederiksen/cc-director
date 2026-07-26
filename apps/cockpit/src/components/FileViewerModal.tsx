@@ -10,6 +10,7 @@ import {
 } from "@devthrottle/client-core/api/client";
 import { markdownToHtml } from "@devthrottle/client-core/history/historyMarkdown";
 import { Button } from "./Button";
+import { useDismissOnBackdrop } from "./useDismissOnBackdrop";
 
 // Local Files mission (Phase 2): the Cockpit file viewer. A clicked file path - in the Chat tab or in
 // the terminal - opens this modal, which renders the file IN PLACE by type, streamed from the owning
@@ -75,14 +76,17 @@ export function FileViewerModal({ sessionId, path, onClose }: FileViewerModalPro
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
+  // Backdrop dismissal that survives a mouse drag - selecting text in a viewed file and releasing
+  // outside the panel must not close the viewer (see useDismissOnBackdrop).
+  const dismiss = useDismissOnBackdrop(onClose);
+
   return (
-    <div className="ui-modal-backdrop" onClick={onClose}>
+    <div className="ui-modal-backdrop" {...dismiss}>
       <div
         className="file-viewer"
         role="dialog"
         aria-modal="true"
         aria-label={name}
-        onClick={(event) => event.stopPropagation()}
       >
         <div className="file-viewer-head">
           <span className="file-viewer-name" title={path}>{name}</span>

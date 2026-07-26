@@ -38,6 +38,9 @@ export {
 } from "./dataTableCore";
 export type { SortDirection, SortState } from "./dataTableCore";
 
+export { useDismissOnBackdrop } from "./useDismissOnBackdrop";
+export type { BackdropDismissHandlers } from "./useDismissOnBackdrop";
+
 export { useFlash } from "./useFlash";
 export type { Flash, FlashController } from "./useFlash";
 
