@@ -1,0 +1,221 @@
+/* The "Injected text" Settings tab (issue #550). Cockpit only.
+ *
+ * The cards, buttons, headings and pills come from the shared Settings stylesheet
+ * (client-core/settings/settings.css) - this file only adds what is particular to this tab: the
+ * whose-text-is-live banner, the two mode cards, the editor panes, and the placeholder list.
+ *
+ * Every colour is a token from the app theme (src/styles.css :root) except the three banner tones and
+ * the warning/error rows, which need their own semantic colours and follow the same red the About page
+ * uses for its error box. */
+
+/* WHOSE TEXT IS LIVE - the one thing a user must never be wrong about, so it is a full-width banner that
+   changes colour, not a checkbox. Ours is neutral; yours is the accent; editing-unsaved is a caution. */
+.itx-banner {
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  padding: 12px 14px;
+  margin-bottom: 16px;
+}
+.itx-banner-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+.itx-banner-detail {
+  font-size: 12px;
+  opacity: 0.85;
+}
+.itx-banner-ours {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.itx-banner-yours {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: var(--accent);
+  color: var(--text);
+}
+.itx-banner-editing {
+  background: #3a331b;
+  border-color: #6a5a2a;
+  color: #e6d59a;
+}
+
+/* THE MODE CHOICE. Two cards side by side, the live one marked with a filled radio - the same shape the
+   AI tab uses for its provider card, so a choice looks like a choice across the whole Settings page.
+   What this replaces: two loose buttons where the ACTIVE one was rendered disabled, which reads as a
+   broken control rather than as the mode you are already in. */
+.itx-modes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+@media (max-width: 720px) {
+  .itx-modes {
+    grid-template-columns: 1fr;
+  }
+}
+.itx-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  cursor: pointer;
+}
+.itx-mode:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+/* Disabled here means "not available right now" (a save is in flight, or an unsaved draft is open),
+   never "this is the mode you are in" - the chosen mode is marked by itx-mode-on, and stays clickable. */
+.itx-mode:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.itx-mode-on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.itx-mode-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.itx-mode-desc {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+/* Why this card is unavailable right now. A disabled control that does not say why is what made the old
+   page read as broken; this is the sentence that stops it reading that way again. */
+.itx-mode-note {
+  font-size: 12px;
+  font-weight: 600;
+  color: #e6c063;
+  margin-top: 2px;
+}
+
+/* THE EDITOR. */
+.itx-editor-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.itx-editor-head .settings-h2 {
+  margin: 0;
+}
+
+.itx-panes {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+.itx-panes-split {
+  grid-template-columns: 1fr 1fr;
+}
+@media (max-width: 900px) {
+  .itx-panes-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+.itx-pane {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.itx-pane-label {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+/* The text WRAPS and is given real height.
+ *
+ * It used to be `white-space: pre` in a 340px frame, which produced a box with both scrollbars where
+ * long lines were clipped mid-sentence - reading one sentence meant scrolling sideways, while the page
+ * below sat empty and the tall content had the short frame. `pre-wrap` keeps the blank lines and
+ * indentation that matter in a template while letting long prose lines fold, so there is no horizontal
+ * scrollbar at all; the height then follows the viewport instead of a fixed guess. */
+.itx-editor {
+  width: 100%;
+  height: clamp(420px, 58vh, 900px);
+  resize: vertical;
+  background: var(--code-bg, var(--surface-2));
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.itx-editor:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.itx-editor:read-only {
+  opacity: 0.9;
+}
+
+.itx-problem {
+  color: #f1a0a0;
+  font-size: 12.5px;
+  margin: 10px 0 0;
+}
+.itx-warn {
+  color: #e6c063;
+  font-size: 12.5px;
+  margin: 10px 0 0;
+}
+
+.itx-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 14px;
+}
+.itx-msg {
+  color: var(--text-dim);
+  font-size: 12.5px;
+  margin-right: auto;
+}
+
+/* THE PLACEHOLDERS, as a list rather than a wrapped run-on line of bracket tokens. One token per row,
+   in columns so a long list stays short on screen, and each token is a code chip you can pick out. */
+.itx-placeholders {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 6px 12px;
+}
+.itx-placeholders li {
+  min-width: 0;
+}
+.itx-placeholders code {
+  display: inline-block;
+  max-width: 100%;
+  background: var(--code-bg, var(--surface-2));
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 8px;
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}

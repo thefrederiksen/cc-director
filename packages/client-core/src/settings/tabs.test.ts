@@ -2,37 +2,77 @@ import { describe, expect, it } from "vitest";
 import { visibleTabs, tabFromParam } from "./tabs";
 
 describe("visibleTabs", () => {
-  it("shows the four per-account tabs, notifications first", () => {
-    expect(visibleTabs().map((t) => t.id)).toEqual(["notifications", "ai", "transcription", "carmode"]);
+  it("shows the four shared tabs on the phone, notifications first", () => {
+    expect(visibleTabs("mobile").map((t) => t.id)).toEqual([
+      "notifications",
+      "ai",
+      "transcription",
+      "carmode",
+    ]);
   });
 
-  // The point of moving this list into client-core: BOTH shells read it, so a tab that exists on the
-  // desktop exists on the phone by construction. Transcription is the tab that was missing from both
-  // Settings pages while its checks lived on separate screens.
-  it("includes Transcription, so the dictation checks have a home in Settings on every surface", () => {
-    expect(visibleTabs().map((t) => t.id)).toContain("transcription");
+  it("shows the same four on the Cockpit, in the same order, plus its own Injected text", () => {
+    expect(visibleTabs("cockpit").map((t) => t.id)).toEqual([
+      "notifications",
+      "ai",
+      "transcription",
+      "carmode",
+      "injectedtext",
+    ]);
+  });
+
+  // The parity law: the desktop may go DEEPER, never sideways. Every tab the phone shows must also be on
+  // the Cockpit, in the same relative order - a phone-only tab, or a reshuffle, would be exactly the
+  // drift this shared list exists to prevent. Written as a relation between the two lists rather than as
+  // a second hardcoded list, so it keeps holding as tabs are added.
+  it("gives the phone a subset of the Cockpit's tabs, in the same order", () => {
+    const cockpit = visibleTabs("cockpit").map((t) => t.id);
+    const mobile = visibleTabs("mobile").map((t) => t.id);
+    expect(cockpit.filter((id) => mobile.includes(id))).toEqual(mobile);
+  });
+
+  it("labels a tab identically on both surfaces", () => {
+    const cockpit = new Map(visibleTabs("cockpit").map((t) => [t.id, t.label]));
+    for (const t of visibleTabs("mobile")) expect(cockpit.get(t.id)).toBe(t.label);
+  });
+
+  it("keeps Injected text off the phone - it is Cockpit only (issue #550)", () => {
+    expect(visibleTabs("mobile").map((t) => t.id)).not.toContain("injectedtext");
   });
 
   it("never includes a machine or Privacy tab", () => {
-    const ids = visibleTabs().map((t) => t.id as string);
-    expect(ids).not.toContain("machine");
-    expect(ids).not.toContain("privacy");
+    for (const surface of ["cockpit", "mobile"] as const) {
+      const ids = visibleTabs(surface).map((t) => t.id as string);
+      expect(ids).not.toContain("machine");
+      expect(ids).not.toContain("privacy");
+    }
   });
 });
 
 describe("tabFromParam", () => {
-  it("resolves each tab id to itself", () => {
-    for (const t of visibleTabs()) expect(tabFromParam(t.id)).toBe(t.id);
+  it("resolves each of a surface's own tab ids to itself", () => {
+    for (const surface of ["cockpit", "mobile"] as const) {
+      for (const t of visibleTabs(surface)) expect(tabFromParam(t.id, surface)).toBe(t.id);
+    }
   });
 
   it("falls back to notifications for missing or unknown ids", () => {
-    expect(tabFromParam(null)).toBe("notifications");
-    expect(tabFromParam("nonsense")).toBe("notifications");
+    for (const surface of ["cockpit", "mobile"] as const) {
+      expect(tabFromParam(null, surface)).toBe("notifications");
+      expect(tabFromParam("nonsense", surface)).toBe("notifications");
+    }
+  });
+
+  // A deep link is not permission to render something. A phone opening a Cockpit link must land on a real
+  // tab, not select one its own strip does not list and its own panel cannot draw.
+  it("refuses a Cockpit-only tab on the phone and falls back to the default", () => {
+    expect(tabFromParam("injectedtext", "mobile")).toBe("notifications");
+    expect(tabFromParam("injectedtext", "cockpit")).toBe("injectedtext");
   });
 
   it("no longer resolves the retired machine/telemetry/privacy ids to a tab", () => {
-    expect(tabFromParam("machine")).toBe("notifications");
-    expect(tabFromParam("telemetry")).toBe("notifications");
-    expect(tabFromParam("privacy")).toBe("notifications");
+    expect(tabFromParam("machine", "cockpit")).toBe("notifications");
+    expect(tabFromParam("telemetry", "cockpit")).toBe("notifications");
+    expect(tabFromParam("privacy", "cockpit")).toBe("notifications");
   });
 });

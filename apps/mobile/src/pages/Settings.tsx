@@ -19,7 +19,7 @@ import { tabFromParam, type TabId } from "@devthrottle/client-core/settings/tabs
 // either surface, and the retired /mic-test and /transcription-test screens can redirect into it.
 export function Settings() {
   const [params, setParams] = useSearchParams();
-  const [tab, setTab] = useState<TabId>(() => tabFromParam(params.get("tab")));
+  const [tab, setTab] = useState<TabId>(() => tabFromParam(params.get("tab"), "mobile"));
 
   // The tab is written back to the address so the phone's own Back gesture and a re-opened app land on
   // the tab that was being used, rather than snapping to Notifications. `replace` keeps tab switching
@@ -38,11 +38,14 @@ export function Settings() {
         <h1>Settings</h1>
       </header>
 
-      <SettingsTabStrip active={tab} onSelect={choose} />
+      <SettingsTabStrip active={tab} onSelect={choose} surface="mobile" />
 
       {/* No accountHref or transcriptionHealthHref: the phone has neither an account page nor the
           Transcription Health report, and a settings screen must never offer a link to a route that
-          does not exist here. */}
+          does not exist here.
+
+          surface="mobile" above is what keeps a Cockpit-only tab (Injected text) off this screen, both
+          in the strip and in what ?tab= can resolve to - see client-core/settings/tabs.ts. */}
       <SettingsTabPanel tab={tab} />
     </div>
   );

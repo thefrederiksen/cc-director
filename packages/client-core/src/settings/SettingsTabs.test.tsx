@@ -61,8 +61,8 @@ afterEach(() => {
 });
 
 describe("the Settings tab strip", () => {
-  it("offers the same four tabs whichever shell mounts it", () => {
-    mount(<SettingsTabStrip active="notifications" onSelect={() => {}} />);
+  it("offers the four shared tabs on the phone", () => {
+    mount(<SettingsTabStrip active="notifications" onSelect={() => {}} surface="mobile" />);
     expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual([
       "Notifications",
       "AI",
@@ -71,8 +71,21 @@ describe("the Settings tab strip", () => {
     ]);
   });
 
+  // The Cockpit-only tab, rendered (issue #550). The tab set decides this, not the shell, so the strip is
+  // where it can be seen: the same four in the same order, and one more that the phone above does not get.
+  it("offers those same four plus Injected text on the Cockpit", () => {
+    mount(<SettingsTabStrip active="notifications" onSelect={() => {}} surface="cockpit" />);
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual([
+      "Notifications",
+      "AI",
+      "Transcription",
+      "Car Mode",
+      "Injected text",
+    ]);
+  });
+
   it("marks exactly the active tab selected", () => {
-    mount(<SettingsTabStrip active="transcription" onSelect={() => {}} />);
+    mount(<SettingsTabStrip active="transcription" onSelect={() => {}} surface="cockpit" />);
     const selected = screen.getAllByRole("tab").filter((t) => t.getAttribute("aria-selected") === "true");
     expect(selected.map((t) => t.textContent)).toEqual(["Transcription"]);
   });
