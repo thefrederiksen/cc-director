@@ -157,6 +157,11 @@ public sealed class TenantSettingsResolver
     public void SetTtsVoice(TenantId tenant, string voice, DateTime nowUtc)
         => _store.Set(tenant, TenantSettingKeys.TtsVoice, RequireNonEmpty(voice, nameof(voice)), nowUtc);
 
+    /// <summary>Remove the tenant's voice override entirely - the honest state when the speech model in
+    /// use has no preset voices to choose from. Distinct from setting an empty string, which the setter
+    /// rejects.</summary>
+    public void ClearTtsVoice(TenantId tenant) => _store.Remove(tenant, TenantSettingKeys.TtsVoice);
+
     /// <summary>Set the tenant's text-to-speech model.</summary>
     /// <exception cref="ArgumentException">The model is null/empty.</exception>
     public void SetTtsModel(TenantId tenant, string model, DateTime nowUtc)

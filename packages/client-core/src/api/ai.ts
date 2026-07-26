@@ -153,8 +153,18 @@ export async function getSpokenLanguages(): Promise<{ current: string; languages
 
 // PUT /gateway/ai/spoken-language { language } - the language DevThrottle SPEAKS BACK in. This does
 // NOT affect dictation, which detects the spoken language on its own. A blank value means English.
-export function setSpokenLanguage(language: string): Promise<{ language: string }> {
-  return putJson<{ language: string }>("/gateway/ai/spoken-language", { language });
+// The Gateway moves the speech model with the language and reports what it ended up as - the client
+// deliberately does not decide this. On the hosted Gateway the model catalog is refused (it spends the
+// shared deployment credential), so a browser has no model list to reason about and would leave the
+// account on an engine that cannot say the chosen language. Deciding server-side also keeps mobile and
+// the Cockpit from drifting, because neither of them decides anything.
+export function setSpokenLanguage(language: string): Promise<{
+  language: string;
+  ttsModel: string | null;
+  ttsVoice: string | null;
+  switched: boolean;
+}> {
+  return putJson("/gateway/ai/spoken-language", { language });
 }
 
 // POST /wingman/tts { text, model, voice } -> audio bytes to play (a short "Play sample").
