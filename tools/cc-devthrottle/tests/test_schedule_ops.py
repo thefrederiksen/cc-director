@@ -10,10 +10,14 @@ import requests
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+import typer  # noqa: E402
+
 from src.schedule_ops import (  # noqa: E402
     LOOPBACK_DEFAULT,
     GatewayError,
     ScheduleClient,
+    _client,
+    assert_scope_is_unambiguous,
     resolve_base_url,
 )
 
@@ -171,3 +175,55 @@ class TestEnableDisable:
         assert second_url == "http://127.0.0.1:7878/cron/jobs/job-9"
         assert req.call_args_list[1].kwargs["json"]["enabled"] is False
         assert result["enabled"] is False
+
+
+class TestScopeGuard:
+    """Issue #2201: refuse when the caller is aimed at a Director this root does not own.
+
+    CC_DIRECTOR_API steers the session commands; CC_DIRECTOR_ROOT steers config.json, and so
+    the Gateway token that selects the TENANT the schedule commands write to. Setting only the
+    first used to succeed against the owner's real fleet and print a confirmation.
+
+    Every test here patches the recorded ports rather than reading the machine's own, so the
+    outcome is decided by the case under test and not by whatever Directors happen to be
+    installed on the box running the suite.
+    """
+
+    @staticmethod
+    def _with_ports(ports):
+        return patch("src.schedule_ops._director_ports_in_this_root", return_value=ports)
+
+    def test_refuses_when_aimed_at_a_director_this_root_does_not_own(self, monkeypatch):
+        monkeypatch.setenv("CC_DIRECTOR_API", "http://127.0.0.1:7880")
+        with self._with_ports([7879]):
+            with pytest.raises(typer.Exit):
+                assert_scope_is_unambiguous()
+
+    def test_allows_the_director_this_root_does_own(self, monkeypatch):
+        """The normal case: an agent inside a session, pointed at its own Director."""
+        monkeypatch.setenv("CC_DIRECTOR_API", "http://127.0.0.1:7879")
+        with self._with_ports([7879]):
+            assert assert_scope_is_unambiguous() is None
+
+    def test_allows_when_the_root_records_no_ports(self, monkeypatch):
+        """No recorded ports is an absence of evidence, not evidence of a mismatch."""
+        monkeypatch.setenv("CC_DIRECTOR_API", "http://127.0.0.1:7880")
+        with self._with_ports([]):
+            assert assert_scope_is_unambiguous() is None
+
+    def test_allows_when_director_api_is_unset(self, monkeypatch):
+        monkeypatch.delenv("CC_DIRECTOR_API", raising=False)
+        with self._with_ports([7879]):
+            assert assert_scope_is_unambiguous() is None
+
+    def test_allows_a_director_api_with_no_port(self, monkeypatch):
+        monkeypatch.setenv("CC_DIRECTOR_API", "not-a-url")
+        with self._with_ports([7879]):
+            assert assert_scope_is_unambiguous() is None
+
+    def test_the_guard_is_wired_into_every_command(self, monkeypatch):
+        """_client() is the single choke point every schedule command goes through."""
+        monkeypatch.setenv("CC_DIRECTOR_API", "http://127.0.0.1:7880")
+        with self._with_ports([7879]):
+            with pytest.raises(typer.Exit):
+                _client()
