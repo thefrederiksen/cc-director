@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -18,7 +19,7 @@ _tools_dir = str(Path(__file__).resolve().parent.parent.parent)
 if _tools_dir not in sys.path:
     sys.path.insert(0, _tools_dir)
 
-from cc_shared.config import CCDirectorConfig  # noqa: E402
+from cc_shared.config import CCDirectorConfig, get_config_path  # noqa: E402
 
 LOOPBACK_DEFAULT = "http://127.0.0.1:7878"
 TIMEOUT_SECONDS = 10
@@ -158,7 +159,86 @@ def _fail(message: str) -> None:
     raise typer.Exit(1)
 
 
+def _director_ports_in_this_root() -> List[int]:
+    """The Control API ports of the Directors registered in the root we are about to read.
+
+    Each data root records one <director-id>.port file per Director it owns, so this is the
+    cheapest local way to ask "does the Director the caller is pointing at actually belong
+    to the configuration I am about to use?".
+    """
+    # config.json's own directory IS the root's config dir, so this follows
+    # CC_DIRECTOR_ROOT exactly as the Gateway address and token do.
+    ports_dir = get_config_path().parent / "director" / "ports"
+    if not ports_dir.is_dir():
+        return []
+    found: List[int] = []
+    for entry in ports_dir.glob("*.port"):
+        try:
+            found.append(int(entry.read_text(encoding="utf-8").strip()))
+        except (OSError, ValueError):
+            continue
+    return found
+
+
+def assert_scope_is_unambiguous() -> None:
+    """Refuse when the caller is pointed at a Director this configuration does not own.
+
+    Issue #2201. Two different environment variables steer two halves of cc-devthrottle,
+    and neither implies the other:
+
+      CC_DIRECTOR_API   the Director Control API - session, message and mission commands
+      CC_DIRECTOR_ROOT  the data root, and so config.json - which is where the SCHEDULE
+                        commands read the Gateway address and, critically, the Gateway
+                        TOKEN that decides WHICH TENANT is written
+
+    So `CC_DIRECTOR_API=<an isolated Director> cc-devthrottle schedule create ...` scopes
+    the session half and silently leaves the schedule half reading the DEFAULT root - which
+    on a normal machine is the owner's real fleet. It then SUCCEEDS, returns a real id, and
+    prints a confirmation. That is how two jobs were written to the owner's live fleet on
+    2026-07-26 while working against an isolated demo Director.
+
+    THE TEST IS A MISMATCH, NOT MERE PRESENCE. Every agent running inside a DevThrottle
+    session has CC_DIRECTOR_API set, pointing at the owner's own Director, and that is the
+    normal case which must keep working. So this refuses only on POSITIVE EVIDENCE that the
+    two disagree: this root records which Directors it owns, and the port the caller is
+    aimed at is not one of them. When the root records no ports at all there is nothing to
+    contradict, and we do not block on an absence of evidence.
+
+    Failing here is deliberate. A scheduled job runs an agent unattended in a working
+    directory, so landing one on the wrong tenant is not a display bug, and there is no safe
+    default to guess once the caller has expressed two different intentions.
+
+    Note that `--gateway` does NOT resolve the ambiguity: it overrides the ADDRESS while the
+    token still comes from config, and on the shared hosted Gateway it is the token that
+    selects the tenant. So the guard is checked regardless of any override.
+    """
+    api = os.environ.get("CC_DIRECTOR_API", "").strip()
+    if not api:
+        return
+    port = urlparse(api).port
+    if port is None:
+        return
+    known = _director_ports_in_this_root()
+    if not known or port in known:
+        return
+
+    root = os.environ.get("CC_DIRECTOR_ROOT", "").strip() or "the default root"
+    _fail(
+        f"CC_DIRECTOR_API points at a Director on port {port}, but {root} owns "
+        f"{', '.join(str(p) for p in sorted(known))}.\n\n"
+        "  Schedule commands read the Gateway address and token from config.json, which "
+        "lives under CC_DIRECTOR_ROOT - CC_DIRECTOR_API does not redirect them. Running "
+        "anyway would write to whichever account THIS root is signed in as, which is not "
+        "the Director you are pointing at.\n\n"
+        "  Set CC_DIRECTOR_ROOT to that Director's own data root and run it again, for "
+        "example:\n"
+        "      CC_DIRECTOR_ROOT=D:\\demo\\_root cc-devthrottle schedule list\n\n"
+        "  If you did mean this root's fleet, unset CC_DIRECTOR_API for this command."
+    )
+
+
 def _client() -> ScheduleClient:
+    assert_scope_is_unambiguous()
     return ScheduleClient(base_url=gateway_override)
 
 
@@ -348,6 +428,10 @@ def create_job(
     console.print(f"  Id:        {_fmt(created.get('id'))}")
     console.print(f"  Name:      {_fmt(created.get('name'))}")
     console.print(f"  Next run:  {_fmt(created.get('nextRunUtc'))} UTC")
+    # Say WHERE it landed. A scheduled job runs an agent unattended, so "which fleet did
+    # that just go to" must be answerable from this output rather than by cross-checking
+    # `schedule list` afterwards and recognising somebody else's jobs (issue #2201).
+    console.print(f"  Gateway:   {gateway_override or resolve_base_url()}")
 
 
 def run_now(job_id: str, json_output: bool) -> None:
