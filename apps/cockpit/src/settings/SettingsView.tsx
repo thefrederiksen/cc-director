@@ -23,9 +23,6 @@ import {
   setCarModeEndPhrase,
   setWingmanFastModel,
   setTtsModel,
-  setSpokenLanguage,
-  getSpokenLanguages,
-  type SpokenLanguageOption,
   setTtsVoice,
   setWingmanModel,
   testChat,
@@ -68,16 +65,7 @@ import {
 // address). Responsive (CodingStyle.md): each tab renders immediately with a loading line and loads
 // asynchronously; on a failure it shows an explicit error banner, never a fabricated value.
 
-// One sample sentence per language. Auditioning a Danish voice by making it read English tells you
-// nothing about the accent you are actually choosing.
-const SAMPLES: Record<string, string> = {
-  en: "Hi, I'm your DevThrottle wingman. This is how I'll sound.",
-  fr: "Bonjour, je suis votre wingman DevThrottle. Voici ma voix.",
-  de: "Hallo, ich bin dein DevThrottle Wingman. So werde ich klingen.",
-  es: "Hola, soy tu wingman de DevThrottle. Asi es como voy a sonar.",
-  da: "Hej, jeg er din DevThrottle wingman. Sadan kommer jeg til at lyde.",
-};
-const SAMPLE_TEXT = SAMPLES.en;
+const SAMPLE_TEXT = "Hi, I'm your DevThrottle wingman. This is how I'll sound.";
 
 export function SettingsView() {
   const [params] = useSearchParams();
@@ -565,8 +553,6 @@ function AiTab() {
   const [snap, setSnap] = useState<AiProviderSnapshot | null>(null);
   const [chatModels, setChatModels] = useState<AiModel[]>([]);
   const [speechModels, setSpeechModels] = useState<AiModel[]>([]);
-  const [languages, setLanguages] = useState<SpokenLanguageOption[]>([]);
-  const [language, setLanguage] = useState("en");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
@@ -581,40 +567,6 @@ function AiTab() {
     setSpeechModels(await getAiModels("speech"));
   }, []);
 
-  // The language list is served by the Gateway and does NOT depend on the model catalog, so it works
-  // on hosted where the catalog is refused. Loaded separately for exactly that reason.
-  const loadLanguages = useCallback(async () => {
-    const spoken = await getSpokenLanguages();
-    setLanguages(spoken.languages);
-    setLanguage(spoken.current);
-  }, []);
-
-  const chooseLanguage = async (code: string) => {
-    setBusy(true);
-    setMsg("Saving...");
-    setSampleMsg("");
-    try {
-      // The Gateway switches the speech model to one that can say this and tells us what it picked.
-      // The browser does not decide: on hosted it cannot even see the model catalog.
-      const res = await setSpokenLanguage(code);
-      setLanguage(res.language);
-      if (res.ttsModel && snap) {
-        setSnap({ ...snap, ttsModel: res.ttsModel, ttsVoice: res.ttsVoice ?? "" });
-      }
-      setMsg(res.switched
-        ? "Spoken language set. Speech model switched to " + res.ttsModel + ", which can speak it."
-        : "Spoken language set.");
-      // Re-read the account from the Gateway rather than believing the local snapshot. The server
-      // owns this decision, and a page that keeps showing the old engine after a switch is the
-      // single most confusing thing this feature can do.
-      await load();
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const load = useCallback(async () => {
     try {
       setError(null);
@@ -624,7 +576,6 @@ function AiTab() {
       // (issue #2022); the Gateway says so via catalogAvailable. Skip the catalog fetch there so the tab
       // renders clean with the account's saved selections instead of painting a load error.
       if (s.catalogAvailable !== false) await loadModels();
-      await loadLanguages();
     } catch (e) {
       setError(errText(e));
     }
@@ -732,9 +683,7 @@ function AiTab() {
     setBusy(true);
     setSampleMsg("Synthesizing...");
     try {
-      // No model/voice: the Gateway plays what the ACCOUNT is set to. Sending what this page
-      // happens to show would audition a stale engine after a language change.
-      const blob = await ttsSample(SAMPLES[language] ?? SAMPLE_TEXT);
+      const blob = await ttsSample(SAMPLE_TEXT, snap.ttsModel, snap.ttsVoice);
       if (audioRef.current === null) audioRef.current = new Audio();
       audioRef.current.src = URL.createObjectURL(blob);
       audioRef.current.onended = () => setSampleMsg("");
@@ -823,29 +772,6 @@ function AiTab() {
             {fastTestMsg || "Used for spoken turn summaries, menus, and choice mapping."}
           </span>
         </div>
-      </div>
-
-      <div className="settings-field">
-        <label htmlFor="settings-ai-spoken-language">Spoken language</label>
-        <select
-          id="settings-ai-spoken-language"
-          className="settings-select"
-          value={language}
-          disabled={busy}
-          onChange={(e) => void chooseLanguage(e.target.value)}
-        >
-          {languages.map((l) => (
-            <option key={l.code} value={l.code}>
-              {l.name === l.endonym ? l.name : l.name + " (" + l.endonym + ")"}
-            </option>
-          ))}
-        </select>
-        <p className="settings-hint">
-          The language DevThrottle speaks back to you in. Dictation understands every language
-          automatically, so this does not change how you talk to it, and your agents keep working in
-          whatever language they work in. Choosing a language moves the speech model to one that can
-          say it.
-        </p>
       </div>
 
       <div className="settings-field">

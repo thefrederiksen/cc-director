@@ -31,7 +31,6 @@ public sealed class CarModeBrain
     private readonly CarModeSubjectStore _subjects;
     private readonly Action<string> _log;
     private readonly string _systemPrompt;
-    private readonly Func<TenantId, string> _spokenLanguage;
 
     /// <param name="fleetForCaller">Resolves the fleet view for one authenticated caller credential
     ///  (issue #2129, hosted tenant isolation): every fleet tool call must run AS the calling device, so
@@ -41,11 +40,7 @@ public sealed class CarModeBrain
     /// <param name="surface">Which surface this brain instance speaks to. Car (the default) keeps the
     ///  hands-free one-or-two-sentence style; Desk (the cockpit Assistant screen) appends the desk-surface
     ///  overrides. Everything else - loop, tools, stores, model - is identical.</param>
-    /// <param name="spokenLanguageProvider">Returns the caller tenant's SPOKEN LANGUAGE. Car Mode is a
-    ///  separate generator from the wingman's turn narration, with its own system prompt, so it needs the
-    ///  language instruction in its own right - narration being translated while the hands-free voice
-    ///  kept answering in English is exactly the defect this closes. Omit it and every turn is English.</param>
-    public CarModeBrain(ICarModeChat chat, Func<string, ICarModeFleet> fleetForCaller, CarModeConversationStore conversations, CarModePendingStore pending, CarModeSubjectStore subjects, Action<string>? log = null, CarModeSurface surface = CarModeSurface.Car, Func<TenantId, string>? spokenLanguageProvider = null)
+    public CarModeBrain(ICarModeChat chat, Func<string, ICarModeFleet> fleetForCaller, CarModeConversationStore conversations, CarModePendingStore pending, CarModeSubjectStore subjects, Action<string>? log = null, CarModeSurface surface = CarModeSurface.Car)
     {
         _chat = chat ?? throw new ArgumentNullException(nameof(chat));
         _fleetForCaller = fleetForCaller ?? throw new ArgumentNullException(nameof(fleetForCaller));
@@ -54,7 +49,6 @@ public sealed class CarModeBrain
         _subjects = subjects ?? throw new ArgumentNullException(nameof(subjects));
         _log = log ?? FileLog.Write;
         _systemPrompt = surface == CarModeSurface.Desk ? SystemPrompt + DeskAddendum : SystemPrompt;
-        _spokenLanguage = spokenLanguageProvider ?? (_ => CcDirector.Core.Configuration.SpokenLanguage.Default);
     }
 
     /// <summary>
@@ -166,8 +160,7 @@ public sealed class CarModeBrain
         }
 
         var messages = new List<object>();
-        var languageBlock = CcDirector.Core.Configuration.SpokenLanguage.PromptInstruction(_spokenLanguage(tenant));
-        messages.Add(new { role = "system", content = languageBlock + _systemPrompt });
+        messages.Add(new { role = "system", content = _systemPrompt });
         foreach (var m in _conversations.GetHistory(deviceKey))
             messages.Add(new { role = m.Role, content = m.Content });
         messages.Add(new { role = "user", content = userText });

@@ -198,7 +198,6 @@ public sealed class WingmanTranslator
     private readonly Func<TenantId, WingmanModelRole, CancellationToken, Task<IAgentBrain>> _brainProvider;
     private readonly Action<string> _log;
     private readonly Func<string> _instructions;
-    private readonly Func<TenantId, string> _spokenLanguage;
 
     /// <summary>
     /// Create a translator over a warm-brain provider. The provider is the same
@@ -208,18 +207,11 @@ public sealed class WingmanTranslator
     /// the ACTIVE wingman instructions at call time - the user's edited/versioned prompt when set,
     /// else the deployed <see cref="FidelityPrompt"/> default; omit it to always use the default.
     /// </summary>
-    /// <param name="spokenLanguageProvider">
-    /// Returns the tenant's SPOKEN LANGUAGE at call time - the language the narration is written
-    /// in. Tenant-scoped rather than a plain <c>Func&lt;string&gt;</c> like the instructions,
-    /// because one Gateway serves many accounts and each picks its own. Omit it and every
-    /// translation is English, which is what every account gets until it chooses otherwise.
-    /// </param>
-    public WingmanTranslator(Func<TenantId, WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider, Action<string>? log = null, Func<string>? instructionsProvider = null, Func<TenantId, string>? spokenLanguageProvider = null)
+    public WingmanTranslator(Func<TenantId, WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider, Action<string>? log = null, Func<string>? instructionsProvider = null)
     {
         _brainProvider = brainProvider ?? throw new ArgumentNullException(nameof(brainProvider));
         _log = log ?? FileLog.Write;
         _instructions = instructionsProvider ?? (() => FidelityPrompt);
-        _spokenLanguage = spokenLanguageProvider ?? (_ => SpokenLanguage.Default);
     }
 
     /// <summary>
@@ -285,11 +277,9 @@ public sealed class WingmanTranslator
         if (string.IsNullOrWhiteSpace(latestReply))
             throw new ArgumentException("Latest reply is required - there is nothing to translate.", nameof(latestReply));
 
-        var language = SpokenLanguage.Normalize(_spokenLanguage(tenant));
+        _log($"[WingmanTranslator] TranslateWithAsync: instrLen={instructions?.Length ?? 0}, contextLen={recentContext?.Length ?? 0}, replyLen={latestReply.Length}, title={(string.IsNullOrWhiteSpace(sessionTitle) ? "(none)" : sessionTitle)}");
 
-        _log($"[WingmanTranslator] TranslateWithAsync: instrLen={instructions?.Length ?? 0}, contextLen={recentContext?.Length ?? 0}, replyLen={latestReply.Length}, title={(string.IsNullOrWhiteSpace(sessionTitle) ? "(none)" : sessionTitle)}, lang={language}");
-
-        var prompt = BuildPrompt(instructions ?? FidelityPrompt, recentContext ?? "", latestReply, sessionTitle, language);
+        var prompt = BuildPrompt(instructions ?? FidelityPrompt, recentContext ?? "", latestReply, sessionTitle);
 
         var brain = await _brainProvider(tenant, WingmanModelRole.Fast, ct);
         AskResult ask;
@@ -330,7 +320,7 @@ public sealed class WingmanTranslator
             throw new ArgumentException("A message is required to ask the wingman.", nameof(userMessage));
 
         _log($"[WingmanTranslator] AskDirectAsync: userLen={userMessage.Length}");
-        var prompt = BuildDirectPrompt(userMessage, SpokenLanguage.Normalize(_spokenLanguage(tenant)));
+        var prompt = BuildDirectPrompt(userMessage);
 
         var brain = await _brainProvider(tenant, WingmanModelRole.Thinking, ct);
         AskResult ask;
@@ -366,7 +356,7 @@ public sealed class WingmanTranslator
             throw new ArgumentException("A question is required to ask about DevThrottle.", nameof(question));
 
         _log($"[WingmanTranslator] AskAboutDevThrottleAsync: questionLen={question.Length}");
-        var prompt = BuildDevThrottlePrompt(question, SpokenLanguage.Normalize(_spokenLanguage(tenant)));
+        var prompt = BuildDevThrottlePrompt(question);
 
         var brain = await _brainProvider(tenant, WingmanModelRole.Thinking, ct);
         AskResult ask;
@@ -390,16 +380,8 @@ public sealed class WingmanTranslator
     /// <summary>The DevThrottle product/docs Q&amp;A prompt (issue #472). Public so a test can assert
     /// it grounds the brain as DevThrottle's in-product help and carries the user's question.</summary>
     public static string BuildDevThrottlePrompt(string question)
-        => BuildDevThrottlePrompt(question, SpokenLanguage.Default);
-
-    /// <summary>The about-DevThrottle answer, in the tenant's spoken language. Spoken output, so it
-    /// needs the instruction like every other speaking path.</summary>
-    public static string BuildDevThrottlePrompt(string question, string? spokenLanguage)
     {
-        // The language goes first so it frames everything that follows.
-        var languageBlock = SpokenLanguage.PromptInstruction(spokenLanguage);
         var sb = new StringBuilder();
-        sb.Append(languageBlock);
         sb.Append("You are DevThrottle's in-product help assistant, answering a question typed on the ");
         sb.Append("Learning page of the DevThrottle Cockpit (the fleet web dashboard). DevThrottle ");
         sb.Append("(the app and command-line tools are named cc-director) is an open-source tool that ");
@@ -593,12 +575,6 @@ public sealed class WingmanTranslator
 
     /// <summary>The direct-to-wingman prompt. Public so a test can assert its contract.</summary>
     public static string BuildDirectPrompt(string userMessage)
-        => BuildDirectPrompt(userMessage, SpokenLanguage.Default);
-
-    /// <summary>The direct reply in the tenant's spoken language. CONVERSATION is a different
-    /// generator from turn narration, and needs the language instruction of its own - it did not
-    /// have one, which is why an account set to Danish was still answered in English.</summary>
-    public static string BuildDirectPrompt(string userMessage, string? spokenLanguage)
     {
         var sb = new StringBuilder();
         sb.Append("You are the wingman, talking directly to a person in a spoken back-and-forth ");
@@ -609,7 +585,6 @@ public sealed class WingmanTranslator
         sb.Append("in words (\"first ... second ...\"), never as a \"1.\" list. ");
         sb.Append("You do NOT edit files or run commands yourself; if the request needs real code ");
         sb.Append("work, say so plainly and suggest sending it to the working session.\n\n");
-        sb.Append(SpokenLanguage.PromptInstruction(spokenLanguage));
         sb.Append("The person said:\n");
         sb.Append(userMessage.Trim());
         sb.Append("\n\n");
@@ -636,30 +611,10 @@ public sealed class WingmanTranslator
     /// rule's own escape clause covers - the model is never handed an empty title to voice.
     /// </summary>
     public static string BuildPrompt(string instructions, string recentContext, string latestReply, string? sessionTitle)
-        => BuildPrompt(instructions, recentContext, latestReply, sessionTitle, SpokenLanguage.Default);
-
-    /// <summary>
-    /// As above, in the tenant's SPOKEN LANGUAGE (see <see cref="SpokenLanguage"/>).
-    ///
-    /// This is the only place the language has to be applied, and that is the whole reason the
-    /// design works: the coding agent is never asked to change language - it keeps working in
-    /// whatever language it works in - and this translator is already the single thing that turns
-    /// its reply into the words that get spoken. So a non-English account costs one extra
-    /// instruction in a prompt that was already being sent, not a translation step.
-    ///
-    /// English is a no-op: the block is omitted entirely, so the prompt is byte-for-byte what it
-    /// was before this existed and nothing changes for accounts that never touch the setting.
-    /// </summary>
-    public static string BuildPrompt(
-        string instructions, string recentContext, string latestReply, string? sessionTitle, string? spokenLanguage)
     {
         var sb = new StringBuilder();
         sb.Append(string.IsNullOrWhiteSpace(instructions) ? FidelityPrompt : instructions);
         sb.Append("\n\n");
-        // ONE instruction, shared by every speaking path (see SpokenLanguage.PromptInstruction):
-        // narration, the direct reply, the about-DevThrottle answer, and Car Mode. Applying it to
-        // only one of them is exactly how "I set Danish and it still speaks English" happens.
-        sb.Append(SpokenLanguage.PromptInstruction(spokenLanguage));
         if (!string.IsNullOrWhiteSpace(sessionTitle))
         {
             sb.Append("The title of the session this reply came from. Open the narration by saying ");

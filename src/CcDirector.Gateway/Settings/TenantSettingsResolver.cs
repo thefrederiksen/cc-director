@@ -56,12 +56,6 @@ public sealed class TenantSettingsResolver
     public string TtsModel(TenantId tenant, TranscriptionMode mode)
         => NonEmptyOverride(tenant, TenantSettingKeys.TtsModel) ?? TtsModelConfig.Resolve(mode);
 
-    /// <summary>The language this tenant is spoken to in. English unless the tenant chose otherwise,
-    /// and English again if the stored value is one we no longer offer - speech must never break over
-    /// a stale setting.</summary>
-    public string SpokenLanguage(TenantId tenant)
-        => CcDirector.Core.Configuration.SpokenLanguage.Normalize(NonEmptyOverride(tenant, TenantSettingKeys.SpokenLanguage));
-
     /// <summary>The tenant's Car Mode model, or the operator global default when unset.</summary>
     public string CarModeModel(TenantId tenant)
         => NonEmptyOverride(tenant, TenantSettingKeys.CarModeModel) ?? CarModeModelConfig.Resolve();
@@ -157,59 +151,10 @@ public sealed class TenantSettingsResolver
     public void SetTtsVoice(TenantId tenant, string voice, DateTime nowUtc)
         => _store.Set(tenant, TenantSettingKeys.TtsVoice, RequireNonEmpty(voice, nameof(voice)), nowUtc);
 
-    /// <summary>What the speech model/voice were before an auto-switch, or null when nothing is
-    /// remembered. A corrupt value reads as null - a bad memo must never break a language change.</summary>
-    public (string Model, string? Voice)? SpeechBeforeLanguageSwitch(TenantId tenant)
-    {
-        var raw = _store.Get(tenant, TenantSettingKeys.SpeechBeforeLanguageSwitch);
-        if (string.IsNullOrWhiteSpace(raw)) return null;
-        try
-        {
-            using var doc = System.Text.Json.JsonDocument.Parse(raw);
-            var model = doc.RootElement.TryGetProperty("model", out var m) ? m.GetString() : null;
-            if (string.IsNullOrWhiteSpace(model)) return null;
-            var voice = doc.RootElement.TryGetProperty("voice", out var v) && v.ValueKind == System.Text.Json.JsonValueKind.String
-                ? v.GetString() : null;
-            return (model!, voice);
-        }
-        catch (System.Text.Json.JsonException) { return null; }
-    }
-
-    /// <summary>Remember the speech model/voice we are about to auto-switch away from.</summary>
-    public void SetSpeechBeforeLanguageSwitch(TenantId tenant, string model, string? voice, DateTime nowUtc)
-    {
-        var json = System.Text.Json.JsonSerializer.Serialize(new { model, voice });
-        _store.Set(tenant, TenantSettingKeys.SpeechBeforeLanguageSwitch, json, nowUtc);
-    }
-
-    /// <summary>Forget the remembered speech model - after restoring it, or once the tenant picks a
-    /// model themselves, because a deliberate choice supersedes anything we were holding for them.</summary>
-    public void ClearSpeechBeforeLanguageSwitch(TenantId tenant)
-        => _store.Remove(tenant, TenantSettingKeys.SpeechBeforeLanguageSwitch);
-
-    /// <summary>Remove the tenant's voice override entirely - the honest state when the speech model in
-    /// use has no preset voices to choose from. Distinct from setting an empty string, which the setter
-    /// rejects.</summary>
-    public void ClearTtsVoice(TenantId tenant) => _store.Remove(tenant, TenantSettingKeys.TtsVoice);
-
     /// <summary>Set the tenant's text-to-speech model.</summary>
     /// <exception cref="ArgumentException">The model is null/empty.</exception>
     public void SetTtsModel(TenantId tenant, string model, DateTime nowUtc)
         => _store.Set(tenant, TenantSettingKeys.TtsModel, RequireNonEmpty(model, nameof(model)), nowUtc);
-
-    /// <summary>Set the tenant's spoken language. English CLEARS the override rather than storing it,
-    /// so "back to default" and "never chose" are the same state on disk.</summary>
-    /// <exception cref="ArgumentException">The code is not a language we offer.</exception>
-    public void SetSpokenLanguage(TenantId tenant, string code, DateTime nowUtc)
-    {
-        var trimmed = (code ?? "").Trim();
-        if (trimmed.Length > 0 && !CcDirector.Core.Configuration.SpokenLanguage.IsSupported(trimmed))
-            throw new ArgumentException($"'{trimmed}' is not a supported spoken language.", nameof(code));
-        if (trimmed.Length == 0 || CcDirector.Core.Configuration.SpokenLanguage.IsDefault(trimmed))
-            _store.Remove(tenant, TenantSettingKeys.SpokenLanguage);
-        else
-            _store.Set(tenant, TenantSettingKeys.SpokenLanguage, trimmed.ToLowerInvariant(), nowUtc);
-    }
 
     /// <summary>Set the tenant's Car Mode model.</summary>
     /// <exception cref="ArgumentException">The model is null/empty.</exception>

@@ -38,22 +38,6 @@ export interface AiModel {
   /** For speech models: the model's own voice list (empty for chat models). */
   voices: string[];
   defaultVoice: string | null;
-  /**
-   * For speech models: the languages this model can actually SPEAK, as BCP-47 primary subtags.
-   * The spoken-language picker filters on this. A model that publishes none is treated as
-   * English-only rather than as speaking everything - offering a language a model cannot
-   * pronounce produces confident gibberish, which is worse than not offering it.
-   */
-  languages: string[];
-}
-
-/** One language DevThrottle can speak back in (GET /gateway/ai/spoken-languages). */
-export interface SpokenLanguageOption {
-  code: string;
-  /** The English name, e.g. "Danish" - what the wingman prompt uses. */
-  name: string;
-  /** The language's own name, e.g. "dansk" - people recognise this faster than the English one. */
-  endonym: string;
 }
 
 /** The result of testing a chat model (POST /gateway/ai/test-chat). */
@@ -142,42 +126,12 @@ export function setTtsVoice(voice: string): Promise<{ voice: string }> {
   return putJson<{ voice: string }>("/gateway/tts-voice", { voice });
 }
 
-// GET /gateway/ai/spoken-languages -> the languages on offer plus the one this account is on.
-// Served by the Gateway rather than hardcoded per app so mobile and the Cockpit cannot drift, and
-// so adding a language does not need two app releases.
-export async function getSpokenLanguages(): Promise<{ current: string; languages: SpokenLanguageOption[] }> {
-  const res = await fetch("/gateway/ai/spoken-languages", { headers: authHeaders() });
-  if (!res.ok) throw new Error(`spoken languages: ${res.status}`);
-  return res.json();
-}
-
-// PUT /gateway/ai/spoken-language { language } - the language DevThrottle SPEAKS BACK in. This does
-// NOT affect dictation, which detects the spoken language on its own. A blank value means English.
-// The Gateway moves the speech model with the language and reports what it ended up as - the client
-// deliberately does not decide this. On the hosted Gateway the model catalog is refused (it spends the
-// shared deployment credential), so a browser has no model list to reason about and would leave the
-// account on an engine that cannot say the chosen language. Deciding server-side also keeps mobile and
-// the Cockpit from drifting, because neither of them decides anything.
-export function setSpokenLanguage(language: string): Promise<{
-  language: string;
-  ttsModel: string | null;
-  ttsVoice: string | null;
-  switched: boolean;
-}> {
-  return putJson("/gateway/ai/spoken-language", { language });
-}
-
 // POST /wingman/tts { text, model, voice } -> audio bytes to play (a short "Play sample").
-//
-// model and voice are OPTIONAL and should normally be omitted: the Gateway then resolves the
-// account's own speech model and voice, which are authoritative. Passing what the page currently
-// shows makes the sample play whatever the CLIENT believes, and a stale page (a cached PWA bundle,
-// say) then auditions the wrong engine entirely - which reads as "the language setting did nothing".
-export async function ttsSample(text: string, model?: string, voice?: string): Promise<Blob> {
+export async function ttsSample(text: string, model: string, voice: string): Promise<Blob> {
   const res = await fetch("/wingman/tts", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ text, model: model ?? "", voice: voice ?? "" }),
+    body: JSON.stringify({ text, model, voice }),
   });
   if (!res.ok) {
     const err = (await res.json().catch(() => ({}))) as { error?: string };
