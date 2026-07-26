@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { MicTestPanel } from "@devthrottle/client-core/dictation/MicTestPanel";
-import { MicrophoneQualityPanel } from "./MicrophoneQualityPanel";
-import { TranscriptionTestPanel } from "@devthrottle/client-core/dictation/TranscriptionTestPanel";
+import { Link } from "react-router-dom";
+import { MicrophoneQualityPanel } from "@devthrottle/client-core/transcription/MicrophoneQualityPanel";
 import {
   clearTranscriptionHistory,
   countFailedTurns,
@@ -239,21 +238,23 @@ export function TranscriptionHealthView() {
         </>
       )}
 
-      {/* Outside the stats conditional on purpose: the microphone check is most useful exactly when
-          there are no stats to show - a Gateway that cannot be reached, or a first run with no
-          history - because that is when the user is asking "is my microphone even working?". It
-          needs nothing from the Gateway, so a load failure above must not take it down with it. */}
-      {/* The background half first: it answers "is anything wrong" without the user doing anything,
-          which is the question they arrived with. The on-demand checks below are what they reach for
-          once they know something IS wrong. */}
-      <MicrophoneQualityPanel />
+      {/* Outside the stats conditional on purpose: the microphone measurements are most useful exactly
+          when there are no stats to show - a Gateway that cannot be reached, or a first run with no
+          history - because that is when the user is asking "is my microphone even working?". A load
+          failure above must not take this down with it. */}
+      <div className="txh-section">
+        <MicrophoneQualityPanel />
+      </div>
 
-      <div className="txh-section">
-        <MicTestPanel />
-      </div>
-      <div className="txh-section">
-        <TranscriptionTestPanel />
-      </div>
+      {/* The two on-demand checks used to be mounted here as well. They are settings-page controls -
+          you run them to fix something, not to read a report - and they now live in one place, the
+          Transcription tab of Settings, which is the SAME tab the phone shows. Duplicating them here
+          would put the same widget on two pages and invite them to drift. */}
+      <p className="txh-agent-note">
+        Microphone or dictation coming out wrong? Run the checks on the{" "}
+        <Link to="/settings?tab=transcription">Transcription tab in Settings</Link> - Test microphone
+        records a clip and plays it back to you, Test transcription shows what the transcriber heard.
+      </p>
     </div>
   );
 }

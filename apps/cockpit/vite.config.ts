@@ -64,6 +64,17 @@ const devProxy = proxyTarget
       "/dictation": { target: proxyTarget, changeOrigin: true },
       "/turnbriefs": { target: proxyTarget, changeOrigin: true },
       "/vault": { target: proxyTarget, changeOrigin: true },
+      // The Transcription Health page and the Transcription tab of Settings. Neither was proxied
+      // before, so both could only ever be exercised against a Gateway that served the bundle itself.
+      //
+      // The three /transcription API paths are listed EXACTLY, never the "/transcription" prefix: the
+      // Cockpit's own Transcription Health page is routed at /transcription, so proxying the prefix
+      // hands the page's own URL to the Gateway and the app answers its own route with JSON. (The
+      // mobile config can proxy the prefix safely - its app is mounted under /mobile.)
+      "/transcription/stats": { target: proxyTarget, changeOrigin: true },
+      "/transcription/terms": { target: proxyTarget, changeOrigin: true },
+      "/transcription/history": { target: proxyTarget, changeOrigin: true },
+      "/voice-quality": { target: proxyTarget, changeOrigin: true },
       // Web Push (issue #1257): the notifications toggle fetches the VAPID public key and registers /
       // unregisters this browser's subscription at the Gateway's /push/* endpoints, so `npm run dev`
       // reaches them against a live Gateway too.

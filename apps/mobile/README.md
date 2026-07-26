@@ -57,7 +57,9 @@ exact `/mobile/enroll` endpoint) while continuing to serve the app itself under 
 
 ## Layout
 
-- `src/pages/` - the screens (Home roster, Terminal, Chat, VoiceMode, NewSession, AiSettings).
+- `src/pages/` - the screens (Home roster, Terminal, Chat, VoiceMode, NewSession, Settings).
+  Settings is only a frame: its tabs and cards are the SAME components the Cockpit renders, from
+  `@devthrottle/client-core/settings`, so the two surfaces cannot offer different settings.
 - `src/components/` - shared on-screen controls (nav drawer, session controls, view tabs).
 - `src/push/`, `src/voice/` - the app-shell-only push registration and voice clip helpers.
 - Everything shared with the React Cockpit lives in `@devthrottle/client-core`.

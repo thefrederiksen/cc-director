@@ -25,6 +25,9 @@ const devProxy = proxyTarget
       "/ingest": { target: proxyTarget, changeOrigin: true },
       "/dictation": { target: proxyTarget, changeOrigin: true },
       "/transcription": { target: proxyTarget, changeOrigin: true },
+      // The Transcription tab of Settings shows the folded microphone-quality verdict, which the phone
+      // never read before that tab existed.
+      "/voice-quality": { target: proxyTarget, changeOrigin: true },
       "/turnbriefs": { target: proxyTarget, changeOrigin: true },
       "/vault": { target: proxyTarget, changeOrigin: true },
       "/push": { target: proxyTarget, changeOrigin: true },

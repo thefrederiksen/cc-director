@@ -2850,120 +2850,113 @@ a.banner-btn {
   margin: 6px 0;
 }
 
-/* ===== AI settings screen ===== */
-.settings-intro {
-  color: var(--text-dim);
+/* ===== Settings screen =====
+   The Settings CARDS are shared with the Cockpit and carry their own stylesheet
+   (client-core/settings/settings.css). This block is the phone's re-tuning of that one baseline for
+   touch - it never re-implements the cards, it only changes their sizing and stacking.
+
+   Every rule is scoped under .screen (the mobile page wrapper) so it outranks the shared single-class
+   rules on specificity rather than on stylesheet order, which no bundler guarantees. */
+
+/* The tab strip scrolls sideways rather than squeezing four labels into a phone width. Scrolling is the
+   honest answer here: shrinking the labels until they fit is how a tab becomes unreadable, and wrapping
+   them onto two rows costs the vertical space the cards need. */
+.screen .settings-tabs {
+  overflow-x: auto;
+  scrollbar-width: none;
+  margin: 14px 0 16px;
+  gap: 0;
+}
+.screen .settings-tabs::-webkit-scrollbar {
+  display: none;
+}
+.screen .settings-tab {
+  padding: 10px 16px 12px;
+  font-size: 14.5px;
+}
+
+/* Cards run edge to edge: a phone has no width to spend on a card inset inside a padded page. */
+.screen .settings-card {
+  padding: 14px;
+  margin-bottom: 12px;
+}
+.screen .settings-h2 {
+  font-size: 15.5px;
+}
+.screen .settings-hint {
   font-size: 13px;
-  line-height: 1.5;
-  margin: 14px 0 6px;
 }
-.setting-block {
-  margin: 16px 0;
-}
-.setting-label {
+
+/* A label above its control, not beside it. The desktop's 120px label column leaves a phone about a
+   thumb's width for the control itself. */
+.screen .settings-field {
   display: block;
+  margin: 0 0 18px;
+}
+.screen .settings-field > label {
+  display: block;
+  width: auto;
   font-size: 13px;
-  color: var(--text-dim);
   margin-bottom: 6px;
 }
-.setting-select {
+.screen .settings-select,
+.screen .settings-input {
+  display: block;
   width: 100%;
-  background: var(--surface-2);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  min-width: 0;
+  /* 16px is the threshold below which iOS Safari zooms the page on focus. */
+  font-size: 16px;
   padding: 11px 12px;
-  font-size: 15px;
+  border-radius: 8px;
 }
-.setting-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+.screen .settings-actions {
   margin-top: 8px;
 }
-.setting-btn {
-  background: var(--surface-2);
-  color: var(--text);
-  border: 1px solid var(--border);
+.screen .settings-btn {
+  padding: 10px 18px;
+  font-size: 14px;
   border-radius: 8px;
-  padding: 9px 18px;
-  font-size: 14px;
-  cursor: pointer;
 }
-.setting-btn:disabled {
-  opacity: 0.5;
+.screen .settings-check {
+  font-size: 15px;
 }
-.setting-msg {
-  font-size: 12.5px;
-  color: var(--text-dim);
-  flex: 1;
-  min-width: 0;
+.screen .settings-check input {
+  width: 20px;
+  height: 20px;
 }
-.setting-msg-foot {
-  margin-top: 12px;
+
+/* The read-only rows stack too, for the same reason the fields do: a 140px label column plus a model
+   id does not fit, and the value is the part worth reading. */
+.screen .settings-row {
+  display: block;
 }
-.setting-readonly {
-  font-size: 13px;
-  color: var(--text-dim);
-  margin: 18px 0 4px;
+.screen .settings-row-label {
+  width: auto;
+  margin-bottom: 2px;
 }
-.mono {
-  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-  color: var(--text);
+
+/* One provider today, so a two-column grid would render one card at half width beside a hole. */
+.screen .settings-provider-cards {
+  grid-template-columns: 1fr;
 }
-.provider-cards {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
+
+/* The snooze rows: the length takes the width it needs and its two buttons sit under it, rather than
+   three items fighting over one line and the length ellipsing to nothing. */
+.screen .snooze-row {
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 0;
 }
-.provider-card {
-  text-align: left;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 12px 12px;
-  cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.screen .snooze-row-pick {
+  flex: 1 0 100%;
 }
-.provider-card.selected {
-  border-color: var(--accent);
-  background: #172038;
+.screen .snooze-row-name {
+  font-size: 15px;
 }
-.provider-card-title {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-}
-.provider-radio {
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
-  border: 2px solid #667;
-  flex: 0 0 auto;
-}
-.provider-radio.on {
-  border-color: var(--accent);
-  box-shadow: inset 0 0 0 3px var(--accent);
-}
-.provider-badge {
-  margin-left: auto;
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  color: #22c55e;
-  background: #12351f;
-  border-radius: 6px;
-  padding: 1px 6px;
-}
-.provider-card-desc {
-  font-size: 11.5px;
-  color: var(--text-dim);
-  line-height: 1.35;
+
+/* The microphone-quality device cards: one per row on a phone. */
+.screen .mq-devices {
+  grid-template-columns: 1fr;
 }
 
 /* ===== Dictation live-status strip + roster badge (#1139 follow-up: never a silent Send) ===== */
