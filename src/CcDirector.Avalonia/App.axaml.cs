@@ -572,10 +572,17 @@ public partial class App : Application
     /// </summary>
     private void RequestShutdownForUpdate()
     {
-        global::Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+        // Same programmatic-shutdown rule as the Control API's requestShutdown delegate: a
+        // programmatic lifetime.Shutdown() does not raise ShutdownRequested, so run the shutdown
+        // routine explicitly first (idempotent - the guard makes any double-fire a no-op).
+        _ = Task.Run(() =>
         {
-            if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime lifetime)
-                lifetime.Shutdown();
+            OnShutdown(msg => FileLog.Write($"[CcDirector] {msg}"));
+            global::Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime lifetime)
+                    lifetime.Shutdown();
+            });
         });
     }
 
@@ -607,14 +614,21 @@ public partial class App : Application
         {
             // Clean semver on the wire (gateway registration / status surfaces).
             var version = AppVersion.Semver;
-            Func<Task> requestShutdown = () =>
+            Func<Task> requestShutdown = async () =>
             {
+                // A programmatic lifetime.Shutdown() does NOT raise ShutdownRequested, so the
+                // shutdown routine (kill sessions, Gateway farewell, stop hosts, delete the crash
+                // journal) must run EXPLICITLY here first - otherwise a POST /shutdown exits without
+                // any of it and the stop is indistinguishable from a crash (issue #2194 found this:
+                // no session removals, no farewell, crash journal left behind). Off the UI thread,
+                // exactly like the ShutdownRequested path; the guard inside OnShutdown makes a later
+                // ShutdownRequested double-fire a no-op.
+                await Task.Run(() => OnShutdown(msg => FileLog.Write($"[CcDirector] {msg}")));
                 global::Avalonia.Threading.Dispatcher.UIThread.Post(() =>
                 {
                     if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime lifetime)
                         lifetime.Shutdown();
                 });
-                return Task.CompletedTask;
             };
 
             ControlApiHost = new ControlApiHost(SessionManager, version, requestShutdown, repositoryRegistry: RepositoryRegistry,
@@ -712,10 +726,41 @@ public partial class App : Application
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern int MessageBoxW(IntPtr hWnd, string text, string caption, uint type);
 
+    /// <summary>0 until the shutdown routine has run. OnShutdown is reachable from TWO paths - the
+    /// lifetime's ShutdownRequested event (user/OS close) and the programmatic path below, which runs
+    /// it explicitly because a programmatic <c>lifetime.Shutdown()</c> does NOT raise
+    /// ShutdownRequested (observed: POST /shutdown exited without killing sessions, without the
+    /// Gateway farewell, and left the crash journal behind - a clean stop indistinguishable from a
+    /// crash). First caller wins; the second is a no-op.</summary>
+    private int _shutdownRoutineRan;
+
     internal void OnShutdown(Action<string> log)
     {
+        if (Interlocked.CompareExchange(ref _shutdownRoutineRan, 1, 0) != 0)
+        {
+            log("OnShutdown: already ran (programmatic path); skipping");
+            return;
+        }
         try
         {
+            // Issue #2194: the work-history farewell, FIRST - before the sessions are killed - so the
+            // Gateway rules every session this shutdown takes with it "Director stopped" (a
+            // per-session remove arriving during the kill keeps that first ruling). Time-boxed inside
+            // the client; the extra wait here is a hard cap so shutdown can never hang on it.
+            if (ControlApiHost != null)
+            {
+                try
+                {
+                    var farewellTask = Task.Run(() => ControlApiHost.NotifyDirectorStoppingAsync());
+                    if (!farewellTask.Wait(TimeSpan.FromSeconds(3)))
+                        log("Gateway farewell timed out after 3 seconds");
+                }
+                catch (Exception ex)
+                {
+                    log($"Gateway farewell error: {ex.Message}");
+                }
+            }
+
             // All async work runs on the thread pool via Task.Run to avoid
             // deadlocking with the UI thread's SynchronizationContext.
             // Without this, .Wait() blocks the UI thread while the async
