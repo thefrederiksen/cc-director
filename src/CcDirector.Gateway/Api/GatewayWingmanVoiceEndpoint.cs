@@ -785,6 +785,35 @@ internal static class GatewayWingmanVoiceEndpoint
             return Results.Json(MenuJson(menu));
         });
 
+        // Phase 1 menu handling (issue #2193): the CHEAP "what is this session waiting on right now?" read.
+        // Pure - one tunnel screen-grid read and the no-brain classifier, NO model call and no cost - which is
+        // what makes it usable before every spoken reply. The richer GET /wingman/menu above cannot serve this
+        // purpose: it calls the brain to extract option labels, which is both slow and billable.
+        // Returns { kind: "menu"|"text"|"blocked", canType, spoken, message }.
+        app.MapGet("/sessions/{sid}/wingman/waiting-screen", async (string sid, HttpContext ctx, CancellationToken ct) =>
+        {
+            var reqTenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" }, statusCode: StatusCodes.Status403Forbidden);
+            if (!Guid.TryParse(sid, out _))
+                return Results.Json(new { error = "invalid session id format" }, statusCode: StatusCodes.Status400BadRequest);
+            var route = await ResolveRouteAsync(reqTenant.Value, sid);
+            if (route is null)
+                return Results.Json(new { error = "session not found on any director" }, statusCode: StatusCodes.Status404NotFound);
+
+            var kind = await WaitingScreenReader.ClassifyAsync(route, sid, ct);
+            FileLog.Write($"[GatewayWingmanVoice] waiting-screen(pure) sid={sid}: {kind}");
+            return Results.Json(new
+            {
+                kind = WaitingScreenReader.KindWord(kind),
+                // Phase 1 blocks ONLY on a confidently-recognized menu, so an unreadable screen still reports
+                // canType - it keeps behaving exactly as it did before this guard existed.
+                canType = kind != WaitingScreenKind.Menu,
+                spoken = kind == WaitingScreenKind.Menu ? WaitingScreenReader.MenuSpoken : "",
+                message = kind == WaitingScreenKind.Menu ? WaitingScreenReader.MenuMessage : "",
+            });
+        });
+
         // NOTE (issue #1777, floor rescope): the raw POST /wingman/menu-press endpoint - which pressed menu
         // keystrokes into a session - was REMOVED. Nothing on this branch ever presses a key into a session.
         // Pressing menu options (fully hands-free voice-answering) is its own later issue, built with per-agent
@@ -917,17 +946,11 @@ internal static class GatewayWingmanVoiceEndpoint
     private static async Task<(WaitingScreenKind Kind, string BlockedSpoken)> ClassifyLiveScreenAtAsync(
         SessionVerbClient route, string sid, CancellationToken ct)
     {
-        Contracts.ScreenGridResponse? grid;
-        try { grid = await route.GetScreenGridAsync(sid, ct); }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[GatewayWingmanVoice] classify sid={sid}: screen-grid read threw ({ex.Message}) - fail closed");
-            return (WaitingScreenKind.Blocked, BlockedUnreadableSpoken);
-        }
-        if (grid is null)
-            return (WaitingScreenKind.Blocked, BlockedUnreadableSpoken);
-
-        var kind = WaitingScreenClassifier.Classify(grid.Rows, grid.CursorRow, grid.CursorCol, grid.CursorVisible, grid.IsAlternateScreen, grid.HasGrid);
+        // The read-and-classify step itself lives in ONE place (issue #2193) so this endpoint, the prompt
+        // front door's menu guard, and the narration generator can never drift on what counts as a menu.
+        // The WORDING stays here, because this path fails closed on an unreadable screen too and therefore
+        // has a second thing to say; the guard refuses only on a menu and has one.
+        var kind = await WaitingScreenReader.ClassifyAsync(route, sid, ct);
         // A menu says "look at the terminal"; everything else uncertain says the generic unreadable line.
         var spoken = kind == WaitingScreenKind.Menu ? BlockedMenuSpoken : BlockedUnreadableSpoken;
         return (kind, spoken);

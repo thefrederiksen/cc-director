@@ -165,6 +165,15 @@ body {
   color: var(--text);
 }
 
+/* A menu owns the session's screen, so a spoken reply was refused rather than typed (issue #2193).
+   Amber, not red: nothing went wrong and nothing was lost - the session simply needs a choice made in
+   it before voice can carry on. */
+.banner-menu {
+  background: rgba(234, 179, 8, 0.12);
+  border: 1px solid rgba(234, 179, 8, 0.4);
+  color: var(--text);
+}
+
 .banner-action {
   display: flex;
   align-items: center;

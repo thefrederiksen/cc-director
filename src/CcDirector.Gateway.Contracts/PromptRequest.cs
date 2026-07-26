@@ -55,6 +55,20 @@ public sealed class PromptRequest
     /// operator prompt.
     /// </summary>
     public string? DeliveryUploadId { get; set; }
+
+    /// <summary>
+    /// Wingman menu guard (issue #2193). When true, the GATEWAY reads the session's live screen immediately
+    /// before forwarding this prompt and REFUSES to send it if a menu owns that screen - answering
+    /// <see cref="PromptResponse.BlockedByMenu"/> instead. Typing a spoken sentence into an on-screen picker
+    /// achieves nothing, and because voice replies carry <see cref="AppendEnter"/> the trailing Enter would
+    /// CONFIRM whichever option happened to be highlighted - a selection the person never made and is never
+    /// told about.
+    ///
+    /// Opt-in and off by default, so the typed composer, the Chat send, and every fleet/automation caller are
+    /// completely unchanged. Only the voice reply paths set it. It is a GATEWAY field: it is consumed there
+    /// and never forwarded, so the Director's own prompt verb sees exactly what it always saw.
+    /// </summary>
+    public bool MenuGuard { get; set; }
 }
 
 /// <summary>
@@ -82,6 +96,18 @@ public sealed class PromptResponse
 
     /// <summary>Error message if Accepted == false.</summary>
     public string? Error { get; set; }
+
+    /// <summary>
+    /// Wingman menu guard (issue #2193): true when this prompt was NOT sent because a menu owns the session's
+    /// live screen and the caller asked for <see cref="PromptRequest.MenuGuard"/>. Nothing was typed and no
+    /// Enter was pressed. This is a REFUSAL, not a failure - it rides a 200 with <see cref="Accepted"/> false,
+    /// because the caller asked for exactly this behaviour and there is nothing to retry.
+    /// </summary>
+    public bool BlockedByMenu { get; set; }
+
+    /// <summary>The line to SPEAK when <see cref="BlockedByMenu"/> is true - the wingman is hands-free, so the
+    /// refusal has to reach the ear, not just a screen. Empty otherwise.</summary>
+    public string? BlockedSpoken { get; set; }
 }
 
 /// <summary>

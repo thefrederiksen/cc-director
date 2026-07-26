@@ -1795,6 +1795,25 @@ body {
   cursor: default;
 }
 
+/* A menu owns the session's screen, so a spoken reply was refused rather than typed (issue #2193).
+   Amber, not red: nothing went wrong and nothing was lost - the session simply needs a choice made in
+   it before voice can carry on. */
+.voice-menu-blocked {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: rgba(234, 179, 8, 0.12);
+  border: 1px solid rgba(234, 179, 8, 0.4);
+}
+
+.voice-menu-blocked .voice-narr-body {
+  margin: 8px 0 0;
+}
+
+.voice-menu-blocked .voice-off-toggle {
+  margin-top: 10px;
+}
+
 .voice-off-toggle {
   display: block;
   width: 100%;
