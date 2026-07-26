@@ -11,6 +11,7 @@ namespace CcDirector.Gateway.Api;
 ///
 ///   POST   /voice-quality/sample   one measurement from a finished dictation -> 204
 ///   GET    /voice-quality/summary  the folded verdict the Cockpit renders    -> 200
+///   GET    /voice-quality/detail   per-device measurements + quality over time -> 200
 ///   DELETE /voice-quality/history  forget every measurement for this tenant  -> 200 { removed }
 ///
 /// The client measures (it is where the decoded audio already is) and posts a handful of numbers plus
@@ -32,6 +33,13 @@ internal static class VoiceQualityEndpoint
     /// <summary>Longest device name stored. Real names are well under this; the cap stops a client
     /// from turning a per-dictation record into a place to park arbitrary text.</summary>
     private const int MaxDeviceChars = 200;
+
+    /// <summary>Longest device id stored. Browser deviceIds are 64-character hashes; the headroom
+    /// covers other engines without opening a text-parking hole.</summary>
+    private const int MaxDeviceIdChars = 128;
+
+    /// <summary>Longest raw platform evidence stored - one capped line of navigator hints.</summary>
+    private const int MaxPlatformRawChars = 160;
 
     public static void Map(
         IEndpointRouteBuilder app,
@@ -63,6 +71,11 @@ internal static class VoiceQualityEndpoint
             {
                 TimestampUtc = DateTime.UtcNow,
                 Device = Trim(body.Device, MaxDeviceChars),
+                DeviceId = Trim(body.DeviceId, MaxDeviceIdChars),
+                // The bucket is validated at FOLD time (anything unrecognised reads as unknown), so
+                // storing what the client sent loses nothing and keeps the record honest.
+                Platform = Trim(body.Platform, 16),
+                PlatformRaw = Trim(body.PlatformRaw, MaxPlatformRawChars),
                 Source = Trim(body.Source, 40),
                 DurationSeconds = body.DurationSeconds,
                 SampleRate = body.SampleRate,
@@ -90,6 +103,17 @@ internal static class VoiceQualityEndpoint
             return Results.Json(MicrophoneQualityFold.Summarize(log.Load(since)));
         });
 
+        group.MapGet("/detail", (HttpContext ctx) =>
+        {
+            if (GatewayDictationEndpoint.ResolveTenant(ctx, tenantBoundary) is not { } tenant)
+                return GatewayDictationEndpoint.NoTenantResult();
+
+            var days = ParseDays(ctx.Request.Query["days"]);
+            var since = days is null ? (DateTime?)null : DateTime.UtcNow.AddDays(-days.Value);
+            var log = logOverride ?? MicrophoneQualityLog.ForTenant(tenant);
+            return Results.Json(MicrophoneQualityFold.Detail(log.Load(since)));
+        });
+
         group.MapDelete("/history", (HttpContext ctx) =>
         {
             if (GatewayDictationEndpoint.ResolveTenant(ctx, tenantBoundary) is not { } tenant)
@@ -115,6 +139,9 @@ internal static class VoiceQualityEndpoint
     {
         [JsonPropertyName("source")] public string? Source { get; init; }
         [JsonPropertyName("device")] public string? Device { get; init; }
+        [JsonPropertyName("deviceId")] public string? DeviceId { get; init; }
+        [JsonPropertyName("platform")] public string? Platform { get; init; }
+        [JsonPropertyName("platformRaw")] public string? PlatformRaw { get; init; }
         [JsonPropertyName("durationSeconds")] public double DurationSeconds { get; init; }
         [JsonPropertyName("sampleRate")] public int SampleRate { get; init; }
         [JsonPropertyName("speechLevelDb")] public double SpeechLevelDb { get; init; }

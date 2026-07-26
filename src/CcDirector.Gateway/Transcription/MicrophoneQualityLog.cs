@@ -171,6 +171,17 @@ public sealed record MicrophoneQualityRecord
     [JsonPropertyName("ts")] public DateTime TimestampUtc { get; init; }
     /// <summary>The microphone's name as the operating system reported it, or empty when unknown.</summary>
     [JsonPropertyName("device")] public string Device { get; init; } = "";
+    /// <summary>The microphone's stable per-origin identifier - the GROUPING key. The name is display
+    /// metadata (a driver update or an operating system language change renames it); this is what
+    /// keeps one microphone's history in one row. Empty on records written before it existed, or when
+    /// the browser withheld it - those group by name as before.</summary>
+    [JsonPropertyName("deviceId")] public string DeviceId { get; init; } = "";
+    /// <summary>What kind of machine captured it: "mobile", "mac", "windows" or "unknown". Empty on
+    /// records written before it existed (folded as unknown).</summary>
+    [JsonPropertyName("platform")] public string Platform { get; init; } = "";
+    /// <summary>The raw evidence behind the platform bucket, kept so a wrong bucket can be diagnosed
+    /// later without guessing.</summary>
+    [JsonPropertyName("platformRaw")] public string PlatformRaw { get; init; } = "";
     /// <summary>Which surface produced it ("dictation-dialog", "dictation-send").</summary>
     [JsonPropertyName("source")] public string Source { get; init; } = "";
     [JsonPropertyName("durationSeconds")] public double DurationSeconds { get; init; }

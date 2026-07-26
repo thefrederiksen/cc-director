@@ -97,6 +97,9 @@ export interface CapturedUtterance {
   /** The microphone's name, for per-device quality reporting. Optional: a caller that does not know
    *  it still delivers its words, it just cannot say which microphone recorded them. */
   deviceLabel?: string;
+  /** The microphone's stable identifier - the value quality measurements are grouped by. Optional
+   *  for the same reason as the label. */
+  deviceId?: string;
 }
 
 /** Callbacks so the host can react to the rare hard failure (durable storage unavailable). A normal send
@@ -174,7 +177,7 @@ export async function backgroundTranscribeAndSend(
     reportDictationQuality(
       transcoded.nativeSamples,
       transcoded.nativeSampleRate,
-      captured.deviceLabel ?? "",
+      { label: captured.deviceLabel ?? "", deviceId: captured.deviceId ?? "" },
       "dictation-send",
     );
   } catch (err) {

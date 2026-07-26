@@ -194,7 +194,7 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
     let lossWarning: string | null = null;
     let nativeSamples = new Float32Array(0);
     let nativeSampleRate = 0;
-    const deviceLabel = recorderRef.current.deviceLabel;
+    const device = { label: recorderRef.current.deviceLabel, deviceId: recorderRef.current.deviceId };
     try {
       const captured = await recorderRef.current.stop();
       const transcoded = await blobToWav16kMono(captured);
@@ -222,7 +222,7 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
     // Measure the microphone in the background. AFTER the transcode and BEFORE awaiting the
     // transcription, so it rides the gap while the upload is being prepared and never sits between
     // the user and their words. Fire-and-forget by contract - see qualityReport.ts.
-    reportDictationQuality(nativeSamples, nativeSampleRate, deviceLabel, "dictation-dialog");
+    reportDictationQuality(nativeSamples, nativeSampleRate, device, "dictation-dialog");
 
     try {
       const text = await transcribeUtterance(wav, health, undefined, (uploaded, total) => {
@@ -343,6 +343,7 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
     }
     onSendAudio({
       deviceLabel: recorderRef.current.deviceLabel,
+      deviceId: recorderRef.current.deviceId,
       blob: captured,
       recordedMs: recorderRef.current.lastRecordedMs,
       prefixText: accumulatedRef.current,

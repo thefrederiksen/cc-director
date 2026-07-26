@@ -7,6 +7,8 @@
 // stream, which the dialog draws as the equalizer. This is display-only; it never touches the
 // captured audio.
 
+import { resolveMicrophoneIdentity } from "./deviceIdentity";
+
 // Pick a MediaRecorder container the browser actually supports, preferring Opus-in-WebM (what
 // every Chromium/Firefox phone produces). The captured blob is transcoded to WAV before upload,
 // so the exact container here only needs to be decodable by the browser's own decodeAudioData.
@@ -114,9 +116,13 @@ export class MicRecorder {
   private startedAt = 0;
   private recordedMs = 0;
 
-  // The microphone's name, read once at start() and deliberately NOT cleared when the stream is
-  // released - the quality report is assembled after stop(), by which time the track is gone.
+  // The microphone's name and stable id, read at start() and deliberately NOT cleared when the
+  // stream is released - the quality report is assembled after stop(), by which time the track is
+  // gone. The label starts as the raw track label and is UPGRADED in the background by
+  // resolveMicrophoneIdentity() once enumerateDevices() answers (issue #2183: a track captured via
+  // the default slot is labelled literally "Default", which cannot discriminate between devices).
   private capturedDeviceLabel = "";
+  private capturedDeviceId = "";
 
   /** True while a segment is actively capturing. */
   get isRecording(): boolean {
@@ -135,6 +141,17 @@ export class MicRecorder {
    */
   get deviceLabel(): string {
     return this.capturedDeviceLabel;
+  }
+
+  /**
+   * The stable identifier of the microphone this segment was captured with, from the live track's
+   * getSettings().deviceId resolved through enumerateDevices(). Empty when the browser withholds
+   * it. This - not the label - is what quality measurements are GROUPED by on the Gateway: a driver
+   * update or an operating system language change renames the label, and a grouping keyed on the
+   * name would silently split one microphone into two histories.
+   */
+  get deviceId(): string {
+    return this.capturedDeviceId;
   }
 
   /** Wall-clock milliseconds the most recently stopped segment was capturing. 0 before the first stop. */
@@ -157,7 +174,14 @@ export class MicRecorder {
     // Read the device name while the track is live. A browser reports an empty label until the user
     // has granted permission at least once, so this is best-effort by design - an unnamed microphone
     // still reports its measurements, it just cannot be told apart from another unnamed one.
-    this.capturedDeviceLabel = this.stream.getAudioTracks()[0]?.label ?? "";
+    const track = this.stream.getAudioTracks()[0];
+    this.capturedDeviceLabel = track?.label ?? "";
+    this.capturedDeviceId = "";
+    // Resolve the REAL device behind the label in the background (issue #2183: a default-slot
+    // capture is labelled literally "Default"). Fire-and-forget by the standing contract - this
+    // must never delay a word of the user's dictation. It settles in milliseconds while the
+    // shortest reportable clip is three seconds, so the quality report reads the resolved identity.
+    void this.resolveDeviceIdentity(track);
 
     // Live level meter on the captured stream (display only).
     const AudioCtor = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
@@ -288,6 +312,26 @@ export class MicRecorder {
     this.recordedMs = this.startedAt > 0 ? performance.now() - this.startedAt : 0;
     this.releaseStream();
     return captured;
+  }
+
+  /**
+   * Resolve which real microphone is behind the live track, in the background. Never throws to the
+   * caller and never delays capture: a dictation that cannot name its device still delivers every
+   * word, it just reports under the raw track label like it always did.
+   */
+  private async resolveDeviceIdentity(track: MediaStreamTrack | undefined): Promise<void> {
+    try {
+      if (track === undefined || !navigator.mediaDevices?.enumerateDevices) return;
+      const settingsId = typeof track.getSettings === "function" ? (track.getSettings().deviceId ?? "") : "";
+      // The raw id is kept immediately so even an interrupted resolution groups consistently.
+      this.capturedDeviceId = settingsId;
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const identity = resolveMicrophoneIdentity(track.label ?? "", settingsId, devices);
+      if (identity.label !== "") this.capturedDeviceLabel = identity.label;
+      if (identity.deviceId !== "") this.capturedDeviceId = identity.deviceId;
+    } catch (err) {
+      console.warn(`[MicRecorder] device identity resolution failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /** Release the microphone and audio graph without producing a clip (Cancel / teardown). */
