@@ -1,0 +1,43 @@
+{
+  "scenario": "phone voice mode: the Snooze slab splits into a default-length tap and a length picker",
+  "steps": {
+    "geometry": {
+      "wide": {
+        "x": 14,
+        "w": 296,
+        "h": 56
+      },
+      "narrow": {
+        "x": 312,
+        "w": 64,
+        "h": 56
+      }
+    },
+    "plainSnooze": {
+      "onHold": true
+    },
+    "sheetChoices": [
+      "15 minutes",
+      "1 hour  (default)",
+      "4 hours",
+      "8 hours"
+    ],
+    "snoozeForFourHours": {
+      "onHold": true,
+      "snoozeMinutes": 240
+    },
+    "reArmWhileSnoozed": {
+      "onHold": true,
+      "snoozeMinutes": 15
+    },
+    "noKnownLengths": {
+      "picker": true,
+      "snooze": "Snooze"
+    },
+    "plainSnoozeWithNoLengths": {
+      "onHold": true
+    }
+  },
+  "generatedAtUtc": "2026-07-26T11:53:37.172Z",
+  "result": "PASS"
+}
