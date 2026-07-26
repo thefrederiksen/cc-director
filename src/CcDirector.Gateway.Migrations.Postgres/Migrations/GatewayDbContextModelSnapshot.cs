@@ -735,6 +735,147 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.ToTable("repo_state", "gateway");
                 });
 
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SessionHistoryEntity", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("SessionId")
+                        .HasColumnType("text")
+                        .UseCollation("C");
+
+                    b.Property<string>("AgentKind")
+                        .HasColumnType("text");
+
+                    b.Property<string>("BranchesJson")
+                        .HasColumnType("text");
+
+                    b.Property<string>("CommitsJson")
+                        .HasColumnType("text");
+
+                    b.Property<string>("DirectorId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("EndedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("EndingKind")
+                        .HasColumnType("text");
+
+                    b.Property<string>("EndingLabel")
+                        .HasColumnType("text");
+
+                    b.Property<string>("FirstPromptLine")
+                        .HasColumnType("text");
+
+                    b.Property<string>("LastActivityState")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("LastActivityUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("LastSeenUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("LeftUnverifiedJson")
+                        .HasColumnType("text");
+
+                    b.Property<string>("MachineName")
+                        .HasColumnType("text");
+
+                    b.Property<string>("MissionName")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Model")
+                        .HasColumnType("text");
+
+                    b.Property<string>("PullRequestsJson")
+                        .HasColumnType("text");
+
+                    b.Property<string>("RepoName")
+                        .HasColumnType("text");
+
+                    b.Property<string>("RepoPath")
+                        .HasColumnType("text");
+
+                    b.Property<string>("SessionName")
+                        .HasColumnType("text");
+
+                    b.Property<int?>("SessionNumber")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("SessionRole")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("StartedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("SummaryAttempts")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("SummaryIsPartial")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("SummaryKind")
+                        .HasColumnType("text");
+
+                    b.Property<string>("SummaryText")
+                        .HasColumnType("text");
+
+                    b.Property<long?>("TurnCount")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("WhatWasBuiltJson")
+                        .HasColumnType("text");
+
+                    b.HasKey("TenantId", "SessionId");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "DirectorId");
+
+                    b.HasIndex("TenantId", "LastSeenUtc");
+
+                    b.ToTable("session_history", "gateway");
+                });
+
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SessionHistoryRollupEntity", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("RepoKey")
+                        .HasColumnType("text")
+                        .UseCollation("C");
+
+                    b.Property<DateTime>("DayUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("ComputedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("InputHash")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("SummaryText")
+                        .HasColumnType("text");
+
+                    b.HasKey("TenantId", "RepoKey", "DayUtc");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "DayUtc");
+
+                    b.ToTable("session_history_rollups", "gateway");
+                });
+
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SessionSpendEntity", b =>
                 {
                     b.Property<string>("TenantId")

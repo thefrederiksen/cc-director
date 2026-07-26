@@ -49,7 +49,8 @@ public sealed class DirectorHub : Hub
         GatewayStreamRegistry streamRegistry, Snooze.SnoozeLandingObserver? snoozeLandings = null,
         Fleet.FleetRoleObserver? fleetRoles = null, Fleet.FleetDisplayStateObserver? fleetDisplayState = null,
         HostedTenantBoundary? tenantBoundary = null, DirectorConnectionRegistry? connections = null,
-        PushedRepositoryStore? repositoryStore = null, RepoHistoryStore? repoHistory = null)
+        PushedRepositoryStore? repositoryStore = null, RepoHistoryStore? repoHistory = null,
+        History.SessionHistoryRecorder? sessionHistory = null)
     {
         _store = store;
         _registry = registry;
@@ -62,10 +63,14 @@ public sealed class DirectorHub : Hub
         _connections = connections;
         _repositoryStore = repositoryStore;
         _repoHistory = repoHistory;
+        _sessionHistory = sessionHistory;
     }
 
     private readonly PushedRepositoryStore? _repositoryStore;
     private readonly RepoHistoryStore? _repoHistory;
+    // Issue #2194: the durable work-history recorder, fed from the same accepted pushes as the other
+    // observers. Throttled internally (it is NOT a write per push) and never throws.
+    private readonly History.SessionHistoryRecorder? _sessionHistory;
 
     /// <summary>
     /// A full repository/worktree snapshot from the bound Director (repositories mission, #510
@@ -202,6 +207,12 @@ public sealed class DirectorHub : Hub
         // (its own, and others' across the fleet). Re-fold and stamp down whatever changed, so the desktop
         // rail renders the Gateway's answer rather than one from before the reconnect.
         _fleetDisplayState?.ObserveSnapshot(set);
+        // Issue #2194: fold the accepted roster into durable work history. Gated on acceptance like the
+        // snooze observer - a rejected stale snapshot must not close rows the current connection owns.
+        // The snapshot is authoritative, so this also reconciles sessions removed while the tunnel was
+        // down (the Director's per-session remove no-ops when disconnected).
+        if (accepted)
+            _sessionHistory?.ObserveSnapshot(RequireBoundTenant(), directorId, set);
     }
 
     /// <summary>A single-session delta: upserts one session for the bound Director.</summary>
@@ -238,6 +249,10 @@ public sealed class DirectorHub : Hub
         // change another session's fold across the fleet. Re-fold and stamp the changed answers down, so the
         // desktop rail shows the Gateway's colour/label/triage within milliseconds of the change.
         _fleetDisplayState?.Observe(session);
+        // Issue #2194: durable work history rides the same accepted delta. Throttled inside; a
+        // rejected push from a superseded connection must not touch the record.
+        if (accepted)
+            _sessionHistory?.Observe(RequireBoundTenant(), directorId, session);
     }
 
     /// <summary>A remove/tombstone: drops one session from the bound Director's set.</summary>
@@ -252,7 +267,7 @@ public sealed class DirectorHub : Hub
         // Hosted Multi-Tenancy increment 1: scope the handler to the bound tenant (the removal re-folds and
         // can touch tenant-scoped state through the observers below).
         using var tenantScope = EnterBoundTenantScope();
-        _store.ApplyRemove(RequireBoundTenant(), directorId, Context.ConnectionId, sequence, sessionId);
+        var accepted = _store.ApplyRemove(RequireBoundTenant(), directorId, Context.ConnectionId, sequence, sessionId);
         // DevThrottle Stats: its contribution stays in the totals; drop only its high-water entry, scoped to
         // this connection's bound tenant (MTR-08) so it cannot drop another tenant's same-id high-water.
         _inputStats.Forget(sessionId, RequireBoundTenant());
@@ -262,6 +277,28 @@ public sealed class DirectorHub : Hub
         _fleetRoles?.ObserveRemoval(sessionId);
         // A departure re-folds the survivors too (a controller leaving un-suppresses its workers' red).
         _fleetDisplayState?.ObserveRemoval(sessionId);
+        // Issue #2194: a per-session remove from the CURRENT connection is the session's farewell -
+        // the recorder rules "finished" or "closed" from the last pushed facts and stamps the row.
+        // Gated on acceptance, unlike the self-correcting observers above: an ending stamped from a
+        // superseded connection's stale remove would stick, because only "interrupted" reopens.
+        if (accepted)
+            _sessionHistory?.ObserveRemoval(RequireBoundTenant(), directorId, sessionId);
+    }
+
+    /// <summary>
+    /// The Director's clean-shutdown farewell (issue #2194, the #1862 ending design). Sent by a
+    /// stopping Director just before it closes the tunnel, AFTER its per-session removes have flowed:
+    /// every still-open work-history row of this Director is ruled "director-stopped". A Director that
+    /// never says goodbye is caught by the history sweep's silence rule instead ("interrupted") - the
+    /// two rulings are exactly what tells a clean stop from a power cut. Older Directors simply never
+    /// call this; nothing here is required for the stream to function.
+    /// </summary>
+    public void DirectorStopping()
+    {
+        var directorId = RequireBoundDirector();
+        using var tenantScope = EnterBoundTenantScope();
+        FileLog.Write($"[DirectorHub] DirectorStopping: director={directorId} conn={Short(Context.ConnectionId)}");
+        _sessionHistory?.ObserveDirectorStopping(RequireBoundTenant(), directorId);
     }
 
     public override Task OnConnectedAsync()

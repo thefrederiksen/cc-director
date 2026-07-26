@@ -26,7 +26,8 @@ namespace CcDirector.Gateway.Prompts;
 public static class PromptEndpoints
 {
     public static void Map(IEndpointRouteBuilder app, GatewayPromptLog log,
-        Tenancy.HostedTenantBoundary? tenantBoundary = null)
+        Tenancy.HostedTenantBoundary? tenantBoundary = null,
+        History.SessionHistoryRecorder? history = null)
     {
         var store = log ?? throw new ArgumentNullException(nameof(log));
 
@@ -41,6 +42,15 @@ public static class PromptEndpoints
                 return Results.BadRequest(new { error = "records is required and must not be empty" });
 
             var written = store.Append(tenant.Value, request.Records);
+            // Issue #2194: each session's FIRST user prompt is a work-history description source
+            // (#1862 priority two). Fed inside the request tenant's ambient scope because the
+            // recorder writes the tenant-scoped history table; memoized, so this is one store call
+            // per session ever, and the recorder never throws into the ingest path.
+            if (history is not null)
+            {
+                using (EnterScope(tenant.Value, tenantBoundary))
+                    history.ObservePrompts(tenant.Value, request.Records);
+            }
             FileLog.Write($"[PromptEndpoints] POST /prompts: tenant={tenant.Value.ToLogString()}, received {request.Records.Count}, wrote {written}");
             return Results.Ok(new PromptIngestResponse { Written = written });
         });
@@ -71,6 +81,18 @@ public static class PromptEndpoints
     /// </summary>
     private static TenantId? ResolveTenant(HttpContext ctx, Tenancy.HostedTenantBoundary? boundary)
         => boundary is null ? TenantId.Local : boundary.ResolveRequestTenant(ctx);
+
+    /// <summary>Enter the resolved tenant's ambient scope for a database-writing side effect (the
+    /// history recorder); the file-backed prompt log itself takes the tenant explicitly. No boundary
+    /// (tests, self-host) means the ambient tenant is already Local.</summary>
+    private static IDisposable EnterScope(TenantId tenant, Tenancy.HostedTenantBoundary? boundary)
+        => boundary is null ? NoScope.Instance : boundary.EnterScope(tenant);
+
+    private sealed class NoScope : IDisposable
+    {
+        public static readonly NoScope Instance = new();
+        public void Dispose() { }
+    }
 
     /// <summary>Parse a yyyy-MM-dd day, or null when absent/unparseable.</summary>
     private static DateTime? ParseDay(string? value)

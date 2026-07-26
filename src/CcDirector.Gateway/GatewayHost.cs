@@ -488,6 +488,19 @@ public sealed class GatewayHost : IAsyncDisposable
     private static readonly TimeSpan SuggestionSweepInterval = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan SuggestionSweepStartupDelay = TimeSpan.FromMinutes(2);
 
+    // Work history (issue #2194): the durable per-session record, its recorder on the push seam, the
+    // Gateway summariser, and the background sweep that concludes "interrupted" from silence, generates
+    // owed summaries and roll-ups (capped per pass - the cost rule), and prunes retention. The sweep
+    // ticks every two minutes so an interrupted ruling lands within minutes of the threshold; guarded
+    // against overlap like the cron sweep. Created in StartAsync, disposed in StopAsync.
+    private readonly History.SessionHistoryStore _sessionHistory;
+    private readonly History.SessionHistoryRecorder _sessionHistoryRecorder;
+    private History.SessionHistorySweep? _sessionHistorySweep;
+    private System.Threading.Timer? _sessionHistoryTimer;
+    private int _sessionHistorySweepInFlight;
+    private static readonly TimeSpan SessionHistorySweepInterval = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan SessionHistorySweepStartupDelay = TimeSpan.FromMinutes(1);
+
     // Scheduled-run auto-dismiss (issue #1200): wakes ~every 15s and closes automated runs that declared
     // themselves done, over the Director stream. Created in StartAsync only when stream mode is on (the
     // feature has no REST fallback), disposed in StopAsync. Freshness matches the aggregation's pushed-cache
@@ -1193,6 +1206,26 @@ public sealed class GatewayHost : IAsyncDisposable
         _suggestionDailySweep = new Transcription.DictionarySuggestionDailySweep(
             _tenantBoundary, TenantRegistry, _tenantContext, _dictionarySuggestions, _tenantSettingsResolver);
 
+        // Work history (issue #2194): the durable session record and its observers. The summariser's
+        // brain is the tenant's FAST wingman model over the same hosted inference path Wingman speaks
+        // through, resolved at call time (the dictionary-screening precedent) - summarisation is a
+        // background digest, and the fast leg is the cheap one. The per-pass caps live in the sweep.
+        _sessionHistory = new History.SessionHistoryStore(_gatewayDb);
+        _sessionHistoryRecorder = new History.SessionHistoryRecorder(_sessionHistory);
+        var historySummarizer = new History.SessionHistorySummarizer(_sessionHistory, _promptLog,
+            (tenant, ct) =>
+            {
+                var mode = Core.Configuration.TranscriptionModeConfig.Get();
+                var ep = Core.Configuration.TranscriptionEndpointResolver.ResolveWingman(mode);
+                var key = _keyVault.Get(ep.KeyName) ?? "";
+                var model = _tenantSettingsResolver.WingmanModel(tenant, mode, Core.Configuration.WingmanModelRole.Fast);
+                CcDirector.AgentBrain.IAgentBrain brain = new Wingman.HostedInferenceBrain(
+                    ep.BaseUrl, key, model, log: FileLog.Write, callTimeout: TimeSpan.FromSeconds(90));
+                return Task.FromResult(brain);
+            });
+        _sessionHistorySweep = new History.SessionHistorySweep(
+            _tenantBoundary, TenantRegistry, _tenantContext, _sessionHistory, historySummarizer);
+
         // Web Push (mobile app-icon "needs you" dot): load (or generate on first run) the VAPID key
         // pair and the set of subscribed devices. The notifier that fans out to these is built and
         // started in StartAsync, once this Gateway's own /sessions endpoint is reachable on loopback.
@@ -1887,6 +1920,9 @@ public sealed class GatewayHost : IAsyncDisposable
         builder.Services.AddSingleton(PushedSessions);
         builder.Services.AddSingleton(PushedRepositories);
         builder.Services.AddSingleton(RepoHistory);
+        // Issue #2194: the work-history recorder, so the SignalR-constructed DirectorHub folds every
+        // accepted push into the durable session record (throttled inside the recorder).
+        builder.Services.AddSingleton(_sessionHistoryRecorder);
         // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store, so the mission endpoints and
         // spawn validation share the one instance.
         builder.Services.AddSingleton(Missions);
@@ -2690,7 +2726,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // wanting history reads GET /prompts. It lives here, not on a Director, because the Gateway is
         // what the whole fleet reports to - so the history is already present rather than scattered
         // across machines - and because the Gateway is what moves to the server.
-        Prompts.PromptEndpoints.Map(_app, _promptLog, _tenantBoundary);
+        Prompts.PromptEndpoints.Map(_app, _promptLog, _tenantBoundary, _sessionHistoryRecorder);
+
+        // Work history (issue #2194): the range report, the flat session records, and the seal verb.
+        History.HistoryEndpoints.Map(_app, _sessionHistory, _tenantBoundary);
 
         // The activity ledger (docs/PLAN-trustworthy-working-start-2026-07-24.md): producers push observed
         // activity/snooze evidence to POST /activity-events/batch (idempotent by producer-minted event id),
@@ -2768,6 +2807,13 @@ public sealed class GatewayHost : IAsyncDisposable
         _suggestionSweepTimer = new System.Threading.Timer(_ => SweepSuggestions(), null,
             SuggestionSweepStartupDelay, SuggestionSweepInterval);
         FileLog.Write($"[GatewayHost] dictionary-suggestion sweep started: tick every {SuggestionSweepInterval.TotalMinutes:0}m, daily per tenant at local 00:05");
+
+        // Work history (issue #2194): conclude "interrupted" from silence, generate owed summaries and
+        // roll-ups (capped per pass), prune retention. A short tick so an interrupted ruling lands within
+        // minutes of the threshold; the first pass is delayed so startup is never contended.
+        _sessionHistoryTimer = new System.Threading.Timer(_ => SweepSessionHistory(), null,
+            SessionHistorySweepStartupDelay, SessionHistorySweepInterval);
+        FileLog.Write($"[GatewayHost] session history sweep started: every {SessionHistorySweepInterval.TotalMinutes:0}m, interrupted after {History.SessionHistorySweep.InterruptedThreshold.TotalMinutes:0}m of silence, retention {History.SessionHistorySweep.Retention.TotalDays:0} days");
 
         // MTR-15 cancellation cutoff: the hosted active-tenant entitlement sweep. Forces a fresh entitlement
         // read for every tenant with a live lease every ~60s and revokes any that has become NotEntitled, so a
@@ -3122,6 +3168,35 @@ public sealed class GatewayHost : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// The work-history timer callback (issue #2194) - a boundary: it owns the overlap guard and the
+    /// try/catch so a sweep failure never crashes the timer thread. One sweep at a time; a pass slowed
+    /// by model calls simply makes the next tick skip.
+    /// </summary>
+    private void SweepSessionHistory()
+    {
+        if (Interlocked.CompareExchange(ref _sessionHistorySweepInFlight, 1, 0) != 0)
+            return;
+        _ = RunSessionHistorySweepAsync();
+    }
+
+    private async Task RunSessionHistorySweepAsync()
+    {
+        try
+        {
+            if (_sessionHistorySweep is not null)
+                await _sessionHistorySweep.SweepAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayHost] session history sweep FAILED: {ex.Message}");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _sessionHistorySweepInFlight, 0);
+        }
+    }
+
     private void SweepEntitlementLeases()
     {
         // Skip this tick if the previous entitlement sweep is still running (many active tenants). One at a
@@ -3297,6 +3372,8 @@ public sealed class GatewayHost : IAsyncDisposable
         _cronTimer = null;
         try { _activityRetentionTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] activity retention timer dispose error: {ex.Message}"); }
         try { _suggestionSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] dictionary-suggestion timer dispose error: {ex.Message}"); }
+        try { _sessionHistoryTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] session history timer dispose error: {ex.Message}"); }
+        _sessionHistoryTimer = null;
         _activityRetentionTimer = null;
         try { _leaseSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] lease sweep timer dispose error: {ex.Message}"); }
         _leaseSweepTimer = null;

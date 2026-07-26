@@ -439,6 +439,23 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         }
         if (_connection is not null)
         {
+            // Issue #2194: the clean-shutdown farewell, sent while the tunnel is still up so the
+            // Gateway rules this Director's remaining work-history rows "Director stopped" instead of
+            // concluding "interrupted" from silence. Best-effort and time-boxed - shutdown must never
+            // hang on it, and an older Gateway without the hub method just throws into the catch.
+            if (_connection.State == HubConnectionState.Connected)
+            {
+                try
+                {
+                    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                    await _connection.InvokeAsync("DirectorStopping", timeout.Token);
+                    FileLog.Write("[GatewayStreamClient] sent DirectorStopping farewell");
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[GatewayStreamClient] DirectorStopping farewell not delivered (older Gateway?): {ex.Message}");
+                }
+            }
             try { await _connection.StopAsync(); }
             catch (Exception ex) { FileLog.Write($"[GatewayStreamClient] StopAsync error: {ex.Message}"); }
         }
