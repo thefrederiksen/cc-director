@@ -165,6 +165,7 @@ internal static class AuthMiddleware
         // /gateway/reports/morning is exempt, and it is a read-only route that returns ONE named account's
         // report, scoped to that account's tenant.
         Api.MorningReportEndpoint.Path,
+        Api.ReportRecipientsEndpoint.Path,
     };
 
     public static async Task Run(HttpContext ctx, RequireToken cfg, Func<Task> next)
