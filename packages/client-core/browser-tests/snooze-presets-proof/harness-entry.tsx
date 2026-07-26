@@ -1,4 +1,7 @@
-// Snooze lengths proof harness: mounts the REAL Cockpit SnoozeCard against a fake Gateway.
+// Snooze lengths proof harness: mounts the REAL SnoozeCard against a fake Gateway.
+//
+// The card moved into client-core when Settings was unified across the Cockpit and the phone, so this
+// harness now proves the one component BOTH surfaces render, not the desktop's copy of it.
 //
 // What is REAL: the shipping SnoozeCard component, the shipping settingsClient (getGatewaySettings /
 // setSnoozePresets), and the shipping snoozeFormat helpers - the whole client path a user's click takes.
@@ -11,7 +14,7 @@
 // This proves the CLIENT list/default flow against shipping code. The Gateway's own validation is proven
 // separately by the C# tests (SnoozePresetsConfigTests + the Gateway end-to-end suite).
 import { createRoot } from "react-dom/client";
-import { SnoozeCard } from "../../../../apps/cockpit/src/settings/SettingsView";
+import { SnoozeCard } from "../../src/settings/NotificationsTab";
 
 declare global {
   interface Window {

@@ -3,9 +3,11 @@ import {
   getMicrophoneQuality,
   type MicrophoneDeviceSummary,
   type MicrophoneQualitySummary,
-} from "@devthrottle/client-core/transcription/microphoneQualityClient";
+} from "./microphoneQualityClient";
+import "./microphoneQuality.css";
 
-// "How your microphones are doing" on the Transcription Health page.
+// "How your microphones are doing" - shared by the Cockpit's Transcription Health page and the
+// Transcription settings tab on both surfaces.
 //
 // This is the BACKGROUND half of microphone quality: every dictation is measured automatically as it
 // is sent, so this screen answers the question the on-demand Test microphone check cannot - which of
@@ -14,6 +16,11 @@ import {
 //
 // Every verdict, every sentence of advice and the target figures are decided on the Gateway
 // (MicrophoneQualityFold) and rendered here verbatim. This component contains no thresholds.
+//
+// It moved out of apps/cockpit when Settings was unified across the two surfaces: the phone shows the
+// identical panel now, so it cannot live in one app's tree. Its styling came with it and is
+// self-contained (mq-* only), rather than borrowing the health page's txh-* classes as it used to -
+// the phone never loads that stylesheet.
 
 function formatDb(value: number): string {
   return `${Math.round(value)} dB`;
@@ -44,27 +51,27 @@ export function MicrophoneQualityPanel() {
   }, [load]);
 
   return (
-    <div className="txh-section mq">
-      <h2>How your microphones are doing</h2>
-      <p className="txh-lede">
+    <div className="mq">
+      <h2 className="mq-title">How your microphones are doing</h2>
+      <p className="mq-lede">
         Every dictation you send is measured automatically, so a microphone that is quietly spoiling
         your transcripts shows up here without you having to go looking. Nothing is recorded - only how
         the audio measured.
       </p>
 
       {loadError ? (
-        <div className="txh-error">
+        <div className="mq-load-error">
           Couldn&apos;t load microphone quality from the Gateway.
-          <button type="button" className="txh-retry" onClick={() => void load()}>
+          <button type="button" className="mq-retry" onClick={() => void load()}>
             Retry
           </button>
         </div>
       ) : summary === null ? (
-        <div className="txh-loading">Loading...</div>
+        <div className="mq-muted">Loading...</div>
       ) : (
         <>
-          <div className={`txh-banner mq-${summary.status}`}>{summary.headline}</div>
-          <p className="txh-lede">{summary.detail}</p>
+          <div className={`mq-banner mq-${summary.status}`}>{summary.headline}</div>
+          <p className="mq-lede">{summary.detail}</p>
 
           {summary.devices.length > 0 && (
             <div className="mq-devices">
@@ -75,9 +82,9 @@ export function MicrophoneQualityPanel() {
           )}
 
           {summary.totalSamples > 0 && (
-            <p className="txh-muted">
-              Based on {summary.totalSamples} measured {summary.totalSamples === 1 ? "dictation" : "dictations"}{" "}
-              over the last 30 days.
+            <p className="mq-muted">
+              Based on {summary.totalSamples} measured{" "}
+              {summary.totalSamples === 1 ? "dictation" : "dictations"} over the last 30 days.
             </p>
           )}
         </>

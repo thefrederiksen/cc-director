@@ -45,14 +45,12 @@ export function NavDrawer() {
               Repos
             </Link>
             <div className="drawer-sep" />
+            {/* One Settings item, not three. "Test microphone" and "Test transcription" were menu
+                entries of their own while they were screens of their own; they are cards on the
+                Transcription tab now, alongside the transcription model and the background microphone
+                measurements - the same tab the Cockpit shows. */}
             <Link className="drawer-item" to="/settings" onClick={close}>
-              AI settings
-            </Link>
-            <Link className="drawer-item" to="/mic-test" onClick={close}>
-              Test microphone
-            </Link>
-            <Link className="drawer-item" to="/transcription-test" onClick={close}>
-              Test transcription
+              Settings
             </Link>
             <Link className="drawer-item" to="/diagnostics" onClick={close}>
               Diagnostics

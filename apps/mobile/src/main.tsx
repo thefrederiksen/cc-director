@@ -10,9 +10,7 @@ import { VoiceMode } from "./pages/VoiceMode";
 import { CarMode } from "./pages/CarMode";
 import { Assistant } from "./pages/Assistant";
 import { EndWordTest } from "./pages/EndWordTest";
-import { AiSettings } from "./pages/AiSettings";
-import { MicTest } from "./pages/MicTest";
-import { TranscriptionTest } from "./pages/TranscriptionTest";
+import { Settings } from "./pages/Settings";
 import { About } from "./pages/About";
 import { Diagnostics } from "./pages/Diagnostics";
 import { YourThrottle } from "./pages/YourThrottle";
@@ -173,9 +171,16 @@ const router = createBrowserRouter(
             // phrase and test detecting it live. Standalone for now; folds into the Cockpit Car Mode
             // settings tab once the approach is proven.
             { path: "/endword", element: <EndWordTest /> },
-            { path: "/settings", element: <AiSettings /> },
-            { path: "/mic-test", element: <MicTest /> },
-            { path: "/transcription-test", element: <TranscriptionTest /> },
+            // Settings: the same tabbed page the Cockpit shows, from the same components
+            // (client-core/settings). The tab rides in ?tab=.
+            { path: "/settings", element: <Settings /> },
+            // The two dictation checks used to be screens of their own, reached from the menu and from
+            // links on the AI settings screen. They are cards on the Transcription tab now - the same
+            // tab, with the same cards, that the desktop shows. These redirects keep every existing
+            // bookmark, home-screen shortcut, and older service-worker shell working: they land on the
+            // tab that holds what they asked for rather than on a dead route.
+            { path: "/mic-test", element: <Navigate to="/settings?tab=transcription" replace /> },
+            { path: "/transcription-test", element: <Navigate to="/settings?tab=transcription" replace /> },
             { path: "/about", element: <About /> },
             // Diagnostics (auto-network-switching mission): a phone-side connection tester - route
             // (direct LAN vs Tailscale relay), latency, and download/upload throughput, with a verdict.

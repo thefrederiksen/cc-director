@@ -1,0 +1,143 @@
+/* "How your microphones are doing" - the background microphone-quality panel, shared by the Cockpit's
+ * Transcription Health page and the Transcription settings tab on both surfaces.
+ *
+ * Self-contained on purpose: the panel used to borrow the Cockpit health page's txh-* classes, which is
+ * fine while it only ever renders there and silently unstyled the moment the phone mounts it. Every rule
+ * it needs is here, under mq-*.
+ *
+ * Status colours only - every WORD on this panel is folded by the Gateway (MicrophoneQualityFold), so
+ * nothing here decides what a state means. Tokens carry a fallback because the two shells define
+ * different theme variables: the phone has no --txh-ok, --warn or --code-bg. */
+
+.mq {
+  margin-bottom: 22px;
+}
+.mq-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 10px;
+}
+.mq-lede {
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 6px 0 16px;
+}
+.mq-muted {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.mq-load-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--warn, #e2b341);
+  font-size: 13px;
+}
+.mq-retry {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.mq-banner {
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 14px;
+  margin-bottom: 18px;
+}
+.mq-good {
+  border-left-color: var(--txh-ok, #22c55e);
+}
+.mq-bad {
+  border-left-color: var(--attention, #f14c4c);
+}
+.mq-learning,
+.mq-empty {
+  border-left-color: var(--text-dim);
+}
+
+.mq-devices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+  margin: 14px 0;
+}
+
+.mq-device {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.mq-device-bad {
+  border-left-color: var(--attention, #f14c4c);
+}
+.mq-device-good {
+  border-left-color: var(--txh-ok, #22c55e);
+}
+.mq-device-learning {
+  border-left-color: var(--text-dim);
+}
+
+.mq-device-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.mq-device-name {
+  font-weight: 600;
+  color: var(--text);
+  /* A device name can be long ("Headset Microphone (Jabra Evolve2 65 Hands-free)") and must not push
+     the sample count off the card. */
+  overflow-wrap: anywhere;
+}
+.mq-device-count {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.mq-device-advice {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.mq-measures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+.mq-measures > div {
+  background: var(--code-bg, var(--surface-2));
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.mq-measures dt {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 2px;
+}
+.mq-measures dd {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.mq-target {
+  display: block;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}

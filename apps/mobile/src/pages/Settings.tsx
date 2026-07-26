@@ -1,0 +1,49 @@
+import { useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { SettingsTabPanel, SettingsTabStrip } from "@devthrottle/client-core/settings/SettingsTabs";
+import { tabFromParam, type TabId } from "@devthrottle/client-core/settings/tabs";
+
+// The mobile Settings screen.
+//
+// It was "AI settings": one untabbed scroll holding the AI models, with the two dictation checks linked
+// out to screens of their own, no notification settings at all, and no way to set the Car Mode end
+// phrase - while the desktop Cockpit had all of those, arranged differently. The phone and the desktop
+// are the same account, so that difference was never a design, only drift.
+//
+// It is the SAME body as the Cockpit's Settings page now: the same tabs, the same cards, one
+// implementation in client-core. This file is only the phone's frame - the back link and the title.
+// Only the layout differs (styles.css re-tunes the shared cards for touch: the tab strip scrolls
+// sideways, labels sit above their controls, and every control is full width).
+//
+// The tab rides in ?tab= exactly as it does on the desktop, so the same deep link opens the same tab on
+// either surface, and the retired /mic-test and /transcription-test screens can redirect into it.
+export function Settings() {
+  const [params, setParams] = useSearchParams();
+  const [tab, setTab] = useState<TabId>(() => tabFromParam(params.get("tab")));
+
+  // The tab is written back to the address so the phone's own Back gesture and a re-opened app land on
+  // the tab that was being used, rather than snapping to Notifications. `replace` keeps tab switching
+  // out of the history stack - Back should leave Settings, not walk back through four tabs.
+  const choose = (next: TabId) => {
+    setTab(next);
+    setParams({ tab: next }, { replace: true });
+  };
+
+  return (
+    <div className="screen">
+      <header className="app-bar">
+        <Link className="back-link" to="/">
+          Back
+        </Link>
+        <h1>Settings</h1>
+      </header>
+
+      <SettingsTabStrip active={tab} onSelect={choose} />
+
+      {/* No accountHref or transcriptionHealthHref: the phone has neither an account page nor the
+          Transcription Health report, and a settings screen must never offer a link to a route that
+          does not exist here. */}
+      <SettingsTabPanel tab={tab} />
+    </div>
+  );
+}

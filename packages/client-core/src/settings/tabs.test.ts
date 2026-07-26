@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { visibleTabs, tabFromParam } from "./settingsTabs";
+import { visibleTabs, tabFromParam } from "./tabs";
 
 describe("visibleTabs", () => {
-  it("shows the same three per-account tabs, notifications first (issue #2022)", () => {
-    expect(visibleTabs().map((t) => t.id)).toEqual(["notifications", "ai", "carmode"]);
+  it("shows the four per-account tabs, notifications first", () => {
+    expect(visibleTabs().map((t) => t.id)).toEqual(["notifications", "ai", "transcription", "carmode"]);
+  });
+
+  // The point of moving this list into client-core: BOTH shells read it, so a tab that exists on the
+  // desktop exists on the phone by construction. Transcription is the tab that was missing from both
+  // Settings pages while its checks lived on separate screens.
+  it("includes Transcription, so the dictation checks have a home in Settings on every surface", () => {
+    expect(visibleTabs().map((t) => t.id)).toContain("transcription");
   });
 
   it("never includes a machine or Privacy tab", () => {
