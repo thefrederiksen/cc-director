@@ -6,11 +6,15 @@ import {
   moveQueueItemDown,
   moveQueueItemUp,
   sendQueueItem,
-  gatewayErrorMessage,
   type QueueItem,
 } from "@devthrottle/client-core/api/client";
 import { ConfirmDialog } from "../components";
 import { confirmThenApply } from "./queueActions";
+import { describeAndReport } from "@devthrottle/client-core/errors/reportClientError";
+
+// The surface label on every client-error report from this view, so the Gateway log and
+// GET /client-errors/recent name where the user was standing (issue #2189).
+const SURFACE = "cockpit-queue-panel";
 
 // The prompt queue panel (issue #972) - the React port of the Blazor Cockpit queue tab. Every verb
 // goes to the owning Director through the Gateway and returns the authoritative queue, so the list is
@@ -46,7 +50,7 @@ export function QueuePanel({ sessionId, queue, onQueue, onPop }: QueuePanelProps
         onQueue(await verb());
         return true;
       } catch (err) {
-        setError(gatewayErrorMessage(err));
+        setError(describeAndReport(SURFACE, "update the prompt queue", err));
         return false;
       } finally {
         setBusy(false);

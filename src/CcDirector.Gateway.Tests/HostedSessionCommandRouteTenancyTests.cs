@@ -49,8 +49,14 @@ public sealed class HostedSessionCommandRouteTenancyTests : IAsyncLifetime
     private const string SessA = "sess-a";
     private const string SessB = "sess-b";
 
-    /// <summary>The exact body the session locator produces when it finds nothing. This IS the defect's signature.</summary>
-    private const string NotLocated = "session not found across any director";
+    /// <summary>
+    /// The signature of "the locator found nothing". Issue #2188 replaced the old prose body
+    /// ("session not found across any director") with a plain sentence plus a MACHINE-READABLE code, and this
+    /// anchors on the code rather than the prose: the sentence is user-facing copy and may be reworded, the
+    /// code is the contract. Anchoring on the prose is also what made the negative assertions below fragile -
+    /// reword the sentence and a "does not contain" check passes for the wrong reason.
+    /// </summary>
+    private const string NotLocated = "session_not_found";
 
     private GatewayHost _gateway = null!;
     private HttpClient _http = null!;
@@ -200,6 +206,12 @@ public sealed class HostedSessionCommandRouteTenancyTests : IAsyncLifetime
         var resp = await Send(method, $"sessions/{SessA}{suffix}", _keyA, body);
         var text = await resp.Content.ReadAsStringAsync();
 
+        // Assert the POSITIVE fact, not merely the absence of a string: the route must not have refused this
+        // as unlocatable at all. A bare "does not contain" would also hold if the body were empty, or if the
+        // refusal were reworded - which is exactly how an absence-only assertion stops proving anything.
+        Assert.False(resp.StatusCode == HttpStatusCode.NotFound,
+            $"{method} /sessions/{{sid}}{suffix} could not locate its OWN tenant's session - " +
+            $"status {(int)resp.StatusCode}, body: {text}");
         Assert.False(text.Contains(NotLocated, StringComparison.Ordinal),
             $"{method} /sessions/{{sid}}{suffix} could not locate its OWN tenant's session - " +
             $"status {(int)resp.StatusCode}, body: {text}");
@@ -214,8 +226,12 @@ public sealed class HostedSessionCommandRouteTenancyTests : IAsyncLifetime
         var resp = await Send(method, $"sessions/{SessA}{suffix}", _keyB, body);
         var text = await resp.Content.ReadAsStringAsync();
 
+        // Still a 404 carrying the not-found CODE - never the retryable 503 that issue #2188 introduced for a
+        // stale Director. Tenant B must not be told "that machine is catching up, try again", because that
+        // would confirm the session exists and invite retries against another tenant's id.
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
         Assert.Contains(NotLocated, text, StringComparison.Ordinal);
+        Assert.DoesNotContain("director_stale", text, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -226,7 +242,9 @@ public sealed class HostedSessionCommandRouteTenancyTests : IAsyncLifetime
         var roster = await (await Send("GET", "sessions", _keyA, null)).Content.ReadAsStringAsync();
         Assert.Contains(SessA, roster, StringComparison.Ordinal);
 
-        var buffer = await (await Send("GET", $"sessions/{SessA}/buffer", _keyA, null)).Content.ReadAsStringAsync();
+        var bufferResp = await Send("GET", $"sessions/{SessA}/buffer", _keyA, null);
+        var buffer = await bufferResp.Content.ReadAsStringAsync();
+        Assert.NotEqual(HttpStatusCode.NotFound, bufferResp.StatusCode);
         Assert.False(buffer.Contains(NotLocated, StringComparison.Ordinal));
     }
 
@@ -235,12 +253,21 @@ public sealed class HostedSessionCommandRouteTenancyTests : IAsyncLifetime
     {
         // Not reachable from the route table: /handover names its session in the BODY, not the path. It was
         // one of the six converted sites the first version of this proof did not cover.
+        // CONTRACT CHANGE (issue #2188): this route used to answer with its own prose,
+        // "source session not found across any director". It now goes through the one shared responder every
+        // other per-session route uses, so the body carries the same machine-readable code as the rest -
+        // which is what this now anchors on. The tenancy property under test is unchanged.
         var own = await Send("POST", "handover", _keyA, $"{{\"fromSessionId\":\"{SessA}\",\"toRepoPath\":\"/repo\"}}");
-        Assert.DoesNotContain("source session not found", await own.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        Assert.NotEqual(HttpStatusCode.NotFound, own.StatusCode);
+        Assert.DoesNotContain(NotLocated, await own.Content.ReadAsStringAsync(), StringComparison.Ordinal);
 
         var cross = await Send("POST", "handover", _keyB, $"{{\"fromSessionId\":\"{SessA}\",\"toRepoPath\":\"/repo\"}}");
         Assert.Equal(HttpStatusCode.NotFound, cross.StatusCode);
-        Assert.Contains("source session not found", await cross.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        var crossBody = await cross.Content.ReadAsStringAsync();
+        Assert.Contains(NotLocated, crossBody, StringComparison.Ordinal);
+        // Never the retryable "that machine is catching up" answer: telling tenant B to try again would
+        // confirm tenant A's session exists and invite retries against another tenant's id.
+        Assert.DoesNotContain("director_stale", crossBody, StringComparison.Ordinal);
     }
 
     [Fact]

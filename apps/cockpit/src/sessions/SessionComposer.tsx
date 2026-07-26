@@ -4,9 +4,10 @@ import {
   enqueuePrompt,
   sendPrompt,
   uploadImage,
-  gatewayErrorMessage,
+  GatewayError,
   type QueueItem,
 } from "@devthrottle/client-core/api/client";
+import { describeAndReport } from "@devthrottle/client-core/errors/reportClientError";
 import { DictationDialog } from "@devthrottle/client-core/dictation/DictationDialog";
 import { insertAt } from "@devthrottle/client-core/dictation/transcript";
 
@@ -40,6 +41,39 @@ import { insertAt } from "@devthrottle/client-core/dictation/transcript";
 //
 // The composer text is owned by the parent (SessionDetail) so the queue's Pop and the screenshot
 // gallery's Insert can drop text into it. Send/Queue are disabled while empty or a call is in flight.
+
+// The surface label on every client-error report from this composer, so a report in the Gateway log
+// and in GET /client-errors/recent names where the user was standing (issue #2189).
+const SURFACE = "cockpit-composer";
+
+// How long to wait before the single retry below. Long enough to outlast the observed hole (the Gateway
+// refuses actions on a session whose Director missed a push, and the next push closes it), short enough
+// that a person watching the button does not think it hung.
+const RETRY_DELAY_MS = 2500;
+
+/**
+ * Upload one image, retrying ONCE if the Gateway said the failure was retryable (issue #2188/#2189).
+ *
+ * Why: the reported failure was a ten-second window in which the owning Director had missed a snapshot
+ * push, so the Gateway refused every action on a session that was alive the whole time. A single retry a
+ * couple of seconds later would have succeeded. One retry, announced in the status line - not a silent
+ * loop, and not a fallback that hides a real outage: a Director that is genuinely gone fails on the
+ * retry too, and the user is told what happened.
+ */
+async function uploadWithOneRetry(
+  sessionId: string,
+  file: File,
+  onRetrying: () => void,
+): Promise<string> {
+  try {
+    return await uploadImage(sessionId, file);
+  } catch (err) {
+    if (!(err instanceof GatewayError) || !err.retryable) throw err;
+    onRetrying();
+    await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+    return await uploadImage(sessionId, file);
+  }
+}
 
 export interface SessionComposerProps {
   sessionId: string | undefined;
@@ -90,7 +124,7 @@ export function SessionComposer({ sessionId, value, onChange, onQueued, focusHan
       setStatus("Sent");
     } catch (err) {
       onChange(text); // restore so a failed send never loses the typed text
-      setError(gatewayErrorMessage(err));
+      setError(describeAndReport(SURFACE, "send that to the session", err));
     } finally {
       setBusy(false);
     }
@@ -108,7 +142,7 @@ export function SessionComposer({ sessionId, value, onChange, onQueued, focusHan
       onChange("");
       setStatus("Queued");
     } catch (err) {
-      setError(gatewayErrorMessage(err));
+      setError(describeAndReport(SURFACE, "queue that prompt", err));
     } finally {
       setBusy(false);
     }
@@ -142,7 +176,7 @@ export function SessionComposer({ sessionId, value, onChange, onQueued, focusHan
       try {
         const paths: string[] = [];
         for (const file of files) {
-          const path = await uploadImage(sessionId, file);
+          const path = await uploadWithOneRetry(sessionId, file, () => setStatus("Retrying..."));
           if (path) paths.push(path);
         }
         if (paths.length > 0) {
@@ -151,7 +185,8 @@ export function SessionComposer({ sessionId, value, onChange, onQueued, focusHan
           setStatus(paths.length === 1 ? "Image attached" : `${paths.length} images attached`);
         }
       } catch (err) {
-        setError(gatewayErrorMessage(err));
+        setStatus(null);
+        setError(describeAndReport(SURFACE, "attach the image", err));
       } finally {
         setBusy(false);
       }
@@ -238,7 +273,7 @@ export function SessionComposer({ sessionId, value, onChange, onQueued, focusHan
         setStatus("Sent");
       } catch (err) {
         onChange(combined); // restore so a failed send never loses the typed + dictated text
-        setError(gatewayErrorMessage(err));
+        setError(describeAndReport(SURFACE, "send that to the session", err));
       } finally {
         setBusy(false);
       }

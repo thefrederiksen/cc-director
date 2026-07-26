@@ -1,8 +1,12 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 import { Button } from "./Button";
 import { useDismissOnBackdrop } from "./useDismissOnBackdrop";
+import { describeAndReport } from "@devthrottle/client-core/errors/reportClientError";
+
+// The surface label on every client-error report from the shared confirm dialog, so the Gateway log and
+// GET /client-errors/recent name where the user was standing (issue #2189).
+const SURFACE = "cockpit-confirm";
 
 // The one confirmation dialog every destructive action in the Cockpit routes through (issue #1244).
 // Before this, destructive actions were handled three different ways: a good inline confirmation on the
@@ -40,6 +44,13 @@ export interface ConfirmDialogProps {
   /** Runs when the person confirms. Return a promise to have the dialog show a busy state and, on a
    *  thrown error, surface it inline. */
   onConfirm: () => void | Promise<void>;
+  /**
+   * What the person is trying to do, in their terms ("compact the context"). It shapes the sentence
+   * shown on a failure and labels the report sent to the Gateway (issue #2189). Defaults to the confirm
+   * button's label, which is already written in the user's words - so an existing caller reports
+   * something sensible without being touched.
+   */
+  action?: string;
   /** Runs when the person cancels, dismisses (backdrop or Escape), or the action succeeds. */
   onClose: () => void;
 }
@@ -53,6 +64,7 @@ export function ConfirmDialog({
   danger = true,
   busyLabel = "Working...",
   onConfirm,
+  action,
   onClose,
 }: ConfirmDialogProps) {
   const [busy, setBusy] = useState(false);
@@ -94,8 +106,10 @@ export function ConfirmDialog({
       }
       onClose();
     } catch (err) {
-      // Fail loudly: keep the dialog open and show precisely what went wrong.
-      setError(gatewayErrorMessage(err));
+      // Fail loudly: keep the dialog open and show precisely what went wrong - AND report it (issue
+      // #2189). This is the shared confirm surface, so every confirmed action in the Cockpit (compact,
+      // clear context, close a session) reports its failure through this one line.
+      setError(describeAndReport(SURFACE, action ?? confirmLabel.toLowerCase(), err));
     } finally {
       setBusy(false);
     }

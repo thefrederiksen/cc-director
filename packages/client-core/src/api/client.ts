@@ -184,12 +184,83 @@ function onUnauthorized(): void {
   }
 }
 
+// Issue #2189: the server's OWN sentence for a failure, carried on the thrown error instead of being
+// discarded at the throw site. Before this, every non-2xx became `new GatewayError(status, "POST x
+// failed: 404")` - the Gateway had written a perfectly good reason into `{ error: ... }` and the client
+// dropped it, so the user was shown nothing but a three-digit number.
+export interface GatewayFailureDetail {
+  /** The server's sentence, from `{ error }` / `{ detail }` / `{ message }`. Never a status number. */
+  reason?: string;
+  /** The server's machine-readable code, when it sent one (e.g. "director_stale"). */
+  code?: string;
+  /** The server said this is worth retrying. */
+  retryable?: boolean;
+}
+
 export class GatewayError extends Error {
   readonly status: number;
-  constructor(status: number, message: string) {
+  /** The server's own sentence for this failure, when it sent one. Never a status number. */
+  readonly serverReason?: string;
+  /** The server's machine-readable code, when it sent one. */
+  readonly code?: string;
+  /** True when retrying could plausibly succeed: the server said so, or the status class implies it. */
+  readonly retryable: boolean;
+  constructor(status: number, message: string, detail?: GatewayFailureDetail) {
     super(message);
     this.name = "GatewayError";
     this.status = status;
+    this.serverReason = detail?.reason;
+    this.code = detail?.code;
+    // A server `retryable` flag is authoritative. Absent one, the transport statuses that mean "the
+    // request never reached a healthy backend" are retryable by definition; a 4xx is the caller's own
+    // request being wrong and retrying it unchanged cannot help.
+    this.retryable = detail?.retryable
+      ?? (status === 0 || status === 429 || status === 502 || status === 503 || status === 504);
+  }
+
+  /**
+   * Build the error for a non-2xx response, READING the server's reason out of the body.
+   *
+   * Every `!res.ok` throw in this client must go through here. A bare `new GatewayError(res.status,
+   * "POST x failed: " + res.status)` is exactly what deleted the reason in the first place (issue #2189):
+   * the Gateway had written a usable sentence into `{ error }` and the throw site dropped it one hop from
+   * being shown, leaving the user with three digits.
+   *
+   * It consumes the response body, which is safe BY CONSTRUCTION at every call site: this is only reached
+   * on a non-2xx, where the alternative was discarding the body unread. The few call sites that parse an
+   * error body themselves (create session, the transcription legs) build their own error and never come
+   * here, so nothing reads a body twice.
+   *
+   * `what` names the action in the user's terms ("attach the image"), never the method and path.
+   */
+  static async from(res: Response, what: string): Promise<GatewayError> {
+    const detail = await readFailureDetail(res);
+    return new GatewayError(res.status, detail.reason ?? `Could not ${what} (error ${res.status}).`, detail);
+  }
+}
+
+/** Pull the server's reason, code and retryable flag out of a failed response. Best-effort by
+ *  construction: a body that is missing, empty, unreadable or not JSON yields an empty detail, and this
+ *  must never turn a failed request into a thrown parse error. */
+async function readFailureDetail(res: Response): Promise<GatewayFailureDetail> {
+  try {
+    const text = await res.text();
+    if (!text.trim()) return {};
+    try {
+      const body = JSON.parse(text) as Record<string, unknown>;
+      return {
+        reason: stringFromErrorBody(body),
+        code: typeof body.code === "string" ? body.code : undefined,
+        retryable: typeof body.retryable === "boolean" ? body.retryable : undefined,
+      };
+    } catch {
+      // A non-JSON body is still a reason, provided it is short enough to be a sentence rather than an
+      // HTML error page from something in front of the Gateway.
+      if (text.length <= 300 && !text.trimStart().startsWith("<")) return { reason: text.trim() };
+      return {};
+    }
+  } catch {
+    return {};
   }
 }
 
@@ -335,18 +406,77 @@ export const POLL_TIMEOUT_MS = 10000;
 
 // Map any error thrown by a Gateway read/write into ONE user-facing line, never leaking the internal
 // "METHOD /path failed: NNN" diagnostic the client throws on a non-2xx, nor the browser's bare
-// "Failed to fetch" when the backend is down (issue #1028). An unreachable Gateway collapses to the
-// shared friendly, retry-implying line; a GatewayError that already carries human copy (a 401 re-auth
-// prompt, a 402 credits notice) is returned verbatim; any other reachable-but-erroring status is
-// reported by its number only, without the raw method and path.
-export function gatewayErrorMessage(err: unknown): string {
-  if (isGatewayUnreachable(err)) return GATEWAY_UNREACHABLE_MESSAGE;
+// "Failed to fetch" when the backend is down (issue #1028).
+//
+// THE RULE (issue #2189): a number is not an error message. Whatever this returns must say what
+// happened, and say whether trying again is worth it. It may mention the status in parentheses for
+// support purposes; the status may never BE the message. The old behaviour - everything that was not a
+// 401 collapsing to "The Gateway rejected the request (error 404)." - is what left the user with three
+// digits and nothing else after a failed image attach, on a session that was alive the whole time.
+//
+// Order of preference:
+//  1. The server's own sentence, when it sent one (the Gateway writes good ones - see the retryable
+//     "has not reported in for N seconds ... try again" copy on a stale Director).
+//  2. Human copy already carried on the error (a 401 re-auth prompt, a 402 credits notice).
+//  3. A plain sentence for the status class, naming the action when the caller supplied one.
+//
+// `what` names the action in the user's terms - "attach the image", "send the prompt". Optional so the
+// many existing poll call sites keep compiling; supply it anywhere a person is watching.
+export function gatewayErrorMessage(err: unknown, what?: string): string {
   if (err instanceof CreditsError) return err.message;
   if (err instanceof GatewayError) {
+    // The server's reason wins over every generic line we could write here.
+    if (err.serverReason) return withRetryHint(err.serverReason, err.retryable);
     if (err.status === 401) return err.message;
-    return `The Gateway rejected the request (error ${err.status}).`;
+    // No reason from the server. A background POLL that could not reach the backend keeps the shared
+    // line from issue #1028 - it is already a real sentence and it already implies the retry those
+    // pages perform. Naming an action means a person pressed something and is waiting, so they get the
+    // specific sentence instead.
+    if (!what && isUnreachableStatus(err.status)) return GATEWAY_UNREACHABLE_MESSAGE;
+    return withRetryHint(statusSentence(err.status, what), err.retryable);
   }
+  if (isGatewayUnreachable(err)) return GATEWAY_UNREACHABLE_MESSAGE;
   return GATEWAY_UNREACHABLE_MESSAGE;
+}
+
+/** The statuses that mean the request never reached a healthy backend. */
+function isUnreachableStatus(status: number): boolean {
+  return status === 0 || status === 502 || status === 503 || status === 504;
+}
+
+/** Add the retry advice unless the reason already gives it, so a retryable failure always tells the
+ *  user that trying again is the right move (and a permanent one never suggests it). */
+function withRetryHint(sentence: string, retryable: boolean): string {
+  if (!retryable) return sentence;
+  if (/try again|retrying|retry/i.test(sentence)) return sentence;
+  return `${sentence} Try again.`;
+}
+
+/** The fallback sentence when the server sent no reason of its own. Never a bare number. */
+function statusSentence(status: number, what?: string): string {
+  const action = what ? `could not ${what}` : "could not complete that";
+  if (status === 0 || status === 502 || status === 503 || status === 504) {
+    return `DevThrottle ${action} - the machine running this session could not be reached (error ${status}).`;
+  }
+  if (status === 404) {
+    return `DevThrottle ${action} - the session could not be found (error 404). It may have been closed.`;
+  }
+  if (status === 409) {
+    return `DevThrottle ${action} - something else changed it first (error 409). Reload and try again.`;
+  }
+  if (status === 413) {
+    return `DevThrottle ${action} - the file is too large (error 413).`;
+  }
+  if (status === 423) {
+    return `DevThrottle ${action} - this session is on hold (error 423). Take it off hold first.`;
+  }
+  if (status === 429) {
+    return `DevThrottle ${action} - too many requests in a row (error 429).`;
+  }
+  if (status >= 500) {
+    return `DevThrottle ${action} - the Gateway hit an internal error (error ${status}).`;
+  }
+  return `DevThrottle ${action} (error ${status}).`;
 }
 
 type GatewayErrorBody = {
@@ -399,7 +529,7 @@ export async function listSessions(signal?: AbortSignal): Promise<SessionDto[]> 
     throw new GatewayError(res.status, "This device is no longer authorized. Please sign in again.");
   }
   if (!res.ok) {
-    throw new GatewayError(res.status, `GET /sessions failed: ${res.status}`);
+    throw await GatewayError.from(res, "load the session list");
   }
   return (await res.json()) as SessionDto[];
 }
@@ -422,7 +552,7 @@ export async function getSessionHistory(
     signal,
   }, { timeoutMs: POLL_TIMEOUT_MS });
   if (!res.ok) {
-    throw new GatewayError(res.status, `GET history failed: ${res.status}`);
+    throw await GatewayError.from(res, "load the conversation history");
   }
   return (await res.json()) as SessionHistoryDto;
 }
@@ -445,7 +575,7 @@ export async function sendPrompt(
     signal,
   });
   if (!res.ok) {
-    throw new GatewayError(res.status, `POST prompt failed: ${res.status}`);
+    throw await GatewayError.from(res, "send that to the session");
   }
 }
 
@@ -458,7 +588,7 @@ export async function sendEscape(sessionId: string, signal?: AbortSignal): Promi
     signal,
   });
   if (!res.ok) {
-    throw new GatewayError(res.status, `POST escape failed: ${res.status}`);
+    throw await GatewayError.from(res, "send Escape to the session");
   }
 }
 
@@ -471,7 +601,7 @@ export async function sendInterrupt(sessionId: string, signal?: AbortSignal): Pr
     signal,
   });
   if (!res.ok) {
-    throw new GatewayError(res.status, `POST interrupt failed: ${res.status}`);
+    throw await GatewayError.from(res, "interrupt the session");
   }
 }
 
@@ -486,7 +616,7 @@ export async function sendClearContext(sessionId: string, signal?: AbortSignal):
     signal,
   });
   if (!res.ok) {
-    throw new GatewayError(res.status, `POST clear-context failed: ${res.status}`);
+    throw await GatewayError.from(res, "clear the session context");
   }
 }
 
@@ -545,7 +675,7 @@ export async function sendCompactContext(
     { timeoutMs: COMPACT_CONTEXT_TIMEOUT_MS },
   );
   if (!res.ok) {
-    throw new GatewayError(res.status, `POST compact-context failed: ${res.status}`);
+    throw await GatewayError.from(res, "compact the session context");
   }
   return (await res.json()) as CompactContextResult;
 }
@@ -560,7 +690,7 @@ export async function sendHistoryPicker(sessionId: string, signal?: AbortSignal)
     signal,
   });
   if (!res.ok) {
-    throw new GatewayError(res.status, `POST history-picker failed: ${res.status}`);
+    throw await GatewayError.from(res, "open the history picker");
   }
 }
 
@@ -580,9 +710,11 @@ export interface QueueItem {
 
 // Read the response's { items } as the authoritative queue. Shared by every queue verb so the
 // parse lives in one place; a non-2xx throws so the caller surfaces it (no silent empty queue).
-async function readQueue(res: Response, label: string): Promise<QueueItem[]> {
+// `what` names the action for the user (issue #2189), so a failed queue verb reads as "DevThrottle
+// could not queue that prompt", never as a status number.
+async function readQueue(res: Response, what: string): Promise<QueueItem[]> {
   if (!res.ok) {
-    throw new GatewayError(res.status, `${label} failed: ${res.status}`);
+    throw await GatewayError.from(res, what);
   }
   const body = (await res.json().catch(() => ({}))) as { items?: QueueItem[] };
   return body.items ?? [];
@@ -596,7 +728,7 @@ export async function getQueue(sessionId: string, signal?: AbortSignal): Promise
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
   });
-  return readQueue(res, "GET queue");
+  return readQueue(res, "load the prompt queue");
 }
 
 // ===== Source control (issue #1266) =====
@@ -638,7 +770,7 @@ export async function getGitStatus(sessionId: string, signal?: AbortSignal): Pro
     signal,
   });
   if (!res.ok) {
-    throw new GatewayError(res.status, `GET git failed: ${res.status}`);
+    throw await GatewayError.from(res, "read the repository status");
   }
   const body = (await res.json()) as GitSnapshot;
   return {
@@ -657,7 +789,7 @@ export async function enqueuePrompt(sessionId: string, text: string, signal?: Ab
     body: JSON.stringify({ text }),
     signal,
   });
-  return readQueue(res, "POST queue");
+  return readQueue(res, "queue that prompt");
 }
 
 // DELETE /sessions/{sid}/queue/{itemId} - remove one item; returns the remaining queue.
@@ -669,7 +801,7 @@ export async function deleteQueueItem(sessionId: string, itemId: string, signal?
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
   });
-  return readQueue(res, "DELETE queue item");
+  return readQueue(res, "remove that queued prompt");
 }
 
 // POST /sessions/{sid}/queue/{itemId}/send - submit one queued item now; returns the remaining queue.
@@ -681,7 +813,7 @@ export async function sendQueueItem(sessionId: string, itemId: string, signal?: 
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
   });
-  return readQueue(res, "POST queue send");
+  return readQueue(res, "send that queued prompt");
 }
 
 // PATCH /sessions/{sid}/queue/{itemId} { text } - edit one item's text; returns the updated queue.
@@ -694,7 +826,7 @@ export async function editQueueItem(sessionId: string, itemId: string, text: str
     body: JSON.stringify({ text }),
     signal,
   });
-  return readQueue(res, "PATCH queue item");
+  return readQueue(res, "edit that queued prompt");
 }
 
 // POST /sessions/{sid}/queue/{itemId}/move-up - move one item earlier; returns the reordered queue.
@@ -706,7 +838,7 @@ export async function moveQueueItemUp(sessionId: string, itemId: string, signal?
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
   });
-  return readQueue(res, "POST queue move-up");
+  return readQueue(res, "move that queued prompt up");
 }
 
 // POST /sessions/{sid}/queue/{itemId}/move-down - move one item later; returns the reordered queue.
@@ -718,7 +850,7 @@ export async function moveQueueItemDown(sessionId: string, itemId: string, signa
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
   });
-  return readQueue(res, "POST queue move-down");
+  return readQueue(res, "move that queued prompt down");
 }
 
 // DELETE /sessions/{sid}/queue - clear the whole queue; returns the (empty) queue.
@@ -729,7 +861,7 @@ export async function clearQueue(sessionId: string, signal?: AbortSignal): Promi
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
   });
-  return readQueue(res, "DELETE queue");
+  return readQueue(res, "clear the prompt queue");
 }
 
 // ===== Screenshots gallery (issue #972): the captured-screenshots folder on the owning Director =====
@@ -794,7 +926,7 @@ export async function fetchSessionFileText(sessionId: string, path: string, sign
     signal,
   });
   if (!res.ok) {
-    throw new GatewayError(res.status, `GET file failed: ${res.status}`);
+    throw await GatewayError.from(res, "open that file");
   }
   return res.text();
 }
@@ -816,7 +948,7 @@ export async function fetchSessionFileSize(sessionId: string, path: string, sign
   });
   // 206 (range honored) and 200 (range ignored, full body) are both "ok"; anything else is a real error.
   if (!res.ok) {
-    throw new GatewayError(res.status, `GET file size failed: ${res.status}`);
+    throw await GatewayError.from(res, "read that file's size");
   }
   // We never read the body - drop it so a 200 (full-file) response does not stream needlessly.
   void res.body?.cancel();
@@ -845,7 +977,7 @@ export async function getScreenshots(sessionId: string, count = 0, signal?: Abor
     signal,
   });
   if (!res.ok) {
-    throw new GatewayError(res.status, `GET screenshots failed: ${res.status}`);
+    throw await GatewayError.from(res, "load the screenshots");
   }
   const body = (await res.json().catch(() => ({}))) as Partial<ScreenshotsResult>;
   return {
@@ -864,7 +996,7 @@ export async function deleteScreenshot(sessionId: string, fileName: string, sign
     signal,
   });
   if (!res.ok) {
-    throw new GatewayError(res.status, `DELETE screenshot failed: ${res.status}`);
+    throw await GatewayError.from(res, "delete that screenshot");
   }
 }
 
@@ -883,7 +1015,7 @@ export async function uploadImage(sessionId: string, file: File, signal?: AbortS
     signal,
   });
   if (!res.ok) {
-    throw new GatewayError(res.status, `POST upload-image failed: ${res.status}`);
+    throw await GatewayError.from(res, "attach the image");
   }
   const body = (await res.json().catch(() => ({}))) as { path?: string };
   return body.path ?? "";
@@ -915,7 +1047,7 @@ export async function getHandover(sessionId: string, signal?: AbortSignal): Prom
     signal,
   });
   if (!res.ok) {
-    throw new GatewayError(res.status, `GET handover failed: ${res.status}`);
+    throw await GatewayError.from(res, "load the handover information");
   }
   const body = (await res.json().catch(() => ({}))) as Partial<SessionHandover>;
   return {
@@ -942,7 +1074,7 @@ export async function getGatewayHealth(signal?: AbortSignal): Promise<GatewayHea
     signal,
   });
   if (!res.ok) {
-    throw new GatewayError(res.status, `GET /healthz failed: ${res.status}`);
+    throw await GatewayError.from(res, "reach the Gateway");
   }
   return (await res.json()) as GatewayHealth;
 }
@@ -973,7 +1105,7 @@ export async function getNetDiagEcho(signal?: AbortSignal): Promise<NetDiagEcho>
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
   }, { timeoutMs: POLL_TIMEOUT_MS });
-  if (!res.ok) throw new GatewayError(res.status, `GET /diag/echo failed: ${res.status}`);
+  if (!res.ok) throw await GatewayError.from(res, "run the echo check");
   return (await res.json()) as NetDiagEcho;
 }
 
@@ -1019,7 +1151,7 @@ export async function measureDownload(bytes: number, signal?: AbortSignal): Prom
     headers: { ...authHeaders() },
     signal,
   });
-  if (!res.ok) throw new GatewayError(res.status, `GET /diag/payload failed: ${res.status}`);
+  if (!res.ok) throw await GatewayError.from(res, "run the download check");
   const buf = await res.arrayBuffer();
   const ms = performance.now() - t0;
   return { bytes: buf.byteLength, ms, mbps: megabitsPerSecond(buf.byteLength, ms) };
@@ -1036,7 +1168,7 @@ export async function measureUpload(bytes: number, signal?: AbortSignal): Promis
     body,
     signal,
   });
-  if (!res.ok) throw new GatewayError(res.status, `POST /diag/payload failed: ${res.status}`);
+  if (!res.ok) throw await GatewayError.from(res, "run the upload check");
   await res.arrayBuffer();
   const ms = performance.now() - t0;
   return { bytes, ms, mbps: megabitsPerSecond(bytes, ms) };
@@ -1097,7 +1229,7 @@ export async function getNetworkDiag(signal?: AbortSignal): Promise<NetworkDiag>
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
   }, { timeoutMs: 20000 });
-  if (!res.ok) throw new GatewayError(res.status, `GET /diag/network failed: ${res.status}`);
+  if (!res.ok) throw await GatewayError.from(res, "run the network check");
   return (await res.json()) as NetworkDiag;
 }
 
@@ -1131,7 +1263,7 @@ export async function postNetDiagResult(result: NetDiagResult, signal?: AbortSig
     body: JSON.stringify(result),
     signal,
   });
-  if (!res.ok) throw new GatewayError(res.status, `POST /diag/result failed: ${res.status}`);
+  if (!res.ok) throw await GatewayError.from(res, "record the check result");
 }
 
 // GET /diag/results - recent logged results, newest first. Backs the Cockpit history view and lets an
@@ -1142,7 +1274,7 @@ export async function getNetDiagResults(signal?: AbortSignal): Promise<NetDiagRe
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
   }, { timeoutMs: POLL_TIMEOUT_MS });
-  if (!res.ok) throw new GatewayError(res.status, `GET /diag/results failed: ${res.status}`);
+  if (!res.ok) throw await GatewayError.from(res, "load the check results");
   return (await res.json()) as NetDiagResult[];
 }
 
@@ -1174,7 +1306,7 @@ export async function getNetDiagRollup(signal?: AbortSignal): Promise<NetDiagRol
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
   }, { timeoutMs: POLL_TIMEOUT_MS });
-  if (!res.ok) throw new GatewayError(res.status, `GET /diag/rollup failed: ${res.status}`);
+  if (!res.ok) throw await GatewayError.from(res, "load the network summary");
   return (await res.json()) as NetDiagRollupBucket[];
 }
 
@@ -1189,7 +1321,7 @@ export async function getDirectors(signal?: AbortSignal): Promise<DirectorInfo[]
     signal,
   });
   if (!res.ok) {
-    throw new GatewayError(res.status, `GET /directors failed: ${res.status}`);
+    throw await GatewayError.from(res, "load the machine list");
   }
   const raw = (await res.json()) as Array<Record<string, unknown>>;
   const list: DirectorInfo[] = raw
@@ -1221,7 +1353,7 @@ export async function getRepos(directorId: string, signal?: AbortSignal): Promis
     signal,
   });
   if (!res.ok) {
-    throw new GatewayError(res.status, `GET /directors/${directorId}/repos failed: ${res.status}`);
+    throw await GatewayError.from(res, "load that machine's repositories");
   }
   const raw = (await res.json()) as Array<Record<string, unknown>>;
   const list: RepoInfo[] = raw
@@ -1247,7 +1379,7 @@ export async function getAgents(directorId: string, signal?: AbortSignal): Promi
     signal,
   });
   if (!res.ok) {
-    throw new GatewayError(res.status, `GET /directors/${directorId}/agents failed: ${res.status}`);
+    throw await GatewayError.from(res, "load that machine's agents");
   }
   const raw = (await res.json()) as Array<Record<string, unknown>>;
   return raw
@@ -1350,7 +1482,7 @@ export async function holdSession(
     signal,
   });
   if (!res.ok) {
-    throw new GatewayError(res.status, `POST hold failed: ${res.status}`);
+    throw await GatewayError.from(res, "put the session on hold");
   }
   const result = (await res.json().catch(() => ({}))) as { onHold?: boolean; pending?: boolean };
   return { onHold: result.onHold ?? onHold, pending: result.pending ?? false };
@@ -1376,7 +1508,7 @@ export async function setTranscribing(
     signal,
   });
   if (!res.ok) {
-    throw new GatewayError(res.status, `POST transcribing failed: ${res.status}`);
+    throw await GatewayError.from(res, "update the transcribing state");
   }
 }
 
@@ -1391,7 +1523,7 @@ export async function killSession(sessionId: string, signal?: AbortSignal): Prom
     signal,
   });
   if (!res.ok) {
-    throw new GatewayError(res.status, `DELETE session failed: ${res.status}`);
+    throw await GatewayError.from(res, "close that session");
   }
 }
 
@@ -1956,7 +2088,7 @@ export async function markVoiceAndExplain(sessionId: string, signal?: AbortSigna
   if (!res.ok) {
     // Switching a session to voice mode ran into out-of-credits (issue #942): the shared notice.
     if (res.status === 402) throw creditsErrorFrom(await res.json().catch(() => ({})));
-    throw new GatewayError(res.status, `POST wingman/explain failed: ${res.status}`);
+    throw await GatewayError.from(res, "ask the wingman to explain");
   }
   const body = (await res.json()) as Partial<WingmanExplain>;
   return {
@@ -1977,7 +2109,7 @@ export async function getWingmanVoice(sessionId: string, signal?: AbortSignal): 
     signal,
   });
   if (!res.ok) {
-    throw new GatewayError(res.status, `GET wingman/voice failed: ${res.status}`);
+    throw await GatewayError.from(res, "load the wingman voice state");
   }
   const body = (await res.json()) as Partial<WingmanVoice>;
   return {
@@ -2001,7 +2133,7 @@ export async function fetchWingmanVoiceAudio(sessionId: string, signal?: AbortSi
   if (!res.ok) {
     // Narration audio unavailable because of credits (issue #942): a 402 body is JSON even here.
     if (res.status === 402) throw creditsErrorFrom(await res.json().catch(() => ({})));
-    throw new GatewayError(res.status, `GET wingman/voice/audio failed: ${res.status}`);
+    throw await GatewayError.from(res, "load the wingman audio");
   }
   return res.arrayBuffer();
 }
@@ -2017,7 +2149,7 @@ export async function getWingmanMenu(sessionId: string, signal?: AbortSignal): P
     signal,
   });
   if (!res.ok) {
-    throw new GatewayError(res.status, `GET wingman/menu failed: ${res.status}`);
+    throw await GatewayError.from(res, "load the wingman menu");
   }
   const body = (await res.json()) as Partial<WingmanMenu> & { options?: Partial<WingmanMenuOption>[] };
   return {
@@ -2055,7 +2187,7 @@ export async function pressWingmanMenu(
     signal,
   });
   if (!res.ok) {
-    throw new GatewayError(res.status, `POST wingman/menu-press failed: ${res.status}`);
+    throw await GatewayError.from(res, "press that wingman menu item");
   }
 }
 
@@ -2075,7 +2207,7 @@ export async function setVoiceMode(sessionId: string, enabled: boolean, signal?:
     signal,
   });
   if (!res.ok) {
-    throw new GatewayError(res.status, `POST voice-mode failed: ${res.status}`);
+    throw await GatewayError.from(res, "change voice mode");
   }
 }
 
@@ -2094,7 +2226,7 @@ export async function stopWingmanVoice(sessionId: string, signal?: AbortSignal):
     signal,
   });
   if (!res.ok) {
-    throw new GatewayError(res.status, `POST wingman/voice/stop failed: ${res.status}`);
+    throw await GatewayError.from(res, "stop the wingman voice");
   }
 }
 
@@ -2131,7 +2263,7 @@ export async function getVoiceModeAllSessions(signal?: AbortSignal): Promise<boo
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
   });
-  if (!res.ok) throw new GatewayError(res.status, `GET voice-mode/all failed: ${res.status}`);
+  if (!res.ok) throw await GatewayError.from(res, "load the voice-mode states");
   const body = (await res.json()) as { enabled?: unknown };
   return Boolean(body.enabled);
 }
@@ -2153,7 +2285,7 @@ export async function setVoiceModeAllSessions(enabled: boolean, signal?: AbortSi
   });
   if (!res.ok) {
     if (res.status === 402) throw creditsErrorFrom(await res.json().catch(() => ({})));
-    throw new GatewayError(res.status, `POST voice-mode/all failed: ${res.status}`);
+    throw await GatewayError.from(res, "change voice mode for every session");
   }
   const body = (await res.json()) as Partial<VoiceModeAllResult>;
   return {
