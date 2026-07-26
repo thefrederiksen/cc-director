@@ -1,5 +1,6 @@
 import { authHeaders, gatewayFetch } from "../api/client";
 import { analyzeMicQuality, judgeMicQuality } from "./micQuality";
+import { currentPlatform } from "./platform";
 
 // Background microphone-quality reporting for ORDINARY dictation.
 //
@@ -20,8 +21,9 @@ import { analyzeMicQuality, judgeMicQuality } from "./micQuality";
 //    performed (wav.ts hands back the native-rate mono buffer), so the only new work is the analysis
 //    itself over a clip already in memory.
 //
-// WHAT IS SENT: measurements and the microphone's name. No audio, and no transcript. The clip itself
-// stays where it was; this is a handful of numbers per dictation.
+// WHAT IS SENT: measurements, the microphone's name and stable id, and which kind of machine
+// captured it (mobile / mac / windows). No audio, and no transcript. The clip itself stays where it
+// was; this is a handful of numbers per dictation.
 
 /** Below this there is not enough audio for a stable reading, and a shaky measurement reported as
  *  fact is worse than no measurement. Chosen from real dictation: the Gateway's own archive of 212
@@ -29,11 +31,25 @@ import { analyzeMicQuality, judgeMicQuality } from "./micQuality";
  *  while keeping the short-utterance case - which has never been measured - out of the data. */
 const MIN_REPORTABLE_SECONDS = 3;
 
+/** The microphone a clip was captured with. The label is what a human reads; the deviceId is the
+ *  stable value the Gateway GROUPS measurements by, so a renamed device keeps one history. Either
+ *  may be empty when the browser withholds it. */
+export interface DeviceIdentity {
+  label: string;
+  deviceId: string;
+}
+
 export interface DictationQualitySample {
   /** Which surface produced it, so a phone and a desktop can be told apart later. */
   source: string;
   /** The microphone's name as the operating system reports it. Empty when the browser withholds it. */
   device: string;
+  /** The stable per-origin identifier of that microphone - the grouping key. Empty when unknown. */
+  deviceId: string;
+  /** "mobile" | "mac" | "windows" | "unknown" - what kind of machine captured it. */
+  platform: string;
+  /** The raw evidence behind the platform bucket, so a wrong bucket can be diagnosed. */
+  platformRaw: string;
   durationSeconds: number;
   sampleRate: number;
   speechLevelDb: number;
@@ -60,7 +76,7 @@ export interface DictationQualitySample {
 export function measureDictationQuality(
   samples: Float32Array,
   sampleRate: number,
-  device: string,
+  device: DeviceIdentity,
   source: string,
 ): DictationQualitySample | null {
   if (samples.length / sampleRate < MIN_REPORTABLE_SECONDS) return null;
@@ -69,9 +85,13 @@ export function measureDictationQuality(
   if (!report.heardSpeech) return null;
 
   const verdict = judgeMicQuality(report);
+  const platform = currentPlatform();
   return {
     source,
-    device,
+    device: device.label,
+    deviceId: device.deviceId,
+    platform: platform.platform,
+    platformRaw: platform.platformRaw,
     durationSeconds: Math.round(report.durationSeconds * 10) / 10,
     sampleRate: report.sampleRate,
     speechLevelDb: Math.round(report.speechLevelDb * 10) / 10,
@@ -95,7 +115,7 @@ export function measureDictationQuality(
 export function reportDictationQuality(
   samples: Float32Array,
   sampleRate: number,
-  device: string,
+  device: DeviceIdentity,
   source: string,
 ): void {
   let sample: DictationQualitySample | null;

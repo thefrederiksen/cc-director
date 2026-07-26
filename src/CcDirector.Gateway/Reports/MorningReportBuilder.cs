@@ -197,25 +197,32 @@ public sealed class MorningReportBuilder
         var worst = ranked[^1];
         var anyBad = ranked.Any(d => d.Status == "bad");
 
+        // The email names each device WITH its platform ("Jabra Evolve2 (Windows)"), because the
+        // comparison the owner actually makes is across machines - "my phone beats my Windows
+        // headset" - and a bare name gives that sentence no context. An unknown platform adds
+        // nothing, so the name stands alone.
+        static string Named(Transcription.MicrophoneDeviceSummary d)
+            => d.PlatformLabel.Length == 0 ? d.Device : $"{d.Device} ({d.PlatformLabel})";
+
         string headline;
         string? advice = null;
         if (!anyBad)
         {
             headline = ranked.Count == 1
-                ? $"{best.Device} is doing fine."
-                : $"All {ranked.Count} of your microphones are doing fine - {best.Device} is the best of them.";
+                ? $"{Named(best)} is doing fine."
+                : $"All {ranked.Count} of your microphones are doing fine - {Named(best)} is the best of them.";
         }
         else if (best.Status == "bad")
         {
             // Every microphone measured is bad. Naming a "best" here would recommend one of them.
             headline = ranked.Count == 1
-                ? $"{best.Device} is holding your transcription back."
+                ? $"{Named(best)} is holding your transcription back."
                 : "Every microphone you used is holding your transcription back.";
             advice = worst.Advice;
         }
         else
         {
-            headline = $"{best.Device} is your best microphone; {worst.Device} is holding you back.";
+            headline = $"{Named(best)} is your best microphone; {Named(worst)} is holding you back.";
             advice = $"Use {best.Device} when you can. {worst.Advice}";
         }
 
@@ -223,9 +230,14 @@ public sealed class MorningReportBuilder
         {
             Headline = headline,
             Advice = advice,
+            // The email stays a SUMMARY by design: the trend and the per-measurement history live on
+            // the Cockpit's Transcription Health page, and this sentence is how the reader gets there.
+            DetailHint = "The full per-microphone detail, including quality over time, is on the Cockpit's Transcription Health page.",
             Devices = ranked.Select(d => new MorningMicrophoneDto
             {
                 Device = d.Device,
+                Platform = d.Platform,
+                PlatformLabel = d.PlatformLabel,
                 Samples = d.Samples,
                 Status = d.Status,
                 Summary = d.Advice,

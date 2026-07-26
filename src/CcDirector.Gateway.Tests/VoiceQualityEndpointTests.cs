@@ -53,11 +53,19 @@ public sealed class VoiceQualityEndpointTests : IDisposable
         return (app, new HttpClient { BaseAddress = new Uri(app.Urls.First()) }, log);
     }
 
-    private static object Sample(string device = "Test Mic", bool narrowband = false, double clipped = 0)
+    private static object Sample(
+        string device = "Test Mic",
+        bool narrowband = false,
+        double clipped = 0,
+        string deviceId = "",
+        string platform = "")
         => new
         {
             source = "dictation-send",
             device,
+            deviceId,
+            platform,
+            platformRaw = platform == "" ? "" : $"uaData platform={platform} mobile={platform == "mobile"}",
             durationSeconds = 18.4,
             sampleRate = 48000,
             speechLevelDb = -19.5,
@@ -115,6 +123,76 @@ public sealed class VoiceQualityEndpointTests : IDisposable
         Assert.Equal(2, devices.Count);
         Assert.Equal("good", devices.Single(d => d.GetProperty("device").GetString() == "Desk Mic").GetProperty("status").GetString());
         Assert.Equal("bad", devices.Single(d => d.GetProperty("device").GetString() == "Headset").GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task TwoMicrophonesOnTwoPlatformsAreTwoRows_NamedAndClassified_OverRealHttp()
+    {
+        // The acceptance line of issue #2183, driven end to end: a phone and a Windows headset each
+        // post measurements, and the Cockpit reads back two rows - named, classified, never one
+        // averaged "Default" row.
+        var (app, http, _) = await StartAsync();
+        await using var _d = app;
+
+        for (var i = 0; i < 8; i++)
+            await http.PostAsJsonAsync("/voice-quality/sample",
+                Sample(device: "iPhone Microphone", deviceId: "id-phone", platform: "mobile"));
+        for (var i = 0; i < 8; i++)
+            await http.PostAsJsonAsync("/voice-quality/sample",
+                Sample(device: "Headset (Jabra Evolve2 65)", deviceId: "id-jabra", platform: "windows", narrowband: true));
+
+        using var doc = JsonDocument.Parse(await http.GetStringAsync("/voice-quality/summary"));
+        var devices = doc.RootElement.GetProperty("devices").EnumerateArray().ToList();
+        Assert.Equal(2, devices.Count);
+
+        var phone = devices.Single(d => d.GetProperty("deviceId").GetString() == "id-phone");
+        Assert.Equal("iPhone Microphone", phone.GetProperty("device").GetString());
+        Assert.Equal("mobile", phone.GetProperty("platform").GetString());
+        Assert.Equal("Phone or tablet", phone.GetProperty("platformLabel").GetString());
+
+        var jabra = devices.Single(d => d.GetProperty("deviceId").GetString() == "id-jabra");
+        Assert.Equal("windows", jabra.GetProperty("platform").GetString());
+        Assert.Equal("bad", jabra.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task TheDetailViewCarriesMeasurementsAndTheDailyTrend_PerDevice()
+    {
+        var (app, http, _) = await StartAsync();
+        await using var _d = app;
+
+        for (var i = 0; i < 6; i++)
+            await http.PostAsJsonAsync("/voice-quality/sample",
+                Sample(device: "Desk Mic", deviceId: "id-desk", platform: "windows"));
+
+        using var doc = JsonDocument.Parse(await http.GetStringAsync("/voice-quality/detail"));
+        Assert.Equal(6, doc.RootElement.GetProperty("totalSamples").GetInt32());
+
+        var device = Assert.Single(doc.RootElement.GetProperty("devices").EnumerateArray().ToList());
+        Assert.Equal("Desk Mic", device.GetProperty("summary").GetProperty("device").GetString());
+        Assert.Equal("windows", device.GetProperty("summary").GetProperty("platform").GetString());
+        Assert.Equal(6, device.GetProperty("measurementsTotal").GetInt32());
+        Assert.Equal(6, device.GetProperty("measurements").GetArrayLength());
+        // Everything was posted just now, so the trend is a single day carrying all six.
+        var day = Assert.Single(device.GetProperty("trend").EnumerateArray().ToList());
+        Assert.Equal(6, day.GetProperty("samples").GetInt32());
+        // The raw platform evidence survives to where a wrong bucket would be diagnosed.
+        Assert.Contains("uaData", device.GetProperty("platformRaw").GetString());
+    }
+
+    [Fact]
+    public async Task TheDetailViewStoresNoAudioAndNoTranscriptEither()
+    {
+        // The same privacy claim the summary path makes, asserted against the detail response - the
+        // new surface must not become the place text leaks out of.
+        var (app, http, _) = await StartAsync();
+        await using var _d = app;
+
+        await http.PostAsJsonAsync("/voice-quality/sample", Sample(deviceId: "id-1", platform: "windows"));
+
+        var body = await http.GetStringAsync("/voice-quality/detail");
+        foreach (var forbidden in new[] { "transcript", "rawText", "audio", "text\"" })
+            Assert.DoesNotContain(forbidden, body, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -21,11 +21,15 @@ public sealed class MicrophoneQualityFoldTests
         double clipped = 0,
         double speechDb = -20,
         double snrDb = 45,
-        int minutesAgo = 0)
+        int minutesAgo = 0,
+        string deviceId = "",
+        string platform = "")
         => new()
         {
             TimestampUtc = DateTime.UtcNow.AddMinutes(-minutesAgo),
             Device = device,
+            DeviceId = deviceId,
+            Platform = platform,
             Source = "dictation-send",
             DurationSeconds = 20,
             SampleRate = 48000,
@@ -170,5 +174,173 @@ public sealed class MicrophoneQualityFoldTests
         var device = Assert.Single(MicrophoneQualityFold.Summarize(records).Devices);
 
         Assert.Equal(-20, device.MedianSpeechLevelDb);
+    }
+
+    // ---- device identity: the grouping key is the ID, the name is display metadata (#2183) ----
+
+    [Fact]
+    public void ARenamedDeviceKeepsOneHistory_BecauseTheIdIsTheGroupingKey()
+    {
+        // A driver update or an operating system language change renames the device. Grouped by
+        // name, that would silently split one microphone into two histories - the exact failure
+        // the deviceId exists to prevent.
+        var records = Many(6, i => Sample(device: "Mikrofonarray (Realtek)", deviceId: "id-1", minutesAgo: i))
+            .Concat(Many(6, i => Sample(device: "Microphone Array (Realtek)", deviceId: "id-1", minutesAgo: 100 + i)))
+            .ToList();
+
+        var device = Assert.Single(MicrophoneQualityFold.Summarize(records).Devices);
+        Assert.Equal(12, device.Samples);
+        // The newest name is the one the operating system currently uses.
+        Assert.Equal("Mikrofonarray (Realtek)", device.Device);
+        Assert.Equal("id-1", device.DeviceId);
+    }
+
+    [Fact]
+    public void TwoDevicesSharingANameAreStillTwoRows_WhenTheirIdsDiffer()
+    {
+        // Two identical USB microphones report the same label; only the id can tell them apart.
+        var records = Many(6, i => Sample(device: "USB Microphone", deviceId: "id-left", minutesAgo: i))
+            .Concat(Many(6, i => Sample(device: "USB Microphone", deviceId: "id-right", narrowband: true, minutesAgo: i)))
+            .ToList();
+
+        var devices = MicrophoneQualityFold.Summarize(records).Devices;
+        Assert.Equal(2, devices.Count);
+        Assert.Equal("good", devices.Single(d => d.DeviceId == "id-left").Status);
+        Assert.Equal("bad", devices.Single(d => d.DeviceId == "id-right").Status);
+    }
+
+    [Fact]
+    public void LegacyRecordsWithoutAnIdJoinTheMatchingIdGroup_SoShippingTheIdResetsNoHistory()
+    {
+        // Records written before the id existed carry only the name. When exactly one id-group
+        // wears that name, they belong to it - otherwise every device restarts at "learning" the
+        // day the id ships.
+        var records = Many(4, i => Sample(device: "Desk Mic", minutesAgo: 500 + i))
+            .Concat(Many(3, i => Sample(device: "Desk Mic", deviceId: "id-desk", minutesAgo: i)))
+            .ToList();
+
+        var device = Assert.Single(MicrophoneQualityFold.Summarize(records).Devices);
+        Assert.Equal(7, device.Samples);
+        Assert.Equal("id-desk", device.DeviceId);
+        // Seven measurements clear the verdict bar; a split would have left 4 + 3, both "learning".
+        Assert.Equal("good", device.Status);
+    }
+
+    [Fact]
+    public void LegacyRecordsStayTheirOwnRowWhenTwoIdGroupsShareTheName()
+    {
+        // Ambiguous adoption would file measurements under the WRONG microphone, which is worse
+        // than an extra row that ages out with the retention window.
+        var records = Many(2, i => Sample(device: "USB Microphone", minutesAgo: 500 + i))
+            .Concat(Many(3, i => Sample(device: "USB Microphone", deviceId: "id-a", minutesAgo: i)))
+            .Concat(Many(3, i => Sample(device: "USB Microphone", deviceId: "id-b", minutesAgo: i)))
+            .ToList();
+
+        Assert.Equal(3, MicrophoneQualityFold.Summarize(records).Devices.Count);
+    }
+
+    // ---- platform classification ----
+
+    [Fact]
+    public void EachDeviceCarriesItsPlatform_ReadyToRender()
+    {
+        var records = Many(6, i => Sample(device: "Phone Mic", deviceId: "id-p", platform: "mobile", minutesAgo: i))
+            .Concat(Many(6, i => Sample(device: "Desk Mic", deviceId: "id-d", platform: "windows", minutesAgo: i)))
+            .ToList();
+
+        var devices = MicrophoneQualityFold.Summarize(records).Devices;
+        var phone = devices.Single(d => d.DeviceId == "id-p");
+        Assert.Equal("mobile", phone.Platform);
+        Assert.Equal("Phone or tablet", phone.PlatformLabel);
+        var desk = devices.Single(d => d.DeviceId == "id-d");
+        Assert.Equal("windows", desk.Platform);
+        Assert.Equal("Windows", desk.PlatformLabel);
+    }
+
+    [Fact]
+    public void AnUnrecognisedPlatformReadsAsUnknown_NeverAsAGuessedBucket()
+    {
+        var bogus = Assert.Single(MicrophoneQualityFold.Summarize(
+            Many(6, i => Sample(deviceId: "id-x", platform: "amiga", minutesAgo: i))).Devices);
+        Assert.Equal("unknown", bogus.Platform);
+        Assert.Equal("", bogus.PlatformLabel);
+
+        var legacy = Assert.Single(MicrophoneQualityFold.Summarize(
+            Many(6, i => Sample(deviceId: "id-y", minutesAgo: i))).Devices);
+        Assert.Equal("unknown", legacy.Platform);
+    }
+
+    // ---- the detail view: measurements + quality over time ----
+
+    [Fact]
+    public void TheDetailAgreesWithTheSummary_TheyShareEveryFold()
+    {
+        var records = Many(10, i => Sample(deviceId: "id-1", minutesAgo: i))
+            .Concat(Many(10, i => Sample(device: "Bad Headset", deviceId: "id-2", narrowband: true, minutesAgo: i)))
+            .ToList();
+
+        var summary = MicrophoneQualityFold.Summarize(records);
+        var detail = MicrophoneQualityFold.Detail(records);
+
+        Assert.Equal(summary.Status, detail.Status);
+        Assert.Equal(summary.Headline, detail.Headline);
+        Assert.Equal(summary.TotalSamples, detail.TotalSamples);
+        Assert.Equal(summary.Devices.Select(d => d.DeviceId), detail.Devices.Select(d => d.Summary.DeviceId));
+    }
+
+    [Fact]
+    public void TheDetailCarriesEveryMeasurementNewestFirst_AndOnePointPerDayOldestFirst()
+    {
+        // Three dictations yesterday, two today - the measurement list is the evidence, the daily
+        // points are the trend a chart draws left to right.
+        var records = Many(3, i => Sample(deviceId: "id-1", snrDb: 30, minutesAgo: 1500 + i))
+            .Concat(Many(2, i => Sample(deviceId: "id-1", snrDb: 40, minutesAgo: i)))
+            .ToList();
+
+        var device = Assert.Single(MicrophoneQualityFold.Detail(records).Devices);
+
+        Assert.Equal(5, device.MeasurementsTotal);
+        Assert.Equal(5, device.Measurements.Count);
+        Assert.True(device.Measurements.First().TimestampUtc >= device.Measurements.Last().TimestampUtc);
+
+        Assert.Equal(2, device.Trend.Count);
+        Assert.True(string.CompareOrdinal(device.Trend[0].Date, device.Trend[1].Date) < 0);
+        Assert.Equal(3, device.Trend[0].Samples);
+        Assert.Equal(30, device.Trend[0].MedianSignalToNoiseDb);
+        Assert.Equal(40, device.Trend[1].MedianSignalToNoiseDb);
+    }
+
+    [Fact]
+    public void TheMeasurementListIsCappedLoudly_TheTotalStillTellsTheTruth()
+    {
+        var records = Many(MicrophoneQualityFold.MaxDetailMeasurements + 25,
+            i => Sample(deviceId: "id-1", minutesAgo: i));
+
+        var device = Assert.Single(MicrophoneQualityFold.Detail(records).Devices);
+
+        Assert.Equal(MicrophoneQualityFold.MaxDetailMeasurements, device.Measurements.Count);
+        Assert.Equal(MicrophoneQualityFold.MaxDetailMeasurements + 25, device.MeasurementsTotal);
+    }
+
+    [Fact]
+    public void TwoMicrophonesOnTwoPlatformsAreTwoRows_NamedAndClassified()
+    {
+        // The acceptance line of issue #2183: two physical microphones on two platforms produce two
+        // rows, correctly named and correctly classified - never one averaged "Default" row.
+        var records = Many(8, i => Sample(device: "iPhone Microphone", deviceId: "id-phone", platform: "mobile", minutesAgo: i))
+            .Concat(Many(8, i => Sample(device: "Headset (Jabra Evolve2 65)", deviceId: "id-jabra", platform: "windows", narrowband: true, minutesAgo: i)))
+            .ToList();
+
+        var detail = MicrophoneQualityFold.Detail(records);
+
+        Assert.Equal(2, detail.Devices.Count);
+        var phone = detail.Devices.Single(d => d.Summary.DeviceId == "id-phone");
+        Assert.Equal("iPhone Microphone", phone.Summary.Device);
+        Assert.Equal("mobile", phone.Summary.Platform);
+        Assert.Equal("good", phone.Summary.Status);
+        var jabra = detail.Devices.Single(d => d.Summary.DeviceId == "id-jabra");
+        Assert.Equal("Headset (Jabra Evolve2 65)", jabra.Summary.Device);
+        Assert.Equal("windows", jabra.Summary.Platform);
+        Assert.Equal("bad", jabra.Summary.Status);
     }
 }

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { measureDictationQuality } from "./qualityReport";
 
+const JABRA = { label: "Jabra Evolve2", deviceId: "id-jabra" };
+
 // The background measurement runs on EVERY dictation, so what it declines to report matters as much
 // as what it reports. Two clips that must never become data: one too short to measure honestly, and
 // one with no speech in it - a false start or a moment of silence. Recording either would drag a
@@ -33,10 +35,13 @@ function speech(seconds: number, level = 0.3): Float32Array {
 
 describe("measureDictationQuality", () => {
   it("measures an ordinary dictation and reports the device it came from", () => {
-    const sample = measureDictationQuality(speech(10), RATE, "Jabra Evolve2", "dictation-send");
+    const sample = measureDictationQuality(speech(10), RATE, JABRA, "dictation-send");
 
     expect(sample).not.toBeNull();
     expect(sample?.device).toBe("Jabra Evolve2");
+    expect(sample?.deviceId).toBe("id-jabra");
+    expect(["mobile", "mac", "windows", "unknown"]).toContain(sample?.platform);
+    expect(sample?.platformRaw).toBeTruthy();
     expect(sample?.source).toBe("dictation-send");
     expect(sample?.sampleRate).toBe(RATE);
     expect(sample?.rating).toBeTruthy();
@@ -45,26 +50,29 @@ describe("measureDictationQuality", () => {
   it("declines a clip too short to measure honestly", () => {
     // Under three seconds there are too few frames for a stable noise floor, and a shaky reading
     // reported as fact is worse than no reading.
-    expect(measureDictationQuality(speech(1.5), RATE, "Mic", "dictation-send")).toBeNull();
+    expect(measureDictationQuality(speech(1.5), RATE, JABRA, "dictation-send")).toBeNull();
   });
 
   it("declines a clip with no speech in it, rather than scoring silence as a bad microphone", () => {
-    expect(measureDictationQuality(new Float32Array(RATE * 10), RATE, "Mic", "dictation-send")).toBeNull();
+    expect(measureDictationQuality(new Float32Array(RATE * 10), RATE, JABRA, "dictation-send")).toBeNull();
   });
 
   it("sends no audio and no transcript - only measurements and the device name", () => {
-    const sample = measureDictationQuality(speech(10), RATE, "Mic", "dictation-send");
+    const sample = measureDictationQuality(speech(10), RATE, JABRA, "dictation-send");
     const keys = Object.keys(sample ?? {}).sort();
 
     expect(keys).toEqual(
       [
         "clippedFraction",
         "device",
+        "deviceId",
         "durationSeconds",
         "highBandRatioDb",
         "issues",
         "narrowband",
         "noiseFloorDb",
+        "platform",
+        "platformRaw",
         "rating",
         "sampleRate",
         "signalToNoiseDb",
@@ -77,7 +85,7 @@ describe("measureDictationQuality", () => {
   it("is JSON-safe even when a measurement is infinite", () => {
     // A digitally silent high band reads as -Infinity, which JSON.stringify turns into null and the
     // Gateway would then store as zero - a value that means "wideband", the opposite of the truth.
-    const sample = measureDictationQuality(speech(10), RATE, "Mic", "dictation-send");
+    const sample = measureDictationQuality(speech(10), RATE, JABRA, "dictation-send");
     const roundTripped = JSON.parse(JSON.stringify(sample)) as Record<string, unknown>;
 
     for (const [key, value] of Object.entries(roundTripped)) {
@@ -88,6 +96,6 @@ describe("measureDictationQuality", () => {
 
   it("copes with an unnamed microphone", () => {
     // A browser withholds the label until permission has been granted at least once.
-    expect(measureDictationQuality(speech(10), RATE, "", "dictation-send")?.device).toBe("");
+    expect(measureDictationQuality(speech(10), RATE, { label: "", deviceId: "" }, "dictation-send")?.device).toBe("");
   });
 });

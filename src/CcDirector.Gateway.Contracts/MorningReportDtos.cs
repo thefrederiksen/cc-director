@@ -73,6 +73,11 @@ public sealed class MorningMicrophonesDto
     /// reads.</summary>
     public string? Advice { get; set; }
 
+    /// <summary>A prewritten sentence pointing the reader at the Cockpit's Transcription Health page
+    /// for the per-measurement history and the quality-over-time trend. The email stays a summary by
+    /// design; this is the door to the detail. The sender prints it verbatim.</summary>
+    public string DetailHint { get; set; } = "";
+
     /// <summary>The devices, best first. Never empty when this section is present.</summary>
     public List<MorningMicrophoneDto> Devices { get; set; } = new();
 }
@@ -82,6 +87,13 @@ public sealed class MorningMicrophoneDto
 {
     /// <summary>The name the operating system gave it, or "Unnamed microphone".</summary>
     public string Device { get; set; } = "";
+
+    /// <summary>What kind of machine it lives on: "mobile", "mac", "windows" or "unknown".</summary>
+    public string Platform { get; set; } = "unknown";
+
+    /// <summary>The finished display string for the platform ("Phone or tablet", "Mac", "Windows").
+    /// Empty when unknown, so the email renders nothing rather than a guess.</summary>
+    public string PlatformLabel { get; set; } = "";
 
     /// <summary>How many dictations this verdict rests on.</summary>
     public int Samples { get; set; }

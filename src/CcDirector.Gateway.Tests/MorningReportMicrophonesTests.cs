@@ -49,7 +49,7 @@ public sealed class MorningReportMicrophonesTests : IDisposable
                microphoneQuality: withMicrophones ? Logs() : null);
 
     private void Seed(TenantId tenant, string device, int count, bool narrowband = false, double clipped = 0,
-        double speechDb = -20, double snrDb = 45, int daysAgo = 1)
+        double speechDb = -20, double snrDb = 45, int daysAgo = 1, string deviceId = "", string platform = "")
     {
         var log = Logs()(tenant);
         for (var i = 0; i < count; i++)
@@ -58,6 +58,8 @@ public sealed class MorningReportMicrophonesTests : IDisposable
             {
                 TimestampUtc = Now.AddDays(-daysAgo),
                 Device = device,
+                DeviceId = deviceId,
+                Platform = platform,
                 Source = "dictation-send",
                 DurationSeconds = 20,
                 SampleRate = 48000,
@@ -195,5 +197,49 @@ public sealed class MorningReportMicrophonesTests : IDisposable
         Seed(Alice, "Ancient Mic", 20, daysAgo: 60);
 
         Assert.Null(Builder().Build("alice@example.com", Alice, Window()).Microphones);
+    }
+
+    [Fact]
+    public void TheBestAndWorstAreNamedWithTheirPlatform_SoTheComparisonHasContext()
+    {
+        // "Your phone microphone beats your Windows headset" is the sentence the owner asked for;
+        // two bare names with no platform cannot say it.
+        Seed(Alice, "iPhone Microphone", 20, deviceId: "id-phone", platform: "mobile");
+        Seed(Alice, "Bluetooth Headset", 20, deviceId: "id-headset", platform: "windows", narrowband: true);
+
+        var mics = Builder().Build("alice@example.com", Alice, Window()).Microphones;
+
+        Assert.NotNull(mics);
+        Assert.Contains("iPhone Microphone (Phone or tablet)", mics!.Headline);
+        Assert.Contains("Bluetooth Headset (Windows)", mics.Headline);
+        Assert.Equal("mobile", mics.Devices[0].Platform);
+        Assert.Equal("Phone or tablet", mics.Devices[0].PlatformLabel);
+        Assert.Equal("windows", mics.Devices[^1].Platform);
+    }
+
+    [Fact]
+    public void AnUnknownPlatformAddsNothingToTheSentence()
+    {
+        // Legacy measurements carry no platform. "(unknown)" next to a working microphone is noise.
+        Seed(Alice, "Good Mic", 20);
+
+        var mics = Builder().Build("alice@example.com", Alice, Window()).Microphones;
+
+        Assert.NotNull(mics);
+        Assert.Contains("Good Mic is doing fine.", mics!.Headline);
+        Assert.DoesNotContain("(", mics.Headline);
+        Assert.Equal("unknown", Assert.Single(mics.Devices).Platform);
+        Assert.Equal("", Assert.Single(mics.Devices).PlatformLabel);
+    }
+
+    [Fact]
+    public void TheEmailStaysASummary_AndPointsTheReaderAtTheCockpitForTheDetail()
+    {
+        Seed(Alice, "Good Mic", 20);
+
+        var mics = Builder().Build("alice@example.com", Alice, Window()).Microphones;
+
+        Assert.NotNull(mics);
+        Assert.Contains("Transcription Health", mics!.DetailHint);
     }
 }
