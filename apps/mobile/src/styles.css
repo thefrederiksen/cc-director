@@ -9,6 +9,18 @@
   --text-dim: #99a0b8;
   --accent: #3b82f6;
   --attention: #f14c4c;
+
+  /* THE TOP CHROME STACK. Two bars can be pinned above every screen at once - the network banner
+     (.conn-banner, only when the network is in trouble) and the voice-mode banner (.voicemode-banner,
+     only while the fleet is narrating). Each publishes its own MEASURED height from its component
+     (--connbanner-h, --voicemode-h; both 0px when that bar is not on screen), and this is their sum:
+     the one number every screen offsets itself by.
+
+     One number, because they stack and a screen must give up BOTH or it loses its own header to
+     whichever bar it did not account for. The screens that are pinned out of the document flow
+     (.terminal-screen, .car-screen) cannot be pushed down by anything rendered above them, so they
+     read this directly; the screens in normal flow are pushed by body's padding-top below. */
+  --topbars-h: calc(var(--connbanner-h, 0px) + var(--voicemode-h, 0px));
 }
 
 * {
@@ -25,6 +37,15 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* The network banner is position:fixed, so it is out of the flow and pushes NOTHING down by itself -
+   it would simply paint over the top of whatever screen is up. This reserves exactly its height at the
+   top of the document so every in-flow screen (and the voice-mode banner under it) starts below it
+   instead. 0px whenever the banner is not on screen, which is nearly always. The pinned screens are
+   position:fixed and ignore this; they subtract --topbars-h themselves. */
+body {
+  padding-top: var(--connbanner-h, 0px);
+}
+
 #root {
   min-height: 100dvh;
 }
@@ -37,10 +58,11 @@ body {
 
 .app-bar {
   position: sticky;
-  /* Parks BELOW the voice-mode banner, not at the very top. Both are sticky, and the banner has the
-     higher stacking order, so at top: 0 the roster header would slide underneath it as you scroll and
-     take the hamburger menu with it. --voicemode-h is 0px whenever the banner is not on screen. */
-  top: var(--voicemode-h, 0px);
+  /* Parks BELOW the pinned top bars, not at the very top. The voice-mode banner is sticky too and has
+     the higher stacking order, so at top: 0 the roster header would slide underneath it as you scroll
+     and take the hamburger menu with it; the network banner is fixed and would simply cover it.
+     --topbars-h is 0px whenever neither bar is on screen. */
+  top: var(--topbars-h, 0px);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -51,8 +73,8 @@ body {
 }
 
 /* ...but NOT when the header is inside a screen that has ALREADY been offset. The pinned shells set
-   their own `top` to the banner height, so their header starts below the banner by virtue of being in
-   that box. A sticky `top: var(--voicemode-h)` there means "never come closer than the banner height
+   their own `top` to the bar height, so their header starts below the bars by virtue of being in
+   that box. A sticky `top: var(--topbars-h)` there means "never come closer than the bar height
    to the TOP OF THIS BOX", which pushes the header down a SECOND time and leaves an empty strip of
    page background exactly one banner tall. Shipped that way on 2026-07-25 and reported from the
    phone: "there's a black space at the top... it's like it bumped it down too far".
@@ -209,12 +231,18 @@ a.banner-btn {
   border-color: rgba(255, 255, 255, 0.25);
 }
 
-/* Mobile-resilience mission: the ONE global bad-connection banner. A slim strip pinned to the very top
-   of every gated screen, shown only when the shared connection-health signal reads bad. It OVERLAYS the
-   top edge (fixed, not in flow) so it never reflows the fixed-height session screens or pushes the
-   terminal, and it names the bad connection plus how stale the data is - the single voice for "showing
-   last known information". Amber (a warning, not an error): the data underneath is fine, the network is
-   not. Sits above the sticky app bar and per-session headers (z-index 5) but below full-screen modals. */
+/* Mobile-resilience mission: the ONE global network banner, and the app's ONLY word about the network.
+   A strip pinned to the very top of every gated screen, shown only when the connection is unreachable
+   or the Gateway rules the path slow. It OVERLAYS the top edge (fixed, not in flow) so it never reflows
+   the fixed-height session screens or pushes the terminal, and it names the problem plus how stale the
+   data is - the single voice for "showing last known information". Amber (a warning, not an error): the
+   data underneath is fine, the network is not. Sits above the sticky app bar and per-session headers
+   (z-index 5) but below full-screen modals.
+
+   It is CENTRED and deliberately BIG. It replaced a 12px corner pill that was on screen permanently and
+   was ignorable exactly because it was: the thing worth saying is worth reading at a glance, and it is
+   only ever on screen when something is actually wrong. Two centred lines, not a corner badge - it does
+   not compete with any control for a corner, because it holds none. */
 .conn-banner {
   position: fixed;
   top: 0;
@@ -222,23 +250,29 @@ a.banner-btn {
   right: 0;
   z-index: 1500;
   display: flex;
-  align-items: baseline;
+  flex-direction: column;
+  align-items: center;
   justify-content: center;
-  flex-wrap: wrap;
-  gap: 3px 8px;
-  padding: calc(6px + env(safe-area-inset-top)) 12px 6px;
+  gap: 2px;
+  padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
   background: #7a5200;
   border-bottom: 1px solid #b8860b;
   color: #ffe6a3;
-  font-size: 12.5px;
-  font-weight: 600;
   text-align: center;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.conn-banner-text {
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.25;
 }
 
 .conn-banner-age {
   color: #ffcf7a;
   font-weight: 500;
+  font-size: 13.5px;
+  line-height: 1.3;
   opacity: 0.9;
 }
 
@@ -872,20 +906,20 @@ a.banner-btn {
    plain 100dvh box; that test will fail and tell you why. */
 .terminal-screen {
   position: fixed;
-  /* STARTS BELOW THE VOICE-MODE BANNER, and gives up exactly its height (owner, 2026-07-25). This box
+  /* STARTS BELOW THE PINNED TOP BARS, and gives up exactly their height (owner, 2026-07-25). This box
      is pinned out of the document flow, so a bar rendered above it in the markup cannot push it down -
      it simply painted OVER this screen's own header, hiding the back arrow to the roster and the
-     overflow menu. You could Respond and Snooze, and you could not leave. --voicemode-h is 0px
-     whenever the banner is not on screen, so nothing here changes when voice mode is off. */
-  top: var(--voicemode-h, 0px);
+     overflow menu. You could Respond and Snooze, and you could not leave. --topbars-h is the sum of
+     both bars and is 0px when neither is on screen, so nothing here changes in the normal case. */
+  top: var(--topbars-h, 0px);
   left: 0;
   right: 0;
   display: flex;
   flex-direction: column;
   height: 100vh;
   height: 100dvh;
-  height: calc(var(--app-vh, 100dvh) - var(--voicemode-h, 0px));
-  max-height: calc(var(--app-vh, 100dvh) - var(--voicemode-h, 0px));
+  height: calc(var(--app-vh, 100dvh) - var(--topbars-h, 0px));
+  max-height: calc(var(--app-vh, 100dvh) - var(--topbars-h, 0px));
   min-height: 0;
   /* Anything that still overflows the column (a large device font scale, safe-area insets) is
      CLIPPED, never scrolled - the page must not move. */
@@ -2348,7 +2382,10 @@ a.banner-btn {
    the "Turn off" button is the one solid thing on it, because that is what the bar is FOR. */
 .voicemode-banner {
   position: sticky;
-  top: 0;
+  /* Parks below the network banner when that one is up, so scrolling never slides this bar - and its
+     "Turn off" button, the only way out of voice mode - underneath a fixed strip. Its RESTING position
+     is already correct: body reserves the network banner's height as padding-top. 0px otherwise. */
+  top: var(--connbanner-h, 0px);
   z-index: 6;
   display: flex;
   align-items: center;
@@ -2549,37 +2586,19 @@ a.banner-btn {
      row 1:  [<- Sessions] ..... ( o Fast ) ..... [...]    navigation left, indicator centre, menu right
      row 2:  102 devthrottle / f9e7                        the name gets the whole row
 
-   The pill is CENTRED in row 1 because it is the one tappable thing here that nobody means to tap - it
-   navigates to Diagnostics. It briefly sat at the right end of row 2, which put a small link directly
-   above "Voice mode": the right-hand tab, the most-pressed control on the screen, and a few pixels away.
-   It got hit instead of the tab. Centre of row 1 is a whole row clear of the tabs and horizontally clear
-   of both controls.
-
-   The corner belongs to the CONTROL, not the indicator. This bar used to put the menu button on the
+   The corner belongs to the CONTROL, not an indicator. This bar used to put the menu button on the
    LEFT because the network pill was position:fixed in the top-right and nothing wanted to guess how
    wide it was ("Fast" / "Warming up" / "Direct LAN"). That broke the menu outright: .session-menu is
    anchored right:0, which is correct for a button on the right, so hanging it off a LEFT button opened
-   it off the left edge of the screen - about half of it was unreadable. The pill is now an ordinary
-   inline item on row 2 (.net-pill-inline; the fixed one stands down on session screens), so the button
-   is back in the corner and its menu opens inward. Both rows are plain flex - nothing guesses widths.
+   it off the left edge of the screen - about half of it was unreadable. The pill was moved inline onto
+   row 1 and then deleted outright (see .conn-banner), so the button owns the corner and its menu opens
+   inward. Both rows are plain flex - nothing guesses widths.
 
    The name keeps its own row: between the two controls there was never enough of row 1 left for a real
-   session name ("102 Ghost Directors from tests" collapsed to "102 M..."). Sharing row 2 with the pill
-   costs it only the pill's width, and .term-title already flexes and ellipsizes. */
+   session name ("102 Ghost Directors from tests" collapsed to "102 M..."). Row 2 is now the name's
+   alone, and .term-title already flexes and ellipsizes. */
 .session-app-bar {
   gap: 8px;
-  position: relative;   /* the anchor the centred pill below positions against */
-}
-
-/* TRUE centre, not "whatever the flex spacers left over". Back ("<- Sessions") is much wider than the
-   menu button, so two equal spacers push the pill ~30px right of centre - which is 30px back toward the
-   Voice mode tab, the exact thing this move exists to get away from. Absolute centring is independent of
-   both controls' widths, so the pill cannot drift as their labels change. It stays out of the flex flow;
-   the spacers keep the row's own geometry unchanged. */
-.session-app-bar .net-pill-inline {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
 }
 
 /* Claims the middle of row 1, so the menu button is pushed to the right edge. Guesses nothing - it
@@ -3274,52 +3293,12 @@ a.banner-btn {
   margin: 8px 0 0;
 }
 
-/* The always-visible network status pill (Network Diagnostics mission, P1): a small green/amber/red/grey
-   dot + label pinned to the top-right, tappable to open Diagnostics. Colour = authoritative direct-vs-relay
-   for this device; never red on the cold-start. */
-.net-pill {
-  position: fixed;
-  top: calc(env(safe-area-inset-top, 0px) + 8px);
-  right: 10px;
-  z-index: 40;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  color: var(--text-dim);
-  font-size: 12px;
-  font-weight: 600;
-  text-decoration: none;
-  line-height: 1;
-}
-/* The session screens give the pill a real home on their title row instead of letting it hold the
-   top-right corner (which cost the overflow menu its corner, and broke that menu - see .session-app-bar).
-   Declared AFTER .net-pill so it wins on position/inset at equal specificity. */
-.net-pill-inline {
-  position: static;
-  top: auto;
-  right: auto;
-  z-index: auto;
-  flex: 0 0 auto;
-}
-
-.net-pill-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--text-dim);
-  flex: 0 0 auto;
-}
-.net-pill-green .net-pill-dot { background: #37c26d; }
-.net-pill-amber .net-pill-dot { background: #e8a33d; }
-.net-pill-red .net-pill-dot { background: var(--attention); }
-.net-pill-grey .net-pill-dot { background: var(--text-dim); }
-.net-pill-green { color: #37c26d; }
-.net-pill-amber { color: #e8a33d; }
-.net-pill-red { color: var(--attention); }
+/* There is deliberately no network status pill here any more. The phone used to carry an always-visible
+   green/amber/red/grey dot + label - fixed top-right on most screens, inline in the header on the four
+   that had one - and it was deleted on 2026-07-26. It said "Connected" almost every second of its life
+   while costing a control the corner on every screen it touched. A network problem is now said once, in
+   words, by .conn-banner; a healthy connection is said with silence. Diagnostics is still one tap away
+   in the menu. */
 
 /* The "how to make it faster" checklist, shown when the connection is relaying or slow. */
 .diag-checklist {
@@ -3367,10 +3346,10 @@ a.banner-btn {
   /* Anchor top/left/right ONLY - deliberately NOT `inset: 0`. `inset: 0` sets both top:0 AND bottom:0,
      which OVER-CONSTRAINS a fixed box: its height is then derived from top+bottom (the tall, toolbar-
      hidden LAYOUT viewport) and the height below is IGNORED. Anchoring top-only lets the height win. */
-  /* Starts below the voice-mode banner and gives up exactly its height, for the same reason
-     .terminal-screen does: this box is pinned out of the flow, so the banner would otherwise paint
-     over Car Mode's own header. 0px when the banner is not on screen. */
-  top: var(--voicemode-h, 0px);
+  /* Starts below the pinned top bars and gives up exactly their height, for the same reason
+     .terminal-screen does: this box is pinned out of the flow, so a bar would otherwise paint
+     over Car Mode's own header. 0px when neither bar is on screen. */
+  top: var(--topbars-h, 0px);
   left: 0;
   right: 0;
   display: flex;
@@ -3387,9 +3366,9 @@ a.banner-btn {
      mechanism, shared with .terminal-screen - see the session-screen shell below. */
   height: 100vh;
   height: 100dvh;
-  height: calc(var(--app-vh, 100dvh) - var(--voicemode-h, 0px));
+  height: calc(var(--app-vh, 100dvh) - var(--topbars-h, 0px));
   max-height: 100dvh;
-  max-height: calc(var(--app-vh, 100dvh) - var(--voicemode-h, 0px));
+  max-height: calc(var(--app-vh, 100dvh) - var(--topbars-h, 0px));
   overflow: hidden;
 }
 /* The pin only works if the column lays out as: header (natural) -> middle (absorbs + scrolls) -> footer
@@ -4316,12 +4295,13 @@ a.banner-btn {
 .assistant-screen {
   display: flex;
   flex-direction: column;
-  /* Gives up the voice-mode banner's height. This screen is in the normal flow, so the banner already
-     pushes it down - but without shrinking it too, banner + full visible height is TALLER than the
-     window and the composer at the bottom would be pushed off. No `top` offset here: the flow has
-     already done that half. 0px when the banner is not on screen. */
-  height: calc(var(--app-vh, 100dvh) - var(--voicemode-h, 0px));
-  max-height: calc(var(--app-vh, 100dvh) - var(--voicemode-h, 0px));
+  /* Gives up the pinned top bars' height. This screen is in the normal flow, so it is already pushed
+     down by them (the voice-mode banner is in flow; the fixed network banner reserves its height as
+     body padding) - but without shrinking it too, bars + full visible height is TALLER than the window
+     and the composer at the bottom would be pushed off. No `top` offset here: the flow has already
+     done that half. 0px when neither bar is on screen. */
+  height: calc(var(--app-vh, 100dvh) - var(--topbars-h, 0px));
+  max-height: calc(var(--app-vh, 100dvh) - var(--topbars-h, 0px));
   overflow: hidden;
   padding: 0 12px;
   max-width: 680px;
@@ -4349,10 +4329,9 @@ a.banner-btn {
 }
 
 /* The Chat / Voice toggle lives in the MIDDLE, on a row of its own beneath the bar. It used to sit at
-   the right end of the bar, where the fixed network pill (.net-pill, top-right on any screen that does
-   not give it a home) landed straight on top of it - a green pill over the one control that decides how
-   this whole screen behaves. The bar now hosts the pill inline instead, and this row centres the toggle
-   clear of both corners. */
+   the right end of the bar, where the app's fixed network pill landed straight on top of it - a green
+   "Connected" pill over the one control that decides how this whole screen behaves. That pill is gone
+   (see .conn-banner), and this row keeps the toggle centred and clear of both corners. */
 .assistant-moderow {
   flex: 0 0 auto;
   display: flex;

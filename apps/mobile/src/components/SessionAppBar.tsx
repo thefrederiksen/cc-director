@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { holdPillLabel } from "@devthrottle/client-core/sessions/snoozeAction";
-import { StatusPill } from "./StatusPill";
 import type { SessionManage } from "./useSessionManage";
 
 // The ONE app bar shared by every per-session screen: Chat, Terminal and Voice mode (owner design
@@ -24,12 +23,12 @@ import type { SessionManage } from "./useSessionManage";
 // on the LEFT, because the globally-mounted network pill was fixed to the top-right and nothing wanted
 // to guess its width. The cost was a broken menu: .session-menu is anchored right:0 - correct for a
 // button on the right - so hanging it off a LEFT button opened it off the left edge of the screen,
-// cut in half and unreadable. The pill now rides the title row as an ordinary inline item (the fixed
-// one stands down on session screens, see GatedLayout), the button is back in the corner, and its menu
-// opens inward. Nothing guesses any widths: both rows are plain flex.
+// cut in half and unreadable. The pill was then moved inline onto row 1, and finally deleted outright
+// (see ConnectionBanner - the app says nothing while the connection is fine). The corner is the
+// button's for good. Nothing guesses any widths: both rows are plain flex.
 //
 //   row 1:  [<- Sessions] ................... [...]     navigation left, menu right
-//   row 2:  102 devthrottle / f9e7 ....... ( o Fast )    name flexes, indicator rides along
+//   row 2:  102 devthrottle / f9e7 .....................  the name gets the whole row
 
 export interface SessionAppBarProps {
   title: string;
@@ -95,20 +94,9 @@ export function SessionAppBar({ title, manage, showSnooze = false, showSwitchToV
           &larr; Sessions
         </button>
 
-        {/* Two spacers, so the pill sits in the CENTRE of row 1 and the menu button still gets the
-            corner. Nothing guesses any widths - the spacers just split whatever is left over. */}
-        <div className="session-bar-spacer" />
-
-        {/* The network pill lives here, mid-row-1, because it is the only tappable thing on this screen
-            that nobody means to tap. It navigates to Diagnostics, and it spent a few hours parked at the
-            right end of the TITLE row - which put a small link directly above "Voice mode", the
-            right-hand tab and the most-pressed control on the screen. A tap a few pixels high landed on
-            it and threw you off the screen you were opening (owner, 2026-07-15: "several times when I
-            wanted to go to voice mode, I hit the fast by accident"). Mid-row-1 is a whole row clear of
-            the tabs and horizontally clear of both controls: an indicator you can still reach on purpose
-            and stop hitting by accident. */}
-        <StatusPill inline />
-
+        {/* The spacer pushes the menu button to the corner and guesses no widths. It used to be two
+            spacers with the network status pill centred between them; the pill is gone (see
+            ConnectionBanner) and row 1 is now just Back and the menu button. */}
         <div className="session-bar-spacer" />
 
         <div className="session-menu-wrap" ref={menuRef}>
