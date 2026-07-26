@@ -917,7 +917,10 @@ public sealed class GatewayHost : IAsyncDisposable
         _morningReport = new Reports.MorningReportBuilder(_gatewayDb, PushedSessions, _streamStaleAfter,
             // The repo-state store (issue #2118) is the hygiene rows' source. Passed here rather than
             // resolved inside the builder so the report reads the SAME store the push endpoint writes.
-            repoState: _repoState);
+            repoState: _repoState,
+            // The same per-tenant log the background monitoring writes, opened per tenant BY PATH so a
+            // report can only ever read the measurements of the account it is about.
+            microphoneQuality: Transcription.MicrophoneQualityLog.ForTenant);
         // Snooze Length mission: the persisted snooze registry (sessionId -> SnoozeUntilUtc), now in the
         // snoozes table of the EF data layer - a Gateway restart re-arms every pending snooze from the
         // database; an entry already past its time simply fires on the first sweep. The path argument is the
