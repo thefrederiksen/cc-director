@@ -706,6 +706,28 @@ public sealed class SessionDto
     public TokenTotalsDto? TokenTotals { get; set; }
 
     /// <summary>
+    /// How many files are changed in this session's working tree - staged plus unstaged plus untracked -
+    /// as the owning Director's <c>SessionGitStatusMonitor</c> last measured it. This is the number behind
+    /// the desktop rail's amber "N chg" badge, and it is on the wire so the Cockpit roster and the phone
+    /// show the SAME number rather than each polling git for themselves (or, as before this field existed,
+    /// showing nothing at all).
+    ///
+    /// A RAW FACT, not a verdict. Only the machine holding the checkout can measure it, so the Gateway
+    /// passes it through untouched; what a client DOES with it (the badge, its wording) is one shared
+    /// formatter, not a per-client rule.
+    ///
+    /// NULL MEANS UNKNOWN AND MUST NEVER BE RENDERED AS ZERO (issue 516). A git probe can fail - no git on
+    /// the path, a permissions problem, a repository mid-rebase - and "we could not tell" is a different
+    /// answer from "this tree is clean". Null is also what an older Director reports, since it does not
+    /// know the field. Clients show no badge for null AND for 0; only a positive count renders.
+    ///
+    /// Scoped to the session's OWN working tree: a session running in a worktree reports that worktree's
+    /// count, not its parent repository's. Two sessions sharing one checkout therefore report the same
+    /// number, which is correct - it is one tree.
+    /// </summary>
+    public int? UncommittedCount { get; set; }
+
+    /// <summary>
     /// Issue #1176 (Phase 1a): a copy safe to hand out from the Gateway's pushed-session cache. The
     /// <c>/sessions</c> aggregation stamps scalar fields (EffectiveColor, DirectorId, MachineName,
     /// voice/transcription overlays, etc.) on the object it serves, so callers must never receive the

@@ -1005,6 +1005,7 @@ public sealed class Session : IDisposable
 
     private bool _isBackgroundRunning;
     private string _backgroundReason = "running in background";
+    private int? _uncommittedCount;
 
     /// <summary>
     /// True when the Wingman has read the screen and determined this session is parked
@@ -1044,6 +1045,37 @@ public sealed class Session : IDisposable
     /// promptly (defect 14). NOT by the SessionStatusWingman, which this comment used to name and which has
     /// never subscribed to it - before defect 14 this event had no subscribers at all.</summary>
     public event Action<bool>? OnIsBackgroundRunningChanged;
+
+    /// <summary>
+    /// How many files are changed in this session's working tree (staged plus unstaged plus untracked),
+    /// or NULL when nobody has been able to tell yet. Written only by <c>SessionGitStatusMonitor</c>,
+    /// which polls <c>GitStatusProvider</c> on the Director; reported on <c>SessionDto.UncommittedCount</c>
+    /// so the desktop rail, the Cockpit roster and the phone all read ONE number instead of each polling
+    /// git for themselves.
+    ///
+    /// NULL IS A REAL ANSWER AND IS NEVER RENDERED AS ZERO (issue 516). A git probe can fail - a missing
+    /// git executable, a permissions problem, a repository that is mid-rebase - and reporting 0 there would
+    /// erase the difference between "this tree is clean" and "we could not tell", which every reader
+    /// downstream would show as a clean tree. The monitor therefore leaves the LAST KNOWN value in place on
+    /// a failed probe and only ever publishes a count a probe actually produced; null means no probe has
+    /// ever succeeded for this session.
+    /// </summary>
+    public int? UncommittedCount
+    {
+        get => _uncommittedCount;
+        set
+        {
+            if (_uncommittedCount == value) return;
+            _uncommittedCount = value;
+            OnUncommittedCountChanged?.Invoke(value);
+        }
+    }
+
+    /// <summary>Fires when <see cref="UncommittedCount"/> changes. Arg: the new count (null when unknown).
+    /// Subscribed by <c>ControlApiHost.WireDoorbellPush</c>, which pushes the session up the stream so the
+    /// Cockpit badge moves when the count moves rather than waiting for the next ten-second re-push, and by
+    /// the desktop rail, which re-renders the badge in place.</summary>
+    public event Action<int?>? OnUncommittedCountChanged;
 
     /// <summary>
     /// Set (or clear) the Wingman's "parked on a background task" verdict for this session.

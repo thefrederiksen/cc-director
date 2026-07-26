@@ -906,6 +906,18 @@ body {
   color: var(--text-dim);
 }
 
+/* Uncommitted work in this session's working tree ("12 chg"), in the desktop rail's amber. A BADGE, never
+   a colour - the dot keeps telling the truth about the work. Not uppercased: "chg" is already a squeeze,
+   and shouting it does not make it clearer. Shown only for a positive count; a clean tree and an unknown
+   one both render nothing (client-core/sessions/changes). */
+.roster-tag.changes {
+  text-transform: none;
+  letter-spacing: 0;
+  background: rgba(245, 208, 96, 0.14);
+  border-color: rgba(245, 208, 96, 0.5);
+  color: #f5d060;
+}
+
 /* A session flagged for deletion wears a neutral "winding down" badge (a BADGE, never a colour): the dot
    still tells the truth about the work while this rides beside it. Mirrors the desktop rail's badge. */
 .roster-tag.winding-down {
