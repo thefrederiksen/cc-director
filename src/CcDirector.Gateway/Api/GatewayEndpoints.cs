@@ -1855,6 +1855,32 @@ internal static class GatewayEndpoints
 
             FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid}, director={director.DirectorId}, waitForIdle={req.WaitForIdle}");
 
+            // THE WINGMAN MENU GUARD (issue #2193), opt-in per request and off for every existing caller.
+            // A voice reply asks for it, so the live screen is read HERE - one hop before the send - rather
+            // than by the client, which would leave a window for the screen to change between the check and
+            // the send. On a menu we type nothing and press nothing: the trailing Enter this prompt carries
+            // would otherwise confirm whatever option the picker had highlighted.
+            //
+            // Only a CONFIDENTLY-recognized menu refuses. A screen the classifier cannot read is forwarded
+            // exactly as it was before this guard existed - blocking on uncertainty would silently break
+            // ordinary voice replies, which is worse than the gap it would close.
+            if (req.MenuGuard)
+            {
+                var guardRoute = new SessionVerbClient(director, sendCommand);
+                if (await Wingman.WaitingScreenReader.IsMenuAsync(guardRoute, sid, CancellationToken.None))
+                {
+                    FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid} REFUSED - a menu owns the live screen (menu guard); nothing typed, no Enter pressed");
+                    return Results.Json(new PromptResponse
+                    {
+                        Accepted = false,
+                        BlockedByMenu = true,
+                        BlockedSpoken = Wingman.WaitingScreenReader.MenuSpoken,
+                        Error = Wingman.WaitingScreenReader.MenuMessage,
+                        ActivityState = session.ActivityState,
+                    });
+                }
+            }
+
             // Post-cut: tunnel-only. A null result means the Director is not connected -> 502. The WaitForIdle
             // poll below is unchanged - it observes the session regardless of how the prompt was delivered.
             bool ok; PromptResponse? body; string? err;

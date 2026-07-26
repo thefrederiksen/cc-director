@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type SyntheticEvent } from "react";
 import {
   GatewayError,
+  getWaitingScreen,
   getWingmanVoice,
   listSessions,
   markVoiceAndExplain,
-  sendPrompt,
+  sendVoicePrompt,
   setVoiceMode,
   stopWingmanVoice,
   type SessionDto,
@@ -131,6 +132,12 @@ export interface VoiceModeView {
    *  failure instead of leaving the error behind on an abandoned screen. */
   onRespondSend: (text: string) => Promise<boolean>;
   onRespondSendAudio: (captured: CapturedUtterance) => void;
+  /** Set when the last reply was NOT sent because a menu owns the session's screen (issue #2193): the
+   *  line to show. Voice cannot pick an option yet, so the person has to open the session and choose.
+   *  Null whenever the last reply went through. Cleared as soon as Respond is opened again. */
+  menuBlocked: string | null;
+  /** Dismiss the menu-blocked notice (the person has read it, or gone and answered the menu). */
+  clearMenuBlocked: () => void;
 }
 
 export function useVoiceMode(
@@ -624,22 +631,57 @@ export function useVoiceMode(
     });
   }, [persist]);
 
+  // A menu owns the session's screen, so the last reply was refused rather than typed (issue #2193).
+  const [menuBlocked, setMenuBlocked] = useState<string | null>(null);
+  const clearMenuBlocked = useCallback(() => setMenuBlocked(null), []);
+  const openResponding = useCallback((value: boolean) => {
+    if (value) setMenuBlocked(null);
+    setResponding(value);
+  }, []);
+
+  // Say the refusal OUT LOUD through the browser's own speech synthesis. Voice mode is hands-free - a
+  // notice that only appears on screen is a notice the person driving never receives. This deliberately
+  // uses LOCAL synthesis rather than the Gateway voice, the same choice Car Mode makes for its state
+  // announcements: this is the product telling you it will not act, not the wingman reading the agent's
+  // words, so it should cost nothing, need no network, and never be the thing that fails.
+  const speakBlocked = useCallback((line: string) => {
+    if (line.length === 0) return;
+    try {
+      const synth = (window as unknown as { speechSynthesis?: SpeechSynthesis }).speechSynthesis;
+      if (synth) {
+        synth.cancel();
+        synth.speak(new SpeechSynthesisUtterance(line));
+      }
+    } catch {
+      // Speaking is on top of the on-screen notice, never instead of it; never let it throw into a send.
+    }
+  }, []);
+
   const onRespondSend = useCallback(
     async (text: string): Promise<boolean> => {
       setResponding(false);
       const trimmed = text.trim();
       if (sid.length === 0 || trimmed.length === 0) return false;
       try {
-        // Same write path the Send button uses; the transcript is already dictionary-corrected by
-        // the Gateway and is sent verbatim (transcript integrity, CodingStyle s16).
-        await sendPrompt(sid, trimmed, true);
+        // The write path a spoken reply takes: the same POST /prompt the Send button uses, but with the
+        // MENU GUARD on (issue #2193). The transcript is already dictionary-corrected by the Gateway and
+        // is sent verbatim (transcript integrity, CodingStyle s16). If a chooser owns the screen the
+        // Gateway types nothing and presses nothing, and says so - we surface that instead of pretending
+        // the reply landed.
+        const result = await sendVoicePrompt(sid, trimmed);
+        if (result.blockedByMenu) {
+          setMenuBlocked(result.message);
+          speakBlocked(result.spoken);
+          return false;
+        }
+        setMenuBlocked(null);
         return true;
       } catch (err) {
         setError(err instanceof Error ? err.message : "Send failed");
         return false;
       }
     },
-    [sid],
+    [sid, speakBlocked],
   );
 
   // Issue #949: the fast fire-and-forget Send - the SAME path the Terminal/Chat Speak use. When Send is
@@ -651,14 +693,32 @@ export function useVoiceMode(
     (captured: CapturedUtterance) => {
       setResponding(false);
       if (sid.length === 0) return;
-      void backgroundTranscribeAndSend(sid, captured, {
-        onError: (message) => setError(message),
-        // Record the session's terminal-byte position now, so a clip resumed later is not injected
-        // into a session that has moved on (issue #1006 guard).
-        baselineBufferBytes: Number(session?.totalBufferBytes ?? 0),
-      });
+      // The menu check happens BEFORE the background pipeline starts (issue #2193). This path is
+      // fire-and-forget by design - it transcodes, uploads, transcribes and delivers after the screen has
+      // closed - so there is no later moment at which a refusal could still reach the person. Asking the
+      // Gateway now costs one cheap read (no model call) and is the only place this path can be honest.
+      void (async () => {
+        try {
+          const screen = await getWaitingScreen(sid);
+          if (screen.kind === "menu") {
+            setMenuBlocked(screen.message);
+            speakBlocked(screen.spoken);
+            return;
+          }
+        } catch {
+          // The screen could not be read. Phase 1 refuses ONLY on a recognized menu, so an unreadable
+          // answer must not silently swallow the reply - deliver it exactly as before the guard existed.
+        }
+        setMenuBlocked(null);
+        void backgroundTranscribeAndSend(sid, captured, {
+          onError: (message) => setError(message),
+          // Record the session's terminal-byte position now, so a clip resumed later is not injected
+          // into a session that has moved on (issue #1006 guard).
+          baselineBufferBytes: Number(session?.totalBufferBytes ?? 0),
+        });
+      })();
     },
-    [sid, session],
+    [sid, session, speakBlocked],
   );
 
   // The speaking state (and its play-triangle) is suppressed while the agent is working again: the
@@ -709,7 +769,9 @@ export function useVoiceMode(
     regenerating,
     enableNote,
     responding,
-    setResponding,
+    // Opening Respond again clears the menu notice: the person has read it, and if they have gone and
+    // answered the menu the notice would otherwise sit there contradicting a screen that has moved on.
+    setResponding: openResponding,
     setPlaying,
     clipUrl: clip.url,
     clipPhase: clip.phase,
@@ -725,5 +787,7 @@ export function useVoiceMode(
     onTogglePlay,
     onRespondSend,
     onRespondSendAudio,
+    menuBlocked,
+    clearMenuBlocked,
   };
 }

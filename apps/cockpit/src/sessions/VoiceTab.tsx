@@ -31,6 +31,20 @@ export function VoiceTab({ sessionId }: { sessionId: string | undefined }) {
           <div className="composer-error" role="alert">{v.error}</div>
         )}
 
+        {/* A menu owns this session's screen, so the last spoken reply was NOT typed (issue #2193).
+            Nothing was sent and no Enter was pressed - the reply would have landed in a chooser, where
+            the trailing Enter would have confirmed whichever option happened to be highlighted. The
+            person answers it in the session itself; voice cannot pick an option yet. */}
+        {v.menuBlocked !== null && (
+          <div className="voice-menu-blocked" role="alert">
+            <span className="voice-state voice-state-yellow">Waiting on a menu</span>
+            <p className="voice-narr-body">{v.menuBlocked}</p>
+            <button type="button" className="voice-off-toggle" onClick={v.clearMenuBlocked}>
+              Dismiss
+            </button>
+          </div>
+        )}
+
         {/* TTS fallback: the Gateway folded a generic "switched to a backup voice" notice onto this turn's
             ready clip (the primary provider was temporarily overloaded). Rendered VERBATIM - never names a
             provider. Shows above whichever voice card is up while the backup clip is the current one. */}

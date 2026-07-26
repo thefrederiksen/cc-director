@@ -108,6 +108,8 @@ export function VoiceMode() {
     onTogglePlay,
     onRespondSend,
     onRespondSendAudio,
+    menuBlocked,
+    clearMenuBlocked,
   } = useVoiceMode(sessionId, {
     seededVoiceOn,
     autoSwitchOn,
@@ -300,6 +302,19 @@ export function VoiceMode() {
 
         {error !== null && (
           <div className="banner banner-error" role="alert">{error}</div>
+        )}
+
+        {/* A menu owns this session's screen, so the last spoken reply was NOT typed (issue #2193).
+            Nothing was sent and no Enter was pressed - a spoken sentence typed into a chooser does
+            nothing, and the trailing Enter would have confirmed whichever option was highlighted. The
+            wingman says this out loud too; the banner is what stays on screen afterwards. */}
+        {menuBlocked !== null && (
+          <div className="banner banner-menu banner-action" role="alert">
+            <span>{menuBlocked}</span>
+            <button type="button" className="banner-btn" onClick={clearMenuBlocked}>
+              Dismiss
+            </button>
+          </div>
         )}
 
         {autoPlayBlocked && (

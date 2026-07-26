@@ -579,6 +579,87 @@ export async function sendPrompt(
   }
 }
 
+// What a session's live screen is right now (GET /sessions/{sid}/wingman/waiting-screen). "menu" means a
+// chooser owns the screen and typing into it is meaningless; "text" is an ordinary composer; "blocked" is a
+// screen the Gateway could not positively read. Cheap on the Gateway - one terminal read, no model call.
+export interface WaitingScreen {
+  kind: "menu" | "text" | "blocked";
+  /** False ONLY on "menu" - phase 1 refuses on a recognized menu and nothing else. */
+  canType: boolean;
+  /** The line to speak when a menu is blocking; empty otherwise. */
+  spoken: string;
+  /** The line to show on screen when a menu is blocking; empty otherwise. */
+  message: string;
+}
+
+export async function getWaitingScreen(sessionId: string, signal?: AbortSignal): Promise<WaitingScreen> {
+  const sid = encodeURIComponent(sessionId);
+  // Hard-capped on purpose. The fire-and-forget voice Send asks this BEFORE it hands the recording to the
+  // durable background pipeline, so a slow answer here would hold a clip that exists only in memory. A
+  // check that cannot finish promptly is not worth a recording - the read gives up and the reply proceeds.
+  const res = await gatewayFetch(`/sessions/${sid}/wingman/waiting-screen`, {
+    method: "GET",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  }, { timeoutMs: POLL_TIMEOUT_MS });
+  if (!res.ok) {
+    throw new GatewayError(res.status, `GET wingman/waiting-screen failed: ${res.status}`);
+  }
+  const body = (await res.json()) as Partial<WaitingScreen>;
+  const kind = body.kind === "menu" || body.kind === "text" ? body.kind : "blocked";
+  return {
+    kind,
+    canType: kind !== "menu",
+    spoken: body.spoken ?? "",
+    message: body.message ?? "",
+  };
+}
+
+// The outcome of a voice reply: either it went into the session, or a menu owned the screen and the Gateway
+// refused to type it. A refusal is a NORMAL outcome, not an error - the caller asked for exactly this - so it
+// comes back as a value rather than a thrown GatewayError.
+export interface VoicePromptResult {
+  sent: boolean;
+  blockedByMenu: boolean;
+  /** The line to speak on a refusal; empty when the prompt was sent. */
+  spoken: string;
+  /** The line to show on a refusal; empty when the prompt was sent. */
+  message: string;
+}
+
+// Send a spoken reply into the session WITH the menu guard on (POST /sessions/{sid}/prompt, menuGuard).
+// The Gateway reads the live screen one hop before the send: if a chooser owns it, nothing is typed and no
+// Enter is pressed - which matters because the Enter this call carries would otherwise confirm whichever
+// option the picker had highlighted. Only the voice reply paths use this; every typed-composer send stays on
+// the plain sendPrompt above, completely unchanged.
+export async function sendVoicePrompt(
+  sessionId: string,
+  text: string,
+  signal?: AbortSignal,
+): Promise<VoicePromptResult> {
+  const sid = encodeURIComponent(sessionId);
+  const body: PromptRequest & { menuGuard: boolean } = { text, appendEnter: true, menuGuard: true };
+  const res = await gatewayFetch(`/sessions/${sid}/prompt`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) {
+    throw new GatewayError(res.status, `POST prompt failed: ${res.status}`);
+  }
+  const answer = (await res.json()) as { accepted?: boolean; blockedByMenu?: boolean; blockedSpoken?: string; error?: string };
+  if (answer.blockedByMenu === true) {
+    return {
+      sent: false,
+      blockedByMenu: true,
+      spoken: answer.blockedSpoken ?? "",
+      message: answer.error ?? "",
+    };
+  }
+  return { sent: true, blockedByMenu: false, spoken: "", message: "" };
+}
+
 // Soft-stop the current turn (the agent driver's Escape). POST /sessions/{sid}/escape.
 export async function sendEscape(sessionId: string, signal?: AbortSignal): Promise<void> {
   const sid = encodeURIComponent(sessionId);

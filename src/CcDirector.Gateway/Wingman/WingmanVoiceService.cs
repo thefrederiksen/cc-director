@@ -865,15 +865,27 @@ public sealed class WingmanVoiceService
                 FileLog.Write($"[WingmanVoiceService] model did not answer for sid={sid}: {ex.Message} - Retrying (audio on its way); the session retries on its own");
                 return false;   // nothing produced; the provider was not usefully reached
             }
-            await StoreSpokenAsync(tenant, sid, t.Spoken, lastReply, ct);
+            // Announce a waiting menu AS THE TURN IS READ (issue #2193). A turn that ends on a picker is the
+            // one case where the narration alone is misleading: the agent's words are read out, the person
+            // answers by voice, and the answer goes nowhere - because voice cannot pick an option yet. So the
+            // live screen is read once here (pure classifier, NO model call) and the fact is spoken with the
+            // turn, before they try to reply. One extra tunnel read per NARRATION - deliberately not added to
+            // the session poll, so this costs nothing per-poll across a fleet.
+            var spoken = t.Spoken;
+            if (await WaitingScreenReader.IsMenuAsync(route, sid, ct))
+            {
+                spoken += WaitingScreenReader.MenuNarrationSuffix;
+                FileLog.Write($"[WingmanVoiceService] narration announces a waiting menu: sid={sid}");
+            }
+            await StoreSpokenAsync(tenant, sid, spoken, lastReply, ct);
             // Log the TRUE outcome: StoreSpokenAsync only makes the session playable when the
             // text-to-speech synthesis actually returned audio. Logging "voice ready"
             // unconditionally (the old behavior) hid every failed synthesis behind a success
             // line, which made a text-to-speech outage look like it was working in the log.
             if (HasVoice(tenant, sid))
-                FileLog.Write($"[WingmanVoiceService] voice ready: sid={sid}, spokenLen={t.Spoken.Length}");
+                FileLog.Write($"[WingmanVoiceService] voice ready: sid={sid}, spokenLen={spoken.Length}");
             else
-                FileLog.Write($"[WingmanVoiceService] voice NOT ready (text-to-speech produced no audio): sid={sid}, spokenLen={t.Spoken.Length}");
+                FileLog.Write($"[WingmanVoiceService] voice NOT ready (text-to-speech produced no audio): sid={sid}, spokenLen={spoken.Length}");
             // The model leg ran and answered - TranslateAsync returned rather than throwing
             // WingmanModelRateLimitedException. Reported as true purely so the return honestly says the
             // provider was reached (no caller acts on it now that the shared gate is gone).
