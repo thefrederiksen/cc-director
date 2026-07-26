@@ -56,6 +56,7 @@ describe("Cockpit left rail", () => {
       "Sessions",
       "Fleet Map",
       "Assistant",
+      "History",
       "Directors",
       "Schedule",
       "Workflows",
