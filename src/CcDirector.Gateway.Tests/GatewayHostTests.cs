@@ -230,16 +230,53 @@ public sealed class GatewayHostTests : IAsyncLifetime
     [Fact]
     public async Task GatewayAbout_returns_runtime_diagnostics()
     {
-        // Issue #2022: the live process diagnostics the "This machine" tab used to show now live read-only on
-        // the About page, on both surfaces. A bare host sets no SettingsHooks, so the mode is "unknown".
+        // Issue #2022: the live process diagnostics the "This machine" tab used to show live read-only on the
+        // About page, on both surfaces. Self-hosted, the listen port IS a real reachable port, so it serves.
         var obj = await _http.GetFromJsonAsync<JsonObject>("gateway/about");
         Assert.NotNull(obj);
-        Assert.Equal("Running", (string?)obj!["state"]);
-        Assert.Equal(_gatewayPort, (int?)obj["port"]);
+        Assert.Equal(_gatewayPort, (int?)obj!["port"]);
         Assert.False(string.IsNullOrEmpty((string?)obj["version"]));
-        Assert.Equal("unknown", (string?)obj["mode"]);
+        Assert.Equal("Self-hosted", (string?)obj["deployment"]);
         Assert.True(obj.ContainsKey("uptimeSeconds"));
-        Assert.True(obj.ContainsKey("directors"));
+        Assert.True(obj.ContainsKey("serverTime"));
+    }
+
+    [Fact]
+    public async Task GatewayAbout_carries_no_director_or_host_internals()
+    {
+        // Owner ruling 2026-07-26: About is a page about the three SERVER-SIDE products, not a report on the
+        // box. The Director has its own About box and its own Cockpit screen, so its facts left this payload -
+        // and with them the host internals. This is a PAYLOAD assertion, not a page one: the install root
+        // (which spells out the operating-system user name, e.g. C:\Users\soren\AppData\Local\cc-director) was
+        // readable by any enrolled device even while the page rendered it, so removing the row alone would not
+        // have stopped it leaving the Gateway. A regression that re-adds any of these reddens here.
+        var obj = await _http.GetFromJsonAsync<JsonObject>("gateway/about");
+        Assert.NotNull(obj);
+        Assert.False(obj!.ContainsKey("installRoot"));
+        Assert.False(obj.ContainsKey("machineName"));
+        Assert.False(obj.ContainsKey("installedComponents"));
+        Assert.False(obj.ContainsKey("directors"));
+        Assert.False(obj.ContainsKey("product"));
+        Assert.False(obj.ContainsKey("mode"));
+        Assert.False(obj.ContainsKey("state"));
+    }
+
+    [Fact]
+    public async Task GatewayAbout_bundle_stamps_are_either_absent_or_named()
+    {
+        // The bundle stamps are present exactly when a built bundle is staged in wwwroot, which depends on the
+        // build configuration: a Debug test run stages nothing, a Release one stages both. So this asserts the
+        // invariant that holds EITHER WAY - a stamp is either absent, or it names a build - rather than a
+        // nullness that would pass in Debug and redden on a Release CI run for no real defect. The exact
+        // absent/present/corrupt behaviour is proved deterministically in BundleStampTests.
+        var obj = await _http.GetFromJsonAsync<JsonObject>("gateway/about");
+        Assert.NotNull(obj);
+        foreach (var key in new[] { "cockpit", "mobile" })
+        {
+            Assert.True(obj!.ContainsKey(key));
+            if (obj[key] is JsonObject stamp)
+                Assert.False(string.IsNullOrWhiteSpace((string?)stamp["commit"]));
+        }
     }
 
     [Fact]

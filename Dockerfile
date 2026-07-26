@@ -146,9 +146,19 @@ ENV COCKPIT_COMMIT=${COCKPIT_COMMIT}
 
 USER gateway
 
-# The Gateway binds to loopback (127.0.0.1:7878) by design - it is reached over the tunnel, not a public
-# port. Exercise it from inside the container (docker exec ... curl 127.0.0.1:7878/...); this EXPOSE is
-# documentation of the internal port, not a public bind.
+# 7878 is the container's INTERNAL port and nothing outside the container ever connects to it. App Service
+# terminates TLS on the public 443 and forwards to this port, so every real client reaches the Gateway over
+# https on 443 at CC_GATEWAY_PUBLIC_URL and no customer network or firewall ever sees 7878. That is why the
+# port does not need to be (and must not be) 443 here: the platform owns the public port, and binding a
+# privileged one inside the container would buy nothing.
+#
+# The bind is 0.0.0.0:7878, NOT loopback (GatewayHost.ConfigureKestrel listens on IPAddress.Any in both
+# hosted and self-hosted mode) - which is exactly what lets the App Service front end reach it. An earlier
+# version of this comment claimed loopback; it was wrong. Reachable-but-authenticated, not open: every route
+# except /healthz, /login and /logout requires a credential.
+#
+# Exercise it from inside the container with: docker exec ... curl 127.0.0.1:7878/healthz
+# This EXPOSE documents the internal port; it is not a public bind.
 EXPOSE 7878
 
 ENTRYPOINT ["dotnet", "CcDirector.Gateway.Host.dll", "--port", "7878"]

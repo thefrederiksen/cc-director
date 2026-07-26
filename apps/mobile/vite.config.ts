@@ -1,6 +1,42 @@
-import { defineConfig } from "vite";
+import { execSync } from "node:child_process";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
+
+// Stamp the mobile app's OWN build identity, exactly as apps/cockpit/vite.config.ts stamps the
+// cockpit's. Until this existed the mobile bundle had NO version identity anywhere: its About page
+// showed the content-hashed script filename it scraped out of the live DOM (an opaque hash, not a
+// build), and the Gateway had no way at all to say which mobile app it was serving.
+//
+// Two SOURCES for the one fact, never a fallback to an invented value (the same rule the cockpit
+// config documents at length): git HEAD in every normal build path, or COCKPIT_COMMIT when the build
+// runs inside the container image, whose build context excludes .git so git cannot answer. If neither
+// yields a commit the build fails loudly rather than stamping "unknown".
+const commitFromEnvironment = process.env.COCKPIT_COMMIT?.trim();
+const mobileCommit =
+  commitFromEnvironment && commitFromEnvironment.length > 0
+    ? commitFromEnvironment
+    : execSync("git rev-parse --short HEAD").toString().trim();
+const mobileBuildTime = new Date().toISOString();
+
+// The same two facts as a file the SERVER can read: dist/build.json, copied by the Gateway's MSBuild
+// target to wwwroot/mobile/build.json. The defines feed the phone's own About page; the file lets the
+// Gateway report the served mobile build to the Cockpit About page, which cannot run this bundle.
+// Not precached by the service worker (workbox globPatterns covers only icons/fonts), so a reload
+// always reads the deployed file rather than a cached copy of an older one.
+function buildStampPlugin(commit: string, buildTime: string): Plugin {
+  return {
+    name: "devthrottle-build-stamp",
+    apply: "build",
+    generateBundle() {
+      this.emitFile({
+        type: "asset",
+        fileName: "build.json",
+        source: `${JSON.stringify({ commit, buildTime }, null, 2)}\n`,
+      });
+    },
+  };
+}
 
 // Dev-only: the mobile shell calls the Gateway through root-relative URLs, so a local Vite run
 // needs an explicit Gateway front door for enrollment and the real app APIs. Without this proxy,
@@ -54,11 +90,16 @@ const devProxy = proxyTarget
 // MSBuild target copies into wwwroot/mobile/.
 export default defineConfig({
   base: "/mobile/",
+  define: {
+    __MOBILE_COMMIT__: JSON.stringify(mobileCommit),
+    __MOBILE_BUILD_TIME__: JSON.stringify(mobileBuildTime),
+  },
   server: {
     proxy: devProxy,
   },
   plugins: [
     react(),
+    buildStampPlugin(mobileCommit, mobileBuildTime),
     VitePWA({
       registerType: "autoUpdate",
       // The injected token script in index.html must survive into the served shell, and the

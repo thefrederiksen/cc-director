@@ -1,66 +1,80 @@
 namespace CcDirector.Gateway.Contracts;
 
 /// <summary>
-/// GET /about response: the "what is this Gateway running and what's installed" diagnostics the
-/// Cockpit About page renders. Built on the Gateway box (it owns installed.json + its own version).
+/// GET /gateway/about response: what the three SERVER-SIDE products are running - this Gateway, the
+/// Cockpit bundle it serves, and the mobile app bundle it serves - plus how it is reached.
+///
+/// It is deliberately NOT a report on the box. The Director is absent: it has its own About box (see
+/// CcDirector.Core AboutInfo.SharedRows) and its own screen in the Cockpit, and its facts do not belong
+/// on a page about server versions. The install root, the operating-system machine name, the run-mode
+/// label and the installer's component manifest are all gone with it - on the hosted service they were
+/// internal detail about somebody else's infrastructure, and on a self-hosted Gateway the install root
+/// leaked the operating-system user name into a page any enrolled device could read.
 /// </summary>
 public sealed class AboutDto
 {
-    public string Product { get; set; } = "Director";
-
-    /// <summary>Full informational version, e.g. "0.6.15+sha".</summary>
+    /// <summary>Full informational version of the running Gateway, e.g. "0.6.15+sha".</summary>
     public string Version { get; set; } = "";
 
-    /// <summary>Build date of the running Gateway exe ("yyyy-MM-dd HH:mm:ss"), or null.</summary>
+    /// <summary>Build date of the running Gateway executable ("yyyy-MM-dd HH:mm:ss"), or null.</summary>
     public string? BuildDate { get; set; }
 
-    public string MachineName { get; set; } = "";
+    /// <summary>
+    /// The build stamp of the Cockpit bundle this Gateway serves at /c, or null when no built bundle is
+    /// staged (a routine Debug build does not build the web apps). Read from wwwroot/c/build.json - the
+    /// Gateway cannot read the commit compiled into the bundle's own JavaScript.
+    /// </summary>
+    public BundleStampDto? Cockpit { get; set; }
 
-    /// <summary>The per-user install root on the Gateway box (%LOCALAPPDATA%\cc-director).</summary>
-    public string InstallRoot { get; set; } = "";
+    /// <summary>
+    /// The build stamp of the mobile app bundle this Gateway serves at /mobile, or null when no built
+    /// bundle is staged. Read from wwwroot/mobile/build.json.
+    /// </summary>
+    public BundleStampDto? Mobile { get; set; }
+
+    /// <summary>
+    /// The folded deployment label the client renders verbatim - "Hosted service" or "Self-hosted"
+    /// (CLAUDE.md rule 7: the Gateway owns the verdict, the client never re-derives it from a flag).
+    /// </summary>
+    public string Deployment { get; set; } = "";
+
+    /// <summary>
+    /// The auto-resolved public base address this Gateway is reached at (no surface path), or null in
+    /// self-host when Tailscale is down. Manual network addressing was retired in issue #2022 - the
+    /// address is resolved automatically and shown read-only, never chosen on a settings page.
+    /// </summary>
+    public string? Address { get; set; }
 
     /// <summary>The one front-door URL the Cockpit is reached at, or null when Tailscale is down.</summary>
     public string? CockpitUrl { get; set; }
 
-    /// <summary>Installed component id -> version (from installed.json on the Gateway box).</summary>
-    public Dictionary<string, string> InstalledComponents { get; set; } = new();
-
     /// <summary>
-    /// The live process diagnostics the "This machine" Settings tab used to show, relocated here read-only
-    /// on BOTH surfaces (issue #2022): the machine settings left the Cockpit Settings page, so the facts a
-    /// user still needs to see about a Gateway host live on the About page, which works everywhere. These
-    /// have no per-tenant dimension - they describe the host process, not an account - so they are shown as
-    /// they are, not partitioned.
+    /// The Gateway's own listen port, or NULL on the hosted service. Hosted clients reach the Gateway
+    /// only through <see cref="Address"/> on 443 (the platform terminates TLS there and forwards to the
+    /// container's internal port), so the internal number composes with nothing a caller can use: shown
+    /// beside an https address it reads as a reachable port and is not one. Self-hosted it IS the port
+    /// the Gateway is listening on and is worth showing, so the Gateway decides here and the client just
+    /// renders what it is given.
     /// </summary>
-    public string State { get; set; } = "Running";
-
-    /// <summary>The Gateway's listen port on its own box.</summary>
-    public int Port { get; set; }
+    public int? Port { get; set; }
 
     /// <summary>Seconds since this Gateway process started.</summary>
     public long UptimeSeconds { get; set; }
 
-    /// <summary>The number of Directors this Gateway currently sees.</summary>
-    public int Directors { get; set; }
-
-    /// <summary>The run mode label ("managed" | "dev" | "unknown"), from the host process.</summary>
-    public string Mode { get; set; } = "unknown";
-
-    /// <summary>
-    /// The auto-resolved public base address this Gateway is reached at (no surface path), or null in
-    /// self-host when Tailscale is down. Manual network addressing (Tailscale vs LAN) was retired in issue
-    /// #2022 - the address is resolved automatically and shown here read-only, never chosen on a settings page.
-    /// </summary>
-    public string? Address { get; set; }
-
-    /// <summary>
-    /// Whether this is the shared HOSTED Gateway (CC_GATEWAY_HOSTED=1) rather than a self-hosted one on the
-    /// owner's own machine (issue #2017). The Settings page reads this ALWAYS-AVAILABLE, public flag to choose
-    /// which tabs to render - Gateway-owned tab selection (CLAUDE.md rule 7), never guessed by the client from
-    /// a failed fetch: on hosted the machine-scoped "This machine" tab is absent and every kept setting is
-    /// scoped to the caller's account; self-host shows the machine tab and one-Gateway scope.
-    /// </summary>
-    public bool Hosted { get; set; }
-
+    /// <summary>The Gateway's current time (UTC).</summary>
     public DateTime ServerTime { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>
+/// The build identity of one served web bundle, read from the <c>build.json</c> its Vite build emits.
+/// The bundles carry no meaningful semantic version of their own (they ship with the Gateway), so the
+/// commit plus the build time IS their version.
+/// </summary>
+public sealed class BundleStampDto
+{
+    /// <summary>The short commit the bundle was built from.</summary>
+    public string Commit { get; set; } = "";
+
+    /// <summary>When the bundle was built (UTC), or null when the stamp carries no time.</summary>
+    public DateTime? BuildTime { get; set; }
 }

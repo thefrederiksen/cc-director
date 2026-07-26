@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 
 // Stamp the cockpit's OWN build identity at build time so the About page can show exactly which
@@ -22,6 +22,27 @@ const cockpitCommit =
     ? commitFromEnvironment
     : execSync("git rev-parse --short HEAD").toString().trim();
 const cockpitBuildTime = new Date().toISOString();
+
+// The SAME two facts, written to a file the SERVER can read: dist/build.json, which the Gateway's
+// MSBuild target copies to wwwroot/c/build.json. The defines above are compiled into the minified
+// bundle, so they are readable only by the browser running that bundle - the Gateway process has no
+// way to learn them, and before this file existed the About page could only report the cockpit build
+// of the bundle it was itself served from, never the mobile app's, and never from a server-side call.
+// One derivation, two destinations: both come from the two constants above, so the file and the
+// bundle can never disagree about which build this is.
+function buildStampPlugin(commit: string, buildTime: string): Plugin {
+  return {
+    name: "devthrottle-build-stamp",
+    apply: "build",
+    generateBundle() {
+      this.emitFile({
+        type: "asset",
+        fileName: "build.json",
+        source: `${JSON.stringify({ commit, buildTime }, null, 2)}\n`,
+      });
+    },
+  };
+}
 
 // The desktop Cockpit is the Gateway's canonical front door: it is served at the site root "/"
 // (epic #967 cutover, issue #979 - the Blazor Server Cockpit is retired). Every asset URL is
@@ -93,7 +114,7 @@ export default defineConfig({
     __COCKPIT_COMMIT__: JSON.stringify(cockpitCommit),
     __COCKPIT_BUILD_TIME__: JSON.stringify(cockpitBuildTime),
   },
-  plugins: [react()],
+  plugins: [react(), buildStampPlugin(cockpitCommit, cockpitBuildTime)],
   server: {
     proxy: devProxy,
   },

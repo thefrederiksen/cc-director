@@ -1,11 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { getGatewayHealth, gatewayErrorMessage, type GatewayHealth } from "@devthrottle/client-core/api/client";
 
 export function About() {
   const [health, setHealth] = useState<GatewayHealth | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const bundle = useMemo(() => currentBundleName(), []);
   const sw = serviceWorkerState();
   const displayMode = isStandalone() ? "Installed PWA" : "Browser tab";
 
@@ -47,7 +46,11 @@ export function About() {
       </section>
 
       <section className="about-list" aria-label="Runtime details">
-        <AboutRow label="Mobile bundle" value={bundle} />
+        {/* The build this app was made from, stamped in at build time (see vite.config.ts). It replaced
+            the content-hashed script filename this row used to scrape out of the live DOM: that hash
+            changed on every build and named nothing you could look up, so it could not answer the one
+            question the row is for - which build am I running. */}
+        <AboutRow label="Mobile app build" value={mobileBuild()} />
         <AboutRow label="Gateway status" value={health?.status ?? "Loading..."} />
         <AboutRow label="Gateway time" value={formatTime(health?.serverTime)} />
         <AboutRow label="Directors" value={formatCount(health, health?.directors)} />
@@ -68,14 +71,11 @@ function AboutRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function currentBundleName(): string {
-  if (typeof document === "undefined") return "unknown";
-  const scripts = Array.from(document.scripts)
-    .map((s) => s.getAttribute("src") ?? "")
-    .filter((src) => src.includes("/assets/") && src.endsWith(".js"));
-  const src = scripts.at(-1);
-  if (!src) return "unknown";
-  return src.substring(src.lastIndexOf("/") + 1);
+/** This app's build: the commit it was built from and when, from the build-time stamp. */
+function mobileBuild(): string {
+  const built = new Date(__MOBILE_BUILD_TIME__);
+  if (Number.isNaN(built.getTime())) return __MOBILE_COMMIT__;
+  return `${__MOBILE_COMMIT__} (${built.toLocaleString()})`;
 }
 
 function serviceWorkerState(): string {

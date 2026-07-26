@@ -78,6 +78,35 @@ public sealed class CockpitUrlEndpointTests
     }
 
     [Fact]
+    public async Task Hosted_about_omits_the_internal_listen_port()
+    {
+        // Owner ruling 2026-07-26. On the hosted service a caller reaches this Gateway ONLY through the public
+        // address on 443 - the platform terminates TLS there and forwards to the container's internal port - so
+        // the internal number composes with nothing the caller can use. Printed beside an https address it
+        // reads as a reachable port and is not one, which is what made the old page look broken.
+        //
+        // The Gateway decides this, not the page (CLAUDE.md rule 7), so it is asserted on the PAYLOAD: a client
+        // that never receives a port cannot render one, whereas a page-only fix would still ship the misleading
+        // number to every other reader of this endpoint.
+        await WithHostedGateway(PublicBase, async (http, gateway) =>
+        {
+            var deviceKey = HostedTestEnrollment.Enroll(
+                gateway,
+                "about-port-subject",
+                "about-port@example.com",
+                "about-port",
+                "PHONE").DeviceKey;
+
+            var about = await GetJson<AboutDto>(http, "gateway/about", bearer: deviceKey);
+
+            Assert.Null(about.Port);
+            Assert.Equal("Hosted service", about.Deployment);
+            // The public address IS served - it is the one address a hosted client can actually use.
+            Assert.Equal(PublicBase, about.Address);
+        });
+    }
+
+    [Fact]
     public async Task Hosted_settings_route_serves_per_account_and_carries_no_cockpit_url()
     {
         await WithHostedGateway(PublicBase, async (http, gateway) =>
