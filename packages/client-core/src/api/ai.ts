@@ -168,11 +168,16 @@ export function setSpokenLanguage(language: string): Promise<{
 }
 
 // POST /wingman/tts { text, model, voice } -> audio bytes to play (a short "Play sample").
-export async function ttsSample(text: string, model: string, voice: string): Promise<Blob> {
+//
+// model and voice are OPTIONAL and should normally be omitted: the Gateway then resolves the
+// account's own speech model and voice, which are authoritative. Passing what the page currently
+// shows makes the sample play whatever the CLIENT believes, and a stale page (a cached PWA bundle,
+// say) then auditions the wrong engine entirely - which reads as "the language setting did nothing".
+export async function ttsSample(text: string, model?: string, voice?: string): Promise<Blob> {
   const res = await fetch("/wingman/tts", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ text, model, voice }),
+    body: JSON.stringify({ text, model: model ?? "", voice: voice ?? "" }),
   });
   if (!res.ok) {
     const err = (await res.json().catch(() => ({}))) as { error?: string };

@@ -113,6 +113,10 @@ export function AiSettings() {
       setMsg(res.switched
         ? "Spoken language set. Speech model switched to " + res.ttsModel + ", which can speak it."
         : "Spoken language set.");
+      // Re-read the account from the Gateway rather than believing the local snapshot. The server
+      // owns this decision, and a page that keeps showing the old engine after a switch is the
+      // single most confusing thing this feature can do.
+      await load();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
     } finally {
@@ -219,7 +223,9 @@ export function AiSettings() {
     setBusy(true);
     setSampleMsg("Synthesizing...");
     try {
-      const blob = await ttsSample(SAMPLES[language] ?? SAMPLE_TEXT, snap.ttsModel, snap.ttsVoice);
+      // No model/voice: the Gateway plays what the ACCOUNT is set to. Sending what this page
+      // happens to show would audition a stale engine after a language change.
+      const blob = await ttsSample(SAMPLES[language] ?? SAMPLE_TEXT);
       if (audioRef.current === null) audioRef.current = new Audio();
       audioRef.current.src = URL.createObjectURL(blob);
       audioRef.current.onended = () => setSampleMsg("");
