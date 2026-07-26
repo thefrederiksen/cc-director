@@ -2071,13 +2071,11 @@ public sealed class GatewayHost : IAsyncDisposable
             // Issue #2017: the snooze-default consumer at POST /sessions/{sid}/hold reads the caller tenant's
             // default through the resolver instead of the process-global config.
             tenantSettings: _tenantSettingsResolver,
-            // Issue #2022: the live process diagnostics the About page now shows read-only on both surfaces,
-            // after the machine settings left the Cockpit Settings page. The mode is a delegate resolved per
-            // request because SettingsHooks is assigned on this host after Map has run.
+            // Issue #2022: the live process diagnostics the About page shows read-only on both surfaces,
+            // after the machine settings left the Cockpit Settings page.
             gatewayStartedAtUtc: StartedAtUtc,
             // Issue #2161: a delegate - Map runs before the listener binds.
             gatewayPort: () => Port,
-            gatewayModeLabel: () => SettingsHooks?.Mode?.Invoke() ?? "unknown",
             // Store injection points: hand the phone-recorder ingest (RecordingEndpoints) the host's single
             // key vault + transcription history + audio archive, so it stops newing its own copies.
             recordingKeyVault: _keyVault,

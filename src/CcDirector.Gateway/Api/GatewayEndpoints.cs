@@ -8,8 +8,11 @@ using CcDirector.Core.Network;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Cockpit;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Diagnostics;
 using CcDirector.Gateway.Discovery;
+using CcDirector.Gateway.Mobile;
 using CcDirector.Gateway.Util;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -142,15 +145,15 @@ internal static class GatewayEndpoints
         // SnoozeDefaultMinutes(tenant) instead of the process-global config. Null (older callers, tests that
         // do not exercise the default) keeps the global read, matching every other optional store here.
         Settings.TenantSettingsResolver? tenantSettings = null,
-        // Issue #2022: the live process diagnostics the About page now shows read-only on both surfaces, after
-        // the machine settings left the Cockpit Settings page. Supplied by the host as its own StartedAtUtc,
-        // Port, and run-mode label. The mode is a delegate (resolved per request) because SettingsHooks is set
-        // on the host AFTER Map runs. Null/zero (older callers, bare test hosts) means "not started"/unknown.
+        // Issue #2022: the live process diagnostics the About page shows read-only on both surfaces, after the
+        // machine settings left the Cockpit Settings page. Supplied by the host as its own StartedAtUtc and
+        // Port. Null (older callers, bare test hosts) means "not started". The run-mode label went with the
+        // Director facts when About became a server-versions page (owner ruling 2026-07-26): the served
+        // bundles' build stamps say which build this is far more precisely than "managed" versus "dev" did.
         DateTime? gatewayStartedAtUtc = null,
-        // Issue #2161: a delegate, resolved per request, for the same reason the mode label is one - Map runs
-        // before the listener binds, and on an operating-system-assigned port the number does not exist yet.
+        // Issue #2161: a delegate, resolved per request - Map runs before the listener binds, and on an
+        // operating-system-assigned port the number does not exist yet.
         Func<int>? gatewayPort = null,
-        Func<string>? gatewayModeLabel = null,
         // devthrottle #2075: the dictionary-suggestions engine and the dismissal store, threaded into the
         // /ingest/dictionary/suggestions routes. Null (older callers, recording-only test harnesses) simply
         // does not expose the suggestion routes; production wires both.
@@ -559,41 +562,40 @@ internal static class GatewayEndpoints
             return Results.Json(netDiagRollup?.All(reqTenant.Value) ?? new List<NetDiagRollupStore.HourBucket>());
         });
 
-        // About / diagnostics: product, version, build date, install root, the one Cockpit URL, and
-        // the installed component versions (from installed.json on this box). Feeds the Cockpit About
-        // page; loopback-reachable like the rest of the read API.
-        // Route is /gateway/about so the /about path passes through to the Cockpit's Blazor page.
+        // About: the three SERVER-SIDE products - this Gateway, the Cockpit bundle it serves, and the
+        // mobile app bundle it serves - plus how it is reached. Feeds the Cockpit About page;
+        // loopback-reachable like the rest of the read API.
+        //
+        // The Director is deliberately NOT here (owner ruling 2026-07-26): it has its own About box and
+        // its own Cockpit screen, so this page is about server versions only. The install root, machine
+        // name, run mode and installer component manifest went with it - on the hosted service they were
+        // internal detail about infrastructure the caller does not own, and the install root leaked the
+        // operating-system user name to every enrolled device.
+        //
         // CockpitUrl comes from GatewayPublicUrl.ResolveCockpit(): {base}/cockpit, where base is the
         // configured public URL in hosted mode and the tailnet front door (null when Tailscale is down)
         // self-hosted. One derivation rule, both modes (owner ruling 2026-07-20).
-        app.MapGet("/gateway/about", (HttpContext ctx) =>
+        app.MapGet("/gateway/about", () =>
         {
-            // Issue #1847: the director list is tenant-scoped (the fleet-wide list was an enumeration
-            // surface), so the diagnostic COUNT here is counted for THIS request's tenant - Local on
-            // self-host. A request with no bound tenant has no attributable directors, so the count is 0;
-            // the rest of the About diagnostics are machine facts and still serve.
-            var aboutTenant = ResolveReadTenant(ctx, tenantBoundary);
             return Results.Json(new AboutDto
             {
-                Product = AboutInfo.ProductName,
                 Version = AboutInfo.VersionFull,
                 BuildDate = AboutInfo.BuildDate()?.ToString("yyyy-MM-dd HH:mm:ss"),
-                MachineName = Environment.MachineName,
-                InstallRoot = AboutInfo.InstallRoot,
-                CockpitUrl = GatewayPublicUrl.ResolveCockpit(),
-                InstalledComponents = new Dictionary<string, string>(AboutInfo.InstalledComponents()),
-                // Issue #2017: the always-available public hosted/self-host signal the Settings page reads to
-                // choose its tab set, so tab selection is Gateway-owned rather than guessed from a failed fetch.
-                Hosted = GatewayHostedMode.IsHosted,
-                // Issue #2022: the live process diagnostics relocated here from the retired "This machine" tab -
-                // read-only, both surfaces. State is "Running" whenever this endpoint answers; the address is the
-                // auto-resolved public base (manual addressing was dropped).
-                State = "Running",
-                Port = gatewayPort?.Invoke() ?? 0,
-                UptimeSeconds = gatewayStartedAtUtc is { } startedAt ? (long)(DateTime.UtcNow - startedAt).TotalSeconds : 0,
-                Directors = aboutTenant is { } t ? registry.ListDirectors(t).Count : 0,
-                Mode = gatewayModeLabel?.Invoke() ?? "unknown",
+                // The served bundles name themselves through the build.json each Vite build emits; the
+                // Gateway cannot read the commit compiled into their JavaScript. Null when no built bundle
+                // is staged, which the page reports as such rather than guessing a build.
+                Cockpit = BundleStamp.Read(CockpitReactApp.WebRoot),
+                Mobile = BundleStamp.Read(MobileApp.WebRoot),
+                // Folded here, not in the client (CLAUDE.md rule 7).
+                Deployment = GatewayHostedMode.IsHosted ? "Hosted service" : "Self-hosted",
                 Address = GatewayPublicUrl.ResolveBase(),
+                CockpitUrl = GatewayPublicUrl.ResolveCockpit(),
+                // The internal listen port is meaningful ONLY self-hosted. On hosted, callers reach this
+                // Gateway through Address on 443 and the platform forwards to the container's internal
+                // port; printing that number beside an https address reads as a reachable port and is not
+                // one. So it is omitted there - the Gateway decides, the client renders.
+                Port = GatewayHostedMode.IsHosted ? null : gatewayPort?.Invoke(),
+                UptimeSeconds = gatewayStartedAtUtc is { } startedAt ? (long)(DateTime.UtcNow - startedAt).TotalSeconds : 0,
                 ServerTime = DateTime.UtcNow,
             });
         });
