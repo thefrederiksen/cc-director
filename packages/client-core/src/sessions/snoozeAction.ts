@@ -39,6 +39,17 @@ export function optimisticHoldToggle(current: HoldUiState, working: boolean): Ho
   return working ? { held: false, deferred: true } : { held: true, deferred: false };
 }
 
+/**
+ * The state to show THE INSTANT the user picks an explicit snooze LENGTH ("Snooze for 4 hours"),
+ * before the server answers. Distinct from {@link optimisticHoldToggle} in one way that matters:
+ * picking a length is ALWAYS a hold, never an unsnooze - picking one while already snoozed re-arms the
+ * clock to the new length. So it never flips to off, and it shows DEFERRED for a working session for
+ * the same reason the toggle does (the clock starts when the work ends).
+ */
+export function optimisticHoldFor(working: boolean): HoldUiState {
+  return working ? { held: false, deferred: true } : { held: true, deferred: false };
+}
+
 /** The reconciled state from the hold endpoint's authoritative tri-state answer. */
 export function holdStateFromResponse(res: { onHold: boolean; pending: boolean }): HoldUiState {
   return { held: res.onHold, deferred: res.pending };

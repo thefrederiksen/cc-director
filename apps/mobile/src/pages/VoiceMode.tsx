@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { DictationDialog } from "@devthrottle/client-core/dictation/DictationDialog";
+import { buildSnoozeMenu } from "@devthrottle/client-core/settings/snoozeMenu";
+import { useSnoozeOptions } from "@devthrottle/client-core/settings/snoozeOptions";
 import { touchQueue } from "@devthrottle/client-core/voice/queueTouch";
 import { formatClock, useVoiceMode } from "@devthrottle/client-core/voice/useVoiceMode";
 import { DictationStatusStrip } from "../components/DictationStatusStrip";
@@ -156,6 +158,27 @@ export function VoiceMode() {
     if (ok && !wasSnoozed) goBackToList();
   }, [manage, goBackToList]);
 
+  // THE SPLIT SNOOZE BUTTON (owner, 2026-07-25). The wide part is the button as it always was: one tap,
+  // the user's DEFAULT length, back to the queue. The narrow part opens this sheet to snooze for a
+  // length picked on the spot - the same Gateway-owned lengths the Cockpit's "Snooze for" flyout and the
+  // desktop rail offer, through the same shared cache and the same buildSnoozeMenu rules, so all three
+  // surfaces read identically.
+  //
+  // No lengths means NO caret: when this phone has never successfully read them from the Gateway,
+  // buildSnoozeMenu returns no choices and only the plain Snooze shows. Inventing a plausible list would
+  // be the one genuinely bad outcome - it would offer lengths that are not the user's.
+  const snoozeOptions = useSnoozeOptions();
+  const snoozeMenu = buildSnoozeMenu(manage.held || manage.deferred, snoozeOptions);
+  const [pickingLength, setPickingLength] = useState(false);
+
+  // Picking a length is ALWAYS a snooze, never an unsnooze - even while already snoozed, where it re-arms
+  // the clock to the new length. So it always ends the same way the plain snooze does when it lands: back
+  // to the queue. On failure the sheet closes but the screen stays, so the surfaced error is seen.
+  const onPickLength = useCallback(async (minutes: number) => {
+    setPickingLength(false);
+    if (await manage.holdFor(minutes)) goBackToList();
+  }, [manage, goBackToList]);
+
   // Respond sent, BACK TO THE LIST: the reply is cached and delivered in the background, so there is
   // no reason to sit on this session's page once it is answered - the queue has the next one. The
   // text path waits for the send to be accepted (stays put on failure, error visible); the audio
@@ -241,21 +264,38 @@ export function VoiceMode() {
               Respond
             </button>
           )}
-          <button
-            type="button"
-            className="voice-action-snooze"
-            onClick={() => void onSnoozeTap()}
-            disabled={manage.busy || manage.onHold === null}
-          >
-            {manage.held || manage.deferred ? (
-              "Unsnooze"
-            ) : (
-              <>
-                Snooze
-                <span className="voice-back-arrow" aria-hidden="true" />
-              </>
+          {/* One slab, two targets. The wide part snoozes for the default length; the narrow part opens
+              the length picker. They are separate buttons rather than one button that guesses from where
+              the thumb landed, so each has its own hit box and its own accessible name. */}
+          <div className="voice-snooze-split">
+            <button
+              type="button"
+              className="voice-action-snooze"
+              onClick={() => void onSnoozeTap()}
+              disabled={manage.busy || manage.onHold === null}
+            >
+              {manage.held || manage.deferred ? (
+                "Unsnooze"
+              ) : (
+                <>
+                  Snooze
+                  <span className="voice-back-arrow" aria-hidden="true" />
+                </>
+              )}
+            </button>
+            {snoozeMenu.choices.length > 0 && (
+              <button
+                type="button"
+                className="voice-snooze-more"
+                onClick={() => setPickingLength(true)}
+                disabled={manage.busy || manage.onHold === null}
+                aria-haspopup="dialog"
+                aria-label="Snooze for a different length"
+              >
+                <span className="voice-snooze-caret" aria-hidden="true" />
+              </button>
             )}
-          </button>
+          </div>
         </div>
 
         {error !== null && (
@@ -417,6 +457,41 @@ export function VoiceMode() {
 
       {/* The old bottom bar is gone: Respond and Snooze moved to the TOP of the body as the big
           voice-actions block (owner's layout rule - the buttons are the important part). */}
+
+      {/* The snooze length picker: a bottom-anchored sheet, so every row sits in thumb reach on a screen
+          used one-handed - the lengths are the reason it opened, and they must not be at the top of the
+          phone. The rows are buildSnoozeMenu's, rendered VERBATIM, including which one it marks default. */}
+      {pickingLength && (
+        <div
+          className="snooze-sheet-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Snooze for"
+          onClick={() => setPickingLength(false)}
+        >
+          <div className="snooze-sheet" onClick={(e) => e.stopPropagation()}>
+            <h2 className="snooze-sheet-title">Snooze for</h2>
+            {snoozeMenu.choices.map((choice) => (
+              <button
+                key={choice.minutes}
+                type="button"
+                className="snooze-sheet-choice"
+                onClick={() => void onPickLength(choice.minutes)}
+                disabled={manage.busy}
+              >
+                {choice.header}
+              </button>
+            ))}
+            <button
+              type="button"
+              className="snooze-sheet-cancel"
+              onClick={() => setPickingLength(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* F. Reply: the shared dictation interface with NO Insert - Send goes straight into the
           session. There is no hold-to-talk; you tap Respond, speak, then Send. After a successful

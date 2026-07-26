@@ -4,6 +4,7 @@ import {
   holdPillLabel,
   holdStateFromResponse,
   isSnoozing,
+  optimisticHoldFor,
   optimisticHoldToggle,
   reconcileHoldToggle,
   type HoldUiState,
@@ -65,6 +66,28 @@ describe("snooze action - instant, honest feedback for every case", () => {
     const armed: HoldUiState = { held: true, deferred: false };
     expect(reconcileHoldToggle(armed, { ok: false })).toEqual(armed);
     expect(holdButtonLabel(reconcileHoldToggle(armed, { ok: false }))).toBe("Unsnooze");
+  });
+
+  it("picking a LENGTH is always a hold - it re-arms an already-snoozed session instead of clearing it", () => {
+    // The split Snooze button's small half (the length picker) must never un-snooze. The toggle flips OFF
+    // when already snoozing; picking "4 hours" while snoozed means "make it four hours from now", so the
+    // optimistic state stays ON in both cases. If this ever shared optimisticHoldToggle, picking a length
+    // on a snoozed session would flash "Snooze" and then jump back - a control fighting the user.
+    expect(optimisticHoldFor(/* working */ false)).toEqual({ held: true, deferred: false });
+    expect(optimisticHoldFor(/* working */ true)).toEqual({ held: false, deferred: true });
+
+    for (const already of [{ held: true, deferred: false }, { held: false, deferred: true }] as HoldUiState[]) {
+      expect(isSnoozing(optimisticHoldFor(isSnoozing(already) && already.deferred))).toBe(true);
+    }
+    expect(holdButtonLabel(optimisticHoldFor(false))).toBe("Unsnooze");
+  });
+
+  it("a FAILED 'snooze for a length' rolls back to pre-tap, exactly like the plain toggle", () => {
+    // Same reconcile path, so the same guarantee: a rejected length-snooze never leaves a false "Snoozed".
+    const armed: HoldUiState = { held: true, deferred: false };
+    expect(reconcileHoldToggle(armed, { ok: false })).toEqual(armed);
+    expect(reconcileHoldToggle(none, { ok: false })).toEqual(none);
+    expect(reconcileHoldToggle(none, { ok: true, response: { onHold: true, pending: false } })).toEqual(armed);
   });
 
   it("a SUCCESSFUL /hold still settles on the server's authoritative tri-state (success path unchanged)", () => {

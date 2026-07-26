@@ -4,6 +4,7 @@ import { holdSession, killSession, listSessions } from "@devthrottle/client-core
 import { classify, isDeferredHold, isWorking, snoozeCountdown } from "@devthrottle/client-core/sessions/ordering";
 import {
   isSnoozing,
+  optimisticHoldFor,
   optimisticHoldToggle,
   reconcileHoldToggle,
   type HoldToggleOutcome,
@@ -47,6 +48,10 @@ export interface SessionManage {
   /** Resolves true when the hold change was accepted by the Gateway, false when it failed (the error
    *  is already surfaced) - so a caller that navigates away after a snooze can stay put on failure. */
   toggleHold: () => Promise<boolean>;
+  /** Snooze for an EXPLICIT length in minutes (the voice screen's length picker), instead of letting the
+   *  Gateway apply the user's default. Always a hold, never an unsnooze: picking a length while already
+   *  snoozed re-arms the clock to that length. Resolves true when the Gateway accepted it. */
+  holdFor: (minutes: number) => Promise<boolean>;
   removeSession: () => Promise<void>;
 }
 
@@ -102,15 +107,18 @@ export function useSessionManage(sessionId: string | undefined): SessionManage {
     };
   }, [sessionId, refresh]);
 
-  const toggleHold = useCallback(async (): Promise<boolean> => {
-    if (!sessionId || busy) return false;
-    // The pre-tap state: both what the toggle flips FROM and what a FAILED /hold must roll back to.
+  // The one write path both snooze verbs take: show the optimistic state now, POST, then settle on the
+  // TRUE outcome. The plain toggle and the length picker differ ONLY in what they ask for (`desired` +
+  // an optional length) and in what to show while it is in flight - everything after that, including the
+  // rollback that stops a false "Snoozed", must be identical for both, so it is written once here.
+  const applyHold = useCallback(async (
+    desired: boolean,
+    optimistic: HoldUiState,
+    snoozeMinutes?: number,
+  ): Promise<boolean> => {
+    if (!sessionId) return false;
+    // The pre-tap state: what a FAILED /hold must roll back to.
     const preTap: HoldUiState = { held: onHold === true, deferred };
-    const desired = !isSnoozing(preTap);
-    // Optimistic: flip the UI the instant the tap lands, so a snooze is NEVER silent. A working session
-    // shows the deferred affordance immediately; a settled one shows held. Settled below from the TRUE
-    // outcome - the server's authoritative answer on success, or a rollback to pre-tap on failure.
-    const optimistic = optimisticHoldToggle(preTap, working);
     setBusy(true);
     pendingRef.current = true;
     setError(null);
@@ -118,7 +126,7 @@ export function useSessionManage(sessionId: string | undefined): SessionManage {
     setDeferred(optimistic.deferred);
     let outcome: HoldToggleOutcome;
     try {
-      outcome = { ok: true, response: await holdSession(sessionId, desired) };
+      outcome = { ok: true, response: await holdSession(sessionId, desired, snoozeMinutes) };
     } catch (err) {
       // /hold FAILED: the snooze did NOT happen. Surface the error; the rollback below returns the UI to
       // its pre-tap state so the button never falsely reads "Snoozed"/"Snoozing when it finishes".
@@ -138,7 +146,23 @@ export function useSessionManage(sessionId: string | undefined): SessionManage {
     setDeferred(settled.deferred);
     if (outcome.ok) void refresh();
     return outcome.ok;
-  }, [sessionId, busy, onHold, deferred, working, refresh]);
+  }, [sessionId, onHold, deferred, refresh]);
+
+  const toggleHold = useCallback((): Promise<boolean> => {
+    if (busy) return Promise.resolve(false);
+    const preTap: HoldUiState = { held: onHold === true, deferred };
+    // Optimistic: flip the UI the instant the tap lands, so a snooze is NEVER silent. A working session
+    // shows the deferred affordance immediately; a settled one shows held.
+    return applyHold(!isSnoozing(preTap), optimisticHoldToggle(preTap, working));
+  }, [busy, onHold, deferred, working, applyHold]);
+
+  // Snooze for a length the user PICKED, rather than the Gateway's default. Always a hold: choosing a
+  // length while already snoozed re-arms the clock to that length (the reason the picker is offered
+  // while snoozed at all), so this must never take the toggle's un-snooze branch.
+  const holdFor = useCallback((minutes: number): Promise<boolean> => {
+    if (busy) return Promise.resolve(false);
+    return applyHold(true, optimisticHoldFor(working), minutes);
+  }, [busy, working, applyHold]);
 
   const removeSession = useCallback(async () => {
     if (!sessionId || busy) return;
@@ -165,6 +189,7 @@ export function useSessionManage(sessionId: string | undefined): SessionManage {
     error,
     setError,
     toggleHold,
+    holdFor,
     removeSession,
   };
 }

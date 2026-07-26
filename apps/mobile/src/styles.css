@@ -1584,6 +1584,123 @@ a.banner-btn {
   cursor: default;
 }
 
+/* THE SPLIT: one amber slab, two targets. The wide part (Snooze, default length) keeps essentially the
+   whole width - it is the tap made every turn, in the dark, without looking. The narrow part is a
+   deliberate aim, so it is small enough that a thumb going for Snooze cannot land on it by accident and
+   still 56px tall, which is a real target in its own right. The 2px seam is what makes them read as two
+   halves of one control rather than two buttons that happen to touch. */
+.voice-snooze-split {
+  display: flex;
+  gap: 2px;
+}
+
+.voice-snooze-split .voice-action-snooze {
+  flex: 1 1 auto;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.voice-snooze-more {
+  flex: 0 0 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 56px;
+  border: 1px solid #8a6516;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-top-right-radius: 12px;
+  border-bottom-right-radius: 12px;
+  color: #f0b429;
+  background: #2b2210;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.voice-snooze-more:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* CSS-only downward chevron (no unicode glyphs), in currentColor so it stays the same amber as the
+   label beside it. Says "there is more here" - the same thing this shape says on the desktop menu. */
+.voice-snooze-caret {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin-top: -5px;
+  border-right: 3px solid currentColor;
+  border-bottom: 3px solid currentColor;
+  transform: rotate(45deg);
+}
+
+/* The snooze length picker: bottom-anchored, because it opens from a control at the top of the screen
+   but is answered with a thumb at the bottom of it. */
+.snooze-sheet-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.66);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.snooze-sheet {
+  max-height: 92dvh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-top-left-radius: 16px;
+  border-top-right-radius: 16px;
+  padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+}
+
+.snooze-sheet-title {
+  margin: 0 0 12px;
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.snooze-sheet-choice {
+  display: block;
+  width: 100%;
+  min-height: 56px;
+  margin-bottom: 10px;
+  border: 1px solid #8a6516;
+  border-radius: 12px;
+  padding: 13px 0;
+  font-size: 17px;
+  font-weight: 700;
+  color: #f0b429;
+  background: #2b2210;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.snooze-sheet-choice:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.snooze-sheet-cancel {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  background: var(--surface-2);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
 /* CSS-only back-to-the-list arrow on the Snooze button (no unicode glyphs): a leftwards chevron with
    a tail, saying "this also takes you back". Drawn in currentColor so it is always the same amber as
    the label beside it and can never be left behind by a colour change. */
