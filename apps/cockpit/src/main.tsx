@@ -29,7 +29,6 @@ import { NetworkDiagnosticsView } from "./network/NetworkDiagnosticsView";
 import { AccountView } from "./account/AccountView";
 import { AboutView } from "./about/AboutView";
 import { SettingsView } from "./settings/SettingsView";
-import { InjectedTextView } from "./injectedtext/InjectedTextView";
 import "./styles.css";
 import "./components/components.css";
 import "./assistant/assistant.css";
@@ -45,7 +44,7 @@ import "./transcription/transcriptionhealth.css";
 import "./account/account.css";
 import "./about/about.css";
 import "./settings/settings.css";
-import "./injectedtext/injectedtext.css";
+import "./settings/injectedtext.css";
 
 // Browser device enrollment is the front door (issue #1088): this desktop shell authenticates with
 // the SAME shared client-core device-auth flow the phone shipped with (#908). The Cockpit installs its
@@ -205,7 +204,10 @@ const router = createBrowserRouter(
             // a dead full-load anchor to /settings (nothing served it, so it fell through to "Not found");
             // it is now this route, reading/writing same-origin through the Gateway settings endpoints.
             { path: "/settings", element: <SettingsView /> },
-            { path: "/injected-text", element: <InjectedTextView /> },
+            // Injected text is a tab of Settings now, not a page of its own (issue #550). The old route
+            // redirects into that tab - the same way /mic-test and /transcription-test redirect into the
+            // Transcription tab on the phone - so existing bookmarks land on what they asked for.
+            { path: "/injected-text", element: <Navigate to="/settings?tab=injectedtext" replace /> },
             { path: "*", element: <NotFound /> },
           ],
         },

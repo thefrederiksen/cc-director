@@ -84,11 +84,14 @@ const DOCS_URL = "https://devthrottle.com/docs";
 
 // This browser's account and the app's own settings - pinned to the bottom of the rail. Help sits last:
 // it is the only item that leaves the app, opening the public documentation site in a new tab.
+//
+// "Injected text" used to sit here, directly beneath Settings (issue #550). It is a setting, so it
+// belongs UNDER Settings rather than beside it, and it is a tab there now - a Cockpit-only one. Its old
+// /injected-text route still resolves, as a redirect into that tab, so existing bookmarks keep working.
 const NAV_FOOT: ReadonlyArray<NavItem> = [
   { to: "/account", label: "Account", icon: "account" },
   { to: "/your-throttle", label: "Your Throttle", icon: "throttle" },
   { to: "/settings", label: "Settings", icon: "settings" },
-  { to: "/injected-text", label: "Injected text", icon: "injected-text" },
   { to: "/about", label: "About", icon: "about" },
   { to: DOCS_URL, label: "Help", icon: "help", href: DOCS_URL },
 ];

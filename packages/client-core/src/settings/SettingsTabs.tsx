@@ -2,7 +2,7 @@ import { AiTab } from "./AiTab";
 import { CarModeTab } from "./CarModeTab";
 import { NotificationsTab } from "./NotificationsTab";
 import { TranscriptionTab } from "./TranscriptionTab";
-import { visibleTabs, type TabId } from "./tabs";
+import { visibleTabs, type Surface, type TabId } from "./tabs";
 import "./settings.css";
 
 // The Settings tab strip and the panel it selects - the whole page body, shared by the Cockpit and the
@@ -10,17 +10,19 @@ import "./settings.css";
 // desktop, a back link and app bar on the phone.
 //
 // Why the switch lives here rather than in each app: the two surfaces have to offer the SAME settings.
-// A tab list shared but a switch copied is a switch that grows a fifth branch on one surface only.
+// A tab list shared but a switch copied is a switch that grows a branch on one surface only.
 
 export interface SettingsTabStripProps {
   active: TabId;
   onSelect: (tab: TabId) => void;
+  /** Which shell is rendering. Decides which tabs the strip lists - see tabs.ts. */
+  surface: Surface;
 }
 
-export function SettingsTabStrip({ active, onSelect }: SettingsTabStripProps) {
+export function SettingsTabStrip({ active, onSelect, surface }: SettingsTabStripProps) {
   return (
     <div className="settings-tabs" role="tablist" aria-label="Settings sections">
-      {visibleTabs().map((t) => (
+      {visibleTabs(surface).map((t) => (
         <button
           key={t.id}
           type="button"
@@ -54,5 +56,12 @@ export function SettingsTabPanel({ tab, accountHref, transcriptionHealthHref }: 
       return <TranscriptionTab healthHref={transcriptionHealthHref} />;
     case "carmode":
       return <CarModeTab />;
+    // Cockpit-only tabs are rendered by the Cockpit shell, not from here: their content is desktop-only
+    // code and has no business in the library both shells load. The shell checks for them BEFORE calling
+    // this panel (see the Cockpit's SettingsView), so reaching this line means a tab was selected on a
+    // surface whose strip does not list it - which tabFromParam already prevents. Return nothing rather
+    // than invent a panel.
+    case "injectedtext":
+      return null;
   }
 }

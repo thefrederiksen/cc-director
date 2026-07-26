@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { SettingsTabPanel, SettingsTabStrip } from "@devthrottle/client-core/settings/SettingsTabs";
 import { tabFromParam, type TabId } from "@devthrottle/client-core/settings/tabs";
+import { InjectedTextTab } from "./InjectedTextTab";
 
 // The Cockpit Settings page (issue #1025, epic #967) - the React port of the retired Blazor
 // wwwroot/pages/settings.html.
@@ -35,10 +36,10 @@ import { tabFromParam, type TabId } from "@devthrottle/client-core/settings/tabs
 
 export function SettingsView() {
   const [params] = useSearchParams();
-  // The tab set is the same on both surfaces (issue #2022), so the initial tab is resolved straight from
-  // ?tab= with no Gateway round-trip first - the page renders its tabs immediately, and each card loads its
-  // own data and shows its own error banner.
-  const [tab, setTab] = useState<TabId>(() => tabFromParam(params.get("tab")));
+  // The initial tab is resolved straight from ?tab= with no Gateway round-trip first - the page renders
+  // its tabs immediately, and each card loads its own data and shows its own error banner. Resolution is
+  // scoped to this surface, so a tab this shell does not list can never be selected here either.
+  const [tab, setTab] = useState<TabId>(() => tabFromParam(params.get("tab"), "cockpit"));
 
   return (
     <div className="page settings">
@@ -52,9 +53,16 @@ export function SettingsView() {
         <Link to="/about">Gateway diagnostics</Link> each have their own page.
       </p>
 
-      <SettingsTabStrip active={tab} onSelect={setTab} />
+      <SettingsTabStrip active={tab} onSelect={setTab} surface="cockpit" />
 
-      <SettingsTabPanel tab={tab} accountHref="/account" transcriptionHealthHref="/transcription" />
+      {/* Injected text is a COCKPIT-ONLY tab (issue #550), so the Cockpit renders it itself rather than
+          putting desktop-only code in the library the phone also loads. Everything else comes from the
+          shared panel. */}
+      {tab === "injectedtext" ? (
+        <InjectedTextTab />
+      ) : (
+        <SettingsTabPanel tab={tab} accountHref="/account" transcriptionHealthHref="/transcription" />
+      )}
     </div>
   );
 }
