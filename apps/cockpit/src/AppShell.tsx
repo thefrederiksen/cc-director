@@ -36,8 +36,10 @@ import { CockpitStatusPill } from "./network/CockpitStatusPill";
 // DEVELOPER page (the Director processes on the Gateway's own machine, and the local_builds slots), so
 // putting it in an end-user rail was the mistake, not leaving it out.
 //
-// The Fleet Map is first and is the default landing (issue #1303): a fresh boot at "/" redirects to
-// it, so the Cockpit opens on the whole-fleet picture (main.tsx). Sessions lives at its own /sessions
+// Sessions is first, then Fleet Map, then Assistant: the sessions are the work, so the destination you
+// reach for most sits at the top of the rail, with the whole-fleet picture and the assistant behind it.
+// The Fleet Map remains the default landing (issue #1303): a fresh boot at "/" redirects to it, so the
+// Cockpit still opens on the whole-fleet picture (main.tsx). Sessions lives at its own /sessions
 // home. `subtree` marks a destination active for a route family that does NOT share its path prefix:
 // the session detail routes into "/session/:id" - a different path from "/sessions" - so Sessions
 // needs an explicit subtree to stay highlighted while a session is being driven (the Directors item
@@ -62,9 +64,9 @@ interface NavItem {
 // Workflows sits with Schedule on purpose - Schedule is what runs when, Workflows is how work runs,
 // and it is next to the place you start work rather than filed away under settings.
 const NAV_MAIN: ReadonlyArray<NavItem> = [
+  { to: "/sessions", label: "Sessions", icon: "sessions", subtree: "/session" },
   { to: "/fleet-map", label: "Fleet Map", icon: "fleet-map" },
   { to: "/assistant", label: "Assistant", icon: "assistant" },
-  { to: "/sessions", label: "Sessions", icon: "sessions", subtree: "/session" },
   { to: "/directors", label: "Directors", icon: "directors" },
   { to: "/schedule", label: "Schedule", icon: "schedule" },
   { to: "/workflows", label: "Workflows", icon: "workflows" },

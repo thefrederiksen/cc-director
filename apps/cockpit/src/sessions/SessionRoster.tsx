@@ -8,6 +8,7 @@ import {
   dotHex,
   groupByDirector,
   inBucket,
+  inWaitingOrder,
   pendingDeletion,
   snoozeCountdown,
   snoozeExpired,
@@ -193,9 +194,15 @@ function VoiceAllButton({ sessions }: { sessions: SessionDto[] }) {
   );
 }
 
-// Opt-in attention view: needs-you first, then active, then on-hold. Each bucket keeps its members in
-// desktop order (inBucket), so a session holds its slot within its bucket and does not reshuffle. These
-// buckets mix machines, so - unlike the grouped "My order" view - each card still shows its own
+// Opt-in attention view: needs-you first, then active, then on-hold.
+//
+// The needs-you group is a WAITING LINE (inWaitingOrder), the same order the phone roster uses: the
+// session that has been asking for you the LONGEST sits at the top, and a session that only just
+// started needing you joins at the BOTTOM. Work it from the top down and it is first-in, first-handled,
+// and it never reshuffles under you as new work arrives. The active and on-hold groups below keep their
+// members in desktop order (inBucket), so a session holds its slot within its bucket.
+//
+// These buckets mix machines, so - unlike the grouped "My order" view - each card still shows its own
 // "computer:port" line so you can see which cc-director a needs-you session lives on.
 function AttentionGroups({
   sessions,
@@ -208,7 +215,7 @@ function AttentionGroups({
   portByDirector: Map<string, string>;
   selectedId: string | undefined;
 }) {
-  const needs = inBucket(sessions, "needsYou");
+  const needs = inWaitingOrder(sessions);
   const active = inBucket(sessions, "active");
   const held = inBucket(sessions, "onHold");
   return (
