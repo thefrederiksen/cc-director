@@ -253,12 +253,21 @@ public sealed class HostedSessionCommandRouteTenancyTests : IAsyncLifetime
     {
         // Not reachable from the route table: /handover names its session in the BODY, not the path. It was
         // one of the six converted sites the first version of this proof did not cover.
+        // CONTRACT CHANGE (issue #2188): this route used to answer with its own prose,
+        // "source session not found across any director". It now goes through the one shared responder every
+        // other per-session route uses, so the body carries the same machine-readable code as the rest -
+        // which is what this now anchors on. The tenancy property under test is unchanged.
         var own = await Send("POST", "handover", _keyA, $"{{\"fromSessionId\":\"{SessA}\",\"toRepoPath\":\"/repo\"}}");
-        Assert.DoesNotContain("source session not found", await own.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        Assert.NotEqual(HttpStatusCode.NotFound, own.StatusCode);
+        Assert.DoesNotContain(NotLocated, await own.Content.ReadAsStringAsync(), StringComparison.Ordinal);
 
         var cross = await Send("POST", "handover", _keyB, $"{{\"fromSessionId\":\"{SessA}\",\"toRepoPath\":\"/repo\"}}");
         Assert.Equal(HttpStatusCode.NotFound, cross.StatusCode);
-        Assert.Contains("source session not found", await cross.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        var crossBody = await cross.Content.ReadAsStringAsync();
+        Assert.Contains(NotLocated, crossBody, StringComparison.Ordinal);
+        // Never the retryable "that machine is catching up" answer: telling tenant B to try again would
+        // confirm tenant A's session exists and invite retries against another tenant's id.
+        Assert.DoesNotContain("director_stale", crossBody, StringComparison.Ordinal);
     }
 
     [Fact]

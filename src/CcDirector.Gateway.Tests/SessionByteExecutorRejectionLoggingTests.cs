@@ -63,10 +63,20 @@ public sealed class SessionByteExecutorRejectionLoggingTests : IAsyncLifetime
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// A session with an EMBEDDED test backend, never a real one.
+    ///
+    /// <see cref="SessionManager.CreateSession(string, string)"/> launches an actual agent process through
+    /// ConPty. That happens to work on a developer machine with an agent installed and fails with
+    /// "CreateProcess failed" on a clean build agent, which is a test depending on the machine it runs on
+    /// rather than on the code under test. These tests are about a LOG LINE; they need a session id to
+    /// address, not a process. <see cref="SessionByteExecutorTests"/> alongside this file uses the same
+    /// embedded backend for the same reason.
+    /// </summary>
     private static (SessionManager, Session) NewSession()
     {
         var sm = new SessionManager(new AgentOptions());
-        var session = sm.CreateSession(Path.GetTempPath());
+        var session = sm.CreateEmbeddedSession(Path.GetTempPath(), null, new ExecuteActionTestBackend());
         return (sm, session);
     }
 
