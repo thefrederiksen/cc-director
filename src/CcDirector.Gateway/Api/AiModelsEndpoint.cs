@@ -258,6 +258,8 @@ internal static class AiModelsEndpoint
                 if (body is null || string.IsNullOrWhiteSpace(body.Model))
                     return Results.BadRequest(new { error = "body { \"model\": \"<id>\" } is required" });
                 resolver.SetTtsModel(t.Value, body.Model, DateTime.UtcNow);
+                // A deliberate choice supersedes the model we were holding to restore later.
+                resolver.ClearSpeechBeforeLanguageSwitch(t.Value);
                 var model = body.Model.Trim();
                 FileLog.Write($"[AiModelsEndpoint] tts model set: {model} for tenant={t.Value.ToLogString()}");
                 return Results.Json(new { model });
@@ -357,6 +359,29 @@ internal static class AiModelsEndpoint
         }
 
         var current = models.FirstOrDefault(m => string.Equals(m.Id, currentModel, StringComparison.OrdinalIgnoreCase));
+
+        // FIRST: can we put the account BACK where it was? If a previous language change moved it off
+        // a model, and that model can speak the language now being chosen, restore it. Without this a
+        // trip to Danish and back to English strands the account on the multilingual engine forever -
+        // which still works, but costs 61% more per character than the default for a language that
+        // never needed it. Restores the REMEMBERED model, not "the default", so a deliberate choice
+        // the tenant made themselves is not quietly replaced by ours.
+        var memo = resolver.SpeechBeforeLanguageSwitch(tenant);
+        if (memo is not null && !string.Equals(memo.Value.Model, currentModel, StringComparison.OrdinalIgnoreCase))
+        {
+            var remembered = models.FirstOrDefault(m => string.Equals(m.Id, memo.Value.Model, StringComparison.OrdinalIgnoreCase));
+            if (remembered is not null && SpokenLanguage.ModelCanSpeak(remembered.Languages, language))
+            {
+                resolver.SetTtsModel(tenant, remembered.Id, DateTime.UtcNow);
+                if (!string.IsNullOrWhiteSpace(memo.Value.Voice))
+                    resolver.SetTtsVoice(tenant, memo.Value.Voice!, DateTime.UtcNow);
+                else
+                    resolver.ClearTtsVoice(tenant);
+                resolver.ClearSpeechBeforeLanguageSwitch(tenant);
+                return new SpeechSwitch(remembered.Id, memo.Value.Voice, true, null);
+            }
+        }
+
         if (current is not null && SpokenLanguage.ModelCanSpeak(current.Languages, language))
         {
             // Nothing to switch. Report the voice as none when this model has no preset voices, rather
@@ -370,6 +395,12 @@ internal static class AiModelsEndpoint
         if (replacement is null)
             return new SpeechSwitch(currentModel, currentVoice, false,
                 $"no speech model available can speak {SpokenLanguage.EnglishName(language)}");
+
+        // Remember where we came from BEFORE moving, so the return trip can undo exactly this.
+        // Only the first auto-switch is recorded: hopping Danish -> French must still remember the
+        // English engine we originally left, not the multilingual one we are already on.
+        if (memo is null)
+            resolver.SetSpeechBeforeLanguageSwitch(tenant, currentModel, currentVoice, DateTime.UtcNow);
 
         resolver.SetTtsModel(tenant, replacement.Id, DateTime.UtcNow);
 

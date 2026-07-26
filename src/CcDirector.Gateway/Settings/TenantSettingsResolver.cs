@@ -157,6 +157,36 @@ public sealed class TenantSettingsResolver
     public void SetTtsVoice(TenantId tenant, string voice, DateTime nowUtc)
         => _store.Set(tenant, TenantSettingKeys.TtsVoice, RequireNonEmpty(voice, nameof(voice)), nowUtc);
 
+    /// <summary>What the speech model/voice were before an auto-switch, or null when nothing is
+    /// remembered. A corrupt value reads as null - a bad memo must never break a language change.</summary>
+    public (string Model, string? Voice)? SpeechBeforeLanguageSwitch(TenantId tenant)
+    {
+        var raw = _store.Get(tenant, TenantSettingKeys.SpeechBeforeLanguageSwitch);
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(raw);
+            var model = doc.RootElement.TryGetProperty("model", out var m) ? m.GetString() : null;
+            if (string.IsNullOrWhiteSpace(model)) return null;
+            var voice = doc.RootElement.TryGetProperty("voice", out var v) && v.ValueKind == System.Text.Json.JsonValueKind.String
+                ? v.GetString() : null;
+            return (model!, voice);
+        }
+        catch (System.Text.Json.JsonException) { return null; }
+    }
+
+    /// <summary>Remember the speech model/voice we are about to auto-switch away from.</summary>
+    public void SetSpeechBeforeLanguageSwitch(TenantId tenant, string model, string? voice, DateTime nowUtc)
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(new { model, voice });
+        _store.Set(tenant, TenantSettingKeys.SpeechBeforeLanguageSwitch, json, nowUtc);
+    }
+
+    /// <summary>Forget the remembered speech model - after restoring it, or once the tenant picks a
+    /// model themselves, because a deliberate choice supersedes anything we were holding for them.</summary>
+    public void ClearSpeechBeforeLanguageSwitch(TenantId tenant)
+        => _store.Remove(tenant, TenantSettingKeys.SpeechBeforeLanguageSwitch);
+
     /// <summary>Remove the tenant's voice override entirely - the honest state when the speech model in
     /// use has no preset voices to choose from. Distinct from setting an empty string, which the setter
     /// rejects.</summary>
