@@ -12,6 +12,7 @@ import {
   snoozeCountdown,
   snoozeExpired,
 } from "@devthrottle/client-core/sessions/ordering";
+import { changesBadge, changesTitle } from "@devthrottle/client-core/sessions/changes";
 import { machinePortLabel } from "@devthrottle/client-core/fleet/directorEndpoint";
 import { useNow, waitingLabel } from "@devthrottle/client-core/sessions/waiting";
 import {
@@ -296,9 +297,15 @@ function RosterRow({
   // rides on contextLine (the stamped stateLabel); this tag adds the countdown beside it.
   const holdCountdown = snoozeCountdown(session);
   const windingDown = pendingDeletion(session);
-  // The tag row (voice / hold-time / snooze-ended / winding-down / last-seen / waiting) renders only when
-  // it has something to say, so a plain working session stays a compact two lines (name + state).
+  // How much uncommitted work this session is sitting on, in the same words the desktop rail uses. The
+  // Director measures it and the Gateway passes it through; the shared formatter decides the wording so
+  // this roster and the mobile one cannot say it two different ways. Null on a clean tree AND on an
+  // unknown one - see client-core/sessions/changes for why those stay distinct upstream.
+  const changes = changesBadge(session);
+  // The tag row (changes / voice / hold-time / snooze-ended / winding-down / last-seen / waiting) renders
+  // only when it has something to say, so a plain working session stays a compact two lines (name + state).
   const hasTags =
+    changes !== null ||
     holdCountdown !== null ||
     snoozeExpired(session) ||
     windingDown ||
@@ -331,6 +338,11 @@ function RosterRow({
           {/* Line 4 (only when there is something to show): the tags and the live waiting timer. */}
           {hasTags && (
             <span className="roster-tags">
+              {changes !== null && (
+                <span className="roster-tag changes" title={changesTitle(session) ?? undefined}>
+                  {changes}
+                </span>
+              )}
               {session.voiceMode && <span className="roster-tag voice">voice</span>}
               {windingDown && (
                 <span className="roster-tag winding-down" title={deletionReason(session) ?? "Marked for deletion"}>

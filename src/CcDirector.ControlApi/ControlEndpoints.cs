@@ -1640,6 +1640,13 @@ internal static class ControlEndpoints
             // this roster mapper never forks git twice for the same checkout; "" when the checkout is on no
             // host we recognize, in which case the Gateway groups it by its folder name instead.
             RepoName = GitHubUrls.ResolveRepoNameCached(s.RepoPath),
+            // How many files are changed in this session's working tree, measured on this machine by
+            // SessionGitStatusMonitor - the number behind the desktop rail's amber "N chg" badge. Null
+            // until a git probe succeeds, and null is UNKNOWN, never "clean": a failed probe leaves the
+            // last known count in place rather than reporting a zero every reader would render as a clean
+            // tree (issue 516). Nothing is derived here - the Gateway passes the count through and the
+            // clients share one formatter.
+            UncommittedCount = s.UncommittedCount,
             // Issue #335: identity fields populated by the Director (not patched by the Gateway).
             MachineName = machineName,
             User = user,

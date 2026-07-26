@@ -202,6 +202,7 @@ public sealed class ControlApiHost : IAsyncDisposable
     private Core.Activity.ActivityEventProducer? _activityProducer;
     private ActivityEventUploader? _activityUploader;
     private RepoStatePusher? _repoStatePusher;
+    private Core.Git.SessionGitStatusMonitor? _sessionGitStatusMonitor;
     private TransientErrorAutoResume? _transientErrorAutoResume;
     private TerminalSessionRecorder? _sessionRecorder;
     private Core.Storage.TurnReviewLogger? _turnReviewLogger;
@@ -771,6 +772,14 @@ public sealed class ControlApiHost : IAsyncDisposable
                 liveSessions: LiveSessionRefs);
             _repoStatePusher.Start();
         }
+
+        // Every live session's uncommitted file count, refreshed every fifteen seconds. This poll used to
+        // live in the desktop window, which meant the number existed only where it was rendered and never
+        // reached the Gateway - so the Cockpit roster had nothing to show. Here it lands on the Session,
+        // which ControlEndpoints.Map puts on the wire, and the desktop rail reads the same number rather
+        // than probing git a second time.
+        _sessionGitStatusMonitor = new Core.Git.SessionGitStatusMonitor(_sessionManager);
+        _sessionGitStatusMonitor.Start();
     }
 
     /// <summary>
@@ -983,6 +992,13 @@ public sealed class ControlApiHost : IAsyncDisposable
             // colour. Found by review of pull request 1598, after three earlier passes hunting exactly this.
             session.OnWingmanEnabledChanged += _ =>
                 _streamClient?.NotifyDelta(ControlEndpoints.Map(session, DirectorId));
+
+            // The uncommitted file count. Same one-line shape and same reason as the pushes above: without
+            // it the Cockpit's "N chg" badge would only move on the ten-second full re-push, or on whatever
+            // unrelated event happened to fire first. The monitor raises this ONLY when the number actually
+            // changes, so an idle session pushes nothing.
+            session.OnUncommittedCountChanged += _ =>
+                _streamClient?.NotifyDelta(ControlEndpoints.Map(session, DirectorId));
         }
 
         _sessionManager.OnSessionCreated += session =>
@@ -1121,6 +1137,8 @@ public sealed class ControlApiHost : IAsyncDisposable
         _activityUploader = null;
         _repoStatePusher?.Dispose();
         _repoStatePusher = null;
+        _sessionGitStatusMonitor?.Dispose();
+        _sessionGitStatusMonitor = null;
         _activityProducer?.Dispose();
         _activityProducer = null;
         _activityOutbox = null;

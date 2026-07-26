@@ -82,6 +82,9 @@ public class SessionViewModel : INotifyPropertyChanged
         // session parked on its background task flips the fold from purple "Background" to red "Needs you"
         // with no overlay flag changing. Easier to miss than a flag for exactly that reason.
         session.OnWingmanEnabledChanged += OnFoldInputChangedVm;
+        // The uncommitted-file count now arrives from the Director's monitor rather than from a timer this
+        // window owns, so the badge needs its own invalidation the same way every other pushed fact does.
+        session.OnUncommittedCountChanged += OnUncommittedCountChangedVm;
 
         if (session.PromptQueue != null)
         {
@@ -528,6 +531,17 @@ public class SessionViewModel : INotifyPropertyChanged
         });
     }
 
+    /// <summary>Repaint the amber "N chg" badge when the Director's git monitor publishes a new count.
+    /// Posted to the UI thread: the monitor raises this from a background poll.</summary>
+    private void OnUncommittedCountChangedVm(int? _)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            OnPropertyChanged(nameof(UncommittedCount));
+            OnPropertyChanged(nameof(HasUncommittedChanges));
+        });
+    }
+
     public string? CustomColor
     {
         get => Session.CustomColor;
@@ -738,20 +752,20 @@ public class SessionViewModel : INotifyPropertyChanged
 
     public string RepoPath => Session.RepoPath;
 
-    private int _uncommittedCount;
-    public int UncommittedCount
-    {
-        get => _uncommittedCount;
-        set
-        {
-            if (_uncommittedCount == value) return;
-            _uncommittedCount = value;
-            OnPropertyChanged();
-            OnPropertyChanged(nameof(HasUncommittedChanges));
-        }
-    }
+    /// <summary>
+    /// How many files are changed in this session's working tree, for the rail's amber "N chg" badge.
+    /// READ STRAIGHT OFF THE SESSION - this view model no longer keeps a copy, and the window no longer
+    /// polls git for it. The count is produced once, on the Director, by <c>SessionGitStatusMonitor</c>,
+    /// which is also what puts it on the wire for the Cockpit roster and the phone. Before that it was
+    /// computed here and nowhere else, so the number existed only on this screen.
+    ///
+    /// Zero when the count is UNKNOWN (no successful probe yet) - and <see cref="HasUncommittedChanges"/>
+    /// is false in that case, so the badge is absent rather than reading "0 chg". Unknown must never render
+    /// as a verified-clean tree (issue 516).
+    /// </summary>
+    public int UncommittedCount => Session.UncommittedCount ?? 0;
 
-    public bool HasUncommittedChanges => _uncommittedCount > 0;
+    public bool HasUncommittedChanges => Session.UncommittedCount is > 0;
 
     private int _queueCount;
     public int QueueCount

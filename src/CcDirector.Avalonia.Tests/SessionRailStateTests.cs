@@ -272,6 +272,64 @@ public sealed class SessionRailStateTests
         Assert.Equal("", vm.RoleGlyphText);
     }
 
+    // ===== The uncommitted-work badge ("N chg") =====
+    //
+    // The rail used to compute this itself, on a timer the window owned, so the number existed only here
+    // and never reached the Gateway. It now reads the Session, which the Director's SessionGitStatusMonitor
+    // writes and ControlEndpoints.Map puts on the wire - so the rail and the Cockpit roster show one number.
+
+    [Fact]
+    public void UncommittedBadge_UnprobedSession_ShowsNoBadge()
+    {
+        var vm = new SessionViewModel(Bare());
+
+        // Null on the Session is UNKNOWN. The badge must be absent, not read "0 chg" - which would claim a
+        // clean tree nobody has measured (issue 516).
+        Assert.False(vm.HasUncommittedChanges);
+        Assert.Equal(0, vm.UncommittedCount);
+    }
+
+    [Fact]
+    public void UncommittedBadge_CleanTree_ShowsNoBadge()
+    {
+        var session = Bare();
+        session.UncommittedCount = 0;
+
+        var vm = new SessionViewModel(session);
+
+        Assert.False(vm.HasUncommittedChanges);
+    }
+
+    [Fact]
+    public void UncommittedBadge_DirtyTree_ShowsTheCountFromTheSession()
+    {
+        var session = Bare();
+        var vm = new SessionViewModel(session);
+
+        session.UncommittedCount = 12;
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.True(vm.HasUncommittedChanges);
+        Assert.Equal(12, vm.UncommittedCount);
+    }
+
+    [Fact]
+    public void UncommittedBadge_CountChanges_RaisesTheRailsRepaint()
+    {
+        var session = Bare();
+        var vm = new SessionViewModel(session);
+        var repainted = new List<string>();
+        vm.PropertyChanged += (_, e) => repainted.Add(e.PropertyName ?? "");
+
+        session.UncommittedCount = 4;
+        Dispatcher.UIThread.RunJobs();
+
+        // Without this the row keeps its old badge until some unrelated event happens to repaint it - the
+        // same class of bug as a fold input with no invalidation path.
+        Assert.Contains(nameof(SessionViewModel.UncommittedCount), repainted);
+        Assert.Contains(nameof(SessionViewModel.HasUncommittedChanges), repainted);
+    }
+
     /// <summary>An inert backend: the Session needs one, these tests never run a process.</summary>
     private sealed class InertBackend : ISessionBackend
     {

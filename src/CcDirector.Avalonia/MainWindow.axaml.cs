@@ -82,11 +82,10 @@ public partial class MainWindow : Window
     private readonly SlashCommandProvider _slashCommandProvider = new();
     private List<SlashCommandItem> _filteredSlashCommands = new();
 
-    // Session git status polling
-    private readonly CcDirector.Core.Git.GitStatusProvider _gitStatusProvider = new();
+    // Rail refresh timers. The git-status probe that used to ride the first of these now runs on the
+    // Director (Core.Git.SessionGitStatusMonitor) so the count reaches every surface, not just this one.
     private global::Avalonia.Threading.DispatcherTimer? _sessionGitTimer;
     private global::Avalonia.Threading.DispatcherTimer? _dictationLockTimer;
-    private bool _sessionGitRefreshRunning;
 
     // Interactive TUI mode
     private bool _isInteractiveTuiMode;
@@ -302,16 +301,21 @@ public partial class MainWindow : Window
         HomeView.GatewayClicked += (_, _) => OpenGatewayConnectionPanel();
         UpdateHomeVisibility();
 
-        // Start session git status polling (15s interval)
+        // Refresh the rail's relative time labels and the needs-you count every 15 seconds.
+        //
+        // This timer used to ALSO probe git for each session's uncommitted file count and write it onto the
+        // view model. That poll has moved to the Director (Core.Git.SessionGitStatusMonitor), which writes
+        // Session.UncommittedCount and so puts the number on the wire for the Cockpit roster and the phone
+        // too. Computing it here meant the number existed only on this screen. The rail now subscribes to
+        // the session's own change event and renders the same count every other surface sees.
         _sessionGitTimer = new global::Avalonia.Threading.DispatcherTimer
         {
             Interval = TimeSpan.FromSeconds(15),
         };
-        _sessionGitTimer.Tick += async (_, _) =>
+        _sessionGitTimer.Tick += (_, _) =>
         {
             foreach (var vm in _sessions) vm.RefreshTimeLabels();
             UpdateNeedsYouCount();
-            await RefreshSessionGitStatusAsync();
         };
         _sessionGitTimer.Start();
 
@@ -5829,46 +5833,6 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             FileLog.Write($"[MainWindow] CaptureStartupTextAsync FAILED: {ex.Message}");
-        }
-    }
-
-    // ==================== SESSION GIT STATUS POLLING ====================
-
-    private async Task RefreshSessionGitStatusAsync()
-    {
-        if (_sessionGitRefreshRunning) return;
-        _sessionGitRefreshRunning = true;
-
-        try
-        {
-            var sessions = _sessions.ToList();
-            using var semaphore = new SemaphoreSlim(4);
-
-            var tasks = sessions.Select(async vm =>
-            {
-                await semaphore.WaitAsync();
-                try
-                {
-                    var repoPath = vm.Session.RepoPath;
-                    if (!Directory.Exists(repoPath)) return;
-
-                    var count = await _gitStatusProvider.GetCountAsync(repoPath);
-                    // Only publish a count the probe actually produced; a failed probe leaves the
-                    // previous value rather than showing a false zero (issue 516).
-                    if (count.Success)
-                        global::Avalonia.Threading.Dispatcher.UIThread.Post(() => vm.UncommittedCount = count.Count);
-                }
-                finally
-                {
-                    semaphore.Release();
-                }
-            });
-
-            await Task.WhenAll(tasks);
-        }
-        finally
-        {
-            _sessionGitRefreshRunning = false;
         }
     }
 
