@@ -330,7 +330,7 @@ public sealed class WingmanTranslator
             throw new ArgumentException("A message is required to ask the wingman.", nameof(userMessage));
 
         _log($"[WingmanTranslator] AskDirectAsync: userLen={userMessage.Length}");
-        var prompt = BuildDirectPrompt(userMessage);
+        var prompt = BuildDirectPrompt(userMessage, SpokenLanguage.Normalize(_spokenLanguage(tenant)));
 
         var brain = await _brainProvider(tenant, WingmanModelRole.Thinking, ct);
         AskResult ask;
@@ -366,7 +366,7 @@ public sealed class WingmanTranslator
             throw new ArgumentException("A question is required to ask about DevThrottle.", nameof(question));
 
         _log($"[WingmanTranslator] AskAboutDevThrottleAsync: questionLen={question.Length}");
-        var prompt = BuildDevThrottlePrompt(question);
+        var prompt = BuildDevThrottlePrompt(question, SpokenLanguage.Normalize(_spokenLanguage(tenant)));
 
         var brain = await _brainProvider(tenant, WingmanModelRole.Thinking, ct);
         AskResult ask;
@@ -390,8 +390,16 @@ public sealed class WingmanTranslator
     /// <summary>The DevThrottle product/docs Q&amp;A prompt (issue #472). Public so a test can assert
     /// it grounds the brain as DevThrottle's in-product help and carries the user's question.</summary>
     public static string BuildDevThrottlePrompt(string question)
+        => BuildDevThrottlePrompt(question, SpokenLanguage.Default);
+
+    /// <summary>The about-DevThrottle answer, in the tenant's spoken language. Spoken output, so it
+    /// needs the instruction like every other speaking path.</summary>
+    public static string BuildDevThrottlePrompt(string question, string? spokenLanguage)
     {
+        // The language goes first so it frames everything that follows.
+        var languageBlock = SpokenLanguage.PromptInstruction(spokenLanguage);
         var sb = new StringBuilder();
+        sb.Append(languageBlock);
         sb.Append("You are DevThrottle's in-product help assistant, answering a question typed on the ");
         sb.Append("Learning page of the DevThrottle Cockpit (the fleet web dashboard). DevThrottle ");
         sb.Append("(the app and command-line tools are named cc-director) is an open-source tool that ");
@@ -585,6 +593,12 @@ public sealed class WingmanTranslator
 
     /// <summary>The direct-to-wingman prompt. Public so a test can assert its contract.</summary>
     public static string BuildDirectPrompt(string userMessage)
+        => BuildDirectPrompt(userMessage, SpokenLanguage.Default);
+
+    /// <summary>The direct reply in the tenant's spoken language. CONVERSATION is a different
+    /// generator from turn narration, and needs the language instruction of its own - it did not
+    /// have one, which is why an account set to Danish was still answered in English.</summary>
+    public static string BuildDirectPrompt(string userMessage, string? spokenLanguage)
     {
         var sb = new StringBuilder();
         sb.Append("You are the wingman, talking directly to a person in a spoken back-and-forth ");
@@ -595,6 +609,7 @@ public sealed class WingmanTranslator
         sb.Append("in words (\"first ... second ...\"), never as a \"1.\" list. ");
         sb.Append("You do NOT edit files or run commands yourself; if the request needs real code ");
         sb.Append("work, say so plainly and suggest sending it to the working session.\n\n");
+        sb.Append(SpokenLanguage.PromptInstruction(spokenLanguage));
         sb.Append("The person said:\n");
         sb.Append(userMessage.Trim());
         sb.Append("\n\n");
@@ -641,26 +656,10 @@ public sealed class WingmanTranslator
         var sb = new StringBuilder();
         sb.Append(string.IsNullOrWhiteSpace(instructions) ? FidelityPrompt : instructions);
         sb.Append("\n\n");
-        if (!SpokenLanguage.IsDefault(spokenLanguage))
-        {
-            // Stated up front, right after the contract, because the model's default behaviour is
-            // to mirror the language of the reply it is given - which is nearly always English.
-            // Being specific about what must NOT be translated matters as much as the language
-            // itself: a listener has to be able to type what they hear.
-            var name = SpokenLanguage.EnglishName(spokenLanguage);
-            sb.Append("LANGUAGE. Write the spoken version in ");
-            sb.Append(name);
-            sb.Append(". The agent's reply below is in whatever language it works in, usually ");
-            sb.Append("English; you are saying it for the ear in ");
-            sb.Append(name);
-            sb.Append(". Write it the way a native speaker would say it out loud, not as a ");
-            sb.Append("word-for-word translation.\n");
-            sb.Append("Leave these EXACTLY as they appear, never translated and never spelled ");
-            sb.Append("differently: file names and paths, code identifiers, command names, branch ");
-            sb.Append("names, and error text. Everything else is spoken in ");
-            sb.Append(name);
-            sb.Append(".\n\n");
-        }
+        // ONE instruction, shared by every speaking path (see SpokenLanguage.PromptInstruction):
+        // narration, the direct reply, the about-DevThrottle answer, and Car Mode. Applying it to
+        // only one of them is exactly how "I set Danish and it still speaks English" happens.
+        sb.Append(SpokenLanguage.PromptInstruction(spokenLanguage));
         if (!string.IsNullOrWhiteSpace(sessionTitle))
         {
             sb.Append("The title of the session this reply came from. Open the narration by saying ");
