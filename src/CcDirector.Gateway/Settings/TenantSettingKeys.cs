@@ -31,6 +31,12 @@ public static class TenantSettingKeys
     /// reads this. BCP-47 primary subtag; unset means English.</summary>
     public const string SpokenLanguage = "spoken_language";
 
+    /// <summary>What the speech model and voice were BEFORE a spoken-language change auto-switched
+    /// them, as JSON. Held so that returning to a language the old engine can speak puts the account
+    /// back where it was, instead of stranding it on a costlier engine it no longer needs. Absent
+    /// whenever nothing has been auto-switched.</summary>
+    public const string SpeechBeforeLanguageSwitch = "speech_before_language_switch";
+
     /// <summary>The conversational model Car Mode drives (global default: <c>car_mode_model</c>).</summary>
     public const string CarModeModel = "car_mode_model";
 
@@ -68,7 +74,7 @@ public static class TenantSettingKeys
     /// <summary>Every key this resolver serves, for validation and enumeration.</summary>
     public static readonly IReadOnlySet<string> All = new HashSet<string>(StringComparer.Ordinal)
     {
-        WingmanModel, WingmanFastModel, TtsModel, TtsVoice, SpokenLanguage,
+        WingmanModel, WingmanFastModel, TtsModel, TtsVoice, SpokenLanguage, SpeechBeforeLanguageSwitch,
         CarModeModel, CarModeEndPhrase, SnoozePresets, SnoozeDefaultMinutes, TimeZone, InjectedText,
         VoiceModeAll,
     };
