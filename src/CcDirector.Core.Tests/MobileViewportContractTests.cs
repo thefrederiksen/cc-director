@@ -182,12 +182,14 @@ public sealed class MobileViewportContractTests
     /// protect: the shells are pinned OUT OF THE DOCUMENT FLOW, so nothing above them in the markup can
     /// push them down. Rendering order does not move a fixed box; only its own `top` does.
     ///
-    /// So the contract is: every pinned shell starts at the banner's height and gives up that much height.
-    /// The banner measures itself and publishes --voicemode-h (0px when it is not on screen), because the
-    /// bar wraps to two lines on a narrow phone and a hard-coded height would be right on one device.
+    /// So the contract is: every pinned shell starts at the top bars' height and gives up that much height.
+    /// There are TWO such bars - the voice-mode banner and the network banner - and each measures itself and
+    /// publishes its own height (--voicemode-h, --connbanner-h; 0px when it is not on screen), because a bar
+    /// wraps to two lines on a narrow phone and a hard-coded height would be right on one device. A shell
+    /// reads their SUM, --topbars-h: accounting for one bar and not the other loses the header to the other.
     /// </summary>
     [Fact]
-    public void PinnedShells_StartBelowTheVoiceModeBanner_AndGiveUpItsHeight()
+    public void PinnedShells_StartBelowTheTopBars_AndGiveUpTheirHeight()
     {
         var root = GetRepoRoot();
         var css = File.ReadAllText(Path.Combine(root, StylesPath));
@@ -198,23 +200,44 @@ public sealed class MobileViewportContractTests
             var block = RuleBlock(css, shell);
             if (block is null) continue;
 
-            // Pinned to the top of the window: `top` must be the banner offset, not 0.
+            // Pinned to the top of the window: `top` must be the bars' offset, not 0.
             var tops = Regex.Matches(block, @"(?<!-)\btop\s*:\s*([^;]+);").Select(m => m.Groups[1].Value.Trim()).ToList();
-            if (tops.Count == 0 || !tops[^1].Contains("var(--voicemode-h", StringComparison.Ordinal))
-                offenders.Add($"{shell}: its effective `top` is `{(tops.Count == 0 ? "unset" : tops[^1])}`, not var(--voicemode-h, 0px) - the banner will paint over this screen's header, hiding its back button.");
+            if (tops.Count == 0 || !tops[^1].Contains("var(--topbars-h", StringComparison.Ordinal))
+                offenders.Add($"{shell}: its effective `top` is `{(tops.Count == 0 ? "unset" : tops[^1])}`, not var(--topbars-h, 0px) - a top bar will paint over this screen's header, hiding its back button.");
 
             // And the height must shrink by the same amount, or the bottom of the screen goes off-window.
             var heights = Regex.Matches(block, @"(?<!max-|min-)\bheight\s*:\s*([^;]+);").Select(m => m.Groups[1].Value.Trim()).ToList();
-            if (heights.Count > 0 && !heights[^1].Contains("var(--voicemode-h", StringComparison.Ordinal))
-                offenders.Add($"{shell}: its effective height `{heights[^1]}` does not subtract var(--voicemode-h, 0px), so the bottom of the screen is pushed off-window while the banner is up.");
+            if (heights.Count > 0 && !heights[^1].Contains("var(--topbars-h", StringComparison.Ordinal))
+                offenders.Add($"{shell}: its effective height `{heights[^1]}` does not subtract var(--topbars-h, 0px), so the bottom of the screen is pushed off-window while a bar is up.");
         }
 
         Assert.True(offenders.Count == 0,
-            "A pinned mobile shell does not make room for the top banner:\n  " + string.Join("\n  ", offenders)
+            "A pinned mobile shell does not make room for the top bars:\n  " + string.Join("\n  ", offenders)
             + "\n\nWHY: these shells are position:fixed and sized to the whole visible height, so a bar rendered "
             + "ABOVE them in the markup cannot push them down - it paints over their header. That is exactly how "
             + "the voice-mode banner hid the session screen's back arrow and overflow menu: Respond and Snooze "
             + "worked, and there was no way back to the roster.");
+    }
+
+    /// <summary>
+    /// --topbars-h must be the SUM of every bar that can be pinned above a screen, or a shell that reads it
+    /// makes room for one bar and loses its header to the other. The network banner and the voice-mode
+    /// banner appear independently and can be up at the same time (a slow connection while the fleet is
+    /// narrating), so neither is safe to leave out.
+    /// </summary>
+    [Fact]
+    public void TopBarsHeight_IsTheSumOfEveryPinnedTopBar()
+    {
+        var css = StripComments(File.ReadAllText(Path.Combine(GetRepoRoot(), StylesPath)));
+        var declaration = Regex.Match(css, @"--topbars-h\s*:\s*([^;]+);");
+        Assert.True(declaration.Success,
+            "--topbars-h is no longer declared. Every pinned shell reads it for its `top` and its height; without it they all fall back to 0px and the top bars paint over their headers.");
+
+        var value = declaration.Groups[1].Value;
+        Assert.True(value.Contains("var(--voicemode-h", StringComparison.Ordinal),
+            $"--topbars-h ({value.Trim()}) does not include the voice-mode banner's height. While that bar is up, every pinned screen loses its own header to it.");
+        Assert.True(value.Contains("var(--connbanner-h", StringComparison.Ordinal),
+            $"--topbars-h ({value.Trim()}) does not include the network banner's height. While that bar is up, every pinned screen loses its own header to it.");
     }
 
     /// <summary>
@@ -272,6 +295,28 @@ public sealed class MobileViewportContractTests
             "VoiceModeBanner no longer MEASURES itself. The bar wraps to two lines on a narrow phone and grows again when an error line appears - a hard-coded height is right on exactly one device.");
         Assert.True(Regex.IsMatch(src, @"""--voicemode-h"",\s*""0px"""),
             "VoiceModeBanner no longer resets --voicemode-h to 0px when it is not shown. A stale height pushes every screen down by a bar that is no longer on the page.");
+    }
+
+    /// <summary>
+    /// The network banner must MEASURE itself and publish --connbanner-h, for exactly the reasons the
+    /// voice-mode banner does. It is position:fixed, so it is out of the flow and pushes nothing down by
+    /// itself - and it is the app's ONLY word about the network now that the always-on status pill is gone,
+    /// so it is deliberately big and wraps to two or three lines on a narrow phone. Unmeasured, it painted
+    /// over the voice-mode banner's "Turn off" button - the one way out of voice mode.
+    /// </summary>
+    [Fact]
+    public void TheConnectionBanner_PublishesItsMeasuredHeight()
+    {
+        var path = Path.Combine(GetRepoRoot(), "apps", "mobile", "src", "components", "ConnectionBanner.tsx");
+        Assert.True(File.Exists(path), "apps/mobile/src/components/ConnectionBanner.tsx is missing. If the banner was renamed, update this test - do not delete the contract.");
+
+        var src = File.ReadAllText(path);
+        Assert.True(src.Contains("--connbanner-h", StringComparison.Ordinal),
+            "ConnectionBanner no longer publishes --connbanner-h. Without it every pinned shell falls back to 0px and the banner covers the screen's own header.");
+        Assert.True(src.Contains("ResizeObserver", StringComparison.Ordinal),
+            "ConnectionBanner no longer MEASURES itself. Its message wraps to two or three lines on a narrow phone - a hard-coded height is right on exactly one device.");
+        Assert.True(Regex.IsMatch(src, @"""--connbanner-h"",\s*""0px"""),
+            "ConnectionBanner no longer resets --connbanner-h to 0px when it is not shown. A stale height pushes every screen down by a bar that is no longer on the page - and this banner is hidden nearly all the time.");
     }
 
     /// <summary>Returns the body of the FIRST rule whose selector list contains <paramref name="selector"/> exactly.</summary>

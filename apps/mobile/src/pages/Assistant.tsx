@@ -3,7 +3,6 @@ import { Link } from "react-router-dom";
 import { useAssistant, type AssistantMode, type AssistantPhase } from "@devthrottle/client-core/assistant/useAssistant";
 import { DictationDialog } from "@devthrottle/client-core/dictation/DictationDialog";
 import { joinText } from "@devthrottle/client-core/dictation/transcript";
-import { StatusPill } from "../components/StatusPill";
 
 // The Assistant on the phone (fleet assistant build): the SAME fleet-level chat + voice screen the
 // cockpit has, as a thin phone view over the shared client-core turn machine (useAssistant). Not tied
@@ -23,12 +22,11 @@ import { StatusPill } from "../components/StatusPill";
 // useVisibleViewportHeight in main.tsx), so the composer and the talk button are always on-screen -
 // the law every mobile session screen follows.
 //
-// The mode toggle is CENTRED, never in the top-right corner. That corner is not this screen's to
-// spend: the fixed network status pill (.net-pill) is pinned there on every screen that does not give
-// it a home of its own, and it sat directly on top of the toggle - a green pill over the one control
-// that decides how the whole screen behaves. This screen now gives the pill a real home inline in its
-// own bar (the Home and session-screen pattern; the fixed one stands down for /assistant in
-// main.tsx), and the toggle owns the middle.
+// The mode toggle is CENTRED, never in the top-right corner. It used to be up there, where the app's
+// fixed network status pill sat straight on top of it - a green "Connected" pill over the one control
+// that decides how this whole screen behaves. That pill is gone now (see ConnectionBanner: the app
+// says nothing at all while the connection is fine), but the toggle keeps the middle: it is the main
+// control on the screen and the middle is where it reads, corner or no corner.
 
 const PHASE_LINE: Record<AssistantPhase, string> = {
   idle: "",
@@ -115,9 +113,6 @@ export function Assistant() {
         <Link className="back-link" to="/">Back</Link>
         <h1>Assistant</h1>
         <div className="assistant-bar-spacer" />
-        {/* The network pill's home on this screen - inline, so the fixed overlay stands down and
-            nothing lands on top of the mode toggle. */}
-        <StatusPill inline />
       </div>
 
       {/* Once a conversation exists the toggle is chrome: small, centred, clear of both corners. In

@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { createBrowserRouter, RouterProvider, Navigate, Outlet, useLocation } from "react-router-dom";
+import { createBrowserRouter, RouterProvider, Navigate, Outlet } from "react-router-dom";
 import { Home } from "./pages/Home";
 import { NewSession } from "./pages/NewSession";
 import { Terminal } from "./pages/Terminal";
@@ -31,7 +31,6 @@ import { useScreenWakeLock } from "./hooks/useScreenWakeLock";
 import { useKeepWarm } from "@devthrottle/client-core/net/useKeepWarm";
 import { resumePendingDictations } from "@devthrottle/client-core/dictation/backgroundSend";
 import { RouteRecoveryBoundary, RootLayout } from "./components/StaleShellRecovery";
-import { StatusPill } from "./components/StatusPill";
 import "./styles.css";
 
 // The auth gate (issue #908): every real screen requires an enrolled device key. Without one, the
@@ -59,34 +58,17 @@ function GatedLayout() {
   React.useEffect(() => {
     void resumePendingDictations();
   }, []);
-  // The one global bad-connection banner (mobile-resilience mission): mounted once here so it pins to
-  // the top of every gated screen and is the single voice for a bad connection. Hidden while the
-  // connection is good; the pages keep their last-known content underneath either way.
-  // The network pill is fixed top-right on every screen that has no header of its own to give it. The
-  // /session/ screens DO have one and render their own inline pill there, so the fixed one stands down
-  // for that whole subtree - otherwise both would show. They need that corner back for the overflow
-  // menu button: while the pill held it, the button lived on the LEFT of the bar and its right-anchored
-  // menu opened off the left edge of the screen.
+  // The one global network banner (mobile-resilience mission): mounted once here so it pins to the top
+  // of every gated screen and is the single voice for a network problem - unreachable, or the Gateway's
+  // own "Slow" verdict. It renders NOTHING while the connection is fine, which is nearly always; the
+  // pages keep their last-known content underneath either way.
   //
-  // THIS SUPPRESSES THE PILL FOR THE ENTIRE /session/ SUBTREE, so every screen routed under /session/
-  // MUST render its own <StatusPill inline />, or it will show no network status at all. Today:
-  //
-  //   /session/:id, /chat, /terminal, /voice  -> SessionAppBar renders it
-  //   /session/:id/file                       -> FileView renders it in its own header
-  //
-  // The file viewer was missed when the pill was first moved inline (caught in review of #1631) - it is
-  // under /session/ but does not use SessionAppBar, so it silently lost its pill. Add a new /session/
-  // route and you own its pill too.
-  // The roster (Home, "/") also gives the pill a real home on its header row now - an inline item in the
-  // middle of the bar, the same as the session screens - so the fixed overlay stands down there too. It
-  // used to sit fixed in the top-right corner and land on top of the roster's filter button.
-  // The Assistant ("/assistant") is the third such screen, for the same reason: the fixed pill landed
-  // directly on its Chat / Voice toggle - a green pill over the control that decides how the whole
-  // screen behaves. It renders <StatusPill inline /> in its own bar and its toggle now owns the middle.
-  const pathname = useLocation().pathname;
-  const onSessionScreen = pathname.startsWith("/session/");
-  const onHome = pathname === "/";
-  const onAssistant = pathname === "/assistant";
+  // There is no network status pill any more, on any screen. There used to be one - fixed in the
+  // top-right on most screens, rendered inline on the four screens that had a header to give it - and
+  // it was removed entirely on 2026-07-26 (see ConnectionBanner for the history). It reported "good"
+  // almost every second of its life while making every screen with a top-right control work around it.
+  // A route list of "which screens suppress the pill" no longer exists, so a new screen cannot get this
+  // wrong: add a route and it inherits the banner, which is the whole story.
   return (
     <>
       <ConnectionBanner />
@@ -96,7 +78,6 @@ function GatedLayout() {
           to catch, not a way out. Here it is on the session screen auto-speak just dropped you into. It
           renders nothing at all when voice mode is off. */}
       <VoiceModeBanner />
-      {!onSessionScreen && !onHome && !onAssistant && <StatusPill />}
       <Outlet />
     </>
   );
