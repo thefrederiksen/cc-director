@@ -22,7 +22,14 @@ import { getGatewaySettings } from "@devthrottle/client-core/settings/settingsCl
 import { classify, dotHex, stateLabel } from "@devthrottle/client-core/sessions/ordering";
 import { useVisiblePolling } from "@devthrottle/client-core/polling/useVisiblePolling";
 import { clockLabel, relativeTime, repoBasename } from "../fleet/format";
-import { Button, ConfirmDialog, DataTable, PageHeader, type DataTableColumn } from "../components";
+import {
+  Button,
+  ConfirmDialog,
+  DataTable,
+  PageHeader,
+  useDismissOnBackdrop,
+  type DataTableColumn,
+} from "../components";
 import {
   absoluteUtc,
   actionShortLabel,
@@ -316,6 +323,12 @@ export function ScheduleView() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [showForm, saving, showDirectorPicker, confirmDiscard, requestCloseForm]);
+
+  // Backdrop dismissal for the editor and the machine picker. Both close only on a press that STARTED
+  // on the backdrop, so selecting the instructions or a machine name with the mouse and releasing past
+  // the panel edge is a selection, never a dismissal (see useDismissOnBackdrop).
+  const dismissForm = useDismissOnBackdrop(requestCloseForm);
+  const dismissDirectorPicker = useDismissOnBackdrop(useCallback(() => setShowDirectorPicker(false), []));
 
   const save = useCallback(async () => {
     // The Create/Save button is disabled while invalid, but guard here too so no code path can POST
@@ -686,7 +699,7 @@ export function ScheduleView() {
       )}
 
       {showForm && (
-        <div className="sched-modal-backdrop" onClick={requestCloseForm}>
+        <div className="sched-modal-backdrop" {...dismissForm}>
           {/* The large two-tab editor (issue #1289): about 70 percent of the viewport, with a Settings
               tab for every field and an Instructions tab where the prompt editor fills the room. Save
               and Cancel sit in the shared footer, visible from either tab. */}
@@ -695,7 +708,6 @@ export function ScheduleView() {
             role="dialog"
             aria-modal="true"
             aria-label={form.editingId === null ? "New cron job" : "Edit cron job"}
-            onClick={(e) => e.stopPropagation()}
           >
             <div className="sched-modal-head sched-modal-head-tabbed">
               <span className="sched-modal-title">
@@ -925,8 +937,8 @@ export function ScheduleView() {
       )}
 
       {showDirectorPicker && (
-        <div className="sched-modal-backdrop dpicker-over" onClick={() => setShowDirectorPicker(false)}>
-          <div className="sched-modal dpicker-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="sched-modal-backdrop dpicker-over" {...dismissDirectorPicker}>
+          <div className="sched-modal dpicker-modal">
             <div className="sched-modal-head">Choose a machine</div>
             <div className="sched-modal-body">
               <input

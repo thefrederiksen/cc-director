@@ -6,6 +6,7 @@ import {
   type SortDirection,
   type SortState,
 } from "./dataTableCore";
+import { useDismissOnBackdrop } from "./useDismissOnBackdrop";
 
 // The shared Cockpit data table (issue #1245). Every list in the app used to be a bespoke <table>: no
 // sort, no search, and - at its worst on the Schedule page - a whole multi-paragraph prompt crammed
@@ -126,6 +127,11 @@ export function DataTable<T>({
 
   const rowsAreActivatable = onRowActivate !== undefined || renderDetail !== undefined;
 
+  // The detail drawer closes on a backdrop click, but only when the press STARTED on the backdrop -
+  // selecting text in the drawer and releasing outside it is a selection, not a dismissal (see
+  // useDismissOnBackdrop).
+  const dismissDetail = useDismissOnBackdrop(() => setDetailKey(null));
+
   return (
     <div className="ui-table-wrap">
       <div className="ui-table-toolbar">
@@ -211,13 +217,8 @@ export function DataTable<T>({
       )}
 
       {detailRow !== null && renderDetail !== undefined && (
-        <div className="ui-drawer-backdrop" onClick={() => setDetailKey(null)}>
-          <aside
-            className="ui-drawer"
-            role="dialog"
-            aria-modal="true"
-            onClick={(event) => event.stopPropagation()}
-          >
+        <div className="ui-drawer-backdrop" {...dismissDetail}>
+          <aside className="ui-drawer" role="dialog" aria-modal="true">
             <header className="ui-drawer-head">
               <div className="ui-drawer-title">{detailTitle !== undefined ? detailTitle(detailRow) : null}</div>
               <div className="ui-drawer-head-actions">

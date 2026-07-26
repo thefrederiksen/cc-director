@@ -13,7 +13,7 @@ import {
 } from "@devthrottle/client-core/workflows/workflowsClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 import { markdownToHtml } from "@devthrottle/client-core/history/historyMarkdown";
-import { Button, ConfirmDialog, ErrorBanner, LoadingState } from "../components";
+import { Button, ConfirmDialog, ErrorBanner, LoadingState, useDismissOnBackdrop } from "../components";
 
 // The Workflows REGISTER (register redesign, approved mockup direction A). Workflows are the rules
 // this fleet works by, and the page reads with that weight: a ledger, not cards. One row per
@@ -253,14 +253,18 @@ function WorkflowPreviewDialog({
     return () => ctrl.abort();
   }, [workflow.id, workflow.version]);
 
+  // Closes on a backdrop click, but never on a drag that started inside - reading a workflow means
+  // selecting its instructions with the mouse, which must not dismiss the preview (see
+  // useDismissOnBackdrop).
+  const dismiss = useDismissOnBackdrop(onClose);
+
   return (
-    <div className="wf-dialog-backdrop" role="presentation" onClick={onClose}>
+    <div className="wf-dialog-backdrop" role="presentation" {...dismiss}>
       <div
         className="wf-dialog wf-preview"
         role="dialog"
         aria-modal="true"
         aria-label={`Preview of ${workflow.name}`}
-        onClick={(e) => e.stopPropagation()}
       >
         <h2 className="wf-dialog-title">
           {workflow.name}
@@ -440,6 +444,13 @@ function AddWorkflowDialog({ onClose, onCreated }: { onClose: () => void; onCrea
     ? ""
     : `Author the '${name.trim()}' workflow (id ${createdId}). Pull it with: cc-devthrottle workflow pull ${createdId} --dir <a working directory> - write its instructions.md (the conduct agents will follow), fill workflow.json (steps, outcome criteria), then push and publish: cc-devthrottle workflow push ${createdId} --dir <the directory> && cc-devthrottle workflow publish ${createdId}`;
 
+  // The backdrop dismisses only while the form is idle: dismissing DURING the create leaves the
+  // draft half-born with its handoff prompt never shown, and dismissing the success state would
+  // lose the prompt. It also never dismisses on a drag that started inside the form - typing a name
+  // and then re-selecting part of it with the mouse must not throw the draft away (see
+  // useDismissOnBackdrop).
+  const dismiss = useDismissOnBackdrop(createdId === null && !busy ? onClose : undefined);
+
   const submit = async () => {
     setBusy(true);
     setError(null);
@@ -454,21 +465,13 @@ function AddWorkflowDialog({ onClose, onCreated }: { onClose: () => void; onCrea
     }
   };
 
-  // The backdrop dismisses only while the form is idle: dismissing DURING the create leaves the
-  // draft half-born with its handoff prompt never shown, and dismissing the success state would
-  // lose the prompt.
   return (
-    <div
-      className="wf-dialog-backdrop"
-      role="presentation"
-      onClick={createdId === null && !busy ? onClose : undefined}
-    >
+    <div className="wf-dialog-backdrop" role="presentation" {...dismiss}>
       <div
         className="wf-dialog"
         role="dialog"
         aria-modal="true"
         aria-label="Add workflow"
-        onClick={(e) => e.stopPropagation()}
       >
         {createdId === null ? (
           <>
