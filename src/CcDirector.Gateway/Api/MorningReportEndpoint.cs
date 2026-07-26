@@ -69,23 +69,7 @@ internal static class MorningReportEndpoint
         TenantRegistry tenants,
         HostedTenantBoundary boundary)
     {
-        var configured = Environment.GetEnvironmentVariable(ServiceTokenEnvVar);
-        if (string.IsNullOrWhiteSpace(configured))
-        {
-            // Fail loud and CLOSED. An unconfigured token is a deployment error, not a reason to serve the
-            // report to anyone who asks; and it is not a reason to invent an allow-anything mode either.
-            FileLog.Write($"[MorningReportEndpoint] DENIED: {ServiceTokenEnvVar} is not set on this Gateway - the report endpoint refuses to serve unguarded");
-            return Results.Json(
-                new { error = $"the morning report service token ({ServiceTokenEnvVar}) is not configured on this Gateway" },
-                statusCode: StatusCodes.Status503ServiceUnavailable);
-        }
-
-        if (!PresentedTokenMatches(ctx, configured))
-        {
-            FileLog.Write("[MorningReportEndpoint] DENIED: missing or incorrect service token");
-            return Results.Json(new { error = "a valid morning report service token is required" },
-                statusCode: StatusCodes.Status401Unauthorized);
-        }
+        if (ServiceTokenDenial(ctx) is { } tokenDenial) return tokenDenial;
 
         MorningReportWindow window;
         try
@@ -165,6 +149,34 @@ internal static class MorningReportEndpoint
     /// The length difference is itself unavoidable and is handled by comparing fixed-size digests, so even
     /// the length does not leak through the comparison.
     /// </summary>
+    /// <summary>
+    /// The report service-token gate, or null when the caller is authorized. Extracted so the recipient
+    /// list endpoint enforces the SAME rule rather than growing a second, subtly different one - a list of
+    /// every account's email address must never be guarded more weakly than a single account's report.
+    /// </summary>
+    internal static IResult? ServiceTokenDenial(HttpContext ctx)
+    {
+        var configured = Environment.GetEnvironmentVariable(ServiceTokenEnvVar);
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            // Fail loud and CLOSED. An unconfigured token is a deployment error, not a reason to serve to
+            // anyone who asks; and it is not a reason to invent an allow-anything mode either.
+            FileLog.Write($"[MorningReportEndpoint] DENIED: {ServiceTokenEnvVar} is not set on this Gateway - the report endpoints refuse to serve unguarded");
+            return Results.Json(
+                new { error = $"the report service token ({ServiceTokenEnvVar}) is not configured on this Gateway" },
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
+        if (!PresentedTokenMatches(ctx, configured))
+        {
+            FileLog.Write("[MorningReportEndpoint] DENIED: missing or incorrect service token");
+            return Results.Json(new { error = "a valid report service token is required" },
+                statusCode: StatusCodes.Status401Unauthorized);
+        }
+
+        return null;
+    }
+
     private static bool PresentedTokenMatches(HttpContext ctx, string configured)
     {
         var header = ctx.Request.Headers.Authorization.ToString();

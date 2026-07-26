@@ -149,6 +149,26 @@ public sealed class TenantRegistry
     }
 
     /// <summary>
+    /// Every tenant with the account email recorded for it, for the daily report's recipient list.
+    ///
+    /// Separate from <see cref="AllTenantIds"/> on purpose: that one feeds background sweeps that only ever
+    /// need an id, and widening it to drag personally-identifying columns into every sweep would be the
+    /// wrong trade. This read exists for the ONE caller that legitimately needs an address.
+    ///
+    /// The email is DISPLAY METADATA captured at mint time and it is nullable, so a caller must treat a
+    /// missing or stale address as exactly that - see <see cref="TenantEntity.Email"/>. Read through the
+    /// UNSCOPED context because the mapping table carries no tenant_id, as every other census read does.
+    /// </summary>
+    public IReadOnlyList<TenantRecipient> ListAll()
+    {
+        using var ctx = _db.CreateUnscopedContext();
+        return ctx.Tenants
+            .AsNoTracking()
+            .Select(t => new TenantRecipient(t.Id, t.Email))
+            .ToList();
+    }
+
+    /// <summary>
     /// The verified account subject a tenant maps to, or null when the tenant id is unknown. This is the
     /// REVERSE of <see cref="MintOrLookupBySubject"/> and the bridge the cancellation cutoff (MTR-15) needs:
     /// the lease and the sweep are keyed by <see cref="TenantId"/>, but the entitlement reader
@@ -263,3 +283,8 @@ public sealed class TenantRegistry
         return string.IsNullOrWhiteSpace(row?.Email) ? null : row!.Email;
     }
 }
+
+/// <summary>A tenant and the account email recorded for it, which may be absent.</summary>
+/// <param name="TenantId">The tenant's own id.</param>
+/// <param name="Email">The account email as last seen at mint time, or null.</param>
+public sealed record TenantRecipient(string TenantId, string? Email);
