@@ -18,7 +18,7 @@
                        FontWeight="SemiBold"
                        HorizontalAlignment="Center" />
 
-            <TextBlock Text="A Windows-first toolkit for Claude Code developers"
+            <TextBlock Text="Run every coding agent in parallel, on Windows"
                        Foreground="{StaticResource AccentBrush}"
                        FontSize="13"
                        FontWeight="SemiBold"
@@ -27,9 +27,13 @@
 
             <!-- Fresh install: what the installer lays down. No account, no gateway, no role choice
                  (issue #1807). The update path overwrites this text with the "Checking for updates /
-                 Up to date / Upgrade available" line. -->
+                 Up to date / Upgrade available" line.
+
+                 This copy matches the website. It used to sell "a Windows-first toolkit for Claude
+                 Code developers", so someone who bought the multi-agent story on the website had
+                 good reason to doubt they had downloaded the right thing. -->
             <TextBlock x:Name="DescriptionText"
-                       Text="DevThrottle runs and manages multiple Claude Code sessions side by side, with a full suite of CLI tools for documents, browser automation, email, media, and more. No account is needed to install it."
+                       Text="DevThrottle runs Claude Code, Codex, Gemini and other coding agents side by side on one board, so you can keep several going at once. It tells you the moment one of them needs you. No account is needed to install it."
                        Foreground="{StaticResource TextForeground}"
                        FontSize="13"
                        TextWrapping="Wrap"

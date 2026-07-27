@@ -2,8 +2,11 @@ using System.Diagnostics;
 
 namespace CcDirectorSetup.Services;
 
-/// <summary>The outcome of a winget runtime install attempt.</summary>
-public sealed record RuntimeInstallResult(bool Success, string Message);
+/// <summary>The outcome of an automatic runtime install attempt.</summary>
+/// <param name="Success">Did it install.</param>
+/// <param name="Message">What the screen shows - never a raw error number, never a tool name.</param>
+/// <param name="Failure">Why it did not, for the row's own status. Null on success.</param>
+public sealed record RuntimeInstallResult(bool Success, string Message, RuntimeInstallFailure? Failure = null);
 
 /// <summary>
 /// Installs a prerequisite runtime via winget. Used by the Prerequisites step to fetch the
@@ -23,8 +26,7 @@ public static class RuntimeInstaller
         if (winget == null)
         {
             SetupLog.Write("[RuntimeInstaller] winget not available");
-            return new RuntimeInstallResult(false,
-                $"winget (the Windows Package Manager) was not found. Use the download link to install {displayName} manually, then click Re-check.");
+            return Fail(displayName, RuntimeInstallFailure.Other);
         }
 
         var args =
@@ -37,10 +39,18 @@ public static class RuntimeInstaller
             return new RuntimeInstallResult(true, "Installed. Re-checking...");
         }
 
-        SetupLog.Write($"[RuntimeInstaller] install failed: exit={exitCode}; {Trim(output)}");
-        return new RuntimeInstallResult(false,
-            $"winget could not install {displayName} (exit {exitCode}). Use the download link to install it manually, then click Re-check.");
+        var failure = RuntimeInstallDiagnosis.Classify(exitCode);
+
+        // The raw code goes HERE, in the log, where it diagnoses instead of confusing. In decimal
+        // and hex, because the package manager documents its codes in hex and reports them signed.
+        SetupLog.Write(
+            $"[RuntimeInstaller] install failed: exit={exitCode} (0x{exitCode:X8}), classified={failure}; {Trim(output)}");
+
+        return Fail(displayName, failure);
     }
+
+    private static RuntimeInstallResult Fail(string displayName, RuntimeInstallFailure failure) =>
+        new(false, RuntimeInstallDiagnosis.Message(displayName, failure, SetupLog.Path), failure);
 
     /// <summary>
     /// winget is not always on the process PATH (it lives under WindowsApps). Prefer the PATH
@@ -82,21 +92,38 @@ public static class RuntimeInstaller
             CreateNoWindow = true,
         };
 
-        using var process = Process.Start(psi);
-        if (process == null)
-            return (-1, "winget did not start");
-
-        var stdout = process.StandardOutput.ReadToEnd();
-        var stderr = process.StandardError.ReadToEnd();
-        // Runtime download + install can take a few minutes on a slow link.
-        if (!process.WaitForExit(300_000))
+        Process? process;
+        try
         {
-            try { process.Kill(entireProcessTree: true); } catch { /* already gone */ }
-            return (-1, "winget timed out after 5 minutes");
+            process = Process.Start(psi);
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            // Windows refused the launch outright. ERROR_CANCELLED means the user dismissed the
+            // elevation prompt, ERROR_ELEVATION_REQUIRED that it could not run unelevated at all;
+            // both are the same thing to the person reading the screen. Returning the code lets
+            // the classifier say so instead of this escaping as an unexplained crash.
+            SetupLog.Write($"[RuntimeInstaller] could not start the install: win32={ex.NativeErrorCode} - {ex.Message}");
+            return (ex.NativeErrorCode, ex.Message);
         }
 
-        var combined = string.IsNullOrWhiteSpace(stdout) ? stderr : stdout;
-        return (process.ExitCode, combined);
+        if (process == null)
+            return (-1, "the installer did not start");
+
+        using (process)
+        {
+            var stdout = process.StandardOutput.ReadToEnd();
+            var stderr = process.StandardError.ReadToEnd();
+            // Runtime download + install can take a few minutes on a slow link.
+            if (!process.WaitForExit(300_000))
+            {
+                try { process.Kill(entireProcessTree: true); } catch { /* already gone */ }
+                return (-1, "the install timed out after 5 minutes");
+            }
+
+            var combined = string.IsNullOrWhiteSpace(stdout) ? stderr : stdout;
+            return (process.ExitCode, combined);
+        }
     }
 
     private static string Trim(string s) => s.Length > 400 ? s[..400] : s;

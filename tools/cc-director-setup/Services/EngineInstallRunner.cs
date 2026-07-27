@@ -164,6 +164,12 @@ public sealed class EngineInstallRunner
         if (File.Exists(AppExePath))
             ShortcutCreator.CreateStartMenuShortcut(AppExePath);
 
+        // Tell Windows the product is here, so it can be removed from Settings > Apps like anything
+        // else. This runs on UPDATE as well as install, so a machine that was installed before this
+        // existed - and therefore has no way off - gains the entry the next time it updates.
+        if (OperatingSystem.IsWindows())
+            UninstallRegistration.Register(_layout, AppExePath);
+
         // NOTE: the runner above PLACES cc-launcher.exe (it is an in-scope component for both roles),
         // but STARTING it is done by MainWindow.StartLauncherAsync after the Gateway phase, so the
         // order matches the CLI (Gateway first, then the launcher) and a launcher start failure can

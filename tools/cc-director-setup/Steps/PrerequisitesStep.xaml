@@ -7,10 +7,14 @@
                        Foreground="White"
                        FontSize="22"
                        FontWeight="SemiBold" />
+            <!-- This line carries the failure message, which is the recovery instruction. It MUST
+                 wrap: unwrapped it was cut in half at the window edge, so the half telling the user
+                 what to do next was the half that disappeared. -->
             <TextBlock x:Name="SubtitleText"
                        Text="Checking required software..."
                        Foreground="{StaticResource TextForeground}"
                        FontSize="13"
+                       TextWrapping="Wrap"
                        Margin="0,8,0,16" />
         </StackPanel>
 
@@ -48,7 +52,16 @@
                 Margin="0,12,0,0"
                 Click="RefreshButton_Click" />
 
-        <ItemsControl x:Name="PrereqList">
+        <!-- The card list scrolls; everything else on this screen is pinned.
+             The DockPanel gives its LAST child whatever space the docked items leave, so the
+             Re-check button and the success banner (docked Bottom above) hold their place and the
+             list takes the rest. Without this the list simply ran off the bottom of the window
+             with no scrollbar: once the descriptions were allowed to wrap onto a second line the
+             cards grew, and the fourth card's "Install automatically" button was cut in half -
+             the user could see the action but not reach it. -->
+        <ScrollViewer VerticalScrollBarVisibility="Visible"
+                      HorizontalScrollBarVisibility="Disabled">
+            <ItemsControl x:Name="PrereqList">
             <ItemsControl.ItemTemplate>
                 <DataTemplate>
                     <Border Background="#2A2D2E"
@@ -57,8 +70,12 @@
                             Margin="0,0,0,6">
                         <Grid>
                             <Grid.ColumnDefinitions>
+                                <!-- The status column is FIXED. On Auto it took whatever width its
+                                     longest word wanted and the descriptions lost the difference,
+                                     which is why they were cut off mid-sentence ("so you can
+                                     install this late", "bring their own Python and ("). -->
                                 <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="150" />
                             </Grid.ColumnDefinitions>
 
                             <StackPanel Grid.Column="0">
@@ -112,11 +129,13 @@
                                 <TextBlock Text="{Binding Description}"
                                            Foreground="#888888"
                                            FontSize="11"
+                                           TextWrapping="Wrap"
                                            Margin="0,2,0,0" />
 
                                 <TextBlock Text="{Binding Version}"
                                            Foreground="#AAAAAA"
                                            FontSize="11"
+                                           TextWrapping="Wrap"
                                            Margin="0,2,0,0">
                                     <TextBlock.Style>
                                         <Style TargetType="TextBlock">
@@ -172,6 +191,8 @@
                                        Text="{Binding Status}"
                                        FontSize="13"
                                        FontWeight="SemiBold"
+                                       TextWrapping="Wrap"
+                                       TextAlignment="Right"
                                        VerticalAlignment="Center"
                                        Margin="12,0,0,0">
                                 <TextBlock.Style>
@@ -189,6 +210,7 @@
                     </Border>
                 </DataTemplate>
             </ItemsControl.ItemTemplate>
-        </ItemsControl>
+            </ItemsControl>
+        </ScrollViewer>
     </DockPanel>
 </UserControl>

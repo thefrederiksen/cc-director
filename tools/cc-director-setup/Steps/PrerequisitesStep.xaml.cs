@@ -53,7 +53,19 @@ public partial class PrerequisitesStep : UserControl
         }
         else
         {
-            SubtitleText.Text = "Some required prerequisites are missing. Install them and re-check.";
+            // Name what is missing AND say why Next will not respond. The button is correctly
+            // disabled, but a disabled button that explains nothing just reads as a broken one -
+            // the person clicks it, nothing happens, and the screen never connects that to the
+            // row above.
+            var missingRequired = _items.Where(p => p.IsRequired && !p.IsFound).Select(p => p.Name).ToList();
+            SubtitleText.Text = missingRequired.Count switch
+            {
+                0 => "Some required prerequisites are missing. Install them and re-check.",
+                1 => $"{missingRequired[0]} is required and is not installed yet. Install it below, "
+                     + "then click Re-check. Next stays unavailable until it is found.",
+                _ => $"These are required and are not installed yet: {string.Join(", ", missingRequired)}. "
+                     + "Install them below, then click Re-check. Next stays unavailable until they are found.",
+            };
             SuccessBanner.Visibility = Visibility.Collapsed;
         }
 
@@ -92,7 +104,9 @@ public partial class PrerequisitesStep : UserControl
             }
             else
             {
-                item.Status = "Install failed";
+                // The row says WHAT is wrong in two words, the subtitle says what to do about it.
+                // Both come from RuntimeInstallDiagnosis so they can never disagree.
+                item.Status = RuntimeInstallDiagnosis.RowStatus(result.Failure ?? RuntimeInstallFailure.Other);
                 SubtitleText.Text = result.Message;
                 button.IsEnabled = true;
                 RefreshButton.IsEnabled = true;
@@ -101,7 +115,8 @@ public partial class PrerequisitesStep : UserControl
         catch (Exception ex)
         {
             SetupLog.Write($"[PrerequisitesStep] InstallButton_Click FAILED: {ex}");
-            SubtitleText.Text = "Install failed unexpectedly. Use the download link, then click Re-check.";
+            SubtitleText.Text = "The install did not finish. Use the download link, then click Re-check. "
+                                + $"The details are in the setup log: {SetupLog.Path}";
             RefreshButton.IsEnabled = true;
         }
     }

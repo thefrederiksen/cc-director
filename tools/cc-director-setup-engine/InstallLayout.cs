@@ -114,6 +114,13 @@ public sealed class InstallLayout
     /// <summary>Setup/update scratch state (e.g. the staged Gateway exe during a self-update).</summary>
     public string StateDir => Path.Combine(LocalRoot, "state");
 
+    /// <summary>
+    /// The retained copy of the setup executable. Windows "Apps &amp; features" needs an
+    /// UninstallString pointing at something that still exists months later, and the executable the
+    /// user downloaded is usually long gone from their Downloads folder.
+    /// </summary>
+    public string SetupDir => Path.Combine(LocalRoot, "setup");
+
     /// <summary>Log root (FileLog writes per-component subdirs underneath).</summary>
     public string LogsDir => Path.Combine(LocalRoot, "logs");
 

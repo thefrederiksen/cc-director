@@ -77,11 +77,16 @@ public static class CapabilityNotice
         if (missing.Count == 0)
             return null;
 
-        var parts = missing.Select(m => $"{m.Name}: {Consequence(m.Name, anotherAgentPresent)}");
+        // ONE LINE PER ITEM, never a semicolon-joined paragraph. Three missing items ran together
+        // into a wall of amber text that had to be re-read to find where one item ended and the
+        // next began - which is the opposite of the point, since each line is a separate thing the
+        // user might act on.
+        var lines = missing.Select(m => $"- {m.Name}: {Consequence(m.Name, anotherAgentPresent)}");
 
         // "Missing or out of date", never "Not installed": IsFound is false for a Python 3.9 that
         // is very much installed, and claiming otherwise would contradict the row the user just read.
-        return "Missing or out of date - " + string.Join("; ", parts)
-            + ". You can install any of these at any time and DevThrottle will pick them up.";
+        return "Missing or out of date:\n"
+            + string.Join("\n", lines)
+            + "\n\nYou can install any of these at any time and DevThrottle will pick them up.";
     }
 }

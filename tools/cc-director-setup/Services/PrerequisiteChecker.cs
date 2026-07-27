@@ -153,8 +153,8 @@ public static class PrerequisiteChecker
 
     private static void CheckExecutable(PrerequisiteInfo item, string exe, string args)
     {
-        var (found, output) = RunCommand("where", exe);
-        if (!found)
+        var resolved = ExecutableResolver.Resolve(exe);
+        if (resolved == null)
         {
             item.Status = "Not found";
             item.IsFound = false;
@@ -162,10 +162,9 @@ public static class PrerequisiteChecker
             return;
         }
 
-        var resolved = output.Trim().Split('\n')[0].Trim();
         SetupLog.Write($"[PrerequisiteChecker] {item.Name}: resolved to {resolved}");
 
-        var (versionFound, versionOutput) = RunCommand(exe, args);
+        var (versionFound, versionOutput) = RunCommand(resolved, args);
         if (versionFound && !string.IsNullOrWhiteSpace(versionOutput))
         {
             item.Version = versionOutput.Trim().Split('\n')[0].Trim();
@@ -184,8 +183,8 @@ public static class PrerequisiteChecker
 
     private static void CheckDotNetRuntime(PrerequisiteInfo item)
     {
-        var (found, _) = RunCommand("where", "dotnet");
-        if (!found)
+        var dotnet = ExecutableResolver.Resolve("dotnet");
+        if (dotnet == null)
         {
             item.Status = "Not found";
             item.IsFound = false;
@@ -193,7 +192,8 @@ public static class PrerequisiteChecker
             return;
         }
 
-        var (listed, output) = RunCommand("dotnet", "--list-runtimes");
+        SetupLog.Write($"[PrerequisiteChecker] .NET: resolved to {dotnet}");
+        var (listed, output) = RunCommand(dotnet, "--list-runtimes");
         if (!listed || string.IsNullOrWhiteSpace(output))
         {
             item.Status = "Not found";
@@ -226,8 +226,8 @@ public static class PrerequisiteChecker
 
     private static void CheckPython(PrerequisiteInfo item)
     {
-        var (found, _) = RunCommand("where", "python");
-        if (!found)
+        var python = ExecutableResolver.Resolve("python");
+        if (python == null)
         {
             item.Status = "Not found";
             item.IsFound = false;
@@ -235,7 +235,7 @@ public static class PrerequisiteChecker
             return;
         }
 
-        var (versionFound, versionOutput) = RunCommand("python", "--version");
+        var (versionFound, versionOutput) = RunCommand(python, "--version");
         if (!versionFound || string.IsNullOrWhiteSpace(versionOutput))
         {
             item.Status = "Not found";
@@ -263,8 +263,8 @@ public static class PrerequisiteChecker
 
     private static void CheckNode(PrerequisiteInfo item)
     {
-        var (found, _) = RunCommand("where", "node");
-        if (!found)
+        var node = ExecutableResolver.Resolve("node");
+        if (node == null)
         {
             item.Status = "Not found";
             item.IsFound = false;
@@ -272,7 +272,7 @@ public static class PrerequisiteChecker
             return;
         }
 
-        var (versionFound, versionOutput) = RunCommand("node", "--version");
+        var (versionFound, versionOutput) = RunCommand(node, "--version");
         if (!versionFound || string.IsNullOrWhiteSpace(versionOutput))
         {
             item.Status = "Not found";
@@ -327,41 +327,42 @@ public static class PrerequisiteChecker
     }
 
     /// <summary>
-    /// Builds the current machine+user PATH straight from the registry. A process snapshots
-    /// PATH at launch, so a tool on the USER PATH (e.g. Claude Code at %USERPROFILE%\.local\bin)
-    /// is invisible to child "where"/"--version" checks when the wizard inherited a stale PATH.
-    /// Reading the Machine/User targets pulls the live value (with %VAR% expansion). Returns null
-    /// when nothing could be read, leaving the inherited process PATH in place.
+    /// Run an already-resolved tool and capture its output.
+    ///
+    /// <paramref name="exePath"/> must be an ABSOLUTE path from <see cref="ExecutableResolver"/>,
+    /// never a bare command name: Process.Start resolves a bare name against this process's stale
+    /// PATH, which is exactly what made Re-check unable to see a newly installed runtime.
     /// </summary>
-    private static string? BuildRefreshedPath()
-    {
-        var machine = Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.Machine) ?? "";
-        var user = Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.User) ?? "";
-
-        var parts = new[] { machine, user }.Where(p => !string.IsNullOrWhiteSpace(p));
-        var combined = string.Join(";", parts);
-
-        return string.IsNullOrWhiteSpace(combined) ? null : combined;
-    }
-
-    private static (bool found, string output) RunCommand(string fileName, string arguments)
+    private static (bool found, string output) RunCommand(string exePath, string arguments)
     {
         try
         {
-            var psi = new ProcessStartInfo
-            {
-                FileName = fileName,
-                Arguments = arguments,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
+            var isScript = exePath.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase)
+                           || exePath.EndsWith(".bat", StringComparison.OrdinalIgnoreCase);
 
-            // Re-read the live PATH from the registry so a tool added to PATH after this wizard
-            // launched (or sitting on the USER PATH the process did not inherit) is visible to
-            // "where"/"--version" on Re-check without restarting the app.
-            var refreshedPath = BuildRefreshedPath();
+            // A .cmd/.bat shim (how npm installs a command line tool) is not a runnable image, so
+            // it goes through the command interpreter. COMSPEC is an absolute path, for the same
+            // reason the tool itself is.
+            var psi = isScript
+                ? new ProcessStartInfo
+                {
+                    FileName = Environment.GetEnvironmentVariable("COMSPEC") ?? "cmd.exe",
+                    Arguments = $"/c \"\"{exePath}\" {arguments}\"",
+                }
+                : new ProcessStartInfo
+                {
+                    FileName = exePath,
+                    Arguments = arguments,
+                };
+
+            psi.RedirectStandardOutput = true;
+            psi.RedirectStandardError = true;
+            psi.UseShellExecute = false;
+            psi.CreateNoWindow = true;
+
+            // The child gets the live PATH too, so anything the tool itself shells out to is found
+            // even when this wizard inherited a stale PATH at launch.
+            var refreshedPath = ExecutableResolver.LivePath();
             if (refreshedPath != null)
                 psi.Environment["PATH"] = refreshedPath;
 
