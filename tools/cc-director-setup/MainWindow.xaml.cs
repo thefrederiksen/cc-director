@@ -34,17 +34,17 @@ public partial class MainWindow : Window
 
     private WelcomeStep? _welcomeStep;
     private PrerequisitesStep? _prerequisitesStep;
-    private SkillsStep? _skillsStep;
     private InstallStep? _installStep;
     private CompleteStep? _completeStep;
 
     private readonly record struct StepUI(Border Circle, TextBlock Label, TextBlock? Number);
 
-    // Wizard steps: 1 Welcome, 2 Prerequisites, 6 Skills, 7 Install, 8 Complete. There is one linear path for every
+    // Wizard steps: 1 Welcome, 2 Prerequisites, 7 Install, 8 Complete. There is one linear path for every
     // install and update - the installer always lays down the Director set with no account gate (issue
     // #1807). Ids 3 (the old Gateway-only Sign-in step) and 5 (the old mandatory gateway-join Connect
-    // step) were removed with the account gate; the surviving ids keep their old numbers so this switch
-    // and the eight-row sidebar are unchanged, and the two removed rows simply never appear.
+    // step) were removed with the account gate, and id 6 (the Skills screen) was removed because it
+    // showed internal identifiers as tick-boxes nobody could tick and asked for no decision. The
+    // surviving ids keep their old numbers so this switch stays stable.
     private const int StepInstall = 7;
     private const int StepComplete = 8;
 
@@ -149,19 +149,18 @@ public partial class MainWindow : Window
         }
     }
 
-    // The five sidebar rows in display order. Historical ids 3-5 are retired; the remaining circles
-    // are renumbered 1..5 at runtime. This list is aligned with WizardStepFlow.VisibleSteps().
+    // The four sidebar rows in display order. Historical ids 3-6 are retired; the remaining circles
+    // are renumbered 1..4 at runtime. This list is aligned with WizardStepFlow.VisibleSteps().
     private List<StepUI> GetStepUIs() =>
     [
         new(Step1Circle, Step1Label, null),
         new(Step2Circle, Step2Label, Step2Num),
-        new(Step6Circle, Step6Label, Step6Num),
         new(Step7Circle, Step7Label, Step7Num),
         new(Step8Circle, Step8Label, Step8Num),
     ];
 
-    // The four connector lines between the five rows, in order.
-    private Border[] GetLines() => [Line12, Line23, Line67, Line78];
+    // The three connector lines between the four rows, in order.
+    private Border[] GetLines() => [Line12, Line23, Line78];
 
     private void ShowStep(int step)
     {
@@ -175,7 +174,6 @@ public partial class MainWindow : Window
         {
             1 => _welcomeStep ??= BuildWelcomeStep(),
             2 => _prerequisitesStep ??= new PrerequisitesStep(OnPrerequisitesChecked, _isUpdate, _role),
-            6 => _skillsStep ??= new SkillsStep(_isUpdate),
             StepInstall => _installStep ??= new InstallStep(),
             StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _directorExePath, _isUpdate, _alreadyUpToDate, _cachedPrep?.Version, _gatewayFailureReason, BuildCapabilityNotice(), IsReadyToGo()),
             _ => null

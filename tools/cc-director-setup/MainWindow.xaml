@@ -39,8 +39,8 @@
                            Margin="0,0,0,4" />
 
                 <!-- Step indicators. One linear Director-only path (issue #1807): Welcome,
-                     Prerequisites, Skills, Install, Complete. Historical ids 3-5 are retired.
-                     The circle numbers are renumbered 1..5 at runtime by UpdateSidebar. -->
+                     Prerequisites, Install, Complete. Historical ids 3-6 are retired.
+                     The circle numbers are renumbered 1..4 at runtime by UpdateSidebar. -->
                 <StackPanel x:Name="StepIndicators" VerticalAlignment="Top">
                     <!-- Step 1: Welcome -->
                     <StackPanel x:Name="Step1Row" Orientation="Horizontal">
@@ -75,37 +75,17 @@
                                    VerticalAlignment="Center" Margin="12,0,0,0" />
                     </StackPanel>
 
-                    <!-- Line 2-6 -->
+                    <!-- Line 2-7 -->
                     <Border Width="2" Height="24" Margin="13,0,0,0"
                             HorizontalAlignment="Left"
                             Background="{StaticResource StepInactive}"
                             x:Name="Line23" />
 
-                    <!-- Step 6 (shown 3rd): Skills -->
-                    <StackPanel x:Name="Step6Row" Orientation="Horizontal">
-                        <Border x:Name="Step6Circle" Width="28" Height="28" CornerRadius="14"
-                                Background="{StaticResource StepInactive}">
-                            <TextBlock Text="3" Foreground="{StaticResource DimText}" FontSize="13"
-                                       FontWeight="SemiBold"
-                                       HorizontalAlignment="Center" VerticalAlignment="Center"
-                                       x:Name="Step6Num" />
-                        </Border>
-                        <TextBlock x:Name="Step6Label" Text="Skills"
-                                   Foreground="{StaticResource DimText}" FontSize="13"
-                                   VerticalAlignment="Center" Margin="12,0,0,0" />
-                    </StackPanel>
-
-                    <!-- Line 6-7 -->
-                    <Border Width="2" Height="24" Margin="13,0,0,0"
-                            HorizontalAlignment="Left"
-                            Background="{StaticResource StepInactive}"
-                            x:Name="Line67" />
-
-                    <!-- Step 7 (shown 4th): Install -->
+                    <!-- Step 7 (shown 3rd): Install -->
                     <StackPanel x:Name="Step7Row" Orientation="Horizontal">
                         <Border x:Name="Step7Circle" Width="28" Height="28" CornerRadius="14"
                                 Background="{StaticResource StepInactive}">
-                            <TextBlock Text="4" Foreground="{StaticResource DimText}" FontSize="13"
+                            <TextBlock Text="3" Foreground="{StaticResource DimText}" FontSize="13"
                                        FontWeight="SemiBold"
                                        HorizontalAlignment="Center" VerticalAlignment="Center"
                                        x:Name="Step7Num" />
@@ -121,11 +101,11 @@
                             Background="{StaticResource StepInactive}"
                             x:Name="Line78" />
 
-                    <!-- Step 8 (shown 5th): Complete -->
+                    <!-- Step 8 (shown 4th): Complete -->
                     <StackPanel x:Name="Step8Row" Orientation="Horizontal">
                         <Border x:Name="Step8Circle" Width="28" Height="28" CornerRadius="14"
                                 Background="{StaticResource StepInactive}">
-                            <TextBlock Text="5" Foreground="{StaticResource DimText}" FontSize="13"
+                            <TextBlock Text="4" Foreground="{StaticResource DimText}" FontSize="13"
                                        FontWeight="SemiBold"
                                        HorizontalAlignment="Center" VerticalAlignment="Center"
                                        x:Name="Step8Num" />
