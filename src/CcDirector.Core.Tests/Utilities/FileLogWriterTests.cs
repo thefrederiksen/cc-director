@@ -60,7 +60,7 @@ public sealed class FileLogWriterTests : IDisposable
     [Fact]
     public void ComputeLogPath_UsesDateAndProcessId()
     {
-        var writer = new FileLogWriter(_logDir, 4242, () => new DateTime(2026, 6, 5));
+        var writer = new FileLogWriter(_logDir, "4242", () => new DateTime(2026, 6, 5));
 
         var path = writer.ComputeLogPath(new DateTime(2026, 6, 5, 0, 0, 9));
 
@@ -72,7 +72,7 @@ public sealed class FileLogWriterTests : IDisposable
     {
         // Clock starts on day 1; the test flips it to day 2 to simulate crossing midnight.
         var now = new DateTime(2026, 6, 4, 23, 59, 57);
-        var writer = new FileLogWriter(_logDir, 6524, () => now);
+        var writer = new FileLogWriter(_logDir, "6524", () => now);
         var day1Path = writer.ComputeLogPath(new DateTime(2026, 6, 4));
         var day2Path = writer.ComputeLogPath(new DateTime(2026, 6, 5));
 
@@ -106,7 +106,7 @@ public sealed class FileLogWriterTests : IDisposable
         // fault-injection hook. If the loop did not catch per-line (the old bug: one try around
         // the whole foreach), the thread would die on that throw and the line after it would
         // never be written.
-        var writer = new FileLogWriter(_logDir, 7000, () => new DateTime(2026, 6, 6, 12, 0, 0))
+        var writer = new FileLogWriter(_logDir, "7000", () => new DateTime(2026, 6, 6, 12, 0, 0))
         {
             BeforeWriteHook = line =>
             {
@@ -148,7 +148,7 @@ public sealed class FileLogWriterTests : IDisposable
         DateTime Clock() =>
             baseTime.AddTicks(FileLogWriter.FlushInterval.Ticks * 6 / 10 * Interlocked.Increment(ref reads));
 
-        var writer = new FileLogWriter(_logDir, 8000, Clock);
+        var writer = new FileLogWriter(_logDir, "8000", Clock);
         var logPath = writer.ComputeLogPath(baseTime);
 
         writer.Start();
@@ -166,6 +166,88 @@ public sealed class FileLogWriterTests : IDisposable
         }
         finally
         {
+            writer.Stop();
+        }
+    }
+
+    // =================================================================================
+    // Issue #2203 - two Gateway containers appended to ONE log file and clobbered each
+    // other, so the startup record of three failed hosted deploys was unreadable. The
+    // discriminator in the file name is the only thing keeping two processes apart, and
+    // in a container the process id is always 1, so it kept nothing apart.
+    // =================================================================================
+
+    [Fact]
+    public void ComputeLogPath_SameInstanceId_LandsOnOneSharedFile()
+    {
+        // Two containers, both running the Gateway as pid 1: this is the collision itself.
+        var containerA = new FileLogWriter(_logDir, "1", () => new DateTime(2026, 7, 26));
+        var containerB = new FileLogWriter(_logDir, "1", () => new DateTime(2026, 7, 26));
+
+        var instant = new DateTime(2026, 7, 26);
+        Assert.Equal(containerA.ComputeLogPath(instant), containerB.ComputeLogPath(instant));
+    }
+
+    [Fact]
+    public void ComputeLogPath_DifferentInstanceId_KeepsEachProcessOnItsOwnFile()
+    {
+        var containerA = new FileLogWriter(_logDir, "a1b2c3d4e5f6", () => new DateTime(2026, 7, 26));
+        var containerB = new FileLogWriter(_logDir, "0f9e8d7c6b5a", () => new DateTime(2026, 7, 26));
+
+        var instant = new DateTime(2026, 7, 26);
+        Assert.NotEqual(containerA.ComputeLogPath(instant), containerB.ComputeLogPath(instant));
+        Assert.EndsWith("director-2026-07-26-a1b2c3d4e5f6.log", containerA.ComputeLogPath(instant));
+    }
+
+    [Fact]
+    public void Constructor_BlankInstanceId_Throws()
+    {
+        // An empty discriminator would put every process back on one file - refuse it rather than
+        // compute a path that silently collides.
+        Assert.Throws<ArgumentException>(() => new FileLogWriter(_logDir, "  ", () => DateTime.Now));
+    }
+
+    [Fact]
+    public void Enqueue_WriterStalled_CountsDroppedLinesAndAnnouncesTheGap()
+    {
+        // The failure that erased the evidence: the file share stops responding, the bounded queue
+        // fills, and every further line is dropped. Silently, before this fix.
+        var release = new ManualResetEventSlim(false);
+        var stalled = new ManualResetEventSlim(false);
+        var clock = new DateTime(2026, 7, 26, 12, 0, 0);
+        var writer = new FileLogWriter(_logDir, "stall-test", () => clock);
+        var logPath = writer.ComputeLogPath(clock);
+
+        writer.BeforeWriteHook = _ =>
+        {
+            if (stalled.IsSet) return;
+            stalled.Set();
+            release.Wait(TimeSpan.FromSeconds(30));
+        };
+
+        writer.Start();
+        try
+        {
+            writer.Enqueue("first-line");
+            Assert.True(stalled.Wait(TimeSpan.FromSeconds(5)), "the writer never reached the stall hook");
+
+            // Overfill the 1024-slot queue while the writer is held.
+            for (int i = 0; i < 3000; i++)
+                writer.Enqueue($"flood-{i}");
+
+            Assert.True(writer.DroppedLines > 0, "a full queue dropped lines but reported none");
+
+            release.Set();
+
+            // Once writing resumes the file must SAY the record is incomplete.
+            WaitUntil(() => ReadShared(logPath).Contains("LOG GAP"));
+            var text = ReadShared(logPath);
+            Assert.Contains("LOG GAP", text);
+            Assert.Contains("line(s) were dropped", text);
+        }
+        finally
+        {
+            release.Set();
             writer.Stop();
         }
     }

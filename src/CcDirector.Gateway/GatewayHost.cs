@@ -2743,6 +2743,19 @@ public sealed class GatewayHost : IAsyncDisposable
             Port = ReadBoundPort(_app);
         FileLog.Write($"[GatewayHost] listening on http://0.0.0.0:{Port} (all interfaces, auth-gated; version {version})");
 
+        // The bind is the finish line the platform's startup probe is waiting for, so it is also where the
+        // hosted standard-output mirror stops. It exists to make the STARTUP sequence readable in the
+        // platform's per-container log (issue #2203 - three deploys produced containers that reached
+        // "Application started" and then never got here, with no record of where they stopped). Leaving it
+        // on past this point would copy the Gateway's whole running log - tens of megabytes a day - into
+        // the platform log mount, which is a different outage. From here the per-container file is the
+        // record, and FileLog.DroppedLines plus its "LOG GAP" marker report if any of it is lost.
+        if (FileLog.MirrorToConsole)
+        {
+            FileLog.Write("[GatewayHost] startup complete - standard-output log mirror off; the per-container file is the record from here");
+            FileLog.MirrorToConsole = false;
+        }
+
         // Cron firing sweep (epic #479, #483): wake ~every minute and fire due jobs. The first tick
         // also catches up a fire that came due while the Gateway was down (at most once per job).
         //
