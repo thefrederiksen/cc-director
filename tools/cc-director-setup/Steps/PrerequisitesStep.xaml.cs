@@ -92,7 +92,9 @@ public partial class PrerequisitesStep : UserControl
             }
             else
             {
-                item.Status = "Install failed";
+                // The row says WHAT is wrong in two words, the subtitle says what to do about it.
+                // Both come from RuntimeInstallDiagnosis so they can never disagree.
+                item.Status = RuntimeInstallDiagnosis.RowStatus(result.Failure ?? RuntimeInstallFailure.Other);
                 SubtitleText.Text = result.Message;
                 button.IsEnabled = true;
                 RefreshButton.IsEnabled = true;
@@ -101,7 +103,8 @@ public partial class PrerequisitesStep : UserControl
         catch (Exception ex)
         {
             SetupLog.Write($"[PrerequisitesStep] InstallButton_Click FAILED: {ex}");
-            SubtitleText.Text = "Install failed unexpectedly. Use the download link, then click Re-check.";
+            SubtitleText.Text = "The install did not finish. Use the download link, then click Re-check. "
+                                + $"The details are in the setup log: {SetupLog.Path}";
             RefreshButton.IsEnabled = true;
         }
     }
