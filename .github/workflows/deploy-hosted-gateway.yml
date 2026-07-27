@@ -182,6 +182,11 @@ jobs:
         run: |
           TARGET="${{ steps.short.outputs.short }}"
           LOG=/tmp/swap-poll.log; : > "$LOG"
+          # The poller is deliberately NOT killed in this step. It keeps running across the settle check
+          # and the post-swap watch below, because the outage this deploy actually causes happens MINUTES
+          # after the swap returns (issue #2203): the platform starts a fresh production container with the
+          # swapped configuration, that container fails to bind its port, and the platform stops the SITE.
+          # A window that closes 8 seconds after the swap always measured 0.0s and always missed it.
           ( while :; do
               t=$(date +%s.%N)
               body=$(curl -s -m 5 -w '\n%{http_code}' "${GATEWAY_URL}/healthz" 2>/dev/null || printf '\n000')
@@ -190,13 +195,13 @@ jobs:
               echo "$t $code ${commit:-none}" >> "$LOG"
               sleep 1
             done ) & POLL=$!
+          echo "$POLL" > /tmp/swap-poll.pid
 
           t_deploy=$(date +%s)
           az webapp deployment slot swap --resource-group "$AZURE_RG" --name "$APP" \
             --slot "$SLOT" --target-slot production --output none
           echo "Swap complete; sampling a few more seconds to catch the first sustained new-commit..."
           sleep 8
-          kill "$POLL" 2>/dev/null || true
 
           echo "--- production poll across the swap ---"; cat "$LOG"
           # last 200 whose commit is NOT the new one (old instance serving), and first 200 on the new commit.
@@ -212,10 +217,11 @@ jobs:
             outage=0
           fi
           tth=$(( $(printf '%.0f' "$first_new") - t_deploy ))
-          echo "outage_seconds=$outage" >> "$GITHUB_OUTPUT"
+          echo "swap_outage_seconds=$outage" >> "$GITHUB_OUTPUT"
           echo "time_to_healthy_seconds=$tth" >> "$GITHUB_OUTPUT"
           echo "outcome=healthy" >> "$GITHUB_OUTPUT"
-          echo "New image ${TARGET} live in production. External outage ~${outage}s (warmed swap)."
+          echo "New image ${TARGET} live in production. Gap ACROSS THE SWAP ITSELF ~${outage}s."
+          echo "This is NOT the deploy's outage - the post-swap watch below measures that."
           curl -s -m 15 "${GATEWAY_URL}/healthz"; echo
 
       # Return to steady state (one running instance) ONLY after production has proven itself STABLY healthy
@@ -252,6 +258,86 @@ jobs:
           echo "Production held a stable streak on $TARGET; stopping the staging slot."
           az webapp stop --resource-group "$AZURE_RG" --name "$APP" --slot "$SLOT" --output none
           echo "stopped_staging=yes" >> "$GITHUB_OUTPUT"
+
+      # KEEP WATCHING. This is the step that measures the outage a user actually gets (issue #2203).
+      #
+      # Every deploy on 2026-07-26 reported 0.0s and every one of them took the live service down two to
+      # four minutes LATER, long after the job used to finish. The mechanism: after the swap the platform
+      # starts a fresh production container with the swapped configuration; that container's application
+      # starts but never binds its port; the platform's startup probe correctly finds nothing, gives up,
+      # and puts the SITE into Stopped. Two of the three were caught only because someone happened to be
+      # polling by hand.
+      #
+      # Two things are watched, because /healthz alone is not enough. Through the whole failing window the
+      # front door was still being served by the warmed instance, so an external poll looked perfect while
+      # the site was being driven to Stopped underneath it. The SITE STATE is the earlier and truer signal.
+      - name: Watch production past the swap and measure the true outage
+        id: outage
+        if: always() && steps.readiness.outputs.outcome == 'healthy'
+        env:
+          WATCH_SECONDS: '600'
+          MAX_ACCEPTABLE_OUTAGE_SECONDS: '30'
+        run: |
+          LOG=/tmp/swap-poll.log
+          STATE_LOG=/tmp/site-state.log; : > "$STATE_LOG"
+          echo "Watching for ${WATCH_SECONDS}s past the swap (the failure window is 2-4 minutes out)..."
+
+          deadline=$(( $(date +%s) + WATCH_SECONDS ))
+          bad_state=""
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            st=$(az webapp show --resource-group "$AZURE_RG" --name "$APP" --query state --output tsv 2>/dev/null || echo "Unknown")
+            echo "$(date -u +%H:%M:%S) $st" >> "$STATE_LOG"
+            if [ "$st" != "Running" ]; then
+              bad_state="$st"
+              echo "SITE STATE LEFT Running: $st at $(date -u +%H:%M:%S)"
+            fi
+            sleep 15
+          done
+
+          # Stop the poller that has been running since before the swap.
+          if [ -f /tmp/swap-poll.pid ]; then kill "$(cat /tmp/swap-poll.pid)" 2>/dev/null || true; fi
+
+          # The whole record, from before the swap to ten minutes after it. Compute the LONGEST unbroken
+          # run of non-200 samples, in seconds, and the total. The poller samples about once a second, so a
+          # gap is measured from the last good sample to the next good one.
+          read -r longest total start_of_longest <<EOF
+          $(awk '
+            $2=="200" {
+              if (gap_start != "") { d = $1 - gap_start; total += d; if (d > longest) { longest = d; at = gap_start } ; gap_start = "" }
+              last_good = $1; next
+            }
+            { if (gap_start == "") gap_start = (last_good != "" ? last_good : $1); last_seen = $1 }
+            END {
+              # Still unavailable when the watch ended: that stretch is the WORST case, not a zero.
+              # Closing the books without it would report 0.0s for a service that never came back.
+              if (gap_start != "") { d = last_seen - gap_start; total += d; if (d > longest) { longest = d; at = gap_start } }
+              printf "%.1f %.1f %s", longest+0, total+0, (at == "" ? "-" : at)
+            }
+          ' "$LOG")
+          EOF
+
+          echo "--- site state samples ---"; cat "$STATE_LOG"
+          echo "Longest unavailable stretch: ${longest}s   Total unavailable: ${total}s"
+          echo "true_outage_seconds=$longest" >> "$GITHUB_OUTPUT"
+          echo "total_unavailable_seconds=$total" >> "$GITHUB_OUTPUT"
+          echo "site_state_left_running=${bad_state:-no}" >> "$GITHUB_OUTPUT"
+
+          fail=""
+          if [ -n "$bad_state" ]; then
+            fail="the App Service site left the Running state (saw '$bad_state')"
+          elif awk -v a="$longest" -v b="$MAX_ACCEPTABLE_OUTAGE_SECONDS" 'BEGIN{exit !(a > b)}'; then
+            fail="production was unavailable for ${longest}s, over the ${MAX_ACCEPTABLE_OUTAGE_SECONDS}s budget"
+          fi
+          if [ -n "$fail" ]; then
+            echo "ERROR: $fail."
+            echo "       The deploy SHIPPED - this is not a rollback signal, it is the outage report the old"
+            echo "       8-second window could not produce. See issue #2203. The failing container's own"
+            echo "       startup log is in the platform container log for this app; the hosted Gateway now"
+            echo "       mirrors its startup to standard output so that record is complete."
+            echo "--- full production poll ---"; cat "$LOG"
+            exit 1
+          fi
+          echo "Production stayed available for the full ${WATCH_SECONDS}s window past the swap."
 
       # Does this deploy carry a schema change to the LIVE Supabase Postgres? Diff the Postgres migration set
       # (the one Database.Migrate() applies on hosted) between the outgoing live commit and the shipped one.
@@ -297,7 +383,10 @@ jobs:
           FULL=$(git rev-parse HEAD)
           OUTCOME="${{ steps.readiness.outputs.outcome }}"; OUTCOME="${OUTCOME:-failed}"
           BUILD_S="${{ steps.build.outputs.build_seconds }}"; BUILD_S="${BUILD_S:-}"
-          OUTAGE_S="${{ steps.readiness.outputs.outage_seconds }}"
+          SWAP_S="${{ steps.readiness.outputs.swap_outage_seconds }}"
+          OUTAGE_S="${{ steps.outage.outputs.true_outage_seconds }}"
+          TOTAL_S="${{ steps.outage.outputs.total_unavailable_seconds }}"
+          STATE_LEFT="${{ steps.outage.outputs.site_state_left_running }}"; STATE_LEFT="${STATE_LEFT:-not-measured}"
           TTH_S="${{ steps.readiness.outputs.time_to_healthy_seconds }}"
           MIG="${{ steps.migration.outputs.migration }}"; MIG="${MIG:-unknown}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -313,6 +402,9 @@ jobs:
             "outcome": "$OUTCOME",
             "build_seconds": "${BUILD_S}",
             "external_outage_seconds": "${OUTAGE_S}",
+            "swap_window_gap_seconds": "${SWAP_S}",
+            "total_unavailable_seconds": "${TOTAL_S}",
+            "site_state_left_running": "${STATE_LEFT}",
             "time_to_healthy_seconds": "${TTH_S}",
             "migration": "$MIG",
             "rollback": "no"
@@ -328,7 +420,10 @@ jobs:
             echo "| commit | \`$TARGET\` |"
             echo "| outcome | $OUTCOME |"
             echo "| build | ${BUILD_S:-?}s |"
-            echo "| external outage | ${OUTAGE_S:-?}s |"
+            echo "| external outage (longest, watched 10 min past the swap) | ${OUTAGE_S:-not measured}s |"
+            echo "| total unavailable | ${TOTAL_S:-not measured}s |"
+            echo "| gap across the swap itself | ${SWAP_S:-?}s |"
+            echo "| site left Running | ${STATE_LEFT} |"
             echo "| time-to-healthy | ${TTH_S:-?}s |"
             echo "| migration | $MIG |"
             echo "| rollback | no |"
@@ -337,7 +432,7 @@ jobs:
             echo "Ledger-ready row (paste into deploy-ledger.md):"
             echo ""
             echo "\`\`\`"
-            echo "$NOW | \`$TARGET\` | ${{ github.run_id }} | build ${BUILD_S:-?}s | migration $MIG | external outage ${OUTAGE_S:-?}s | time-to-healthy ${TTH_S:-?}s | $OUTCOME"
+            echo "$NOW | \`$TARGET\` | ${{ github.run_id }} | build ${BUILD_S:-?}s | migration $MIG | external outage ${OUTAGE_S:-not measured}s (longest, 10 min watch) | time-to-healthy ${TTH_S:-?}s | $OUTCOME"
             echo "\`\`\`"
           } >> "$GITHUB_STEP_SUMMARY"
 

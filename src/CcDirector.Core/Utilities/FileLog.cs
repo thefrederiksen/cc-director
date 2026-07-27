@@ -14,13 +14,51 @@ public static class FileLog
 {
     private static readonly string LogDir = CcStorage.ToolLogs("director");
 
+    // What distinguishes this process's log file from another process's. The desktop uses the process id,
+    // which is unique there and is what the desktop tooling globs for. A container must call
+    // UseUniqueInstanceId() before Start(), because inside a container the process id is always 1.
+    private static string _instanceId = Environment.ProcessId.ToString();
+
     // The active writer. Production never reassigns it; the test-only RedirectForTests seam (issue
     // #862) swaps it for an isolated writer for the duration of one test, which is safe because the
     // test assemblies disable parallelization (one test owns FileLog at a time).
     private static FileLogWriter _writer =
-        new(LogDir, Environment.ProcessId, () => DateTime.Now);
+        new(LogDir, _instanceId, () => DateTime.Now);
 
     private static int _started;
+
+    /// <summary>
+    /// Also write every line to standard output. Off by default; a hosted/container deployment turns it on.
+    ///
+    /// This is a SECOND SINK, not a fallback: it is written on the caller's thread with no queue in front of
+    /// it, so it survives the exact failure that erased the evidence of three hosted startup failures - the
+    /// file share stalling, the bounded queue filling, and every line being dropped before it reached disk.
+    /// In a container, standard output is what the platform captures per container, so it is also the only
+    /// sink that is guaranteed unshared.
+    /// </summary>
+    public static bool MirrorToConsole { get; set; }
+
+    /// <summary>
+    /// Give this process its own log file, distinct from any other process writing the same directory.
+    /// Must be called BEFORE <see cref="Start"/>; calling it afterwards throws rather than silently
+    /// leaving the process on the shared file.
+    ///
+    /// A hosted Gateway needs this because the default discriminator - the process id - is always 1 inside
+    /// a container, so every container computed the same path. Two of them then appended to one file on an
+    /// SMB share mounted <c>nobrl</c>, where the FileShare.Read request is not enforced across clients, and
+    /// clobbered each other mid-record. The token is generated per process rather than read from the
+    /// environment so its uniqueness does not depend on the platform supplying anything.
+    /// </summary>
+    public static void UseUniqueInstanceId()
+    {
+        if (_started != 0)
+            throw new InvalidOperationException(
+                "FileLog.UseUniqueInstanceId() must be called before FileLog.Start(); the writer is already " +
+                "running on the shared log file and moving it now would split this process's record in two.");
+
+        _instanceId = Guid.NewGuid().ToString("N")[..12];
+        _writer = new FileLogWriter(LogDir, _instanceId, () => DateTime.Now);
+    }
 
     /// <summary>Start the background writer thread. Safe to call multiple times.</summary>
     public static void Start()
@@ -37,8 +75,15 @@ public static class FileLog
         if (_started == 0) return;
         var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} {message}";
         _writer.Enqueue(line);
+        if (MirrorToConsole) Console.Out.WriteLine(line);
         System.Diagnostics.Debug.WriteLine(line);
     }
+
+    /// <summary>
+    /// Lines this process could not fit into the writer's queue - a stalled writer means the file record is
+    /// incomplete by exactly this many lines. Zero on a healthy process.
+    /// </summary>
+    public static long DroppedLines => _writer.DroppedLines;
 
     /// <summary>Flush remaining messages and stop the writer thread.</summary>
     public static void Stop()
@@ -50,7 +95,7 @@ public static class FileLog
 
     /// <summary>Returns the current log file path (useful for display).</summary>
     public static string CurrentLogPath =>
-        Path.Combine(LogDir, $"director-{DateTime.Now:yyyy-MM-dd}-{Environment.ProcessId}.log");
+        Path.Combine(LogDir, $"director-{DateTime.Now:yyyy-MM-dd}-{_instanceId}.log");
 
     /// <summary>
     /// TEST-ONLY seam (issue #862). Redirects FileLog to a private, throwaway directory for the life
@@ -79,7 +124,7 @@ public static class FileLog
             Directory.CreateDirectory(_dir);
             _previousWriter = _writer;
             _previousStarted = _started;
-            _testWriter = new FileLogWriter(_dir, Environment.ProcessId, () => DateTime.Now);
+            _testWriter = new FileLogWriter(_dir, Environment.ProcessId.ToString(), () => DateTime.Now);
             _writer = _testWriter;
             _started = 1;
             _testWriter.Start();

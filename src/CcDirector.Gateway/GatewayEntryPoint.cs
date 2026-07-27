@@ -25,8 +25,35 @@ public static class GatewayEntryPoint
     /// </summary>
     public static int Run(string[] args)
     {
+        // A hosted Gateway logs differently from a desktop one, and it must, because a deploy runs TWO
+        // Gateway containers at once and they share one storage mount.
+        //
+        //  - Its own log file. The default discriminator is the process id, which is 1 in EVERY container,
+        //    so both containers computed the same path on the SMB mount and clobbered each other's records
+        //    mid-line. Must be set before FileLog.Start().
+        //  - Standard output as a second sink. The platform captures it per container, and it has no queue
+        //    in front of it, so it survives a stalled file share - the failure that erased the startup
+        //    record of three deploys and left "no listening ports were detected" with nothing to explain it.
+        //
+        // Keyed on the IMMUTABLE hosted image identity, not the CC_GATEWAY_HOSTED toggle: a slot swap or a
+        // config restore can drop the environment variable, and the moment it does is exactly when two
+        // containers are running and the logging matters most.
+        if (GatewayHostedMode.IsHostedImage)
+        {
+            FileLog.UseUniqueInstanceId();
+            FileLog.MirrorToConsole = true;
+        }
+
         FileLog.Start();
         FileLog.Write($"[Program] CC Director Gateway starting, log: {FileLog.CurrentLogPath}");
+        if (GatewayHostedMode.IsHostedImage)
+        {
+            // Correlation, not identity: the platform names containers by their id, so record what this
+            // process can see about which container it is. The log file name does not depend on any of it.
+            FileLog.Write(
+                $"[Program] hosted container: machine={Environment.MachineName} " +
+                $"pid={Environment.ProcessId} instance={Environment.GetEnvironmentVariable("WEBSITE_INSTANCE_ID") ?? "<unset>"}");
+        }
 
         int port = GatewayHost.DefaultPort;
 
