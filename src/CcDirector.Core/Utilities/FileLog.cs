@@ -60,12 +60,59 @@ public static class FileLog
         _writer = new FileLogWriter(LogDir, _instanceId, () => DateTime.Now);
     }
 
+    /// <summary>
+    /// True when the file sink has failed repeatedly and the console mirror was turned on to report it
+    /// rather than by configuration. Read it to tell "the mirror is on because we asked for it" apart from
+    /// "the mirror is on because the file is dead".
+    /// </summary>
+    public static bool FileSinkFailed { get; private set; }
+
+    /// <summary>
+    /// Report a file sink that has stopped working, on a channel that is not the file (issue #2223).
+    ///
+    /// A permanently failing write repeats forever behind the writer's per-line catch, so before this the
+    /// only symptom was a log that stopped growing - indistinguishable from a process with nothing to say.
+    /// Turning the console mirror ON here is a REPORT, not a fallback: the point is that the failure
+    /// becomes audible and names itself, and that the record continues somewhere a reader can find it.
+    /// It is turned back off on recovery ONLY if this is what turned it on, so a hosted deployment that
+    /// deliberately set the mirror never has it revoked underneath it.
+    /// </summary>
+    private static void OnSinkHealthChanged(int consecutiveFailures, Exception? ex)
+    {
+        if (ex is not null)
+        {
+            FileSinkFailed = true;
+            if (!MirrorToConsole)
+            {
+                MirrorToConsole = true;
+                _mirrorForcedBySinkFailure = true;
+            }
+            Console.Error.WriteLine(
+                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} [FileLog] FILE SINK DEAD: {consecutiveFailures} consecutive " +
+                $"write failures ({ex.GetType().Name}: {ex.Message}). Path: {CurrentLogPath}. The log file is NOT " +
+                "being written; this process's record continues on standard output until the file sink recovers.");
+            return;
+        }
+
+        FileSinkFailed = false;
+        Console.Error.WriteLine(
+            $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} [FileLog] file sink recovered; writing to {CurrentLogPath} again.");
+        if (_mirrorForcedBySinkFailure)
+        {
+            _mirrorForcedBySinkFailure = false;
+            MirrorToConsole = false;
+        }
+    }
+
+    private static bool _mirrorForcedBySinkFailure;
+
     /// <summary>Start the background writer thread. Safe to call multiple times.</summary>
     public static void Start()
     {
         if (Interlocked.CompareExchange(ref _started, 1, 0) != 0)
             return;
 
+        _writer.OnSinkHealthChanged = OnSinkHealthChanged;
         _writer.Start();
     }
 

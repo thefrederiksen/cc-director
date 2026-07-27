@@ -33,13 +33,21 @@ on:
   # The branch/tag picked when starting the run is the commit that ships.
   workflow_dispatch:
 
-# Only the latest release should win. If a newer release is started while one is still running,
-# cancel the older one so we never spend a full build shipping code that is about to be replaced.
-# The cancel is safe during the ~5-minute build (nothing live has changed yet); the newer release
-# repeats the short repin+restart at the end, so the live service always lands on the latest commit.
+# A second release WAITS for the one in flight. It must never cancel it (issue #2222).
+#
+# This used to be cancel-in-progress: true, on the reasoning that the cancel is safe during the
+# ~5-minute build because nothing live has changed yet. That reasoning only holds if the cancel
+# lands during the build, and there is no way to promise it does. On 2026-07-27 one landed INSIDE
+# "Deploy the new image to the staging slot and warm it" - after the staging slot had been started
+# and before anything could stop it. The stop step is skipped on a cancelled run, so the slot was
+# abandoned RUNNING: two Gateway containers on one worker for ten minutes, unattended, with the app
+# degraded the whole time. No probe failed and /healthz never dropped, so nothing caught it.
+#
+# Waiting costs a few minutes of build time. Cancelling costs an abandoned slot and a degraded
+# production service. Queue.
 concurrency:
   group: deploy-hosted-gateway
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   id-token: write   # required for the Azure OIDC login
@@ -123,6 +131,29 @@ jobs:
       # anything here fails, production is untouched and still serving the old image - the deploy aborts
       # safely. Staging is normally STOPPED (steady state is one instance writing the shared mount), so we
       # point it at the new digest and start it.
+      # REFUSE to start on a dirty slot (issue #2222). Steady state is staging STOPPED - one instance
+      # writing the shared mount. If it is already running, a previous run died without cleaning up, and
+      # starting a deploy on top of that means three containers contending instead of two. Fail here,
+      # where nothing has been touched, rather than discovering it after the swap.
+      #
+      # The one legitimate exception is the deploy that deliberately LEAVES staging running for swap-back
+      # (see the settle step below). That case needs a human to decide whether to roll back or proceed, so
+      # it is correct for this to stop and say so rather than guess.
+      - name: Refuse to deploy onto a staging slot that is already running
+        run: |
+          STATE=$(az webapp show --resource-group "$AZURE_RG" --name "$APP" --slot "$SLOT" --query state --output tsv)
+          echo "Staging slot state: $STATE"
+          if [ "$STATE" != "Stopped" ]; then
+            echo "ERROR: the staging slot is '$STATE', expected 'Stopped'."
+            echo "       Steady state is one running instance. A running staging slot means either a"
+            echo "       previous deploy died without cleaning up (see issue #2222), or a deploy"
+            echo "       deliberately left it running so rollback-hosted-gateway could swap back."
+            echo "       Decide which, then either run the rollback or stop the slot by hand:"
+            echo "         az webapp stop -g $AZURE_RG -n $APP --slot $SLOT"
+            echo "       Nothing has been changed by this run."
+            exit 1
+          fi
+
       - name: Deploy the new image to the staging slot and warm it
         id: warm
         run: |
@@ -258,6 +289,40 @@ jobs:
           echo "Production held a stable streak on $TARGET; stopping the staging slot."
           az webapp stop --resource-group "$AZURE_RG" --name "$APP" --slot "$SLOT" --output none
           echo "stopped_staging=yes" >> "$GITHUB_OUTPUT"
+
+      # The safety net (issue #2222). A run that dies anywhere between starting the staging slot and the
+      # settle step leaves that slot RUNNING, and a second Gateway container on the worker degrades the
+      # live service until someone notices. `always()` covers cancellation as well as failure, which is
+      # the case that actually bit us.
+      #
+      # It reads the settle step's own verdict and does NOT second-guess it:
+      #   stopped_staging=yes  -> settle already stopped it; nothing to do.
+      #   stopped_staging=no   -> settle DELIBERATELY left it running as the swap-back instance. Leave it.
+      #                           Stopping it here would destroy the rollback path.
+      #   <empty>              -> settle never ran, so nobody owns the slot. Stop it.
+      # This is a second line of defence, not the primary fix - a cancelled job is not guaranteed to
+      # finish its steps. The primary fix is cancel-in-progress: false above.
+      - name: Always leave the staging slot stopped unless it is the swap-back instance
+        if: always()
+        run: |
+          VERDICT="${{ steps.settle.outputs.stopped_staging }}"
+          if [ "$VERDICT" = "yes" ]; then
+            echo "Staging was already stopped by the settle step; nothing to clean up."
+            exit 0
+          fi
+          if [ "$VERDICT" = "no" ]; then
+            echo "Staging is DELIBERATELY left running as the swap-back instance - not touching it."
+            exit 0
+          fi
+          STATE=$(az webapp show --resource-group "$AZURE_RG" --name "$APP" --slot "$SLOT" --query state --output tsv 2>/dev/null || echo Unknown)
+          echo "This run never reached the settle step. Staging slot state: $STATE"
+          if [ "$STATE" = "Stopped" ]; then
+            echo "Already stopped - nothing to clean up."
+            exit 0
+          fi
+          echo "Stopping the abandoned staging slot so production is not left sharing its worker."
+          az webapp stop --resource-group "$AZURE_RG" --name "$APP" --slot "$SLOT" --output none
+          echo "Staging stopped."
 
       # KEEP WATCHING. This is the step that measures the outage a user actually gets (issue #2203).
       #
