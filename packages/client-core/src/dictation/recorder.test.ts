@@ -178,3 +178,65 @@ describe("rmsLevel", () => {
     expect(v).toBeLessThanOrEqual(1);
   });
 });
+
+// The suspended-context guard (the Cockpit "bars never bounce" defect): the meter's AudioContext is
+// created after the async getUserMedia round trip, so the browser's autoplay policy can start it
+// SUSPENDED - and a suspended analyser reads the flat centre line forever, pinning the equalizer at
+// zero while MediaRecorder captures fine. level() must re-ask a suspended context to resume on every
+// read (it runs once per animation frame), so the meter self-heals instead of staying dead for the
+// whole dictation. These drive the REAL level() with the private capture fields wired in, the same
+// way the snapshotFlushed tests wire theirs - not a copy of the logic.
+describe("MicRecorder.level suspended-context guard", () => {
+  // The analyser hands back a clearly loud waveform so a healed meter is distinguishable from silence.
+  class FakeAnalyser {
+    getByteTimeDomainData(buf: Uint8Array): void {
+      for (let i = 0; i < buf.length; i++) buf[i] = i % 2 === 0 ? 88 : 168;
+    }
+  }
+
+  class FakeAudioContext {
+    state: "suspended" | "running";
+    resumeCalls = 0;
+    constructor(state: "suspended" | "running") {
+      this.state = state;
+    }
+    resume(): Promise<void> {
+      this.resumeCalls += 1;
+      this.state = "running";
+      return Promise.resolve();
+    }
+  }
+
+  function wireLevel(ctx: FakeAudioContext): MicRecorder {
+    const mic = new MicRecorder();
+    const anyMic = mic as unknown as { audioCtx: FakeAudioContext; analyser: FakeAnalyser; levelData: Uint8Array };
+    anyMic.audioCtx = ctx;
+    anyMic.analyser = new FakeAnalyser();
+    anyMic.levelData = new Uint8Array(8);
+    return mic;
+  }
+
+  it("asks a suspended context to resume, once per read, until it runs", () => {
+    const ctx = new FakeAudioContext("suspended");
+    const mic = wireLevel(ctx);
+    mic.level();
+    expect(ctx.resumeCalls).toBe(1);
+    // The next frame's read sees the context running and leaves it alone.
+    mic.level();
+    expect(ctx.resumeCalls).toBe(1);
+  });
+
+  it("never touches resume on a context that is already running", () => {
+    const ctx = new FakeAudioContext("running");
+    const mic = wireLevel(ctx);
+    expect(mic.level()).toBeGreaterThan(0);
+    expect(ctx.resumeCalls).toBe(0);
+  });
+
+  it("still returns the analyser's reading on the same call that resumes", () => {
+    // The resume is fire-and-forget; the read itself must not be skipped or zeroed by the guard.
+    const ctx = new FakeAudioContext("suspended");
+    const mic = wireLevel(ctx);
+    expect(mic.level()).toBeGreaterThan(0);
+  });
+});

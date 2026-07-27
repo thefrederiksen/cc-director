@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useKeepWarm } from "@devthrottle/client-core/net/useKeepWarm";
 import { getSuggestionCount } from "@devthrottle/client-core/dictation/dictionaryClient";
+import { resumePendingDictations } from "@devthrottle/client-core/dictation/backgroundSend";
 import { NavIcon, type NavIconName } from "./components";
 import { CockpitStatusPill } from "./network/CockpitStatusPill";
 
@@ -103,6 +104,15 @@ export function AppShell() {
   const location = useLocation();
   // Keep-warm heartbeat (P2): hold the direct LAN path open during active use.
   useKeepWarm();
+
+  // Resume any recorded-but-unsent dictation once this enrolled shell mounts, exactly like the mobile
+  // GatedLayout does (issue #1006): a clip whose upload was interrupted by a refresh / closed tab /
+  // dropped connection is re-driven to its session from the durable on-device queue. Without this, the
+  // Cockpit's fire-and-forget Speak Send (SessionComposer / VoiceTab) could persist a clip and then
+  // never deliver it after a reload - saved forever, sent never.
+  useEffect(() => {
+    void resumePendingDictations();
+  }, []);
 
   // The pending dictionary-suggestions count (devthrottle #2075) - the Gateway-owned verdict rendered as a
   // red badge on the Dictionary nav item. Polled here so the whole app shows the attention signal without

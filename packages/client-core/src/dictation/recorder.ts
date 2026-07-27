@@ -195,6 +195,13 @@ export class MicRecorder {
     this.analyser.fftSize = LEVEL_FFT_SIZE;
     source.connect(this.analyser);
     this.levelData = new Uint8Array(this.analyser.fftSize);
+    // The meter's context can be born SUSPENDED: it is created here, after the async getUserMedia
+    // round trip, so the browser's autoplay policy may no longer credit it to the user's click. A
+    // suspended analyser reads flat centre-line samples forever - loudness 0 - so the equalizer sits
+    // dead while MediaRecorder (which does not use this context) captures fine: recording works, the
+    // bars say it doesn't. That was the desktop-Cockpit "bars never bounce" defect. Same guard the
+    // ready cue carries (readyCue.ts); level() re-checks each frame in case the resume is refused here.
+    if (this.audioCtx.state === "suspended") void this.audioCtx.resume();
 
     this.mimeType = pickMimeType();
     this.recorder = this.mimeType
@@ -291,6 +298,10 @@ export class MicRecorder {
   /** Current input level in 0..1, sampled live from the waveform. Returns 0 when not recording. */
   level(): number {
     if (!this.analyser || !this.levelData) return 0;
+    // Self-healing arm of the suspended-context guard in start(): this is called every animation
+    // frame, so a context that was refused there (or suspended later) is re-asked until it runs.
+    // While suspended the read below is the flat centre line and the meter honestly shows zero.
+    if (this.audioCtx !== null && this.audioCtx.state === "suspended") void this.audioCtx.resume();
     this.analyser.getByteTimeDomainData(this.levelData);
     return rmsLevel(this.levelData);
   }

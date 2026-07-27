@@ -1,5 +1,6 @@
 import { useVoiceMode, formatClock } from "@devthrottle/client-core/voice/useVoiceMode";
 import { DictationDialog } from "@devthrottle/client-core/dictation/DictationDialog";
+import { DictationStatusStrip } from "@devthrottle/client-core/dictation/DictationStatusStrip";
 
 // The Cockpit Voice tab (issue #1213): a thin view over the SAME shared client-core hook the mobile
 // Voice page uses (useVoiceMode), so the two apps render the hands-free Wingman narration from one
@@ -25,6 +26,10 @@ export function VoiceTab({ sessionId }: { sessionId: string | undefined }) {
         onEnded={v.onEndedAudio}
         style={{ display: "none" }}
       />
+
+      {/* The live status of a background dictation reply for THIS session - the same shared strip the
+          mobile Voice page mounts. Renders nothing when no dictation is in play. */}
+      <DictationStatusStrip sessionId={sessionId} />
 
       <div className="voice-body">
         {v.error !== null && (
@@ -190,18 +195,21 @@ export function VoiceTab({ sessionId }: { sessionId: string | undefined }) {
       </div>
 
       {/* Reply: the shared dictation interface with NO Insert - Send goes straight into the session.
-          Deliberately NOT wired to the fire-and-forget onSendAudio path, matching SessionComposer: that
-          path is the durable /dictation/* background pipeline, which is not tenant-aware on the hosted
-          Gateway (blocker #1884) - so a hosted-Cockpit send-direct through it resolves an empty partition
-          and holds forever with no feedback (the Cockpit mounts no DictationStatusStrip). Omitting
-          onSendAudio makes the dialog use the blocking commit path (transcribeUtterance -> the tenant-safe
-          /wingman/utterance/* route), which ALSO surfaces a dropped-audio capture-loss warning in the
-          dialog itself (it parks instead of committing), so a Cockpit voice reply that lost audio is never
-          silent - closing the one gap where the warning was published but had no strip to show it. */}
+          Send while still recording is the hook's fire-and-forget path (onRespondSendAudio ->
+          backgroundTranscribeAndSend), the SAME wiring the mobile Voice page has: the dialog closes the
+          instant Send is pressed and the transcription + submit run in the background, with the shared
+          DictationStatusStrip above showing the live phase and any held/dropped outcome. This tab was
+          deliberately NOT wired to that path while the /dictation/* pipeline resolved sessions in the
+          Local partition on hosted (blocker #1884, see the SessionComposer history note); the pipeline is
+          tenant-partitioned end to end now (PR #1945) and the strip is mounted here, so the reasons are
+          gone. A capture-loss warning rides the strip as the delivered-with-warning state, so a reply
+          that lost audio is still never silent. The PAUSED-stage Send submits the already-transcribed
+          text synchronously, unchanged. */}
       {v.responding && (
         <DictationDialog
           showInsert={false}
           onSend={(text) => void v.onRespondSend(text)}
+          onSendAudio={v.onRespondSendAudio}
           onClose={() => v.setResponding(false)}
         />
       )}

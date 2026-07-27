@@ -9,7 +9,9 @@ import {
 } from "@devthrottle/client-core/api/client";
 import { describeAndReport } from "@devthrottle/client-core/errors/reportClientError";
 import { DictationDialog } from "@devthrottle/client-core/dictation/DictationDialog";
-import { insertAt } from "@devthrottle/client-core/dictation/transcript";
+import { DictationStatusStrip } from "@devthrottle/client-core/dictation/DictationStatusStrip";
+import { backgroundTranscribeAndSend, type CapturedUtterance } from "@devthrottle/client-core/dictation/backgroundSend";
+import { insertAt, joinText } from "@devthrottle/client-core/dictation/transcript";
 
 // The composer (issue #972, completed in issue #1210) - the React port of the Blazor Cockpit composer.
 // It drives the selected session's reply through the shared Gateway client:
@@ -17,20 +19,22 @@ import { insertAt } from "@devthrottle/client-core/dictation/transcript";
 //   Send  -> POST /sessions/{sid}/prompt { appendEnter: true }  (submit the typed line; Ctrl+Enter)
 //   Speak -> mounts the shared DictationDialog (packages/client-core), exactly as the mobile
 //            SessionControls does; the transcript inserts at the caret (Insert) or inserts + submits
-//            (Send). Both Insert and Send go through the SAME synchronous transcribe-then-act path
-//            (transcribeUtterance -> the Gateway's /wingman/utterance/* transcription, which is
-//            tenant-aware on hosted), so Send-direct sends exactly the text Insert would place.
+//            (Send). Insert transcribes synchronously (transcribeUtterance -> the Gateway's
+//            /wingman/utterance/* transcription); Send while still recording is the same
+//            fire-and-forget path the phone uses (onSendAudio -> backgroundTranscribeAndSend -> the
+//            /dictation/* durable pipeline): the dialog closes the instant Send is pressed and the
+//            transcription + submit run in the background, with the shared DictationStatusStrip
+//            (mounted below) showing where the send is.
 //
-// The Cockpit deliberately does NOT wire the DictationDialog's fire-and-forget onSendAudio path (the
-// durable background pipeline the phone uses so mobile Speak does not hold the screen). That pipeline
-// injects the turn server-side through the /dictation/* routes, which are NOT tenant-aware on the
-// hosted Gateway (they still resolve the session in the Local partition - documented blocker #1884),
-// so a hosted-Cockpit Send-direct through it resolves an empty partition, holds, and retries forever
-// with no visible status - "Send basically sends nothing". The Cockpit also never mounts the mobile's
-// DictationStatusStrip / resumePendingDictations, so a held send has no feedback here at all. Omitting
-// onSendAudio makes the dialog fall back to the blocking commit-then-onSend path (the same fallback the
-// mobile Voice-mode reply panel uses), which reuses the proven Insert transcription path. See
-// mission/cockpit-speak-send.md.
+// HISTORY, so nobody re-unplugs this: the Cockpit deliberately did NOT wire onSendAudio between PR
+// #1975 and this change, because back then the /dictation/* routes resolved sessions in the Local
+// partition on the hosted Gateway (blocker #1884) - a hosted Send through them held forever with no
+// status ("Send basically sends nothing"), and the Cockpit mounted no status strip to even show the
+// hold. Both halves are gone: the dictation upload family is tenant-partitioned end to end behind
+// DictationTenantGate (PR #1945, per-tenant transcript storage #2093), the phone has been sending
+// through it on hosted daily, and the Cockpit now mounts the same DictationStatusStrip and resumes
+// pending dictations on load (AppShell.tsx) exactly like the mobile shell. The PAUSED-stage Send still
+// submits the already-transcribed text synchronously - no audio round trip.
 //   Queue -> POST /sessions/{sid}/queue { text }                (append to the queue; Ctrl+Shift+Enter)
 //   Attach -> POST /sessions/{sid}/upload-image                 (upload a device-local image, then
 //             insert the Director-side saved path into the composer for the agent to read)
@@ -101,6 +105,14 @@ export function SessionComposer({ sessionId, value, onChange, onQueued, focusHan
   // change while it is open). Dictation is inserted here, exactly like the desktop Insert button and
   // the mobile SessionControls, instead of always at the end.
   const caretRef = useRef(0);
+  // Mirror of the parent-owned composer text, for callbacks that outlive their render (the
+  // background dictation send's onFailed fires long after this component re-rendered, and the
+  // `value` its closure captured is stale by then). The parent owns the text, so there is no
+  // functional setState to lean on the way the mobile SessionControls does.
+  const valueRef = useRef(value);
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
 
   // Publish a focuser for the composer textarea into the parent-owned ref (issue #1266), and clear it on
   // unmount so the Source Control tab never calls into a torn-down composer.
@@ -241,8 +253,7 @@ export function SessionComposer({ sessionId, value, onChange, onQueued, focusHan
   }, []);
 
   // Speak: mount the shared dictation dialog, exactly like the mobile SessionControls. Insert drops the
-  // transcript at the caret (no submit); Send inserts at the caret and submits via the same POST /prompt
-  // path. Both transcribe synchronously through the tenant-aware /wingman/utterance/* path.
+  // transcript at the caret (no submit); Send inserts at the caret and submits.
   const onSpeak = useCallback(() => {
     caretRef.current = textareaRef.current?.selectionStart ?? value.length;
     setError(null);
@@ -277,6 +288,41 @@ export function SessionComposer({ sessionId, value, onChange, onQueued, focusHan
       } finally {
         setBusy(false);
       }
+    },
+    [sessionId, value, onChange],
+  );
+
+  // Immediate (fire-and-forget) Send from the Speak dialog, the same shape as the mobile
+  // SessionControls: the dialog already captured the audio buffer and closed itself, releasing the
+  // screen. Transcode + upload + transcribe + submit run in the background; the DictationStatusStrip
+  // below shows the live phase and any held/dropped outcome. Send behaves like Insert-then-Enter: the
+  // dictation is inserted at the snapshotted caret inside any typed text, then submitted. The box is
+  // cleared now (at dialog-close time); on a send that does not complete the typed text is put back -
+  // the audio itself is kept durably for resume, but the typed text is client-only.
+  const onDictateSendAudio = useCallback(
+    (captured: CapturedUtterance) => {
+      setDictating(false);
+      if (!sessionId) return;
+      const composerText = value;
+      const caret = caretRef.current;
+      setError(null);
+      onChange("");
+      // No composer status line here: the DictationStatusStrip below is the ONE live voice for this
+      // send (it publishes "Saving..." before any network work and follows through to "Sent"). A
+      // second "Transcribing..." in the button row would go stale the moment the strip moved on.
+      void backgroundTranscribeAndSend(sessionId, captured, {
+        onError: (message) => setError(message),
+        // Insert the dictated words at the snapshotted caret inside the typed text: the Gateway
+        // submits before + dictation + after. The caret splits the typed text into the two halves.
+        composeParts: { before: composerText.slice(0, caret), after: composerText.slice(caret) },
+        // Restore the typed text (ahead of anything typed since - valueRef reads the box as it is at
+        // failure time, this callback's own `value` is a stale snapshot by then) so Send never
+        // silently loses it. The audio itself is kept durably for resume; the typed text is
+        // client-only, which is why it has to be put back here.
+        onFailed: () => {
+          if (composerText.trim().length > 0) onChange(joinText(composerText, valueRef.current));
+        },
+      });
     },
     [sessionId, value, onChange],
   );
@@ -338,10 +384,16 @@ export function SessionComposer({ sessionId, value, onChange, onQueued, focusHan
         {error !== null && <span className="composer-error">{error}</span>}
       </div>
 
+      {/* The live status of a background dictation Send for THIS session (the same shared strip the
+          mobile screens mount): in-flight phase, held/parked with retry controls, dropped with the
+          words quoted back. Renders nothing when no dictation is in play, which is nearly always. */}
+      <DictationStatusStrip sessionId={sessionId} />
+
       {dictating && (
         <DictationDialog
           onInsert={onDictateInsert}
           onSend={onDictateSend}
+          onSendAudio={onDictateSendAudio}
           onClose={() => setDictating(false)}
         />
       )}
