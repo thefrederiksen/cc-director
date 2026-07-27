@@ -102,6 +102,14 @@ public sealed record WorkHistorySessionDto
     /// <summary>Total input turns observed (operator plus agent-driven). Null when never reported.</summary>
     [JsonPropertyName("turnCount")] public long? TurnCount { get; init; }
 
+    /// <summary>Completed agent turns - one flip to waiting-for-input equals one turn, counted on the
+    /// Director (internal#625). Null when the owning Director never reported the counter.</summary>
+    [JsonPropertyName("agentTurnCount")] public long? AgentTurnCount { get; init; }
+
+    /// <summary>Total seconds the session spent waiting on the user, summed over closed waiting
+    /// stretches. Null when never reported.</summary>
+    [JsonPropertyName("idleSeconds")] public double? IdleSeconds { get; init; }
+
     /// <summary>Null when no summary exists yet; otherwise one of <see cref="SessionHistorySummaryKinds"/>.</summary>
     [JsonPropertyName("summaryKind")] public string? SummaryKind { get; init; }
 
