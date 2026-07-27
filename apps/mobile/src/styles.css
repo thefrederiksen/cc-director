@@ -9,6 +9,7 @@
   --text-dim: #99a0b8;
   --accent: #3b82f6;
   --attention: #f14c4c;
+  --warn: #f59e0b;
 
   /* THE TOP CHROME STACK. Two bars can be pinned above every screen at once - the network banner
      (.conn-banner, only when the network is in trouble) and the voice-mode banner (.voicemode-banner,
@@ -460,6 +461,26 @@ a.banner-btn {
   font-size: 12px;
   color: var(--text-dim);
 }
+
+/* The supervision line (internal#625): started / open / idle / turns as quiet monospace key-value
+   pairs - the same shared formatter as the Cockpit card, re-tuned for touch. Generous gaps and free
+   wrapping on purpose: the values must sit legibly on their lines, never cram (owner's note on the
+   issue). Idle and open go amber/red when a session has sat too long. */
+.row-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 12px;
+  margin-top: 2px;
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.row-stat { display: inline-flex; gap: 5px; white-space: nowrap; }
+.row-stat-k { color: var(--text); opacity: 0.82; }
+.row-stat-v { color: var(--text-dim); }
+.row-stat-v.warm { color: var(--warn); }
+.row-stat-v.hot { color: var(--attention); font-weight: 600; }
 
 /* Thin vertical divider drawn in CSS (no glyph) between the status text and the repo. */
 .row-divider {

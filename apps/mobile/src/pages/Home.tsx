@@ -9,6 +9,8 @@ import { classify, contextLine, deletionReason, dotHex, inBucket, inDesktopOrder
 import { applyFilter, filterIsActive, filterSummary, machineName, pruneFilter } from "@devthrottle/client-core/sessions/filter";
 import { useDictationStatusFor } from "@devthrottle/client-core/dictation/status";
 import { useNow, waitingLabel } from "@devthrottle/client-core/sessions/waiting";
+import { supervisionStats } from "@devthrottle/client-core/sessions/supervision";
+import { useNow as useSharedNow } from "@devthrottle/client-core/polling/useNow";
 import { playClip, playingSid, rowVoiceInputs, stopPlayback, syncVoiceSessions, useVoiceClips } from "@devthrottle/client-core/voice/clips";
 import { isVoiceReady, voiceRowState } from "@devthrottle/client-core/voice/voiceRowState";
 import { NavDrawer } from "../components/NavDrawer";
@@ -606,6 +608,10 @@ function SessionRow({ session, mark, fromTab = "all" }: { session: SessionDto; m
                 ticking each second - only mounted when there is a clock, so other rows keep no timer. */}
             {holdCountdown !== null && <HoldCountdown session={session} />}
           </span>
+          {/* The supervision facts (internal#625) - started / open / idle / turns, the same shared
+              formatter the Cockpit card maps over, so both surfaces say each fact the same way.
+              Stats a Director does not report are omitted, never rendered as zero. */}
+          <SupervisionLine session={session} />
           {/* Snooze Length mission: a distinct "Snooze ended" badge when this session just returned from
               an expired snooze on its own (the dead-man's switch fired) - so the reader knows this is a
               "go see why it went quiet" item, not a fresh turn-end. */}
@@ -746,6 +752,26 @@ function rowBusyLabel(phase: string, uploaded?: number, total?: number): string 
     return "Uploading...";
   }
   return "Transcribing...";
+}
+
+// The card's supervision line (internal#625): started / open / idle / turns. The wording and the
+// amber/red thresholds live in client-core/sessions/supervision, shared with the Cockpit roster,
+// so the two surfaces cannot say the same fact two different ways. Ticks on the app's ONE shared
+// one-second clock; the re-render is scoped to this line.
+function SupervisionLine({ session }: { session: SessionDto }) {
+  const now = useSharedNow();
+  const stats = supervisionStats(session, now);
+  if (stats.length === 0) return null;
+  return (
+    <span className="row-stats">
+      {stats.map((s) => (
+        <span className="row-stat" key={s.key} title={s.title}>
+          <span className="row-stat-k">{s.key}</span>
+          <span className={`row-stat-v${s.tone === "normal" ? "" : ` ${s.tone}`}`}>{s.value}</span>
+        </span>
+      ))}
+    </span>
+  );
 }
 
 // Issue #844: the live elapsed-waiting label for a needs-you card, right-aligned on the status
