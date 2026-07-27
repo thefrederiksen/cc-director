@@ -149,6 +149,57 @@ public sealed class TranscriptStore
         }
     }
 
+    /// <summary>
+    /// How many transcripts a tenant has stored and when the oldest of them was recorded, read in ONE pass so
+    /// the two can never disagree with each other - a count taken separately from an age can be read either
+    /// side of a retention trim and describe a state that never existed. The oldest is null when there are
+    /// none, which is a different fact from "stored today" and must stay distinguishable. Scoped to
+    /// <paramref name="tenant"/> by the global query filter.
+    /// </summary>
+    /// <exception cref="ArgumentException">The tenant is invalid.</exception>
+    public (int Count, DateTime? OldestUtc) Stats(TenantId tenant)
+    {
+        lock (_gate)
+        {
+            using var ctx = _db.CreateContext(tenant);
+            var rows = ctx.DictationTranscripts.AsNoTracking();
+            var count = rows.Count();
+            // Min() over an empty set throws for a non-nullable projection, so ask only when there is a row.
+            var oldest = count == 0 ? (DateTime?)null : rows.Min(e => e.TimestampUtc);
+            return (count, oldest);
+        }
+    }
+
+    /// <summary>
+    /// Delete every transcript one tenant has stored and return how many rows went. The count is RETURNED
+    /// rather than only logged because the caller is generally about to tell a person what was destroyed, and
+    /// a number it guessed rather than observed would be the wrong one exactly when it mattered.
+    ///
+    /// Scoped to <paramref name="tenant"/> by the global query filter, so it can only ever empty the caller's
+    /// own partition - one tenant can never delete another's transcripts. That is asserted directly rather
+    /// than left to follow from the filter, because it is the most damaging thing this method could get wrong.
+    ///
+    /// Deleting nothing returns zero rather than throwing: a second press is not an error.
+    /// </summary>
+    /// <exception cref="ArgumentException">The tenant is invalid.</exception>
+    public int DeleteAll(TenantId tenant)
+    {
+        lock (_gate)
+        {
+            using var ctx = _db.CreateContext(tenant);
+            var all = ctx.DictationTranscripts.ToList();
+            if (all.Count == 0)
+            {
+                FileLog.Write($"[TranscriptStore] DeleteAll: tenant={tenant.ToLogString()} had nothing stored");
+                return 0;
+            }
+            ctx.DictationTranscripts.RemoveRange(all);
+            ctx.SaveChanges();
+            FileLog.Write($"[TranscriptStore] DeleteAll: tenant={tenant.ToLogString()} deleted={all.Count}");
+            return all.Count;
+        }
+    }
+
     /// <summary>This tenant's transcripts, newest first, as detached copies. Test/diagnostic helper - the read
     /// surface proper is devthrottle issue #2075. Scoped to <paramref name="tenant"/> by the query filter.</summary>
     /// <exception cref="ArgumentException">The tenant is invalid.</exception>
