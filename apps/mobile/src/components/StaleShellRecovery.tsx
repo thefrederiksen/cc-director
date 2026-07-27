@@ -101,12 +101,16 @@ export function RouteRecoveryBoundary() {
     );
   }
 
+  // A 404 that survived the one self-heal refresh is a page that genuinely does not exist - the
+  // shell is current and its router has no such route. Say exactly that and link home (issue #958):
+  // telling the user to refresh here was a lie, because refreshing can never make a missing route
+  // appear. The non-404 branch keeps its own copy - that one really is an unexpected error.
   return (
     <div style={container}>
-      <h1>Something went wrong</h1>
+      <h1>{isNotFound ? "Page not found" : "Something went wrong"}</h1>
       <p style={{ opacity: 0.8, marginBottom: "1.5rem" }}>
         {isNotFound
-          ? "This page could not be loaded. Please refresh, or return to DevThrottle."
+          ? "This page does not exist. The link may be wrong or out of date."
           : "An unexpected error occurred. Please return to DevThrottle and try again."}
       </p>
       <button
