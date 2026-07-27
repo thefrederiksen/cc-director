@@ -1,4 +1,4 @@
-<Window xmlns="https://github.com/avaloniaui"
+﻿<Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="CcDirector.Avalonia.FirstRunWizardDialog"
         Title="Set up DevThrottle"
@@ -138,7 +138,8 @@
                  expanded used to push "Set me up" off the bottom of the window. -->
             <Grid x:Name="WelcomePanel" IsVisible="False" RowDefinitions="*,Auto">
                 <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto"
-                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
+                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"
+                              MaxWidth="580" HorizontalAlignment="Center">
                     <StackPanel Spacing="16" VerticalAlignment="Center">
                         <TextBlock Classes="wtitle" Text="Welcome to DevThrottle" />
                         <TextBlock Classes="wsub"
@@ -185,7 +186,8 @@
                 <TextBlock Grid.Row="2" x:Name="AgentsStatusText" Classes="wsub"
                            Text="Scanning this machine for coding agents..." Margin="0,0,0,20" />
                 <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto"
-                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
+                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"
+                              MaxWidth="600" HorizontalAlignment="Center">
                     <StackPanel x:Name="AgentsListPanel" Spacing="8" MaxWidth="560"
                                 HorizontalAlignment="Stretch" />
                 </ScrollViewer>
@@ -229,7 +231,8 @@
                            Foreground="#1A7F37" HorizontalAlignment="Center" TextAlignment="Center"
                            Margin="0,0,0,14" Text="" />
                 <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto"
-                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
+                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"
+                              MaxWidth="640" HorizontalAlignment="Center">
                     <StackPanel x:Name="ToolsListPanel" Spacing="6" MaxWidth="600"
                                 HorizontalAlignment="Stretch" />
                 </ScrollViewer>
@@ -245,7 +248,8 @@
                 <TextBlock Grid.Row="2" Classes="wsub" Margin="0,0,0,22"
                            Text="Pick the folder (or folders) where you keep your repositories. This is what DevThrottle keeps the books on - branches, unmerged work, what is waiting on you - and where it offers you repositories when you start an agent." />
                 <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto"
-                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
+                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"
+                              MaxWidth="640" HorizontalAlignment="Center">
                     <StackPanel MaxWidth="600" HorizontalAlignment="Stretch" Spacing="8">
                         <StackPanel x:Name="CodeSuggestionsPanel" Spacing="8" />
                         <TextBlock x:Name="CodeScanStatusText" Classes="hint"
@@ -295,7 +299,8 @@
                 <TextBlock Grid.Row="2" Classes="wsub" Margin="0,0,0,26"
                            Text="Snap a screen, then drag the screenshot straight onto an agent - the fastest way to show it exactly what you mean. DevThrottle watches one folder for new screenshots." />
                 <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto"
-                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
+                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"
+                              MaxWidth="640" HorizontalAlignment="Center">
                 <StackPanel MaxWidth="600" Spacing="14" VerticalAlignment="Top"
                             HorizontalAlignment="Stretch">
 
@@ -345,7 +350,8 @@
                     <!-- Choice view: one dominant hosted card (pre-selected), two quiet alternatives.
                          Scrolls so the cards stay reachable on a short window. -->
                     <ScrollViewer x:Name="GatewayChoiceView" VerticalScrollBarVisibility="Auto"
-                                  HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
+                                  HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"
+                                  MaxWidth="640" HorizontalAlignment="Center">
                     <StackPanel MaxWidth="600" Spacing="14"
                                 VerticalAlignment="Top" HorizontalAlignment="Stretch">
                         <Border x:Name="GatewayHostedCard" Cursor="Hand"
@@ -447,7 +453,8 @@
                 <TextBlock Grid.Row="2" x:Name="ReportSubText" Classes="wsub" Margin="0,0,0,24"
                            Text="Every morning DevThrottle emails you what happened, what needs your attention, and what it recommends - stale worktrees, unmerged branches, sessions waiting on you. So Friday never surprises you." />
                 <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto"
-                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
+                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"
+                              MaxWidth="560" HorizontalAlignment="Center">
                 <StackPanel MaxWidth="520" Spacing="10" VerticalAlignment="Top"
                             HorizontalAlignment="Stretch">
                     <Border x:Name="ReportDailyCard" Cursor="Hand"
@@ -492,7 +499,8 @@
                  close button as the only way out of the wizard. -->
             <Grid x:Name="DonePanel" IsVisible="False" RowDefinitions="*,Auto">
                 <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto"
-                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
+                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"
+                              MaxWidth="560" HorizontalAlignment="Center">
                     <StackPanel Spacing="18" VerticalAlignment="Center">
                         <TextBlock Classes="wtitle" Text="You are ready" />
                         <TextBlock x:Name="DoneSubText" Classes="wsub"
