@@ -1069,27 +1069,6 @@
                                     Cursor="Hand"
                                     ToolTip.Tip="Open the large editor with image preview (text + pictures)" />
 
-                            <!-- Ask the Wingman to read this session and explain, in plain
-                                 language, what happened and what the agent wants. Overlaid in
-                                 the bottom-left corner of the input so it stays clear of the
-                                 Speak/Send cluster. Same read-only briefing the FIFO uses. -->
-                            <Button x:Name="BtnExplain"
-                                    Grid.Column="0"
-                                    Content="Explain"
-                                    IsVisible="False"
-                                    Click="BtnExplain_Click"
-                                    HorizontalAlignment="Left"
-                                    VerticalAlignment="Bottom"
-                                    Margin="6,0,0,4"
-                                    Padding="8,2"
-                                    FontSize="10"
-                                    Background="#0E7C6B"
-                                    Foreground="White"
-                                    BorderThickness="0"
-                                    Opacity="0.9"
-                                    Cursor="Hand"
-                                    ToolTip.Tip="Have the Wingman read this session and explain what's happening" />
-
                             <!-- Vertical action stack: Send (primary) on top, then
                                  Speak, then Queue. Handover is alpha-gated and stays
                                  collapsed unless enabled, so the visible stack is three

@@ -137,8 +137,9 @@ public partial class MainWindow : Window
         InitializeComponent();
         FileLog.Write("[MainWindow] Avalonia MainWindow initialized");
 
-        // Show which named instance this window is, so multiple instances are distinguishable.
-        Title = "Director" + InstanceTitleSuffix();
+        // Show which named instance this window is when multiple instances exist, so they are
+        // distinguishable. A single-instance install reads plainly as "DevThrottle Director".
+        Title = "DevThrottle Director" + InstanceTitleSuffix();
 
         Loaded += MainWindow_Loaded;
         Activated += MainWindow_Activated;
@@ -799,9 +800,6 @@ public partial class MainWindow : Window
         }
     }
 
-    // TEMPORARY (Gateway Connection mission): the View-menu entry opens the panel for testing.
-    private void OpenGatewayConnectionPreview() => OpenGatewayConnectionPanel();
-
     // ==================== GATEWAY STATUS BOX - ACCOUNT LINE (line 2) ====================
 
     private global::Avalonia.Threading.DispatcherTimer? _accountPollTimer;
@@ -1435,10 +1433,24 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Title-bar suffix identifying which instance this window is (e.g. " -- Company B").
-    /// Shown for every instance, default included - the default is not special.
+    /// Only shown when MORE THAN ONE instance is registered on this machine - that is the
+    /// suffix's entire purpose. A single-instance install shows no suffix, so a new user
+    /// never sees an internal instance name in the title bar.
     /// </summary>
     private static string InstanceTitleSuffix()
     {
+        try
+        {
+            if (NamedInstanceRegistry.List().Count <= 1)
+                return "";
+        }
+        catch (Exception ex)
+        {
+            // Same rule as Program.ResolveInstance: instance resolution must never stop the app.
+            // An unreadable registry costs the cosmetic suffix, not the window.
+            FileLog.Write($"[MainWindow] InstanceTitleSuffix: registry read FAILED, showing no suffix: {ex.Message}");
+            return "";
+        }
         var name = InstanceContext.DisplayName ?? InstanceContext.Slug;
         return string.IsNullOrWhiteSpace(name) ? "" : $" -- {name}";
     }
@@ -1892,8 +1904,8 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Lock (or unlock) the prompt-bar compose surface for the active session. While a dictated
-    /// utterance transcribes and submits in the background, the input box, Send, Speak, Queue,
-    /// Explain and Handover are disabled, and the action bar's Clear context / History are disabled
+    /// utterance transcribes and submits in the background, the input box, Send, Speak, Queue
+    /// and Handover are disabled, and the action bar's Clear context / History are disabled
     /// via <see cref="Controls.SessionActionBar.SetTranscribingLock"/> - Stop and Interrupt stay live.
     /// The keyboard shortcuts (Ctrl+H / Ctrl+Enter / Ctrl+Shift+Enter) are guarded separately by
     /// <see cref="IsActiveSessionTranscribing"/> so they no-op too. Unlocks automatically when the
@@ -1905,7 +1917,6 @@ public partial class MainWindow : Window
         BtnSend.IsEnabled = !locked;
         BtnSpeak.IsEnabled = !locked;
         BtnQueuePrompt.IsEnabled = !locked;
-        BtnExplain.IsEnabled = !locked;
         BtnHandover.IsEnabled = !locked;
         ActionBar.SetTranscribingLock(locked);
         FileLog.Write($"[MainWindow] ApplyComposeLock: locked={locked}");
@@ -2820,40 +2831,6 @@ public partial class MainWindow : Window
         }
     }
 
-    // Explain: pop a small modal that asks the Wingman to read the active session's
-    // terminal and explain, in plain language, what happened and what the agent wants.
-    // The dialog runs the same read-only briefing the FIFO conveyor uses
-    // (WingmanService.BriefingQuestion over AnswerViaSessionAsync), so honing that one
-    // briefing improves both. The dialog owns its own cancellation; it appears at once
-    // and the call resolves a few seconds later.
-    private async void BtnExplain_Click(object? sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var vm = _activeSession;
-            if (vm is null)
-            {
-                ShowNotification("Select a session first to explain it.");
-                return;
-            }
-            var options = (global::Avalonia.Application.Current as App)?.SessionManager?.Options;
-            if (options is null)
-            {
-                FileLog.Write("[MainWindow] BtnExplain_Click: AgentOptions not available");
-                ShowNotification("Explain not available: AgentOptions not loaded.");
-                return;
-            }
-            FileLog.Write($"[MainWindow] BtnExplain_Click: explaining session {vm.Session.Id}");
-            var dlg = new global::CcDirector.Avalonia.Controls.ExplainDialog(vm.Session, options);
-            await dlg.ShowDialog(this);
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[MainWindow] BtnExplain_Click FAILED: {ex.Message}");
-            ShowNotification($"Explain failed: {ex.Message}");
-        }
-    }
-
     // True while a SpeakDialog is on screen. The dialog is modal, but BtnSpeak_Click is async void
     // and there is a window between this handler firing and the modal actually appearing; without this
     // guard a second Ctrl+H (or Speak click) in that window opens a SECOND dictation box. Set
@@ -3752,10 +3729,6 @@ public partial class MainWindow : Window
         view.Menu.Items.Add(new NativeMenuItemSeparator());
         view.Menu.Items.Add(Item("Toggle Right Panel", () => RightPanelToggle_Click(this, new RoutedEventArgs())));
         view.Menu.Items.Add(Item("Reset Terminal View", () => TabBarRefreshButton_Click(this, new RoutedEventArgs())));
-        // TEMPORARY (Gateway Connection mission, Phase 1): a test entry into the new unified panel.
-        // Removed in Phase 4 when the panel is embedded in Settings, the status box, and onboarding.
-        view.Menu.Items.Add(new NativeMenuItemSeparator());
-        view.Menu.Items.Add(Item("Gateway Connection (preview)...", OpenGatewayConnectionPreview));
         menu.Items.Add(view);
 
         // ===== Browsers =====

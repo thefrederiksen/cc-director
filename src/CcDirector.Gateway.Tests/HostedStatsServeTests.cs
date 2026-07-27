@@ -122,15 +122,18 @@ public sealed class HostedStatsServeTests : IAsyncLifetime
         Assert.DoesNotContain("not available on the hosted gateway", text, StringComparison.Ordinal);
     }
 
-    /// <summary>The embedded dashboard shell serves on hosted too (it carries no per-tenant data; the feed it
-    /// fetches is what is tenant-gated).</summary>
+    /// <summary>The standalone dashboard page is retired (issue #587): /stats answers a redirect to the
+    /// Cockpit /your-throttle route on hosted too. It carries no per-tenant data; the feed it used to
+    /// fetch is what is tenant-gated.</summary>
     [Fact]
-    public async Task The_stats_page_shell_serves_an_enrolled_tenant_on_hosted()
+    public async Task The_stats_page_redirects_to_your_throttle_on_hosted()
     {
-        var resp = await _httpA.GetAsync("stats");
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        Assert.StartsWith("text/html", resp.Content.Headers.ContentType!.ToString());
-        Assert.Contains("Your Throttle", await resp.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        using var handler = new HttpClientHandler { AllowAutoRedirect = false };
+        using var raw = new HttpClient(handler) { BaseAddress = _httpA.BaseAddress };
+        raw.DefaultRequestHeaders.Authorization = _httpA.DefaultRequestHeaders.Authorization;
+        var resp = await raw.GetAsync("stats");
+        Assert.Equal(HttpStatusCode.Found, resp.StatusCode);
+        Assert.Equal("/your-throttle", resp.Headers.Location!.ToString());
     }
 
     /// <summary>
@@ -291,23 +294,22 @@ public sealed class HostedStatsSelfHostControlTests : IDisposable
     /// </summary>
     public static TheoryData<string?> NonHostedValues => new() { null, "0" };
 
+    /// <summary>The standalone dashboard page is retired (issue #587): on self-host too, /stats answers a
+    /// redirect to the Cockpit /your-throttle route rather than serving embedded HTML.</summary>
     [Theory]
     [MemberData(nameof(NonHostedValues))]
-    public async Task The_stats_page_still_serves_its_real_dashboard_on_self_host(string? hostedValue)
+    public async Task The_stats_page_redirects_to_your_throttle_on_self_host(string? hostedValue)
     {
         DeclareSelfHost(hostedValue);
 
         var (app, http) = await StatsGroupProbeHost.StartAsync(SeededAggregator());
         try
         {
-            var resp = await http.GetAsync("/stats");
-            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-            Assert.StartsWith("text/html", resp.Content.Headers.ContentType!.ToString());
-
-            var html = await resp.Content.ReadAsStringAsync();
-            Assert.Contains("Your Throttle", html);
-            Assert.Contains("/stats/data", html);
-            Assert.Contains("What you have spent", html);
+            using var handler = new HttpClientHandler { AllowAutoRedirect = false };
+            using var raw = new HttpClient(handler) { BaseAddress = http.BaseAddress };
+            var resp = await raw.GetAsync("/stats");
+            Assert.Equal(HttpStatusCode.Found, resp.StatusCode);
+            Assert.Equal("/your-throttle", resp.Headers.Location!.ToString());
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
     }

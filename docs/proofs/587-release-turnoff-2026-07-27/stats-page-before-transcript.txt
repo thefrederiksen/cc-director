@@ -1,0 +1,21 @@
+=== BEFORE (origin/main 5429ccdf): GET /stats ===
+HTTP/1.1 200 OK
+Content-Type: text/html; charset=utf-8
+Date: Mon, 27 Jul 2026 06:00:40 GMT
+Server: Kestrel
+Cache-Control: no-cache
+Transfer-Encoding: chunked
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Your Throttle</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --ink: #1b1f24; --muted: #5b636d; --line: #e2e5ea;
+    --voice: #2f6feb; --typed: #8a94a3; --accent: #0b8f5a; --warn: #8a6d1a; --warnbg: #fdf6e3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
