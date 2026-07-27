@@ -728,6 +728,39 @@ public sealed class SessionDto
     public int? UncommittedCount { get; set; }
 
     /// <summary>
+    /// How many turns the agent has completed in this run of the session, counted by the owning
+    /// Director at the activity flip: one flip to WaitingForInput equals one turn - the same rule
+    /// <c>TurnReviewLogger</c> writes its records by - so it works for every agent kind and no
+    /// reader ever re-parses a transcript. A RAW FACT the Gateway passes through untouched.
+    ///
+    /// NULL MEANS UNKNOWN, NEVER ZERO: null is what an older Director reports, since it does not
+    /// know the field. A live Director always reports a number, and 0 from one genuinely means
+    /// "no turn has completed yet". Distinct from <see cref="InputStats"/>, which counts turns
+    /// the user SUBMITTED, not turns the agent finished.
+    /// </summary>
+    public int? TurnCount { get; set; }
+
+    /// <summary>
+    /// UTC moment the session last entered a waiting-on-the-user state (WaitingForInput or
+    /// WaitingForPerm), or null while it is not waiting. An ABSOLUTE ANCHOR, not a duration:
+    /// clients derive the ticking "sitting on you for X" clock from it locally, the same way the
+    /// waiting label already ticks between roster polls (the durationLabel precedent, issue #844).
+    /// Distinct from <see cref="IdleSeconds"/>, which is byte-silence and resets on any output,
+    /// and from <see cref="NeedsYouSince"/>, which is the Gateway's red-state verdict clock -
+    /// this one is the Director's raw fact about the terminal's turn state.
+    /// </summary>
+    public DateTime? WaitingSince { get; set; }
+
+    /// <summary>
+    /// Total seconds this session has spent waiting on the user, summed over CLOSED waiting
+    /// stretches, as measured by the owning Director. While <see cref="WaitingSince"/> is set the
+    /// current open stretch is NOT yet included - a reader adds (now - WaitingSince) for the live
+    /// total, so the number keeps moving between pushes without the Director re-pushing. Null when
+    /// an older Director does not report it; unknown, never zero.
+    /// </summary>
+    public double? CumulativeIdleSeconds { get; set; }
+
+    /// <summary>
     /// Issue #1176 (Phase 1a): a copy safe to hand out from the Gateway's pushed-session cache. The
     /// <c>/sessions</c> aggregation stamps scalar fields (EffectiveColor, DirectorId, MachineName,
     /// voice/transcription overlays, etc.) on the object it serves, so callers must never receive the

@@ -1647,6 +1647,13 @@ internal static class ControlEndpoints
             // tree (issue 516). Nothing is derived here - the Gateway passes the count through and the
             // clients share one formatter.
             UncommittedCount = s.UncommittedCount,
+            // Supervision facts (internal#625 Phase 1): the completed-turn counter and the honest
+            // waiting clock, kept by the Session at the activity flip. Raw facts; the Gateway
+            // passes them through and the clients share one formatter. Always reported by this
+            // Director - only an older build leaves them null on the wire.
+            TurnCount = s.TurnCount,
+            WaitingSince = s.WaitingSince,
+            CumulativeIdleSeconds = s.CumulativeIdleSeconds,
             // Issue #335: identity fields populated by the Director (not patched by the Gateway).
             MachineName = machineName,
             User = user,
