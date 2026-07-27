@@ -20,7 +20,20 @@ export interface WorkHistorySession {
   agentKind?: string | null;
   model?: string | null;
   missionName?: string | null;
+  missionId?: string | null;
   sessionRole?: string | null;
+  /**
+   * Who asked for this session (internal#982): "human" | "agent" | "schedule" | "unknown".
+   * NULL means the row predates the field - which is NOT the same as "unknown", the answer for a
+   * create path that was asked and had nothing to say. Never render either as "human".
+   */
+  originKind?: string | null;
+  /** Where the create call came from: "desktop" | "cockpit" | "phone" | "cli" | "cron" |
+   * "workflow" | "api" | "unknown". Null on rows that predate the field. */
+  originSurface?: string | null;
+  /** The session that ASKED for this one, or null. Keys the same table, so it resolves against
+   * other records in the report - and may name a row retention has already pruned. */
+  parentSessionId?: string | null;
   startedAtUtc: string;
   lastActivityUtc?: string | null;
   lastSeenUtc: string;
@@ -38,6 +51,20 @@ export interface WorkHistorySession {
   agentTurnCount?: number | null;
   /** Total seconds spent waiting on the user, closed stretches only. Null when never reported. */
   idleSeconds?: number | null;
+  /** How many times the session started waiting on the user (internal#982) - the matched pair to
+   * idleSeconds, and not derivable from it. Null when never reported. */
+  waitingStretchCount?: number | null;
+  /** Character volume of input submitted, operator plus agent-driven. Null when never reported. */
+  inputCharacterCount?: number | null;
+  /** Cumulative token spend, kept per kind because they are priced differently. Null when the
+   * agent's driver reports no usage. */
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  cacheReadTokens?: number | null;
+  cacheCreationTokens?: number | null;
+  /** The fullest the context window was observed to be. A PEAK, never a sum - occupancy is a gauge
+   * that drops on compaction. Null when the driver reports no reading. */
+  peakContextTokens?: number | null;
   /** null until a summary exists; "sealed" | "generated" | "none" | "unavailable". */
   summaryKind?: string | null;
   summaryIsPartial: boolean;

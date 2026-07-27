@@ -7,6 +7,15 @@ import {
   type WorkHistoryReport,
   type WorkHistorySession,
 } from "@devthrottle/client-core/history/historyClient";
+import {
+  accountedFor,
+  buildLineage,
+  indexReport,
+  nodeCount,
+  originLabel,
+  tallyOrigins,
+  type LineageNode,
+} from "@devthrottle/client-core/history/lineage";
 import { ErrorBanner, LoadingState, PageHeader } from "../components";
 
 // The History page (issue #2194): "what have I been working on?" answered from the Gateway's durable
@@ -54,9 +63,14 @@ function timeOf(iso: string | null | undefined): string {
   return parsed.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
-function SessionEntry({ session }: { session: WorkHistorySession }) {
+function SessionEntry({ node, depth = 0 }: { node: LineageNode; depth?: number }) {
+  const session = node.session;
   const [open, setOpen] = useState(false);
+  // Children start EXPANDED. The whole point of nesting is that you can see what a session set off;
+  // collapsed-by-default would hide the answer behind a click on every row that has one.
+  const [childrenOpen, setChildrenOpen] = useState(true);
   const live = session.endingKind == null;
+  const descendants = nodeCount(node) - 1;
   const meta: string[] = [];
   if (session.sessionName) meta.push(session.sessionNumber != null ? `${session.sessionName} (#${session.sessionNumber})` : session.sessionName);
   else if (session.sessionNumber != null) meta.push(`#${session.sessionNumber}`);
@@ -70,6 +84,14 @@ function SessionEntry({ session }: { session: WorkHistorySession }) {
   else if (session.turnCount != null && session.turnCount > 0) meta.push(`${session.turnCount} turns`);
   if (session.idleSeconds != null && session.idleSeconds >= 60)
     meta.push(`idle ${durationFromMs(session.idleSeconds * 1000)}`);
+  // The interruption COUNT beside the clock (internal#982). Twelve five-minute waits and one
+  // hour-long wait read identically on the clock and are nothing alike to live with.
+  if (session.waitingStretchCount != null && session.waitingStretchCount > 0)
+    meta.push(`needed you ${session.waitingStretchCount}x`);
+  // Who started it (internal#982). Null for "unknown" and for rows that predate the field - a row
+  // that cannot say shows nothing rather than a hedge.
+  const origin = originLabel(session);
+  if (origin !== null) meta.push(origin);
 
   const hasDetail =
     (session.summaryText != null && session.summaryText.length > 0) ||
@@ -80,7 +102,7 @@ function SessionEntry({ session }: { session: WorkHistorySession }) {
     (session.commits?.length ?? 0) > 0;
 
   return (
-    <li className={`wh-session wh-tone-${session.endingTone}`}>
+    <li className={`wh-session wh-tone-${session.endingTone}${depth > 0 ? " wh-session-child" : ""}`}>
       <button
         type="button"
         className="wh-session-row"
@@ -92,6 +114,18 @@ function SessionEntry({ session }: { session: WorkHistorySession }) {
         <span className="wh-session-main">
           <span className="wh-session-desc">{session.descriptionLine}</span>
           <span className="wh-session-meta">{meta.join(" · ")}</span>
+          {/* The parent is real but not in this group - almost always because it spawned work in
+              another repository, which is the fleet's most ordinary move. Nesting the row here
+              would file that work under a repository it never touched, so it stays put and says
+              who started it instead. A null label means the parent is outside the report
+              altogether (pruned, or older than the window) - which is worth saying, not hiding. */}
+          {node.parentElsewhere && (
+            <span className="wh-parent-note">
+              {node.parentElsewhere.label !== null
+                ? `started by ${node.parentElsewhere.label}, elsewhere in this range`
+                : "started by a session outside this range"}
+            </span>
+          )}
         </span>
         <span className="wh-ending">
           {live ? "Running now" : session.endingLabel ?? session.endingKind}
@@ -111,6 +145,26 @@ function SessionEntry({ session }: { session: WorkHistorySession }) {
           <DetailList title="Pull requests" items={session.pullRequests} />
           <DetailList title="Commits" items={session.commits} />
         </div>
+      )}
+      {node.children.length > 0 && (
+        <>
+          <button
+            type="button"
+            className="wh-children-toggle"
+            onClick={() => setChildrenOpen((v) => !v)}
+            aria-expanded={childrenOpen}
+          >
+            {childrenOpen ? "Hide" : "Show"} {descendants} session
+            {descendants === 1 ? "" : "s"} this one started
+          </button>
+          {childrenOpen && (
+            <ul className="wh-sessions wh-sessions-nested">
+              {node.children.map((child) => (
+                <SessionEntry key={child.session.sessionId} node={child} depth={depth + 1} />
+              ))}
+            </ul>
+          )}
+        </>
       )}
     </li>
   );
@@ -153,18 +207,29 @@ export function HistoryView() {
     return () => controller.abort();
   }, [load, days]);
 
+  // Every session in the report, keyed by id - what a cross-group parent is resolved against, so a
+  // child can name its parent even when that parent is filed under another repository or day.
+  const reportIndex = useMemo(() => (report === null ? null : indexReport(report)), [report]);
+
   const totals = useMemo(() => {
-    if (report === null) return null;
-    const sessions = new Set<string>();
+    if (report === null || reportIndex === null) return null;
+    const unique = new Map<string, WorkHistorySession>();
     let running = 0;
     for (const repo of report.repos)
       for (const day of repo.days)
         for (const s of day.sessions) {
-          if (!sessions.has(s.sessionId) && s.endingKind == null) running++;
-          sessions.add(s.sessionId);
+          if (!unique.has(s.sessionId) && s.endingKind == null) running++;
+          if (!unique.has(s.sessionId)) unique.set(s.sessionId, s);
         }
-    return { repos: report.repos.length, sessions: sessions.size, running };
-  }, [report]);
+    const origins = tallyOrigins(unique.values());
+    return {
+      repos: report.repos.length,
+      sessions: unique.size,
+      running,
+      origins,
+      known: accountedFor(origins),
+    };
+  }, [report, reportIndex]);
 
   return (
     <div className="page wh">
@@ -189,6 +254,26 @@ export function HistoryView() {
             {totals.sessions} session{totals.sessions === 1 ? "" : "s"} across {totals.repos}{" "}
             repositor{totals.repos === 1 ? "y" : "ies"}
             {totals.running > 0 ? ` · ${totals.running} running now` : ""}
+            {/* The agent share, stated over the sessions we can actually ACCOUNT FOR rather than
+                over all of them. These fields only start being written on 2026-07-27, so a window
+                reaching back further is mostly rows that predate them - and dividing by the total
+                would report a share far lower than the truth. When some rows cannot say, the
+                denominator says so out loud rather than quietly absorbing them. */}
+            {totals.known > 0 && (
+              <>
+                {" · "}
+                {totals.origins.agent} of {totals.known} started by agents
+                {totals.known < totals.sessions && (
+                  <span className="wh-totals-caveat">
+                    {" "}
+                    ({totals.sessions - totals.known} older session
+                    {totals.sessions - totals.known === 1 ? "" : "s"} do
+                    {totals.sessions - totals.known === 1 ? "es" : ""} not record who started
+                    {totals.sessions - totals.known === 1 ? " it" : " them"})
+                  </span>
+                )}
+              </>
+            )}
           </span>
         )}
       </div>
@@ -224,9 +309,14 @@ export function HistoryView() {
                     The day&apos;s summary has not been written yet.
                   </p>
                 )}
+                {/* The day's sessions as the shape they actually had (internal#989): a day where
+                    three things were started and they spawned nineteen helpers is a list of
+                    twenty-two rows and a tree of three roots - identical data, completely
+                    different stories. Built per group, resolving parents against the whole report
+                    so a child can still name a parent filed under another repository. */}
                 <ul className="wh-sessions">
-                  {day.sessions.map((s) => (
-                    <SessionEntry key={s.sessionId} session={s} />
+                  {buildLineage(day.sessions, reportIndex ?? undefined).map((node) => (
+                    <SessionEntry key={node.session.sessionId} node={node} />
                   ))}
                 </ul>
               </div>

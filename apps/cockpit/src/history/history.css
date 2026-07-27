@@ -150,6 +150,56 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Lineage (internal#989). ---------------------------------------------------------------------
+   Children are INDENTED with a rail rather than boxed: the rail says "these came from the row
+   above" while keeping every row on the same reading line, so a parent with six children still
+   scans as one thing. A box per level turns three roots into three cards and undoes the point. */
+.wh-sessions-nested {
+  margin: 0 0 6px 22px;
+  border-left: 2px solid var(--border);
+  padding-left: 10px;
+}
+/* A nested row's top border would double up with the rail; drop it on the first child. */
+.wh-sessions-nested > .wh-session:first-child {
+  border-top: none;
+}
+.wh-session-child > .wh-session-row {
+  font-size: 12.5px;
+}
+
+/* "Hide/Show N sessions this one started" - quiet by default; this is orientation, not an action. */
+.wh-children-toggle {
+  display: block;
+  margin: 0 0 2px 22px;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.wh-children-toggle:hover {
+  color: var(--accent);
+}
+
+/* The parent that is not in this group - a real fact about the row, so it reads as one rather
+   than as a warning. */
+.wh-parent-note {
+  color: var(--text-dim);
+  font-size: 11.5px;
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The "some rows cannot say who started them" caveat on the totals line. Deliberately not hidden
+   behind a tooltip: a share whose denominator needs explaining must carry the explanation. */
+.wh-totals-caveat {
+  opacity: 0.75;
+}
 .wh-ending {
   flex: 0 0 auto;
   font-size: 12px;
