@@ -1077,6 +1077,66 @@ public sealed class Session : IDisposable
     /// the desktop rail, which re-renders the badge in place.</summary>
     public event Action<int?>? OnUncommittedCountChanged;
 
+    private int _turnCount;
+    private DateTime? _waitingSince;
+    private double _cumulativeIdleSeconds;
+
+    /// <summary>Clock for the supervision facts below. A test seam; production never sets it.</summary>
+    internal Func<DateTime> SupervisionClock { private get; set; } = static () => DateTime.UtcNow;
+
+    /// <summary>
+    /// How many turns the agent has completed in this run of the session: one flip of
+    /// <see cref="ActivityState"/> to <see cref="ActivityState.WaitingForInput"/> equals one turn -
+    /// the same rule <c>TurnReviewLogger</c> writes its records by. Kept as a running count at the
+    /// flip so no reader ever re-parses a transcript, and so it works for every agent kind (the
+    /// on-demand <c>ComputeTurnCount</c> is a full JSONL re-parse and Claude-only).
+    /// Reported on <c>SessionDto.TurnCount</c>.
+    /// </summary>
+    public int TurnCount => _turnCount;
+
+    /// <summary>
+    /// UTC moment this session last entered a waiting-on-the-user state (WaitingForInput or
+    /// WaitingForPerm), or null while it is not waiting. An absolute anchor, not a duration:
+    /// readers derive the ticking "sitting on you for X" clock from it. Survives the
+    /// WaitingForPerm-to-WaitingForInput transition - one uninterrupted wait, one anchor.
+    /// </summary>
+    public DateTime? WaitingSince => _waitingSince;
+
+    /// <summary>
+    /// Total seconds this session has spent waiting on the user, summed over CLOSED waiting
+    /// stretches. The stretch currently open (<see cref="WaitingSince"/> non-null) is NOT yet
+    /// included - a reader adds it for the live total. This is the honest idle clock the cards
+    /// show; it is NOT the byte-silence <c>IdleSeconds</c> in the mapper, which resets on any
+    /// terminal output.
+    /// </summary>
+    public double CumulativeIdleSeconds => _cumulativeIdleSeconds;
+
+    /// <summary>
+    /// Supervision bookkeeping (internal#625 Phase 1): the turn counter and the waiting clock.
+    /// Runs INSIDE <see cref="SetActivityState"/> before <see cref="OnActivityStateChanged"/> fires,
+    /// so the delta push wired to that event always carries the numbers this very flip produced -
+    /// a subscriber could run after the push and ship stale values. Reporting only, no rulings.
+    /// </summary>
+    private void RecordSupervisionFacts(ActivityState old, ActivityState @new)
+    {
+        var wasWaiting = old is ActivityState.WaitingForInput or ActivityState.WaitingForPerm;
+        var isWaiting = @new is ActivityState.WaitingForInput or ActivityState.WaitingForPerm;
+
+        if (@new == ActivityState.WaitingForInput)
+            _turnCount++;
+
+        if (!wasWaiting && isWaiting)
+        {
+            _waitingSince = SupervisionClock();
+        }
+        else if (wasWaiting && !isWaiting)
+        {
+            if (_waitingSince is { } since)
+                _cumulativeIdleSeconds += Math.Max(0, (SupervisionClock() - since).TotalSeconds);
+            _waitingSince = null;
+        }
+    }
+
     /// <summary>
     /// Set (or clear) the Wingman's "parked on a background task" verdict for this session.
     /// Sole caller is <c>ProactiveExplainService</c> after an explain briefing. Pass a short
@@ -2541,6 +2601,9 @@ public sealed class Session : IDisposable
         Interlocked.Increment(ref _activityGeneration);
         // Log the transition (blue<->red) to the in-memory ring the Wingman tab renders.
         RecordStateChange(old, newState);
+        // Turn counter and waiting clock - must run before the event so the delta push
+        // that rides OnActivityStateChanged carries this flip's numbers, not the last one's.
+        RecordSupervisionFacts(old, newState);
         OnActivityStateChanged?.Invoke(old, newState);
     }
 
