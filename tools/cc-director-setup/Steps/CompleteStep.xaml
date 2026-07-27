@@ -144,9 +144,14 @@
                            TextWrapping="Wrap" />
             </Border>
 
-            <!-- Note about terminal PATH -->
+            <!-- The terminal note. It used to read "NOTE: Open a new terminal for cc-* commands to
+                 be available on PATH." - three pieces of jargon aimed at someone who came here for
+                 a GUI and may never open a terminal at all. It is kept rather than dropped because
+                 it is true and it saves a confusing failure later, but it now leads with "if you
+                 use a terminal", so a person who does not can see in four words that it is not
+                 about them. -->
             <TextBlock x:Name="PathNote"
-                       Text="NOTE: Open a new terminal for cc-* commands to be available on PATH."
+                       Text="If you use a terminal: open a new one before running the cc-* commands. Terminals that are already open will not find them yet."
                        Foreground="#666666"
                        FontSize="11"
                        TextWrapping="Wrap" />

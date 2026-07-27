@@ -67,8 +67,18 @@
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter Property="Background" Value="#1A8AD4" />
                             </Trigger>
+                            <!-- A disabled Next must not look like a Next you can press.
+                                 Halving the opacity was not enough: over this dark background the
+                                 accent blue stayed recognisably blue, so a disabled Next on the
+                                 Prerequisites screen looked identical to the working one on
+                                 Welcome. People clicked it, nothing happened, and nothing said
+                                 why. Disabled now drops the accent entirely - neutral fill, dimmed
+                                 label, and no hand cursor inviting the click. Listed last so it
+                                 beats the mouse-over trigger above. -->
                             <Trigger Property="IsEnabled" Value="False">
-                                <Setter Property="Opacity" Value="0.5" />
+                                <Setter Property="Background" Value="{StaticResource StepInactive}" />
+                                <Setter Property="Foreground" Value="{StaticResource MutedText}" />
+                                <Setter Property="Cursor" Value="Arrow" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
