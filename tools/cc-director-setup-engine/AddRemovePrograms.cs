@@ -19,6 +19,9 @@ public static class AddRemovePrograms
     /// <summary>The display name shown in Windows "Apps &amp; features".</summary>
     public const string DisplayName = "DevThrottle";
 
+    /// <summary>The publisher shown in Windows "Apps &amp; features" - the company, not the product.</summary>
+    public const string PublisherName = "Center Consulting Inc.";
+
     private const string UninstallRoot = @"Software\Microsoft\Windows\CurrentVersion\Uninstall";
 
     private static string SubKeyPath(string keyName) => $@"{UninstallRoot}\{keyName}";
@@ -28,9 +31,13 @@ public static class AddRemovePrograms
     /// command Windows runs when the user clicks Uninstall (e.g. the setup exe with an uninstall arg);
     /// <paramref name="installLocation"/> is the per-user root. Idempotent. Returns true on success.
     /// </summary>
+    /// <param name="estimatedSizeKb">
+    /// Installed size in KILOBYTES, which is the unit Windows expects for EstimatedSize. Null or
+    /// zero leaves the value out, and the Settings row simply shows no size rather than "0 bytes".
+    /// </param>
     [SupportedOSPlatform("windows")]
     public static bool Register(string version, string uninstallCommand, string installLocation,
-        string? displayIcon = null, string keyName = DefaultKeyName)
+        string? displayIcon = null, string keyName = DefaultKeyName, int? estimatedSizeKb = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(version);
         ArgumentException.ThrowIfNullOrWhiteSpace(uninstallCommand);
@@ -42,10 +49,12 @@ public static class AddRemovePrograms
 
         key.SetValue("DisplayName", DisplayName, RegistryValueKind.String);
         key.SetValue("DisplayVersion", version, RegistryValueKind.String);
-        key.SetValue("Publisher", "DevThrottle", RegistryValueKind.String);
+        key.SetValue("Publisher", PublisherName, RegistryValueKind.String);
         key.SetValue("InstallLocation", installLocation ?? "", RegistryValueKind.String);
         key.SetValue("UninstallString", uninstallCommand, RegistryValueKind.String);
         key.SetValue("DisplayIcon", displayIcon ?? uninstallCommand, RegistryValueKind.String);
+        if (estimatedSizeKb is > 0)
+            key.SetValue("EstimatedSize", estimatedSizeKb.Value, RegistryValueKind.DWord);
         // Per-user install: no modify/repair entry points, so hide those buttons.
         key.SetValue("NoModify", 1, RegistryValueKind.DWord);
         key.SetValue("NoRepair", 1, RegistryValueKind.DWord);

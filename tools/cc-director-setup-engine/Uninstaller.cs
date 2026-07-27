@@ -43,6 +43,9 @@ public sealed class Uninstaller
             // The Launcher tray app ships to BOTH roles (issue #250), so its binaries are removed
             // regardless of role.
             ("Launcher binaries", _layout.LauncherDir),
+            // The retained setup executable that Apps & features points at. Removable because the
+            // uninstall runs from a temp copy, never from this directory - see UninstallRegistration.
+            ("Setup executable", _layout.SetupDir),
         };
         if (!OperatingSystem.IsWindows())
         {

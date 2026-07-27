@@ -28,6 +28,25 @@ public partial class App : Application
         // (EngineLog defaults to a no-op), leaving the log blank during the apply phase - exactly
         // where installs stall - so a failed/stuck install can't be diagnosed.
         EngineLog.Sink = SetupLog.Write;
+
+        // Windows started us from the copy inside the install root (the Uninstall button in
+        // Settings > Apps runs the UninstallString we registered there). Uninstalling from inside
+        // the tree we are about to delete would hold a file open in it, so hand the job to a copy
+        // in the temp directory and get out of the way. No window is created on this path.
+        if (OperatingSystem.IsWindows()
+            && LaunchedToUninstall(e.Args)
+            && UninstallRegistration.ShouldRelaunchFromTemp(InstallLayout.Default())
+            && UninstallRegistration.RelaunchFromTemp())
+        {
+            SetupLog.Write("[App] handed the uninstall to a temp copy; exiting so the install root is unlocked");
+            Shutdown();
+            return;
+        }
+
         base.OnStartup(e);
     }
+
+    /// <summary>True when the process was started with the uninstall switch (/uninstall, -uninstall).</summary>
+    private static bool LaunchedToUninstall(string[] args) =>
+        args.Any(a => string.Equals(a.TrimStart('-', '/'), "uninstall", StringComparison.OrdinalIgnoreCase));
 }

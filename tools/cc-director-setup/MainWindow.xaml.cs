@@ -83,8 +83,26 @@ public partial class MainWindow : Window
         }
 
         Loaded += MainWindow_Loaded;
+
+        // Launched by the Windows "Uninstall" button in Settings > Apps, which runs the
+        // UninstallString we registered. Go straight to the uninstall flow: a person who pressed
+        // Uninstall in Settings and landed on a Welcome screen offering to INSTALL would
+        // reasonably think the button was broken.
+        if (LaunchedToUninstall())
+        {
+            SetupLog.Write("[MainWindow] launched with the uninstall switch - going straight to the uninstall flow");
+            OnUninstallRequested(this, EventArgs.Empty);
+            return;
+        }
+
         ShowStep(1);
     }
+
+    /// <summary>True when this process was started with the uninstall switch.</summary>
+    private static bool LaunchedToUninstall() =>
+        Environment.GetCommandLineArgs()
+            .Skip(1)
+            .Any(a => string.Equals(a.TrimStart('-', '/'), "uninstall", StringComparison.OrdinalIgnoreCase));
 
     private void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
