@@ -34,7 +34,9 @@ public sealed class GatewayAccountCreditsClientTests
     [Fact]
     public async Task GetCreditsAsync_SignedIn_ReadsBalance_AndSendsBearer()
     {
-        var handler = new CapturingHandler(HttpStatusCode.OK, "{\"signedIn\":true,\"balanceMicros\":5000000,\"lastDebitMicros\":1200}");
+        // balanceAvailable is what gates the balance since issue #984 - "the caller is signed in" and "a
+        // balance was read" became two fields because on the hosted Gateway they differ.
+        var handler = new CapturingHandler(HttpStatusCode.OK, "{\"signedIn\":true,\"balanceAvailable\":true,\"balanceMicros\":5000000,\"lastDebitMicros\":1200}");
         var client = new GatewayAccountCreditsClient(new HttpClient(handler));
 
         var credits = await client.GetCreditsAsync(new GatewayConfig { Url = GatewayUrl, Token = "tok-123" });
@@ -56,13 +58,47 @@ public sealed class GatewayAccountCreditsClientTests
     {
         // A real zero balance (out of credits) is a KNOWN value the readiness check must gate on -
         // distinct from unknown/null.
-        var handler = new CapturingHandler(HttpStatusCode.OK, "{\"signedIn\":true,\"balanceMicros\":0}");
+        var handler = new CapturingHandler(HttpStatusCode.OK, "{\"signedIn\":true,\"balanceAvailable\":true,\"balanceMicros\":0}");
         var client = new GatewayAccountCreditsClient(new HttpClient(handler));
 
         var credits = await client.GetCreditsAsync(new GatewayConfig { Url = GatewayUrl });
 
         Assert.True(credits.SignedIn);
         Assert.Equal(0, credits.BalanceMicros);
+    }
+
+    [Fact]
+    public async Task GetCreditsAsync_SignedInButBalanceUnavailable_KeepsTheCallerSignedIn_AndTreatsTheBalanceAsUnknown()
+    {
+        // Issue #984, the hosted shape. The Gateway now says, in one body, that the CALLER is signed in and
+        // that no BALANCE could be read - a combination the old single boolean could not express, which is
+        // why hosted customers were shown "not signed in" on a billing surface. The desktop must carry both
+        // facts through: still signed in, balance UNKNOWN (never a fabricated zero, and never blocking - the
+        // authoritative out-of-credits gate is the runtime 402), and the Gateway's own message preserved.
+        var handler = new CapturingHandler(HttpStatusCode.OK,
+            "{\"signedIn\":true,\"balanceAvailable\":false,\"message\":\"Your account is active and your credit balance is unaffected.\"}");
+        var client = new GatewayAccountCreditsClient(new HttpClient(handler));
+
+        var credits = await client.GetCreditsAsync(new GatewayConfig { Url = GatewayUrl });
+
+        Assert.True(credits.Reachable);
+        Assert.True(credits.SignedIn);
+        Assert.Null(credits.BalanceMicros);
+        Assert.Equal("Your account is active and your credit balance is unaffected.", credits.Error);
+    }
+
+    [Fact]
+    public async Task GetCreditsAsync_BalanceNotAvailable_IgnoresAnyBalanceInTheBody()
+    {
+        // Defence in depth for the field that now gates the balance: if a body ever carries a figure while
+        // declaring the balance unavailable, the declaration wins. A stale or partial number on a billing
+        // surface is a worse answer than an honest unknown.
+        var handler = new CapturingHandler(HttpStatusCode.OK, "{\"signedIn\":true,\"balanceAvailable\":false,\"balanceMicros\":123}");
+        var client = new GatewayAccountCreditsClient(new HttpClient(handler));
+
+        var credits = await client.GetCreditsAsync(new GatewayConfig { Url = GatewayUrl });
+
+        Assert.Null(credits.BalanceMicros);
     }
 
     [Fact]

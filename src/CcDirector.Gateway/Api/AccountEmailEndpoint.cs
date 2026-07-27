@@ -20,16 +20,42 @@ namespace CcDirector.Gateway.Api;
 ///   POST /account/email  { "subject": string, "bodyText"?: string, "bodyHtml"?: string,
 ///                          "attachments"?: [ { "filename": string, "content": base64, "contentType"?: string } ] }
 ///        200 -> { "sent": true, "providerId"?: string }
-///        4xx -> { "sent": false, "error": string }   (bad input, forwarded from the cloud)
-///        401 -> { "sent": false, "error": string }   (Gateway not signed in - no account to send from)
+///        400 -> { "sent": false, "error": string }   (bad input, forwarded from the cloud)
+///        401 -> { "sent": false, "error": string }   (GENUINELY signed out - nothing stored on this Gateway)
+///        403 -> { "sent": false, "error": string }   (hosted: no account is bound to this request)
+///        503 -> { "sent": false, "error": string }   (this Gateway cannot act on the caller's account)
 ///        502 -> { "sent": false, "error": string }   (cloud unreachable / send failure - never a fake success)
+///
+/// WHICH of those non-2xx answers applies is NOT decided here. It is folded once by
+/// <see cref="AccountActingCredential"/> and rendered verbatim (CLAUDE.md rule 7). This route used to make
+/// that call itself, with a single <c>if (string.IsNullOrEmpty(token))</c> that answered 401 "not signed in
+/// to DevThrottle - sign in from the Gateway tray, then retry". On the HOSTED Gateway that token is empty
+/// for every caller always - hosted holds no account credential by design - so a signed-in paying user was
+/// told to perform the one action they had already performed and that could not possibly help (issue #984).
+/// The states are now distinct, and 401 is reserved for the one case where it is true.
+///
+/// HOSTED LIMIT, stated plainly: the cloud primitive resolves the recipient from an account access token,
+/// and the hosted Gateway holds none for its tenants. So on hosted this route reports the truth and does NOT
+/// send. Making it send is devthrottle_internal #986 - a tenant-addressed cloud sender authenticated by a
+/// Gateway service credential, with the recipient resolved SERVER-side from the tenant (naming an address is
+/// refused outright, so this Gateway can never address anyone). Its swap point is marked below.
 ///
 /// Inherits the host-wide Gateway token middleware like the other <c>/account/*</c> endpoints (not on the
 /// public-paths allow-list). The account token is never returned or logged (DT-05).
 /// </summary>
 internal static class AccountEmailEndpoint
 {
-    public static void Map(IEndpointRouteBuilder app, DevThrottleAccountService? account, AccountNotifyClient notify)
+    /// <param name="app">The route builder.</param>
+    /// <param name="account">The Gateway-hosted credential service; null on a host with no credential store.</param>
+    /// <param name="notify">The cloud owner-email client (the injectable egress seam).</param>
+    /// <param name="tenantBoundary">
+    /// The hosted tenant boundary (issue #984). On hosted it resolves the CALLER's own tenant so this route
+    /// can report the truth about them. Omitting it on a hosted Gateway does NOT fall back to the self-host
+    /// answer - the hosted path fails closed. Ignored off hosted mode.
+    /// </param>
+    /// <param name="tenants">The tenant registry, read on hosted for the caller's display email.</param>
+    public static void Map(IEndpointRouteBuilder app, DevThrottleAccountService? account, AccountNotifyClient notify,
+        Tenancy.HostedTenantBoundary? tenantBoundary = null, Tenancy.TenantRegistry? tenants = null)
     {
         if (notify is null) throw new ArgumentNullException(nameof(notify));
 
@@ -39,16 +65,27 @@ internal static class AccountEmailEndpoint
             if (request is null || string.IsNullOrWhiteSpace(request.Subject))
                 return Results.BadRequest(new AccountEmailResponse(false, "subject is required.", null));
 
-            var token = account?.GetAccessTokenForForwarding();
-            if (string.IsNullOrEmpty(token))
+            // Issue #984: the Gateway rules ONCE on what the caller's account situation actually is, and this
+            // route renders the verdict verbatim. It never re-derives what an empty token means - that
+            // conditional is what turned "this hosted Gateway holds no credential of yours" into "you are not
+            // signed in - sign in from the Gateway tray", told to a user who plainly was signed in.
+            var verdict = await AccountActingCredential
+                .ResolveAsync(AccountOperations.Email, http, account, tenantBoundary, tenants, http.RequestAborted)
+                .ConfigureAwait(false);
+            if (!verdict.IsReady)
             {
-                FileLog.Write("[AccountEmailEndpoint] POST /account/email: no account credential -> not signed in");
-                return Results.Json(
-                    new AccountEmailResponse(false,
-                        "not signed in to DevThrottle - there is no account to email from. Sign in from the Gateway tray, then retry.",
-                        null),
-                    statusCode: StatusCodes.Status401Unauthorized);
+                // THE SWAP POINT for devthrottle_internal #986. When the cloud's tenant-addressed sender
+                // exists, HostedNoGatewayCredential stops being a refusal and becomes a send: the verdict
+                // already carries verdict.Tenant and verdict.AccountSubject, resolved from the caller's own
+                // authenticated device key, which is everything that route takes. It is one branch here and
+                // one client method - deliberately not a rewrite, and deliberately NOT a reason to start
+                // storing user account tokens, which hosted enrollment does not do and must not begin doing.
+                // Every other state stays a refusal, because none of them is a Gateway that could act.
+                FileLog.Write($"[AccountEmailEndpoint] POST /account/email: cannot send ({verdict.State}) -> {verdict.StatusCode}");
+                return Results.Json(new AccountEmailResponse(false, verdict.Message, null), statusCode: verdict.StatusCode);
             }
+
+            var token = verdict.Token!;
 
             try
             {

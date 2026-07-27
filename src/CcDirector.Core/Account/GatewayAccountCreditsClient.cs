@@ -22,9 +22,17 @@ namespace CcDirector.Core.Account;
 /// </summary>
 /// <param name="GatewayConfigured">Whether a Gateway URL is configured at all (config.json gateway.url).</param>
 /// <param name="Reachable">Whether the Gateway answered the credits request.</param>
-/// <param name="SignedIn">Whether the Gateway holds a valid DevThrottle credential.</param>
+/// <param name="SignedIn">
+/// Whether the CALLER is signed in to DevThrottle (issue #984). NOT "whether a balance could be read" - on
+/// the hosted Gateway the caller is signed in and no balance is readable, and conflating the two is what put
+/// a false "not signed in" on a billing surface. Read <see cref="BalanceMicros"/> for the balance.
+/// </param>
 /// <param name="BalanceMicros">The balance in micro-dollars when known, else null (unknown - do not block).</param>
-/// <param name="Error">A short human-readable reason when not reachable, or null on success.</param>
+/// <param name="Error">
+/// A short human-readable reason the balance is not available - the Gateway is unreachable, or it answered
+/// but could not read a balance (in which case this is the Gateway's own finished message, rendered
+/// verbatim). Null when a balance was read.
+/// </param>
 public sealed record GatewayAccountCredits(
     bool GatewayConfigured,
     bool Reachable,
@@ -97,12 +105,15 @@ public sealed class GatewayAccountCreditsClient
                 return new GatewayAccountCredits(GatewayConfigured: true, Reachable: false, SignedIn: false,
                     BalanceMicros: null, Error: "The Gateway returned an empty credits response.");
 
-            // Signed out -> balance genuinely unknown (never a fabricated zero). Signed in -> the balance
-            // the readiness check gates on (null when the cloud omitted it, still treated as unknown).
-            var balance = dto.SignedIn ? dto.BalanceMicros : null;
-            FileLog.Write($"[GatewayAccountCreditsClient] GetCreditsAsync: signedIn={dto.SignedIn}, balanceMicros={(balance is null ? "unknown" : balance.ToString())}");
+            // Issue #984: gate the balance on BalanceAvailable, not on SignedIn. Those are two different
+            // facts and the Gateway now reports them separately - on hosted the caller is signed in AND no
+            // balance is readable, a combination the old single-boolean read could not express. An
+            // unavailable balance is UNKNOWN, never a fabricated zero, and an unknown balance must not block
+            // (the authoritative gate is the runtime 402).
+            var balance = dto.BalanceAvailable ? dto.BalanceMicros : null;
+            FileLog.Write($"[GatewayAccountCreditsClient] GetCreditsAsync: signedIn={dto.SignedIn}, balanceAvailable={dto.BalanceAvailable}, balanceMicros={(balance is null ? "unknown" : balance.ToString())}");
             return new GatewayAccountCredits(GatewayConfigured: true, Reachable: true, SignedIn: dto.SignedIn,
-                BalanceMicros: balance, Error: null);
+                BalanceMicros: balance, Error: dto.BalanceAvailable ? null : dto.Message);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

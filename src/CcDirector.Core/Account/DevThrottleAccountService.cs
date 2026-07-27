@@ -95,6 +95,31 @@ public sealed class DevThrottleAccountService
     }
 
     /// <summary>
+    /// Whether ANY credential is stored at all, regardless of whether it is valid, expired, renewable, or
+    /// even decodable. Read locally with NO network call.
+    ///
+    /// This exists to separate two states that used to collapse into one wrong answer (issue #984). An
+    /// account route that finds <see cref="GetAccessTokenForForwarding"/> empty needs to know WHICH of these
+    /// it is looking at: nothing stored (the user really is signed out, and telling them to sign in is
+    /// useful), or something stored that will not forward (an internal inconsistency, where telling them to
+    /// sign in sends them to redo an action that was already done and cannot help). Only the first is a
+    /// sign-out. <see cref="IsLoggedIn"/> cannot answer this - it folds storage, validity and renewability
+    /// into a single boolean and returns false for both.
+    /// </summary>
+    public bool HasStoredCredential()
+    {
+        DevThrottleTokens? tokens;
+        lock (_gate)
+        {
+            tokens = _store.Load();
+        }
+
+        var stored = tokens is not null;
+        FileLog.Write($"[DevThrottleAccountService] HasStoredCredential: {stored} (no network call)");
+        return stored;
+    }
+
+    /// <summary>
     /// Answers "is this install logged in with a genuinely-usable token?" entirely from the cached
     /// credential, with NO outbound network call. Returns true when a stored access token's signature
     /// verifies AND it either has not expired, or is expired-but-well-formed WHILE the background
