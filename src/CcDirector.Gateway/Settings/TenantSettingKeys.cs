@@ -60,11 +60,27 @@ public static class TenantSettingKeys
     /// sweep applies it to sessions as they appear.</summary>
     public const string VoiceModeAll = "voice_mode_all";
 
+    /// <summary>
+    /// Whether pending dictionary suggestions are mentioned in this tenant's daily report email. Stored as
+    /// "true"/"false". Like <see cref="VoiceModeAll"/> there is no operator global default to fall back to -
+    /// this is a per-tenant choice about a per-tenant email - and its default is ON, so the mention reaches the
+    /// people who never open Settings, which is who the suggestions feature exists for.
+    /// </summary>
+    public const string DictationSuggestionsInDailyEmail = "dictation_suggestions_in_daily_email";
+
+    /// <summary>
+    /// The per-tenant state behind the daily email's "mention a batch at most twice" cadence, serialized as one
+    /// JSON object so the batch identity and the send count stay consistent with each other. Not a setting the
+    /// user edits - it is written by the email-block route and read by nothing else - but it lives here because
+    /// it is exactly a small per-tenant value and needs no table of its own.
+    /// </summary>
+    public const string DictationEmailCadence = "dictation_email_cadence";
+
     /// <summary>Every key this resolver serves, for validation and enumeration.</summary>
     public static readonly IReadOnlySet<string> All = new HashSet<string>(StringComparer.Ordinal)
     {
         WingmanModel, WingmanFastModel, TtsModel, TtsVoice,
         CarModeModel, CarModeEndPhrase, SnoozePresets, SnoozeDefaultMinutes, TimeZone, InjectedText,
-        VoiceModeAll,
+        VoiceModeAll, DictationSuggestionsInDailyEmail, DictationEmailCadence,
     };
 }
