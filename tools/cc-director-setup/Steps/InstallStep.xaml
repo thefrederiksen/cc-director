@@ -39,7 +39,8 @@
 
         <ScrollViewer VerticalScrollBarVisibility="Auto">
             <StackPanel>
-                <!-- cc-director (main app) -->
+                <!-- The main app. Called DevThrottle here, which is what the user downloaded and
+                     what every other screen calls it - cc-director is the name of the executable. -->
                 <Border Background="#2A2D2E" CornerRadius="6" Padding="16" Margin="0,0,0,12">
                     <Grid>
                         <Grid.ColumnDefinitions>
@@ -48,7 +49,7 @@
                         </Grid.ColumnDefinitions>
 
                         <StackPanel Grid.Column="0">
-                            <TextBlock Text="cc-director"
+                            <TextBlock Text="DevThrottle"
                                        Foreground="White"
                                        FontSize="16"
                                        FontWeight="SemiBold" />
@@ -82,17 +83,36 @@
                      not by the installer (that kept the install snappy). This is an honest note, not a
                      live install row. -->
                 <Border Background="#2A2D2E" CornerRadius="6" Padding="16">
-                    <StackPanel>
-                        <TextBlock Text="Tools"
-                                   Foreground="White"
-                                   FontSize="16"
-                                   FontWeight="SemiBold" />
-                        <TextBlock Text="Your cc-* command-line tools finish setting up the first time you open DevThrottle."
-                                   Foreground="#888888"
-                                   FontSize="12"
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="0">
+                            <TextBlock Text="Tools"
+                                       Foreground="White"
+                                       FontSize="16"
+                                       FontWeight="SemiBold" />
+                            <TextBlock Text="Your cc-* command-line tools finish setting up the first time you open DevThrottle."
+                                       Foreground="#888888"
+                                       FontSize="12"
+                                       TextWrapping="Wrap"
+                                       Margin="0,2,0,0" />
+                        </StackPanel>
+
+                        <!-- Every other row carries a status, so a blank one here read as a row
+                             that had not finished. It is not pending - it is deliberately deferred,
+                             and saying so is the honest status. -->
+                        <TextBlock Grid.Column="1"
+                                   Text="Sets up on first launch"
+                                   Foreground="#CCCCCC"
+                                   FontSize="13" FontWeight="SemiBold"
                                    TextWrapping="Wrap"
-                                   Margin="0,2,0,0" />
-                    </StackPanel>
+                                   TextAlignment="Right"
+                                   VerticalAlignment="Center"
+                                   Margin="12,0,0,0" />
+                    </Grid>
                 </Border>
 
                 <!-- Gateway and Cockpit (Gateway role only; hidden for a Workstation install) -->
