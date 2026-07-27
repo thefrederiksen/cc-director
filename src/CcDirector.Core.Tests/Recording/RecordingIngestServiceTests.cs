@@ -184,6 +184,57 @@ public sealed class RecordingIngestServiceTests : IDisposable
         Assert.Contains("[01:05]", md);           // note timestamp offset
     }
 
+    [Fact]
+    public async Task GetTranscript_FoldsNotesIntoServedText()
+    {
+        // The notes ride the manifest, but the served transcript used to be the bare cleaned
+        // text - so a note typed during recording was invisible on EVERY display surface
+        // (issue devthrottle_internal#966). The server folds the notes in, ordered and
+        // positioned by their [mm:ss] offsets, so both the Cockpit and the phone show them
+        // with no client logic.
+        var svc = NewService(new FakeTranscriber(), new FakeFiler());
+        svc.Register(Reg("rec1"));
+        var c0 = Encoding.UTF8.GetBytes("audio-0");
+        await svc.StoreChunkAsync("rec1", 0, c0, Sha(c0));
+        var manifest = new RecordingManifest("rec1", "Test Call", "dev-1",
+            "2026-05-23T09:00:00Z", null, 16000, 1, "mp3",
+            new() { new RecordingChunkInfo(0, "0000.mp3", 0, 60000, c0.Length, Sha(c0)) },
+            Notes: new()
+            {
+                new RecordingNote(65000, "Discussed pricing"),
+                new RecordingNote(5000, "Intro started"),
+            });
+        await svc.CompleteAsync("rec1", manifest);
+        await svc.ProcessRecordingAsync("rec1");
+
+        var text = svc.GetTranscript("rec1");
+
+        Assert.NotNull(text);
+        Assert.Contains("Notes:", text);
+        Assert.Contains("[00:05] Intro started", text);
+        Assert.Contains("[01:05] Discussed pricing", text);
+        // Ordered by offset even though the manifest listed them out of order.
+        Assert.True(text!.IndexOf("Intro started", StringComparison.Ordinal)
+            < text.IndexOf("Discussed pricing", StringComparison.Ordinal));
+        // The cleaned transcript still follows the notes block.
+        Assert.Contains("CLEANED", text);
+        Assert.True(text.IndexOf("Discussed pricing", StringComparison.Ordinal)
+            < text.IndexOf("CLEANED", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task GetTranscript_NoNotes_ServesCleanedTextUnchanged()
+    {
+        var svc = NewService(new FakeTranscriber(), new FakeFiler());
+        await TranscribeOneChunk(svc, "rec1"); // manifest carries no notes
+
+        var text = svc.GetTranscript("rec1");
+
+        Assert.NotNull(text);
+        Assert.DoesNotContain("Notes:", text);
+        Assert.Contains("CLEANED", text);
+    }
+
     // ===== queue + background-worker behaviour ==============================
 
     [Fact]

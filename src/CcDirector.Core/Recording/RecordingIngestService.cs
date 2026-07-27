@@ -788,12 +788,32 @@ public sealed class RecordingIngestService : IDisposable
         FileLog.Write($"[RecordingIngestService] DeleteRecording done: id={recordingId}");
     }
 
-    /// <summary>The cleaned transcript text, or the assembled markdown as a fallback.</summary>
+    /// <summary>
+    /// The transcript text every display surface renders, with the recording's timestamped notes
+    /// folded in ON THE SERVER (the client-is-dumb rule): the notes ride the manifest, so serving
+    /// the cleaned text alone made every note invisible on every surface (issue devthrottle_internal#966).
+    /// The markdown fallback already carries its own Notes section, so notes are prepended only to
+    /// the cleaned text.
+    /// </summary>
     public string? GetTranscript(string recordingId)
     {
         var s = LoadStatus(recordingId);
         if (s is null) return null;
-        if (!string.IsNullOrWhiteSpace(s.Transcript)) return s.Transcript;
+        if (!string.IsNullOrWhiteSpace(s.Transcript))
+        {
+            var manifest = LoadManifest(recordingId);
+            if (manifest is not null && manifest.Notes.Count > 0)
+            {
+                var sb = new StringBuilder();
+                sb.AppendLine("Notes:");
+                foreach (var note in manifest.Notes.OrderBy(n => n.TMs))
+                    sb.Append('[').Append(FormatOffset(note.TMs)).Append("] ").AppendLine(note.Text);
+                sb.AppendLine();
+                sb.Append(s.Transcript);
+                return sb.ToString();
+            }
+            return s.Transcript;
+        }
         var md = Path.Combine(RecordingDir(recordingId), "transcript.md");
         return File.Exists(md) ? File.ReadAllText(md) : null;
     }

@@ -14,12 +14,14 @@ import type { LocalRecordingState } from "./recordingStore";
 
 /**
  * The recording still has upload work to do, so a retry pass must process it. Either the audio bytes
- * are not all on the server yet (queued/retry/uploading), or the audio IS uploaded but the complete
- * call - the only thing that delivers the NOTES and triggers server-side transcription - has not yet
- * been acknowledged. A "ready" recording is NOT picked up: the user has not pressed Send.
+ * are not all on the server yet (ready/queued/retry/uploading), or the audio IS uploaded but the
+ * complete call - the only thing that delivers the NOTES and triggers server-side transcription - has
+ * not yet been acknowledged. Uploading is automatic on stop (the Android recorder's "uploaded
+ * automatically" bar, issue devthrottle_internal#966), so "ready" - which only a pre-auto-send build
+ * could have written - is picked up too: a stored recording never sits waiting for a Send press.
  */
 export function needsUpload(state: LocalRecordingState, completed: boolean): boolean {
-  if (state === "queued" || state === "retry" || state === "uploading") return true;
+  if (state === "ready" || state === "queued" || state === "retry" || state === "uploading") return true;
   if (state === "uploaded" && !completed) return true;
   return false;
 }

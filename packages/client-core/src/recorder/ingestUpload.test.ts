@@ -9,7 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 //   - the completeness gate's 409 re-arms EXACTLY the named indices and never loops complete;
 //   - 202 on complete is the ONLY terminal success: the local copy is deleted then, and only then;
 //   - a recording in "uploaded" but not completed goes straight to complete without re-sending audio;
-//   - resumePendingRecordingUploads drives what the user asked to send and never touches "ready".
+//   - resumePendingRecordingUploads drives every recording with upload work left - uploading is
+//     automatic, so even a legacy "ready" row never waits for a Send press (devthrottle_internal#966).
 
 vi.mock("../api/client", () => ({ authHeaders: () => ({ Authorization: "Bearer test" }) }));
 vi.mock("./recordingStore", () => ({
@@ -264,7 +265,7 @@ describe("driveRecordingUpload", () => {
 });
 
 describe("resumePendingRecordingUploads", () => {
-  it("drives what the user asked to send and never touches ready or delivered recordings", async () => {
+  it("drives every recording with upload work left, including a legacy 'ready' row - uploading is automatic (devthrottle_internal#966)", async () => {
     const queued = makeRecording({ recordingId: "queued-1", state: "queued" });
     const ready = makeRecording({ recordingId: "ready-1", state: "ready" });
     const stranded = makeRecording({ recordingId: "stranded-1", state: "uploaded", completed: false });
@@ -280,6 +281,6 @@ describe("resumePendingRecordingUploads", () => {
     const askedFor = vi.mocked(getRecording).mock.calls.map((c) => c[0]);
     expect(askedFor).toContain("queued-1");
     expect(askedFor).toContain("stranded-1");
-    expect(askedFor).not.toContain("ready-1");
+    expect(askedFor).toContain("ready-1");
   });
 });
