@@ -92,6 +92,11 @@ const devProxy = proxyTarget
       // Cockpit's own Transcription Health page is routed at /transcription, so proxying the prefix
       // hands the page's own URL to the Gateway and the app answers its own route with JSON. (The
       // mobile config can proxy the prefix safely - its app is mounted under /mobile.)
+      // Work history (issue #2194): the API paths are listed EXACTLY, never the "/history" prefix,
+      // for the same reason as /transcription below - the History page itself is routed at
+      // /history, so proxying the prefix would hand the page's own URL to the Gateway.
+      "/history/report": { target: proxyTarget, changeOrigin: true },
+      "/history/sessions": { target: proxyTarget, changeOrigin: true },
       "/transcription/stats": { target: proxyTarget, changeOrigin: true },
       "/transcription/terms": { target: proxyTarget, changeOrigin: true },
       "/transcription/history": { target: proxyTarget, changeOrigin: true },

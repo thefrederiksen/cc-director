@@ -1,0 +1,191 @@
+/* History page (issue #2194). Rendered as normal scrolling content in the padded main pane. Every
+   color is a shared theme token from src/styles.css :root (the one page-local token is the ok
+   green, the same value the Transcription Health page declares) so the page reads as one product
+   with the rest of the Cockpit. Tones come from the Gateway's endingTone verbatim - this sheet maps
+   a NAMED tone to a pixel color, it never decides what a state means. */
+.wh {
+  --wh-ok: #22c55e;
+  max-width: 980px;
+}
+
+.wh-ranges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+.wh-range {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.wh-range-on {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.wh-totals {
+  margin-left: 10px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.wh-empty {
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.wh-empty-sub {
+  font-size: 12px;
+}
+.wh-empty a {
+  color: var(--accent);
+}
+
+/* One repository group. */
+.wh-repo {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 18px;
+  margin-bottom: 16px;
+}
+.wh-repo-name {
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 600;
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+}
+
+.wh-day {
+  margin-top: 12px;
+}
+.wh-day-head {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+.wh-rollup {
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.wh-rollup-pending {
+  color: var(--text-dim);
+  font-style: italic;
+}
+.wh-pending {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.wh-sessions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.wh-session {
+  border-top: 1px solid var(--border);
+}
+.wh-session-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 4px;
+  border: none;
+  background: none;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.wh-session-row:disabled {
+  cursor: default;
+}
+.wh-session-row:not(:disabled):hover {
+  background: var(--surface-2);
+}
+
+/* The tone dot: a NAMED Gateway tone mapped to a pixel color. */
+.wh-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-dim);
+}
+.wh-tone-live .wh-dot {
+  background: var(--accent);
+}
+.wh-tone-ok .wh-dot {
+  background: var(--wh-ok);
+}
+.wh-tone-attention .wh-dot {
+  background: var(--attention);
+}
+
+.wh-session-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.wh-session-desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wh-session-meta {
+  color: var(--text-dim);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wh-ending {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.wh-tone-live .wh-ending {
+  color: var(--accent);
+}
+.wh-tone-attention .wh-ending {
+  color: var(--attention);
+}
+
+.wh-session-detail {
+  padding: 4px 4px 12px 22px;
+  font-size: 13px;
+}
+.wh-summary-text {
+  margin: 0 0 8px;
+  line-height: 1.55;
+}
+.wh-partial {
+  color: var(--warn);
+  font-weight: 600;
+}
+.wh-detail-block {
+  margin-bottom: 6px;
+}
+.wh-detail-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+.wh-detail-items {
+  margin: 2px 0 0;
+  padding-left: 18px;
+  line-height: 1.5;
+}

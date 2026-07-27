@@ -1,0 +1,175 @@
+using System.Text.Json.Serialization;
+
+namespace CcDirector.Gateway.Contracts;
+
+/// <summary>
+/// The ending kinds a session-history row can carry (issue #2194, reusing the #1862 ledger design).
+/// The RULING belongs to the Gateway: the kind, the label and the tone are folded once on the Gateway
+/// and stamped onto the row; a client renders them verbatim and never re-derives what an ending means.
+/// </summary>
+public static class SessionHistoryEndings
+{
+    /// <summary>The owner closed the session deliberately while it was still able to run.</summary>
+    public const string Closed = "closed";
+
+    /// <summary>The agent exited on its own - finished its work, or its process ended.</summary>
+    public const string Finished = "finished";
+
+    /// <summary>The Director shut down cleanly and took the session with it (a farewell arrived).</summary>
+    public const string DirectorStopped = "director-stopped";
+
+    /// <summary>No farewell ever arrived. Nobody reports this: the Gateway CONCLUDES it when a row is
+    /// still open and its Director has been silent past the threshold. The absence of a goodbye is the
+    /// evidence. Revisable: if the session reappears, the row reopens.</summary>
+    public const string Interrupted = "interrupted";
+
+    public static readonly string[] All = { Closed, Finished, DirectorStopped, Interrupted };
+}
+
+/// <summary>
+/// Who wrote a session-history row's summary (issue #2194).
+/// </summary>
+public static class SessionHistorySummaryKinds
+{
+    /// <summary>The session sealed its own record on a clean shutdown - its own account of what it did.</summary>
+    public const string Sealed = "sealed";
+
+    /// <summary>The Gateway wrote the summary afterwards from the prompt log (the session never sealed).</summary>
+    public const string Generated = "generated";
+
+    /// <summary>There was nothing to summarise - the session left no prompt-log content worth a model call.</summary>
+    public const string None = "none";
+
+    /// <summary>Summarisation was attempted and failed repeatedly (for example, hosted AI unreachable).
+    /// The record stands without a summary rather than pretending one exists.</summary>
+    public const string Unavailable = "unavailable";
+}
+
+/// <summary>
+/// One session's durable history record as served by GET /history/sessions and inside the
+/// /history/report grouping (issue #2194). Written the first time the Gateway sees the session and kept
+/// fresh WHILE IT RUNS, so a session killed by a power cut still leaves this record. A row with a null
+/// <see cref="EndingKind"/> is a session that has not ended - "what am I working on right now" and
+/// "what did I work on Tuesday" are the same record.
+///
+/// HONESTY RULE (issue #2157): <see cref="StartedAtUtc"/> is the Director-measured creation time that
+/// rides every push - a real measurement, persisted here. For an interrupted ending
+/// <see cref="EndedAtUtc"/> is the LAST TIME THE GATEWAY SAW THE SESSION, not the moment it died -
+/// the label says "last seen" and clients must not present it as an exact end.
+/// </summary>
+public sealed record WorkHistorySessionDto
+{
+    [JsonPropertyName("sessionId")] public required string SessionId { get; init; }
+    [JsonPropertyName("sessionNumber")] public int? SessionNumber { get; init; }
+    [JsonPropertyName("sessionName")] public string? SessionName { get; init; }
+    [JsonPropertyName("machineName")] public string? MachineName { get; init; }
+    [JsonPropertyName("directorId")] public string? DirectorId { get; init; }
+    [JsonPropertyName("repoPath")] public string? RepoPath { get; init; }
+
+    /// <summary>owner/repo from the origin remote when known - the roll-up grouping key. Worktrees of one
+    /// repository share it, which is exactly why it is the group.</summary>
+    [JsonPropertyName("repoName")] public string? RepoName { get; init; }
+
+    [JsonPropertyName("agentKind")] public string? AgentKind { get; init; }
+    [JsonPropertyName("model")] public string? Model { get; init; }
+    [JsonPropertyName("missionName")] public string? MissionName { get; init; }
+    [JsonPropertyName("sessionRole")] public string? SessionRole { get; init; }
+
+    [JsonPropertyName("startedAtUtc")] public required DateTime StartedAtUtc { get; init; }
+    [JsonPropertyName("lastActivityUtc")] public DateTime? LastActivityUtc { get; init; }
+
+    /// <summary>The last moment the Gateway observed this session in a push. For an open row this is
+    /// how fresh the record is; for an interrupted row it is the honest stand-in for an end time.</summary>
+    [JsonPropertyName("lastSeenUtc")] public required DateTime LastSeenUtc { get; init; }
+
+    /// <summary>Null while the session runs. One of <see cref="SessionHistoryEndings"/> once ended.</summary>
+    [JsonPropertyName("endingKind")] public string? EndingKind { get; init; }
+
+    /// <summary>The Gateway-folded wording for the ending ("Finished", "Interrupted - last seen ...").
+    /// Clients render it verbatim.</summary>
+    [JsonPropertyName("endingLabel")] public string? EndingLabel { get; init; }
+
+    /// <summary>Gateway-folded display tone: "live" (still running), "ok", "neutral", "attention".
+    /// A pure display verdict; clients map it to their palette and never re-derive it.</summary>
+    [JsonPropertyName("endingTone")] public required string EndingTone { get; init; }
+
+    [JsonPropertyName("endedAtUtc")] public DateTime? EndedAtUtc { get; init; }
+
+    /// <summary>The Gateway-folded one-line description of what the session is doing / was for.
+    /// Never empty: mission, then the first prompt, then name plus repository as the floor.</summary>
+    [JsonPropertyName("descriptionLine")] public required string DescriptionLine { get; init; }
+
+    /// <summary>Total input turns observed (operator plus agent-driven). Null when never reported.</summary>
+    [JsonPropertyName("turnCount")] public long? TurnCount { get; init; }
+
+    /// <summary>Null when no summary exists yet; otherwise one of <see cref="SessionHistorySummaryKinds"/>.</summary>
+    [JsonPropertyName("summaryKind")] public string? SummaryKind { get; init; }
+
+    /// <summary>True when the record is a partial account - the session ended without a farewell, so
+    /// this is "how far it got", not the whole story.</summary>
+    [JsonPropertyName("summaryIsPartial")] public bool SummaryIsPartial { get; init; }
+
+    [JsonPropertyName("summaryText")] public string? SummaryText { get; init; }
+    [JsonPropertyName("whatWasBuilt")] public IReadOnlyList<string>? WhatWasBuilt { get; init; }
+    [JsonPropertyName("leftUnverified")] public IReadOnlyList<string>? LeftUnverified { get; init; }
+    [JsonPropertyName("branches")] public IReadOnlyList<string>? Branches { get; init; }
+    [JsonPropertyName("pullRequests")] public IReadOnlyList<string>? PullRequests { get; init; }
+    [JsonPropertyName("commits")] public IReadOnlyList<string>? Commits { get; init; }
+}
+
+/// <summary>
+/// A session sealing its own record on a clean shutdown (POST /history/sessions/{id}/summary).
+/// The session knows its own story best; this is its account of what it did, what it left undone,
+/// and what needs testing. All fields optional except the prose.
+/// </summary>
+public sealed record SealSessionSummaryRequest
+{
+    [JsonPropertyName("summary")] public required string Summary { get; init; }
+    [JsonPropertyName("whatWasBuilt")] public IReadOnlyList<string>? WhatWasBuilt { get; init; }
+    [JsonPropertyName("leftUnverified")] public IReadOnlyList<string>? LeftUnverified { get; init; }
+    [JsonPropertyName("branches")] public IReadOnlyList<string>? Branches { get; init; }
+    [JsonPropertyName("pullRequests")] public IReadOnlyList<string>? PullRequests { get; init; }
+    [JsonPropertyName("commits")] public IReadOnlyList<string>? Commits { get; init; }
+}
+
+/// <summary>One repository group's one day inside the /history/report response.</summary>
+public sealed record WorkHistoryDayDto
+{
+    /// <summary>The UTC day, yyyy-MM-dd.</summary>
+    [JsonPropertyName("day")] public required string Day { get; init; }
+
+    /// <summary>The cached roll-up paragraph for this repository and day, when it has been written.</summary>
+    [JsonPropertyName("summaryText")] public string? SummaryText { get; init; }
+
+    /// <summary>True when the roll-up has not been written yet (the background pass will catch up).
+    /// The client says so plainly rather than inventing a paragraph.</summary>
+    [JsonPropertyName("summaryPending")] public bool SummaryPending { get; init; }
+
+    [JsonPropertyName("sessions")] public required IReadOnlyList<WorkHistorySessionDto> Sessions { get; init; }
+}
+
+/// <summary>One repository group inside the /history/report response.</summary>
+public sealed record WorkHistoryRepoDto
+{
+    /// <summary>The grouping key: owner/repo when the origin remote is known, else the repository path.</summary>
+    [JsonPropertyName("repoKey")] public required string RepoKey { get; init; }
+
+    /// <summary>What to show as the group heading.</summary>
+    [JsonPropertyName("displayName")] public required string DisplayName { get; init; }
+
+    /// <summary>Days newest first, each with its sessions and cached roll-up.</summary>
+    [JsonPropertyName("days")] public required IReadOnlyList<WorkHistoryDayDto> Days { get; init; }
+}
+
+/// <summary>
+/// GET /history/report - what was worked on over a date range, grouped by repository and day
+/// (issue #2194). The consumable spine of the work-history feature: the Cockpit History page renders
+/// it, and the daily report email and the brain read the same shape. Tenant-scoped like every other
+/// Gateway endpoint.
+/// </summary>
+public sealed record WorkHistoryReportDto
+{
+    [JsonPropertyName("fromDay")] public required string FromDay { get; init; }
+    [JsonPropertyName("toDay")] public required string ToDay { get; init; }
+    [JsonPropertyName("repos")] public required IReadOnlyList<WorkHistoryRepoDto> Repos { get; init; }
+}

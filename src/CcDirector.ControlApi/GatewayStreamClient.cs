@@ -470,6 +470,31 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         catch (Exception ex) { FileLog.Write($"[GatewayStreamClient] ReconnectAsync stop error: {ex.Message}"); }
     }
 
+    /// <summary>
+    /// The clean-shutdown farewell (issue #2194, the #1862 ending design): tell the Gateway this
+    /// Director is stopping ON PURPOSE, so its work-history rows are ruled "Director stopped" instead
+    /// of being concluded "interrupted" from silence. Called at the START of the Director's shutdown
+    /// routine - BEFORE the sessions are killed - so the ruling covers every session the shutdown
+    /// takes with it (a per-session remove arriving later keeps this first ruling). Best-effort and
+    /// time-boxed: shutdown must never hang on it, and an older Gateway without the hub method just
+    /// throws into the catch. Safe to call more than once.
+    /// </summary>
+    public async Task NotifyDirectorStoppingAsync()
+    {
+        var conn = _connection;
+        if (conn is null || conn.State != HubConnectionState.Connected) return;
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await conn.InvokeAsync("DirectorStopping", timeout.Token);
+            FileLog.Write("[GatewayStreamClient] sent DirectorStopping farewell");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayStreamClient] DirectorStopping farewell not delivered (older Gateway?): {ex.Message}");
+        }
+    }
+
     public async Task StopAsync()
     {
         _disposed = true;
@@ -480,6 +505,10 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         }
         if (_connection is not null)
         {
+            // Issue #2194: the farewell backstop for stop paths that never ran the app-level shutdown
+            // routine. When that routine DID run, the Gateway already ruled these rows and this second
+            // call stamps nothing.
+            await NotifyDirectorStoppingAsync();
             try { await _connection.StopAsync(); }
             catch (Exception ex) { FileLog.Write($"[GatewayStreamClient] StopAsync error: {ex.Message}"); }
         }

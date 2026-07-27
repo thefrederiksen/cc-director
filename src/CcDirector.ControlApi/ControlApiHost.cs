@@ -1104,6 +1104,15 @@ public sealed class ControlApiHost : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// The clean-shutdown farewell to the Gateway (issue #2194): rules this Director's open
+    /// work-history rows "Director stopped" while the tunnel is still up. The app's shutdown routine
+    /// calls this FIRST - before killing sessions - so the ruling covers every session the shutdown
+    /// takes with it. Best-effort, time-boxed inside the stream client, never throws.
+    /// </summary>
+    public Task NotifyDirectorStoppingAsync()
+        => _streamClient?.NotifyDirectorStoppingAsync() ?? Task.CompletedTask;
+
     /// <summary>Stop Kestrel and delete the registration file. Safe to call multiple times.</summary>
     public async Task StopAsync()
     {

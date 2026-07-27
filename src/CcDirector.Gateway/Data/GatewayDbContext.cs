@@ -124,6 +124,15 @@ public sealed class GatewayDbContext : DbContext
     /// trustworthy-Working-start plan, docs/PLAN-trustworthy-working-start-2026-07-24.md).</summary>
     public DbSet<ActivityEventEntity> ActivityEvents => Set<ActivityEventEntity>();
 
+    /// <summary>The durable per-session work-history record (<c>session_history</c>, issue #2194) - one row
+    /// per fleet session, written while the session RUNS so a power cut still leaves a usable record, with
+    /// the Gateway-ruled ending and the summary sealed at close or generated from the prompt log.</summary>
+    public DbSet<SessionHistoryEntity> SessionHistory => Set<SessionHistoryEntity>();
+
+    /// <summary>Cached per-repository per-day roll-up paragraphs (<c>session_history_rollups</c>, issue
+    /// #2194) - computed once in the background sweep, never on page load.</summary>
+    public DbSet<SessionHistoryRollupEntity> SessionHistoryRollups => Set<SessionHistoryRollupEntity>();
+
     /// <summary>Per-tenant setting overrides (<c>tenant_settings</c>, issue #2017) - the per-tenant home the
     /// AI / voice / car-mode / notification settings needed before they could be served on the hosted Gateway.
     /// Tenant-scoped: an absent row means "no override" and the typed resolver returns the operator global
@@ -345,6 +354,33 @@ public sealed class GatewayDbContext : DbContext
             b.HasKey(e => new { e.TenantId, e.SessionId });
             // The reporting cut is a last-observed time window, tenant-leading for the global filter.
             b.HasIndex(e => new { e.TenantId, e.LastObservedUtc });
+        });
+
+        modelBuilder.Entity<SessionHistoryEntity>(b =>
+        {
+            b.ToTable("session_history");
+            // COMPOSITE primary key (tenant_id, SessionId) - the session_spend reasoning exactly: the
+            // session id is CALLER-SUPPLIED (it arrives on the push stream), the recorder upserts through
+            // the tenant query filter, so a SessionId-only key would let one tenant squat an id for every
+            // other tenant and would leak the fact that it holds it.
+            b.HasKey(e => new { e.TenantId, e.SessionId });
+            // The range read ("what was worked on between these days") cuts on last-seen; the interrupted
+            // sweep cuts on the same column for open rows. Tenant-leading for the global filter.
+            b.HasIndex(e => new { e.TenantId, e.LastSeenUtc });
+            // The recorder's per-Director reconcile ("which open rows does this Director still push")
+            // and the director-stopped farewell both cut by Director.
+            b.HasIndex(e => new { e.TenantId, e.DirectorId });
+        });
+
+        modelBuilder.Entity<SessionHistoryRollupEntity>(b =>
+        {
+            b.ToTable("session_history_rollups");
+            // COMPOSITE primary key (tenant_id, RepoKey, DayUtc): one cached paragraph per repository
+            // group per day per tenant. RepoKey is caller-derived (a repo name or path off the push
+            // stream), so it is scoped by tenant like every caller-supplied natural key.
+            b.HasKey(e => new { e.TenantId, e.RepoKey, e.DayUtc });
+            // Retention prune cuts on the day, tenant-leading.
+            b.HasIndex(e => new { e.TenantId, e.DayUtc });
         });
 
         modelBuilder.Entity<AccountHostedAiSpendEntity>(b =>
@@ -600,6 +636,8 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<DictationSuggestionScanEntity>(modelBuilder);
         ApplyTenantScope<ActivityEventEntity>(modelBuilder);
         ApplyTenantScope<RepoStateEntity>(modelBuilder);
+        ApplyTenantScope<SessionHistoryEntity>(modelBuilder);
+        ApplyTenantScope<SessionHistoryRollupEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
 
@@ -643,6 +681,11 @@ public sealed class GatewayDbContext : DbContext
             // dictation_suggestion_verdicts.Term is the same normalized canonical spelling as the dismissal
             // Term above, with the same byte-ordinal equality requirement - pin it to "C" identically.
             modelBuilder.Entity<DictationSuggestionVerdictEntity>().Property(e => e.Term).UseCollation("C");
+            // session_history.SessionId and session_history_rollups.RepoKey are caller-supplied natural-key
+            // strings in composite primary keys (issue #2194), same byte-ordinal equality/uniqueness
+            // requirement as session_spend.SessionId above - pin both to "C" so the two providers agree.
+            modelBuilder.Entity<SessionHistoryEntity>().Property(e => e.SessionId).UseCollation("C");
+            modelBuilder.Entity<SessionHistoryRollupEntity>().Property(e => e.RepoKey).UseCollation("C");
             // The tenants mapping table's natural-key string columns (the tenant id primary key and the
             // account_subject unique index) rely on byte-ordinal equality/uniqueness, same as the keys above,
             // so pin them to "C" too - the account subject in particular must match EXACTLY on both providers.

@@ -17,6 +17,7 @@ export type NavIconName =
   | "fleet-map"
   | "assistant"
   | "sessions"
+  | "history"
   | "directors"
   | "schedule"
   | "workflows"
@@ -57,6 +58,15 @@ const PAINT: Record<NavIconName, JSX.Element> = {
       <rect x="3" y="3" width="18" height="18" rx="2" />
       <path d="m7 11 2-2-2-2" />
       <path d="M11 13h4" />
+    </>
+  ),
+  // A clock winding back: what was worked on. The counter-clockwise arrow keeps it distinct from
+  // the plain circles (network, about, help) elsewhere in the rail.
+  history: (
+    <>
+      <path d="M3 12a9 9 0 1 0 2.64-6.36" />
+      <path d="M3 4v4h4" />
+      <path d="M12 7v5l3 3" />
     </>
   ),
   // A monitor: one machine running the fleet.

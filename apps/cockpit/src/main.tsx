@@ -16,6 +16,7 @@ import { SessionDetail } from "./sessions/SessionDetail";
 import { SessionRedirect } from "./sessions/SessionRedirect";
 import { AssistantView } from "./assistant/AssistantView";
 import { FleetMapView } from "./fleet/FleetMapView";
+import { HistoryView } from "./history/HistoryView";
 import { DirectorsView } from "./fleet/DirectorsView";
 import { DirectorDetailView } from "./fleet/DirectorDetailView";
 import { ScheduleView } from "./schedule/ScheduleView";
@@ -34,6 +35,7 @@ import "./components/components.css";
 import "./assistant/assistant.css";
 import "./fleet/fleet.css";
 import "./fleet/fleetmap.css";
+import "./history/history.css";
 import "./missions/missions.css";
 import "./schedule/schedule.css";
 import "./workflows/workflows.css";
@@ -143,6 +145,10 @@ const router = createBrowserRouter(
             // page lists, pivotable by machine / repository / agent. Reads the same GET /sessions
             // envelope through client-core.
             { path: "/fleet-map", element: <FleetMapView /> },
+            // The History page (issue #2194): what was worked on over a picked range, grouped by
+            // repository and day, from the Gateway's durable per-session record (GET /history/report).
+            // Running sessions appear as the entries that have not ended yet.
+            { path: "/history", element: <HistoryView /> },
             // The Assistant (fleet assistant build): a fleet-level chat + voice screen that is not
             // tied to any session. It drives the Gateway brain at POST /assistant/turn - the desk
             // surface of the same brain Car Mode uses on the phone.
