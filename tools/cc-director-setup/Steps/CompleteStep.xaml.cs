@@ -17,7 +17,17 @@ public partial class CompleteStep : UserControl
     private readonly int _skipped;
     private readonly bool _isUpdate;
 
-    public CompleteStep(int installed, int skipped, string installPath, string directorExePath, bool isUpdate, bool alreadyUpToDate = false, string? version = null, string? gatewayFailureReason = null, string? capabilityNotice = null)
+    /// <summary>The one amber used for "something still needs you" - headline, notice and summary.</summary>
+    private static System.Windows.Media.SolidColorBrush AmberBrush =>
+        new(System.Windows.Media.Color.FromRgb(0xE0, 0xA0, 0x30));
+
+    /// <param name="readyToGo">
+    /// May this screen tell the user they are ready? False when a REQUIRED prerequisite is still
+    /// missing or no coding agent is installed at all - a board with nothing to run is not "ready",
+    /// and saying so next to an amber list of what is missing is the lie this parameter removes.
+    /// Computed once by <see cref="InstallCompletion.IsReadyToGo"/>; this screen only renders it.
+    /// </param>
+    public CompleteStep(int installed, int skipped, string installPath, string directorExePath, bool isUpdate, bool alreadyUpToDate = false, string? version = null, string? gatewayFailureReason = null, string? capabilityNotice = null, bool readyToGo = true)
     {
         InitializeComponent();
 
@@ -54,14 +64,25 @@ public partial class CompleteStep : UserControl
                 break;
 
             case InstallCompletionKind.Success when isUpdate:
-                HeadingText.Text = "✓  Update Complete";
-                DescriptionText.Text = "Everything went perfectly. You're up to date.";
+                HeadingText.Text = readyToGo ? "✓  DevThrottle is up to date" : "DevThrottle is up to date - one thing left";
+                DescriptionText.Text = readyToGo
+                    ? "You're ready to go."
+                    : "The update finished. One thing below still needs you.";
+                if (!readyToGo) HeadingText.Foreground = AmberBrush;
                 SummaryLine.Text = $"{installed} components updated{versionSuffix}";
                 PathNote.Visibility = Visibility.Collapsed;
                 break;
 
             case InstallCompletionKind.Success:
-                // Fresh install: heading/description keep their XAML defaults ("...ready to go.").
+                // Nothing failed to install - but "ready to go" is a claim about the MACHINE, not
+                // about this install, and it is false while a required prerequisite is missing or
+                // there is no coding agent to run. The XAML defaults cover the genuinely-ready case.
+                if (!readyToGo)
+                {
+                    HeadingText.Text = "DevThrottle is installed - one thing left";
+                    HeadingText.Foreground = AmberBrush;
+                    DescriptionText.Text = "Everything installed. One thing below still needs you.";
+                }
                 SummaryLine.Text = $"{installed} components installed{versionSuffix}";
                 break;
 
@@ -69,7 +90,7 @@ public partial class CompleteStep : UserControl
                 // Failure path: surface the problem loudly - amber heading, full summary box,
                 // and the details/report expander forced open. On success all of that stays
                 // out of the way behind the small collapsed expander at the bottom.
-                var amber = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xE0, 0xA0, 0x30));
+                var amber = AmberBrush;
                 HeadingText.Text = isUpdate ? "Update finished with problems" : "Setup finished with problems";
                 HeadingText.Foreground = amber;
                 // Carry the specific Gateway failure reason onto the final screen when we have it, so a

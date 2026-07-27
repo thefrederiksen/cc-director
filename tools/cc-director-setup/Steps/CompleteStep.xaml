@@ -48,30 +48,35 @@
 
         <StackPanel>
             <TextBlock x:Name="HeadingText"
-                       Text="&#x2713;  Setup Complete"
+                       Text="&#x2713;  DevThrottle is installed"
                        Foreground="#22C55E"
                        FontSize="22"
-                       FontWeight="SemiBold" />
+                       FontWeight="SemiBold"
+                       TextWrapping="Wrap" />
 
             <TextBlock x:Name="DescriptionText"
-                       Text="Everything went perfectly. You're ready to go."
+                       Text="You're ready to go."
                        Foreground="{StaticResource TextForeground}"
                        FontSize="13"
+                       TextWrapping="Wrap"
                        Margin="0,12,0,24"
                        LineHeight="20" />
 
-            <!-- Launch button: the hero of the happy path -->
+            <!-- Launch button: the hero of the happy path. The label lives inside the template, so
+                 the button itself exposes an EMPTY automation name and a screen reader announces an
+                 unlabelled button - AutomationProperties.Name is what it reads instead. -->
             <Button x:Name="LaunchButton"
                     Height="44"
                     HorizontalAlignment="Stretch"
                     Margin="0,0,0,12"
                     Cursor="Hand"
+                    AutomationProperties.Name="Open DevThrottle"
                     Click="LaunchButton_Click">
                 <Button.Template>
                     <ControlTemplate TargetType="Button">
                         <Border Background="#22C55E" CornerRadius="6"
                                 Padding="20,0">
-                            <TextBlock Text="Launch cc-director"
+                            <TextBlock Text="Open DevThrottle"
                                        Foreground="White"
                                        FontSize="16"
                                        FontWeight="SemiBold"

@@ -177,7 +177,7 @@ public partial class MainWindow : Window
             2 => _prerequisitesStep ??= new PrerequisitesStep(OnPrerequisitesChecked, _isUpdate, _role),
             6 => _skillsStep ??= new SkillsStep(_isUpdate),
             StepInstall => _installStep ??= new InstallStep(),
-            StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _directorExePath, _isUpdate, _alreadyUpToDate, _cachedPrep?.Version, _gatewayFailureReason, BuildCapabilityNotice()),
+            StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _directorExePath, _isUpdate, _alreadyUpToDate, _cachedPrep?.Version, _gatewayFailureReason, BuildCapabilityNotice(), IsReadyToGo()),
             _ => null
         };
 
@@ -294,6 +294,24 @@ public partial class MainWindow : Window
         return CcDirector.Setup.Engine.CapabilityNotice.Describe(
             recommended,
             CcDirector.Setup.Engine.AgentPresence.AnyOtherAgent());
+    }
+
+    /// <summary>
+    /// Whether the Complete screen is allowed to say the user is ready to go. The rule lives in
+    /// <see cref="InstallCompletion.IsReadyToGo"/>; this only gathers the three facts it needs.
+    /// A machine with no coding agent at all has nothing to run, so it is not ready however
+    /// cleanly the install itself went.
+    /// </summary>
+    private bool IsReadyToGo()
+    {
+        var claudeFound = _prerequisites
+            .Any(p => p.Name == CcDirector.Setup.Engine.PrerequisiteNames.ClaudeCode && p.IsFound);
+        var anyAgent = claudeFound || CcDirector.Setup.Engine.AgentPresence.AnyOtherAgent();
+
+        return InstallCompletion.IsReadyToGo(
+            _skippedCount,
+            PrerequisiteChecker.AllRequiredMet(_prerequisites),
+            anyAgent);
     }
 
     private async Task RunInstallAsync()

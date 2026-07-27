@@ -34,4 +34,19 @@ public static class InstallCompletion
             return InstallCompletionKind.Problems;
         return alreadyUpToDate ? InstallCompletionKind.AlreadyUpToDate : InstallCompletionKind.Success;
     }
+
+    /// <summary>
+    /// May the Complete screen tell the user they are ready to go?
+    ///
+    /// <see cref="Classify"/> answers "did this install do its job", which is a different question.
+    /// A pass where every component landed can still leave a machine that cannot run anything: a
+    /// required prerequisite may be missing, or there may be no coding agent installed at all. The
+    /// screen said "Everything went perfectly. You're ready to go." in exactly those cases, with
+    /// the amber list of what was missing sitting directly underneath it.
+    /// </summary>
+    /// <param name="skipped">Components that did not install.</param>
+    /// <param name="allRequiredMet">Every REQUIRED prerequisite is present.</param>
+    /// <param name="anyCodingAgentPresent">Claude Code or any other agent command line tool is installed.</param>
+    public static bool IsReadyToGo(int skipped, bool allRequiredMet, bool anyCodingAgentPresent)
+        => skipped == 0 && allRequiredMet && anyCodingAgentPresent;
 }
