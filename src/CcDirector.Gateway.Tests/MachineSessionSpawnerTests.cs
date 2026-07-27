@@ -37,7 +37,7 @@ public sealed class MachineSessionSpawnerTests
     /// <summary>A launcher that must never be called: the Director is already registered on the machine.</summary>
     private sealed class ThrowingLauncher : IDirectorLauncher
     {
-        public Task<bool> StartAsync(string machine, CancellationToken ct) =>
+        public Task<bool> StartAsync(CcDirector.Core.Tenancy.TenantId tenant, string machine, CancellationToken ct) =>
             throw new InvalidOperationException("launcher must not be called: the Director is already registered");
     }
 
