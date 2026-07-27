@@ -11,6 +11,7 @@ import { CarMode } from "./pages/CarMode";
 import { Assistant } from "./pages/Assistant";
 import { EndWordTest } from "./pages/EndWordTest";
 import { Settings } from "./pages/Settings";
+import { Recorder } from "./pages/Recorder";
 import { About } from "./pages/About";
 import { Diagnostics } from "./pages/Diagnostics";
 import { YourThrottle } from "./pages/YourThrottle";
@@ -28,6 +29,7 @@ import { useVisibleViewportHeight } from "./hooks/useVisibleViewportHeight";
 import { useScreenWakeLock } from "./hooks/useScreenWakeLock";
 import { useKeepWarm } from "@devthrottle/client-core/net/useKeepWarm";
 import { resumePendingDictations } from "@devthrottle/client-core/dictation/backgroundSend";
+import { resumePendingRecordingUploads } from "@devthrottle/client-core/recorder/ingestUpload";
 import { RouteRecoveryBoundary, RootLayout } from "./components/StaleShellRecovery";
 import "./styles.css";
 
@@ -55,6 +57,10 @@ function GatedLayout() {
   // upload was interrupted by a refresh / crash / dropped connection is re-driven to the session here.
   React.useEffect(() => {
     void resumePendingDictations();
+    // Same durable resume for long-form recordings (issue #958): a recording whose send was
+    // interrupted by a refresh / crash / dropped connection is re-driven to the /ingest pipeline
+    // here, from its durable IndexedDB copy. Recordings not yet sent are left alone.
+    void resumePendingRecordingUploads();
   }, []);
   // The one global network banner (mobile-resilience mission): mounted once here so it pins to the top
   // of every gated screen and is the single voice for a network problem - unreachable, or the Gateway's
@@ -162,6 +168,13 @@ const router = createBrowserRouter(
             // tab that holds what they asked for rather than on a dead route.
             { path: "/mic-test", element: <Navigate to="/settings?tab=transcription" replace /> },
             { path: "/transcription-test", element: <Navigate to="/settings?tab=transcription" replace /> },
+            // The Voice Recorder (issue #958): long-form recording -> durable local segments ->
+            // /ingest upload -> Gateway transcription -> the Cockpit's Voice Recorder page. /notes
+            // and /record were the names the retired native apps and old bookmarks used; they land
+            // on the recorder rather than on a dead route.
+            { path: "/recorder", element: <Recorder /> },
+            { path: "/notes", element: <Navigate to="/recorder" replace /> },
+            { path: "/record", element: <Navigate to="/recorder" replace /> },
             { path: "/about", element: <About /> },
             // Diagnostics (auto-network-switching mission): a phone-side connection tester - route
             // (direct LAN vs Tailscale relay), latency, and download/upload throughput, with a verdict.

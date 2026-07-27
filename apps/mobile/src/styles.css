@@ -4676,3 +4676,311 @@ a.banner-btn {
 .assistant-audio {
   display: none;
 }
+
+/* ===== Voice Recorder (issue #958) ==================================================== */
+/* The Android recorder's layout, translated: one card with the big timer + state + segment count +
+   live level meter; the title entry; the big red Record button (Pause only while recording); the
+   notes section; the library below with per-row determinate progress and the two independent
+   status checks (Uploaded / Transcribed). */
+
+.rec-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px;
+  margin-top: 16px;
+  text-align: center;
+}
+
+.rec-timer {
+  font-size: 44px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 1px;
+}
+
+.rec-state {
+  margin-top: 4px;
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
+.rec-state-live {
+  color: #5fd08a;
+}
+
+.rec-segments {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+/* Live mic level so you can see it's hearing you. */
+.rec-level {
+  margin-top: 12px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.rec-level-fill {
+  height: 100%;
+  background: #5fd08a;
+  border-radius: 4px;
+  transition: width 120ms linear;
+}
+
+.rec-title {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+  padding: 12px;
+  font-size: 15px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.rec-title::placeholder {
+  color: var(--text-dim);
+}
+
+.rec-record-btn {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+  height: 64px;
+  font-size: 18px;
+  font-weight: 700;
+  color: #fff;
+  background: #e5484d;
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.rec-record-btn:disabled {
+  opacity: 0.55;
+}
+
+.rec-controls {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.rec-pause-btn,
+.rec-stop-btn {
+  flex: 1;
+  height: 56px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #fff;
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.rec-pause-btn {
+  background: #2b6cb0;
+}
+
+.rec-stop-btn {
+  background: #e5484d;
+}
+
+.rec-section-title {
+  margin-top: 22px;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.rec-section-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.rec-notes .rec-note-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.rec-note-input {
+  flex: 1;
+  padding: 10px 12px;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.rec-note-add {
+  padding: 0 18px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  background: #2b6cb0;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.rec-note-add:disabled {
+  opacity: 0.55;
+}
+
+.rec-note-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.rec-note-list li {
+  padding: 2px 0;
+}
+
+.rec-note-t {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.rec-empty {
+  margin-top: 12px;
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
+.rec-row {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  margin-top: 10px;
+}
+
+.rec-row-title {
+  font-weight: 700;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.rec-row-sub {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.rec-row-note {
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.rec-row-err {
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--attention);
+}
+
+.rec-progress {
+  margin-top: 8px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.rec-progress-fill {
+  height: 100%;
+  background: #5fd08a;
+  border-radius: 3px;
+  transition: width 200ms linear;
+}
+
+/* Two independent status checkmarks per row: upload + transcription (never conflated). */
+.rec-row-status {
+  display: flex;
+  gap: 18px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.rec-status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.rec-check {
+  width: 13px;
+  height: 11px;
+  stroke: var(--border);
+}
+
+.rec-check-on {
+  stroke: #5fd08a;
+}
+
+.rec-cross {
+  width: 11px;
+  height: 11px;
+  stroke: #e5484d;
+}
+
+.rec-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* Thumb-sized (>=44px tall) row actions, like the roster's banner buttons. */
+.rec-row-btn {
+  min-height: 44px;
+  padding: 0 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.rec-row-btn-primary {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.rec-row-btn-danger {
+  color: #fff;
+  background: #e5484d;
+  border-color: #e5484d;
+}
+
+.rec-transcript {
+  margin-top: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--surface-2);
+  border-radius: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.rec-banner-info {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
