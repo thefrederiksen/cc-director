@@ -1,37 +1,40 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, fireEvent, waitFor, within, cleanup } from "@testing-library/react";
 import { useState } from "react";
 
-// Behavioral regression for the Cockpit Speak Send-direct fix (PR #1975).
+// Behavioral regression for the Cockpit Speak Send-direct path - REWIRED to the fire-and-forget
+// pipeline (mobile parity), reversing the PR #1975 workaround.
 //
-// The bug: pressing Send WHILE RECORDING in the Cockpit Speak box "basically sent nothing" on the
-// hosted Gateway, because the recording-stage Send was wired to the phone's fire-and-forget durable
-// pipeline (backgroundTranscribeAndSend -> the /dictation/* routes), which the hosted Gateway still
-// resolves in the Local tenant partition (blocker #1884). Insert worked because it transcribes
-// synchronously through the tenant-aware /wingman/utterance/* path and submits via POST /prompt.
+// History, in order, because this file has pinned OPPOSITE behaviors at different times and the next
+// reader must know why the current one is right:
 //
-// The fix (SessionComposer.tsx): stop passing the DictationDialog's onSendAudio prop, so a
-// recording-stage Send falls back to the blocking commit-then-onSend path - the SAME synchronous
-// transcribe-then-send Insert already uses. The RMS-meter unit tests do not exercise this; only a
-// render of the real composer + real dialog, pressing Send while recording, proves the repaired path.
+//   1. Originally the recording-stage Send used the phone's durable pipeline
+//      (backgroundTranscribeAndSend -> the /dictation/* routes). On the HOSTED Gateway those routes
+//      then resolved sessions in the Local tenant partition (blocker #1884), so a hosted Send held
+//      forever with no status - "Send basically sent nothing".
+//   2. PR #1975 unplugged onSendAudio so Send fell back to the blocking transcribe-then-sendPrompt
+//      path, and THIS TEST pinned "the durable pipeline is never touched".
+//   3. The dictation upload family is now tenant-partitioned end to end (DictationTenantGate, PR
+//      #1945; per-tenant transcript storage #2093) and the phone sends through it on hosted daily.
+//      The Cockpit is rewired onto it (onSendAudio passed again), mounts the shared
+//      DictationStatusStrip for feedback, and resumes pending dictations on load (AppShell). So the
+//      pin flips: a recording-stage Send must hand the CAPTURED AUDIO to the background pipeline and
+//      release the screen immediately - it must NOT block on a synchronous transcription.
 //
-// This test presses Send while RECORDING and asserts the transcript (composed with the typed text at
-// the snapshotted caret) is submitted via sendPrompt for the SELECTED session id, through the
-// synchronous transcription path, and that the durable /dictation/* pipeline is NEVER touched.
-//
-// Revert-proof: re-add `onSendAudio={onDictateSendAudio}` to the DictationDialog mount (undo the fix)
-// and a recording-stage Send calls backgroundTranscribeAndSend instead of sendPrompt - every
-// assertion below flips, so the test reddens.
+// Revert-proof both ways: remove `onSendAudio={onDictateSendAudio}` from the DictationDialog mount
+// (re-introduce the #1975 workaround) and the recording-stage Send blocks through transcribeUtterance
+// + sendPrompt instead - every assertion below flips, so the test reddens. The PAUSED-stage test pins
+// the path that deliberately did NOT change.
 
 // vi.mock is hoisted above module scope, so the spies it references must be created in the same
 // hoisted phase (vi.hoisted) rather than as ordinary consts.
 const { sendPrompt, transcribeUtterance, backgroundTranscribeAndSend } = vi.hoisted(() => ({
-  // The synchronous POST /prompt the fix routes Send-direct through.
+  // The synchronous POST /prompt path: PAUSED-stage Send (text already in hand) and Insert use it.
   sendPrompt: vi.fn(async () => {}),
-  // The tenant-aware /wingman/utterance/* transcription.
+  // The synchronous /wingman/utterance/* transcription: the Pause checkpoint and Insert use it.
   transcribeUtterance: vi.fn(async () => "the dictated words"),
-  // The durable background pipeline (POST /dictation/*) the fix routes Send-direct AWAY from.
+  // The durable background pipeline (POST /dictation/*) the recording-stage Send now rides.
   backgroundTranscribeAndSend: vi.fn(async () => {}),
 }));
 
@@ -44,10 +47,17 @@ vi.mock("@devthrottle/client-core/api/client", () => ({
   gatewayErrorMessage: (e: unknown) => (e instanceof Error ? e.message : String(e)),
 }));
 
-// The durable background pipeline. This test asserts it is never invoked; reverting the fix makes the
-// recording-stage Send call it.
+// The durable background pipeline boundary. The recording-stage Send must call
+// backgroundTranscribeAndSend; the other exports are what the shared DictationStatusStrip (mounted by
+// the composer now) imports from the same module.
 vi.mock("@devthrottle/client-core/dictation/backgroundSend", () => ({
   backgroundTranscribeAndSend,
+  resumePendingDictations: vi.fn(async () => {}),
+  abandonPendingDictation: vi.fn(async () => {}),
+  dismissDictationStatus: vi.fn(async () => {}),
+  retryDroppedDictation: vi.fn(async () => {}),
+  retryPendingDictation: vi.fn(async () => {}),
+  sendDroppedDictationAnyway: vi.fn(async () => {}),
 }));
 
 // Mic + audio-decode boundaries jsdom cannot provide. The fake recorder fires onCaptureLive on start
@@ -58,6 +68,8 @@ vi.mock("@devthrottle/client-core/dictation/recorder", () => {
   class MicRecorder {
     onCaptureLive: (() => void) | null = null;
     lastRecordedMs = 1000;
+    deviceLabel = "Fake Microphone";
+    deviceId = "fake-mic";
     async start() {
       this.onCaptureLive?.();
     }
@@ -72,7 +84,13 @@ vi.mock("@devthrottle/client-core/dictation/recorder", () => {
   return { MicRecorder, rmsLevel: () => 0 };
 });
 vi.mock("@devthrottle/client-core/dictation/wav", () => ({
-  blobToWav16kMono: async () => ({ wav: new Blob(["wav"]), decodedSeconds: 1, sourceBytes: 1000 }),
+  blobToWav16kMono: async () => ({
+    wav: new Blob(["wav"]),
+    decodedSeconds: 1,
+    sourceBytes: 1000,
+    nativeSamples: new Float32Array(0),
+    nativeSampleRate: 16000,
+  }),
 }));
 vi.mock("@devthrottle/client-core/dictation/readyCue", () => ({
   playReadyCue: () => {},
@@ -93,6 +111,19 @@ function Harness({ sessionId }: { sessionId?: string }) {
   );
 }
 
+// Type "AB" into the composer, drop the caret BETWEEN A and B, open Speak, and wait for RECORDING.
+// The caret placement is what proves the compose lands the dictation at the caret, not at the end.
+async function typeAndOpenRecordingDialog(): Promise<HTMLElement> {
+  const textarea = screen.getByPlaceholderText(/Type a message/i) as HTMLTextAreaElement;
+  fireEvent.change(textarea, { target: { value: "AB" } });
+  textarea.selectionStart = 1;
+  textarea.selectionEnd = 1;
+  fireEvent.click(screen.getByRole("button", { name: "Speak" }));
+  const dialog = await screen.findByRole("dialog", { name: "Dictate" });
+  await within(dialog).findByText("RECORDING");
+  return dialog;
+}
+
 describe("Cockpit Speak Send-direct (recording-stage)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -102,32 +133,58 @@ describe("Cockpit Speak Send-direct (recording-stage)", () => {
     globalThis.cancelAnimationFrame = (() => {}) as typeof globalThis.cancelAnimationFrame;
   });
 
-  it("submits the transcript composed at the caret via sendPrompt for the selected session, not the durable /dictation path", async () => {
+  // Two renders share this file; without vitest globals RTL does not auto-clean between them.
+  afterEach(() => cleanup());
+
+  it("hands the captured audio to the background pipeline with the typed text split at the caret, and releases the screen at once", async () => {
     render(<Harness sessionId="sess-42" />);
+    const dialog = await typeAndOpenRecordingDialog();
 
-    // Type "AB" and drop the caret BETWEEN A and B, so a correct compose lands the dictation at the
-    // caret ("A ... B"), not appended at the end.
-    const textarea = screen.getByPlaceholderText(/Type a message/i) as HTMLTextAreaElement;
-    fireEvent.change(textarea, { target: { value: "AB" } });
-    textarea.selectionStart = 1;
-    textarea.selectionEnd = 1;
-
-    // Open the Speak dialog (snapshots the caret) and wait for it to reach RECORDING.
-    fireEvent.click(screen.getByRole("button", { name: "Speak" }));
-    const dialog = await screen.findByRole("dialog", { name: "Dictate" });
-    await within(dialog).findByText("RECORDING");
-
-    // Press Send WHILE RECORDING - the exact action that "sent nothing" before the fix.
+    // Press Send WHILE RECORDING - the fire-and-forget action under test.
     fireEvent.click(within(dialog).getByText("Send"));
 
-    // The dictated words are transcribed synchronously and submitted, composed at the snapshotted
-    // caret, to the SELECTED session, via POST /prompt (appendEnter true).
+    // The captured audio goes to the durable background pipeline for the SELECTED session, with the
+    // typed text split at the snapshotted caret so the Gateway submits "A <dictation> B".
+    await waitFor(() => expect(backgroundTranscribeAndSend).toHaveBeenCalledTimes(1));
+    const [sid, captured, opts] = backgroundTranscribeAndSend.mock.calls[0] as unknown as [
+      string,
+      { blob: Blob; recordedMs: number },
+      { composeParts?: { before: string; after: string } },
+    ];
+    expect(sid).toBe("sess-42");
+    expect(captured.blob).toBeInstanceOf(Blob);
+    expect(captured.recordedMs).toBe(1000);
+    expect(opts.composeParts).toEqual({ before: "A", after: "B" });
+
+    // The screen is released immediately: the dialog is gone without waiting for any transcription.
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Dictate" })).toBeNull());
+
+    // Nothing on this path blocks on the synchronous transcription or submits a text prompt itself -
+    // the Gateway does both server-side. (Reverting the rewire flips exactly these.)
+    expect(transcribeUtterance).not.toHaveBeenCalled();
+    expect(sendPrompt).not.toHaveBeenCalled();
+
+    // The typed text was cleared like any other Send (it rides in composeParts instead).
+    expect((screen.getByPlaceholderText(/Type a message/i) as HTMLTextAreaElement).value).toBe("");
+  });
+
+  it("PAUSED-stage Send still submits the already-transcribed text synchronously via sendPrompt (unchanged path)", async () => {
+    render(<Harness sessionId="sess-42" />);
+    const dialog = await typeAndOpenRecordingDialog();
+
+    // Pause: the checkpoint transcribes the segment synchronously and parks in PAUSED with the words
+    // in the editable box. (The pause button renders a glyph, not text - reach it by its class.)
+    const pauseBtn = dialog.querySelector(".dictate-pause") as HTMLButtonElement;
+    fireEvent.click(pauseBtn);
+    await within(dialog).findByText("PAUSED");
+    expect(transcribeUtterance).toHaveBeenCalledTimes(1);
+
+    // Send from PAUSED: the text is already in hand, so it submits via POST /prompt composed at the
+    // snapshotted caret - no audio round trip, and the background pipeline stays untouched.
+    fireEvent.click(within(dialog).getByText("Send"));
     await waitFor(() =>
       expect(sendPrompt).toHaveBeenCalledWith("sess-42", "A the dictated words B", true),
     );
-    expect(transcribeUtterance).toHaveBeenCalledTimes(1);
-
-    // The durable, Local-pinned /dictation/* pipeline that caused the bug is never touched.
     expect(backgroundTranscribeAndSend).not.toHaveBeenCalled();
   });
 });

@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import "@xterm/xterm/css/xterm.css";
 import { listSessions } from "@devthrottle/client-core/api/client";
 import { TerminalMirror, type TerminalStreamStatus } from "@devthrottle/client-core/terminal/stream";
-import { DictationStatusStrip } from "../components/DictationStatusStrip";
+import { DictationStatusStrip } from "@devthrottle/client-core/dictation/DictationStatusStrip";
 import { SessionControls } from "../components/SessionControls";
 import { SessionAppBar } from "../components/SessionAppBar";
 import { useSessionManage } from "../components/useSessionManage";

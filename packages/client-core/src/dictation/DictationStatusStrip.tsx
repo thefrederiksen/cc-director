@@ -5,14 +5,24 @@ import {
   retryDroppedDictation,
   retryPendingDictation,
   sendDroppedDictationAnyway,
-} from "@devthrottle/client-core/dictation/backgroundSend";
-import { clearDictationStatus, useDictationStatusFor } from "@devthrottle/client-core/dictation/status";
+} from "./backgroundSend";
+import { clearDictationStatus, useDictationStatusFor } from "./status";
+// The strip carries its own styles, exactly like DictationDialog does (issue #1288's rule): every
+// shell that mounts it gets the dictate-strip-* rules from this one copy. The rules formerly lived
+// only in the mobile stylesheet (apps/mobile/src/styles.css); they moved here when the strip itself
+// was hoisted out of the mobile app so the Cockpit could mount it too.
+import "./dictationStrip.css";
 
-// The on-screen live-status strip for a dictation Send, shown on the Terminal, Chat, and Voice
-// screens (owner rule after #1139: a dictation must never fail silently, and while the user stays on
-// the screen it must show what is happening). It is non-blocking - a thin bar under the header, not a
-// modal - so the user can keep working or walk away; the roster badge (Home) carries the same status
-// once they leave, because both read the one shared store.
+// The on-screen live-status strip for a dictation Send - SHARED between the mobile shell (Terminal,
+// Chat, and Voice screens) and the Cockpit (session composer, Voice tab). Owner rule after #1139: a
+// dictation must never fail silently, and while the user stays on the screen it must show what is
+// happening. It is non-blocking - a thin bar, not a modal - so the user can keep working or walk
+// away; on the phone the roster badge (Home) carries the same status once they leave, because both
+// read the one shared store.
+//
+// It lived in apps/mobile/src/components until the Cockpit was rewired onto the same fire-and-forget
+// dictation pipeline the phone uses; a background send without this strip is a send that can hold or
+// drop with no feedback at all, which is exactly why the Cockpit was kept OFF that pipeline before.
 //
 // While a send is in flight it shows the live phase (saving -> uploading N of M -> transcribing). On
 // success it shows a brief "Sent" that clears itself. A held send (saved and still being delivered on a

@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { listSessions } from "@devthrottle/client-core/api/client";
 import { useSessionChat } from "@devthrottle/client-core/history/useSessionChat";
 import { chatLinkLabel } from "@devthrottle/client-core/history/chatView";
-import { DictationStatusStrip } from "../components/DictationStatusStrip";
+import { DictationStatusStrip } from "@devthrottle/client-core/dictation/DictationStatusStrip";
 import { SessionAppBar } from "../components/SessionAppBar";
 import { SessionControls } from "../components/SessionControls";
 import { useSessionManage } from "../components/useSessionManage";

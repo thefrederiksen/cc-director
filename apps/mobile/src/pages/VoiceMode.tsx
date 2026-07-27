@@ -5,7 +5,7 @@ import { buildSnoozeMenu } from "@devthrottle/client-core/settings/snoozeMenu";
 import { useSnoozeOptions } from "@devthrottle/client-core/settings/snoozeOptions";
 import { touchQueue } from "@devthrottle/client-core/voice/queueTouch";
 import { formatClock, useVoiceMode } from "@devthrottle/client-core/voice/useVoiceMode";
-import { DictationStatusStrip } from "../components/DictationStatusStrip";
+import { DictationStatusStrip } from "@devthrottle/client-core/dictation/DictationStatusStrip";
 import { SessionAppBar } from "../components/SessionAppBar";
 import { useSessionManage } from "../components/useSessionManage";
 import { ViewTabs } from "../components/ViewTabs";
