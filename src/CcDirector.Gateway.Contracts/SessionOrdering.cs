@@ -144,6 +144,20 @@ public static class SessionOrdering
         // mapping until the user acts". So cooked-red can stand while the raw activity says otherwise.
         // Raw is the authority here - not because the two agree, but because the fold says raw wins.
         if (!IsRawRed(s)) return false;
+        // A BRAND-NEW SESSION IS NEVER "PREPARING VOICE" - it is READY (green), and this arm must not
+        // eat that (owner's ruling, 2026-07-27). A session that has taken no turn has produced no
+        // assistant reply, so there is no turn to narrate: no generation will ever be attempted, no
+        // audio will ever land, and the `|| !VoiceAudioReady` hold below would therefore be permanent.
+        //
+        // The bug this closes: green lives in BaseColor, the LAST arm of EffectiveColor, BELOW the
+        // IsVoicePreparing arm. So with voice mode ON, every freshly-spawned session folded to yellow
+        // "Preparing voice" and STAYED there - the green "Ready" state was unreachable for the entire
+        // voice-mode fleet. "Preparing voice" was also simply false about it: nothing was being prepared.
+        //
+        // Not caught for the same reason it was easy to write: the brand-new-is-green tests build their
+        // session with a helper that leaves VoiceMode at its default false, so green was only ever proven
+        // for the voice-OFF case. The voice-mode variants now live beside them.
+        if (s.IsBrandNew) return false;
         var state = s.AssessedState ?? s.ActivityState;
         var waiting = string.Equals(state, "WaitingForInput", StringComparison.OrdinalIgnoreCase)
                    || string.Equals(state, "WaitingForPerm", StringComparison.OrdinalIgnoreCase);
