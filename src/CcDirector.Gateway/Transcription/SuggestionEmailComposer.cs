@@ -45,7 +45,7 @@ public sealed class SuggestionEmailComposer
     /// <c>{base}/cockpit</c> surface URL: the Cockpit's router is mounted at the root, so its Dictionary page
     /// is <c>{base}/dictionary</c> - a <c>{base}/cockpit/dictionary</c> link would be swallowed by the
     /// <c>/cockpit/{sessionId}</c> route and land the reader nowhere. A null means the block renders with no
-    /// link rather than with a dead localhost one.</param>
+    /// link rather than with a dead machine-local one.</param>
     /// <param name="now">Clock for the cadence timestamp; <see cref="DateTime.UtcNow"/> when null.</param>
     public SuggestionEmailComposer(
         Func<TenantId, IReadOnlyList<MistranscriptionSuggestion>> pendingFor,
@@ -138,7 +138,7 @@ public sealed class SuggestionEmailComposer
 
     /// <summary>
     /// The absolute link to the Dictionary page, or null when this Gateway has no publicly reachable address.
-    /// Null is a truthful answer, not a failure: a link to 127.0.0.1 in a message read on a phone is a dead
+    /// Null is a truthful answer, not a failure: a link to the Gateway's own machine, read on a phone, is a dead
     /// link, and the block is written to name the page instead when there is nothing real to point at.
     /// </summary>
     private string? BuildDictionaryUrl()

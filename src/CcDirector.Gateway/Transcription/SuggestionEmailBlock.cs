@@ -84,7 +84,7 @@ public static class SuggestionEmailBlock
     /// empty block that looks like a rendering bug.</param>
     /// <param name="dictionaryUrl">The absolute link to the Dictionary page. When null (self-host with no
     /// reachable public address), the block renders WITHOUT a link and names the page instead - it never emits
-    /// a localhost address, which would be a dead link in a message read on a phone.</param>
+    /// a machine-local address, which would be a dead link in a message read on a phone.</param>
     /// <exception cref="ArgumentException">The suggestion list is empty.</exception>
     public static Rendered Render(IReadOnlyList<MistranscriptionSuggestion> suggestions, string? dictionaryUrl)
     {
