@@ -376,11 +376,20 @@ public sealed class WingmanVoiceService
 
     /// <summary>Load every tenant partition present on disk. A directory whose name is not a partition key
     /// this system mints is SKIPPED loudly rather than loaded under some coerced name - the same refusal the
-    /// write path applies, so a hand-made or half-renamed folder can never become a tenant.</summary>
+    /// write path applies, so a hand-made or half-renamed folder can never become a tenant.
+    ///
+    /// The two loads are deliberately NOT equal (issue #2203). Which sessions are voice sessions is a
+    /// correctness fact - the turn-end watcher consults it the moment it starts - and it costs one small
+    /// file per tenant, so it is read here and now. The ready-AUDIO cache is a warm-start convenience that
+    /// costs one full mp3 read per cached session (measured: 106 files, 11.6 seconds off the hosted SMB
+    /// mount), and every byte of it sat in front of the port bind. A cache that is not loaded yet behaves
+    /// exactly like a cache miss, which the voice path already handles by regenerating - whereas a port that
+    /// is not open yet is an outage. So the audio warms in the background, after the bind.</summary>
     private void LoadAllPartitions()
     {
         var tenantsRoot = Path.Combine(_baseDir, "tenants");
         if (!Directory.Exists(tenantsRoot)) return;
+        var tenants = new List<TenantId>();
         foreach (var dir in Directory.EnumerateDirectories(tenantsRoot))
         {
             var name = Path.GetFileName(dir);
@@ -396,9 +405,34 @@ public sealed class WingmanVoiceService
                 continue;
             }
             LoadVoiceSessions(tenant);
-            LoadReadyAudio(tenant);
+            tenants.Add(tenant);
         }
+        WarmReadyAudio(tenants);
     }
+
+    /// <summary>
+    /// Read the cached voice audio for each tenant off the background thread pool, so the cost never lands
+    /// in front of the port bind. The work is published as <see cref="ReadyAudioWarmup"/> so a caller that
+    /// genuinely needs the cache populated can wait for it deterministically instead of racing it.
+    /// </summary>
+    private void WarmReadyAudio(List<TenantId> tenants)
+    {
+        if (tenants.Count == 0) return;
+
+        ReadyAudioWarmup = Task.Run(() =>
+        {
+            foreach (var tenant in tenants) LoadReadyAudio(tenant);
+            FileLog.Write($"[WingmanVoiceService] ready-audio warm load finished for {tenants.Count} tenant partition(s) (background; the port was already open)");
+        });
+    }
+
+    /// <summary>
+    /// Completes when the ready-audio cache has finished loading from disk. Nothing in the serving path
+    /// waits on it - a cache that is still loading behaves as a cache miss and regenerates, which is the
+    /// whole reason it was moved off the startup path (issue #2203). Tests that assert on the reloaded
+    /// cache await this rather than racing the background read.
+    /// </summary>
+    internal Task ReadyAudioWarmup { get; private set; } = Task.CompletedTask;
 
     private void LoadVoiceSessions(TenantId tenant)
     {

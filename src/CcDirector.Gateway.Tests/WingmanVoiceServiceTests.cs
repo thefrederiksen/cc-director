@@ -111,7 +111,7 @@ public sealed class WingmanVoiceServiceTests : IDisposable
         Func<TenantId, WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
             (_, _, _) => throw new InvalidOperationException("brain must not be called");
         var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
-        return new WingmanVoiceService(brain, new KeyVault(vaultPath), Settings, persistPath);
+        return Warmed(new WingmanVoiceService(brain, new KeyVault(vaultPath), Settings, persistPath));
     }
 
     /// <summary>Remove the whole per-test directory. It deletes the DIRECTORY rather than picking out the
@@ -1032,5 +1032,18 @@ public sealed class WingmanVoiceServiceTests : IDisposable
 
         svc.Unmark(TenantId.Local, "sid-1");
         Assert.Null(svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
+    }
+
+    /// <summary>
+    /// Wait for the ready-audio cache to finish loading before handing the service to a test. The cache is
+    /// read in the BACKGROUND in production so its cost cannot sit in front of the port bind (issue #2203);
+    /// a test that asserts on reloaded audio would otherwise be racing that read. Nothing in the serving
+    /// path waits like this - a cache still loading behaves as a miss and regenerates.
+    /// </summary>
+    private static WingmanVoiceService Warmed(WingmanVoiceService svc)
+    {
+        Assert.True(svc.ReadyAudioWarmup.Wait(TimeSpan.FromSeconds(30)),
+            "the ready-audio warm load did not finish within 30 seconds");
+        return svc;
     }
 }
