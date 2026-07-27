@@ -54,8 +54,7 @@ public partial class FifoWindow : Window
     private const string Red = StatusPalette.Red;
 
     // Read-only briefing prompt for the right pane: the wingman summarizes the session
-    // from its terminal, the same read-only path "Ask Wingman" uses. Shared with the
-    // Terminal tab's "Explain" button so honing one briefing hones both.
+    // from its terminal, the same read-only path "Ask Wingman" uses.
     private const string BriefingQuestion = global::CcDirector.Core.Wingman.WingmanService.BriefingQuestion;
 
     private readonly SessionManager _sm;

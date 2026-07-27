@@ -1,0 +1,10 @@
+=== AFTER (chore/587-release-turnoff-list): GET /stats ===
+HTTP/1.1 302 Found
+Content-Length: 0
+Date: Mon, 27 Jul 2026 07:24:32 GMT
+Server: Kestrel
+Location: /your-throttle
+
+
+=== AFTER: GET /stats/data (feed unchanged) ===
+HTTP 200 application/json; charset=utf-8

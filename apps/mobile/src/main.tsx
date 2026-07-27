@@ -9,7 +9,6 @@ import { FileView } from "./pages/FileView";
 import { VoiceMode } from "./pages/VoiceMode";
 import { CarMode } from "./pages/CarMode";
 import { Assistant } from "./pages/Assistant";
-import { EndWordTest } from "./pages/EndWordTest";
 import { Settings } from "./pages/Settings";
 import { About } from "./pages/About";
 import { Diagnostics } from "./pages/Diagnostics";
@@ -148,10 +147,6 @@ const router = createBrowserRouter(
             // session - the phone view of the same client-core turn machine the cockpit mounts.
             // Distinct from Car Mode: button turns (tap to talk), no auto turn taking, hands-on.
             { path: "/assistant", element: <Assistant /> },
-            // Car Mode End Word Test (harness for the spoken end-of-turn phrase): set a configurable
-            // phrase and test detecting it live. Standalone for now; folds into the Cockpit Car Mode
-            // settings tab once the approach is proven.
-            { path: "/endword", element: <EndWordTest /> },
             // Settings: the same tabbed page the Cockpit shows, from the same components
             // (client-core/settings). The tab rides in ?tab=.
             { path: "/settings", element: <Settings /> },

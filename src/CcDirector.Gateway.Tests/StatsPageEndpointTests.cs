@@ -64,42 +64,25 @@ public sealed class StatsPageEndpointTests : IDisposable
         return (app, http);
     }
 
+    /// <summary>
+    /// The standalone embedded dashboard is RETIRED (issue #587): it duplicated the Cockpit's Your
+    /// Throttle page outside the Cockpit shell. GET /stats now answers a redirect to the Cockpit
+    /// /your-throttle route instead of serving HTML of its own.
+    /// </summary>
     [Fact]
-    public async Task StatsPage_Serves_SelfContainedHtml()
+    public async Task StatsPage_RedirectsToYourThrottle()
     {
         var agg = new GatewayInputStatsAggregator(Path.Combine(_dir, "s.db"));
         var (app, http) = await StartAsync(agg, authEnabled: false);
         try
         {
-            var resp = await http.GetAsync("/stats");
-            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-            Assert.StartsWith("text/html", resp.Content.Headers.ContentType!.ToString());
-
-            var html = await resp.Content.ReadAsStringAsync();
-            Assert.Contains("Your Throttle", html); // private per-person view name (owner decision)
-            Assert.Contains("/stats/data", html); // the page fetches its own data endpoint
-            // The governance views (issue #1637): the spend headline, the day/week/month activity rollup with
-            // its toggle, and the per-model spend table. A guard so a future edit cannot quietly drop the
-            // "what did I spend" surface the mission exists to deliver.
-            Assert.Contains("What you have spent", html);
-            Assert.Contains("tokenTotal", html);
-            Assert.Contains("periodToggle", html);
-            Assert.Contains("data-period=\"month\"", html);
-            Assert.Contains("Spend by model", html);
-            Assert.Contains("modelSpendTable", html);
-
-            // SOURCE TRIPWIRE, not behavioral coverage - and named as such because this repo has no
-            // JavaScript execution harness, so a C# HTTP test cannot run the page's rendering. The model
-            // name is records-derived free text; a Codex review found it was concatenated into innerHTML,
-            // which would parse markup from a model string as HTML in the Gateway's own origin. The fix
-            // routes every cell through a textContent builder (trow). The BEHAVIOURAL proof that a hostile
-            // model name renders as inert text is the Playwright before/after check run at review time; this
-            // assertion only trips the obvious verbatim revert - it does not claim to prove escaping.
-            Assert.Contains("function trow(", html);          // the safe textContent row builder exists
-            Assert.DoesNotContain("\"<td>\" + name", html);   // the exact vulnerable concatenation is gone
-            // Self-contained: no external resource references.
-            Assert.DoesNotContain("http://", html);
-            Assert.DoesNotContain("https://", html);
+            // A non-following client, so the redirect itself is what is asserted - the shared client
+            // would chase it to /your-throttle, which this probe host does not map.
+            using var handler = new HttpClientHandler { AllowAutoRedirect = false };
+            using var raw = new HttpClient(handler) { BaseAddress = http.BaseAddress };
+            var resp = await raw.GetAsync("/stats");
+            Assert.Equal(HttpStatusCode.Found, resp.StatusCode);
+            Assert.Equal("/your-throttle", resp.Headers.Location!.ToString());
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
     }

@@ -216,17 +216,6 @@ export function CarMode() {
               for learning while stopped; during a live turn the eyes-free spoken help is what matters. */}
           {!started && cheatSheet !== null && <CheatSheet sheet={cheatSheet} />}
 
-          {/* A small link to the End Word Test harness so the owner can reach it without remembering the
-              URL (his ask). Shown only on the idle screen; it is a tuning tool, not part of a live turn. */}
-          {!started && (
-            <Link
-              to="/endword"
-              style={{ marginTop: 16, fontSize: 14, color: "#8ab4f8", textDecoration: "underline" }}
-            >
-              Open the End Word Test
-            </Link>
-          )}
-
           {/* Live microphone level meter (Architect direction): visibly shows the owner his voice is being
               picked up. Reads the capture stream's AnalyserNode via getMicLevel on an animation frame. It
               only moves while the microphone is actually capturing (the Listening phase); flat otherwise. */}
