@@ -262,7 +262,7 @@ public sealed class WingmanVoiceTenantPartitionTests : IDisposable
         Func<TenantId, Core.Configuration.WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
             (_, _, _) => Task.FromResult<IAgentBrain>(null!);
         var vault = new KeyVault(Path.Combine(baseDir, "vault.json"));
-        return new WingmanVoiceService(brain, vault, Settings, Path.Combine(baseDir, "voice-sessions.json"));
+        return Warmed(new WingmanVoiceService(brain, vault, Settings, Path.Combine(baseDir, "voice-sessions.json")));
     }
 
     // ===== cross-tenant isolation, each with its same-tenant control =========================
@@ -638,5 +638,18 @@ public sealed class WingmanVoiceTenantPartitionTests : IDisposable
             Assert.Null(archive.Get(TenantA, turnId.ToString()));
         }
         finally { Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", prior); }
+    }
+
+    /// <summary>
+    /// Wait for the ready-audio cache to finish loading before handing the service to a test. The cache is
+    /// read in the BACKGROUND in production so its cost cannot sit in front of the port bind (issue #2203);
+    /// a test that asserts on reloaded audio would otherwise be racing that read. Nothing in the serving
+    /// path waits like this - a cache still loading behaves as a miss and regenerates.
+    /// </summary>
+    private static WingmanVoiceService Warmed(WingmanVoiceService svc)
+    {
+        Assert.True(svc.ReadyAudioWarmup.Wait(TimeSpan.FromSeconds(30)),
+            "the ready-audio warm load did not finish within 30 seconds");
+        return svc;
     }
 }

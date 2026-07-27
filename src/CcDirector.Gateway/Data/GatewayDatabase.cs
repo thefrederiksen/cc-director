@@ -93,7 +93,32 @@ public sealed class GatewayDatabase : IDisposable
                 {
                     // Apply the Postgres migration set (its own assembly + gateway-schema history table). No
                     // PRAGMA journal_mode here - WAL is a SQLite-only setting and Postgres has its own WAL.
-                    ctx.Database.Migrate();
+                    //
+                    // ASK FIRST (issue #2203). Migrate() takes an EXCLUSIVE database-wide advisory lock before
+                    // it looks at whether there is anything to apply, and it holds that lock for the whole
+                    // call with no lock timeout and no command timeout. Every deploy runs two Gateway
+                    // containers against this one database, so the second one waits on the first: measured at
+                    // 43 seconds on a deploy carrying NO schema change, against 7 seconds with nothing else
+                    // running. That wait sits in front of the port bind, and when it pushes the bind past the
+                    // platform's 230-second startup deadline the platform stops the SITE - which is the
+                    // user-visible outage this issue is about.
+                    //
+                    // GetPendingMigrations() takes no lock: it reads the history table and compares. On a
+                    // code-only deploy - most deploys - the answer is "none" and we skip the locking call
+                    // entirely. This is NOT a fallback and it does not weaken the contract: when there ARE
+                    // migrations we still call Migrate() and still fail loudly if it throws. It only removes
+                    // a lock acquisition that had nothing to do.
+                    var pending = ctx.Database.GetPendingMigrations().ToList();
+                    if (pending.Count == 0)
+                    {
+                        FileLog.Write("[GatewayDatabase] Migrate: no pending migrations - skipping Migrate() and its database-wide lock");
+                    }
+                    else
+                    {
+                        FileLog.Write($"[GatewayDatabase] Migrate: {pending.Count} pending migration(s), applying: {string.Join(", ", pending)}");
+                        ctx.Database.Migrate();
+                        FileLog.Write($"[GatewayDatabase] Migrate: applied {pending.Count} migration(s)");
+                    }
                 }
 
                 _provider = provider;

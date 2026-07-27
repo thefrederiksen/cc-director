@@ -51,7 +51,7 @@ public sealed class WingmanVoiceFallbackTests : IDisposable
         // StoreSpokenAsync takes the spoken text directly, so the brain is never reached here.
         Func<TenantId, Core.Configuration.WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
             (_, _, _) => throw new InvalidOperationException("the brain must not be reached by a fallback header test");
-        return new WingmanVoiceService(brain, vault, Settings, persistPath, ttsHttpClient: new HttpClient(handler));
+        return Warmed(new WingmanVoiceService(brain, vault, Settings, persistPath, ttsHttpClient: new HttpClient(handler)));
     }
 
     // A unique SUBDIRECTORY per test, not a bare temp filename. The service derives its durable audio
@@ -193,5 +193,18 @@ public sealed class WingmanVoiceFallbackTests : IDisposable
         await svc.StoreSpokenAsync(TenantId.Local, "sid-other", "summary", "reply");  // a DIFFERENT session
         Assert.Equal(2, stub.Calls);
         Assert.False(stub.LastRequest!.Headers.Contains("X-DevThrottle-TTS-Prefer-Backup"));   // not armed for sid-other
+    }
+
+    /// <summary>
+    /// Wait for the ready-audio cache to finish loading before handing the service to a test. The cache is
+    /// read in the BACKGROUND in production so its cost cannot sit in front of the port bind (issue #2203);
+    /// a test that asserts on reloaded audio would otherwise be racing that read. Nothing in the serving
+    /// path waits like this - a cache still loading behaves as a miss and regenerates.
+    /// </summary>
+    private static WingmanVoiceService Warmed(WingmanVoiceService svc)
+    {
+        Assert.True(svc.ReadyAudioWarmup.Wait(TimeSpan.FromSeconds(30)),
+            "the ready-audio warm load did not finish within 30 seconds");
+        return svc;
     }
 }
