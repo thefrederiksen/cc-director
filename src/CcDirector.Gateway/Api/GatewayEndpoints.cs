@@ -1415,6 +1415,12 @@ internal static class GatewayEndpoints
                 RepoPath = row.RepoPath,
                 Agent = row.Agent,
                 PrePrompt = context,
+                // Session origin (devthrottle_internal issue #982). The SURFACE is certain - this is a
+                // direct Gateway API route, not the command line and not a schedule - so it is stated.
+                // The KIND is NOT: restoring an interrupted session can be asked for by a person in the
+                // Cockpit or by an agent cleaning up after a crash, and this handler cannot tell which.
+                // Left unstated, so it records "unknown", which is exactly what we know.
+                OriginSurface = Core.Sessions.SessionOriginSurfaces.Api,
             };
             var createSr = await DirectorCommandRouter.TrySendAsync(sendCommand, target.DirectorId, "create", "", spawnReq, CancellationToken.None, machineName: target.MachineName);
             if (createSr is null)
@@ -2748,6 +2754,16 @@ internal static class GatewayEndpoints
                 RepoPath = req.ToRepoPath,
                 Agent = req.ToAgent,
                 PrePrompt = contextText,
+                // Session origin (devthrottle_internal issue #982): a direct API route, like the
+                // interrupted-session restore above. The kind is left unstated for the same reason - a
+                // handover is asked for by a person moving work or by a session handing itself over,
+                // and this handler cannot tell them apart.
+                //
+                // The SOURCE session is deliberately NOT recorded as the parent. ParentSessionId means
+                // "the session that asked for this one", and in a handover the source is the session
+                // being LEFT, which is a different relationship; putting it here would make the lineage
+                // tree quietly mean two things at once.
+                OriginSurface = Core.Sessions.SessionOriginSurfaces.Api,
             };
             // Gateway Cleanup Phase 2: create the target over the tunnel (create verb, director-level), tunnel-first;
             // the dedicated 20s HTTP client is the fallback pre-cut (the tunnel unary has no 2s aggregate timeout).

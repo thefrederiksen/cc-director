@@ -106,3 +106,42 @@ def test_type_option_is_removed(monkeypatch):
     result = runner.invoke(app, ["session", "spawn", "C:/repo", "--type", "Developer"])
     assert result.exit_code != 0
     assert "No such option" in result.output or "--type" in result.output
+
+
+# --- Session origin and lineage (devthrottle_internal issue #982) ---
+# This process is the only place that can tell a session-initiated spawn from a human one:
+# CC_SESSION_ID is injected into a session's environment at birth and is absent from a human's
+# own shell, so its presence IS the answer. The Director sees an identical HTTP request either
+# way and would have to guess, which is why the CLI states it.
+
+
+def test_session_initiated_spawn_records_the_agent_origin_and_its_parent(monkeypatch, captured):
+    _spawn(monkeypatch, cc_session="sess-A")
+    assert captured.get("origin") == "agent"
+    assert captured.get("parentSessionId") == "sess-A"
+    assert captured.get("originSurface") == "cli"
+
+
+def test_human_spawn_records_the_human_origin_and_no_parent(monkeypatch, captured):
+    _spawn(monkeypatch, cc_session=None)
+    assert captured.get("origin") == "human"
+    assert "parentSessionId" not in captured
+    assert captured.get("originSurface") == "cli"
+
+
+def test_standalone_keeps_the_lineage_even_though_it_drops_the_controller(monkeypatch, captured):
+    # The case that separates lineage from supervision. --standalone deliberately creates a
+    # human-facing PEER with no controller, so nothing about the running session says an agent
+    # made it. It is still an agent-started session, and that is exactly what is being counted.
+    _spawn(monkeypatch, cc_session="sess-A", standalone=True)
+    assert "controllerSessionId" not in captured
+    assert captured.get("origin") == "agent"
+    assert captured.get("parentSessionId") == "sess-A"
+
+
+def test_an_explicit_controller_does_not_change_who_made_the_call(monkeypatch, captured):
+    # --controlled-by names who SUPERVISES the new session; the parent is who ASKED for it. A
+    # session seating its worker under a different manager is still the session that spawned it.
+    _spawn(monkeypatch, cc_session="sess-A", controlled_by="explicit-manager-id")
+    assert captured.get("controllerSessionId") == "explicit-manager-id"
+    assert captured.get("parentSessionId") == "sess-A"

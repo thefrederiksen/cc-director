@@ -1697,7 +1697,12 @@ public partial class MainWindow : Window
         _lastSessionCreateError = null;
         try
         {
-            var session = _sessionManager.CreateSession(repoPath, agent, userArgs, SessionBackendType.ConPty, resumeSessionId, groupId, groupRole, groupName);
+            // Session origin (devthrottle_internal issue #982): human at the desktop, true BY
+            // CONSTRUCTION - this method only ever runs in response to this machine's own New Session
+            // UI. Stamped pre-launch, because the session's first roster push (which is what creates
+            // the durable history row) can leave before create even returns.
+            var session = _sessionManager.CreateSession(repoPath, agent, userArgs, SessionBackendType.ConPty, resumeSessionId, groupId, groupRole, groupName,
+                beforeLaunch: s => s.StampOrigin(SessionOrigin.DesktopHuman));
             FileLog.Write($"[MainWindow] CreateSession: session created, id={session.Id}, pid={session.ProcessId}");
 
             var vm = new SessionViewModel(session);
@@ -1722,7 +1727,10 @@ public partial class MainWindow : Window
         try
         {
             IAgent agent = CreateAgent(agentKind);
-            var session = _sessionManager.CreateSession(repoPath, agent, claudeArgs, SessionBackendType.ConPty, resumeSessionId, groupId, groupRole, groupName);
+            // Session origin (issue #982): human at the desktop, by construction - see the sibling
+            // overload above.
+            var session = _sessionManager.CreateSession(repoPath, agent, claudeArgs, SessionBackendType.ConPty, resumeSessionId, groupId, groupRole, groupName,
+                beforeLaunch: s => s.StampOrigin(SessionOrigin.DesktopHuman));
             FileLog.Write($"[MainWindow] CreateSession: session created, id={session.Id}, pid={session.ProcessId}");
 
             var vm = new SessionViewModel(session);

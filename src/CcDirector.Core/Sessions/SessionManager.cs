@@ -1173,6 +1173,10 @@ public sealed class SessionManager : IDisposable
                 GroupName = s.GroupName,
                 ControllerSessionId = s.ControllerSessionId,
                 ExplicitRole = s.ExplicitRole,
+                // Birth facts (issue #982): unrecoverable once lost, so they ride every snapshot.
+                OriginKind = s.OriginKind,
+                OriginSurface = s.OriginSurface,
+                ParentSessionId = s.ParentSessionId,
                 IsAutoNamed = s.IsAutoNamed,
                 MissionId = s.MissionId,
                 MissionName = s.MissionName,
@@ -1222,6 +1226,10 @@ public sealed class SessionManager : IDisposable
         session.GroupName = ps.GroupName;
         session.ControllerSessionId = ps.ControllerSessionId;
         session.ExplicitRole = ps.ExplicitRole;
+        // Birth facts (issue #982). Composed, not assigned: a snapshot written before these fields
+        // existed carries nulls, and the composer turns those into the honest "unknown" rather than
+        // leaving the session claiming an origin it never had.
+        session.StampOrigin(SessionOrigin.Compose(ps.OriginKind, ps.OriginSurface, ps.ParentSessionId));
         session.IsAutoNamed = ps.IsAutoNamed;
         session.MissionId = ps.MissionId;
         session.MissionName = ps.MissionName;

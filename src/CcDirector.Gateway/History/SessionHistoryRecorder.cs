@@ -219,7 +219,15 @@ public sealed class SessionHistoryRecorder
     /// time are deliberately absent - see the class doc.</summary>
     private static string MaterialSignature(SessionDto s)
         => string.Join('|', s.Name, s.Number?.ToString(), s.MachineName, s.RepoPath, s.RepoName,
-            s.Agent, s.CurrentModel, s.MissionName, s.ExplicitRole);
+            s.Agent, s.CurrentModel, s.MissionName, s.ExplicitRole,
+            // The birth facts (devthrottle_internal issue #982). They are stamped before launch and
+            // never change, so on the normal path they arrive with the first push and this costs
+            // nothing. What it buys is the ONE case where they do not: a session first seen through a
+            // Director too old to report them, then re-reported by a current one mid-upgrade. Without
+            // this the fill-in waits for the five-minute freshness heartbeat; with it the row is
+            // corrected on the next push. The store's write-once guard is what makes adding them here
+            // safe - a change in these can only ever fill a blank, never overwrite a recorded value.
+            s.OriginKind, s.OriginSurface, s.ParentSessionId);
 
     private static string Key(TenantId tenant, string id) => $"{tenant.Value}|{id}";
 }

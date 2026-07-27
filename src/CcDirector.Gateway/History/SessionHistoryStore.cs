@@ -73,7 +73,27 @@ public sealed class SessionHistoryStore
             entity.AgentKind = string.IsNullOrWhiteSpace(session.Agent) ? entity.AgentKind : session.Agent;
             entity.Model = string.IsNullOrWhiteSpace(session.CurrentModel) ? entity.Model : session.CurrentModel;
             entity.MissionName = string.IsNullOrWhiteSpace(session.MissionName) ? entity.MissionName : session.MissionName;
+            // The mission KEY beside the name (issue #982): a name reads well but cannot be joined on -
+            // missions get renamed, and two can share a name. Unknown never overwrites known.
+            entity.MissionId = session.MissionId ?? entity.MissionId;
             entity.SessionRole = string.IsNullOrWhiteSpace(session.ExplicitRole) ? entity.SessionRole : session.ExplicitRole;
+            // Birth facts (devthrottle_internal issue #982). WRITE-ONCE, unlike everything around them:
+            // these describe the create call, so the first push that carries them is as good as the
+            // last, and a later push that lost them (an older Director taking over mid-upgrade, a
+            // reconnect from a build that predates the fields) must not be able to blank them. The
+            // guard is on the STORED value being empty, not on first-sight, so a row created by an old
+            // Director is still filled in the moment a new one reports the same session.
+            //
+            // "unknown" counts as a value here and is not overwritten later. It is the honest answer for
+            // a create path that did not say, and letting a subsequent push replace it would mean the
+            // recorded origin depended on which push happened to arrive - the same fact reading
+            // differently run to run.
+            if (string.IsNullOrEmpty(entity.OriginKind) && !string.IsNullOrWhiteSpace(session.OriginKind))
+                entity.OriginKind = session.OriginKind;
+            if (string.IsNullOrEmpty(entity.OriginSurface) && !string.IsNullOrWhiteSpace(session.OriginSurface))
+                entity.OriginSurface = session.OriginSurface;
+            if (string.IsNullOrEmpty(entity.ParentSessionId) && !string.IsNullOrWhiteSpace(session.ParentSessionId))
+                entity.ParentSessionId = session.ParentSessionId;
             // CreatedAt is the Director-measured start and is stable; keep the first non-default value.
             if (entity.StartedAtUtc == default && session.CreatedAt != default)
                 entity.StartedAtUtc = Utc(session.CreatedAt);
@@ -90,6 +110,28 @@ public sealed class SessionHistoryStore
                 entity.AgentTurnCount = agentTurns;
             if (session.CumulativeIdleSeconds is { } idle && (entity.CumulativeIdleSeconds is not { } ci || idle > ci))
                 entity.CumulativeIdleSeconds = idle;
+            // The remaining per-session facts issue #982 asked for, all on the SAME high-water-mark
+            // rule as the two above and for the same reason: a Director restart begins its counters
+            // again at zero, and a monotonic record must not follow them down. Null is unknown and
+            // never overwrites a known value.
+            if (session.WaitingStretchCount is { } waits && (entity.WaitingStretchCount is not { } ws || waits > ws))
+                entity.WaitingStretchCount = waits;
+            if (CharacterCountOf(session) is { } chars && (entity.InputCharacterCount is not { } ic || chars > ic))
+                entity.InputCharacterCount = chars;
+            if (session.TokenTotals is { } tokens)
+            {
+                // Cumulative spend, kept per kind rather than pre-summed: cache reads and cache
+                // creation are priced differently from plain input, so one total could never be turned
+                // back into money - which is the whole point of keeping spend per session.
+                if (entity.InputTokens is not { } it || tokens.InputTokens > it) entity.InputTokens = tokens.InputTokens;
+                if (entity.OutputTokens is not { } ot || tokens.OutputTokens > ot) entity.OutputTokens = tokens.OutputTokens;
+                if (entity.CacheReadTokens is not { } crt || tokens.CacheReadTokens > crt) entity.CacheReadTokens = tokens.CacheReadTokens;
+                if (entity.CacheCreationTokens is not { } cct || tokens.CacheCreationTokens > cct) entity.CacheCreationTokens = tokens.CacheCreationTokens;
+                // Context occupancy is a GAUGE - it rises through a turn and DROPS on a compaction -
+                // so the maximum is the only reduction of it that means anything. Summing observations
+                // of a gauge produces a number with no unit.
+                if (entity.PeakContextTokens is not { } pct || tokens.ContextTokens > pct) entity.PeakContextTokens = tokens.ContextTokens;
+            }
             entity.LastSeenUtc = nowUtc;
 
             ctx.SaveChanges();
@@ -102,6 +144,16 @@ public sealed class SessionHistoryStore
         var stats = session.InputStats;
         if (stats is null) return null;
         return stats.Buckets.Sum(b => b.Turns) + stats.AgentDrivenTurns;
+    }
+
+    /// <summary>Total input CHARACTER volume (operator plus agent-driven) off the pushed stats, or
+    /// null (issue #982). Counted on the same population as <see cref="TurnCountOf"/> so the two are
+    /// comparable: a turn count alone cannot tell a one-word "yes" from a pasted design document.</summary>
+    public static long? CharacterCountOf(SessionDto session)
+    {
+        var stats = session.InputStats;
+        if (stats is null) return null;
+        return stats.Buckets.Sum(b => b.Characters) + stats.AgentDrivenCharacters;
     }
 
     /// <summary>
@@ -353,6 +405,55 @@ public sealed class SessionHistoryStore
         }
     }
 
+    /// <summary>
+    /// How the sessions that STARTED in the inclusive UTC window came to exist (devthrottle_internal
+    /// issue #982) - the counts behind "what share of sessions do agents start", plus how many carry a
+    /// lineage edge at all.
+    ///
+    /// Counted by START, not by overlap. <see cref="ReadRange"/> deliberately returns every session
+    /// whose life TOUCHED the window, because "what was I working on Tuesday" includes a session that
+    /// began on Monday. This question is a different one - how sessions come into being - and a session
+    /// is born once. Using the overlap window here would count a long-running session in every window
+    /// it survived into, which for a fleet whose agent-started sessions are typically short and whose
+    /// human-started ones are long would bias the share the wrong way, quietly, and by more the wider
+    /// the window.
+    ///
+    /// A row that predates the origin fields is counted under the null key, kept apart from "unknown":
+    /// one means the Gateway was not asking, the other that it asked and got nothing. A caller
+    /// reporting a share must say what it did with both.
+    /// </summary>
+    public SessionOriginTotals OriginTotals(DateTime fromUtc, DateTime toUtc)
+    {
+        lock (_gate)
+        {
+            using var ctx = _db.CreateContext();
+            var rows = ctx.SessionHistory.AsNoTracking()
+                .Where(e => e.StartedAtUtc >= fromUtc && e.StartedAtUtc <= toUtc)
+                .Select(e => new { e.OriginKind, e.OriginSurface, e.ParentSessionId, e.StartedAtUtc })
+                .ToList();
+
+            var byKind = new Dictionary<string, int>(StringComparer.Ordinal);
+            var bySurface = new Dictionary<string, int>(StringComparer.Ordinal);
+            var withParent = 0;
+            DateTime? earliest = null;
+            foreach (var r in rows)
+            {
+                var kind = string.IsNullOrEmpty(r.OriginKind) ? NotRecorded : r.OriginKind;
+                var surface = string.IsNullOrEmpty(r.OriginSurface) ? NotRecorded : r.OriginSurface;
+                byKind[kind] = byKind.TryGetValue(kind, out var k) ? k + 1 : 1;
+                bySurface[surface] = bySurface.TryGetValue(surface, out var s) ? s + 1 : 1;
+                if (!string.IsNullOrEmpty(r.ParentSessionId)) withParent++;
+                if (earliest is not { } e || r.StartedAtUtc < e) earliest = r.StartedAtUtc;
+            }
+
+            return new SessionOriginTotals(fromUtc, toUtc, earliest, rows.Count, withParent, byKind, bySurface);
+        }
+    }
+
+    /// <summary>The bucket key for a row written before the origin fields existed. Deliberately NOT
+    /// "unknown", which is a recorded answer.</summary>
+    public const string NotRecorded = "notRecorded";
+
     /// <summary>One session's folded record, or null.</summary>
     public WorkHistorySessionDto? Get(string sessionId)
     {
@@ -432,3 +533,35 @@ public sealed class SessionHistoryStore
             _ => DateTime.SpecifyKind(value, DateTimeKind.Utc),
         };
 }
+
+/// <summary>
+/// How the sessions born in one window came to exist (devthrottle_internal issue #982), as counted by
+/// <see cref="SessionHistoryStore.OriginTotals"/>.
+///
+/// Counts only - no share, no percentage. The interesting ratio ("agents start X% of sessions") depends
+/// on what its author decides to do with the <see cref="SessionHistoryStore.NotRecorded"/> and
+/// "unknown" buckets, and there is no single right answer: excluding them measures the sessions we can
+/// account for, including them measures the fleet. Computing one here would fix that choice for every
+/// reader and hide it from all of them, which is how a number becomes a claim nobody can check.
+/// </summary>
+/// <param name="FromUtc">Inclusive start of the birth window ASKED FOR - not where the record
+/// actually begins. See <paramref name="EarliestStartUtc"/>.</param>
+/// <param name="ToUtc">Inclusive end of the birth window.</param>
+/// <param name="EarliestStartUtc">The oldest birth actually found, or null when the window is empty.
+/// This is where the RECORD begins, which is rarely where the window does and is never where the fleet
+/// does: retention prunes from the front, and the origin fields only started being written the day they
+/// shipped. A caller quoting a share over "all time" has to say this date out loud, or it is quoting a
+/// denominator it has not got.</param>
+/// <param name="Sessions">How many sessions started in the window - the denominator.</param>
+/// <param name="WithParent">How many of those name a parent session. Never larger than the "agent"
+/// count in <paramref name="ByKind"/>: a parent is only kept on an agent origin.</param>
+/// <param name="ByKind">Session count per origin kind, plus the not-recorded bucket.</param>
+/// <param name="BySurface">Session count per origin surface, plus the not-recorded bucket.</param>
+public sealed record SessionOriginTotals(
+    DateTime FromUtc,
+    DateTime ToUtc,
+    DateTime? EarliestStartUtc,
+    int Sessions,
+    int WithParent,
+    IReadOnlyDictionary<string, int> ByKind,
+    IReadOnlyDictionary<string, int> BySurface);

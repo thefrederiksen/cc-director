@@ -586,6 +586,22 @@ def spawn_session(
         body["commandArgs"] = command_args
     if controller_session_id:
         body["controllerSessionId"] = controller_session_id
+    # Session origin and lineage (devthrottle_internal issue #982). This process is the only place
+    # that can tell a session-initiated spawn from a human one: CC_SESSION_ID is injected into a
+    # session's environment at birth and is absent from a human's own shell, so its presence IS the
+    # answer. Stated here rather than inferred at the Director, which sees an identical HTTP request
+    # either way and would have to guess.
+    #
+    # NOT the same as controllerSessionId above, and deliberately sent separately. That one asks for a
+    # live supervision relationship and is dropped by --standalone; this one records who made the call
+    # and survives it. A session spawning a deliberate human-facing peer is exactly the case where the
+    # two must differ - it is still an agent starting a session, which is the thing being counted.
+    if cc_session:
+        body["origin"] = "agent"
+        body["parentSessionId"] = cc_session
+    else:
+        body["origin"] = "human"
+    body["originSurface"] = "cli"
     # Automatic session roles: forward an explicit --role VERBATIM to the Director, which validates it
     # against Standalone/Manager/Worker/Architect and rejects an unknown value (never a silent drop).
     if role:

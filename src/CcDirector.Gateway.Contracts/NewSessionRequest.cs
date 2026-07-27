@@ -97,6 +97,49 @@ public sealed class NewSessionRequest
     public string? ControllerSessionId { get; set; }
 
     /// <summary>
+    /// WHO is asking for this session (devthrottle_internal issue #982): one of the
+    /// <c>SessionOriginKinds</c> tokens - "human", "agent", "schedule" - case-insensitive. An unknown
+    /// value is REJECTED as a bad request, the same posture as <see cref="Role"/>: a mistyped origin
+    /// must not silently become "unknown", because unknown is also what an honest older caller sends
+    /// and the two would then be indistinguishable. Null records "unknown", which is the truth about a
+    /// caller that did not say.
+    ///
+    /// STATED BY THE CALLER, AND THAT IS DELIBERATE - but it is not the last word on every path. The
+    /// Gateway's spawn relay OVERWRITES this from the verified per-device key when the caller is a
+    /// signed-in phone or browser (the same gateway-authoritative rule <c>PromptRequest.Surface</c>
+    /// follows), so the one route a stranger could reach cannot forge its own origin. The Director's
+    /// loopback floor is reachable only from this machine, so a caller there is already as trusted as
+    /// the machine itself.
+    /// </summary>
+    public string? Origin { get; set; }
+
+    /// <summary>
+    /// WHERE this create call is coming from (issue #982): one of the <c>SessionOriginSurfaces</c>
+    /// tokens - "desktop", "cockpit", "phone", "cli", "cron", "workflow", "api" - case-insensitive.
+    /// An unknown value is REJECTED, for the same reason as <see cref="Origin"/>. Null records
+    /// "unknown". Overwritten by the Gateway relay for a device-key caller.
+    /// </summary>
+    public string? OriginSurface { get; set; }
+
+    /// <summary>
+    /// The session MAKING this call (issue #982), when an agent session is: the lineage edge that turns
+    /// a flat roster into the tree of operations it actually is. A session id (GUID string); an
+    /// unparseable value is REJECTED rather than dropped, so a broken lineage edge is never mistaken for
+    /// a root session.
+    ///
+    /// This is the issue's <c>originAgentSessionId</c> and its <c>parentSessionId</c>, which are one
+    /// fact under two names - the session that made the create call IS the parent. Kept only alongside
+    /// <see cref="Origin"/> = "agent"; a parent named on a human or scheduled origin is dropped, since
+    /// one of the two statements must be wrong and the stated origin is the one the caller meant.
+    ///
+    /// DISTINCT from <see cref="ControllerSessionId"/>, which asks for a live supervision relationship
+    /// and changes how the new session is painted. The two carry the same id on an ordinary CLI spawn
+    /// and diverge on <c>--standalone</c>, where an agent starts a deliberate human-facing peer: no
+    /// controller, but still an agent-started session.
+    /// </summary>
+    public string? ParentSessionId { get; set; }
+
+    /// <summary>
     /// Optional EXPLICIT role for the new session (automatic session roles). One of the
     /// <see cref="SessionRoles"/> values (Standalone / Manager / Worker / Architect); case-insensitive. An
     /// unknown value is REJECTED as a bad request (so a mistyped --role never silently drops). When set it

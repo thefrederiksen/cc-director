@@ -651,6 +651,16 @@ internal static class ControlEndpoints
             if (req is null || string.IsNullOrWhiteSpace(req.RepoPath))
                 return Results.BadRequest(new { error = "repoPath is required" });
 
+            // Session origin (devthrottle_internal issue #982). This route IS the command line: it is
+            // loopback-only and cc-devthrottle's `session spawn` is what reaches it, so a request that
+            // named no surface came from the CLI and saying so is a measurement, not a guess. The KIND
+            // is left exactly as the caller stated it - only the caller knows whether a session or a
+            // person ran the command (the CLI reads CC_SESSION_ID to decide), and inventing a kind here
+            // would fabricate the one number this field exists to produce. Applied to BOTH legs, since
+            // the remote leg forwards this same request object through the Gateway.
+            if (string.IsNullOrWhiteSpace(req.OriginSurface))
+                req.OriginSurface = SessionOriginSurfaces.Cli;
+
             var machine = req.Machine?.Trim();
             var isLocal = string.IsNullOrEmpty(machine)
                 || string.Equals(machine, "local", StringComparison.OrdinalIgnoreCase)
@@ -1578,6 +1588,13 @@ internal static class ControlEndpoints
             IsBrandNew = s.IsBrandNew,
             IsControlled = s.IsControlled,
             ControllerSessionId = s.ControllerSessionId?.ToString(),
+            // Session origin and lineage (devthrottle_internal issue #982): the birth facts, reported
+            // straight from the Session. They ride every push, not just the first, because the durable
+            // history row is written on FIRST SIGHT and a push that omitted them would be the one that
+            // created the row. Nothing paints from these - they are the record, and the tree.
+            OriginKind = s.OriginKind,
+            OriginSurface = s.OriginSurface,
+            ParentSessionId = s.ParentSessionId?.ToString(),
             // Automatic session roles (chunk 2.5): the sticky explicit role, so the Gateway aggregation can
             // apply the explicit-wins precedence. The RESOLVED SessionRole is computed at the aggregation.
             ExplicitRole = s.ExplicitRole,
@@ -1654,6 +1671,11 @@ internal static class ControlEndpoints
             TurnCount = s.TurnCount,
             WaitingSince = s.WaitingSince,
             CumulativeIdleSeconds = s.CumulativeIdleSeconds,
+            // The interruption COUNT beside the seconds (devthrottle_internal issue #982): how many
+            // times this session started waiting on the user. The pair is what makes the clock
+            // readable - an hour of waiting spread over twelve interruptions is a different session
+            // from one that waited once.
+            WaitingStretchCount = s.WaitingStretchCount,
             // Issue #335: identity fields populated by the Director (not patched by the Gateway).
             MachineName = machineName,
             User = user,
