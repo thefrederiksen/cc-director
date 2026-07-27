@@ -54,8 +54,14 @@ internal static class AccountEmailEndpoint
     /// answer - the hosted path fails closed. Ignored off hosted mode.
     /// </param>
     /// <param name="tenants">The tenant registry, read on hosted for the caller's display email.</param>
+    /// <param name="byTenant">
+    /// The TENANT-ADDRESSED cloud sender (devthrottle_internal #986), used on the hosted path where no
+    /// account token exists. Null disables the hosted send, and the route then reports the truthful refusal
+    /// - never a fabricated success and never a fabricated sign-out.
+    /// </param>
     public static void Map(IEndpointRouteBuilder app, DevThrottleAccountService? account, AccountNotifyClient notify,
-        Tenancy.HostedTenantBoundary? tenantBoundary = null, Tenancy.TenantRegistry? tenants = null)
+        Tenancy.HostedTenantBoundary? tenantBoundary = null, Tenancy.TenantRegistry? tenants = null,
+        AccountNotifyByTenantClient? byTenant = null)
     {
         if (notify is null) throw new ArgumentNullException(nameof(notify));
 
@@ -72,15 +78,25 @@ internal static class AccountEmailEndpoint
             var verdict = await AccountActingCredential
                 .ResolveAsync(AccountOperations.Email, http, account, tenantBoundary, tenants, http.RequestAborted)
                 .ConfigureAwait(false);
+            // HOSTED SEND (devthrottle_internal #986). The caller IS signed in and this Gateway holds no
+            // account token for them - and now does not need one. It names their TENANT, resolved from their
+            // own authenticated device key, and the cloud resolves the recipient. Note what is NOT happening:
+            // no user account token is stored, read, or forwarded on this path, so the property that hosted
+            // enrollment keeps neither token stays true.
+            if (verdict.State == AccountActingState.HostedNoGatewayCredential && byTenant is not null && verdict.Tenant is { } tenant)
+            {
+                var result = await SendForTenantAsync(byTenant, tenant, verdict, request, http).ConfigureAwait(false);
+                if (result is not null)
+                    return result;
+                // Null means this Gateway is not configured to make that call. Fall through to the verdict,
+                // which reports the truth for the state we are actually in.
+            }
+
             if (!verdict.IsReady)
             {
-                // THE SWAP POINT for devthrottle_internal #986. When the cloud's tenant-addressed sender
-                // exists, HostedNoGatewayCredential stops being a refusal and becomes a send: the verdict
-                // already carries verdict.Tenant and verdict.AccountSubject, resolved from the caller's own
-                // authenticated device key, which is everything that route takes. It is one branch here and
-                // one client method - deliberately not a rewrite, and deliberately NOT a reason to start
-                // storing user account tokens, which hosted enrollment does not do and must not begin doing.
-                // Every other state stays a refusal, because none of them is a Gateway that could act.
+                // Every remaining state is a refusal, because none of them is a Gateway that could act:
+                // genuinely signed out, no credential store, an unusable credential, a caller bound to no
+                // tenant, or a miswired hosted deployment.
                 FileLog.Write($"[AccountEmailEndpoint] POST /account/email: cannot send ({verdict.State}) -> {verdict.StatusCode}");
                 return Results.Json(new AccountEmailResponse(false, verdict.Message, null), statusCode: verdict.StatusCode);
             }
@@ -120,6 +136,93 @@ internal static class AccountEmailEndpoint
                     statusCode: StatusCodes.Status502BadGateway);
             }
         });
+    }
+
+    /// <summary>
+    /// The HOSTED send (devthrottle_internal #986): name the caller's own tenant and let the cloud resolve
+    /// the recipient. Returns null when this Gateway holds no service secret, so the caller falls through to
+    /// the truthful refusal - it does NOT call unauthenticated.
+    ///
+    /// FAILING CLOSED ON A MISSING SECRET IS LOAD-BEARING, not tidiness. If an unconfigured Gateway called
+    /// anyway, the cloud's 401 would mean either "your secret is wrong" or "you have no secret", and nobody
+    /// could tell which from either end. Refusing here keeps that 401 diagnostic: it can only ever mean
+    /// WRONG. The message says which of the two configuration steps is outstanding, because "unauthorized"
+    /// on a route nobody has configured yet is exactly the sort of true-but-useless answer this whole issue
+    /// is about.
+    ///
+    /// This is the one try-catch for this path (the delegate boundary rule): a transport failure is caught
+    /// and reported as unreachable, never as a send.
+    /// </summary>
+    private static async Task<IResult?> SendForTenantAsync(
+        AccountNotifyByTenantClient byTenant, string tenant, AccountActingVerdict verdict,
+        AccountEmailRequest request, HttpContext http)
+    {
+        var serviceToken = AccountNotifyByTenantClient.ResolveServiceToken();
+        if (serviceToken is null)
+        {
+            FileLog.Write($"[AccountEmailEndpoint] POST /account/email (hosted): {AccountNotifyByTenantClient.ServiceTokenEnvVar} is not set on this Gateway -> refusing to call the owner-email service unauthenticated");
+            // NAME THE SIGNED-IN IDENTITY HERE TOO. This message replaces the fold's refusal on the hosted
+            // path, and the fold names the identity for a reason: it is what makes the sentence impossible to
+            // read as a sign-out. A configuration gap that forgot to say who you are would quietly reintroduce
+            // the ambiguity issue #984 exists to remove - which is exactly how this was caught, by that issue's
+            // own test going red when this path was added.
+            var who = string.IsNullOrWhiteSpace(verdict.Email) ? "your DevThrottle account" : verdict.Email;
+            return Results.Json(
+                new AccountEmailResponse(false,
+                    $"You are signed in to DevThrottle as {who}. This hosted Gateway is not yet configured to "
+                    + $"send owner email - its {AccountNotifyByTenantClient.ServiceTokenEnvVar} setting is "
+                    + "missing. This is a Gateway configuration step, not a sign-in problem, and signing in "
+                    + "again will not change it. No email was sent.",
+                    null),
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
+        try
+        {
+            var attachments = request.Attachments?
+                .Select(a => new NotifyAttachment(a.Filename ?? "", a.Content ?? "", a.ContentType))
+                .ToList();
+
+            var result = await byTenant
+                .SendOwnerForTenantAsync(serviceToken, tenant, verdict.AccountSubject, request.Subject!,
+                    request.BodyText, request.BodyHtml, attachments, http.RequestAborted)
+                .ConfigureAwait(false);
+
+            if (result.Sent)
+            {
+                FileLog.Write("[AccountEmailEndpoint] POST /account/email (hosted): sent to the tenant's owner.");
+                return Results.Json(new AccountEmailResponse(true, null, result.ProviderId));
+            }
+
+            // The cloud's message is written to be read by a human, so it is surfaced VERBATIM rather than
+            // reworded here. A 4xx is a caller/config problem forwarded as-is; 429 keeps its own status so a
+            // caller can honour Retry-After; anything else is an upstream failure. Never a fabricated success.
+            var status = result.StatusCode switch
+            {
+                StatusCodes.Status429TooManyRequests => StatusCodes.Status429TooManyRequests,
+                >= 400 and < 500 => StatusCodes.Status400BadRequest,
+                _ => StatusCodes.Status502BadGateway,
+            };
+            FileLog.Write($"[AccountEmailEndpoint] POST /account/email (hosted): not sent (cloud status {result.StatusCode}, code {result.ErrorCode ?? "<none>"})");
+
+            var response = Results.Json(new AccountEmailResponse(false, result.Error, null), statusCode: status);
+            if (result.RetryAfterSeconds is { } retryAfter)
+            {
+                // Pass the cloud's own wait through untouched. It is computed from when the oldest hit in the
+                // window actually expires, so honouring it is sufficient and a backoff of our own would only
+                // fight it.
+                http.Response.Headers["Retry-After"] = retryAfter.ToString();
+            }
+            return response;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[AccountEmailEndpoint] POST /account/email (hosted) FAILED: {ex.Message}");
+            return Results.Json(
+                new AccountEmailResponse(false,
+                    "Could not reach the DevThrottle account service to send the email. Try again shortly.", null),
+                statusCode: StatusCodes.Status502BadGateway);
+        }
     }
 
     /// <summary>

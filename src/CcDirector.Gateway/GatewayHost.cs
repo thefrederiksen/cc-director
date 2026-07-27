@@ -2593,8 +2593,13 @@ public sealed class GatewayHost : IAsyncDisposable
         // the host-wide token middleware above like the other /account routes. Issue #984: the tenant boundary
         // is passed in so the hosted path reports the truth - the caller IS signed in and this shared Gateway
         // holds no credential of theirs to send with - instead of the old 401 "sign in from the Gateway tray".
+        // devthrottle_internal #986: on hosted there is no account token to forward, so the send names the
+        // caller's TENANT and the cloud resolves the recipient. Wired unconditionally - the route decides by
+        // hosted state, and the client itself fails closed when NOTIFY_OWNER_SERVICE_TOKEN is unset rather
+        // than calling the service unauthenticated.
         AccountEmailEndpoint.Map(_app, Account, new Core.Account.AccountNotifyClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) }),
-            tenantBoundary: _tenantBoundary, tenants: TenantRegistry);
+            tenantBoundary: _tenantBoundary, tenants: TenantRegistry,
+            byTenant: new Core.Account.AccountNotifyByTenantClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) }));
 
 
         // The credential-free cloud sign-in START front door (epic #1069, issue #1076): GET + POST
