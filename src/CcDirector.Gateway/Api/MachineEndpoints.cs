@@ -7,6 +7,7 @@ using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.Running;
 using CcDirector.Gateway.Tenancy;
+using CcDirector.Gateway.Util;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -236,6 +237,35 @@ internal static class MachineEndpoints
         Results.Json(new { error = "no tenant is bound to this request" }, statusCode: 403);
 
     /// <summary>
+    /// Session origin (devthrottle_internal issue #982), stamped GATEWAY-AUTHORITATIVELY on the spawn
+    /// relay - the same rule <c>PromptRequest.Surface</c> already follows for turns.
+    ///
+    /// This route is the one spawn path a caller outside the owner's machines can reach, so what a
+    /// client CLAIMS about its own origin cannot be the record. When the verified per-device key says
+    /// the caller is a signed-in phone or browser, we know two things by construction - a person is
+    /// holding it, and which surface it is - and both are OVERWRITTEN here, along with any parent
+    /// session the client named (a phone is nobody's child).
+    ///
+    /// Every OTHER caller is left exactly as it arrived, and that is the important half. A remote spawn
+    /// from an agent reaches this route relayed by its own Director over the tunnel, carrying that
+    /// Director's key rather than a device key; the Director already stamped the truth on the loopback
+    /// floor, and overwriting it here would erase the agent lineage on precisely the cross-machine
+    /// spawns - one session driving work on another computer - that make the lineage worth having.
+    /// </summary>
+    private static void StampOriginFromDeviceKey(NewSessionRequest req, HttpContext ctx)
+    {
+        var deviceType = ctx.Items.TryGetValue(AuthMiddleware.DeviceTypeItemKey, out var dt) ? dt as string : null;
+        var surface = Core.Sessions.SessionOriginSurfaces.FromDeviceType(deviceType);
+        if (surface == Core.Sessions.SessionOriginSurfaces.Unknown)
+            return; // not a person's device - keep what the relaying Director stated
+
+        req.Origin = Core.Sessions.SessionOriginKinds.Human;
+        req.OriginSurface = surface;
+        req.ParentSessionId = null;
+        FileLog.Write($"[MachineEndpoints] spawn origin stamped from the verified device key: human/{surface} (deviceType={deviceType})");
+    }
+
+    /// <summary>
     /// The four launcher self-registration routes, mapped relative to <see cref="LauncherPrefix"/> so the full
     /// paths are <c>/launchers</c> and <c>/launchers/{machine}/...</c> exactly as before. Takes the denied
     /// GROUP HANDLE and nothing else: the ungrouped route builder is deliberately out of scope so no route can
@@ -333,11 +363,13 @@ internal static class MachineEndpoints
         // to a Director (auto-launching one via the launcher if none is running) and create the session
         // there through the SAME resolve-then-create path the cron firing engine uses. Fail loud: an
         // off/unreachable machine or a create failure returns 502 with the error - NEVER a local spawn.
-        app.MapPost("/{machine}/sessions", async (string machine, NewSessionRequest req, CancellationToken ct) =>
+        app.MapPost("/{machine}/sessions", async (string machine, NewSessionRequest req, HttpContext ctx, CancellationToken ct) =>
         {
             FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/sessions: repo={req?.RepoPath}, agent={req?.Agent}");
             if (req is null || string.IsNullOrWhiteSpace(req.RepoPath))
                 return Results.BadRequest(new { error = "repoPath is required" });
+
+            StampOriginFromDeviceKey(req, ctx);
 
             // Gateway Cleanup mission (Wave 4b): a mission-scoped spawn is validated against the Gateway's OWN
             // mission store (the source of truth) and the resolved NAME is stamped onto the create request, so

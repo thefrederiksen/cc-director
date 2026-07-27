@@ -2728,7 +2728,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // DevThrottle Stats: the always-available private dashboard (/stats) and its JSON (/stats/data).
         // A self-contained embedded page, so it works even on a plain dev build with no React wwwroot.
         // Mapped before the mobile/cockpit catch-alls so the explicit routes win.
-        Stats.StatsPageEndpoint.Map(_app, InputStats, SessionConcurrency, _tenantSettingsResolver, _tenantBoundary);
+        // The work-history store rides along (devthrottle_internal issue #982) as the source of the
+        // session-ORIGIN counts: how sessions came to exist, which only the durable per-session record
+        // can answer - the in-memory aggregates behind the rest of this feed count turns, and a session
+        // is born exactly once.
+        Stats.StatsPageEndpoint.Map(_app, InputStats, SessionConcurrency, _tenantSettingsResolver, _tenantBoundary, _sessionHistory);
 
         // The prompt log (issue #1551): Directors push what they captured to POST /prompts, and anyone
         // wanting history reads GET /prompts. It lives here, not on a Director, because the Gateway is

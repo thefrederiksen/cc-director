@@ -146,6 +146,73 @@ public sealed class SessionSupervisionFactsTests
         Assert.Null(session.WaitingSince);
     }
 
+    // --- The interruption COUNT beside the clock (devthrottle_internal issue #982) ---
+    // The seconds cannot stand in for the count: one session that needed you once for an hour and one
+    // that needed you twelve times for five minutes read identically on the clock and are nothing alike
+    // to live with. The brain's job is deciding when to interrupt, so this is what it is measured on.
+
+    [Fact]
+    public void WaitingStretchCount_CountsEveryEntryIntoWaiting()
+    {
+        using var session = NewSession();
+
+        Assert.Equal(0, session.WaitingStretchCount);
+
+        session.ApplyTerminalActivityState(ActivityState.Working);
+        session.ApplyTerminalActivityState(ActivityState.WaitingForInput);
+        Assert.Equal(1, session.WaitingStretchCount);
+
+        session.ApplyTerminalActivityState(ActivityState.Working);
+        session.ApplyTerminalActivityState(ActivityState.WaitingForInput);
+        Assert.Equal(2, session.WaitingStretchCount);
+    }
+
+    [Fact]
+    public void WaitingStretchCount_CountsAnOpenWaitImmediately()
+    {
+        // Counted when the stretch OPENS, unlike the seconds, which only land when it closes. A session
+        // sitting on you right now has interrupted you, whatever happens next - and a count that only
+        // moved on release would report zero for exactly the sessions the question is about.
+        using var session = NewSession();
+
+        session.ApplyTerminalActivityState(ActivityState.Working);
+        session.ApplyTerminalActivityState(ActivityState.WaitingForInput);
+
+        Assert.Equal(1, session.WaitingStretchCount);
+        Assert.Equal(0, session.CumulativeIdleSeconds);   // the stretch is still open
+    }
+
+    [Fact]
+    public void WaitingStretchCount_APermissionPromptIsAnInterruptionEvenThoughItIsNotATurn()
+    {
+        // The deliberate difference from TurnCount, which counts only completed turns. A permission
+        // prompt finishes nothing - but it stops and asks you, which is the thing being counted.
+        using var session = NewSession();
+
+        session.ApplyTerminalActivityState(ActivityState.Working);
+        session.ApplyTerminalActivityState(ActivityState.WaitingForPerm);
+
+        Assert.Equal(0, session.TurnCount);
+        Assert.Equal(1, session.WaitingStretchCount);
+    }
+
+    [Fact]
+    public void WaitingStretchCount_PermThenInputIsOneUninterruptedWait()
+    {
+        // The wait that changes shape without ending: a permission prompt answered into a turn-end
+        // never returned control to you in between, so it is ONE interruption. The anchor already
+        // survives this transition (one wait, one anchor) and the count must agree with it - two
+        // counters disagreeing about the same stretch is how "how often does this bother me" quietly
+        // doubles.
+        using var session = NewSession();
+
+        session.ApplyTerminalActivityState(ActivityState.Working);
+        session.ApplyTerminalActivityState(ActivityState.WaitingForPerm);
+        session.ApplyTerminalActivityState(ActivityState.WaitingForInput);
+
+        Assert.Equal(1, session.WaitingStretchCount);
+    }
+
     private static Session NewSession()
         => new(Guid.NewGuid(), @"C:\test\repo", @"C:\test\repo", null, new StubSessionBackend(), SessionBackendType.ConPty);
 }

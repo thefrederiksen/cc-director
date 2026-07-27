@@ -52,6 +52,21 @@ public class PersistedSession
     /// values.</summary>
     public string? ExplicitRole { get; set; }
 
+    /// <summary>WHO asked for this session (issue #982) - one of the SessionOriginKinds values.
+    /// Persisted because it is a birth fact that can never be recovered once lost: nothing about a
+    /// running session says who asked for it. Sessions persisted before this field existed restore as
+    /// null and are stamped "unknown", which is the truth about them.</summary>
+    public string? OriginKind { get; set; }
+
+    /// <summary>WHERE the create call came from (issue #982) - one of the SessionOriginSurfaces values.
+    /// Persisted on the same terms as <see cref="OriginKind"/>.</summary>
+    public string? OriginSurface { get; set; }
+
+    /// <summary>The session that asked for this one (issue #982), or null. Persisted so the lineage tree
+    /// survives a Director restart - an edge lost here is an operation that silently becomes N unrelated
+    /// sessions.</summary>
+    public Guid? ParentSessionId { get; set; }
+
     /// <summary>True when the name was auto-composed at birth (automatic session roles, chunk 3). Persisted
     /// so an explicit human/self rename is never re-auto-named after a restart.</summary>
     public bool IsAutoNamed { get; set; }

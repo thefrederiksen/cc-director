@@ -49,8 +49,44 @@ public sealed class SessionHistoryEntity : TenantScopedEntity
     public string? Model { get; set; }
     public string? MissionName { get; set; }
 
+    /// <summary>
+    /// The mission this session was attached to (devthrottle_internal issue #982), or null. The NAME
+    /// was already stored beside it and reads well, but a name is not a key: missions get renamed, two
+    /// can share a name, and reporting a mission as a unit of work - sessions taken, elapsed time, cost
+    /// - needs the id the mission store is keyed by. Written once, like the other attachment facts.
+    /// </summary>
+    public Guid? MissionId { get; set; }
+
     /// <summary>The declared role (Architect/Manager/Worker...), when the session has one.</summary>
     public string? SessionRole { get; set; }
+
+    /// <summary>
+    /// WHO asked for this session (devthrottle_internal issue #982) - one of the
+    /// <c>SessionOriginKinds</c> tokens. A BIRTH FACT: written on first sight and never revised, unlike
+    /// the running facts above, which are refreshed on every observed push. It cannot change, and a
+    /// later push that lost it (an old Director mid-upgrade) must not be allowed to erase it.
+    ///
+    /// Null on rows written before the field existed, and "unknown" on rows whose create path did not
+    /// say. Those are different states and are kept different: the first means the Gateway was not
+    /// asking, the second means it asked and the answer was nothing.
+    /// </summary>
+    public string? OriginKind { get; set; }
+
+    /// <summary>WHERE the create call came from (issue #982) - one of the <c>SessionOriginSurfaces</c>
+    /// tokens. A birth fact on the same terms as <see cref="OriginKind"/>.</summary>
+    public string? OriginSurface { get; set; }
+
+    /// <summary>
+    /// The session that asked for this one (issue #982), or null. THE LINEAGE EDGE, and the reason this
+    /// table can answer questions the live roster never could: a fleet of twenty-two rows resolves into
+    /// the handful of operations it actually was, long after every one of those sessions has exited.
+    ///
+    /// Stored as the session GUID string, matching <see cref="SessionId"/>, so a parent joins to its
+    /// own row in this table. NOT a foreign key: a parent's row can be pruned by the 90-day retention
+    /// while a child's remains, and a dangling id is a truthful record of a parent we no longer keep -
+    /// a constraint here would force the retention sweep to either lie or cascade.
+    /// </summary>
+    public string? ParentSessionId { get; set; }
 
     /// <summary>Director-measured session creation time (SessionDto.CreatedAt) - a real measurement.</summary>
     public DateTime StartedAtUtc { get; set; }
@@ -79,6 +115,57 @@ public sealed class SessionHistoryEntity : TenantScopedEntity
     /// stretches (SessionDto.CumulativeIdleSeconds, internal#625 phase 4), as last pushed. Null when
     /// the owning Director predates the clock.</summary>
     public double? CumulativeIdleSeconds { get; set; }
+
+    /// <summary>
+    /// How many times the session started waiting on the user (devthrottle_internal issue #982) - the
+    /// matched pair to <see cref="CumulativeIdleSeconds"/>. Seconds waited is the total; this is the
+    /// number of times, and the two together are what make either readable. High-water mark, like the
+    /// counters above: a Director restart resets its own counter, and the run's record must not follow
+    /// it down. Null when the owning Director predates the counter.
+    /// </summary>
+    public long? WaitingStretchCount { get; set; }
+
+    /// <summary>
+    /// Character volume of input submitted into this session (issue #982), operator plus agent-driven,
+    /// summed from the pushed input stats. Turn counts alone flatten a one-word "yes" and a pasted
+    /// design document into the same number. High-water mark; null when never reported.
+    /// </summary>
+    public long? InputCharacterCount { get; set; }
+
+    /// <summary>
+    /// This session's cumulative token spend (issue #982), from the pushed
+    /// <c>SessionDto.TokenTotals</c>. Spend existed globally, by hour and by model, but not per
+    /// session - which is what "cost per merged change" needs, joined against the commits and pull
+    /// requests already on this row (the session-to-forge join product strategy decision 27 calls ours).
+    ///
+    /// ADDITIVE tokens only, and all four kept apart rather than pre-summed: cache reads and cache
+    /// creation are priced differently from plain input, so a single total could not be turned back
+    /// into money. High-water marks; null when the agent's driver reports no usage (only Claude's does
+    /// today).
+    /// </summary>
+    public long? InputTokens { get; set; }
+
+    /// <summary>Cumulative output tokens. See <see cref="InputTokens"/>.</summary>
+    public long? OutputTokens { get; set; }
+
+    /// <summary>Cumulative cache-read input tokens. See <see cref="InputTokens"/>.</summary>
+    public long? CacheReadTokens { get; set; }
+
+    /// <summary>Cumulative cache-creation input tokens. See <see cref="InputTokens"/>.</summary>
+    public long? CacheCreationTokens { get; set; }
+
+    /// <summary>
+    /// The FULLEST the session's context window was observed to be (issue #982), in tokens.
+    ///
+    /// A GAUGE, not spend, and that is why it is a peak rather than a sum: context occupancy rises
+    /// through a turn and DROPS when the agent compacts, so adding the readings together would produce
+    /// a number that means nothing. Keeping the maximum is the honest reduction, and it is the fact
+    /// behind "did this session run out of room" - a session whose peak sits near its model's window
+    /// was working under pressure whether or not it visibly compacted.
+    ///
+    /// Null when the agent's driver reports no context reading.
+    /// </summary>
+    public long? PeakContextTokens { get; set; }
 
     /// <summary>The first user prompt, trimmed to one line - description source number two (#1862).
     /// Set once from the prompt-log ingest and never overwritten.</summary>

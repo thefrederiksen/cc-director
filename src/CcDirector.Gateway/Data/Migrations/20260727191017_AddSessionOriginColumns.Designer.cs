@@ -3,6 +3,7 @@ using System;
 using CcDirector.Gateway.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace CcDirector.Gateway.Data.Migrations
 {
     [DbContext(typeof(GatewayDbContext))]
-    partial class GatewayDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260727191017_AddSessionOriginColumns")]
+    partial class AddSessionOriginColumns
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.2");
@@ -739,12 +742,6 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.Property<string>("BranchesJson")
                         .HasColumnType("TEXT");
 
-                    b.Property<long?>("CacheCreationTokens")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<long?>("CacheReadTokens")
-                        .HasColumnType("INTEGER");
-
                     b.Property<string>("CommitsJson")
                         .HasColumnType("TEXT");
 
@@ -767,12 +764,6 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.Property<string>("FirstPromptLine")
                         .HasColumnType("TEXT");
 
-                    b.Property<long?>("InputCharacterCount")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<long?>("InputTokens")
-                        .HasColumnType("INTEGER");
-
                     b.Property<string>("LastActivityState")
                         .HasColumnType("TEXT");
 
@@ -788,9 +779,6 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.Property<string>("MachineName")
                         .HasColumnType("TEXT");
 
-                    b.Property<Guid?>("MissionId")
-                        .HasColumnType("TEXT");
-
                     b.Property<string>("MissionName")
                         .HasColumnType("TEXT");
 
@@ -803,14 +791,8 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.Property<string>("OriginSurface")
                         .HasColumnType("TEXT");
 
-                    b.Property<long?>("OutputTokens")
-                        .HasColumnType("INTEGER");
-
                     b.Property<string>("ParentSessionId")
                         .HasColumnType("TEXT");
-
-                    b.Property<long?>("PeakContextTokens")
-                        .HasColumnType("INTEGER");
 
                     b.Property<string>("PullRequestsJson")
                         .HasColumnType("TEXT");
@@ -846,9 +828,6 @@ namespace CcDirector.Gateway.Data.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<long?>("TurnCount")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<long?>("WaitingStretchCount")
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("WhatWasBuiltJson")

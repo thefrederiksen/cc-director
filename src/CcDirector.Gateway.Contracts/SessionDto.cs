@@ -570,6 +570,41 @@ public sealed class SessionDto
     public string? SessionRole { get; set; }
 
     /// <summary>
+    /// RAW FACT: WHO asked for this session to exist (devthrottle_internal issue #982) - one of the
+    /// <c>SessionOriginKinds</c> tokens ("human" / "agent" / "schedule" / "unknown"). Mirrors
+    /// <c>Session.OriginKind</c>; stamped at birth by the create path and never changed, so it keeps
+    /// describing the create call however the session later behaves. Passes through the Gateway
+    /// aggregation unchanged and is folded into the durable work-history record.
+    ///
+    /// "unknown" is a real answer here and must be rendered as one, never as "human". It is what a
+    /// Director that predates the field reports, and what an honest create path with nothing to say
+    /// records. The whole point of the field is the share of sessions AGENTS start; quietly resolving
+    /// unknown to either real value corrupts that number where no later reader could see it.
+    /// </summary>
+    public string? OriginKind { get; set; }
+
+    /// <summary>
+    /// RAW FACT: WHERE the create call came from (issue #982) - one of the
+    /// <c>SessionOriginSurfaces</c> tokens ("desktop" / "cockpit" / "phone" / "cli" / "cron" /
+    /// "workflow" / "api" / "unknown"). Mirrors <c>Session.OriginSurface</c>, on the same terms as
+    /// <see cref="OriginKind"/>.
+    /// </summary>
+    public string? OriginSurface { get; set; }
+
+    /// <summary>
+    /// RAW FACT: the id of the session that ASKED for this one (issue #982), or null when nothing did.
+    /// Mirrors <c>Session.ParentSessionId</c>. This is the lineage edge: with it, a roster of
+    /// twenty-two sessions resolves into the handful of operations it actually is, and delegation depth
+    /// becomes answerable at all.
+    ///
+    /// DISTINCT from <see cref="ControllerSessionId"/>, which is a live supervision relationship the
+    /// fold reads to recede a sub-agent to slate. This one is history and paints nothing. They carry
+    /// the same id on an ordinary CLI spawn and diverge whenever a session spawns a deliberate peer
+    /// (<c>--standalone</c>) - no controller, but an agent still started it.
+    /// </summary>
+    public string? ParentSessionId { get; set; }
+
+    /// <summary>
     /// RAW FACT: the sticky EXPLICIT role a human/session declared for this session (mirrors
     /// <c>Session.ExplicitRole</c>), or null when none was set. When present it WINS over auto-derivation in
     /// the aggregation's role resolution (so an explicit <see cref="SessionRoles.Architect"/> - which can
@@ -759,6 +794,18 @@ public sealed class SessionDto
     /// an older Director does not report it; unknown, never zero.
     /// </summary>
     public double? CumulativeIdleSeconds { get; set; }
+
+    /// <summary>
+    /// How many times this session has STARTED waiting on the user (devthrottle_internal issue #982),
+    /// as counted by the owning Director at the same activity flip that opens the stretch
+    /// <see cref="CumulativeIdleSeconds"/> later closes. Mirrors <c>Session.WaitingStretchCount</c>.
+    ///
+    /// The matched pair to the idle clock, and not derivable from it: one session that needed you once
+    /// for an hour and one that needed you twelve times for five minutes read the same on the clock and
+    /// are nothing alike to live with. Null when an older Director does not report it - unknown, never
+    /// zero, and zero from a current Director genuinely means it has not needed you yet.
+    /// </summary>
+    public int? WaitingStretchCount { get; set; }
 
     /// <summary>
     /// Issue #1176 (Phase 1a): a copy safe to hand out from the Gateway's pushed-session cache. The

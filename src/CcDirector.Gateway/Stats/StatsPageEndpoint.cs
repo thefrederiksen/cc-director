@@ -62,6 +62,59 @@ public static class StatsPageEndpoint
             statusCode: StatusCodes.Status403Forbidden);
 
     /// <summary>
+    /// The session-origin block of the feed (devthrottle_internal issue #982): how sessions came to
+    /// exist, over the whole window the work-history table retains and over the last seven days.
+    ///
+    /// TWO WINDOWS, ON PURPOSE. The all-time counts are the ones a claim gets made from, and they are
+    /// the ones that will be wrong first: the record only began the day the fields shipped, so an
+    /// all-time share silently mixes "before we were asking" into the denominator forever. The
+    /// seven-day window is the one that is honestly comparable to itself week over week, and it states
+    /// its own bounds so a reader can see how much record there actually is.
+    ///
+    /// The all-time block reports where the RECORD begins (the oldest birth actually stored), not the
+    /// floor of the query. Those differ by more than a detail: retention prunes from the front, and the
+    /// origin fields only began being written the day they shipped, so quoting a share over "all time"
+    /// without that date is quoting a denominator the Gateway has not got. The floor of the query is
+    /// <see cref="DateTime.MinValue"/> deliberately - anything higher would silently drop a row whose
+    /// start time is missing rather than showing it in the not-recorded bucket where it belongs.
+    /// </summary>
+    private static object OriginBlock(History.SessionHistoryStore sessionHistory)
+    {
+        var now = DateTime.UtcNow;
+        var allTime = sessionHistory.OriginTotals(DateTime.MinValue, now);
+        var week = sessionHistory.OriginTotals(now.AddDays(-7), now);
+        return new
+        {
+            // What each bucket key means, served beside the numbers so a reader never has to guess
+            // whether "notRecorded" is a kind of session or the absence of a record.
+            notRecordedMeans = "the session's row predates the origin fields - the Gateway was not "
+                             + "asking. Distinct from \"unknown\", which is a recorded answer: the "
+                             + "create path was asked and had nothing to say.",
+            allTime = new
+            {
+                // Where the RECORD begins, not where the query floor was set. Null when nothing is
+                // stored at all - honestly empty rather than dated to the epoch.
+                recordBeginsUtc = allTime.EarliestStartUtc,
+                toUtc = allTime.ToUtc,
+                sessions = allTime.Sessions,
+                withParentSession = allTime.WithParent,
+                byKind = allTime.ByKind,
+                bySurface = allTime.BySurface,
+            },
+            last7Days = new
+            {
+                sinceUtc = week.FromUtc,
+                toUtc = week.ToUtc,
+                recordBeginsUtc = week.EarliestStartUtc,
+                sessions = week.Sessions,
+                withParentSession = week.WithParent,
+                byKind = week.ByKind,
+                bySurface = week.BySurface,
+            },
+        };
+    }
+
+    /// <summary>
     /// Maps the two stats routes. Returns the group builder they were mapped through (kept for callers that
     /// compose onto it). The hosted deny is gone: the data route serves the caller's own tenant's totals and
     /// answers 403 when no tenant resolves.
@@ -75,7 +128,12 @@ public static class StatsPageEndpoint
         // The tenant boundary the data route resolves the CALLER's tenant through. Null (self-host, older
         // callers, tests) means the single Local tenant; on hosted it resolves the authenticated device key's
         // tenant and answers 403 when there is none - never falling back to Local.
-        Tenancy.HostedTenantBoundary? tenantBoundary = null)
+        Tenancy.HostedTenantBoundary? tenantBoundary = null,
+        // The durable work-history store (devthrottle_internal issue #982), source of the session-origin
+        // counts. Null (older callers, tests) omits that block from the feed entirely rather than serving
+        // zeroes - a zero here would read as "no agent ever started a session", which is a different and
+        // much more interesting claim than "this Gateway is not keeping the record".
+        History.SessionHistoryStore? sessionHistory = null)
     {
         FileLog.Write($"[StatsPageEndpoint] mapping /stats (redirect to /your-throttle) and /stats/data; hosted={GatewayHostedMode.IsHosted} - the data route serves the caller's own tenant totals, 403 when unresolved (issue #1848 deny retired)");
 
@@ -142,6 +200,13 @@ public static class StatsPageEndpoint
                 // them is the leverage the owner actually gets per turn they spend.
                 agentDrivenTurns = aggregator.AgentDrivenUsage(tenant).Turns,
                 agentDrivenCharacters = aggregator.AgentDrivenUsage(tenant).Characters,
+                // devthrottle_internal issue #982: how the fleet's sessions CAME TO EXIST, over the
+                // durable work-history window. The agent-driven numbers above count turns - who does
+                // the talking once a session is running. This counts births - who decides a session
+                // should exist at all, which is the step that turns one person into a supervisor of
+                // twenty-two. Null when no history store is wired; see the parameter note above for
+                // why that is not zero.
+                sessionOrigins = sessionHistory is null ? null : OriginBlock(sessionHistory),
                 notCaptured = NotCaptured,
             });
         });

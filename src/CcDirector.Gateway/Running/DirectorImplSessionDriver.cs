@@ -1,3 +1,4 @@
+using CcDirector.Core.Sessions;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Contracts;
@@ -51,6 +52,12 @@ public sealed class DirectorImplSessionDriver : IImplSessionDriver
             // implementation-loop skill drives the whole DEV->QA loop for this item in its source
             // mode and prints the IMPL-LOOP-TERMINAL sentinel when it terminates.
             PrePrompt = seedPrompt,
+            // Session origin (devthrottle_internal issue #982). A work-list item opening its own
+            // session is automation, like cron: no person asked for this one and no agent session made
+            // the call - the runner did, working its way down a list. Certain on this path, which runs
+            // for nothing else.
+            Origin = SessionOriginKinds.Schedule,
+            OriginSurface = SessionOriginSurfaces.Workflow,
         };
 
         var (ok, body, error) = await _verb.CreateSessionAsync(req, ct);

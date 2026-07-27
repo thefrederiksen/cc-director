@@ -434,6 +434,29 @@ internal static class SessionCommandExecutor
         if (req.Role is not null && !SessionRoles.IsValid(req.Role))
             return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unknown role '{req.Role}'. Valid: {string.Join(", ", SessionRoles.All)}");
 
+        // Session origin and lineage (devthrottle_internal issue #982), validated BEFORE creating the
+        // session on exactly the role check's terms. A mistyped origin is REJECTED rather than recorded
+        // as "unknown", because unknown is also what an honest older caller sends: if a typo landed
+        // there too, the two would be indistinguishable and the field's whole purpose - counting how
+        // many sessions agents start - would quietly absorb every caller's mistakes.
+        if (req.Origin is not null && !SessionOriginKinds.IsValid(req.Origin))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest,
+                $"unknown origin '{req.Origin}'. Valid: {string.Join(", ", SessionOriginKinds.All)}");
+        if (req.OriginSurface is not null && !SessionOriginSurfaces.IsValid(req.OriginSurface))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest,
+                $"unknown origin surface '{req.OriginSurface}'. Valid: {string.Join(", ", SessionOriginSurfaces.All)}");
+        Guid? parentSessionId = null;
+        if (!string.IsNullOrWhiteSpace(req.ParentSessionId))
+        {
+            if (!Guid.TryParse(req.ParentSessionId, out var parsedParentId))
+                return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest,
+                    $"parentSessionId '{req.ParentSessionId}' is not a session id.");
+            parentSessionId = parsedParentId;
+        }
+        // Compose now so the create log records what will actually be stamped, not what was asked for -
+        // the composer drops a parent id that arrived on a non-agent origin.
+        var origin = SessionOrigin.Compose(req.Origin, req.OriginSurface, parentSessionId);
+
         // Workflow seat at spawn (Workflows mission, phase 5b): validated BEFORE creating the session,
         // like the role above. The Director stamps the seat ONLY when the run id arrives with its
         // Gateway-resolved workflow id and pinned version - the Gateway is the source of truth for
@@ -565,6 +588,13 @@ internal static class SessionCommandExecutor
                         s.SetExplicitRole(preLaunchRole);
                     if (seatRequested)
                         s.SeatOnWorkflow(req.WorkflowRunId, req.WorkflowId, req.WorkflowVersion);
+                    // Birth facts (issue #982), stamped in the same pre-launch window as the role and
+                    // the seat. Pre-launch is not cosmetic here: the session's FIRST roster push can
+                    // leave for the Gateway the moment the process starts, and the history recorder
+                    // writes its row from that first sight. A stamp after create returns would race it,
+                    // and the row that lost the race would record "unknown" for a session whose origin
+                    // was known all along - permanently, since first sight only happens once.
+                    s.StampOrigin(origin);
                 });
         }
         catch (Exception ex)

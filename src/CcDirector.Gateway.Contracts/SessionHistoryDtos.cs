@@ -73,7 +73,30 @@ public sealed record WorkHistorySessionDto
     [JsonPropertyName("agentKind")] public string? AgentKind { get; init; }
     [JsonPropertyName("model")] public string? Model { get; init; }
     [JsonPropertyName("missionName")] public string? MissionName { get; init; }
+
+    /// <summary>The mission's id (devthrottle_internal issue #982), or null. The name reads well but
+    /// cannot be joined on - missions get renamed, and two can share a name - so reporting a mission as
+    /// a unit of work (sessions taken, elapsed time, cost) needs the key.</summary>
+    [JsonPropertyName("missionId")] public Guid? MissionId { get; init; }
     [JsonPropertyName("sessionRole")] public string? SessionRole { get; init; }
+
+    /// <summary>WHO asked for this session (devthrottle_internal issue #982): one of the
+    /// <c>SessionOriginKinds</c> tokens - "human", "agent", "schedule", "unknown". A birth fact,
+    /// written once and never revised. NULL means the row predates the field - which is not the same
+    /// as "unknown", the answer for a create path that was asked and had nothing to say.</summary>
+    [JsonPropertyName("originKind")] public string? OriginKind { get; init; }
+
+    /// <summary>WHERE the create call came from (issue #982): one of the
+    /// <c>SessionOriginSurfaces</c> tokens - "desktop", "cockpit", "phone", "cli", "cron",
+    /// "workflow", "api", "unknown". Null on rows that predate the field.</summary>
+    [JsonPropertyName("originSurface")] public string? OriginSurface { get; init; }
+
+    /// <summary>The id of the session that ASKED for this one (issue #982), or null when nothing did -
+    /// the lineage edge that turns a flat list of sessions into the operations they belonged to. The id
+    /// keys this same table, so a parent is looked up by its own <see cref="SessionId"/>; it may name a
+    /// row that retention has already pruned, which is a truthful record of a parent we no longer
+    /// keep.</summary>
+    [JsonPropertyName("parentSessionId")] public string? ParentSessionId { get; init; }
 
     [JsonPropertyName("startedAtUtc")] public required DateTime StartedAtUtc { get; init; }
     [JsonPropertyName("lastActivityUtc")] public DateTime? LastActivityUtc { get; init; }
@@ -109,6 +132,37 @@ public sealed record WorkHistorySessionDto
     /// <summary>Total seconds the session spent waiting on the user, summed over closed waiting
     /// stretches. Null when never reported.</summary>
     [JsonPropertyName("idleSeconds")] public double? IdleSeconds { get; init; }
+
+    /// <summary>How many times the session started waiting on the user (devthrottle_internal issue
+    /// #982) - the matched pair to <see cref="IdleSeconds"/>, and not derivable from it. An hour of
+    /// waiting spread over twelve interruptions is a different session to live with from one that
+    /// waited once. Null when the owning Director never reported the counter.</summary>
+    [JsonPropertyName("waitingStretchCount")] public long? WaitingStretchCount { get; init; }
+
+    /// <summary>Character volume of input submitted into the session, operator plus agent-driven
+    /// (issue #982). Turn counts alone flatten a one-word "yes" and a pasted design document into the
+    /// same number. Null when never reported.</summary>
+    [JsonPropertyName("inputCharacterCount")] public long? InputCharacterCount { get; init; }
+
+    /// <summary>Cumulative uncached input tokens for this session (issue #982). Kept apart from the
+    /// cache figures rather than pre-summed, because they are priced differently and one total could
+    /// not be turned back into money. Null when the agent's driver reports no usage.</summary>
+    [JsonPropertyName("inputTokens")] public long? InputTokens { get; init; }
+
+    /// <summary>Cumulative output tokens. See <see cref="InputTokens"/>.</summary>
+    [JsonPropertyName("outputTokens")] public long? OutputTokens { get; init; }
+
+    /// <summary>Cumulative cache-read input tokens. See <see cref="InputTokens"/>.</summary>
+    [JsonPropertyName("cacheReadTokens")] public long? CacheReadTokens { get; init; }
+
+    /// <summary>Cumulative cache-creation input tokens. See <see cref="InputTokens"/>.</summary>
+    [JsonPropertyName("cacheCreationTokens")] public long? CacheCreationTokens { get; init; }
+
+    /// <summary>The fullest the session's context window was observed to be, in tokens (issue #982).
+    /// A GAUGE, so this is a PEAK and never a sum: occupancy rises through a turn and drops on a
+    /// compaction, and adding the readings would produce a number with no unit. Null when the agent's
+    /// driver reports no context reading.</summary>
+    [JsonPropertyName("peakContextTokens")] public long? PeakContextTokens { get; init; }
 
     /// <summary>Null when no summary exists yet; otherwise one of <see cref="SessionHistorySummaryKinds"/>.</summary>
     [JsonPropertyName("summaryKind")] public string? SummaryKind { get; init; }

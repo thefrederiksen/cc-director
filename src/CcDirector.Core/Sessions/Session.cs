@@ -168,6 +168,56 @@ public sealed class Session : IDisposable
     public bool IsControlled => ControllerSessionId.HasValue;
 
     /// <summary>
+    /// WHO asked for this session to exist (devthrottle_internal issue #982) - one of the
+    /// <see cref="SessionOriginKinds"/> values. A BIRTH FACT: stamped by the create path and never
+    /// changed, so it keeps describing the create call however the session later behaves. Persisted, so
+    /// a Director restart does not turn a known origin into an unknown one.
+    ///
+    /// Defaults to <see cref="SessionOriginKinds.Unknown"/> rather than to <c>human</c>. The number this
+    /// field exists to produce is the share of sessions AGENTS start; defaulting the unstated case to
+    /// either real value would bias exactly that number, in a way no later reader could detect.
+    /// </summary>
+    public string OriginKind { get; internal set; } = SessionOriginKinds.Unknown;
+
+    /// <summary>WHERE the create call came from (issue #982) - one of the
+    /// <see cref="SessionOriginSurfaces"/> values. A birth fact beside <see cref="OriginKind"/>, on the
+    /// same terms: stamped once, persisted, unknown when unstated.</summary>
+    public string OriginSurface { get; internal set; } = SessionOriginSurfaces.Unknown;
+
+    /// <summary>
+    /// The session that asked for this one (issue #982), or null when nothing did. This is the LINEAGE
+    /// edge: with it a roster of twenty-two sessions resolves into the handful of operations it actually
+    /// is, and delegation depth and runaway-parent detection become answerable at all.
+    ///
+    /// DISTINCT FROM <see cref="ControllerSessionId"/>, which is a live supervision relationship that
+    /// changes how the session is PAINTED (a controlled sub-agent recedes to slate while its controller
+    /// lives). This one is a historical fact about who made the create call and affects no display at
+    /// all. They coincide on the common CLI spawn and diverge whenever a session spawns a deliberate
+    /// peer (<c>--standalone</c>): that peer has no controller and must stay human-facing, but an agent
+    /// still started it, and that is precisely the thing #982 exists to count.
+    /// </summary>
+    public Guid? ParentSessionId { get; internal set; }
+
+    /// <summary>The three birth facts read back together. Stamped through
+    /// <see cref="StampOrigin"/>.</summary>
+    public SessionOrigin Origin => new(OriginKind, OriginSurface, ParentSessionId);
+
+    /// <summary>
+    /// Stamp the birth facts (issue #982). Called once by the create path BEFORE launch, and by the
+    /// restore path carrying the persisted values back. Composed through
+    /// <see cref="SessionOrigin.Compose"/>, so an unknown token lands as unknown rather than as a
+    /// plausible-looking lie, and a parent id never survives on a non-agent origin.
+    /// </summary>
+    public void StampOrigin(SessionOrigin origin)
+    {
+        var composed = SessionOrigin.Compose(origin.Kind, origin.Surface, origin.ParentSessionId);
+        OriginKind = composed.Kind;
+        OriginSurface = composed.Surface;
+        ParentSessionId = composed.ParentSessionId;
+        FileLog.Write($"[Session] {Id} origin stamped: kind={OriginKind} surface={OriginSurface} parent={ParentSessionId?.ToString() ?? "(none)"}");
+    }
+
+    /// <summary>
     /// The sticky EXPLICIT role a human/session declared for this session (automatic session roles), or null
     /// for none. When set it WINS over the Gateway's auto-derivation of the role - the only way to be an
     /// Architect, which cannot be inferred from the spawn graph. Settable at birth (from the create request)
@@ -1080,6 +1130,7 @@ public sealed class Session : IDisposable
     private int _turnCount;
     private DateTime? _waitingSince;
     private double _cumulativeIdleSeconds;
+    private int _waitingStretchCount;
 
     /// <summary>Clock for the supervision facts below. A test seam; production never sets it.</summary>
     internal Func<DateTime> SupervisionClock { private get; set; } = static () => DateTime.UtcNow;
@@ -1112,6 +1163,30 @@ public sealed class Session : IDisposable
     public double CumulativeIdleSeconds => _cumulativeIdleSeconds;
 
     /// <summary>
+    /// How many times this session has STARTED waiting on the user (devthrottle_internal issue #982) -
+    /// one per entry into a waiting state, counted at the same flip that opens the stretch
+    /// <see cref="CumulativeIdleSeconds"/> later closes. The two are a matched pair: seconds waited is
+    /// the total, this is the number of times, and a fleet where the brain is doing its job should move
+    /// one without the other.
+    ///
+    /// The COUNT of interruptions, which the total seconds cannot stand in for: one session that needed
+    /// you once for an hour and one that needed you twelve times for five minutes read identically on
+    /// the clock and are completely different to live with. The brain's whole job is deciding when to
+    /// interrupt, so this is the denominator it gets measured on.
+    ///
+    /// Counts the DIRECTOR's waiting state, which is close to but not identical with the Gateway's red
+    /// verdict: a wait that the wingman is still narrating, or one the owner has snoozed, is counted
+    /// here and is not red yet. That is the honest thing a Director can measure - it cannot see the
+    /// Gateway's overlays - and it is the raw fact a red-event count would have to be built from
+    /// anyway. Reported on <c>SessionDto.WaitingStretchCount</c>.
+    ///
+    /// The stretch that is currently OPEN is already counted (it started), unlike the seconds, which
+    /// are only added when it closes. That is deliberate: a session waiting on you right now has
+    /// interrupted you, whatever happens next.
+    /// </summary>
+    public int WaitingStretchCount => _waitingStretchCount;
+
+    /// <summary>
     /// Supervision bookkeeping (internal#625 Phase 1): the turn counter and the waiting clock.
     /// Runs INSIDE <see cref="SetActivityState"/> before <see cref="OnActivityStateChanged"/> fires,
     /// so the delta push wired to that event always carries the numbers this very flip produced -
@@ -1128,6 +1203,12 @@ public sealed class Session : IDisposable
         if (!wasWaiting && isWaiting)
         {
             _waitingSince = SupervisionClock();
+            // The interruption count (issue #982), incremented at the SAME flip that opens the stretch
+            // the idle clock later closes. Counting it here rather than at the close is what makes an
+            // open wait count: a session sitting on you right now has interrupted you already, and a
+            // count that only moved on release would report zero for the sessions still waiting - the
+            // exact ones the question is about.
+            _waitingStretchCount++;
         }
         else if (wasWaiting && !isWaiting)
         {

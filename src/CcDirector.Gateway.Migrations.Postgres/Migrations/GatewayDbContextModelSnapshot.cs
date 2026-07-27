@@ -754,6 +754,12 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.Property<string>("BranchesJson")
                         .HasColumnType("text");
 
+                    b.Property<long?>("CacheCreationTokens")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("CacheReadTokens")
+                        .HasColumnType("bigint");
+
                     b.Property<string>("CommitsJson")
                         .HasColumnType("text");
 
@@ -776,6 +782,12 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.Property<string>("FirstPromptLine")
                         .HasColumnType("text");
 
+                    b.Property<long?>("InputCharacterCount")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("InputTokens")
+                        .HasColumnType("bigint");
+
                     b.Property<string>("LastActivityState")
                         .HasColumnType("text");
 
@@ -791,11 +803,29 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.Property<string>("MachineName")
                         .HasColumnType("text");
 
+                    b.Property<Guid?>("MissionId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("MissionName")
                         .HasColumnType("text");
 
                     b.Property<string>("Model")
                         .HasColumnType("text");
+
+                    b.Property<string>("OriginKind")
+                        .HasColumnType("text");
+
+                    b.Property<string>("OriginSurface")
+                        .HasColumnType("text");
+
+                    b.Property<long?>("OutputTokens")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ParentSessionId")
+                        .HasColumnType("text");
+
+                    b.Property<long?>("PeakContextTokens")
+                        .HasColumnType("bigint");
 
                     b.Property<string>("PullRequestsJson")
                         .HasColumnType("text");
@@ -831,6 +861,9 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                         .HasColumnType("text");
 
                     b.Property<long?>("TurnCount")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("WaitingStretchCount")
                         .HasColumnType("bigint");
 
                     b.Property<string>("WhatWasBuiltJson")

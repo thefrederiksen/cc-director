@@ -1,3 +1,4 @@
+using CcDirector.Core.Sessions;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 
@@ -44,6 +45,14 @@ public sealed class DirectorCronSessionStarter : ICronSessionStarter
             // finishes with nothing needing a human, so an hourly job stops piling leftover sessions into
             // the rail. The job can opt out (AutoDismiss=false) to keep the run open like a normal session.
             AutoDismiss = job.Action.AutoDismiss,
+            // Session origin (devthrottle_internal issue #982). A fired schedule is the third origin:
+            // nobody was at a keyboard and no session made the call, so it is neither "human" nor
+            // "agent". Recording it as either would corrupt the one number the field exists to answer -
+            // what share of sessions agents start - and on a fleet with hourly jobs the error would not
+            // be small. This is a measurement, not a default: this code path only ever runs for a cron
+            // firing, so it knows both facts for certain.
+            Origin = SessionOriginKinds.Schedule,
+            OriginSurface = SessionOriginSurfaces.Cron,
         };
 
         FileLog.Write($"[DirectorCronSessionStarter] start: job={job.Id}, machine={job.Target.Machine}, repo={job.Action.RepoPath}, seed={job.Action.Seed}");

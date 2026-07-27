@@ -104,7 +104,14 @@ public static class SessionHistoryFold
         AgentKind = e.AgentKind,
         Model = e.Model,
         MissionName = e.MissionName,
+        MissionId = e.MissionId,
         SessionRole = e.SessionRole,
+        // Birth facts (issue #982). Passed through as stored, INCLUDING null: a row from before the
+        // fields existed is not the same as a session whose origin was asked for and unknown, and the
+        // reader is entitled to tell them apart.
+        OriginKind = e.OriginKind,
+        OriginSurface = e.OriginSurface,
+        ParentSessionId = e.ParentSessionId,
         StartedAtUtc = e.StartedAtUtc,
         LastActivityUtc = e.LastActivityUtc,
         LastSeenUtc = e.LastSeenUtc,
@@ -117,6 +124,13 @@ public static class SessionHistoryFold
         TurnCount = e.TurnCount,
         AgentTurnCount = e.AgentTurnCount,
         IdleSeconds = e.CumulativeIdleSeconds,
+        WaitingStretchCount = e.WaitingStretchCount,
+        InputCharacterCount = e.InputCharacterCount,
+        InputTokens = e.InputTokens,
+        OutputTokens = e.OutputTokens,
+        CacheReadTokens = e.CacheReadTokens,
+        CacheCreationTokens = e.CacheCreationTokens,
+        PeakContextTokens = e.PeakContextTokens,
         SummaryKind = string.IsNullOrEmpty(e.SummaryKind) ? null : e.SummaryKind,
         SummaryIsPartial = e.SummaryIsPartial,
         SummaryText = e.SummaryText,
