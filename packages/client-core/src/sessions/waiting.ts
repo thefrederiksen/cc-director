@@ -19,11 +19,18 @@ export function durationLabel(sinceIso: string, now: number): string {
   const since = Date.parse(trimmed);
   if (Number.isNaN(since)) return "";
 
-  let ms = now - since;
-  if (ms < 0) ms = 0;
+  const ms = now - since;
+  if (Math.floor(Math.max(0, ms) / 60000) < 1) return "just now";
+  return durationFromMs(ms);
+}
 
+// The ladder itself, from a bare millisecond span: "0m" -> "12m" -> "1h 4m" -> "2d 3h". THE one
+// duration ladder every card stat shares (durationLabel above, the supervision stats line) - a
+// second copy of these breakpoints is how two surfaces come to say the same span two different
+// ways. Sub-minute reads "0m" here; the "just now" wording belongs to durationLabel's contract.
+export function durationFromMs(ms: number): string {
+  if (ms < 0 || !Number.isFinite(ms)) ms = 0;
   const totalMinutes = Math.floor(ms / 60000);
-  if (totalMinutes < 1) return "just now";
 
   const days = Math.floor(totalMinutes / 1440);
   const hours = Math.floor((totalMinutes % 1440) / 60);

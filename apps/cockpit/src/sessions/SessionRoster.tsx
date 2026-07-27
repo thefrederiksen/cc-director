@@ -14,8 +14,10 @@ import {
   snoozeExpired,
 } from "@devthrottle/client-core/sessions/ordering";
 import { changesBadge, changesTitle } from "@devthrottle/client-core/sessions/changes";
+import { supervisionStats } from "@devthrottle/client-core/sessions/supervision";
 import { machinePortLabel } from "@devthrottle/client-core/fleet/directorEndpoint";
 import { useNow, waitingLabel } from "@devthrottle/client-core/sessions/waiting";
+import { useNow as useSharedNow } from "@devthrottle/client-core/polling/useNow";
 import {
   reachabilityFor,
   reachabilityLastSeen,
@@ -336,6 +338,10 @@ function RosterRow({
           </span>
           {/* Line 2: the Gateway-stamped status, on its own line so it is never squeezed to "Wor...". */}
           <span className="roster-state">{contextLine(session)}</span>
+          {/* Line 2b: the supervision facts (internal#625) - started / open / idle / turns, from the
+              ONE shared formatter, ticking on the shared one-second clock. Stats a Director does not
+              report are omitted, never shown as zero. */}
+          <SupervisionLine session={session} />
           {/* Line 3 (Attention view only): which cc-director this session lives on. */}
           {machineLine && (
             <span className="roster-machine" title={session.directorId ?? undefined}>
@@ -372,6 +378,26 @@ function RosterRow({
           sits OUTSIDE the Link so opening the menu never navigates into the session. */}
       <SessionMenu session={session} variant="rail" />
     </li>
+  );
+}
+
+// The card's supervision line (internal#625): started / open / idle / turns. The wording and the
+// amber/red idle thresholds live in client-core/sessions/supervision, shared with the mobile row,
+// so the two surfaces cannot say the same fact two different ways. Ticks on the app's ONE shared
+// one-second clock; the re-render is scoped to this line, not the whole card.
+function SupervisionLine({ session }: { session: SessionDto }) {
+  const now = useSharedNow();
+  const stats = supervisionStats(session, now);
+  if (stats.length === 0) return null;
+  return (
+    <span className="roster-stats">
+      {stats.map((s) => (
+        <span className="roster-stat" key={s.key} title={s.title}>
+          <span className="roster-stat-k">{s.key}</span>
+          <span className={`roster-stat-v${s.tone === "normal" ? "" : ` ${s.tone}`}`}>{s.value}</span>
+        </span>
+      ))}
+    </span>
   );
 }
 

@@ -878,6 +878,26 @@ body {
   word-break: break-word;
 }
 
+/* The supervision line (internal#625): started / open / idle / turns as quiet monospace key-value
+   pairs, the same visual language as the Fleet Map's tag rows. Generous gaps and free wrapping on
+   purpose - the values must read clearly and sit on their lines, never cram (owner's note on the
+   issue). Idle and open carry an amber/red tone when a session has sat too long, so a neglected
+   session looks neglected without shouting from every healthy card. */
+.roster-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 12px;
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.roster-stat { display: inline-flex; gap: 5px; white-space: nowrap; }
+.roster-stat-k { color: var(--text); opacity: 0.82; }
+.roster-stat-v { color: var(--text-dim); }
+.roster-stat-v.warm { color: var(--warn); }
+.roster-stat-v.hot { color: var(--attention); font-weight: 600; }
+
 .roster-tag {
   flex: 0 0 auto;
   font-size: 10px;
