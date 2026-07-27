@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using CcDirector.Core.Home;
@@ -43,10 +43,10 @@ public class HomeStatusBuilderTests
             new[] { Cli("Claude Code", false), Cli("Codex", false), Cli("Pi", false) },
             toolsBuilt: 31, toolsTotal: 31);
 
-        var clis = Row(status, "Agent CLIs");
+        var clis = Row(status, HomeStatusBuilder.AgentRowTitle);
         Assert.Equal(HomeCheckLevel.Bad, clis.Level);
         Assert.Equal(HomeCheckAction.OpenSettings, clis.Action);
-        Assert.Contains("No agent CLI found", clis.Detail);
+        Assert.Contains("No coding agent found", clis.Detail);
         Assert.False(status.AllReady);
         Assert.Equal(1, status.ReadyCount);
     }
@@ -58,7 +58,7 @@ public class HomeStatusBuilderTests
             new[] { Cli("Codex", true, "0.21.0"), Cli("Claude Code", false) },
             toolsBuilt: 31, toolsTotal: 31);
 
-        var clis = Row(status, "Agent CLIs");
+        var clis = Row(status, HomeStatusBuilder.AgentRowTitle);
         Assert.Equal(HomeCheckLevel.Ok, clis.Level);
         Assert.Equal("Codex 0.21.0 - on PATH", clis.Detail);
         Assert.Equal(HomeCheckAction.None, clis.Action);
@@ -71,7 +71,7 @@ public class HomeStatusBuilderTests
             new[] { Cli("Claude Code", true, "2.1.177"), Cli("Codex", true), Cli("Gemini", false) },
             toolsBuilt: 31, toolsTotal: 31);
 
-        var clis = Row(status, "Agent CLIs");
+        var clis = Row(status, HomeStatusBuilder.AgentRowTitle);
         Assert.Equal(HomeCheckLevel.Ok, clis.Level);
         Assert.Equal("Claude Code 2.1.177, Codex - on PATH", clis.Detail);
     }
@@ -84,7 +84,7 @@ public class HomeStatusBuilderTests
             new[] { Cli("Claude Code", true, "2.1.177 (Claude Code)") },
             toolsBuilt: 31, toolsTotal: 31);
 
-        Assert.Equal("Claude Code 2.1.177 - on PATH", Row(status, "Agent CLIs").Detail);
+        Assert.Equal("Claude Code 2.1.177 - on PATH", Row(status, HomeStatusBuilder.AgentRowTitle).Detail);
     }
 
     [Fact]
@@ -94,7 +94,7 @@ public class HomeStatusBuilderTests
             new[] { Cli("Claude Code", true) },
             toolsBuilt: 1, toolsTotal: 1);
 
-        var clis = Row(status, "Agent CLIs");
+        var clis = Row(status, HomeStatusBuilder.AgentRowTitle);
         Assert.Equal(HomeCheckLevel.Ok, clis.Level);
         Assert.Equal("Claude Code - on PATH", clis.Detail);
     }
@@ -106,7 +106,7 @@ public class HomeStatusBuilderTests
             new[] { Cli("Claude Code", true, "2.1.168") },
             toolsBuilt: 12, toolsTotal: 31);
 
-        var tools = Row(status, "cc-* tools");
+        var tools = Row(status, HomeStatusBuilder.ToolsRowTitle);
         Assert.Equal(HomeCheckLevel.Warn, tools.Level);
         Assert.Equal("12 of 31 working", tools.Detail);
         Assert.Equal(HomeCheckAction.RepairTools, tools.Action);
@@ -122,7 +122,7 @@ public class HomeStatusBuilderTests
             new[] { Cli("Claude Code", true, "2.1.168") },
             toolsBuilt: 25, toolsTotal: 25);
 
-        var tools = Row(status, "cc-* tools");
+        var tools = Row(status, HomeStatusBuilder.ToolsRowTitle);
         Assert.Equal(HomeCheckLevel.Ok, tools.Level);
         Assert.Equal(HomeCheckAction.None, tools.Action);
         Assert.Equal("25 installed, all working", tools.Detail);
@@ -135,7 +135,7 @@ public class HomeStatusBuilderTests
             new[] { Cli("Claude Code", true, "2.1.168") },
             toolsBuilt: 0, toolsTotal: 0);
 
-        var tools = Row(status, "cc-* tools");
+        var tools = Row(status, HomeStatusBuilder.ToolsRowTitle);
         Assert.Equal(HomeCheckLevel.Ok, tools.Level);
         Assert.Equal(HomeCheckAction.None, tools.Action);
     }
@@ -148,7 +148,7 @@ public class HomeStatusBuilderTests
             toolsBuilt: 29, toolsTotal: 32,
             brokenTools: new[] { "cc-html", "cc-pdf", "cc-word" });
 
-        var tools = Row(status, "cc-* tools");
+        var tools = Row(status, HomeStatusBuilder.ToolsRowTitle);
         Assert.Equal(HomeCheckLevel.Warn, tools.Level);
         Assert.Equal(HomeCheckAction.RepairTools, tools.Action);
         Assert.Contains("cc-html", tools.Detail);
@@ -164,7 +164,7 @@ public class HomeStatusBuilderTests
             new[] { Cli("Claude Code", true, "2.1.168") },
             toolsBuilt: 26, toolsTotal: 32, brokenTools: missing);
 
-        var tools = Row(status, "cc-* tools");
+        var tools = Row(status, HomeStatusBuilder.ToolsRowTitle);
         Assert.Contains("+2 more", tools.Detail);
     }
 
@@ -175,7 +175,7 @@ public class HomeStatusBuilderTests
             new[] { Cli("Claude Code", true, "2.1.168") },
             toolsBuilt: 0, toolsTotal: 31);
 
-        var tools = Row(status, "cc-* tools");
+        var tools = Row(status, HomeStatusBuilder.ToolsRowTitle);
         Assert.Equal(HomeCheckLevel.Bad, tools.Level);
         Assert.Equal(HomeCheckAction.RepairTools, tools.Action);
     }
@@ -188,7 +188,7 @@ public class HomeStatusBuilderTests
         var health = new ToolHealthSummary(24, 1, 4,0, new[] { "cc-foo" });
         var status = HomeStatusBuilder.Build(new[] { Cli("Claude Code", true, "2.1") }, 0, 0, null, health);
 
-        var tools = Row(status, "cc-* tools");
+        var tools = Row(status, HomeStatusBuilder.ToolsRowTitle);
         Assert.Equal(HomeCheckLevel.Warn, tools.Level);
         Assert.Contains("24 pass", tools.Detail);
         Assert.Contains("1 fail", tools.Detail);
@@ -206,7 +206,7 @@ public class HomeStatusBuilderTests
         var health = new ToolHealthSummary(24, 0, 4, 0, Array.Empty<string>());
         var status = HomeStatusBuilder.Build(new[] { Cli("Claude Code", true, "2.1") }, 0, 0, null, health);
 
-        var tools = Row(status, "cc-* tools");
+        var tools = Row(status, HomeStatusBuilder.ToolsRowTitle);
         Assert.Equal(HomeCheckLevel.Warn, tools.Level);
         Assert.Contains("4 not built", tools.Detail);
         Assert.Equal(HomeCheckAction.OpenTools, tools.Action); // not broken -> route to the Tools page
@@ -218,7 +218,7 @@ public class HomeStatusBuilderTests
         var health = new ToolHealthSummary(28, 0, 0, 0, Array.Empty<string>());
         var status = HomeStatusBuilder.Build(new[] { Cli("Claude Code", true, "2.1") }, 0, 0, null, health);
 
-        var tools = Row(status, "cc-* tools");
+        var tools = Row(status, HomeStatusBuilder.ToolsRowTitle);
         Assert.Equal(HomeCheckLevel.Ok, tools.Level);   // green ONLY when every tool passes
         Assert.Equal(HomeCheckAction.None, tools.Action);
     }
@@ -229,7 +229,7 @@ public class HomeStatusBuilderTests
         var health = new ToolHealthSummary(24, 0, 1,1, Array.Empty<string>());
         var status = HomeStatusBuilder.Build(new[] { Cli("Claude Code", true, "2.1") }, 0, 0, null, health);
 
-        var tools = Row(status, "cc-* tools");
+        var tools = Row(status, HomeStatusBuilder.ToolsRowTitle);
         Assert.Equal(HomeCheckLevel.Warn, tools.Level);
         Assert.Equal(HomeCheckAction.RepairTools, tools.Action); // broken -> one-click Fix
     }
@@ -244,10 +244,10 @@ public class HomeStatusBuilderTests
         var status = HomeStatusBuilder.Build(
             new[] { Cli("Claude Code", true, "2.1") }, 0, 0, null, health, basePythonBroken: true);
 
-        var tools = Row(status, "cc-* tools");
+        var tools = Row(status, HomeStatusBuilder.ToolsRowTitle);
         Assert.Equal(HomeCheckLevel.Bad, tools.Level);
         Assert.Equal(HomeCheckAction.RepairTools, tools.Action);
-        Assert.Contains("runtime broken", tools.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cannot start", tools.Detail, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -258,7 +258,7 @@ public class HomeStatusBuilderTests
         var health = new ToolHealthSummary(24, 0, 4, 0, Array.Empty<string>());
         var status = HomeStatusBuilder.Build(new[] { Cli("Claude Code", true, "2.1") }, 0, 0, null, health);
 
-        var tools = Row(status, "cc-* tools");
+        var tools = Row(status, HomeStatusBuilder.ToolsRowTitle);
         Assert.Equal(HomeCheckAction.OpenTools, tools.Action);
     }
 
