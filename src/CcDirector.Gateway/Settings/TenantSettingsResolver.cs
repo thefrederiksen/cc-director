@@ -124,6 +124,37 @@ public sealed class TenantSettingsResolver
     public bool VoiceModeAll(TenantId tenant)
         => string.Equals(_store.Get(tenant, TenantSettingKeys.VoiceModeAll), "true", StringComparison.Ordinal);
 
+    /// <summary>
+    /// Whether pending dictionary suggestions are mentioned in this tenant's daily report email. Defaults to
+    /// <see cref="SuggestionsInDailyEmailDefault"/> when the tenant has set no choice, and ALSO when the stored
+    /// value is not a boolean: a corrupt override degrades to the documented default rather than to whichever
+    /// boolean a lenient parse happened to leave behind.
+    /// </summary>
+    public bool SuggestionsInDailyEmail(TenantId tenant)
+        => ParseBool(_store.Get(tenant, TenantSettingKeys.DictationSuggestionsInDailyEmail))
+           ?? SuggestionsInDailyEmailDefault;
+
+    /// <summary>
+    /// This tenant's daily-email cadence state, or <see cref="DictationEmailCadenceState.None"/> when nothing
+    /// has been sent yet or the stored state cannot be read. Degrading an unreadable state to "nothing sent" is
+    /// the safe direction for a cadence whose whole job is to stay QUIET: it can cost at most one extra mention
+    /// of a batch, where the opposite default would silence a batch that was never mentioned at all.
+    /// </summary>
+    public DictationEmailCadenceState DictationEmailCadence(TenantId tenant)
+    {
+        var raw = _store.Get(tenant, TenantSettingKeys.DictationEmailCadence);
+        if (string.IsNullOrEmpty(raw)) return DictationEmailCadenceState.None;
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<DictationEmailCadenceState>(raw)
+                   ?? DictationEmailCadenceState.None;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return DictationEmailCadenceState.None;
+        }
+    }
+
     // ---- writes: validate like the global setters, then persist a per-tenant override -------------------
 
     /// <summary>Set the tenant's wingman model for a role.</summary>
@@ -214,7 +245,27 @@ public sealed class TenantSettingsResolver
         _store.Set(tenant, TenantSettingKeys.SnoozeDefaultMinutes, defaultMinutes.ToString(), nowUtc);
     }
 
+    /// <summary>Set whether pending suggestions are mentioned in this tenant's daily report email.</summary>
+    public void SetSuggestionsInDailyEmail(TenantId tenant, bool include, DateTime nowUtc)
+        => _store.Set(tenant, TenantSettingKeys.DictationSuggestionsInDailyEmail, include ? "true" : "false", nowUtc);
+
+    /// <summary>Record this tenant's daily-email cadence state after a mention is emitted.</summary>
+    public void SetDictationEmailCadence(TenantId tenant, DictationEmailCadenceState state, DateTime nowUtc)
+        => _store.Set(tenant, TenantSettingKeys.DictationEmailCadence,
+            System.Text.Json.JsonSerializer.Serialize(state), nowUtc);
+
     // ---- helpers ----------------------------------------------------------------------------------------
+
+    /// <summary>The default for <see cref="SuggestionsInDailyEmail"/> when a tenant has expressed no choice:
+    /// ON. The suggestions feature exists to help people who never open Settings, so the one place it reaches
+    /// them when they are not in the app has to be on by default.</summary>
+    public const bool SuggestionsInDailyEmailDefault = true;
+
+    /// <summary>Parse a stored boolean override; null when absent or not a boolean, so the caller falls back to
+    /// the documented default rather than guessing.</summary>
+    private static bool? ParseBool(string? raw)
+        => bool.TryParse(raw, out var value) ? value : null;
+
 
     /// <summary>An override value only when it is present AND non-empty; null otherwise (so the caller falls
     /// back to the operator global default rather than to an empty string).</summary>

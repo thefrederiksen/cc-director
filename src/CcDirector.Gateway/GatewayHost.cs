@@ -614,6 +614,8 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly Transcription.DictionarySuggestionVerdictStore _dictionaryVerdicts;
     private readonly Transcription.DictionarySuggestionScanStore _dictionaryScans;
     private readonly Transcription.DictionarySuggestionService _dictionarySuggestions;
+    // Composes the daily email's suggestions block for a tenant, cadence included.
+    private readonly Transcription.SuggestionEmailComposer _suggestionEmailComposer;
     private Transcription.DictionarySuggestionDailySweep? _suggestionDailySweep;
     // The voice-turn staging root, likewise bound to an explicitly-named partition. This path stages a clip
     // for the duration of one turn and then deletes it; it writes no delivery record and performs no
@@ -1084,6 +1086,12 @@ public sealed class GatewayHost : IAsyncDisposable
                     ep.BaseUrl, key, model, log: FileLog.Write, callTimeout: TimeSpan.FromMinutes(3));
                 return Task.FromResult((brain, model));
             });
+        // The daily-email block composer. It folds the tenant's "Suggestions in my daily email" choice,
+        // whether there is anything pending, and the once-per-batch cadence into ONE verdict, so whatever
+        // composes the daily report renders the answer rather than deciding for itself (rule 7). It is handed
+        // the READ of the stored scan, never the service, so it can never trigger a scan of its own.
+        _suggestionEmailComposer = new Transcription.SuggestionEmailComposer(
+            _dictionarySuggestions.GetSuggestions, _tenantSettingsResolver, GatewayPublicUrl.ResolveBase);
         // Cron-job definitions persist across a Gateway restart (epic #479, #482) in the cron_jobs table
         // (next-run times recomputed on load). The path argument is the LEGACY cronjobs.json, imported once
         // on first upgrade then renamed aside. Tests MUST pass an isolated path so they never touch the real
@@ -2085,6 +2093,8 @@ public sealed class GatewayHost : IAsyncDisposable
             // /ingest/dictionary/suggestions routes serve per tenant.
             dictionarySuggestions: _dictionarySuggestions,
             dictionaryDismissals: _dictionaryDismissals,
+            // The daily-email block route for the caller's tenant.
+            suggestionEmailComposer: _suggestionEmailComposer,
             requestShutdown: () =>
             {
                 var handler = OnShutdownRequested;

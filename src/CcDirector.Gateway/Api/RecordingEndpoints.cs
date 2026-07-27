@@ -116,7 +116,8 @@ internal static class RecordingEndpoints
         TranscriptionHistoryLog? history = null,
         TranscriptionAudioArchive? audioArchive = null,
         DictionarySuggestionService? suggestions = null,
-        DictionarySuggestionDismissalStore? dismissals = null)
+        DictionarySuggestionDismissalStore? dismissals = null,
+        SuggestionEmailComposer? emailComposer = null)
     {
         FileLog.Write($"[RecordingEndpoints] mapping {Prefix} recording + dictionary routes PER-TENANT (issues #2058/#2060); hosted={GatewayHostedMode.IsHosted} - each route resolves the caller's tenant and answers 403 when none resolves");
 
@@ -124,7 +125,7 @@ internal static class RecordingEndpoints
         // being refused on hosted. They map under the same prefix on the ungrouped builder; each handler
         // resolves the caller's tenant and dispatches to that tenant's own recording store / glossary.
         var app = outer.MapGroup(Prefix);
-        MapRoutes(app, tenantBoundary, keyVault, history, audioArchive, suggestions, dismissals);
+        MapRoutes(app, tenantBoundary, keyVault, history, audioArchive, suggestions, dismissals, emailComposer);
     }
 
     /// <summary>
@@ -140,7 +141,8 @@ internal static class RecordingEndpoints
         TranscriptionHistoryLog? history,
         TranscriptionAudioArchive? audioArchive,
         DictionarySuggestionService? suggestions = null,
-        DictionarySuggestionDismissalStore? dismissals = null)
+        DictionarySuggestionDismissalStore? dismissals = null,
+        SuggestionEmailComposer? emailComposer = null)
     {
         // Lazily built on FIRST USE, not at host startup: constructing the service resolves
         // the OpenAI API key (the transcriber needs it), and the Gateway must boot on machines
@@ -372,6 +374,11 @@ internal static class RecordingEndpoints
         // route: resolve the caller's tenant, 403 when none resolves, never the Local partition on hosted.
         if (suggestions is not null && dismissals is not null)
             MapSuggestionRoutes(app, tenantBoundary, suggestions, dismissals);
+
+        // The daily-email block, mapped on its own condition because it depends on the composer rather than on
+        // the dismissal store - a harness that wires one need not wire the other.
+        if (emailComposer is not null)
+            MapSuggestionEmailRoute(app, tenantBoundary, emailComposer);
 
         app.MapGet("/recordings", (HttpContext ctx) =>
         {
@@ -620,6 +627,60 @@ internal static class RecordingEndpoints
             // The term is eligible again on the NEXT scan (daily, or the page's "Scan now"); the stored
             // result is not edited here because a restored term has no fresh mining evidence to show yet.
             return Results.Json(new { ok = true, restored });
+        });
+    }
+
+    /// <summary>
+    /// The daily-email block route (issue #2074, mockup screen 5): <c>POST /ingest/dictionary/suggestions/
+    /// email-block</c>. Whatever composes this tenant's daily report asks here whether the report should carry
+    /// a dictionary-suggestions block, and gets the finished block back - it never decides for itself
+    /// (critical rule 7). Same tenant idiom as every other route in this group.
+    ///
+    /// A POST rather than a GET because it can COMMIT: <c>markMentioned</c> spends one of the batch's two
+    /// mentions, and a GET that changes state would be spent by a link preview or a retry. Omit it, or send
+    /// false, to preview the block without spending anything.
+    /// </summary>
+    private static void MapSuggestionEmailRoute(
+        IEndpointRouteBuilder app,
+        Tenancy.HostedTenantBoundary? tenantBoundary,
+        SuggestionEmailComposer composer)
+    {
+        app.MapPost("/dictionary/suggestions/email-block", async (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
+
+            // An absent or empty body is the common case (preview), so it is valid and means markMentioned
+            // false - the caller that commits says so explicitly.
+            SuggestionEmailBlockRequest? req = null;
+            if (ctx.Request.ContentLength is > 0)
+            {
+                try
+                {
+                    req = await JsonSerializer.DeserializeAsync<SuggestionEmailBlockRequest>(
+                        ctx.Request.Body, JsonOpts, ctx.RequestAborted);
+                }
+                catch (JsonException ex)
+                {
+                    FileLog.Write($"[RecordingEndpoints] email-block bad JSON: {ex.Message}");
+                    return Results.BadRequest(new { error = "invalid JSON" });
+                }
+            }
+
+            var decision = composer.Compose(t.Value, req?.MarkMentioned ?? false);
+            return Results.Json(new SuggestionEmailBlockResponse(
+                decision.Include,
+                // The reason travels as a lower-case word rather than the enum's name, so it reads the same
+                // in a log line, a test assertion, and a report the owner sees.
+                decision.Reason.ToString().ToLowerInvariant(),
+                decision.Block?.Heading,
+                decision.Block?.Html,
+                decision.Block?.Text,
+                SuggestionEmailBlock.Footer,
+                decision.TermCount,
+                decision.Batch,
+                decision.Mentions,
+                Settings.DictationEmailCadenceState.MaxMentionsPerBatch));
         });
     }
 
@@ -890,3 +951,26 @@ internal sealed record DismissedTermDto(
 
 /// <summary>GET /ingest/dictionary/dismissed - the dismissed terms, newest first.</summary>
 internal sealed record DismissedResponse(List<DismissedTermDto> Dismissed);
+
+/// <summary>POST /ingest/dictionary/suggestions/email-block request (issue #2074). The body is optional;
+/// omitting it previews the block without spending one of the batch's mentions.</summary>
+/// <param name="MarkMentioned">True only from the caller that is actually sending the report.</param>
+internal sealed record SuggestionEmailBlockRequest(bool? MarkMentioned);
+
+/// <summary>
+/// POST /ingest/dictionary/suggestions/email-block response (issue #2074) - the Gateway's finished verdict on
+/// whether this tenant's daily report carries a suggestions block, and the block itself when it does.
+/// </summary>
+/// <param name="Include">Whether the report should carry the block. When false, every block field is null.</param>
+/// <param name="Reason">Why: "included", "settingoff", "nosuggestions", or "alreadymentioned".</param>
+/// <param name="Heading">The block's heading line; null when not included.</param>
+/// <param name="Html">The block as HTML; null when not included.</param>
+/// <param name="Text">The block as plain text; null when not included.</param>
+/// <param name="Footer">The sentence naming the setting that controls the block, for the report's foot.</param>
+/// <param name="TermCount">How many terms are pending, whether or not the block is included.</param>
+/// <param name="Batch">The batch fingerprint the cadence is keyed on; empty when there are no suggestions.</param>
+/// <param name="Mentions">How many times this batch has been mentioned, after any commit this call made.</param>
+/// <param name="MaxMentions">The cap a batch may be mentioned, so the caller can render "1 of 2".</param>
+internal sealed record SuggestionEmailBlockResponse(
+    bool Include, string Reason, string? Heading, string? Html, string? Text, string Footer,
+    int TermCount, string Batch, int Mentions, int MaxMentions);
