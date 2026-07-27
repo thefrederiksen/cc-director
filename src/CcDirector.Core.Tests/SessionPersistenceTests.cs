@@ -53,6 +53,29 @@ public class SessionPersistenceTests : IDisposable
     // which is the entire reason the state moved. The coverage lives in SnoozeRegistryTests.
 
     [Fact]
+    public void SaveCurrentState_PreservesCreatedAtNumberAndHistoryLink()
+    {
+        // internal#625 phase 3: the desktop used to write sessions.json through a second,
+        // hand-rolled builder that dropped these fields, so every persisted row read
+        // 0001-01-01 and the roster-to-history link did not survive a restart. The desktop now
+        // saves through THIS builder; these three fields are the ones whose loss went unnoticed
+        // the longest, so they are pinned by name.
+        var store = CreateTempStore();
+        var session = _manager.CreateSession(Path.GetTempPath());
+        session.Number = 102;
+        session.HistoryEntryId = Guid.NewGuid();
+
+        _manager.SaveCurrentState(store);
+
+        var loaded = store.Load().Sessions;
+        Assert.Single(loaded);
+        Assert.Equal(session.CreatedAt, loaded[0].CreatedAt);
+        Assert.NotEqual(default, loaded[0].CreatedAt);
+        Assert.Equal(102, loaded[0].Number);
+        Assert.Equal(session.HistoryEntryId, loaded[0].HistoryEntryId);
+    }
+
+    [Fact]
     public void SaveCurrentState_PreservesExpectedFirstPrompt()
     {
         var store = CreateTempStore();

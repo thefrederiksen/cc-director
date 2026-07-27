@@ -2508,21 +2508,15 @@ public partial class MainWindow : Window
         try
         {
             var app = (App)global::Avalonia.Application.Current!;
-            var persisted = _sessions.Select((vm, i) => new PersistedSession
-            {
-                Id = vm.Session.Id,
-                RepoPath = vm.Session.RepoPath,
-                ClaudeArgs = vm.Session.ClaudeArgs,
-                CustomName = vm.Session.CustomName,
-                CustomColor = vm.Session.CustomColor,
-                ClaudeSessionId = vm.Session.ClaudeSessionId,
-                ActivityState = vm.Session.ActivityState,
-                BackendType = vm.Session.BackendType,
-                PendingPromptText = vm.Session.PendingPromptText,
-                WingmanEnabled = vm.Session.WingmanEnabled,
-                SortOrder = i,
-            });
-            app.SessionStateStore.Save(persisted);
+            // ONE builder, the SessionManager's (internal#625 phase 3). A hand-rolled initializer
+            // used to live here and silently dropped every field it did not name - CreatedAt,
+            // Number, HistoryEntryId, WorkingDirectory, mission and workflow attachment, the
+            // prompt queue and a dozen more - which is why every row in sessions.json read
+            // 0001-01-01 while the crash journal two lines below carried the real timestamp.
+            // The rail order still wins: SyncPromptTextToSessions stamps Session.SortOrder from
+            // the list index on the UI thread before the debounce, and SaveCurrentState orders
+            // by it.
+            _sessionManager.SaveCurrentState(app.SessionStateStore);
 
             // Mirror the live roster into the durable crash journal (issue #212 L5). Same
             // snapshot, but keyed per-Director and preserved across an abnormal death so the
