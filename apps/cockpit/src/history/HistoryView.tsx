@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
+import { durationFromMs } from "@devthrottle/client-core/sessions/waiting";
 import {
   getWorkHistoryReport,
   type WorkHistoryReport,
@@ -63,7 +64,12 @@ function SessionEntry({ session }: { session: WorkHistorySession }) {
   if (session.agentKind) meta.push(session.agentKind);
   if (session.model) meta.push(session.model);
   meta.push(`started ${timeOf(session.startedAtUtc)}`);
-  if (session.turnCount != null && session.turnCount > 0) meta.push(`${session.turnCount} turns`);
+  // Agent turns (completed turns, internal#625) are the sharper fact when the Director reports
+  // them; the input-turn count stays as the fallback for records from older Directors.
+  if (session.agentTurnCount != null && session.agentTurnCount > 0) meta.push(`${session.agentTurnCount} turns`);
+  else if (session.turnCount != null && session.turnCount > 0) meta.push(`${session.turnCount} turns`);
+  if (session.idleSeconds != null && session.idleSeconds >= 60)
+    meta.push(`idle ${durationFromMs(session.idleSeconds * 1000)}`);
 
   const hasDetail =
     (session.summaryText != null && session.summaryText.length > 0) ||

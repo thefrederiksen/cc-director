@@ -83,6 +83,13 @@ public sealed class SessionHistoryStore
             var turns = TurnCountOf(session);
             if (turns is { } t && (entity.TurnCount is not { } existing || t > existing))
                 entity.TurnCount = t;
+            // The supervision facts (internal#625 phase 4). Null means an older Director - unknown
+            // never overwrites a known value - and both only move forward, so a Director restart
+            // (whose counters start again at zero) cannot erase the run's high-water mark.
+            if (session.TurnCount is { } agentTurns && (entity.AgentTurnCount is not { } at || agentTurns > at))
+                entity.AgentTurnCount = agentTurns;
+            if (session.CumulativeIdleSeconds is { } idle && (entity.CumulativeIdleSeconds is not { } ci || idle > ci))
+                entity.CumulativeIdleSeconds = idle;
             entity.LastSeenUtc = nowUtc;
 
             ctx.SaveChanges();

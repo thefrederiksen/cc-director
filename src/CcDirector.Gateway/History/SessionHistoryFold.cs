@@ -115,6 +115,8 @@ public static class SessionHistoryFold
         DescriptionLine = DescriptionLine(e.MissionName, e.SessionRole, e.FirstPromptLine,
             e.SessionName, e.RepoName, e.RepoPath),
         TurnCount = e.TurnCount,
+        AgentTurnCount = e.AgentTurnCount,
+        IdleSeconds = e.CumulativeIdleSeconds,
         SummaryKind = string.IsNullOrEmpty(e.SummaryKind) ? null : e.SummaryKind,
         SummaryIsPartial = e.SummaryIsPartial,
         SummaryText = e.SummaryText,

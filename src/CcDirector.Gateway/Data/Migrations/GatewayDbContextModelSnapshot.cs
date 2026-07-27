@@ -733,11 +733,17 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.Property<string>("AgentKind")
                         .HasColumnType("TEXT");
 
+                    b.Property<long?>("AgentTurnCount")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("BranchesJson")
                         .HasColumnType("TEXT");
 
                     b.Property<string>("CommitsJson")
                         .HasColumnType("TEXT");
+
+                    b.Property<double?>("CumulativeIdleSeconds")
+                        .HasColumnType("REAL");
 
                     b.Property<string>("DirectorId")
                         .IsRequired()

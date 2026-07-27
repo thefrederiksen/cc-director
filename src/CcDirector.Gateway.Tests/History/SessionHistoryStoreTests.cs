@@ -45,6 +45,46 @@ public sealed class SessionHistoryStoreTests : IDisposable
     };
 
     [Fact]
+    public void Supervision_facts_land_and_unknown_never_erases_them()
+    {
+        // internal#625 phase 4: the agent turn count and the cumulative idle clock ride the pushed
+        // session onto the history row. The cases that are silent when wrong: an older Director's
+        // null must not erase a known value, and a Director restart (whose counters start again at
+        // zero) must not lower the run's high-water mark.
+        var store = NewStore();
+        var now = DateTime.UtcNow;
+
+        var measured = Session();
+        measured.TurnCount = 14;
+        measured.CumulativeIdleSeconds = 2520;
+        store.UpsertLive("dir-1", measured, now);
+
+        var row = Assert.Single(store.ReadRange(now.AddDays(-1), now.AddDays(1)));
+        Assert.Equal(14, row.AgentTurnCount);
+        Assert.Equal(2520, row.IdleSeconds);
+
+        // An older Director pushes the same session with no supervision facts: nothing is erased.
+        var silent = Session();
+        silent.TurnCount = null;
+        silent.CumulativeIdleSeconds = null;
+        store.UpsertLive("dir-1", silent, now.AddMinutes(6));
+
+        row = Assert.Single(store.ReadRange(now.AddDays(-1), now.AddDays(1)));
+        Assert.Equal(14, row.AgentTurnCount);
+        Assert.Equal(2520, row.IdleSeconds);
+
+        // A restarted Director reports lower counters: the high-water mark stands.
+        var restarted = Session();
+        restarted.TurnCount = 2;
+        restarted.CumulativeIdleSeconds = 30;
+        store.UpsertLive("dir-1", restarted, now.AddMinutes(12));
+
+        row = Assert.Single(store.ReadRange(now.AddDays(-1), now.AddDays(1)));
+        Assert.Equal(14, row.AgentTurnCount);
+        Assert.Equal(2520, row.IdleSeconds);
+    }
+
+    [Fact]
     public void First_sight_creates_an_open_row_carrying_the_director_measured_start()
     {
         var store = NewStore();

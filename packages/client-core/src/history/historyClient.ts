@@ -34,6 +34,10 @@ export interface WorkHistorySession {
   /** Gateway-folded one-liner; never empty. */
   descriptionLine: string;
   turnCount?: number | null;
+  /** Completed agent turns (one flip to waiting-for-input equals one turn). Null when never reported. */
+  agentTurnCount?: number | null;
+  /** Total seconds spent waiting on the user, closed stretches only. Null when never reported. */
+  idleSeconds?: number | null;
   /** null until a summary exists; "sealed" | "generated" | "none" | "unavailable". */
   summaryKind?: string | null;
   summaryIsPartial: boolean;

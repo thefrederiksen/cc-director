@@ -69,6 +69,17 @@ public sealed class SessionHistoryEntity : TenantScopedEntity
     /// <summary>Total input turns observed (operator plus agent-driven), from the pushed input stats.</summary>
     public long? TurnCount { get; set; }
 
+    /// <summary>Completed AGENT turns (SessionDto.TurnCount, internal#625 phase 4): one flip to
+    /// waiting-for-input equals one turn, counted incrementally on the Director. Distinct from
+    /// <see cref="TurnCount"/>, which counts turns SUBMITTED to the session. Null when the owning
+    /// Director predates the counter; a known value is never overwritten by null.</summary>
+    public long? AgentTurnCount { get; set; }
+
+    /// <summary>Total seconds the session spent waiting on the user, summed over CLOSED waiting
+    /// stretches (SessionDto.CumulativeIdleSeconds, internal#625 phase 4), as last pushed. Null when
+    /// the owning Director predates the clock.</summary>
+    public double? CumulativeIdleSeconds { get; set; }
+
     /// <summary>The first user prompt, trimmed to one line - description source number two (#1862).
     /// Set once from the prompt-log ingest and never overwritten.</summary>
     public string? FirstPromptLine { get; set; }
