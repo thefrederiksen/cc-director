@@ -251,4 +251,105 @@ public sealed class FileLogWriterTests : IDisposable
             writer.Stop();
         }
     }
+
+    // =================================================================================
+    // Issue #2223 - the writer surviving a permanent write failure is NOT enough. Before
+    // this, a sink that failed every single time repeated silently behind the per-line
+    // catch and the log simply stopped growing, which reads exactly like a quiet process.
+    // The live hosted Gateway sat at a 0-byte file for a quarter of an hour while serving.
+    // =================================================================================
+
+    [Fact]
+    public void WriterLoop_SinkFailsPermanently_ReportsOnceWithTheExceptionType()
+    {
+        var reports = new List<(int failures, Exception? ex)>();
+        var writer = new FileLogWriter(_logDir, "dead-sink", () => new DateTime(2026, 7, 27, 12, 0, 0));
+        writer.OnSinkHealthChanged = (n, ex) => { lock (reports) reports.Add((n, ex)); };
+        writer.BeforeWriteHook = _ => throw new UnauthorizedAccessException("the share is read-only");
+
+        writer.Start();
+        try
+        {
+            for (int i = 0; i < 20; i++) writer.Enqueue($"line-{i}");
+
+            WaitUntil(() => { lock (reports) return reports.Count > 0; });
+
+            lock (reports)
+            {
+                // Reported exactly ONCE for the episode, not once per failed line - an alarm that
+                // repeats every line is an alarm nobody reads.
+                Assert.Single(reports);
+                Assert.True(reports[0].failures >= FileLogWriter.SinkFailureThreshold);
+                Assert.IsType<UnauthorizedAccessException>(reports[0].ex);
+            }
+            Assert.True(writer.ConsecutiveWriteFailures >= FileLogWriter.SinkFailureThreshold);
+        }
+        finally
+        {
+            writer.BeforeWriteHook = null;
+            writer.Stop();
+        }
+    }
+
+    [Fact]
+    public void WriterLoop_SinkRecovers_ReportsTheRecoveryToo()
+    {
+        // A recovery nobody announces leaves the reader believing the log is still lying.
+        var reports = new List<(int failures, Exception? ex)>();
+        var fail = true;
+        var writer = new FileLogWriter(_logDir, "recovering-sink", () => new DateTime(2026, 7, 27, 12, 0, 0));
+        writer.OnSinkHealthChanged = (n, ex) => { lock (reports) reports.Add((n, ex)); };
+        writer.BeforeWriteHook = _ => { if (fail) throw new IOException("share stalled"); };
+
+        writer.Start();
+        try
+        {
+            for (int i = 0; i < 20; i++) writer.Enqueue($"bad-{i}");
+            WaitUntil(() => { lock (reports) return reports.Count > 0; });
+
+            fail = false;
+            writer.Enqueue("good-line");
+
+            WaitUntil(() => { lock (reports) return reports.Count > 1; });
+            lock (reports)
+            {
+                Assert.Equal(2, reports.Count);
+                Assert.NotNull(reports[0].ex);      // the failure
+                Assert.Null(reports[1].ex);         // the recovery
+                Assert.Equal(0, reports[1].failures);
+            }
+            Assert.Equal(0, writer.ConsecutiveWriteFailures);
+        }
+        finally
+        {
+            writer.BeforeWriteHook = null;
+            writer.Stop();
+        }
+    }
+
+    [Fact]
+    public void WriterLoop_OneTransientFailure_IsNotReportedAsADeadSink()
+    {
+        // The guard from issue #171 must keep working: a single bad write is survivable and
+        // unremarkable. Raising an alarm for it would train us to ignore the alarm.
+        var reports = new List<(int failures, Exception? ex)>();
+        var thrown = false;
+        var writer = new FileLogWriter(_logDir, "transient-sink", () => new DateTime(2026, 7, 27, 12, 0, 0));
+        writer.OnSinkHealthChanged = (n, ex) => { lock (reports) reports.Add((n, ex)); };
+        writer.BeforeWriteHook = _ => { if (!thrown) { thrown = true; throw new IOException("one blip"); } };
+
+        writer.Start();
+        try
+        {
+            for (int i = 0; i < 10; i++) writer.Enqueue($"line-{i}");
+            WaitUntil(() => ReadShared(writer.ComputeLogPath(new DateTime(2026, 7, 27, 12, 0, 0))).Contains("line-9"));
+
+            lock (reports) Assert.Empty(reports);
+        }
+        finally
+        {
+            writer.BeforeWriteHook = null;
+            writer.Stop();
+        }
+    }
 }

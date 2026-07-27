@@ -39,6 +39,30 @@ internal sealed class FileLogWriter
     private long _droppedLines;
     private long _reportedDrops;
 
+    // Consecutive failures of the WRITE itself (issue #2223). The per-line catch below exists so a
+    // transient failure cannot kill the writer thread (issue #171), and that is right - but a PERMANENT
+    // failure then repeats forever and, reported only to the debugger, is invisible. The live hosted
+    // Gateway sat at a 0-byte log file for a quarter of an hour while serving traffic and nothing said so.
+    // A dead sink must not look like a quiet process. Note this is a different failure from a dropped
+    // line: nothing is dropped here - every line is accepted and then silently thrown away by the sink.
+    private int _consecutiveWriteFailures;
+    private bool _sinkFailureReported;
+
+    /// <summary>How many consecutive write attempts have failed. Zero on a healthy writer.</summary>
+    internal int ConsecutiveWriteFailures => Volatile.Read(ref _consecutiveWriteFailures);
+
+    /// <summary>
+    /// Raised once when the sink has failed <see cref="SinkFailureThreshold"/> times in a row, and again
+    /// when it recovers. The handler's job is to report the failure somewhere that still works - the file
+    /// cannot report on itself. Arguments: the consecutive failure count, and the last exception (null on
+    /// the recovery call).
+    /// </summary>
+    internal Action<int, Exception?>? OnSinkHealthChanged { get; set; }
+
+    /// <summary>Consecutive failures before the sink is declared dead. Small: one or two failures can be a
+    /// genuine transient, a steady stream cannot.</summary>
+    internal const int SinkFailureThreshold = 3;
+
     /// <summary>
     /// Test-only fault-injection seam: invoked with each line just before it is written, inside the
     /// loop's per-line try. A test can throw from here to prove a transient write failure does not
@@ -173,13 +197,41 @@ internal sealed class FileLogWriter
                         writer.Flush();
                         lastFlush = now;
                     }
+
+                    // The write landed. If the sink had been declared dead, say that it is back - a
+                    // recovery that nobody announces leaves the reader believing the log is still lying.
+                    if (Volatile.Read(ref _consecutiveWriteFailures) > 0)
+                    {
+                        Volatile.Write(ref _consecutiveWriteFailures, 0);
+                        if (_sinkFailureReported)
+                        {
+                            _sinkFailureReported = false;
+                            OnSinkHealthChanged?.Invoke(0, null);
+                        }
+                    }
                 }
                 catch (Exception ex)
                 {
-                    // Log and continue - the loop must outlive any single bad write so logging
-                    // keeps working. Use the debugger channel because FileLog itself is the thing
-                    // that failed; we cannot route this back through it.
+                    // Continue - the loop must outlive any single bad write so logging keeps working
+                    // (issue #171). Use the debugger channel because FileLog itself is the thing that
+                    // failed; we cannot route this back through it.
                     Debug.WriteLine($"[FileLogWriter] write FAILED, continuing: {ex.Message}");
+
+                    // ...but a failure that KEEPS happening is not transient, and surviving it quietly is
+                    // how a dead log came to look like a quiet process (issue #2223). Announce it ONCE, on
+                    // a channel that is not the thing that just broke, and name the exception type so the
+                    // report is actionable rather than merely alarming.
+                    var failures = Interlocked.Increment(ref _consecutiveWriteFailures);
+                    if (failures >= SinkFailureThreshold && !_sinkFailureReported)
+                    {
+                        _sinkFailureReported = true;
+                        try { OnSinkHealthChanged?.Invoke(failures, ex); }
+                        catch (Exception handlerEx)
+                        {
+                            // The reporter itself failing must not kill the writer thread either.
+                            Debug.WriteLine($"[FileLogWriter] sink-failure report FAILED: {handlerEx.Message}");
+                        }
+                    }
                 }
             }
         }
