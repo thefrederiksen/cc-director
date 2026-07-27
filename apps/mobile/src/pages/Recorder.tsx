@@ -38,10 +38,13 @@ import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 // recording); the notes section; the library below with per-row determinate progress. Upload
 // machinery stays out of the way of the recording controls.
 //
-// Recordings the user has sent are driven by client-core's durable upload driver and auto-retried on
-// app load and when connectivity returns. Once the server acknowledges the complete call the local
-// copy is deleted and the row is carried by the server's own list (GET /ingest/recordings), where its
-// transcription state comes from - so the row reads the same before and after delivery.
+// Uploading is AUTOMATIC, exactly like the Android recorder ("Kept on your phone and uploaded
+// automatically" was its literal copy - issue devthrottle_internal#966): Stop finalizes the recording
+// AND queues its upload in the same breath; there is no Send step. A failed upload parks the row
+// saved-and-retryable with a manual Retry, and client-core's durable upload driver re-drives pending
+// work on app load and when connectivity returns. Once the server acknowledges the complete call the
+// local copy is deleted and the row is carried by the server's own list (GET /ingest/recordings),
+// where its transcription state comes from - so the row reads the same before and after delivery.
 
 const SERVER_POLL_MS = 5000;
 const TICK_MS = 150;
@@ -197,6 +200,7 @@ export function Recorder() {
     async (recovered: boolean) => {
       const rec = activeRef.current;
       if (rec === null) return;
+      let queuedId: string | null = null;
       const fresh = await getRecording(rec.recordingId);
       if (fresh !== null) {
         if (fresh.segments === 0) {
@@ -204,11 +208,14 @@ export function Recorder() {
           // pass the server's completeness gate, so it is removed rather than shown as sendable.
           await deleteRecording(fresh.recordingId);
         } else {
-          fresh.state = "ready";
+          // Stop finalizes AND queues the upload - no Send step (the Android recorder's "uploaded
+          // automatically" bar, issue devthrottle_internal#966).
+          fresh.state = "queued";
           fresh.endedAt = new Date().toISOString();
           fresh.title = titleRef.current.trim() || fresh.title;
           if (recovered) fresh.recovered = true;
           await saveRecording(fresh);
+          queuedId = fresh.recordingId;
         }
       }
       activeRef.current = null;
@@ -220,8 +227,14 @@ export function Recorder() {
       setActiveNotes([]);
       setTitle("");
       await refreshLocal();
+      if (queuedId !== null) {
+        void driveRecordingUpload(queuedId, () => void refreshLocal()).then(() => {
+          void refreshLocal();
+          void refreshServer();
+        });
+      }
     },
-    [refreshLocal],
+    [refreshLocal, refreshServer],
   );
 
   const startRecording = useCallback(async () => {
@@ -350,7 +363,8 @@ export function Recorder() {
     }
   }, []);
 
-  const sendRecording = useCallback(
+  // Manual retry for a PARKED (saved-and-retryable) row only - the happy path uploads by itself.
+  const retryUpload = useCallback(
     async (recordingId: string) => {
       const rec = await getRecording(recordingId);
       if (rec === null) return;
@@ -576,8 +590,8 @@ export function Recorder() {
       <section className="rec-library" aria-label="Recordings">
         <div className="rec-section-title">Recordings</div>
         <div className="rec-section-hint">
-          Kept on your phone until the Gateway confirms delivery, then transcribed there. Each row shows
-          its own progress; transcripts appear on the Cockpit&apos;s Voice Recorder page too.
+          Kept on your phone and uploaded automatically when you stop, then transcribed on the Gateway.
+          Each row shows its own progress; transcripts appear on the Cockpit&apos;s Voice Recorder page too.
         </div>
 
         {serverError !== null && (
@@ -587,7 +601,7 @@ export function Recorder() {
         )}
 
         {rows.length === 0 && serverError === null && (
-          <div className="rec-empty">No recordings yet. Hit Record, talk, stop, and send.</div>
+          <div className="rec-empty">No recordings yet. Hit Record, talk, stop.</div>
         )}
 
         {rows.map((row) => {
@@ -615,10 +629,9 @@ export function Recorder() {
                 {l?.recovered && " - recovered after the app closed while recording"}
               </div>
 
-              {l !== undefined && l.state === "ready" && (
-                <div className="rec-row-note">Saved on this phone - ready to send.</div>
+              {l !== undefined && (l.state === "queued" || l.state === "ready") && (
+                <div className="rec-row-note">Waiting to upload...</div>
               )}
-              {l !== undefined && l.state === "queued" && <div className="rec-row-note">Waiting to send...</div>}
               {uploading && (
                 <>
                   <div className="rec-row-note">
@@ -670,17 +683,12 @@ export function Recorder() {
                     {isPlaying ? "Stop playback" : "Play"}
                   </button>
                 )}
-                {l !== undefined && l.state === "ready" && (
-                  <button type="button" className="rec-row-btn rec-row-btn-primary" onClick={() => void sendRecording(l.recordingId)}>
-                    Send
-                  </button>
-                )}
                 {l !== undefined && l.state === "retry" && (
-                  <button type="button" className="rec-row-btn rec-row-btn-primary" onClick={() => void sendRecording(l.recordingId)}>
+                  <button type="button" className="rec-row-btn rec-row-btn-primary" onClick={() => void retryUpload(l.recordingId)}>
                     Retry
                   </button>
                 )}
-                {l !== undefined && (l.state === "ready" || l.state === "retry") && (
+                {l !== undefined && l.state === "retry" && (
                   confirmDiscard === l.recordingId ? (
                     <>
                       <button type="button" className="rec-row-btn rec-row-btn-danger" onClick={() => void discardRecording(l.recordingId)}>

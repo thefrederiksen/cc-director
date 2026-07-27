@@ -22,8 +22,11 @@ describe("needsUpload", () => {
     expect(needsUpload("uploaded", true)).toBe(false);
   });
 
-  it("never picks up a recording the user has not asked to send", () => {
-    expect(needsUpload("ready", false)).toBe(false);
+  it("picks up a legacy 'ready' row - uploading is automatic, nothing waits for a Send press (devthrottle_internal#966)", () => {
+    expect(needsUpload("ready", false)).toBe(true);
+  });
+
+  it("never picks up a recording still being captured", () => {
     expect(needsUpload("recording", false)).toBe(false);
   });
 });

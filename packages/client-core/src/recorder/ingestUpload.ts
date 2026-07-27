@@ -278,10 +278,10 @@ async function drivePass(recordingId: string, onProgress?: () => void): Promise<
 }
 
 /**
- * Re-drive every recording the user has asked to send (queued/retry/uploading/uploaded-not-completed)
+ * Re-drive every recording with upload work left (ready/queued/retry/uploading/uploaded-not-completed)
  * from the durable store. Called at app load (the resume-on-open pattern of resumePendingDictations)
- * and when connectivity returns. Recordings still in "ready" are NOT touched - the user has not
- * pressed Send on them.
+ * and when connectivity returns. Uploading is automatic - a stored recording never waits for a Send
+ * press, including "ready" rows a pre-auto-send build left behind (issue devthrottle_internal#966).
  */
 export async function resumePendingRecordingUploads(onProgress?: () => void): Promise<void> {
   const all = await listRecordings();

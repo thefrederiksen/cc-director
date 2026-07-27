@@ -6,8 +6,8 @@
 // captures into rolling one-minute segments, and EVERY finalized segment is written here (IndexedDB,
 // which holds Blobs on disk) the moment it exists - during recording, long before any network work.
 // So an app close, a tab crash, a phone reboot, or a dropped connection loses at most the
-// currently-open segment; everything already finalized survives and is offered back for review and
-// send on the next visit.
+// currently-open segment; everything already finalized survives and is queued for automatic upload
+// on the next visit.
 //
 // Two deliberately separate kinds of state, exactly as on the Android recorder:
 //
@@ -29,14 +29,18 @@
 // IndexedDB (rare - some private modes) is capability-detected, and the recorder screen refuses to
 // record without it instead of silently capturing into memory that a refresh would lose.
 
-/** The upload lifecycle of a locally stored recording. */
+/** The upload lifecycle of a locally stored recording. Uploading is AUTOMATIC: stopping a recording
+ *  queues it immediately (the Android recorder's "uploaded automatically" bar, issue
+ *  devthrottle_internal#966) - there is no Send step on the happy path. */
 export type LocalRecordingState =
   /** Actively capturing. A recording found in this state at load was interrupted (the app closed
-   *  while recording); recovery flips it to "ready" with `recovered` set. */
+   *  while recording); recovery flips it to "queued" with `recovered` set, so the audio is never
+   *  stranded just because the app died (the Android RecordingUploadGate recovery rule). */
   | "recording"
-  /** Stopped and reviewable: play it back, retitle it, send it, or discard it. Not yet queued. */
+  /** LEGACY - only a pre-auto-send build wrote this state (stopped, waiting for a Send press).
+   *  Treated exactly like "queued": the next upload pass picks it up automatically. */
   | "ready"
-  /** Send was pressed; waiting for an upload pass to pick it up. Auto-retried. */
+  /** Finalized; waiting for an upload pass to pick it up. Auto-retried. */
   | "queued"
   /** An upload pass is actively pushing segments right now. */
   | "uploading"
@@ -223,7 +227,8 @@ export async function deleteRecording(recordingId: string): Promise<void> {
 /**
  * Recover interrupted captures at app load (the Android NeedsRecovery rule): any recording still
  * marked "recording" was cut off by an app close / crash. A recording WITH finalized segments on disk
- * is flipped to "ready" with `recovered` set so the screen offers it back for review and send. An
+ * is finalized into the normal automatic upload path - flipped to "queued" with `recovered` set, so
+ * the audio is never stranded just because the app died - and the row says it was recovered. An
  * empty shell (no segments captured) is deleted - the server's completeness gate refuses a zero-segment
  * recording, so there is nothing it could ever become. Returns the recovered recordings.
  */
@@ -238,7 +243,7 @@ export async function recoverInterrupted(): Promise<LocalRecording[]> {
       await deleteRecording(rec.recordingId);
       continue;
     }
-    rec.state = "ready";
+    rec.state = "queued";
     rec.recovered = true;
     if (rec.endedAt === null) rec.endedAt = new Date().toISOString();
     await saveRecording(rec);
