@@ -429,6 +429,73 @@ public sealed class SessionOrderingTests
         Assert.Equal("blue", SessionOrdering.EffectiveColor(Raw("Working", brandNew: true)));
     }
 
+    // ===================================================================================
+    // A BRAND-NEW SESSION IS GREEN **IN VOICE MODE TOO** (owner's ruling, 2026-07-27).
+    //
+    // The test above proves green only for the voice-OFF case, because the Raw(...) helper
+    // leaves VoiceMode false. That blind spot hid a live defect: green lives in BaseColor,
+    // the LAST arm of EffectiveColor, BELOW IsVoicePreparing - so with voice mode ON every
+    // freshly-spawned session folded to yellow "Preparing voice" instead, and STAYED yellow,
+    // because a session that has taken no turn has no reply to narrate and so never gets
+    // audio. `|| !VoiceAudioReady` then holds forever.
+    //
+    // These are the voice-mode twins. If one goes yellow, the brand-new guard in
+    // IsVoicePreparing was removed or an arm was added above the green.
+    // ===================================================================================
+
+    /// <summary>A brand-new session as it actually arrives with the gateway in voice mode: voice on,
+    /// parked at its first prompt, and (necessarily) with no audio ever generated.</summary>
+    private static SessionDto BrandNewVoiceSession(string activityState = "WaitingForInput")
+    {
+        var s = Raw(activityState, brandNew: true);
+        s.VoiceMode = true;
+        s.VoiceGenerating = false;
+        s.VoiceAudioReady = false;
+        return s;
+    }
+
+    [Fact]
+    public void EffectiveColor_BrandNewInVoiceMode_IsGreen_NotPreparingVoiceYellow()
+    {
+        Assert.Equal("green", SessionOrdering.EffectiveColor(BrandNewVoiceSession()));
+    }
+
+    [Fact]
+    public void StateLabel_BrandNewInVoiceMode_IsReady_NotPreparingVoice()
+    {
+        // The label folds from the same inputs in the same order, so it must move with the dot.
+        Assert.Equal("Ready", SessionOrdering.StateLabel(BrandNewVoiceSession()));
+    }
+
+    [Fact]
+    public void IsVoicePreparing_BrandNew_IsFalse()
+    {
+        // The rule itself: there is no turn to narrate, so nothing is being prepared.
+        Assert.False(SessionOrdering.IsVoicePreparing(BrandNewVoiceSession()));
+    }
+
+    [Fact]
+    public void EffectiveColor_BrandNewInVoiceMode_WhileGenerating_IsStillGreen()
+    {
+        // Even if a generation is somehow marked in flight for a session that has taken no turn,
+        // "brand new" is the truer statement - it has produced nothing to read back.
+        var s = BrandNewVoiceSession();
+        s.VoiceGenerating = true;
+        Assert.Equal("green", SessionOrdering.EffectiveColor(s));
+    }
+
+    [Fact]
+    public void EffectiveColor_VoiceModeAfterFirstTurn_StillHoldsYellow()
+    {
+        // The NEGATIVE control: the brand-new guard must not disarm the voice hold generally.
+        // Once the session has taken a turn (IsBrandNew false), a waiting voice session with no
+        // audio yet is still yellow "Preparing voice" - the behaviour issue #553 asked for.
+        var s = BrandNewVoiceSession();
+        s.IsBrandNew = false;
+        Assert.Equal("yellow", SessionOrdering.EffectiveColor(s));
+        Assert.Equal("Preparing voice", SessionOrdering.StateLabel(s));
+    }
+
     [Fact]
     public void EffectiveColor_BackgroundRunningAtTurnEnd_IsPurple_FromRawFacts()
     {

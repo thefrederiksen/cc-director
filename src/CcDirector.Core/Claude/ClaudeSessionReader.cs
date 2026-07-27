@@ -52,7 +52,23 @@ public static class ClaudeSessionReader
         // themselves). The previous char-list version missed dots, which made every
         // transcript under a path like "...\.temp\brain-sandbox" invisible to us
         // (found live in the issue #184 brain verification).
-        var normalized = Path.GetFullPath(repoPath);
+        // A TRAILING SEPARATOR MUST NOT REACH THE REGEX. Path.GetFullPath PRESERVES one, and every
+        // character here becomes a dash - so "D:\ReposFred\cc-consult\" produced the folder name
+        // "D--ReposFred-cc-consult-", with a trailing dash, which does not exist. Claude Code names
+        // the folder from the directory itself, so the separator is not part of the name.
+        //
+        // This was NOT theoretical: it wedged a live session for hours. The session's repo path was
+        // stored with a trailing backslash (the path is equivalent to a human and the UI shows no
+        // difference), so the transcript lookup missed, the conversation read back EMPTY, and the
+        // voice service recorded "this session has nothing to say" about a session that had just
+        // written a full answer. With no narration the session could never become playable, so the
+        // roster held it yellow "Preparing voice" permanently. One character, and the whole chain
+        // downstream is silent about it.
+        //
+        // TrimEndingDirectorySeparator (not a bare TrimEnd) because a DRIVE ROOT must keep its
+        // separator: "D:\" is a real path whose name is "D--", while "D:" means "the current
+        // directory on D:", which is a different place entirely.
+        var normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(repoPath));
         return System.Text.RegularExpressions.Regex.Replace(normalized, "[^a-zA-Z0-9]", "-");
     }
 
