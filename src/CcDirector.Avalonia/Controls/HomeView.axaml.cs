@@ -69,6 +69,14 @@ public partial class HomeView : UserControl
         HomeAllClear.IsVisible = false;
         HomeProblems.IsVisible = true;
 
+        // The heading must match what is actually listed. When the only thing not green is setup
+        // still running, "NEEDS ATTENTION" is false and alarming - nothing needs the user at all.
+        var onlyInProgress = !gatewayError
+            && status.Checks.Any(c => c.Level == HomeCheckLevel.Busy)
+            && status.Checks.All(c => c.Level is HomeCheckLevel.Ok or HomeCheckLevel.Busy);
+        HomeProblemsHeading.Text = onlyInProgress ? "FINISHING SETUP" : "NEEDS ATTENTION";
+        HomeProblemsHeading.Foreground = Brush.Parse(onlyInProgress ? "#7FB2E5" : "#F0B848");
+
         // Gateway trouble is surfaced here too (its glanceable light is in the rail), so the
         // status screen is a single place to see and fix everything that is wrong.
         if (gatewayError)
@@ -90,14 +98,19 @@ public partial class HomeView : UserControl
             };
             HomeStatusRows.Children.Add(BuildProblemRow(
                 check.Title, check.Detail, fix is null ? null : "Fix", fix,
-                warn: check.Level == HomeCheckLevel.Warn));
+                warn: check.Level == HomeCheckLevel.Warn,
+                busy: check.Level == HomeCheckLevel.Busy));
         }
     }
 
-    /// <summary>A single failing-check card: icon + title + detail, with an optional fix button.</summary>
-    private Control BuildProblemRow(string title, string detail, string? fixLabel, Action? onFix, bool warn = false)
+    /// <summary>
+    /// A single check card: icon + title + detail, with an optional fix button. Three looks - red for
+    /// a failure, amber for a warning, and calm blue with a progress glyph for work still running
+    /// (<paramref name="busy"/>), which is not a problem and never offers a fix.
+    /// </summary>
+    private Control BuildProblemRow(string title, string detail, string? fixLabel, Action? onFix, bool warn = false, bool busy = false)
     {
-        var accent = warn ? "#F0B848" : "#E05656";
+        var accent = busy ? "#7FB2E5" : warn ? "#F0B848" : "#E05656";
 
         var dock = new DockPanel();
 
@@ -123,7 +136,7 @@ public partial class HomeView : UserControl
 
         var icon = new TextBlock
         {
-            Text = warn ? "!" : "X",
+            Text = busy ? "..." : warn ? "!" : "X",
             Foreground = Brush.Parse(accent),
             FontWeight = FontWeight.Bold,
             FontSize = 13,
@@ -152,8 +165,8 @@ public partial class HomeView : UserControl
 
         return new Border
         {
-            Background = Brush.Parse(warn ? "#241f17" : "#241a1a"),
-            BorderBrush = Brush.Parse(warn ? "#4a3f22" : "#4a2a2a"),
+            Background = Brush.Parse(busy ? "#171d24" : warn ? "#241f17" : "#241a1a"),
+            BorderBrush = Brush.Parse(busy ? "#26384a" : warn ? "#4a3f22" : "#4a2a2a"),
             BorderThickness = new global::Avalonia.Thickness(1),
             CornerRadius = new global::Avalonia.CornerRadius(7),
             Padding = new global::Avalonia.Thickness(14, 12),
@@ -162,17 +175,22 @@ public partial class HomeView : UserControl
     }
 
     /// <summary>
-    /// Show the cc-* tools check in a "repairing" state while the one-click Fix rebuild runs.
-    /// MainWindow pushes live progress text here; a normal status refresh restores the screen
-    /// when it finishes. Reuses the problem-card style with no fix button (the repair is running).
+    /// Show the tools check in a working state while a rebuild runs - either the one-click Fix or the
+    /// automatic first-launch setup (<paramref name="firstRunSetup"/>), which is the expected state on
+    /// a new machine and must never read as a failure. MainWindow pushes live progress text here; a
+    /// normal status refresh restores the screen when it finishes. No fix button: it is already running.
     /// </summary>
-    public void SetToolsRepairing(string detail)
+    public void SetToolsRepairing(string detail, bool firstRunSetup = false)
     {
         HomeBusyText.IsVisible = false;
         HomeAllClear.IsVisible = false;
         HomeProblems.IsVisible = true;
+        HomeProblemsHeading.Text = firstRunSetup ? "FINISHING SETUP" : "NEEDS ATTENTION";
+        HomeProblemsHeading.Foreground = Brush.Parse(firstRunSetup ? "#7FB2E5" : "#F0B848");
         HomeStatusRows.Children.Clear();
         HomeStatusRows.Children.Add(BuildProblemRow(
-            "cc-* tools", $"Repairing... {detail}", null, null, warn: true));
+            HomeStatusBuilder.ToolsRowTitle,
+            firstRunSetup ? $"Finishing setup - {detail}" : $"Repairing - {detail}",
+            null, null, busy: true));
     }
 }

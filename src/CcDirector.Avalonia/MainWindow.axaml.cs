@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.IO;
 using System.Net.Http;
 using System.Net.Http.Json;
@@ -992,7 +992,15 @@ public partial class MainWindow : Window
 
             _lastClis = facts.clis;
             _lastBuildFacts = (facts.built, facts.total, facts.missing);
-            _lastHomeStatus = HomeStatusBuilder.Build(facts.clis, facts.built, facts.total, facts.missing, _lastToolHealth, _lastBasePythonBroken);
+            // Tools that are missing on the very first launch are the setup the installer promised
+            // ("your tools finish setting up the first time you open DevThrottle"), and the automatic
+            // self-heal below is about to run. Rule it as in-progress BEFORE painting, so the first
+            // frame never shows the expected state as a red failure.
+            _toolsSetupInProgress = _repairingTools
+                || (facts.missing.Count > 0 && !_autoRepairAttempted);
+            _lastHomeStatus = HomeStatusBuilder.Build(
+                facts.clis, facts.built, facts.total, facts.missing, _lastToolHealth, _lastBasePythonBroken,
+                _toolsSetupInProgress);
 
             ApplyHomeHealth();
 
@@ -1033,12 +1041,13 @@ public partial class MainWindow : Window
     {
         if (_repairingTools) return;
         _repairingTools = true;
+        _toolsSetupInProgress = true;
         FileLog.Write(auto ? "[MainWindow] Tools auto self-heal started" : "[MainWindow] Tools repair requested from Home");
         try
         {
-            HomeView.SetToolsRepairing(auto ? "auto-repairing..." : "starting...");
+            HomeView.SetToolsRepairing(auto ? "starting" : "starting...", firstRunSetup: auto);
             var layout = CcDirector.Setup.Engine.InstallLayout.Default();
-            var progress = new Progress<string>(msg => HomeView.SetToolsRepairing(msg));
+            var progress = new Progress<string>(msg => HomeView.SetToolsRepairing(msg, firstRunSetup: auto));
             var result = await Task.Run(() =>
                 new CcDirector.Setup.Engine.ToolUpdater(layout).RepairPythonToolsAsync(progress));
             FileLog.Write($"[MainWindow] Tools repair done: success={result.Success}, count={result.ToolCount}, msg={result.Message}");
@@ -1063,6 +1072,9 @@ public partial class MainWindow : Window
     // in RefreshHomeAsync reflects a known-broken runtime without re-launching the probe on the fast path.
     private bool _lastBasePythonBroken;
     private bool _toolHealthRunning;
+    // True while the tools are still being set up (first-launch provisioning or a repair in flight).
+    // The status screen renders this as progress instead of a failure - see HomeCheckLevel.Busy.
+    private bool _toolsSetupInProgress;
 
     // ---- Active cc-* tools indicator state machine (issue #829) ----
     // The rail badge is no longer a passive "fix me" warning: when drift is detected and
@@ -1121,9 +1133,14 @@ public partial class MainWindow : Window
             _lastBasePythonBroken = basePythonBroken;
             FileLog.Write($"[MainWindow] tool health: pass={summary.Pass}, fail={summary.Fail}, notBuilt={summary.NotBuilt}, broken={summary.Broken}, basePythonBroken={basePythonBroken}");
 
+            // Same rule as the fast path: a broken runtime that the automatic self-heal below is about
+            // to repair is unfinished setup, not a fault, and is painted as progress rather than red.
+            _toolsSetupInProgress = _repairingTools || (basePythonBroken && !_autoRepairAttempted);
+
             if (_lastClis is { } clis && _lastBuildFacts is { } bf)
             {
-                _lastHomeStatus = HomeStatusBuilder.Build(clis, bf.built, bf.total, bf.missing, summary, basePythonBroken);
+                _lastHomeStatus = HomeStatusBuilder.Build(
+                    clis, bf.built, bf.total, bf.missing, summary, basePythonBroken, _toolsSetupInProgress);
                 ApplyHomeHealth();
             }
 
@@ -1165,7 +1182,7 @@ public partial class MainWindow : Window
     /// </summary>
     private async Task DriveToolsSyncAsync()
     {
-        var toolsCheck = _lastHomeStatus?.Checks.FirstOrDefault(c => c.Title == "cc-* tools");
+        var toolsCheck = _lastHomeStatus?.Checks.FirstOrDefault(c => c.Title == HomeStatusBuilder.ToolsRowTitle);
         var healthDrift = toolsCheck is not null && toolsCheck.Level != HomeCheckLevel.Ok;
         var enabled = ToolAutoUpdateSetting.Get();
 
@@ -1242,7 +1259,7 @@ public partial class MainWindow : Window
         _lastToolHealth = null;
         await RefreshToolHealthAsync(force: true, driveSync: false);
 
-        var toolsCheck = _lastHomeStatus?.Checks.FirstOrDefault(c => c.Title == "cc-* tools");
+        var toolsCheck = _lastHomeStatus?.Checks.FirstOrDefault(c => c.Title == HomeStatusBuilder.ToolsRowTitle);
         var healthDrift = toolsCheck is not null && toolsCheck.Level != HomeCheckLevel.Ok;
         var reconcilerDrift = await Task.Run(() =>
             new CcDirector.Setup.Engine.ToolReconciler(CcDirector.Setup.Engine.InstallLayout.Default()).HasDrift());
@@ -1349,8 +1366,18 @@ public partial class MainWindow : Window
     /// </summary>
     private void UpdateToolsIndicator()
     {
-        var toolsCheck = _lastHomeStatus?.Checks.FirstOrDefault(c => c.Title == "cc-* tools");
+        var toolsCheck = _lastHomeStatus?.Checks.FirstOrDefault(c => c.Title == HomeStatusBuilder.ToolsRowTitle);
         var detail = toolsCheck?.Detail ?? "";
+
+        // Never say the same thing twice. When the status screen is up it already carries the tools
+        // row, so a rail badge repeating it is the same problem reported in two places at once - which
+        // is how the very first frame came to show one Python failure as two red alarms.
+        if (HomeView.IsVisible)
+        {
+            ToolsIndicator.IsVisible = false;
+            ToolsIndicatorSpinner.IsVisible = false;
+            return;
+        }
 
         switch (_toolsSync.State)
         {
@@ -1363,10 +1390,10 @@ public partial class MainWindow : Window
                 ToolsIndicatorGlyph.IsVisible = false;
                 ToolsIndicatorLabel.Text = "Syncing tools...";
                 ToolsIndicatorLabel.Foreground = SyncOrangeText;
-                ToolsIndicatorSub.Text = "reconciling cc-* tools";
+                ToolsIndicatorSub.Text = "updating the DevThrottle tools";
                 ToolsIndicatorSub.Foreground = SyncOrangeSub;
                 ToolsIndicatorSpinner.IsVisible = true;
-                ToolTip.SetTip(ToolsIndicator, "Bringing the cc-* tools back in sync...");
+                ToolTip.SetTip(ToolsIndicator, "Bringing the DevThrottle tools back in sync...");
                 break;
 
             case ToolsIndicatorState.NeedsAttention:
@@ -1392,13 +1419,13 @@ public partial class MainWindow : Window
                 ToolsIndicator.Cursor = new Cursor(StandardCursorType.Hand);
                 ToolsIndicatorDot.Fill = WarnAmberBorder;
                 ToolsIndicatorGlyph.IsVisible = true;
-                ToolsIndicatorLabel.Text = "cc-* tools";
+                ToolsIndicatorLabel.Text = HomeStatusBuilder.ToolsRowTitle;
                 ToolsIndicatorLabel.Foreground = WarnAmberText;
                 ToolsIndicatorSub.Text = detail;
                 ToolsIndicatorSub.Foreground = WarnAmberSub;
                 ToolsIndicatorSpinner.IsVisible = false;
                 ToolTip.SetTip(ToolsIndicator,
-                    $"Some cc-* tools are missing or failing ({detail}).\nClick to open Settings and download/repair the tools.");
+                    $"Some DevThrottle tools are missing or failing ({detail}).\nClick to open Settings and download/repair the tools.");
                 break;
 
             case ToolsIndicatorState.InSync:

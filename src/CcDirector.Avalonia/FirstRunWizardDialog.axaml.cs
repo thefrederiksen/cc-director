@@ -84,6 +84,10 @@ public partial class FirstRunWizardDialog : Window
     private bool _codeScanRan;
     private CancellationTokenSource? _codeScanCts;
 
+    // Set when the user says there is no code on this machine yet (a new laptop). It changes nothing
+    // on disk - it only stops the step, and the Done receipt, from reading as a failure.
+    private bool _codeNoneOnThisMachine;
+
     // Morning report step: the chosen cadence. Daily is the default - the report is the payoff the
     // whole onboarding story builds to, so it arrives unless the user says otherwise.
     private enum ReportCadence { Daily, Weekly, Off }
@@ -238,8 +242,17 @@ public partial class FirstRunWizardDialog : Window
                 PrimaryButton.IsVisible = true;
                 PrimaryButton.IsEnabled = true;
                 RefreshReportCards();
-                // The report travels through the gateway; say so plainly when none is connected.
-                ReportGatewayNote.IsVisible = !_gatewayConnected && string.IsNullOrWhiteSpace(GatewayConfig.Load().Url);
+                // The report travels through the gateway. With none connected nothing can arrive
+                // tomorrow morning, so the headline says what is actually true instead of making a
+                // promise the previous step already ruled out.
+                var hasGateway = HasGateway();
+                ReportGatewayNote.IsVisible = !hasGateway;
+                ReportTitle.Text = hasGateway
+                    ? "Tomorrow morning, we report back"
+                    : "Your morning report is ready when your gateway is";
+                ReportSubText.Text = hasGateway
+                    ? "Every morning DevThrottle emails you what happened, what needs your attention, and what it recommends - stale worktrees, unmerged branches, sessions waiting on you. So Friday never surprises you."
+                    : "The report tells you every morning what happened, what needs your attention, and what DevThrottle recommends. Choose how often you want it - it starts arriving as soon as a gateway is connected.";
                 break;
 
             case WizardStep.Done:
@@ -247,6 +260,11 @@ public partial class FirstRunWizardDialog : Window
                 // the carried to-do leads: the button routes back to the Agents step and its installer
                 // instead of promising a session that cannot start.
                 DoneStartButton.Content = _model.AgentsFound ? "Start my first agent" : "Install an agent";
+                // Never close with an instruction the same screen says cannot be followed: with no code
+                // folder there is nothing to start an agent on, so adding one is the closing step.
+                DoneSubText.Text = _codeAddedRoots.Values.Sum() > 0
+                    ? "Start an agent on one of your repositories - give it a small task and watch the card, not the terminal. Tomorrow morning, DevThrottle reports back on how it went."
+                    : "Add a code folder first - the Repositories view in the left rail - and DevThrottle can start an agent on it. Everything else here is already set up.";
                 FooterNote.Text = "Everything here can be changed in Settings.";
                 FooterNote.IsVisible = true;
                 BuildDoneReceipt();
@@ -942,6 +960,20 @@ public partial class FirstRunWizardDialog : Window
         }
     }
 
+    /// <summary>
+    /// "I don't have code on this machine yet": acknowledge the clean-machine case and move on. It
+    /// writes nothing and creates nothing - a genuinely empty machine is a normal state, not a step
+    /// the user failed.
+    /// </summary>
+    private void BtnNoCodeYet_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[FirstRunWizardDialog] BtnNoCodeYet_Click");
+        _codeNoneOnThisMachine = true;
+        CodeNoneLink.IsVisible = false;
+        CodeNoneAckText.IsVisible = true;
+        Advance();
+    }
+
     // ---- Screenshots step --------------------------------------------------------------------------
 
     /// <summary>
@@ -1141,6 +1173,14 @@ public partial class FirstRunWizardDialog : Window
 
     // ---- Gateway step (native, hosted-first) -------------------------------------------------------
 
+    /// <summary>
+    /// True when a gateway is reachable for this machine - connected during this run, or already
+    /// configured before it. Everything that travels through the gateway (the morning report) reads
+    /// this one answer rather than deciding for itself.
+    /// </summary>
+    private bool HasGateway() =>
+        _gatewayConnected || !string.IsNullOrWhiteSpace(GatewayConfig.Load().Url);
+
     /// <summary>Paint the three choice cards and the primary CTA from the current selection.</summary>
     private void RefreshGatewayChoiceUi()
     {
@@ -1331,7 +1371,11 @@ public partial class FirstRunWizardDialog : Window
                 string.Join(", ", _codeAddedRoots.Keys), done: true));
         else
             DoneReceiptPanel.Children.Add(ReceiptRow(
-                "No code folders yet", "Add them from the Repositories view to get repo suggestions", done: false));
+                "No code folders yet",
+                _codeNoneOnThisMachine
+                    ? "Add a folder from the Repositories view once you have code on this machine"
+                    : "Add them from the Repositories view to get repository suggestions",
+                done: false));
 
         // Screenshots row.
         if (_shotsSelectedPath is not null)
@@ -1361,16 +1405,24 @@ public partial class FirstRunWizardDialog : Window
         DoneReceiptPanel.Children.Add(ReceiptRow(
             "Browsers", "Give agents a signed-in browser any time - the Browsers group in the left rail", done: false));
 
-        // Morning report row - the promise, restated on the receipt.
-        DoneReceiptPanel.Children.Add(_reportCadence switch
+        // Morning report row - the promise, restated on the receipt. With no gateway the report
+        // cannot arrive, so this row must not claim it is Done two rows under "No gateway".
+        var gatewayReady = !string.IsNullOrWhiteSpace(gatewayUrl);
+        DoneReceiptPanel.Children.Add((_reportCadence, gatewayReady) switch
         {
-            ReportCadence.Daily => ReceiptRow("Morning report", "Every morning at 7:00, your time", done: true),
-            ReportCadence.Weekly => ReceiptRow("Morning report", "Monday mornings", done: true),
-            _ => ReceiptRow("Morning report off", "Turn it on any time in Settings", done: false),
+            (ReportCadence.Off, _) => ReceiptRow("Morning report off", "Turn it on any time in Settings", done: false),
+            (ReportCadence.Daily, true) => ReceiptRow("Morning report", "Every morning at 7:00, your time", done: true),
+            (ReportCadence.Weekly, true) => ReceiptRow("Morning report", "Monday mornings", done: true),
+            (ReportCadence.Daily, false) => ReceiptRow(
+                "Morning report", "Every morning at 7:00 - once a gateway is connected",
+                done: false, pillText: "Waiting for a gateway"),
+            _ => ReceiptRow(
+                "Morning report", "Monday mornings - once a gateway is connected",
+                done: false, pillText: "Waiting for a gateway"),
         });
     }
 
-    private static Border ReceiptRow(string name, string sub, bool done)
+    private static Border ReceiptRow(string name, string sub, bool done, string? pillText = null)
     {
         var pill = new Border
         {
@@ -1380,7 +1432,7 @@ public partial class FirstRunWizardDialog : Window
             VerticalAlignment = VerticalAlignment.Center,
             Child = new TextBlock
             {
-                Text = done ? "Done" : "Later",
+                Text = pillText ?? (done ? "Done" : "Later"),
                 Foreground = Brush(done ? "#1A7F37" : "#8A909A"),
                 FontSize = 11,
                 FontWeight = FontWeight.SemiBold,

@@ -43,7 +43,7 @@
 
             <!-- Problem: needs-attention header + only the failing rows. Hidden when healthy. -->
             <StackPanel x:Name="HomeProblems" IsVisible="False" Spacing="0">
-                <TextBlock Text="NEEDS ATTENTION"
+                <TextBlock x:Name="HomeProblemsHeading" Text="NEEDS ATTENTION"
                            Foreground="#F0B848"
                            FontSize="12" FontWeight="Bold" LetterSpacing="1.5"
                            HorizontalAlignment="Center"

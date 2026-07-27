@@ -1,4 +1,4 @@
-namespace CcDirector.Core.Home;
+﻿namespace CcDirector.Core.Home;
 
 /// <summary>Severity of a single readiness row on the home page.</summary>
 public enum HomeCheckLevel
@@ -6,6 +6,14 @@ public enum HomeCheckLevel
     Ok,
     Warn,
     Bad,
+
+    /// <summary>
+    /// Work that has not finished yet, and has not failed. Setup still running is NOT an error: on a
+    /// brand-new machine the installer tells the user the tools finish installing the first time the
+    /// app opens, and reporting that expected state as a red failure alarms them about the product
+    /// working as designed. Rendered as calm progress, never as a problem to fix.
+    /// </summary>
+    Busy,
 }
 
 /// <summary>Where a row's "fix it" affordance should take the user, if anywhere.</summary>
@@ -57,22 +65,39 @@ public sealed record HomeStatus(
 /// </summary>
 public static class HomeStatusBuilder
 {
+    /// <summary>
+    /// The row titles the user reads. Plain product words, not internal vocabulary - these are among
+    /// the first things a new customer ever sees. Every lookup of a row goes through these constants
+    /// so a rename is one edit, never a scatter of string literals.
+    /// </summary>
+    public const string AgentRowTitle = "Coding agent";
+
+    public const string ToolsRowTitle = "DevThrottle tools";
+
     public static HomeStatus Build(
         IReadOnlyList<AgentCliFact> agentClis,
         int toolsBuilt,
         int toolsTotal,
         IReadOnlyList<string>? brokenTools = null,
         Tools.ToolHealthSummary? toolHealth = null,
-        bool basePythonBroken = false)
+        bool basePythonBroken = false,
+        bool toolsSetupInProgress = false)
     {
+        // Tool setup that is still running is progress, not a fault - it outranks every failure signal
+        // below, because on first launch those signals ARE the unfinished setup. It goes red only once
+        // setup has finished and the tools are still not working.
+        HomeCheck toolsCheck;
+        if (toolsSetupInProgress)
+            toolsCheck = new HomeCheck(ToolsRowTitle, HomeCheckLevel.Busy,
+                "Finishing setup - this completes on its own, you can start working",
+                HomeCheckAction.None);
         // The shared base Python being hollow (present but unable to import its standard library) takes down
         // EVERY Python cc-* tool at once (issue #995). It is a distinct, repairable runtime failure, so it
         // short-circuits the per-tool breakdown with a clear message and a one-click repair - the repair
         // re-provisions the base Python.
-        HomeCheck toolsCheck;
-        if (basePythonBroken)
-            toolsCheck = new HomeCheck("cc-* tools", HomeCheckLevel.Bad,
-                "Python runtime broken - the shared Python cannot start; one-click repair reinstalls it",
+        else if (basePythonBroken)
+            toolsCheck = new HomeCheck(ToolsRowTitle, HomeCheckLevel.Bad,
+                "The shared runtime the tools need cannot start; one-click repair reinstalls it",
                 HomeCheckAction.RepairTools);
         // When tool tests have run (toolHealth supplied) the tools row reflects pass/fail/not-built;
         // before that it falls back to the cheap build-status check so the home renders immediately.
@@ -103,7 +128,7 @@ public static class HomeStatusBuilder
     private static HomeCheck BuildToolsFromHealth(Tools.ToolHealthSummary h)
     {
         if (h.Total == 0)
-            return new HomeCheck("cc-* tools", HomeCheckLevel.Ok, "no tools installed", HomeCheckAction.None);
+            return new HomeCheck(ToolsRowTitle, HomeCheckLevel.Ok, "no tools installed", HomeCheckAction.None);
 
         var parts = new List<string> { $"{h.Pass} pass" };
         if (h.Fail > 0) parts.Add($"{h.Fail} fail");
@@ -111,7 +136,7 @@ public static class HomeStatusBuilder
         var detail = string.Join(" · ", parts);
 
         if (!h.HasProblem)
-            return new HomeCheck("cc-* tools", HomeCheckLevel.Ok, detail, HomeCheckAction.None);
+            return new HomeCheck(ToolsRowTitle, HomeCheckLevel.Ok, detail, HomeCheckAction.None);
 
         if (h.Failing.Count > 0)
         {
@@ -121,7 +146,7 @@ public static class HomeStatusBuilder
         }
 
         var action = (h.Broken > 0 || h.Fail > 0) ? HomeCheckAction.RepairTools : HomeCheckAction.OpenTools;
-        return new HomeCheck("cc-* tools", HomeCheckLevel.Warn, detail, action);
+        return new HomeCheck(ToolsRowTitle, HomeCheckLevel.Warn, detail, action);
     }
 
     /// <summary>
@@ -132,12 +157,12 @@ public static class HomeStatusBuilder
     {
         var installed = agentClis.Where(c => c.Found).ToList();
         if (installed.Count == 0)
-            return new HomeCheck("Agent CLIs", HomeCheckLevel.Bad,
-                "No agent CLI found - install Claude Code, Codex, Pi, Gemini, or OpenCode",
+            return new HomeCheck(AgentRowTitle, HomeCheckLevel.Bad,
+                "No coding agent found - install Claude Code, Codex, Pi, Gemini, or OpenCode",
                 HomeCheckAction.OpenSettings);
 
         var names = installed.Select(CliLabel);
-        return new HomeCheck("Agent CLIs", HomeCheckLevel.Ok,
+        return new HomeCheck(AgentRowTitle, HomeCheckLevel.Ok,
             $"{string.Join(", ", names)} - on PATH", HomeCheckAction.None);
     }
 
@@ -168,9 +193,9 @@ public static class HomeStatusBuilder
     private static HomeCheck BuildTools(int built, int total, IReadOnlyList<string> broken)
     {
         if (total == 0)
-            return new HomeCheck("cc-* tools", HomeCheckLevel.Ok, "no tools installed", HomeCheckAction.None);
+            return new HomeCheck(ToolsRowTitle, HomeCheckLevel.Ok, "no tools installed", HomeCheckAction.None);
         if (built == total)
-            return new HomeCheck("cc-* tools", HomeCheckLevel.Ok, $"{total} installed, all working", HomeCheckAction.None);
+            return new HomeCheck(ToolsRowTitle, HomeCheckLevel.Ok, $"{total} installed, all working", HomeCheckAction.None);
 
         string detail;
         if (broken.Count > 0)
@@ -185,6 +210,6 @@ public static class HomeStatusBuilder
         }
 
         var level = built == 0 ? HomeCheckLevel.Bad : HomeCheckLevel.Warn;
-        return new HomeCheck("cc-* tools", level, detail, HomeCheckAction.RepairTools);
+        return new HomeCheck(ToolsRowTitle, level, detail, HomeCheckAction.RepairTools);
     }
 }
