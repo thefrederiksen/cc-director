@@ -52,7 +52,16 @@
                 Margin="0,12,0,0"
                 Click="RefreshButton_Click" />
 
-        <ItemsControl x:Name="PrereqList">
+        <!-- The card list scrolls; everything else on this screen is pinned.
+             The DockPanel gives its LAST child whatever space the docked items leave, so the
+             Re-check button and the success banner (docked Bottom above) hold their place and the
+             list takes the rest. Without this the list simply ran off the bottom of the window
+             with no scrollbar: once the descriptions were allowed to wrap onto a second line the
+             cards grew, and the fourth card's "Install automatically" button was cut in half -
+             the user could see the action but not reach it. -->
+        <ScrollViewer VerticalScrollBarVisibility="Visible"
+                      HorizontalScrollBarVisibility="Disabled">
+            <ItemsControl x:Name="PrereqList">
             <ItemsControl.ItemTemplate>
                 <DataTemplate>
                     <Border Background="#2A2D2E"
@@ -201,6 +210,7 @@
                     </Border>
                 </DataTemplate>
             </ItemsControl.ItemTemplate>
-        </ItemsControl>
+            </ItemsControl>
+        </ScrollViewer>
     </DockPanel>
 </UserControl>
