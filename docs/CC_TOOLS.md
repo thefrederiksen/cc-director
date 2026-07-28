@@ -1031,16 +1031,28 @@ specific. Use `machine apps` to get the exact name.
 #### On macOS, grant the launcher Full Disk Access before relying on file search
 
 **Without it the file search on a Mac returns close to nothing, and this is not a nice-to-have.**
-macOS guards Documents, Desktop and Downloads behind a privacy consent, and a folder without that
-consent does not refuse the search - it never answers at all. The search gives up on it at the
-deadline and reports the folder as an abandoned root, which is honest but is not results.
+macOS guards Documents, Desktop and Downloads behind a privacy consent, granted per folder
+category. A folder the launcher has no consent for may refuse the search quickly - or it **may hang
+rather than refuse**, never answering at all, and that is the case that costs you. The search gives
+up on such a folder at its deadline and reports it as an abandoned root, which is honest but is not
+results.
 
-It is worse than losing those folders alone. On macOS the search walks a single root (`/`), so
-abandoning it abandons everything not already visited: on a real Mac, hitting the Documents folder
-about 630 directories in returned ZERO files out of the whole machine. On Windows each drive is its
-own root, so the same block would cost you one drive rather than the search.
+Which folders behave which way varies by machine, because the consents are separate: on the Mac this
+was measured on, Desktop and Downloads enumerated normally and only Documents hung. So a search that
+looks fine on one Mac is not evidence about another.
 
-Grant it in System Settings under Privacy & Security, Full Disk Access, adding `cc-launcher`.
+It is worse than losing the guarded folder alone. On macOS the search walks a single root (`/`), so
+abandoning it abandons everything not already visited: on that machine, hitting Documents about 630
+directories in returned ZERO files out of the whole machine. On Windows each drive is its own root,
+so the same block would cost you one drive rather than the search.
+
+Grant it in System Settings under Privacy & Security, Full Disk Access. The launcher is a bare
+binary rather than an application bundle, so the file dialog will not offer it by name - press
+Command-Shift-G and enter the path:
+
+```
+~/Library/Application Support/cc-director/launcher/cc-launcher
+```
 
 ---
 
