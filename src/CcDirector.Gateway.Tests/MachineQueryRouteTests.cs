@@ -80,17 +80,17 @@ public sealed class MachineQueryRouteTests : IAsyncLifetime
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
 
-        _aliceKey = _gateway.Devices.Register("dev-alice", "ALICE-PC").DeviceKey;
-        _aliceTenant = _gateway.TenantRegistry.MintOrLookupBySubject("sub-alice", "alice@example.com");
-        _gateway.Devices.SetAccountBinding("dev-alice", "sub-alice", _aliceTenant.Value);
+        _aliceKey = _gateway.Devices.Register("dev-machinequery-alice", "ALICE-PC").DeviceKey;
+        _aliceTenant = _gateway.TenantRegistry.MintOrLookupBySubject("sub-machinequery-alice", "machinequery-alice@example.com");
+        _gateway.Devices.SetAccountBinding("dev-machinequery-alice", "sub-machinequery-alice", _aliceTenant.Value);
 
-        _bobKey = _gateway.Devices.Register("dev-bob", "BOB-PC").DeviceKey;
-        _bobTenant = _gateway.TenantRegistry.MintOrLookupBySubject("sub-bob", "bob@example.com");
-        _gateway.Devices.SetAccountBinding("dev-bob", "sub-bob", _bobTenant.Value);
+        _bobKey = _gateway.Devices.Register("dev-machinequery-bob", "BOB-PC").DeviceKey;
+        _bobTenant = _gateway.TenantRegistry.MintOrLookupBySubject("sub-machinequery-bob", "machinequery-bob@example.com");
+        _gateway.Devices.SetAccountBinding("dev-machinequery-bob", "sub-machinequery-bob", _bobTenant.Value);
 
         Assert.NotEqual(_aliceTenant.Value, _bobTenant.Value);
 
-        _unboundKey = _gateway.Devices.Register("dev-unbound", "NOBODY-PC").DeviceKey;
+        _unboundKey = _gateway.Devices.Register("dev-machinequery-unbound", "NOBODY-PC").DeviceKey;
     }
 
     public async Task DisposeAsync()

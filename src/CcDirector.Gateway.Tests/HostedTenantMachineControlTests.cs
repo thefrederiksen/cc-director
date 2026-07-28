@@ -106,19 +106,19 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
 
         // Two fully enrolled, tenant-bound device keys - one per account.
-        _aliceKey = _gateway.Devices.Register("dev-alice", "ALICE-PC").DeviceKey;
-        _aliceTenant = _gateway.TenantRegistry.MintOrLookupBySubject("sub-alice", "alice@example.com");
-        _gateway.Devices.SetAccountBinding("dev-alice", "sub-alice", _aliceTenant.Value);
+        _aliceKey = _gateway.Devices.Register("dev-tenantmachines-alice", "ALICE-PC").DeviceKey;
+        _aliceTenant = _gateway.TenantRegistry.MintOrLookupBySubject("sub-tenantmachines-alice", "tenantmachines-alice@example.com");
+        _gateway.Devices.SetAccountBinding("dev-tenantmachines-alice", "sub-tenantmachines-alice", _aliceTenant.Value);
 
-        _bobKey = _gateway.Devices.Register("dev-bob", "BOB-PC").DeviceKey;
-        _bobTenant = _gateway.TenantRegistry.MintOrLookupBySubject("sub-bob", "bob@example.com");
-        _gateway.Devices.SetAccountBinding("dev-bob", "sub-bob", _bobTenant.Value);
+        _bobKey = _gateway.Devices.Register("dev-tenantmachines-bob", "BOB-PC").DeviceKey;
+        _bobTenant = _gateway.TenantRegistry.MintOrLookupBySubject("sub-tenantmachines-bob", "tenantmachines-bob@example.com");
+        _gateway.Devices.SetAccountBinding("dev-tenantmachines-bob", "sub-tenantmachines-bob", _bobTenant.Value);
 
         Assert.NotEqual(_aliceTenant.Value, _bobTenant.Value);
 
         // A device that is enrolled but bound to NO account. On hosted it resolves to no tenant, which is a
         // deny-by-default 403 everywhere in this family - never a fall back to the Local or System partition.
-        _unboundKey = _gateway.Devices.Register("dev-unbound", "NOBODY-PC").DeviceKey;
+        _unboundKey = _gateway.Devices.Register("dev-tenantmachines-unbound", "NOBODY-PC").DeviceKey;
     }
 
     public async Task DisposeAsync()

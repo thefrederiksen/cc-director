@@ -57,9 +57,9 @@ public sealed class MachineSpawnWorkflowScopeTests : IAsyncLifetime
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
 
-        _aliceKey = _gateway.Devices.Register("dev-alice", "ALICE-PC").DeviceKey;
-        _aliceTenant = _gateway.TenantRegistry.MintOrLookupBySubject("sub-alice", "alice@example.com");
-        _gateway.Devices.SetAccountBinding("dev-alice", "sub-alice", _aliceTenant.Value);
+        _aliceKey = _gateway.Devices.Register("dev-spawnscope-alice", "ALICE-PC").DeviceKey;
+        _aliceTenant = _gateway.TenantRegistry.MintOrLookupBySubject("sub-spawnscope-alice", "spawnscope-alice@example.com");
+        _gateway.Devices.SetAccountBinding("dev-spawnscope-alice", "sub-spawnscope-alice", _aliceTenant.Value);
     }
 
     public async Task DisposeAsync()
