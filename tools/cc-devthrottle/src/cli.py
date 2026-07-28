@@ -44,6 +44,11 @@ app = typer.Typer(
 session_app = typer.Typer(help="Manage running sessions.", add_completion=False)
 repo_app = typer.Typer(help="List the fleet's repositories.", add_completion=False)
 worktree_app = typer.Typer(help="List the fleet's worktrees and who is in them.", add_completion=False)
+machine_app = typer.Typer(
+    help="Search and start applications on another computer.",
+    add_completion=False,
+    no_args_is_help=True,
+)
 mission_app = typer.Typer(
     help="Create and list Missions (the unit of work sessions attach to).",
     add_completion=False,
@@ -85,6 +90,7 @@ browser_app = typer.Typer(
 app.add_typer(session_app, name="session")
 app.add_typer(repo_app, name="repo")
 app.add_typer(worktree_app, name="worktree")
+app.add_typer(machine_app, name="machine")
 app.add_typer(mission_app, name="mission")
 app.add_typer(message_app, name="message")
 app.add_typer(settings_app, name="settings")
@@ -156,6 +162,65 @@ _ACTIONS = [
         "command": "cc-devthrottle session spawn <repo>",
         "mutatesState": True,
         "args": [{"name": "repo", "required": True}],
+    },
+    {
+        "id": "machine-list",
+        "description": (
+            "List the computers this account can search and start applications on. A computer appears "
+            "once cc-launcher is running on it and has registered with the Gateway."
+        ),
+        "command": "cc-devthrottle machine list",
+        "mutatesState": False,
+        "args": [],
+    },
+    {
+        "id": "machine-apps",
+        "description": (
+            "List the applications installed on another computer. Omit the query to list everything. "
+            "The names it returns are what 'machine launch --app' accepts."
+        ),
+        "command": "cc-devthrottle machine apps <machine> [query] [--count <n>]",
+        "mutatesState": False,
+        "args": [
+            {"name": "machine", "required": True},
+            {"name": "query", "required": False},
+            {"name": "count", "required": False},
+        ],
+    },
+    {
+        "id": "machine-files",
+        "description": (
+            "Find files by name across every drive on another computer. Use * and ? to match patterns; "
+            "a query containing a directory separator is matched against the whole path. The search is "
+            "bounded by a result count AND a time limit, and reports which one stopped it when it ends "
+            "early - so check the truncation before treating the answer as complete."
+        ),
+        "command": "cc-devthrottle machine files <machine> <query> [--count <n>] [--seconds <s>]",
+        "mutatesState": False,
+        "args": [
+            {"name": "machine", "required": True},
+            {"name": "query", "required": True},
+            {"name": "count", "required": False},
+            {"name": "seconds", "required": False},
+        ],
+    },
+    {
+        "id": "machine-launch",
+        "description": (
+            "Start an application on another computer, by catalogue name (--app) or by absolute path "
+            "(--path). A name that matches several applications is refused rather than guessed at, so "
+            "nothing unintended starts on a machine nobody is sitting at."
+        ),
+        "command": "cc-devthrottle machine launch <machine> --app \"<name>\" | --path <path>",
+        "mutatesState": True,
+        "args": [
+            {"name": "machine", "required": True},
+            {"name": "app", "required": False},
+            {"name": "path", "required": False},
+            {"name": "args", "required": False},
+            {"name": "cwd", "required": False},
+            {"name": "headless", "required": False},
+        ],
     },
     {
         "id": "session-hold",
@@ -671,6 +736,63 @@ def worktree_list(
     from .repo_ops import list_worktrees
 
     list_worktrees(json_output, repo=repo, state=state)
+
+
+@machine_app.command("list")
+def machine_list(
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output raw JSON."),
+) -> None:
+    """List the computers you can search and start applications on."""
+    from .machine_ops import list_machines
+
+    list_machines(json_output)
+
+
+@machine_app.command("apps")
+def machine_apps(
+    machine: str = typer.Argument(..., help="The computer to look on."),
+    query: str = typer.Argument(None, help="Filter by name. Omit to list everything installed."),
+    count: int = typer.Option(100, "--count", "-n", help="Largest number of results to return."),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output raw JSON."),
+) -> None:
+    """List the applications installed on another computer."""
+    from .machine_ops import list_apps
+
+    list_apps(machine, query, count, json_output)
+
+
+@machine_app.command("files")
+def machine_files(
+    machine: str = typer.Argument(..., help="The computer to search."),
+    query: str = typer.Argument(..., help="Filename to find. Use * and ? to match patterns."),
+    count: int = typer.Option(200, "--count", "-n", help="Largest number of results to return."),
+    seconds: int = typer.Option(20, "--seconds", "-s", help="How long the search may run before it reports what it found."),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output raw JSON."),
+) -> None:
+    """Find files by name across every drive on another computer.
+
+    The search is bounded by both a result count and a time limit, and says which one stopped it when
+    it returns early, so a partial answer is never mistaken for the whole one.
+    """
+    from .machine_ops import search_files
+
+    search_files(machine, query, count, seconds, json_output)
+
+
+@machine_app.command("launch")
+def machine_launch(
+    machine: str = typer.Argument(..., help="The computer to start it on."),
+    app: str = typer.Option(None, "--app", "-a", help="Application name, as shown by 'machine apps'."),
+    path: str = typer.Option(None, "--path", "-p", help="Absolute path to start instead of a name."),
+    args: str = typer.Option(None, "--args", help="Command-line arguments to pass to it."),
+    cwd: str = typer.Option(None, "--cwd", help="Working directory to start it in."),
+    headless: bool = typer.Option(False, "--headless", help="Run with no window."),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output raw JSON."),
+) -> None:
+    """Start an application on another computer, by name or by absolute path."""
+    from .machine_ops import launch
+
+    launch(machine, app, path, args, cwd, headless, json_output)
 
 
 @session_app.command()

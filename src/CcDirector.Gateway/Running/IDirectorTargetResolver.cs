@@ -32,12 +32,22 @@ public interface IDirectorTargetResolver
 ///
 /// Hosted Multi-Tenancy (audit H1, gap audit-e): the resolve is confined to the CALLER'S tenant. The
 /// <paramref name="listDirectors"/> reader takes the tenant to list (production: the registry's
-/// tenant-scoped <c>ListDirectors(TenantId)</c> overload), and the tenant is resolved per-resolve from
-/// <paramref name="resolveTenant"/> - the tenant of the current cron fire (<c>() =&gt; _tenantPass.Current</c>
-/// in production), which flows across the launch poll's awaits with the ambient scope. A bare machine-name
-/// match against the FLEET-GLOBAL list could pick another tenant's Director on the same machine and persist
-/// that cross-tenant DirectorId in this tenant's CronRunRecord; scoping to the caller's partition makes that
-/// structurally impossible. On self-host the tenant is always Local - one partition, unchanged.
+/// tenant-scoped <c>ListDirectors(TenantId)</c> overload), and the tenant is resolved from
+/// <paramref name="resolveTenant"/> - the scope of the current unit of work
+/// (<c>() =&gt; _tenantPass.Current</c> in production), which flows across the launch poll's awaits with the
+/// ambient scope. A bare machine-name match against the FLEET-GLOBAL list could pick another tenant's
+/// Director on the same machine and persist that cross-tenant DirectorId in this tenant's CronRunRecord;
+/// scoping to the caller's partition makes that structurally impossible. On self-host the tenant is always
+/// Local - one partition, unchanged.
+///
+/// TWO CALLERS, NOT ONE. This began as the cron firing engine's resolver, and the naming still shows it. It
+/// also serves the INTERACTIVE spawn - POST /machines/{machine}/sessions, the route "start a session on
+/// another computer" uses - which enters the caller's tenant scope before calling in. Both callers therefore
+/// arrive already scoped, which is why a null tenant here is a bug in the caller and not a case to handle.
+///
+/// THE TENANT IS RESOLVED ONCE PER RESOLVE AND PASSED DOWN, including to the LAUNCH. That matters because
+/// the launch is the step that reaches another machine: it used to go out as a fresh loopback request to the
+/// Gateway's own relay, which carries no device key and so arrived with no tenant at all.
 /// </summary>
 public sealed class RegistryDirectorTargetResolver : IDirectorTargetResolver
 {
@@ -74,20 +84,27 @@ public sealed class RegistryDirectorTargetResolver : IDirectorTargetResolver
         if (string.IsNullOrWhiteSpace(machine))
             return new DirectorTargetResult(null, "no target machine");
 
-        var d = PickReachable(machine);
+        // Resolve the tenant ONCE, at the top, and carry it through both the registry reads and the launch.
+        // Reading it separately per step would let a resolve that starts in one scope finish in another, and
+        // would leave the LAUNCH - the one step that reaches another machine - with no tenant at all.
+        var tenant = RequireTenant();
+
+        var d = PickReachable(tenant, machine);
         if (d is not null)
             return new DirectorTargetResult(d.DirectorId, null);
 
-        // No Director running on the machine: ask its launcher to start one, then wait for it to register.
-        FileLog.Write($"[RegistryDirectorTargetResolver] no Director on machine={machine}; asking launcher to start one");
-        if (!await _launcher.StartAsync(machine, ct))
+        // No Director running on the machine: ask THIS TENANT'S launcher to start one, then wait for it to
+        // register. A launcher another tenant registered under the same bare machine name is not reachable
+        // from here and is never asked.
+        FileLog.Write($"[RegistryDirectorTargetResolver] no Director on tenant={tenant.Value}, machine={machine}; asking launcher to start one");
+        if (!await _launcher.StartAsync(tenant, machine, ct))
             return new DirectorTargetResult(null, $"no Director on '{machine}' and the launcher could not start one");
 
         var deadline = DateTime.UtcNow + _launchTimeout;
         while (DateTime.UtcNow < deadline)
         {
             await Task.Delay(_pollInterval, ct);
-            d = PickReachable(machine);
+            d = PickReachable(tenant, machine);
             if (d is not null)
             {
                 FileLog.Write($"[RegistryDirectorTargetResolver] launched Director registered on machine={machine}: {d.DirectorId}");
@@ -98,19 +115,26 @@ public sealed class RegistryDirectorTargetResolver : IDirectorTargetResolver
     }
 
     /// <summary>
+    /// The tenant of the current unit of work. On hosted a null means the caller path was not bound at its
+    /// tenant boundary, which is a bug in that path and DENIES loudly rather than defaulting to a partition.
+    /// </summary>
+    private TenantId RequireTenant() =>
+        _resolveTenant()
+            ?? throw new InvalidOperationException(
+                "A machine target resolution ran with no tenant scope in effect. The Director list and the " +
+                "launcher registry are both partitioned by tenant; the caller path was not bound at its " +
+                "tenant boundary.");
+
+    /// <summary>
     /// First registered Director on the machine. Gateway Cleanup mission (tunnel-only): a registered Director
     /// IS reachable - it is reached over its tunnel by id, not by dialing a control endpoint - so this no
     /// longer requires a non-empty ControlEndpoint or an advertised-endpoint reachability state (both are
     /// artifacts of the deleted HTTP-dial path).
     /// </summary>
-    private DirectorDto? PickReachable(string machine)
+    private DirectorDto? PickReachable(TenantId tenant, string machine)
     {
         // Confine the machine-name match to the caller's OWN tenant partition (audit H1, gap audit-e): a
         // fleet-global scan could return another tenant's Director that happens to run on the same machine.
-        var tenant = _resolveTenant()
-            ?? throw new InvalidOperationException(
-                "A cron target resolution ran with no tenant scope in effect. The Director list is " +
-                "partitioned by tenant; the caller path was not bound at its tenant boundary.");
         return _listDirectors(tenant).FirstOrDefault(x =>
             string.Equals(x.MachineName, machine, StringComparison.OrdinalIgnoreCase));
     }

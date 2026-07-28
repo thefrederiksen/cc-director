@@ -32,12 +32,17 @@ public sealed class RegistryDirectorTargetResolverTests
         public int StartCount { get; private set; }
         public string? LastMachine { get; private set; }
 
+        /// <summary>The tenant the resolver handed to the launch, so a test can assert that the resolved
+        /// tenant reaches the launcher rather than being dropped on the way.</summary>
+        public TenantId? LastTenant { get; private set; }
+
         public FakeLauncher(Func<string, bool> onStart) => _onStart = onStart;
 
-        public Task<bool> StartAsync(string machine, CancellationToken ct)
+        public Task<bool> StartAsync(TenantId tenant, string machine, CancellationToken ct)
         {
             StartCount++;
             LastMachine = machine;
+            LastTenant = tenant;
             return Task.FromResult(_onStart(machine));
         }
     }
@@ -82,6 +87,10 @@ public sealed class RegistryDirectorTargetResolverTests
         Assert.Equal("d-new", result.DirectorId);
         Assert.Equal(1, launcher.StartCount);
         Assert.Equal("MACHINE_A", launcher.LastMachine);
+        // The resolved tenant reaches the launcher. It used to be dropped here: the launch went out as a fresh
+        // loopback request to the Gateway's own relay, which carries no device key and so arrived with no
+        // tenant at all.
+        Assert.Equal(TenantId.Local, launcher.LastTenant);
     }
 
     [Fact]

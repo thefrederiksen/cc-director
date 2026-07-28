@@ -53,7 +53,14 @@ public sealed class LauncherCore : IAsyncDisposable
         var launchService = new LaunchService();
         var directorSupervisor = new DirectorSupervisor();
 
-        _host = new LauncherHost(_port, launchService, directorSupervisor, requestShutdownAsync, _version, userInterfaceState);
+        // One instance of each query service, shared by the loopback host and the Gateway command stream, for
+        // the same reason they share the supervisor and the launch service: two instances would be two places
+        // for behaviour to drift apart.
+        var appCatalog = new AppCatalog();
+        var fileSearch = new FileSearchService();
+
+        _host = new LauncherHost(_port, launchService, directorSupervisor, requestShutdownAsync, _version,
+            userInterfaceState, appCatalog, fileSearch);
         await _host.StartAsync();
         FileLog.Write($"[LauncherCore] Host running on :{_port}");
 
@@ -69,7 +76,8 @@ public sealed class LauncherCore : IAsyncDisposable
         // connection instead of dialing this launcher's REST API. Runs alongside the registration
         // client (which stays for metadata). Start() is a no-op unless a Gateway is configured AND
         // stream mode is on.
-        _launcherStreamClient = new LauncherStreamClient(gwConfig, _port, _version, directorSupervisor, launchService);
+        _launcherStreamClient = new LauncherStreamClient(gwConfig, _port, _version, directorSupervisor, launchService,
+            appCatalog, fileSearch);
         _launcherStreamClient.Start();
     }
 

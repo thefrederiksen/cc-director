@@ -16,7 +16,9 @@ namespace CcDirector.Launcher;
 /// Endpoints (all require Bearer token except /healthz):
 ///   GET  /healthz         -> {ok, version, pid, uptimeS}
 ///   GET  /status          -> launcher info + director status + launched pids
-///   POST /launch          -> {path, args?, cwd?, headless?} -> {ok, pid}
+///   GET  /apps            -> ?q=&amp;limit= -> the installed application catalogue
+///   GET  /files           -> ?q=&amp;limit=&amp;timeoutMilliseconds= -> filename search across this machine
+///   POST /launch          -> {path|app, args?, cwd?, headless?} -> {ok, pid}
 ///   POST /director/start  -> start installed Director
 ///   POST /director/stop   -> stop installed Director
 ///   POST /director/restart -> restart installed Director
@@ -31,6 +33,8 @@ public sealed class LauncherHost : IAsyncDisposable
     private readonly int _port;
     private readonly LaunchService _launchService;
     private readonly DirectorSupervisor _directorSupervisor;
+    private readonly AppCatalog _appCatalog;
+    private readonly FileSearchService _fileSearch;
     private readonly Func<Task> _requestShutdownAsync;
     private readonly DateTime _startedAt = DateTime.UtcNow;
     private readonly string _version;
@@ -45,11 +49,16 @@ public sealed class LauncherHost : IAsyncDisposable
     public int Port => _port;
 
     public LauncherHost(int port, LaunchService launchService, DirectorSupervisor directorSupervisor, Func<Task> requestShutdownAsync, string version = "0.0.0",
-        string userInterfaceState = "tray")
+        string userInterfaceState = "tray", AppCatalog? appCatalog = null, FileSearchService? fileSearch = null)
     {
         _port = port;
         _launchService = launchService ?? throw new ArgumentNullException(nameof(launchService));
         _directorSupervisor = directorSupervisor ?? throw new ArgumentNullException(nameof(directorSupervisor));
+        // Both query services hold no state, so a caller that does not supply them gets its own. They are
+        // constructor arguments at all so a test can substitute one rooted at a temporary directory instead of
+        // searching the machine the test happens to run on.
+        _appCatalog = appCatalog ?? new AppCatalog();
+        _fileSearch = fileSearch ?? new FileSearchService();
         _requestShutdownAsync = requestShutdownAsync ?? throw new ArgumentNullException(nameof(requestShutdownAsync));
         _version = version;
         // "tray" (normal) or "degraded" (headless fallback: the user-interface platform could
@@ -176,23 +185,52 @@ public sealed class LauncherHost : IAsyncDisposable
                 return;
             }
 
-            if (dto is null || string.IsNullOrWhiteSpace(dto.Path))
+            // Resolve a path or an application name through the shared rule, so this route and the Gateway
+            // command stream cannot disagree about what "start Chrome" means on this machine.
+            var (resolvedPath, resolveError) = _appCatalog.ResolveLaunchPath(dto?.Path, dto?.App);
+            if (resolveError is not null)
             {
+                FileLog.Write($"[LauncherHost] POST /launch refused: {resolveError}");
                 ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
-                await ctx.Response.WriteAsync("{\"error\":\"path is required\"}");
+                await ctx.Response.WriteAsJsonAsync(new { error = resolveError }, JsonOpts);
                 return;
             }
 
             var request = new LaunchRequest
             {
-                Path = dto.Path,
-                Args = dto.Args,
+                Path = resolvedPath!,
+                Args = dto!.Args,
                 Cwd = dto.Cwd,
                 Headless = dto.Headless,
             };
 
             var pid = _launchService.Launch(request, caller: $"POST /launch from {ctx.Connection.RemoteIpAddress}");
             await ctx.Response.WriteAsJsonAsync(new { ok = true, pid }, JsonOpts);
+        });
+
+        // GET /apps - the installed application catalogue, optionally filtered.
+        app.MapGet("/apps", (HttpContext ctx) =>
+        {
+            var query = ctx.Request.Query["q"].ToString();
+            _ = int.TryParse(ctx.Request.Query["limit"].ToString(), out var limit);
+            FileLog.Write($"[LauncherHost] GET /apps: q={query}, limit={limit}");
+            return Results.Json(_appCatalog.Search(query, limit), JsonOpts);
+        });
+
+        // GET /files - a filename search across this machine's drives.
+        app.MapGet("/files", (HttpContext ctx) =>
+        {
+            var query = ctx.Request.Query["q"].ToString();
+            _ = int.TryParse(ctx.Request.Query["limit"].ToString(), out var limit);
+            _ = int.TryParse(ctx.Request.Query["timeoutMilliseconds"].ToString(), out var timeout);
+            FileLog.Write($"[LauncherHost] GET /files: q={query}, limit={limit}, timeout={timeout}");
+
+            // A search with no query would walk every drive to return an arbitrary first N files, which is a
+            // long way to travel for a meaningless answer. Refuse it rather than serve it.
+            if (string.IsNullOrWhiteSpace(query))
+                return Results.Json(new { error = "q is required for a file search" }, JsonOpts, statusCode: 400);
+
+            return Results.Json(_fileSearch.Search(query, limit, timeout, ctx.RequestAborted), JsonOpts);
         });
 
         // POST /director/start
@@ -294,10 +332,19 @@ public sealed class LauncherHost : IAsyncDisposable
     }
 }
 
-/// <summary>JSON body for POST /launch.</summary>
+/// <summary>
+/// The body for POST /launch. Exactly one of <see cref="Path"/> and <see cref="App"/> identifies what to
+/// start: a path names it directly, an application name is resolved against the catalogue this machine
+/// reports from GET /apps. A caller on another machine has no way to know local paths, which is the whole
+/// reason the name form exists.
+/// </summary>
 internal sealed class LaunchRequestDto
 {
     public string? Path { get; init; }
+
+    /// <summary>An application display name from the catalogue, used when <see cref="Path"/> is absent.</summary>
+    public string? App { get; init; }
+
     public string? Args { get; init; }
     public string? Cwd { get; init; }
     public bool Headless { get; init; }

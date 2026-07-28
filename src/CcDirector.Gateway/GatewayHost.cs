@@ -1147,7 +1147,10 @@ public sealed class GatewayHost : IAsyncDisposable
             // the drain runner read the same seam); on self-host it is always Local.
             tenant => Registry.ListDirectors(tenant),
             () => _tenantPass.Current,
-            new Running.RelayDirectorLauncher(() => Port, Token));
+            // The auto-launch runs IN-PROCESS through the shared launcher relay, carrying the resolved tenant
+            // as an argument. It used to POST to this Gateway's own /machines/{m}/director/start over
+            // loopback, which cannot carry a device key and so arrived with no tenant at all.
+            new Running.RelayDirectorLauncher(Launchers, SendLauncherCommandAsync));
         // The single resolve-then-create path shared by the cron firing engine and the interactive
         // POST /machines/{machine}/sessions relay ("start a session on another computer"). Gateway Cleanup
         // Phase 2 (PR E-B2): both the spawner and the work-list drain driver ride the tunnel. Tunnel-only:
