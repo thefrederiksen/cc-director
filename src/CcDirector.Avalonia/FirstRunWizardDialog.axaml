@@ -457,53 +457,6 @@
                 </Grid>
             </Grid>
 
-            <!-- ===================== MORNING REPORT (the promise screen) ===================== -->
-            <Grid x:Name="ReportPanel" IsVisible="False" RowDefinitions="Auto,Auto,Auto,*">
-                <TextBlock Grid.Row="0" Classes="eyebrow" Text="THE PAYOFF" />
-                <TextBlock Grid.Row="1" x:Name="ReportTitle" Classes="wtitle"
-                           Text="Tomorrow morning, we report back" Margin="0,0,0,10" />
-                <TextBlock Grid.Row="2" x:Name="ReportSubText" Classes="wsub" Margin="0,0,0,24"
-                           Text="Every morning DevThrottle emails you what happened, what needs your attention, and what it recommends - stale worktrees, unmerged branches, sessions waiting on you. So Friday never surprises you." />
-                <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto"
-                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"
-                              MaxWidth="560" HorizontalAlignment="Center">
-                <StackPanel MaxWidth="520" Spacing="10" VerticalAlignment="Top"
-                            HorizontalAlignment="Stretch">
-                    <Border x:Name="ReportDailyCard" Cursor="Hand"
-                            Background="#FFFFFF" BorderBrush="#E6E8EC" BorderThickness="1"
-                            CornerRadius="10" Padding="16,13"
-                            PointerPressed="ReportDailyCard_Pressed">
-                        <StackPanel Spacing="2">
-                            <TextBlock Text="Daily" FontSize="14" FontWeight="SemiBold" Foreground="#16181D" />
-                            <TextBlock Text="Every morning at 7:00, your time" FontSize="11" Foreground="#8A909A" />
-                        </StackPanel>
-                    </Border>
-                    <Border x:Name="ReportWeeklyCard" Cursor="Hand"
-                            Background="#FFFFFF" BorderBrush="#E6E8EC" BorderThickness="1"
-                            CornerRadius="10" Padding="16,13"
-                            PointerPressed="ReportWeeklyCard_Pressed">
-                        <StackPanel Spacing="2">
-                            <TextBlock Text="Weekly" FontSize="14" FontWeight="SemiBold" Foreground="#16181D" />
-                            <TextBlock Text="Monday mornings only" FontSize="11" Foreground="#8A909A" />
-                        </StackPanel>
-                    </Border>
-                    <Border x:Name="ReportOffCard" Cursor="Hand"
-                            Background="#FFFFFF" BorderBrush="#E6E8EC" BorderThickness="1"
-                            CornerRadius="10" Padding="16,13"
-                            PointerPressed="ReportOffCard_Pressed">
-                        <StackPanel Spacing="2">
-                            <TextBlock Text="No report" FontSize="14" FontWeight="SemiBold" Foreground="#16181D" />
-                            <TextBlock Text="You can turn it on later in Settings" FontSize="11" Foreground="#8A909A" />
-                        </StackPanel>
-                    </Border>
-                    <TextBlock x:Name="ReportGatewayNote" Classes="hint" IsVisible="False"
-                               HorizontalAlignment="Center" TextAlignment="Center" MaxWidth="480"
-                               Margin="0,6,0,0"
-                               Text="The report travels through your gateway. Connect one on the previous step - or any time in Settings - and it starts arriving." />
-                </StackPanel>
-                </ScrollViewer>
-            </Grid>
-
             <!-- ===================== DONE =====================
                  The receipt grows with the number of things it reports, so it scrolls and the two
                  finish buttons are pinned to the bottom row. Before this they lived inside the

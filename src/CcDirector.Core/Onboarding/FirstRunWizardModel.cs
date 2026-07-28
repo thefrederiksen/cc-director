@@ -3,11 +3,18 @@ using CcDirector.Core.Utilities;
 namespace CcDirector.Core.Onboarding;
 
 /// <summary>
-/// The seven first-run wizard screens in their canonical order (issue #2100 mockup). A given
+/// The first-run wizard screens in their canonical order (issue #2100 mockup). A given
 /// release presents a subsequence of these: the bookends (<see cref="Welcome"/> and
 /// <see cref="Done"/>) always ship, the middle steps slot in as their own issues land. Absent
 /// steps are simply not part of the present-step list a <see cref="FirstRunWizardModel"/> is built
 /// with, so the wizard tolerates a configurable step list without re-ordering logic.
+///
+/// EVERY STEP HERE MUST BE ABOUT THIS MACHINE. The wizard runs once per director, per machine, so a
+/// question whose answer belongs to the ACCOUNT gets asked once per machine and the copies never
+/// reconcile. That is why there is no daily-report step (issue #996): the report is one person, one
+/// email, delivered through the gateway, so asking about it on machine two was asking the same
+/// person the same question again and writing the answer somewhere machine one could not see. The
+/// gateway step stays, because enrolling THIS machine to a gateway genuinely is about this machine.
 /// </summary>
 public enum WizardStep
 {
@@ -17,7 +24,6 @@ public enum WizardStep
     Code,
     Screenshots,
     Gateway,
-    MorningReport,
     Done,
 }
 
@@ -60,7 +66,6 @@ public sealed class FirstRunWizardModel
         WizardStep.Code,
         WizardStep.Screenshots,
         WizardStep.Gateway,
-        WizardStep.MorningReport,
         WizardStep.Done,
     };
 
@@ -96,7 +101,7 @@ public sealed class FirstRunWizardModel
         FileLog.Write($"[FirstRunWizardModel] Constructor: steps=[{string.Join(",", _steps)}]");
     }
 
-    /// <summary>Build a wizard over all seven canonical steps (the full mockup flow).</summary>
+    /// <summary>Build a wizard over every canonical step (the full mockup flow).</summary>
     public static FirstRunWizardModel CreateFull() => new(CanonicalOrder);
 
     /// <summary>The present steps, in canonical order. Its length is the number of progress dots.</summary>

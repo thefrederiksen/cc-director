@@ -93,12 +93,6 @@ public partial class FirstRunWizardDialog : Window
     // on disk - it only stops the step, and the Done receipt, from reading as a failure.
     private bool _codeNoneOnThisMachine;
 
-    // Morning report step: the chosen cadence. Daily is the default - the report is the payoff the
-    // whole onboarding story builds to, so it arrives unless the user says otherwise.
-    private enum ReportCadence { Daily, Weekly, Off }
-
-    private ReportCadence _reportCadence = ReportCadence.Daily;
-
     // True once the completion marker has been written, so OnClosed does not write it twice.
     private bool _marked;
 
@@ -181,7 +175,6 @@ public partial class FirstRunWizardDialog : Window
         CodePanel.IsVisible = step == WizardStep.Code;
         ScreenshotsPanel.IsVisible = step == WizardStep.Screenshots;
         GatewayPanel.IsVisible = step == WizardStep.Gateway;
-        ReportPanel.IsVisible = step == WizardStep.MorningReport;
         DonePanel.IsVisible = step == WizardStep.Done;
 
         // Leaving the Screenshots step ends any take-a-screenshot watch; leaving Tools stops the
@@ -249,24 +242,6 @@ public partial class FirstRunWizardDialog : Window
                 RefreshGatewayChoiceUi();
                 break;
 
-            case WizardStep.MorningReport:
-                PrimaryButton.Content = "Sounds good";
-                PrimaryButton.IsVisible = true;
-                PrimaryButton.IsEnabled = true;
-                RefreshReportCards();
-                // The report travels through the gateway. With none connected nothing can arrive
-                // tomorrow morning, so the headline says what is actually true instead of making a
-                // promise the previous step already ruled out.
-                var hasGateway = HasGateway();
-                ReportGatewayNote.IsVisible = !hasGateway;
-                ReportTitle.Text = hasGateway
-                    ? "Tomorrow morning, we report back"
-                    : "Your morning report is ready when your gateway is";
-                ReportSubText.Text = hasGateway
-                    ? "Every morning DevThrottle emails you what happened, what needs your attention, and what it recommends - stale worktrees, unmerged branches, sessions waiting on you. So Friday never surprises you."
-                    : "The report tells you every morning what happened, what needs your attention, and what DevThrottle recommends. Choose how often you want it - it starts arriving as soon as a gateway is connected.";
-                break;
-
             case WizardStep.Done:
                 // Primary and the board link live in the content panel. With no agent on the machine
                 // the carried to-do leads: the button routes back to the Agents step and its installer
@@ -302,11 +277,6 @@ public partial class FirstRunWizardDialog : Window
 
                 case WizardStep.Screenshots:
                     await SaveScreenshotsFolderAsync();
-                    Advance();
-                    break;
-
-                case WizardStep.MorningReport:
-                    await SaveReportCadenceAsync();
                     Advance();
                     break;
 
@@ -1232,45 +1202,6 @@ public partial class FirstRunWizardDialog : Window
         }
     }
 
-    // ---- Morning report step (the promise screen) ---------------------------------------------------
-
-    private void RefreshReportCards()
-    {
-        StyleGatewayCard(ReportDailyCard, _reportCadence == ReportCadence.Daily, emphasized: false);
-        StyleGatewayCard(ReportWeeklyCard, _reportCadence == ReportCadence.Weekly, emphasized: false);
-        StyleGatewayCard(ReportOffCard, _reportCadence == ReportCadence.Off, emphasized: false);
-    }
-
-    private void SelectReportCadence(ReportCadence cadence)
-    {
-        FileLog.Write($"[FirstRunWizardDialog] SelectReportCadence: {cadence}");
-        _reportCadence = cadence;
-        RefreshReportCards();
-    }
-
-    private void ReportDailyCard_Pressed(object? sender, PointerPressedEventArgs e) => SelectReportCadence(ReportCadence.Daily);
-    private void ReportWeeklyCard_Pressed(object? sender, PointerPressedEventArgs e) => SelectReportCadence(ReportCadence.Weekly);
-    private void ReportOffCard_Pressed(object? sender, PointerPressedEventArgs e) => SelectReportCadence(ReportCadence.Off);
-
-    /// <summary>
-    /// Persist the cadence choice to config so the morning-report sender reads the user's answer
-    /// when it ships. Skipping the step writes nothing - only an explicit "Sounds good" commits.
-    /// </summary>
-    private async Task SaveReportCadenceAsync()
-    {
-        var cadence = _reportCadence switch
-        {
-            ReportCadence.Daily => "daily",
-            ReportCadence.Weekly => "weekly",
-            _ => "off",
-        };
-        FileLog.Write($"[FirstRunWizardDialog] SaveReportCadenceAsync: {cadence}");
-        await Task.Run(() => CcDirectorConfigService.MergePatch(new JsonObject
-        {
-            ["morning_report"] = new JsonObject { ["cadence"] = cadence, ["hour"] = 7 },
-        }));
-    }
-
     // ---- Welcome: founder note ----------------------------------------------------------------------
 
     private void BtnFounderMore_Click(object? sender, RoutedEventArgs e)
@@ -1280,14 +1211,6 @@ public partial class FirstRunWizardDialog : Window
     }
 
     // ---- Gateway step (native, hosted-first) -------------------------------------------------------
-
-    /// <summary>
-    /// True when a gateway is reachable for this machine - connected during this run, or already
-    /// configured before it. Everything that travels through the gateway (the morning report) reads
-    /// this one answer rather than deciding for itself.
-    /// </summary>
-    private bool HasGateway() =>
-        _gatewayConnected || !string.IsNullOrWhiteSpace(GatewayConfig.Load().Url);
 
     /// <summary>Paint the three choice cards and the primary CTA from the current selection.</summary>
     private void RefreshGatewayChoiceUi()
@@ -1513,21 +1436,20 @@ public partial class FirstRunWizardDialog : Window
         DoneReceiptPanel.Children.Add(ReceiptRow(
             "Browsers", "Give agents a signed-in browser any time - the Browsers group in the left rail", done: false));
 
-        // Morning report row - the promise, restated on the receipt. With no gateway the report
-        // cannot arrive, so this row must not claim it is Done two rows under "No gateway".
-        var gatewayReady = !string.IsNullOrWhiteSpace(gatewayUrl);
-        DoneReceiptPanel.Children.Add((_reportCadence, gatewayReady) switch
-        {
-            (ReportCadence.Off, _) => ReceiptRow("Morning report off", "Turn it on any time in Settings", done: false),
-            (ReportCadence.Daily, true) => ReceiptRow("Morning report", "Every morning at 7:00, your time", done: true),
-            (ReportCadence.Weekly, true) => ReceiptRow("Morning report", "Monday mornings", done: true),
-            (ReportCadence.Daily, false) => ReceiptRow(
-                "Morning report", "Every morning at 7:00 - once a gateway is connected",
-                done: false, pillText: "Waiting for a gateway"),
-            _ => ReceiptRow(
-                "Morning report", "Monday mornings - once a gateway is connected",
-                done: false, pillText: "Waiting for a gateway"),
-        });
+        // Morning report row. There is no longer a frequency question in the wizard - the report is
+        // one person, one email, and asking about it once per machine could never reconcile (issue
+        // #996) - so this row states the ONE default rather than reporting a choice back. It is now
+        // also the only place onboarding says the email is coming at all, which is why the row stays.
+        //
+        // Two claims here have to be true and stay true. The report travels through the gateway, so
+        // with none connected it must not read Done two rows under "No gateway". And the time is
+        // 7:00 EASTERN, not "your time" - that is when the sender runs, and a receipt that invents a
+        // local hour is wrong for everyone outside one timezone.
+        DoneReceiptPanel.Children.Add(!string.IsNullOrWhiteSpace(gatewayUrl)
+            ? ReceiptRow("Morning report", "Every morning at 7:00 Eastern - the email says how to change or stop it", done: true)
+            : ReceiptRow(
+                "Morning report", "Every morning at 7:00 Eastern - once a gateway is connected",
+                done: false, pillText: "Waiting for a gateway"));
     }
 
     private static Border ReceiptRow(string name, string sub, bool done, string? pillText = null)

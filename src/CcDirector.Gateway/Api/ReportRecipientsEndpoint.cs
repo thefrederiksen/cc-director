@@ -25,10 +25,15 @@ namespace CcDirector.Gateway.Api;
 /// was at mint time and it is nullable; a recipient with nothing to send to is not a recipient, and
 /// returning an empty address would invite the sender to try anyway.
 ///
-/// WHAT THIS DOES NOT DECIDE: whether a given account WANTS the email. There is no such setting yet
-/// (the wizard cadence step is issue #2107). When it exists, the filtering belongs HERE - one place
-/// that answers "who should be mailed" - and not in the sender, so that every future channel inherits
-/// the same answer instead of each one re-deriving it.
+/// WHAT THIS DOES NOT DECIDE: whether a given account WANTS the email. There is no such setting yet,
+/// and it is NOT coming from the first-run wizard - that step was removed (issue #996) because the
+/// wizard runs once per director per machine while this preference is one per ACCOUNT, so it was
+/// asked N times and the answers never reconciled. Until the account-scoped setting exists the report
+/// is simply daily, and the email itself carries the instructions for changing or stopping it.
+///
+/// When the setting does exist, the filtering belongs HERE - one place that answers "who should be
+/// mailed" - and not in the sender, so that every future channel inherits the same answer instead of
+/// each one re-deriving it.
 /// </summary>
 internal static class ReportRecipientsEndpoint
 {

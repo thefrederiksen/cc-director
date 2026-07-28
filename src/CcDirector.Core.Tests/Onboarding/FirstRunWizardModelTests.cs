@@ -123,14 +123,37 @@ public class FirstRunWizardModelTests
     }
 
     [Fact]
-    public void CreateFull_HasAllEightStepsInCanonicalOrder()
+    public void CreateFull_HasAllSevenStepsInCanonicalOrder()
     {
         var model = FirstRunWizardModel.CreateFull();
         Assert.Equal(FirstRunWizardModel.CanonicalOrder, model.Steps);
-        Assert.Equal(8, model.Count);
+        Assert.Equal(7, model.Count);
 
         // Tools sits right after Agents: workforce first, then their toolbelt.
         Assert.Equal(WizardStep.Tools, model.Steps[2]);
+
+        // Gateway is the last step before Done. It used to be followed by a daily-report frequency
+        // question, which is an ACCOUNT setting and so was asked once per machine with no way to
+        // reconcile the answers (issue #996). The number here is also the number of progress dots,
+        // so a step creeping back in is a failing assertion rather than a silently longer wizard.
+        Assert.Equal(WizardStep.Gateway, model.Steps[^2]);
+    }
+
+    [Fact]
+    public void CanonicalOrder_HasNoStepAskingForAnAccountLevelSetting()
+    {
+        // The guard for issue #996, stated as the rule rather than as one banned name: the wizard
+        // runs per director per machine, so every step it presents must be answerable about THIS
+        // machine. Enum.GetValues is the source, so adding a step to WizardStep without adding it
+        // to this list fails here and forces the question to be asked deliberately.
+        var machineScoped = new[]
+        {
+            WizardStep.Welcome, WizardStep.Agents, WizardStep.Tools, WizardStep.Code,
+            WizardStep.Screenshots, WizardStep.Gateway, WizardStep.Done,
+        };
+
+        Assert.Equal(machineScoped, Enum.GetValues<WizardStep>());
+        Assert.Equal(machineScoped, FirstRunWizardModel.CanonicalOrder);
     }
 
     [Fact]
