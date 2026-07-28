@@ -2552,8 +2552,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // Issue #881: revoke the auto-minted inference key on sign-out (before the credential is cleared),
         // so a signed-out install leaves no live key behind. A manually-pasted key has no recorded id and
         // is left untouched. Best-effort - never blocks logout.
+        // Issue #984: on hosted there is no Gateway credential to clear, so the tenant boundary is passed in
+        // and the route refuses truthfully instead of reporting a sign-out that never happened.
         AccountLogoutEndpoint.Map(_app, Account,
-            onBeforeLogout: _transcriptionKeyProvisioner is null ? null : ct => _transcriptionKeyProvisioner.RevokeMintedKeyAsync(ct));
+            onBeforeLogout: _transcriptionKeyProvisioner is null ? null : ct => _transcriptionKeyProvisioner.RevokeMintedKeyAsync(ct),
+            tenantBoundary: _tenantBoundary, tenants: TenantRegistry);
 
         // Account device list + revoke proxy (issue #854): GET /account/devices and
         // DELETE /account/devices/{id}. The Cockpit Account page needs the account-wide device list with
@@ -2573,17 +2576,25 @@ public sealed class GatewayHost : IAsyncDisposable
         // Account credit-balance proxy (issue #884): GET /account/credits. Same proxy shape as the device
         // list - the Gateway reads the balance from the cloud with its own stored account token (JWT) and
         // returns a token-free DTO, so the Settings account section shows the balance without the Cockpit
-        // ever holding the token. Signed-out -> explicit signedIn:false; unreachable cloud -> clear 502.
-        AccountCreditsEndpoint.Map(_app, Account, new Core.Account.AccountCreditsClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }));
+        // ever holding the token. Genuinely signed out -> explicit signedIn:false; unreachable cloud -> clear
+        // 502. Issue #984: this is a BILLING surface and it was telling hosted customers they were not signed
+        // in, because it reported "this Gateway holds no credential" as a fact about the caller. The tenant
+        // boundary is passed in so the hosted path answers about the CALLER: signed in, balance unreadable
+        // here, account and balance unaffected.
+        AccountCreditsEndpoint.Map(_app, Account, new Core.Account.AccountCreditsClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }),
+            tenantBoundary: _tenantBoundary, tenants: TenantRegistry);
 
         // "DevThrottle emails me" relay (issue #1318 consumer): POST /account/email. A session or scheduled
         // run passes a subject + body (+ optional attachments); the Gateway injects its own stored account
         // token and forwards to the cloud primitive (POST /api/v1/account/notify-owner, devthrottle_internal
         // #338), which resolves the recipient from the token and sends via Resend. The Gateway holds NO
         // Resend key and runs no email code - it only relays the account's own token. Single-recipient by
-        // construction (no recipient field). Signed-out -> 401; cloud failure -> clear 502. Inherits the
-        // host-wide token middleware above like the other /account routes.
-        AccountEmailEndpoint.Map(_app, Account, new Core.Account.AccountNotifyClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) }));
+        // construction (no recipient field). Genuinely signed out -> 401; cloud failure -> clear 502. Inherits
+        // the host-wide token middleware above like the other /account routes. Issue #984: the tenant boundary
+        // is passed in so the hosted path reports the truth - the caller IS signed in and this shared Gateway
+        // holds no credential of theirs to send with - instead of the old 401 "sign in from the Gateway tray".
+        AccountEmailEndpoint.Map(_app, Account, new Core.Account.AccountNotifyClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) }),
+            tenantBoundary: _tenantBoundary, tenants: TenantRegistry);
 
 
         // The credential-free cloud sign-in START front door (epic #1069, issue #1076): GET + POST

@@ -20,6 +20,15 @@ namespace CcDirector.Gateway.Api;
 /// (<c>{ "signedIn": false }</c>) so the caller can confirm the gateway is signed out without a
 /// second round-trip; it carries no identity and NO token (security rule DT-05).
 ///
+/// HOSTED (issue #984): everything above describes the SELF-HOST shape, where one Gateway holds one account
+/// and clearing it IS the sign-out. The hosted Gateway holds no account credential at all - identity arrives
+/// per device and is bound to a tenant at enrollment - so there was nothing for this route to clear, and it
+/// answered <c>{"signedIn":false}</c> anyway. That is a button reporting success for an action it did not
+/// perform, next to a <c>/account/status</c> that keeps saying signed in: the same lie as the credits and
+/// owner-email routes, in the form the user is most likely to act on. On hosted it now REFUSES, says so, and
+/// names the mechanism that does work (removing the device under the account's devices, which is already
+/// tenant-scoped and functioning). Refusing is not a denial of the capability - it points at the working one.
+///
 /// When Gateway auth is enabled, this endpoint inherits the host-wide Gateway token middleware exactly
 /// like the other Gateway endpoints (it is not on the public-paths allow-list), so a call with no token
 /// is answered 401 by that middleware before this delegate runs.
@@ -41,10 +50,30 @@ internal static class AccountLogoutEndpoint
     /// auto-minted inference key while the account token is still available to authenticate the revoke).
     /// It has its own boundary try/catch here, so a slow or failed revoke never blocks or fails logout.
     /// </param>
-    public static void Map(IEndpointRouteBuilder app, DevThrottleAccountService? account, Func<CancellationToken, Task>? onBeforeLogout = null)
+    /// <param name="tenantBoundary">
+    /// The hosted tenant boundary (issue #984). On hosted it resolves the CALLER's own tenant so this route
+    /// can refuse truthfully instead of reporting a sign-out it did not perform. Omitting it on a hosted
+    /// Gateway does NOT fall back to the self-host answer - the hosted path fails closed. Ignored off hosted.
+    /// </param>
+    /// <param name="tenants">The tenant registry, read on hosted for the caller's display email.</param>
+    public static void Map(IEndpointRouteBuilder app, DevThrottleAccountService? account, Func<CancellationToken, Task>? onBeforeLogout = null,
+        Tenancy.HostedTenantBoundary? tenantBoundary = null, Tenancy.TenantRegistry? tenants = null)
     {
         app.MapPost("/account/logout", async (HttpContext ctx) =>
         {
+            // Issue #984: on HOSTED there is no Gateway credential to clear, so clearing one and reporting
+            // signedIn=false claims an action that did not happen. Ruled on once in the fold and rendered
+            // verbatim; gated on hosted MODE, not on the boundary argument, so a hosted Gateway can never
+            // silently take the self-host path.
+            if (GatewayHostedMode.IsHosted)
+            {
+                var hostedVerdict = await AccountActingCredential
+                    .ResolveAsync(AccountOperations.Logout, ctx, account, tenantBoundary, tenants, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+                FileLog.Write($"[AccountLogoutEndpoint] POST /account/logout (hosted): refusing ({hostedVerdict.State}) -> {hostedVerdict.StatusCode}; nothing was cleared and nothing is claimed to have been");
+                return Results.Json(new { error = hostedVerdict.Message }, statusCode: hostedVerdict.StatusCode);
+            }
+
             // No credential service on this host (a non-Windows host where the operating-system
             // credential store is not yet implemented): there is no credential to clear, so the truthful
             // post-logout answer is simply not-signed-in.
