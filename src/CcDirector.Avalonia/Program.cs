@@ -44,14 +44,15 @@ internal static class Program
 
         // Hidden auto-update relauncher mode, handled BEFORE the single-instance
         // guard: a freshly downloaded build is invoked as
-        //   cc-director --apply-update <installTarget> <parentPid>
+        //   cc-director --apply-update <installTarget> <parentPid> [instanceSlug]
         // to wait for the old process to exit, swap itself into place, and
         // relaunch. It must not acquire the guard or run any normal startup.
+        // The instance slug is optional: a build older than that argument does not send one.
         if (args.Length >= 3 && args[0] == "--apply-update")
         {
             try
             {
-                return UpdateInstaller.ApplyUpdate(args[1], int.Parse(args[2]));
+                return UpdateInstaller.ApplyUpdate(args[1], int.Parse(args[2]), args.Length >= 4 ? args[3] : null);
             }
             catch (Exception ex)
             {
@@ -86,11 +87,11 @@ internal static class Program
             MessageBoxW(IntPtr.Zero, rollbackNotice, "Director - Update rolled back", MB_OK | MB_ICONWARNING | MB_TOPMOST);
             try
             {
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = Environment.ProcessPath ?? "",
-                    UseShellExecute = true,
-                });
+                // Started the same way an update relaunch is: no inherited CC_DIRECTOR_ROOT (which would
+                // make the restored build nest a new, empty data home inside this instance's one) and the
+                // instance carried explicitly.
+                System.Diagnostics.Process.Start(
+                    UpdateInstaller.BuildRelaunchStartInfo(Environment.ProcessPath ?? "", InstanceContext.Slug));
             }
             catch (Exception ex)
             {

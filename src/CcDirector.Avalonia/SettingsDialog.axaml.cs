@@ -550,8 +550,13 @@ public partial class SettingsDialog : Window
 
             if (patch.Count == 0 && !alphaChanged && !agentsChanged)
             {
-                // Nothing changed - "Save and Close" just closes, same as Cancel.
-                FileLog.Write("[SettingsDialog] BtnSave_Click: no changes; closing");
+                // Nothing changed on disk - but leaving through Save still has to leave the screenshots
+                // panel pointing at the folder shown in the box. A user whose panel was stale (folder set
+                // elsewhere after the panel resolved it) opened Settings, saw the right folder, pressed
+                // Save, and this early return closed without re-pointing anything.
+                FileLog.Write("[SettingsDialog] BtnSave_Click: no changes; reloading screenshots panel and closing");
+                if (_reloadScreenshots is not null)
+                    await _reloadScreenshots();
                 Close();
                 return;
             }
@@ -714,8 +719,16 @@ public partial class SettingsDialog : Window
         try
         {
             var options = CurrentOptions();
-            var dialog = new FirstRunWizardDialog(options);
+            var dialog = new FirstRunWizardDialog(options, _reloadScreenshots);
             await dialog.ShowDialog<bool?>(this);
+
+            // The wizard writes the screenshots folder straight to config. Re-read it into the box and
+            // the baseline, or Save would write our stale pre-wizard path back over the folder the
+            // user just chose. Only this field is re-read - rebuilding the whole page would recreate
+            // the embedded gateway panel and re-run its LAN scan for nothing.
+            var (screenshots, _, _, _) = await Task.Run(ReadConfigSnapshot);
+            _loadedScreenshots = screenshots;
+            ScreenshotsDirBox.Text = screenshots;
 
             LoadAgentEntries();
             ShowAgentToolsStatus("Setup wizard finished. Your agent list is up to date.", error: false);

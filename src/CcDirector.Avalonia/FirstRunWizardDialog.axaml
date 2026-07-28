@@ -322,6 +322,18 @@
                     <TextBlock x:Name="ShotsProvenanceText" Classes="hint"
                                HorizontalAlignment="Center" TextAlignment="Center" MaxWidth="540" />
 
+                    <!-- Proof you can SEE: the newest images from the chosen folder, drawn as soon as the
+                         folder is picked. Hidden when the folder holds no images. -->
+                    <Border x:Name="ShotsPreviewStrip" IsVisible="False" Background="#FFFFFF"
+                            BorderBrush="#E6E8EC" BorderThickness="1" CornerRadius="12" Padding="14,12">
+                        <StackPanel Spacing="10">
+                            <StackPanel x:Name="ShotsPreviewRow" Orientation="Horizontal" Spacing="10"
+                                        HorizontalAlignment="Center" />
+                            <TextBlock Classes="hint" HorizontalAlignment="Center" TextAlignment="Center"
+                                       Text="Your most recent screenshots. Use this folder and they show up in the Screenshots panel, ready to drag onto an agent." />
+                        </StackPanel>
+                    </Border>
+
                     <!-- The certainty trick: press the normal screenshot shortcut; we watch where it lands. -->
                     <StackPanel x:Name="ShotsWatchIdle" HorizontalAlignment="Center">
                         <Button Classes="quietLink" Content="Not sure? Take a screenshot and we'll find it"
