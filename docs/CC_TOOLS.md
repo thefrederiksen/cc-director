@@ -994,6 +994,56 @@ cc-devthrottle settings path
 
 ---
 
+### cc-devthrottle machine
+
+Find out what is installed on another computer, find a file on it, and start a program there. Every
+call is scoped by the Gateway to the calling account, so a machine name only ever reaches a machine
+that account registered. A computer appears here once `cc-launcher` is running on it and has
+registered with the Gateway.
+
+```bash
+# Which computers can I reach?
+cc-devthrottle machine list
+
+# What is installed on one of them? Omit the query to list everything.
+cc-devthrottle machine apps SOREN_NORTH
+cc-devthrottle machine apps SOREN_NORTH chrome
+
+# Find files by name across every drive on that computer.
+# Use * and ? to match patterns; a query containing a directory separator matches the whole path.
+cc-devthrottle machine files SOREN_NORTH "*.pptx"
+cc-devthrottle machine files SOREN_NORTH "budget" --count 50 --seconds 45
+
+# Start something there, by catalogue name or by absolute path.
+cc-devthrottle machine launch SOREN_NORTH --app "Google Chrome"
+cc-devthrottle machine launch SOREN_NORTH --path "C:\Tools\thing.exe" --args "--flag"
+```
+
+A file search is bounded by BOTH a result count (`--count`) and a time limit (`--seconds`), and it
+tells you which one stopped it when it ends early. Read that line before treating the answer as
+complete: "stopped at the result limit" means narrow the search, "stopped at the time limit" means
+the same search might finish with more time. It also reports how many directories it could not read.
+
+A launch by name is refused when the name matches several applications, rather than picking one -
+starting the wrong program on a computer nobody is sitting at is worse than being asked to be more
+specific. Use `machine apps` to get the exact name.
+
+#### On macOS, grant the launcher Full Disk Access before relying on file search
+
+**Without it the file search on a Mac returns close to nothing, and this is not a nice-to-have.**
+macOS guards Documents, Desktop and Downloads behind a privacy consent, and a folder without that
+consent does not refuse the search - it never answers at all. The search gives up on it at the
+deadline and reports the folder as an abandoned root, which is honest but is not results.
+
+It is worse than losing those folders alone. On macOS the search walks a single root (`/`), so
+abandoning it abandons everything not already visited: on a real Mac, hitting the Documents folder
+about 630 directories in returned ZERO files out of the whole machine. On Windows each drive is its
+own root, so the same block would cost you one drive rather than the search.
+
+Grant it in System Settings under Privacy & Security, Full Disk Access, adding `cc-launcher`.
+
+---
+
 ### cc-devthrottle schedule
 
 Manage cron jobs on the DevThrottle Gateway from the command line. A cron job schedules a
