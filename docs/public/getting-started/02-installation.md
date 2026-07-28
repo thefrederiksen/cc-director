@@ -12,7 +12,7 @@ The DevThrottle **Setup** app checks for these on its Prerequisites screen. On W
 | [Claude Code](#claude-code) | Recommended | latest | No coding agent installed yet - but DevThrottle runs seven others |
 | [Python](#python) | Recommended | 3.11+ | Your own Python scripts. The `cc-*` tools bring their own Python and do not need this |
 | [Node.js](#nodejs) | Recommended | 20+ | MCP servers and the browser tools |
-| [Tailscale](#tailscale-optional--remote-access) | Optional | latest | Reaching this gateway's Cockpit from a phone or another computer |
+| [Tailscale](#tailscale-self-hosted-gateway-only) | Optional, **self-hosted gateway installs only** | latest | Reaching a self-hosted gateway's Cockpit from a phone or another computer |
 
 On **Windows**, Setup can install every one of these for you via `winget`: each row shows an **Install automatically** action while the tool is missing. If `winget` is unavailable -- it is absent on some locked-down machines -- use the download link in the same row and click **Re-check**. On **macOS** there is no `winget`, so the links are the install path.
 
@@ -56,9 +56,16 @@ Node.js 20 or higher (MCP servers and browser tools).
 
 Confirm: `node --version` prints `v20+`.
 
-### Tailscale (optional -- remote access)
+### Tailscale (self-hosted gateway only)
 
-Tailscale is what lets a Gateway or the Cockpit on **another machine** (or your phone) reach the Directors on this one. **It is optional for local-only use** -- a Director without Tailscale works normally on its own machine; it just will not appear on a remote Gateway.
+**Most people never see this row.** Setup shows it only when you are installing a
+**self-hosted gateway** on this machine. A normal DevThrottle install -- and every install
+that uses the hosted gateway -- does not check for Tailscale and does not need it.
+
+Tailscale is what gives a **self-hosted** gateway a web address that browsers trust as
+secure, so the Cockpit on another machine (or your phone) can reach it. **It is optional
+for local-only use** -- a Director without Tailscale works normally on its own machine; it
+just will not appear on a remote Gateway.
 
 - **Windows:** `winget install tailscale.Tailscale`, then log into your tailnet from the tray icon.
 - The Setup app checks three things and tells you exactly which one is missing: the CLI is installed, the daemon is running and logged in, and the machine has a MagicDNS name.
