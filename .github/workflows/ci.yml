@@ -28,6 +28,22 @@ jobs:
       - name: Run tests
         run: dotnet test cc-director.sln -c Release --no-build --verbosity normal
 
+      # The installer's own tests. They are NOT in cc-director.sln, so the step above
+      # never touched them: roughly 455 tests - PrerequisiteClassificationTests,
+      # CapabilityNoticeTests, the uninstaller tests - ran only when someone happened to
+      # invoke them by hand. That included the tests written on 2026-07-27 for the sole
+      # purpose of keeping the six clean-machine install blockers fixed, so a change could
+      # have re-broken the first thing a new user ever sees and CI would have stayed green.
+      # Found while adding the Git prerequisite row (#2242), by running them manually
+      # rather than trusting the green tick. Same shape as the JavaScript gap below.
+      #
+      # Built here rather than in the solution build: these are net10.0-windows projects
+      # outside the solution, so they restore and build themselves.
+      - name: Run installer tests
+        run: |
+          dotnet test tools/cc-director-setup.Tests/ -c Release --verbosity normal
+          dotnet test tools/cc-director-setup-engine.Tests/ -c Release --verbosity normal
+
   # The browser shells (the mobile PWA and the React Cockpit) and the client-core library they share.
   #
   # This job exists because CI ran NO JavaScript tests at all: 583 vitest tests across client-core and
