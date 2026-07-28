@@ -67,6 +67,17 @@ public sealed class GatewayDbContext : DbContext
     /// <summary>Workflow runs (<c>workflow_runs</c>) - the governance outcome spine (issue #1771).</summary>
     public DbSet<WorkflowRunEntity> WorkflowRuns => Set<WorkflowRunEntity>();
 
+    /// <summary>Skill head records (<c>skills</c>) - identity and lifecycle, never content. The
+    /// central skill library (devthrottle_internal issue 995): a separate register from workflows,
+    /// sharing their storage shape.</summary>
+    public DbSet<SkillEntity> Skills => Set<SkillEntity>();
+
+    /// <summary>Immutable skill content versions (<c>skill_versions</c>).</summary>
+    public DbSet<SkillVersionEntity> SkillVersions => Set<SkillVersionEntity>();
+
+    /// <summary>Supporting files belonging to a skill version (<c>skill_files</c>).</summary>
+    public DbSet<SkillFileEntity> SkillFiles => Set<SkillFileEntity>();
+
     /// <summary>Pending session snoozes (<c>snoozes</c>), keyed by session id.</summary>
     public DbSet<SnoozeEntity> Snoozes => Set<SnoozeEntity>();
 
@@ -144,6 +155,11 @@ public sealed class GatewayDbContext : DbContext
     /// tenants, so a tenant's switch flip lands here and the read paths fold it over the library value. An
     /// absent row means "no choice made" - the workflow serves with the library's shipped state.</summary>
     public DbSet<WorkflowTenantOverrideEntity> WorkflowTenantOverrides => Set<WorkflowTenantOverrideEntity>();
+
+    /// <summary>Per-tenant on/off choices for BUILT-IN skills (<c>skill_tenant_overrides</c>). The
+    /// built-ins live once in the shared library partition and are read-only to tenants, so a
+    /// tenant's choice lands here; an absent row means "no choice made".</summary>
+    public DbSet<SkillTenantOverrideEntity> SkillTenantOverrides => Set<SkillTenantOverrideEntity>();
 
     /// <summary>The account-to-tenant mapping (<c>tenants</c>), keyed by the verified Supabase subject. This
     /// is the GLOBAL mapping table (Hosted Multi-Tenancy increment 1) - deliberately NOT tenant-scoped, so it
@@ -264,6 +280,45 @@ public sealed class GatewayDbContext : DbContext
             b.HasKey(e => e.Id);
             // Files are read per version; indexed but deliberately NOT a foreign key (independent
             // lifecycle, matching cron_runs -> cron_jobs).
+            b.HasIndex(e => e.VersionId);
+        });
+
+        // ---- the central skill library (devthrottle_internal issue 995) ----------------------------
+        // A separate register from workflows, sharing their storage shape: head row, immutable content
+        // versions, supporting files, and a per-tenant switch over the read-only built-ins.
+
+        modelBuilder.Entity<SkillEntity>(b =>
+        {
+            b.ToTable("skills");
+            // COMPOSITE primary key (tenant_id, Id), for the same reason workflows use one: the
+            // built-in seed uses a FIXED id per built-in, so with Id ALONE two tenants seeding the
+            // same built-in collide at the database.
+            b.HasKey(e => new { e.TenantId, e.Id });
+            b.Property(e => e.Id);
+            // The owner's switch defaults ON at the DATABASE level too, so the migration that adds
+            // the column backfills every pre-existing skill as available - upgrading must never
+            // silently switch a fleet's skills off.
+            b.Property(e => e.Enabled).HasDefaultValue(true);
+        });
+
+        modelBuilder.Entity<SkillVersionEntity>(b =>
+        {
+            b.ToTable("skill_versions");
+            b.HasKey(e => e.Id);
+            // Unique PER TENANT, not globally: a built-in's SkillId + Version=1 is the same across
+            // tenants, so a global unique index would collide between the shared library seed and a
+            // single-tenant gateway's own built-ins.
+            b.HasIndex(e => new { e.TenantId, e.SkillId, e.Version }).IsUnique();
+            // Triggers are a bounded sub-document: a primitive collection serialized to a JSON column.
+            b.PrimitiveCollection(e => e.Triggers);
+        });
+
+        modelBuilder.Entity<SkillFileEntity>(b =>
+        {
+            b.ToTable("skill_files");
+            b.HasKey(e => e.Id);
+            // Read per version; indexed but deliberately NOT a foreign key (independent lifecycle,
+            // matching workflow_files).
             b.HasIndex(e => e.VersionId);
         });
 
@@ -508,6 +563,14 @@ public sealed class GatewayDbContext : DbContext
             b.HasKey(e => new { e.TenantId, e.WorkflowId });
         });
 
+        modelBuilder.Entity<SkillTenantOverrideEntity>(b =>
+        {
+            b.ToTable("skill_tenant_overrides");
+            // COMPOSITE primary key (tenant_id, SkillId), mirroring workflow_tenant_overrides: every
+            // tenant may hold its own on/off choice for the same built-in skill.
+            b.HasKey(e => new { e.TenantId, e.SkillId });
+        });
+
         modelBuilder.Entity<GovernanceAuditEventEntity>(b =>
         {
             b.ToTable("governance_audit_events");
@@ -620,6 +683,10 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<WorkflowVersionEntity>(modelBuilder);
         ApplyTenantScope<WorkflowFileEntity>(modelBuilder);
         ApplyTenantScope<WorkflowRunEntity>(modelBuilder);
+        ApplyTenantScope<SkillEntity>(modelBuilder);
+        ApplyTenantScope<SkillVersionEntity>(modelBuilder);
+        ApplyTenantScope<SkillFileEntity>(modelBuilder);
+        ApplyTenantScope<SkillTenantOverrideEntity>(modelBuilder);
         ApplyTenantScope<SnoozeEntity>(modelBuilder);
         ApplyTenantScope<GovernanceEventEntity>(modelBuilder);
         ApplyTenantScope<PushSubscriptionEntity>(modelBuilder);
@@ -674,6 +741,11 @@ public sealed class GatewayDbContext : DbContext
             // workflow_tenant_overrides.WorkflowId is a workflow slug compared ordinally everywhere else
             // (the stores normalize to lower-case and compare Ordinal), so pin it to "C" the same way.
             modelBuilder.Entity<WorkflowTenantOverrideEntity>().Property(e => e.WorkflowId).UseCollation("C");
+            // skills.Id and skill_tenant_overrides.SkillId are slugs in composite primary keys, compared
+            // ordinally by the store exactly like the workflow ids above - pin both to "C" so the two
+            // providers agree on equality and uniqueness.
+            modelBuilder.Entity<SkillEntity>().Property(e => e.Id).UseCollation("C");
+            modelBuilder.Entity<SkillTenantOverrideEntity>().Property(e => e.SkillId).UseCollation("C");
             // dictation_suggestion_dismissals.Term is the normalized canonical spelling, byte-ordinal equality
             // like the keys above (the miner folds a spelling and compares exactly), so pin it to "C" so both
             // providers agree on uniqueness and the miner's dismissed-exclusion check matches identically.

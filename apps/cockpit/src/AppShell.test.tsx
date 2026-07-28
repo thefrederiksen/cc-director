@@ -60,6 +60,9 @@ describe("Cockpit left rail", () => {
       "Directors",
       "Schedule",
       "Workflows",
+      // Skills sits immediately after Workflows on purpose: two lists on one shelf (the central
+      // skill library, devthrottle_internal issue 995). Nothing else moved.
+      "Skills",
       "Dictionary",
       "Voice Recorder",
       "Transcription",

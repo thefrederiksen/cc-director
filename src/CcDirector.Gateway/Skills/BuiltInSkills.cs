@@ -1,0 +1,77 @@
+namespace CcDirector.Gateway.Skills;
+
+/// <summary>
+/// A skill the Gateway ships: identity, the one line that rides every briefing, and the phrases that
+/// should bring it to mind. The BODY is not here - it lives in an embedded markdown resource, read by
+/// <see cref="BuiltInSkills.BodyFor"/>, so the text stays diffable against the skill file it came from
+/// and cannot drift through C# string escaping.
+/// </summary>
+public sealed record SkillDefinition(
+    string Id,
+    string Name,
+    string Summary,
+    IReadOnlyList<string> Triggers);
+
+/// <summary>
+/// The skills the Gateway ships with (devthrottle_internal issue 995). These are exactly the three the
+/// installer used to copy onto every machine - now held centrally and served, so fixing one is an edit
+/// on the Gateway rather than a release every user has to take.
+///
+/// This list is the SEED SOURCE, not the served set: the seeder writes these into the skill store at
+/// startup and the endpoints read the store. Adding a fourth skill does NOT belong here - it is a row
+/// in the register, authored through the Cockpit or the command line. This list exists only so a
+/// brand-new Gateway has the skills DevThrottle considers part of the product.
+/// </summary>
+public static class BuiltInSkills
+{
+    private static readonly IReadOnlyList<SkillDefinition> Definitions = new[]
+    {
+        new SkillDefinition(
+            Id: "dev-throttle",
+            Name: "DevThrottle",
+            Summary: "The product itself - the app, the command line tools, and how an agent drives the fleet.",
+            Triggers: new[]
+            {
+                "devthrottle", "cc-director", "what cc tools", "list tools", "available tools",
+                "session manager", "mission control",
+            }),
+
+        new SkillDefinition(
+            Id: "fleet-comms",
+            Name: "Fleet communication",
+            Summary: "Talk to other sessions across the fleet: list, rename, message, ask, and open sessions.",
+            Triggers: new[]
+            {
+                "message another session", "talk to another session", "ask another session",
+                "rename this session", "list sessions", "what sessions are running", "spawn a session",
+                "fleet messaging",
+            }),
+
+        new SkillDefinition(
+            Id: "move-session",
+            Name: "Move a session",
+            Summary: "Relocate a live session to another Director through the Gateway, with an approval gate.",
+            Triggers: new[] { "move session", "migrate session", "transfer session" }),
+    };
+
+    /// <summary>Every skill the Gateway ships, in the order the register lists them.</summary>
+    public static IReadOnlyList<SkillDefinition> All() => Definitions;
+
+    /// <summary>
+    /// The shipped body (the instructions an agent fetches) for a built-in skill, read from the
+    /// embedded <c>Skills/Content/&lt;id&gt;.skill.md</c> resource. Fail-loud on a missing resource - a
+    /// built-in skill without its body is a build defect, not a runtime condition, and it would put a
+    /// line in every session's briefing that leads nowhere.
+    /// </summary>
+    public static string BodyFor(string id)
+    {
+        var resourceName = $"CcDirector.Gateway.Skills.Content.{id}.skill.md";
+        var assembly = typeof(BuiltInSkills).Assembly;
+        using var stream = assembly.GetManifestResourceStream(resourceName)
+            ?? throw new InvalidOperationException(
+                $"Embedded skill body '{resourceName}' is missing from the Gateway binary. " +
+                "Every built-in skill must ship its body.");
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
+    }
+}

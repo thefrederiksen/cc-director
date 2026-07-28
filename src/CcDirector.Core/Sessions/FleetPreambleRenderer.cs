@@ -36,6 +36,11 @@ public static class FleetPreamblePlaceholders
     /// Gateway or the catalog is empty.</summary>
     public const string WorkflowIndex = "[WORKFLOW_INDEX]";
 
+    /// <summary>The skill register index block (the central skill library): one line per available
+    /// skill plus how to fetch one in full. Empty when the Director has never reached a Gateway or the
+    /// register is empty. This block is what replaces installing skill files on the machine.</summary>
+    public const string SkillIndex = "[SKILL_INDEX]";
+
     /// <summary>Opens a block kept only when a user is signed in.</summary>
     public const string IfSignedIn = "[IF_SIGNED_IN]";
 
@@ -46,6 +51,7 @@ public static class FleetPreamblePlaceholders
     public static IReadOnlyList<string> All { get; } = new[]
     {
         SessionId, SessionShortId, SessionName, Machine, RepoPath, UserName, UserEmail, WorkflowIndex,
+        SkillIndex,
     };
 }
 
@@ -92,7 +98,8 @@ public static class FleetPreambleRenderer
         string machine,
         string repoPath,
         SignedInUser? user = null,
-        string workflowIndex = "")
+        string workflowIndex = "",
+        string skillIndex = "")
     {
         var signedIn = user is not null && !string.IsNullOrWhiteSpace(user.Email);
         var kept = ApplyConditionals(template, signedIn);
@@ -115,6 +122,9 @@ public static class FleetPreambleRenderer
             // running their own template gets the index only where they wrote the token, the same
             // contract as every other placeholder.
             [FleetPreamblePlaceholders.WorkflowIndex] = workflowIndex,
+            // The skill index follows the same contract: whatever block the caller supplies, possibly
+            // empty, rendered only where the token appears.
+            [FleetPreamblePlaceholders.SkillIndex] = skillIndex,
         };
 
         return Substitute(kept, values);

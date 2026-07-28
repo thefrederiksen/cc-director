@@ -1,0 +1,219 @@
+using System.Text.Json;
+using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Skills;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
+
+namespace CcDirector.Gateway.Api;
+
+/// <summary>
+/// The central skill library (devthrottle_internal issue 995): the capabilities every agent on every
+/// machine can reach for, held here and fetched, instead of copied onto each machine by the installer.
+///
+///   GET /gateway/skills                     -> { skills: [ ... ] }   the REGISTER LISTING
+///   GET /gateway/skills/{id}                -> { ... } | 404
+///   GET /gateway/skills/{id}/body           raw text/markdown (the agent read path)
+///   GET /gateway/skills/{id}/files/{name}   raw text/plain
+///
+/// THE LISTING IS THE FEATURE. It carries id, name, one line, triggers, version and hash - and no
+/// bodies - because it is what every session's launch briefing is rendered from. The body is fetched
+/// per skill, only by a session that is about to use that skill. If discovery ever costs more than the
+/// listing, the change that made it so is the wrong change.
+///
+/// The routes sit under /gateway (the same convention as /gateway/workflows) and NOT at a bare
+/// /skills: the Cockpit's Skills PAGE owns that path, and the Gateway falls unknown page paths back to
+/// the single-page app, so an API mapped there would make a hard navigation render raw JSON.
+///
+/// Authoring - drafts are the safety boundary, publish is the fleet-visible act:
+///
+///   POST   /gateway/skills                  body SkillContentRequest -> 201 detail | 400 | 409
+///   PUT    /gateway/skills/{id}/draft       body SkillContentRequest, optional If-Match (content
+///                                           hash) -> 200 detail | 400 | 404 | 409
+///   POST   /gateway/skills/{id}/publish     -> 200 SkillDto | 400 | 404
+///   POST   /gateway/skills/{id}/clone       ?newId=&amp;by= copy published content into a new
+///                                           tenant-owned editable skill -> 201 | 400 | 404 | 409
+///   POST   /gateway/skills/{id}/enable      ?by= the owner's switch -> 200 | 400 | 404
+///   POST   /gateway/skills/{id}/disable     ?by= -> 200 | 400 | 404
+///   DELETE /gateway/skills/{id}             archive (never a built-in) -> 200 | 400 | 404
+///   GET    /gateway/skills/{id}/versions    -> { versions: [...] } | 404
+///   GET    /gateway/skills/{id}/versions/{n} -> full content snapshot | 404
+///
+/// Inherits the host-wide token middleware, like every other Gateway route.
+/// </summary>
+internal static class SkillEndpoints
+{
+    public static void Map(IEndpointRouteBuilder app, SkillStore store)
+    {
+        app.MapGet("/gateway/skills", () =>
+        {
+            var skills = store.ListPublished();
+            FileLog.Write($"[SkillEndpoints] list skills: count={skills.Count}");
+            return Results.Json(new { skills });
+        });
+
+        app.MapGet("/gateway/skills/{id}", (string id) =>
+        {
+            var skill = store.GetPublished(id);
+            if (skill is null)
+            {
+                FileLog.Write($"[SkillEndpoints] get skill: id={id}, result=not found");
+                return NotFound(id);
+            }
+
+            FileLog.Write($"[SkillEndpoints] get skill: id={id}, result=found");
+            return Results.Json(skill);
+        });
+
+        // The agent read path: raw markdown, no JSON envelope, so `cc-devthrottle skill get <id>` can
+        // print it verbatim into an agent's context. This is the ONLY route that serves a body, and it
+        // is reached once per skill actually used - never as part of discovery.
+        app.MapGet("/gateway/skills/{id}/body", (string id, int? version) => Guard(() =>
+        {
+            var body = store.GetBody(id, version);
+            return body is null ? NotFound(id) : Results.Text(body, "text/markdown");
+        }));
+
+        app.MapGet("/gateway/skills/{id}/files/{fileName}", (string id, string fileName, int? version) =>
+            Guard(() =>
+            {
+                var content = store.GetFileContent(id, fileName, version);
+                return content is null
+                    ? Results.Json(new { error = $"no file '{fileName}' on skill '{id}'" },
+                        statusCode: StatusCodes.Status404NotFound)
+                    : Results.Text(content, "text/plain");
+            }));
+
+        // ---- authoring ----------------------------------------------------------------------------
+        // Any agent may author and publish. Authorship is recorded on every version and a bad publish
+        // is fixed by publishing again - which reaches the whole fleet just as fast as the mistake did.
+
+        app.MapPost("/gateway/skills", async (HttpContext ctx) =>
+        {
+            var content = await ReadBody(ctx);
+            if (content is null)
+                return Results.BadRequest(new { error = "a skill body is required" });
+            return Guard(() =>
+            {
+                var created = store.CreateDraft(content);
+                FileLog.Write($"[SkillEndpoints] create skill: id={created.SkillId}, draft v{created.Version}");
+                return Results.Json(created, statusCode: StatusCodes.Status201Created);
+            });
+        });
+
+        app.MapPut("/gateway/skills/{id}/draft", async (string id, HttpContext ctx) =>
+        {
+            var content = await ReadBody(ctx);
+            if (content is null)
+                return Results.BadRequest(new { error = "a skill body is required" });
+            var ifMatch = ReadIfMatch(ctx);
+            return Guard(() =>
+            {
+                var updated = store.UpdateDraft(id, content, ifMatch);
+                if (updated is null)
+                    return NotFound(id);
+                FileLog.Write($"[SkillEndpoints] update draft: id={id}, v{updated.Version}");
+                return Results.Json(updated);
+            });
+        });
+
+        app.MapPost("/gateway/skills/{id}/publish", (string id) => Guard(() =>
+        {
+            var published = store.Publish(id);
+            if (published is null)
+                return NotFound(id);
+            FileLog.Write($"[SkillEndpoints] publish: id={id}, v{published.Version}");
+            return Results.Json(published);
+        }));
+
+        // Clone: the sanctioned customization path for the read-only built-ins. ?newId names the clone;
+        // ?by records who cloned.
+        app.MapPost("/gateway/skills/{id}/clone", (string id, string? newId, string? by) => Guard(() =>
+        {
+            var clone = store.Clone(id, newId ?? "", by ?? "");
+            if (clone is null)
+                return NotFound(id);
+            FileLog.Write($"[SkillEndpoints] clone: '{id}' -> '{clone.Id}' v{clone.Version}");
+            return Results.Json(clone, statusCode: StatusCodes.Status201Created);
+        }));
+
+        app.MapDelete("/gateway/skills/{id}", (string id) => Guard(() =>
+        {
+            if (!store.Archive(id))
+                return NotFound(id);
+            FileLog.Write($"[SkillEndpoints] archive: id={id}");
+            return Results.Json(new { id, archived = true });
+        }));
+
+        app.MapGet("/gateway/skills/{id}/versions", (string id) =>
+        {
+            var versions = store.ListVersions(id);
+            return versions is null ? NotFound(id) : Results.Json(new { versions });
+        });
+
+        app.MapGet("/gateway/skills/{id}/versions/{version:int}", (string id, int version) =>
+        {
+            var detail = store.GetVersionDetail(id, version);
+            return detail is null ? NotFound(id) : Results.Json(detail);
+        });
+
+        // The owner's switch. Off = left out of every briefing and the default fetch refused; nothing
+        // deleted, instant both ways fleet-wide. Both verbs REQUIRE ?by=<who>.
+        app.MapPost("/gateway/skills/{id}/enable", (string id, string? by) => Guard(() =>
+            store.SetEnabled(id, true, by ?? "")
+                ? Results.Json(new { id, enabled = true })
+                : NotFound(id)));
+
+        app.MapPost("/gateway/skills/{id}/disable", (string id, string? by) => Guard(() =>
+            store.SetEnabled(id, false, by ?? "")
+                ? Results.Json(new { id, enabled = false })
+                : NotFound(id)));
+    }
+
+    private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
+
+    private static async Task<SkillContentRequest?> ReadBody(HttpContext ctx)
+    {
+        try
+        {
+            return await JsonSerializer.DeserializeAsync<SkillContentRequest>(
+                ctx.Request.Body, JsonOpts, ctx.RequestAborted);
+        }
+        catch (JsonException ex)
+        {
+            FileLog.Write($"[SkillEndpoints] bad JSON body: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>The If-Match header as a bare hash (clients may send it RFC-quoted).</summary>
+    private static string? ReadIfMatch(HttpContext ctx)
+    {
+        string? raw = ctx.Request.Headers.IfMatch;
+        return string.IsNullOrWhiteSpace(raw) ? null : raw.Trim().Trim('"');
+    }
+
+    /// <summary>Translate the store's authoring exceptions to their status codes.</summary>
+    private static IResult Guard(Func<IResult> action)
+    {
+        try
+        {
+            return action();
+        }
+        catch (SkillValidationException ex)
+        {
+            FileLog.Write($"[SkillEndpoints] rejected: {ex.Message}");
+            return Results.BadRequest(new { error = ex.Message });
+        }
+        catch (SkillConflictException ex)
+        {
+            FileLog.Write($"[SkillEndpoints] conflict: {ex.Message}");
+            return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status409Conflict);
+        }
+    }
+
+    private static IResult NotFound(string id) =>
+        Results.Json(new { error = $"no skill with id '{id}'" },
+            statusCode: StatusCodes.Status404NotFound);
+}

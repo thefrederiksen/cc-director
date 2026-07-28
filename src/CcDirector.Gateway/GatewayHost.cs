@@ -426,6 +426,10 @@ public sealed class GatewayHost : IAsyncDisposable
     // Workflow runs (phase 4, issue #1771): one row per execution of a workflow definition, pinned to
     // the version that governed it. The governance outcome spine.
     private readonly Workflows.WorkflowRunStore _workflowRuns;
+    // The central skill library (devthrottle_internal issue 995): the capabilities agents reach for,
+    // held here and fetched, instead of copied onto every machine by the installer. Served by
+    // Api.SkillEndpoints - a separate register from workflows, sharing their storage shape.
+    private readonly Skills.SkillStore _skills;
     // The append-only governance event ledger (issue #1771, spine item 2): immutable session/run state
     // transitions, the duration spine no run row can give.
     private readonly Governance.GovernanceEventLedger _governanceEvents;
@@ -906,6 +910,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // Workflow runs (phase 4, issue #1771): built after the catalog store so the built-ins a run
         // pins are already seeded.
         _workflowRuns = new Workflows.WorkflowRunStore(_gatewayDb);
+        // The central skill library: persisted in the skills tables, the shipped built-ins
+        // seeded/upgraded at construction. Nothing is deployed to any machine - agents fetch.
+        _skills = new Skills.SkillStore(_gatewayDb);
         // The governance event ledger (issue #1771, spine item 2): append-only session/run transitions on
         // the EF data layer, so a Gateway restart never loses a recorded transition.
         _governanceEvents = new Governance.GovernanceEventLedger(_gatewayDb);
@@ -2496,6 +2503,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // each carrying a private copy. Served from the persisted store (built-ins seeded at startup);
         // authoring routes are the next phase. Inherits the host-wide token middleware above.
         Api.WorkflowEndpoints.Map(_app, _workflows);
+        Api.SkillEndpoints.Map(_app, _skills);
 
         // Workflow runs (phase 4, issue #1771): the outcome spine's REST surface. One row per
         // execution of a workflow, pinned to the exact published version that governed it.
