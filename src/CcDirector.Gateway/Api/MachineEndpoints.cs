@@ -30,6 +30,8 @@ namespace CcDirector.Gateway.Api;
 ///   POST /machines/{machine}/director/start         relay -> launcher POST /director/start
 ///   POST /machines/{machine}/director/stop          relay -> launcher POST /director/stop
 ///   POST /machines/{machine}/launch                 relay -> launcher POST /launch
+///   GET  /machines/{machine}/apps                   relay -> launcher GET /apps
+///   GET  /machines/{machine}/files                  relay -> launcher GET /files
 ///
 /// Relay calls are token-gated (Gateway Bearer) and audit-logged. A slot guard in the
 /// relay refuses restart/stop targeting the main Director build or slots 1-4 unless the
@@ -453,6 +455,69 @@ internal static class MachineEndpoints
                 tenant, machine, body, launchers, sendLauncherCommand, ct);
             return ToResult(machine, "launch", outcome);
         });
+
+        // GET /machines/{machine}/apps - what is installed on that machine, so a caller can find something to
+        // start without knowing any of its paths.
+        app.MapGet("/{machine}/apps", async (string machine, HttpContext ctx, CancellationToken ct) =>
+        {
+            FileLog.Write($"[MachineEndpoints] GET /machines/{machine}/apps: caller={ctx.Connection.RemoteIpAddress}");
+            if (ReqTenant(ctx, boundary) is not { } tenant) return NoTenant();
+
+            var query = ctx.Request.Query["q"].ToString();
+            _ = int.TryParse(ctx.Request.Query["limit"].ToString(), out var limit);
+
+            var outcome = await LauncherLifecycleRelay.SendQueryAsync(
+                tenant, machine, "apps", query, limit, timeoutMilliseconds: 0, launchers, sendLauncherCommand, ct);
+            return ToQueryResult(machine, "apps", outcome);
+        });
+
+        // GET /machines/{machine}/files - a filename search across that machine's drives.
+        app.MapGet("/{machine}/files", async (string machine, HttpContext ctx, CancellationToken ct) =>
+        {
+            FileLog.Write($"[MachineEndpoints] GET /machines/{machine}/files: caller={ctx.Connection.RemoteIpAddress}");
+            if (ReqTenant(ctx, boundary) is not { } tenant) return NoTenant();
+
+            var query = ctx.Request.Query["q"].ToString();
+            if (string.IsNullOrWhiteSpace(query))
+                return Results.Json(new { error = "q is required for a file search", machine }, statusCode: 400);
+
+            _ = int.TryParse(ctx.Request.Query["limit"].ToString(), out var limit);
+            _ = int.TryParse(ctx.Request.Query["timeoutMilliseconds"].ToString(), out var timeout);
+
+            var outcome = await LauncherLifecycleRelay.SendQueryAsync(
+                tenant, machine, "files", query, limit, timeout, launchers, sendLauncherCommand, ct);
+            return ToQueryResult(machine, "files", outcome);
+        });
+    }
+
+    /// <summary>
+    /// Render a QUERY outcome as the HTTP answer.
+    ///
+    /// It differs from <see cref="ToResult"/> in one way that matters to every caller: a successful query
+    /// returns the launcher's own document AS the response body, rather than wrapping it in a relay envelope
+    /// with the answer buried in a string field. A caller asking a machine what it has installed should get
+    /// the catalogue, not a description of a relay hop that happens to contain one.
+    ///
+    /// Every failure shape is left identical to the action verbs, including the deliberate merging of
+    /// "no such machine" with "that machine belongs to another tenant".
+    /// </summary>
+    private static IResult ToQueryResult(string machine, string verb, LauncherLifecycleRelay.LauncherRelayOutcome outcome)
+    {
+        if (outcome.Kind != LauncherLifecycleRelay.RelayOutcomeKind.Relayed)
+            return ToResult(machine, verb, outcome);
+
+        // The launcher's body is already JavaScript Object Notation - its own answer on success, its own error
+        // document on failure - so it is passed through untouched at the status the launcher chose. An empty
+        // body would mean the launcher answered with nothing at all, which is a relay fault rather than an
+        // answer, and is reported as one instead of being served as an empty document.
+        if (string.IsNullOrWhiteSpace(outcome.Payload))
+        {
+            FileLog.Write($"[MachineEndpoints] {verb} on {machine}: relayed {outcome.RelayStatus} with an EMPTY body");
+            return Results.Json(new { error = $"the launcher on '{machine}' returned no answer for '{verb}'", machine },
+                statusCode: 502);
+        }
+
+        return Results.Content(outcome.Payload, "application/json; charset=utf-8", statusCode: outcome.RelayStatus);
     }
 
     /// <summary>
@@ -583,6 +648,14 @@ internal static class MachineEndpoints
 internal sealed class LaunchRelayBody
 {
     public string? Path { get; init; }
+
+    /// <summary>
+    /// An application display name from that machine's catalogue, used instead of <see cref="Path"/>. This is
+    /// the form a remote caller can actually use: it has no way to know where a program lives on a machine it
+    /// cannot see, and the launcher resolves the name locally where the catalogue is.
+    /// </summary>
+    public string? App { get; init; }
+
     public string? Args { get; init; }
     public string? Cwd { get; init; }
     public bool Headless { get; init; }

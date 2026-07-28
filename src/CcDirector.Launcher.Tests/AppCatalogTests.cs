@@ -1,0 +1,201 @@
+using CcDirector.Launcher;
+using Xunit;
+
+namespace CcDirector.Launcher.Tests;
+
+/// <summary>
+/// The application catalogue, tested over a temporary directory tree rather than the machine's real Start
+/// Menu, so the assertions are about the catalogue and not about what happens to be installed on the machine
+/// running the tests.
+///
+/// Entries are the platform's own application file type, because that is what the catalogue collects: a
+/// shortcut on Windows, a desktop entry elsewhere. The files need no real content - the catalogue reports
+/// where a thing is and what it is called, and leaves starting it to the launch service.
+/// </summary>
+public sealed class AppCatalogTests : IDisposable
+{
+    private readonly string _root;
+
+    public AppCatalogTests()
+    {
+        _root = Path.Combine(Path.GetTempPath(), "cc-app-catalog-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_root);
+    }
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_root, recursive: true); }
+        catch (IOException) { /* a temporary directory that outlives the test run is not a test failure */ }
+    }
+
+    /// <summary>The application file extension this operating system's catalogue collects.</summary>
+    private static string AppExtension => OperatingSystem.IsWindows() ? ".lnk" : ".desktop";
+
+    private string CreateApp(string name, string? subdirectory = null)
+    {
+        var directory = subdirectory is null ? _root : Path.Combine(_root, subdirectory);
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, name + AppExtension);
+        File.WriteAllText(path, "");
+        return path;
+    }
+
+    private AppCatalog CatalogOverRoot() => new(new[] { (_root, "test-root") });
+
+    [Fact]
+    public void Search_EmptyQuery_ReturnsEveryApplication()
+    {
+        CreateApp("Chrome");
+        CreateApp("Notepad");
+
+        var result = CatalogOverRoot().Search("", 100);
+
+        Assert.Equal(2, result.TotalMatches);
+        Assert.Contains(result.Apps, app => app.Name == "Chrome");
+        Assert.Contains(result.Apps, app => app.Name == "Notepad");
+        Assert.False(result.Truncated);
+    }
+
+    [Fact]
+    public void Search_NestedDirectories_FindsApplicationsBelowTheRoot()
+    {
+        CreateApp("Visual Studio Code", subdirectory: "Microsoft");
+
+        var result = CatalogOverRoot().Search("Visual", 100);
+
+        Assert.Single(result.Apps);
+        Assert.Equal("Visual Studio Code", result.Apps[0].Name);
+    }
+
+    [Fact]
+    public void Search_NonApplicationFiles_AreIgnored()
+    {
+        CreateApp("Chrome");
+        File.WriteAllText(Path.Combine(_root, "readme.txt"), "not an application");
+
+        var result = CatalogOverRoot().Search("", 100);
+
+        Assert.Single(result.Apps);
+        Assert.Equal("Chrome", result.Apps[0].Name);
+    }
+
+    /// <summary>
+    /// A truncated catalogue must announce itself. Silently returning the first few would be indistinguishable
+    /// from a machine with only a few programs installed.
+    /// </summary>
+    [Fact]
+    public void Search_MoreMatchesThanTheLimit_ReportsTruncatedAndTheRealTotal()
+    {
+        for (var index = 0; index < 5; index++)
+            CreateApp($"App{index}");
+
+        var result = CatalogOverRoot().Search("", 2);
+
+        Assert.Equal(5, result.TotalMatches);
+        Assert.Equal(2, result.Apps.Count);
+        Assert.True(result.Truncated);
+    }
+
+    [Fact]
+    public void Resolve_ExactName_WinsOverALongerNameContainingIt()
+    {
+        CreateApp("Notepad");
+        CreateApp("Notepad++");
+
+        var outcome = CatalogOverRoot().Resolve("Notepad");
+
+        Assert.Equal(AppCatalog.ResolveStatus.Found, outcome.Status);
+        Assert.Equal("Notepad", outcome.App!.Name);
+    }
+
+    [Fact]
+    public void Resolve_SingleSubstringMatch_Resolves()
+    {
+        CreateApp("Google Chrome");
+
+        var outcome = CatalogOverRoot().Resolve("chrome");
+
+        Assert.Equal(AppCatalog.ResolveStatus.Found, outcome.Status);
+        Assert.Equal("Google Chrome", outcome.App!.Name);
+    }
+
+    /// <summary>
+    /// The rule that keeps a remote caller from starting the wrong program: when a name picks out more than
+    /// one application and none of them matches exactly, the launcher refuses rather than guessing.
+    /// </summary>
+    [Fact]
+    public void Resolve_SeveralSubstringMatches_IsAmbiguousRatherThanTheFirstOne()
+    {
+        CreateApp("Chrome Canary");
+        CreateApp("Chrome Beta");
+
+        var outcome = CatalogOverRoot().Resolve("Chrome");
+
+        Assert.Equal(AppCatalog.ResolveStatus.Ambiguous, outcome.Status);
+        Assert.Null(outcome.App);
+        Assert.Equal(2, outcome.Candidates!.Count);
+    }
+
+    [Fact]
+    public void Resolve_UnknownName_IsNotFound()
+    {
+        CreateApp("Chrome");
+
+        Assert.Equal(AppCatalog.ResolveStatus.NotFound, CatalogOverRoot().Resolve("Photoshop").Status);
+    }
+
+    [Fact]
+    public void ResolveLaunchPath_PathGiven_WinsOverTheApplicationName()
+    {
+        CreateApp("Chrome");
+
+        var (path, error) = CatalogOverRoot().ResolveLaunchPath(@"C:\explicit\thing.exe", "Chrome");
+
+        Assert.Null(error);
+        Assert.Equal(@"C:\explicit\thing.exe", path);
+    }
+
+    [Fact]
+    public void ResolveLaunchPath_ApplicationName_ResolvesToItsCataloguePath()
+    {
+        var expected = CreateApp("Chrome");
+
+        var (path, error) = CatalogOverRoot().ResolveLaunchPath(null, "Chrome");
+
+        Assert.Null(error);
+        Assert.Equal(expected, path);
+    }
+
+    [Fact]
+    public void ResolveLaunchPath_NeitherPathNorName_IsRefusedWithAReason()
+    {
+        var (path, error) = CatalogOverRoot().ResolveLaunchPath(null, null);
+
+        Assert.Null(path);
+        Assert.Contains("either path or app is required", error);
+    }
+
+    /// <summary>The ambiguity refusal must name the candidates, or the caller cannot act on it.</summary>
+    [Fact]
+    public void ResolveLaunchPath_AmbiguousName_RefusesAndNamesTheCandidates()
+    {
+        CreateApp("Chrome Canary");
+        CreateApp("Chrome Beta");
+
+        var (path, error) = CatalogOverRoot().ResolveLaunchPath(null, "Chrome");
+
+        Assert.Null(path);
+        Assert.Contains("Chrome Canary", error);
+        Assert.Contains("Chrome Beta", error);
+    }
+
+    [Fact]
+    public void ResolveLaunchPath_UnknownName_RefusesAndNamesTheMachine()
+    {
+        var (path, error) = CatalogOverRoot().ResolveLaunchPath(null, "Photoshop");
+
+        Assert.Null(path);
+        Assert.Contains("Photoshop", error);
+        Assert.Contains(Environment.MachineName, error);
+    }
+}

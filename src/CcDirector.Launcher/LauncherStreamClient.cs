@@ -1,3 +1,4 @@
+using System.Text.Json;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Network;
 using CcDirector.Core.Utilities;
@@ -28,6 +29,12 @@ public sealed class LauncherStreamClient : IAsyncDisposable
     private readonly string _version;
     private readonly DirectorSupervisor _supervisor;
     private readonly LaunchService _launchService;
+    private readonly AppCatalog _appCatalog;
+    private readonly FileSearchService _fileSearch;
+
+    /// <summary>Query answers are serialised here before they ride back up the stream, using the same
+    /// web-style naming the loopback routes serialise with so both surfaces produce identical text.</summary>
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private HubConnection? _connection;
     private int _started;
@@ -36,13 +43,16 @@ public sealed class LauncherStreamClient : IAsyncDisposable
     /// <summary>Reconnect backoff between long-outage restart attempts once auto-reconnect has given up.</summary>
     private static readonly TimeSpan RestartDelay = TimeSpan.FromSeconds(5);
 
-    public LauncherStreamClient(GatewayConfig config, int port, string version, DirectorSupervisor supervisor, LaunchService launchService)
+    public LauncherStreamClient(GatewayConfig config, int port, string version, DirectorSupervisor supervisor,
+        LaunchService launchService, AppCatalog? appCatalog = null, FileSearchService? fileSearch = null)
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
         _port = port;
         _version = version ?? "";
         _supervisor = supervisor ?? throw new ArgumentNullException(nameof(supervisor));
         _launchService = launchService ?? throw new ArgumentNullException(nameof(launchService));
+        _appCatalog = appCatalog ?? new AppCatalog();
+        _fileSearch = fileSearch ?? new FileSearchService();
     }
 
     /// <summary>True when stream mode is enabled for a configured Gateway. When false, <see cref="Start"/> is a no-op.</summary>
@@ -128,12 +138,30 @@ public sealed class LauncherStreamClient : IAsyncDisposable
                     return LauncherCommandResult.Ok();
 
                 case "launch":
-                    if (string.IsNullOrWhiteSpace(cmd.Path))
-                        return LauncherCommandResult.Fail(LauncherCommandStatus.BadRequest, "path is required for launch");
+                {
+                    // The same resolution rule the loopback route uses, so a launch asked for over the stream
+                    // and the identical launch asked for over the relay cannot pick different programs.
+                    var (path, error) = _appCatalog.ResolveLaunchPath(cmd.Path, cmd.App);
+                    if (error is not null)
+                        return LauncherCommandResult.Fail(LauncherCommandStatus.BadRequest, error);
                     _launchService.Launch(
-                        new LaunchRequest { Path = cmd.Path!, Args = cmd.Args, Cwd = cmd.Cwd, Headless = cmd.Headless },
+                        new LaunchRequest { Path = path!, Args = cmd.Args, Cwd = cmd.Cwd, Headless = cmd.Headless },
                         caller: "launcher-stream");
                     return LauncherCommandResult.Ok();
+                }
+
+                // The query verbs. Their answers ride back in the result payload; see LauncherCommandResult.
+                case "apps":
+                    return LauncherCommandResult.OkWithPayload(
+                        JsonSerializer.Serialize(_appCatalog.Search(cmd.Query, cmd.Limit), JsonOptions));
+
+                case "files":
+                    if (string.IsNullOrWhiteSpace(cmd.Query))
+                        return LauncherCommandResult.Fail(LauncherCommandStatus.BadRequest, "query is required for a file search");
+                    return LauncherCommandResult.OkWithPayload(
+                        JsonSerializer.Serialize(
+                            _fileSearch.Search(cmd.Query, cmd.Limit, cmd.TimeoutMilliseconds, CancellationToken.None),
+                            JsonOptions));
 
                 default:
                     FileLog.Write($"[LauncherStreamClient] Command declined (unknown verb): {cmd.Verb}");

@@ -33,6 +33,19 @@ namespace CcDirector.Gateway.Api;
 /// </summary>
 internal static class LauncherLifecycleRelay
 {
+    /// <summary>
+    /// The longest a launcher will let a file search run, mirroring the launcher's own ceiling. The Gateway
+    /// keeps its own copy because it has to size the relay client BEFORE it can ask the launcher anything.
+    /// </summary>
+    internal const int QueryTimeoutCeilingMilliseconds = 120_000;
+
+    /// <summary>
+    /// Extra time allowed on top of the search ceiling for connecting, serialising the answer and carrying it
+    /// back. Without it the relay client and the search would expire together, turning a search that finished
+    /// on the last moment into a transport failure.
+    /// </summary>
+    internal const int QueryTimeoutHeadroomMilliseconds = 15_000;
+
     /// <summary>How the relay attempt ended. The HTTP routes map this onto a status code and body; the
     /// in-process auto-launcher only asks whether the launcher accepted.</summary>
     internal enum RelayOutcomeKind
@@ -91,7 +104,7 @@ internal static class LauncherLifecycleRelay
             },
             restPath: $"/director/{verb}",
             // The lifecycle verbs carry NO body on the REST arm - the launcher reads the verb from the path.
-            restBody: null, sendsJsonBody: false,
+            restBody: null, sendsJsonBody: false, isQuery: false,
             launchers, sendLauncherCommand, ct);
 
     /// <summary>
@@ -108,6 +121,7 @@ internal static class LauncherLifecycleRelay
             {
                 Verb = "launch",
                 Path = body?.Path,
+                App = body?.App,
                 Args = body?.Args,
                 Cwd = body?.Cwd,
                 Headless = body?.Headless ?? false,
@@ -116,8 +130,39 @@ internal static class LauncherLifecycleRelay
             // The launch body is forwarded VERBATIM, and it is sent as JSON even when it is null - a null body
             // serialises to "null" and the launcher answers its own 400, which is the behaviour the route has
             // always had for an unparsable body. Posting nothing instead would be a different request.
-            restBody: body, sendsJsonBody: true,
+            restBody: body, sendsJsonBody: true, isQuery: false,
             launchers, sendLauncherCommand, ct);
+
+    /// <summary>
+    /// Run a QUERY verb - "apps" or "files" - on the CALLING TENANT's launcher for <paramref name="machine"/>
+    /// and return the launcher's answer.
+    ///
+    /// It differs from the action verbs in the only two ways a question differs from an instruction: the rest
+    /// arm reads with GET instead of posting, and the launcher's answer is carried back to the caller rather
+    /// than reduced to whether it worked. Everything else - tenant scoping, arm preference, the failure
+    /// outcomes - is the shared path, because a query that could reach a machine the action verbs could not
+    /// would be a second, weaker boundary.
+    /// </summary>
+    public static Task<LauncherRelayOutcome> SendQueryAsync(
+        TenantId tenant, string machine, string verb, string? query, int limit, int timeoutMilliseconds,
+        LauncherRegistry launchers, LauncherCommandRouter.SendLauncherCommandAsync? sendLauncherCommand,
+        CancellationToken ct)
+    {
+        var restPath = $"/{verb}?q={Uri.EscapeDataString(query ?? "")}&limit={limit}" +
+                       $"&timeoutMilliseconds={timeoutMilliseconds}";
+        return SendAsync(
+            tenant, machine,
+            streamCommand: new LauncherCommand
+            {
+                Verb = verb,
+                Query = query,
+                Limit = limit,
+                TimeoutMilliseconds = timeoutMilliseconds,
+            },
+            restPath: restPath,
+            restBody: null, sendsJsonBody: false, isQuery: true,
+            launchers, sendLauncherCommand, ct);
+    }
 
     /// <summary>
     /// The shared two-arm dispatch. The persistent stream is preferred; a null from it means "no stream"
@@ -127,7 +172,7 @@ internal static class LauncherLifecycleRelay
     /// </summary>
     private static async Task<LauncherRelayOutcome> SendAsync(
         TenantId tenant, string machine, LauncherCommand streamCommand, string restPath, object? restBody,
-        bool sendsJsonBody,
+        bool sendsJsonBody, bool isQuery,
         LauncherRegistry launchers, LauncherCommandRouter.SendLauncherCommandAsync? sendLauncherCommand,
         CancellationToken ct)
     {
@@ -140,7 +185,12 @@ internal static class LauncherLifecycleRelay
                 LauncherCommandStatus.BadRequest => 400,
                 _ => 502,
             };
-            var streamPayload = streamResult.IsOk
+            // A QUERY answers with data, so its payload is passed through exactly as the launcher wrote it.
+            // Synthesising {ok:true} here - which is right for an action verb, whose only news is that it
+            // worked - would throw away the entire answer and hand the caller a success with no result in it.
+            var streamPayload = isQuery && streamResult.IsOk && streamResult.Payload is not null
+                ? streamResult.Payload
+                : streamResult.IsOk
                 ? System.Text.Json.JsonSerializer.Serialize(new { ok = true, via = "stream" })
                 : System.Text.Json.JsonSerializer.Serialize(new { error = streamResult.Error, via = "stream" });
             FileLog.Write($"[LauncherLifecycleRelay] {streamCommand.Verb} tenant={tenant.Value} machine={machine} via=stream -> {streamStatus}");
@@ -165,10 +215,18 @@ internal static class LauncherLifecycleRelay
         var networkAddress = launchers.GetNetworkAddress(tenant, machine) ?? "";
         var dialHost = string.IsNullOrWhiteSpace(networkAddress) ? "127.0.0.1" : networkAddress;
 
-        using var http = BuildLauncherClient(launcher.Port, token, networkAddress);
+        // A lifecycle verb answers at once, but a file search is allowed to run for up to its own deadline, so
+        // the client must outlast it. A ten-second client on a sixty-second search would abort the request
+        // that was working correctly and report the machine unreachable.
+        var clientTimeout = isQuery
+            ? TimeSpan.FromMilliseconds(QueryTimeoutCeilingMilliseconds + QueryTimeoutHeadroomMilliseconds)
+            : TimeSpan.FromSeconds(10);
+        using var http = BuildLauncherClient(launcher.Port, token, networkAddress, clientTimeout);
         try
         {
-            var response = sendsJsonBody
+            var response = isQuery
+                ? await http.GetAsync(restPath, ct)
+                : sendsJsonBody
                 ? await http.PostAsJsonAsync(restPath, restBody, ct)
                 : await http.PostAsync(restPath, content: null, ct);
             var payload = await response.Content.ReadAsStringAsync(ct);
@@ -191,13 +249,13 @@ internal static class LauncherLifecycleRelay
     /// http://&lt;networkAddress&gt;:&lt;port&gt;/ over the tailnet. When it is empty the launcher is
     /// co-located with the Gateway: dial http://127.0.0.1:&lt;port&gt;/ on loopback.
     /// </summary>
-    private static HttpClient BuildLauncherClient(int port, string token, string networkAddress)
+    private static HttpClient BuildLauncherClient(int port, string token, string networkAddress, TimeSpan timeout)
     {
         var host = string.IsNullOrWhiteSpace(networkAddress) ? "127.0.0.1" : networkAddress;
         var http = new HttpClient
         {
             BaseAddress = new Uri($"http://{host}:{port}/"),
-            Timeout = TimeSpan.FromSeconds(10),
+            Timeout = timeout,
         };
         http.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
         return http;

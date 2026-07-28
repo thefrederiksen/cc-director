@@ -451,6 +451,91 @@ internal static class ControlEndpoints
             return Results.Json(RepositoryDtoMapper.Flatten(LocalRepoDtos()));
         });
 
+        // GET /fleet/machines - the machines this tenant can search and start things on.
+        // GET /fleet/machines/{machine}/apps  - what is installed there.
+        // GET /fleet/machines/{machine}/files - a filename search across its drives.
+        // POST /fleet/machines/{machine}/launch - start something there.
+        //
+        // All four are Gateway relays with NO local fallback, and that is the point. Everything they describe
+        // lives on another computer, so a Director with no Gateway has nothing truthful to answer with - an
+        // empty list here would read as "you have no other machines" rather than "I cannot see them from
+        // here". They fail loud instead, naming the Gateway as the missing piece.
+        //
+        // The two query routes pass the Gateway's answer through as raw text at its own status. This Director
+        // is a hop, not a reader: it does not interpret a catalogue or a search result, so it does not
+        // deserialise one and cannot drop a field a newer launcher added.
+        app.MapGet("/fleet/machines", async (CancellationToken ct) =>
+        {
+            var gw = gatewayClientProvider?.Invoke();
+            if (gw is not { IsEnabled: true })
+                return Results.Json(new { error = "No Gateway is configured, so this Director cannot see other machines." },
+                    statusCode: StatusCodes.Status502BadGateway);
+            try
+            {
+                var machines = await gw.ListMachinesAsync(ct);
+                if (machines is null)
+                    return Results.Json(new { error = "This Gateway does not offer machine control." },
+                        statusCode: StatusCodes.Status502BadGateway);
+                return Results.Json(machines);
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[ControlEndpoints] /fleet/machines relay FAILED: {ex.Message}");
+                return Results.Json(new { error = $"Cannot reach the Gateway: {ex.Message}" },
+                    statusCode: StatusCodes.Status502BadGateway);
+            }
+        });
+
+        async Task<IResult> RelayMachineQueryAsync(string machine, string verb, HttpContext ctx, CancellationToken ct)
+        {
+            var gw = gatewayClientProvider?.Invoke();
+            if (gw is not { IsEnabled: true })
+                return Results.Json(new { error = $"No Gateway is configured, so this Director cannot reach '{machine}'." },
+                    statusCode: StatusCodes.Status502BadGateway);
+
+            var query = ctx.Request.Query["q"].ToString();
+            _ = int.TryParse(ctx.Request.Query["limit"].ToString(), out var limit);
+            _ = int.TryParse(ctx.Request.Query["timeoutMilliseconds"].ToString(), out var timeout);
+
+            try
+            {
+                var (status, body) = await gw.QueryMachineAsync(machine, verb, query, limit, timeout, ct);
+                return Results.Content(body, "application/json; charset=utf-8", statusCode: status);
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[ControlEndpoints] /fleet/machines/{machine}/{verb} relay FAILED: {ex.Message}");
+                return Results.Json(new { error = $"Cannot reach the Gateway: {ex.Message}" },
+                    statusCode: StatusCodes.Status502BadGateway);
+            }
+        }
+
+        app.MapGet("/fleet/machines/{machine}/apps", (string machine, HttpContext ctx, CancellationToken ct) =>
+            RelayMachineQueryAsync(machine, "apps", ctx, ct));
+
+        app.MapGet("/fleet/machines/{machine}/files", (string machine, HttpContext ctx, CancellationToken ct) =>
+            RelayMachineQueryAsync(machine, "files", ctx, ct));
+
+        app.MapPost("/fleet/machines/{machine}/launch", async (string machine, MachineLaunchRequest req, CancellationToken ct) =>
+        {
+            var gw = gatewayClientProvider?.Invoke();
+            if (gw is not { IsEnabled: true })
+                return Results.Json(new { error = $"No Gateway is configured, so this Director cannot reach '{machine}'." },
+                    statusCode: StatusCodes.Status502BadGateway);
+            try
+            {
+                var (status, body) = await gw.LaunchOnMachineAsync(
+                    machine, req?.Path, req?.App, req?.Args, req?.Cwd, req?.Headless ?? false, ct);
+                return Results.Content(body, "application/json; charset=utf-8", statusCode: status);
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[ControlEndpoints] /fleet/machines/{machine}/launch relay FAILED: {ex.Message}");
+                return Results.Json(new { error = $"Cannot reach the Gateway: {ex.Message}" },
+                    statusCode: StatusCodes.Status502BadGateway);
+            }
+        });
+
         // POST /fleet/send - deliver one message. A local target is delivered directly (works with
         // or without a Gateway); a remote target is relayed through the Gateway. An unknown target
         // with no Gateway is a clear error (no silent drop, no fallback).
@@ -1870,4 +1955,17 @@ internal static class ControlEndpoints
         ".md" or ".txt" or ".log" => "text/plain; charset=utf-8",
         _                 => "application/octet-stream",
     };
+}
+
+/// <summary>
+/// The body of POST /fleet/machines/{machine}/launch. Either <see cref="Path"/> or <see cref="App"/> says
+/// what to start - a path directly, or a name resolved against that machine's own catalogue.
+/// </summary>
+internal sealed class MachineLaunchRequest
+{
+    public string? Path { get; init; }
+    public string? App { get; init; }
+    public string? Args { get; init; }
+    public string? Cwd { get; init; }
+    public bool Headless { get; init; }
 }

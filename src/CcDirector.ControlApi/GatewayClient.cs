@@ -333,6 +333,83 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     }
 
     /// <summary>
+    /// The launchers this tenant has registered (GET /launchers) - the list of machines it can search and
+    /// start things on. NULL on 404, which on this route means a Gateway that still has the launcher family
+    /// denied rather than one that never had it.
+    /// </summary>
+    public async Task<List<LauncherDto>?> ListMachinesAsync(CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled)
+            throw new InvalidOperationException("Gateway is not configured; cannot list machines.");
+        FileLog.Write("[GatewayClient] ListMachinesAsync: GET /launchers");
+        using var resp = await _http.GetAsync("launchers", ct);
+        if (RouteAbsent(resp))
+        {
+            FileLog.Write("[GatewayClient] GET /launchers: route absent on this Gateway");
+            return null;
+        }
+        if (!resp.IsSuccessStatusCode)
+            throw await RelayFailureAsync(resp, "GET /launchers", ct);
+        return await resp.Content.ReadFromJsonAsync<List<LauncherDto>>(ct)
+               ?? throw new InvalidOperationException("Gateway GET /launchers returned an unparsable body.");
+    }
+
+    /// <summary>
+    /// Ask one machine a query - "apps" or "files" - through the Gateway's machine relay.
+    ///
+    /// The answer is returned as the raw text the launcher produced, along with the status, rather than
+    /// deserialised here. This Director is a pass-through for it: it does not read the catalogue or the search
+    /// results, and typing them here would mean a launcher a version ahead loses any field this build has not
+    /// been taught, on a hop that had no reason to look inside.
+    /// </summary>
+    public async Task<(int Status, string Body)> QueryMachineAsync(string machine, string verb, string? query,
+        int limit, int timeoutMilliseconds, CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled)
+            throw new InvalidOperationException($"Gateway is not configured; cannot query machine '{machine}'.");
+
+        var path = $"machines/{Uri.EscapeDataString(machine)}/{verb}" +
+                   $"?q={Uri.EscapeDataString(query ?? "")}&limit={limit}&timeoutMilliseconds={timeoutMilliseconds}";
+        FileLog.Write($"[GatewayClient] QueryMachineAsync: GET /{path}");
+
+        // A file search may legitimately run for a couple of minutes on a large disk, well past this client's
+        // ordinary timeout, so the request carries its own.
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(TimeSpan.FromMilliseconds(MachineQueryClientTimeoutMilliseconds));
+
+        using var resp = await _http.SendAsync(request, deadline.Token);
+        var body = await resp.Content.ReadAsStringAsync(deadline.Token);
+        FileLog.Write($"[GatewayClient] QueryMachineAsync: {verb} on {machine} -> {(int)resp.StatusCode}");
+        return ((int)resp.StatusCode, body);
+    }
+
+    /// <summary>
+    /// Start something on one machine through the Gateway's machine relay. Either <paramref name="path"/> or
+    /// <paramref name="app"/> identifies it; the launcher resolves a name against its own catalogue.
+    /// </summary>
+    public async Task<(int Status, string Body)> LaunchOnMachineAsync(string machine, string? path, string? app,
+        string? args, string? cwd, bool headless, CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled)
+            throw new InvalidOperationException($"Gateway is not configured; cannot launch on machine '{machine}'.");
+
+        FileLog.Write($"[GatewayClient] LaunchOnMachineAsync: {machine} path={path ?? "(none)"} app={app ?? "(none)"}");
+        using var resp = await _http.PostAsJsonAsync($"machines/{Uri.EscapeDataString(machine)}/launch",
+            new { path, app, args, cwd, headless }, ct);
+        var body = await resp.Content.ReadAsStringAsync(ct);
+        FileLog.Write($"[GatewayClient] LaunchOnMachineAsync: {machine} -> {(int)resp.StatusCode}");
+        return ((int)resp.StatusCode, body);
+    }
+
+    /// <summary>
+    /// How long this Director waits for a machine query. It exceeds the launcher's own search ceiling and the
+    /// Gateway relay's allowance, so a search that ran to its full deadline still returns an answer here
+    /// rather than being cut off by the nearest hop.
+    /// </summary>
+    private const int MachineQueryClientTimeoutMilliseconds = 150_000;
+
+    /// <summary>
     /// Relay a single message to a session anywhere in the fleet via the Gateway's
     /// POST /sessions/{sid}/prompt. Fire-and-forget (WaitForIdle=false). Throws when the
     /// Gateway is disabled or the call fails.
