@@ -2083,25 +2083,48 @@ public sealed class GatewayHost : IAsyncDisposable
         // launcher-persistent-join: the launcher-push stream endpoint. When a launcher joins, the machine
         // lifecycle relay pushes commands DOWN this stream instead of dialing the launcher's REST API.
         //
-        // DENIED ON HOSTED, consistent with #1917's deny of the /launchers + /machines HTTP family. The hub is
-        // the ONE launcher/machine writer that HTTP deny did not cover: LauncherHub.Hello resolves NO tenant
-        // (unlike DirectorHub.Hello, which aborts when the device key resolves to no tenant), and
-        // LauncherConnectionRegistry keys one active connection per BARE machine name. So on hosted a launcher
-        // Hello for machine X supersedes ANY other tenant's active connection for the same name - a cross-tenant
-        // collision. A physical machine is not owned by a tenant on shared hosted infrastructure, so there is no
-        // per-tenant answer to serve here, only a leak to close: the hub is NOT MAPPED on hosted, exactly as the
-        // HTTP family's handlers are not mapped, so no launcher can join and no bare-machine-keyed row is ever
-        // written. Self-host maps the hub unchanged. Un-denying requires a launcher/machine tenant-ownership
-        // model AND a purge of the launcher + launcher-connection registries.
-        if (GatewayHostedMode.IsHosted)
-        {
-            FileLog.Write("[GatewayHost] LauncherHub DENIED on hosted (no per-tenant machine ownership) - /launcher-stream is not mapped; launcher/machine control is self-host only");
-        }
-        else
-        {
-            _app.MapHub<Streaming.LauncherHub>("/launcher-stream");
-            FileLog.Write("[GatewayHost] LauncherHub mapped at /launcher-stream; machine lifecycle relay prefers the stream when a launcher is joined");
-        }
+        // MAPPED EVERYWHERE, INCLUDING HOSTED. It was denied on hosted, alongside #1917's deny of the
+        // /launchers + /machines HTTP family, and this is the last piece of that deny to come down.
+        //
+        // WHAT THE DENY WAS FOR. The hub was the one launcher/machine writer the HTTP deny did not cover, and
+        // the reason was specific: LauncherHub.Hello resolved NO tenant, and LauncherConnectionRegistry keyed
+        // one active connection per BARE MACHINE NAME. So a launcher saying Hello for machine X overwrote the
+        // row for machine X whoever owned it - one subscriber's launcher could supersede another's active
+        // connection just by claiming the same name, and then receive the commands meant for it. That was a
+        // real leak and denying the hub genuinely closed it.
+        //
+        // WHY IT IS NOT THE ANSWER ANY MORE - AND WHY THIS IS NOT SIMPLY A REVERT. Both conditions the deny
+        // named are now false, fixed by the tenant-scoping work that replaced the HTTP deny:
+        //   * LauncherHub.Hello resolves the tenant from the AUTHENTICATED DEVICE KEY and ABORTS the connection
+        //     when it resolves to none - exactly as DirectorHub.Hello does. The comparison the deny drew
+        //     against DirectorHub no longer distinguishes them.
+        //   * LauncherConnectionRegistry keys on (TenantId, Machine), not on the bare name. Two subscribers
+        //     naming the same machine occupy two different rows; neither can see, overwrite or receive on the
+        //     other's.
+        // So the supersession the deny existed to prevent is no longer expressible. Leaving the hub unmapped
+        // would not be caution, it would be a gate standing in front of a hole that is already filled - while
+        // costing every subscriber the ability to reach their own machines.
+        //
+        // AND THE COST WAS TOTAL, NOT PARTIAL, WHICH IS WHY THIS MATTERS MORE THAN IT LOOKS. On hosted the
+        // stream is the ONLY arm that can reach a launcher. The REST fallback dials the launcher's registered
+        // address, and LauncherHost binds Kestrel to loopback ONLY - so from a hosted Gateway that arm cannot
+        // connect to any remote machine, ever. With the hub unmapped, a hosted subscriber's launcher could
+        // register and heartbeat and appear in the machine list, and then never receive a single command:
+        // observed in the field as a launcher retrying the hub thousands of times a day while looking healthy.
+        //
+        // THE REGISTRY PURGE THE DENY REQUIRED IS DISCHARGED BY CONSTRUCTION. It asked for the launcher and
+        // launcher-connection registries to be purged of rows written under the bare-name scheme. Both are
+        // process-lifetime IN-MEMORY dictionaries - GatewayHost.Launchers is a plain new(), LauncherConnections
+        // is a plain new(), there is no launcher entity in the database and nothing reloads either at startup -
+        // so the restart that ships this performs the purge. On hosted there is additionally nothing to purge:
+        // the hub was never mapped there, so no bare-name-keyed connection row was ever written on hosted.
+        //
+        // THE STANDARD THIS IS HELD TO, both halves at once: a subscriber may drive EVERY machine registered to
+        // their own account, and may never reach one registered to another. HostedLauncherHubTenantTests proves
+        // both on a real hosted Gateway with two real tenants - including that both may hold a live connection
+        // for the SAME machine name simultaneously, which is the precise case the deny said was impossible.
+        _app.MapHub<Streaming.LauncherHub>("/launcher-stream");
+        FileLog.Write("[GatewayHost] LauncherHub mapped at /launcher-stream (hosted and self-host); connections are keyed (tenant, machine) and Hello aborts on an unresolved tenant");
 
         // Product version stamped by Directory.Build.props; full form carries the commit SHA.
         var version = AppVersion.Full;
