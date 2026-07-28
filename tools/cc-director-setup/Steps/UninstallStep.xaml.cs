@@ -74,7 +74,6 @@ public partial class UninstallStep : UserControl
         {
             "The DevThrottle app and all cc-* CLI tools",
             "The PATH entry for the tools",
-            "The DevThrottle skills (only the ones it installed)",
             "Scheduled tasks and the Start Menu shortcut",
         };
         if (OperatingSystem.IsWindows())

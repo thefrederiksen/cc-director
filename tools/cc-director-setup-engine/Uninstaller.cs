@@ -4,7 +4,7 @@ using System.Runtime.Versioning;
 namespace CcDirector.Setup.Engine;
 
 /// <summary>The kind of thing an uninstall step removes.</summary>
-public enum UninstallKind { Autostart, Directory, PathEntry, Shortcut, Skill, ScheduledTask, TailscaleServe, ArpEntry }
+public enum UninstallKind { Autostart, Directory, PathEntry, Shortcut, ScheduledTask, TailscaleServe, ArpEntry }
 
 /// <summary>One thing the uninstaller would remove, with whether it is currently present.</summary>
 public sealed record UninstallTarget(UninstallKind Kind, string Description, string Path, bool Present);
@@ -69,11 +69,6 @@ public sealed class Uninstaller
         System.IO.Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.StartMenu), "Programs", "DevThrottle.lnk");
 
-    /// <summary>The per-user Claude Code skills directory (%USERPROFILE%\.claude\skills). Skills are
-    /// installed here per-user; only the names in the <see cref="SkillManifest"/> are ours to remove.</summary>
-    private static string SkillsBaseDir() => System.IO.Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "skills");
-
     /// <summary>What an uninstall would remove (existence-checked). Pure: no side effects.</summary>
     public IReadOnlyList<UninstallTarget> Plan(InstallRole role)
     {
@@ -99,16 +94,6 @@ public sealed class Uninstaller
         targets.Add(new UninstallTarget(UninstallKind.PathEntry, "PATH entry", _layout.BinDir, IsBinOnUserPath()));
         var lnk = ShortcutPath();
         targets.Add(new UninstallTarget(UninstallKind.Shortcut, "Start Menu shortcut", lnk, File.Exists(lnk)));
-
-        // Owned skills (issue #257): one entry per skill the install recorded, existence-checked
-        // against %USERPROFILE%\.claude\skills. Only manifested skills are ever listed, so the
-        // user's own skills never appear here.
-        var skillsBase = SkillsBaseDir();
-        foreach (var skill in SkillManifest.Load(_layout).OwnedSkills)
-        {
-            var dir = System.IO.Path.Combine(skillsBase, skill);
-            targets.Add(new UninstallTarget(UninstallKind.Skill, $"Skill '{skill}'", dir, Directory.Exists(dir)));
-        }
 
         // Add/Remove Programs registration (issue #257), Windows only. Cheap registry read.
         if (OperatingSystem.IsWindows())
@@ -186,10 +171,8 @@ public sealed class Uninstaller
         progress?.Report("Removing the Start Menu shortcut");
         RemoveShortcut(steps, errors);
 
-        // Integration points common to both roles (issue #257). Skills + scheduled tasks are per-user
-        // and role-independent; the Add/Remove Programs entry is Windows-only.
-        progress?.Report("Removing the DevThrottle skills");
-        RemoveSkills(steps, errors);
+        // Integration points common to both roles (issue #257). Scheduled tasks are per-user and
+        // role-independent; the Add/Remove Programs entry is Windows-only.
         progress?.Report("Removing scheduled tasks");
         RemoveScheduledTasks(steps, errors);
         if (OperatingSystem.IsWindows())
@@ -236,45 +219,6 @@ public sealed class Uninstaller
         catch (Exception ex)
         {
             errors.Add($"data ({root}): {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Remove ONLY the skills the install recorded in the <see cref="SkillManifest"/> (issue #257).
-    /// A user-authored skill that is not in the manifest is never touched - that is the whole point
-    /// of the manifest (AC8). <paramref name="skillsBaseDir"/> is injectable for tests/sandbox.
-    /// </summary>
-    public void RemoveSkills(List<string> steps, List<string> errors, string? skillsBaseDir = null)
-    {
-        var owned = SkillManifest.Load(_layout).OwnedSkills;
-        if (owned.Count == 0) { steps.Add("skills: none recorded (nothing to remove)"); return; }
-
-        var baseDir = skillsBaseDir ?? SkillsBaseDir();
-        var baseFull = System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetFullPath(baseDir));
-        foreach (var skill in owned)
-        {
-            // SAFETY: never trust a manifest entry to be a simple child name. A blank entry would
-            // make Path.Combine resolve to baseDir itself (deleting the WHOLE skills tree), and a
-            // "..\x" entry would escape it. Refuse anything whose resolved parent is not exactly the
-            // skills dir - this is a destructive op, so the guard lives at the point of deletion.
-            var dirFull = System.IO.Path.GetFullPath(System.IO.Path.Combine(baseDir, skill));
-            if (string.IsNullOrWhiteSpace(skill) ||
-                !string.Equals(System.IO.Path.GetDirectoryName(dirFull), baseFull, StringComparison.OrdinalIgnoreCase))
-            {
-                errors.Add($"skill '{skill}': refused (resolves outside {baseDir})");
-                continue;
-            }
-
-            if (!Directory.Exists(dirFull)) { steps.Add($"skill '{skill}': not present"); continue; }
-            try
-            {
-                Directory.Delete(dirFull, recursive: true);
-                steps.Add($"removed skill '{skill}': {dirFull}");
-            }
-            catch (Exception ex)
-            {
-                errors.Add($"skill '{skill}' ({dirFull}): {ex.Message}");
-            }
         }
     }
 

@@ -137,67 +137,6 @@
                                    Margin="0,2,0,0" />
                     </StackPanel>
                 </Border>
-
-                <!-- Skills section -->
-                <Border Background="#2A2D2E" CornerRadius="6" Padding="16" Margin="0,12,0,0">
-                    <StackPanel>
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-
-                            <StackPanel Grid.Column="0">
-                                <TextBlock Text="Skills"
-                                           Foreground="White"
-                                           FontSize="16"
-                                           FontWeight="SemiBold" />
-                                <TextBlock x:Name="SkillsSummary"
-                                           Text="Claude Code skill files"
-                                           Foreground="#888888"
-                                           FontSize="12"
-                                           Margin="0,2,0,0" />
-                            </StackPanel>
-
-                            <TextBlock x:Name="SkillsStatus"
-                                       Grid.Column="1"
-                                       Text="Pending"
-                                       Foreground="#CCCCCC"
-                                       FontSize="13" FontWeight="SemiBold"
-                                       VerticalAlignment="Center" />
-                        </Grid>
-
-                        <Expander Header="Show details"
-                                  Foreground="#888888"
-                                  FontSize="11"
-                                  Margin="0,12,0,0"
-                                  IsExpanded="False">
-                            <ItemsControl x:Name="SkillList" Margin="0,8,0,0">
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Grid Margin="0,0,0,3">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="70" />
-                                            </Grid.ColumnDefinitions>
-
-                                            <TextBlock Text="{Binding Name}"
-                                                       Foreground="#AAAAAA"
-                                                       FontSize="12" />
-
-                                            <TextBlock Grid.Column="1"
-                                                       Text="{Binding Status}"
-                                                       FontSize="11"
-                                                       FontWeight="SemiBold"
-                                                       HorizontalAlignment="Right"
-                                                       Foreground="#666666" />
-                                        </Grid>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-                        </Expander>
-                    </StackPanel>
-                </Border>
             </StackPanel>
         </ScrollViewer>
     </DockPanel>

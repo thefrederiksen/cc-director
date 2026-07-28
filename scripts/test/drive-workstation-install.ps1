@@ -1,8 +1,12 @@
 # Non-destructive UI test of the installer's Workstation path (skip Sign-in).
 # Launches the built cc-director-setup.exe, selects the "I already have a gateway" (Workstation) card,
-# and asserts the step rail contains only the current five-step flow and that advancing past
-# Prerequisites lands on Skills, NOT the retired Sign-in step.
-# It NEVER reaches the Install step, so nothing is installed. It then closes the installer it launched.
+# and asserts the step rail contains only the current four-step flow - Welcome, Prerequisites,
+# Install, Complete - with the retired Sign-in step gone.
+#
+# It stops at Prerequisites and NEVER clicks past it, so nothing is installed. That matters: with the
+# Skills screen gone (issue 995 - the installer places no skills at all), the step straight after
+# Prerequisites is Install, and reaching it starts a REAL install on this machine.
+# It then closes the installer it launched.
 $ErrorActionPreference = "Stop"
 
 $exe    = "C:\repos\devthrottle\tools\cc-director-setup\bin\Release\net10.0-windows\win-x64\publish\cc-director-setup.exe"
@@ -89,10 +93,10 @@ $numsWs   = VisibleSteps $win
 Write-Host "Welcome (workstation) rail labels: $($labelsWs -join ' | ')"
 Write-Host "Welcome (workstation) circle numbers (steps 2..n): $($numsWs -join ' ')"
 if ($labelsWs -contains "Sign in") { $fail += "Workstation rail STILL shows the 'Sign in' step." }
-# The current flow is Welcome, Prerequisites, Skills, Install, Complete.
-if (($numsWs -join ' ') -ne "2 3 4 5") { $fail += "Workstation rail numbers not renumbered cleanly (got '$($numsWs -join ' ')', expected '2 3 4 5')." }
-if (($labelsWs -join ' | ') -ne "Welcome | Prerequisites | Skills | Install | Complete") {
-    $fail += "Workstation rail does not match the five-step flow (got '$($labelsWs -join ' | ')')."
+# The current flow is Welcome, Prerequisites, Install, Complete.
+if (($numsWs -join ' ') -ne "2 3 4") { $fail += "Workstation rail numbers not renumbered cleanly (got '$($numsWs -join ' ')', expected '2 3 4')." }
+if (($labelsWs -join ' | ') -ne "Welcome | Prerequisites | Install | Complete") {
+    $fail += "Workstation rail does not match the four-step flow (got '$($labelsWs -join ' | ')')."
 }
 
 # --- Welcome -> Prerequisites ---
@@ -102,23 +106,12 @@ Shot $procId "03-prerequisites.png"
 $onPrereq = (ByName $win "Sign in to DevThrottle") -eq $null
 if (-not $onPrereq) { $fail += "Landed on the Sign-in step right after Welcome on the Workstation path." }
 
-# --- Prerequisites -> next visible step (must be Skills, not Sign in) ---
+# --- Stop here ---
+# The step after Prerequisites is Install, which starts a REAL install the moment it is shown, so this
+# script does not click Next again. The rail assertions above already prove the Workstation flow: no
+# Sign-in step, no Skills step, four steps in the right order.
 $next = ById $win "NextButton"
-$prereqNextEnabled = $next.Current.IsEnabled
-Write-Host "Prerequisites Next enabled: $prereqNextEnabled"
-if ($prereqNextEnabled) {
-    Invoke-El $next
-    Start-Sleep -Milliseconds 1200
-    Shot $procId "04-after-prereq.png"
-    $onSkills  = (ById $win "TitleText") -ne $null
-    $onSignIn  = (ByName $win "Sign in to DevThrottle") -ne $null
-    Write-Host "After Prerequisites -> Skills heading present: $onSkills ; Sign-in heading present: $onSignIn"
-    if ($onSignIn) { $fail += "Workstation path showed the Sign-in step after Prerequisites." }
-    if (-not $onSkills) { $fail += "Workstation path did NOT land on the Skills step after Prerequisites." }
-} else {
-    Write-Host "NOTE: a required prerequisite is missing on this machine, so Next is disabled at step 2."
-    Write-Host "      The rail assertions above already prove Sign-in is dropped for the Workstation role."
-}
+Write-Host "Prerequisites Next enabled: $($next.Current.IsEnabled) (not clicked - the next step installs for real)"
 
 # --- Close the installer we launched (this is cc-director-setup.exe, NOT cc-director.exe) ---
 Stop-Process -Id $procId -Force

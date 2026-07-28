@@ -82,7 +82,6 @@ public partial class UninstallStep : UserControl
             OperatingSystem.IsMacOS()
                 ? "The shell PATH entries and tool shims"
                 : "The PATH entry for the tools",
-            "The DevThrottle skills (only the ones it installed)",
             OperatingSystem.IsMacOS()
                 ? "The Launcher launch agent"
                 : "Scheduled tasks and the Start Menu shortcut",

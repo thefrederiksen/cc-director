@@ -79,7 +79,7 @@
                        Margin="0,16,0,0" />
 
             <!-- Uninstall entry (issue #257): shown only when an existing install is detected
-                 (update mode). Removes the app, tools, PATH, skills, scheduled tasks, and the
+                 (update mode). Removes the app, tools, PATH, scheduled tasks, and the
                  Gateway autostart + Tailscale mapping; the user's data is preserved. -->
             <Button x:Name="UninstallButton"
                     Content="Uninstall DevThrottle"

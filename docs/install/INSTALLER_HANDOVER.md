@@ -28,7 +28,11 @@ One installer experience on **two thin GUIs over one shared engine**:
   - bundled Python -> `%LOCALAPPDATA%\cc-director\python` (win) / `~/Library/Application Support/cc-director/python` (mac)
   - venv -> `…\cc-director\pyenv`
   - shims -> `…\cc-director\bin\cc-<tool>.cmd` (win) / `~/.local/bin/cc-<tool>` symlinks (mac)
-- **Skills** into `~/.claude/skills/`.
+
+It installs NO skills (issue 995). Skills are held centrally on the Gateway and reach every agent from
+there, so nothing is written into `~/.claude/skills/` and the uninstaller has nothing of ours to take
+out of it. Skill files already sitting on an older machine are left exactly where they are - they are
+the user's files now, and a local skill wins its name against the central library anyway.
 
 ### Release assets (per tag, built by `.github/workflows/release.yml`)
 Windows: `cc-director-win-x64.exe`, `cc-director-gateway-win-x64.exe`, `cc-director-cockpit-win-x64.zip`,

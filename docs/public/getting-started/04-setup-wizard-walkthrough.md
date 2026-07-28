@@ -38,7 +38,7 @@ prerequisites for you — it checks for them and tells you what is missing.
 
 ---
 
-## The five steps
+## The four steps
 
 Every run of the wizard moves left-to-right through the same rail:
 
@@ -46,9 +46,8 @@ Every run of the wizard moves left-to-right through the same rail:
 |------|--------------|
 | **1. Welcome** | On a first install, you choose the role (Workstation or Gateway). On an existing install, this becomes the Update / Uninstall screen. |
 | **2. Prerequisites** | The wizard checks for the .NET 10 Runtime, Claude Code, Python, Node.js, and (optionally) Tailscale, and offers to install each missing one for you. Only the .NET 10 Runtime blocks Next - the rest are recommended, and you can install them here or later. |
-| **3. Skills** | Shows the Claude Code skills that will be installed. |
-| **4. Install** | Downloads and places each component, verifying every file against the manifest's SHA-256. The Gateway role adds a Gateway + Cockpit phase here. |
-| **5. Complete** | Confirms what was installed and offers to launch the app. |
+| **3. Install** | Downloads and places each component, verifying every file against the manifest's SHA-256. The Gateway role adds a Gateway + Cockpit phase here. |
+| **4. Complete** | Confirms what was installed and offers to launch the app. |
 
 ---
 
@@ -124,18 +123,11 @@ turns on.
 
 ![Prerequisites all found](assets/wizard-ws-prerequisites.png)
 
-### 3. Skills
-
-Shows the Claude Code skills the wizard will install (for example, the `cc-director`
-skill). These add the DevThrottle slash-commands to Claude Code.
-
-![Skills to be installed](assets/wizard-ws-skills.png)
-
-### 4. Install
+### 3. Install
 
 Installation starts automatically. Each component shows its own progress: the
-**cc-director** app, the **Tools** (the `cc-*` command-line tools), and the **Skills**.
-Every downloaded file is verified against the manifest before it is placed.
+**cc-director** app and the **Tools** (the `cc-*` command-line tools). Every downloaded
+file is verified against the manifest before it is placed.
 
 ![Workstation install in progress](assets/wizard-ws-installing.png)
 
@@ -144,7 +136,7 @@ always-on Launcher tray app.
 
 ![Workstation install complete](assets/wizard-ws-install-done.png)
 
-### 5. Complete
+### 4. Complete
 
 A success summary with the number of components installed and the version. **Open a new
 terminal** for the `cc-*` commands to be available on your `PATH`. You can launch the
@@ -189,13 +181,7 @@ enforced later, during the Gateway phase of the install, not here.
 
 ![Gateway prerequisites](assets/wizard-gw-prerequisites.png)
 
-### 3. Skills
-
-Identical to the Workstation flow.
-
-![Gateway skills](assets/wizard-gw-skills.png)
-
-### 4. Install
+### 3. Install
 
 The install list now includes an extra card: **Gateway & Cockpit — Always-on tray app +
 fleet dashboard**. This phase extracts the Cockpit, starts the Gateway tray app in
@@ -209,7 +195,7 @@ Cockpit address (for example `https://your-machine.your-tailnet.ts.net/`).
 
 ![Gateway install complete](assets/wizard-gw-install-done.png)
 
-### 5. Complete
+### 4. Complete
 
 The same success screen. The machine is now a live Gateway: the tray app and Cockpit
 are running, ports 7878 (Gateway) and 7470 (Cockpit) are listening, and the Gateway

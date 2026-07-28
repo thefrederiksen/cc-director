@@ -13,7 +13,6 @@ namespace CcDirectorSetup.Steps;
 public partial class InstallStep : UserControl
 {
     private ToolDownloadItem? _directorItem;
-    private List<SkillItem> _skillItems = [];
 
     public InstallStep()
     {
@@ -84,14 +83,9 @@ public partial class InstallStep : UserControl
         _directorItem = items.FirstOrDefault(i => i.Name == "cc-director");
 
         // The cc-* tools are no longer installed here (the app provisions them on first launch), so the
-        // Tools card is a static note - there are no tool rows to bind or track.
-
-        // Set up skills list
-        _skillItems = SkillInstaller.SkillNames
-            .Select(name => new SkillItem { Name = name })
-            .ToList();
-        SkillList.ItemsSource = _skillItems;
-        SkillsSummary.Text = $"{_skillItems.Count} Claude Code skills";
+        // Tools card is a static note - there are no tool rows to bind or track. Skills are not placed
+        // on the machine at all any more (issue 995): they are held on the Gateway and fetched, so this
+        // step has nothing to say about them.
 
         // Bind director item changes
         if (_directorItem != null)
@@ -139,8 +133,6 @@ public partial class InstallStep : UserControl
 
         DirectorStatus.Text = "Up to date";
         DirectorStatus.Foreground = upToDateColor;
-        SkillsStatus.Text = "Up to date";
-        SkillsStatus.Foreground = upToDateColor;
     }
 
     private void RepairButton_Click(object sender, RoutedEventArgs e)
@@ -186,16 +178,5 @@ public partial class InstallStep : UserControl
     public void ShowProgress()
     {
         DirectorProgress.Visibility = Visibility.Visible;
-    }
-
-    public List<SkillItem> GetSkillItems() => _skillItems;
-
-    public void UpdateSkillsStatus()
-    {
-        var done = _skillItems.Count(s => s.Status == "Done");
-        SkillsStatus.Text = $"{done} installed";
-        SkillsStatus.Foreground = new SolidColorBrush(
-            (Color)ColorConverter.ConvertFromString("#22C55E"));
-        SkillsSummary.Text = $"{done}/{_skillItems.Count} skills installed";
     }
 }

@@ -85,25 +85,6 @@ public class GitHubReleaseService
         SetupLog.Write($"[GitHubReleaseService] DownloadFileAsync: complete, bytes={downloaded}");
     }
 
-    public async Task<bool> DownloadSkillFileAsync(string destPath, string repoPath = ".claude/skills/dev-throttle/SKILL.md")
-    {
-        SetupLog.Write($"[GitHubReleaseService] DownloadSkillFileAsync: {repoPath}");
-
-        var url = GitHubRepositoryDefaults.RawUrl(repoPath);
-
-        try
-        {
-            var content = await Http.GetStringAsync(url);
-            await File.WriteAllTextAsync(destPath, content);
-            SetupLog.Write("[GitHubReleaseService] DownloadSkillFileAsync: success");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            SetupLog.Write($"[GitHubReleaseService] DownloadSkillFileAsync FAILED: {ex.Message}");
-            return false;
-        }
-    }
 }
 
 public class AssetInfo

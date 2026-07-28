@@ -9,7 +9,7 @@ namespace CcDirector.Setup.Engine;
 /// downloading the ~334 MB bundle, building the venv, and offline pip-installing ~20 wheels is the
 /// dominant install time ("3-8 min"). Instead the app provisions the bundle FROM NOTHING on first
 /// launch via the startup reconcile (<see cref="ToolReconciler.ReconcileAsync"/>), so the install
-/// places only the Director + Launcher (+ skills) and returns fast.
+/// places only the Director + Launcher and returns fast.
 ///
 /// The real provisioner (<see cref="PythonToolsInstaller.InstallAsync"/>, wrapped by each wizard) is
 /// passed in so a test can prove the installer NEVER invokes it.

@@ -17,8 +17,9 @@ namespace CcDirectorSetup.Services;
 ///
 /// Step 6, the Skills screen, is gone too. It listed three internal identifiers as tick-boxes that
 /// could not be ticked, described a completely different set of skills, said "for Claude Code" on a
-/// machine that may not have Claude Code, and asked the user for no decision at all. The skills are
-/// still installed exactly as before and still report on the Install step - only the screen went.
+/// machine that may not have Claude Code, and asked the user for no decision at all. The installer
+/// no longer places skills on the machine either (issue 995): skills are held on the Gateway and
+/// fetched by whichever agent actually uses one, so there is nothing here to choose or to install.
 /// </summary>
 public static class WizardStepFlow
 {

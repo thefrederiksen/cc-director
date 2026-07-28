@@ -76,7 +76,7 @@
                        Margin="0,16,0,0" />
 
             <!-- Uninstall entry (issue #257): shown only when an existing install is detected
-                 (update mode). Removes the app, tools, PATH, skills, and the launch agent; the
+                 (update mode). Removes the app, tools, PATH, and the launch agent; the
                  user's data is preserved. -->
             <Button x:Name="UninstallButton"
                     Content="Uninstall DevThrottle"
