@@ -13,6 +13,14 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 
+  <!-- The registration-directory scan is the seam a test has to reach: it is a pure function of the storage
+       layout, and the defect it fixes was entirely about WHICH directories get looked in. Exposing it through
+       the public surface would put an implementation detail on the supervisor's contract, so the test assembly
+       is admitted to internals instead. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="CcDirector.Launcher.Tests" />
+  </ItemGroup>
+
   <!-- Windows-only executable dressing: the Win32 icon resource and the app manifest
        only apply to the Windows apphost. -->
   <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0-windows'">

@@ -22,10 +22,17 @@ namespace CcDirector.Launcher;
 ///
 /// Stop strategy: POST /shutdown to the Director's Control API (graceful, portable).
 /// The running Director and its Control API port are discovered through the instance
-/// registration files every Director writes to config/director/instances/{id}.json
-/// (see CcStorage.DirectorInstances). A registration counts only when its process is
-/// alive AND that process's executable is the installed Director - a stale file or a
-/// development-slot Director never matches.
+/// registration files every Director writes to config/director/instances/{id}.json.
+/// A registration counts only when its process is alive AND that process's executable
+/// is the installed Director - a stale file or a development-slot Director never matches.
+///
+/// THOSE FILES LIVE IN MORE THAN ONE PLACE, which is easy to get wrong and was.
+/// CcStorage.DirectorInstances resolves relative to the CALLER'S home, and the launcher
+/// runs at the storage root - but a Director started for a named instance keeps its whole
+/// storage under &lt;root&gt;/instances/&lt;slug&gt;/ and registers there. From 1.8 the
+/// installed Director boots as instance "default", so on a normal machine the root's own
+/// directory is empty and every live registration sits one level in. Both layouts are
+/// scanned; see InstanceRegistrationDirectories.
 /// </summary>
 public sealed class DirectorSupervisor
 {
@@ -127,7 +134,23 @@ public sealed class DirectorSupervisor
         }
 
         // Try graceful shutdown via Control API.
+        //
+        // A port of 0 means no registration was found for this pid, and that is NOT a normal condition - the
+        // Director is demonstrably running, so it registered somewhere. It is logged loudly because the silent
+        // version of this cost real damage: when the launcher looked in only one of the registration
+        // directories, every 1.8 Director came back with port 0, the graceful shutdown below was skipped
+        // without a word, and every remote stop and restart force-killed instead. A force-kill gives the
+        // Director no chance to clean up and leaves a phantom interrupted entry in its crash journal, so the
+        // failure degraded the very signal used to tell a real crash from a clean stop - while looking like it
+        // worked every time. The kill remains the fallback, because a Director that cannot be stopped at all
+        // would be worse; what changes is that it can no longer happen quietly.
         var port = FindDirectorPort(proc.Id);
+        if (port <= 0)
+            FileLog.Write($"[DirectorSupervisor] StopAsync: NO registration found for pid={proc.Id} - cannot reach "
+                          + "the Control API, so this stop will FORCE-KILL instead of shutting down gracefully. "
+                          + "The Director is running but its instance registration was not found in any known "
+                          + "directory; expect a phantom crash-journal entry.");
+
         if (port > 0)
         {
             try
@@ -239,39 +262,92 @@ public sealed class DirectorSupervisor
         return 0;
     }
 
+    /// <summary>
+    /// The folder under the storage root that holds per-instance homes. A Director started for a named
+    /// instance keeps its whole storage under &lt;root&gt;/instances/&lt;slug&gt;/ and registers there rather
+    /// than in the root's own config directory - which from 1.8 is where the installed Director lives, as
+    /// instance "default".
+    /// </summary>
+    private const string InstancesFolderName = "instances";
+
     /// <summary>One parsed instance registration file: config/director/instances/{id}.json.</summary>
-    private readonly record struct InstanceRegistration(int Pid, int Port);
+    internal readonly record struct InstanceRegistration(int Pid, int Port);
 
     /// <summary>
     /// Read every Director instance registration file (CcStorage.DirectorInstances).
     /// Each running Director writes {DirectorId, Pid, ControlEndpoint, ...}; files of
     /// dead Directors may linger, so callers must verify the Pid is alive.
     /// </summary>
-    private static List<InstanceRegistration> ReadInstanceRegistrations()
+    internal static IEnumerable<string> InstanceRegistrationDirectories()
+    {
+        // The launcher's own home. Also the path CC_DIRECTOR_INSTANCES_DIR pins, which is how a test aims this
+        // whole scan at a throwaway directory.
+        yield return CcStorage.DirectorInstances();
+
+        var instancesRoot = Path.Combine(CcStorage.Root(), InstancesFolderName);
+        string[] instanceHomes;
+        try
+        {
+            if (!Directory.Exists(instancesRoot)) yield break;
+            instanceHomes = Directory.GetDirectories(instancesRoot);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DirectorSupervisor] InstanceRegistrationDirectories: cannot list {instancesRoot}: {ex.Message}");
+            yield break;
+        }
+
+        foreach (var home in instanceHomes)
+            yield return Path.Combine(home, "config", "director", "instances");
+    }
+
+    /// <summary>
+    /// Read every Director instance registration file, across the launcher's own home AND every per-instance
+    /// home (see <see cref="InstanceRegistrationDirectories"/>).
+    ///
+    /// Each running Director writes {DirectorId, Pid, ControlEndpoint, ...}; files of dead Directors may
+    /// linger, so callers must verify the Pid is alive.
+    /// </summary>
+    internal static List<InstanceRegistration> ReadInstanceRegistrations()
     {
         var result = new List<InstanceRegistration>();
-        var dir = CcStorage.DirectorInstances();
-        if (!Directory.Exists(dir)) return result;
 
-        foreach (var file in Directory.GetFiles(dir, "*.json"))
+        foreach (var dir in InstanceRegistrationDirectories())
         {
+            if (!Directory.Exists(dir)) continue;
+
+            string[] files;
             try
             {
-                using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(file));
-                var root = doc.RootElement;
-                if (!root.TryGetProperty("Pid", out var pidEl) || !pidEl.TryGetInt32(out var pid))
-                    continue;
-                var port = 0;
-                if (root.TryGetProperty("ControlEndpoint", out var epEl)
-                    && Uri.TryCreate(epEl.GetString(), UriKind.Absolute, out var ep))
-                    port = ep.Port;
-                result.Add(new InstanceRegistration(pid, port));
+                files = Directory.GetFiles(dir, "*.json");
             }
-            catch
+            catch (Exception ex)
             {
-                // Skip malformed files.
+                FileLog.Write($"[DirectorSupervisor] ReadInstanceRegistrations: cannot list {dir}: {ex.Message}");
+                continue;
+            }
+
+            foreach (var file in files)
+            {
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(file));
+                    var root = doc.RootElement;
+                    if (!root.TryGetProperty("Pid", out var pidEl) || !pidEl.TryGetInt32(out var pid))
+                        continue;
+                    var port = 0;
+                    if (root.TryGetProperty("ControlEndpoint", out var epEl)
+                        && Uri.TryCreate(epEl.GetString(), UriKind.Absolute, out var ep))
+                        port = ep.Port;
+                    result.Add(new InstanceRegistration(pid, port));
+                }
+                catch
+                {
+                    // Skip malformed files.
+                }
             }
         }
+
         return result;
     }
 
