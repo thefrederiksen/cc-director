@@ -58,6 +58,24 @@ export interface SkillVersionInfo {
   publishedUtc: string | null;
 }
 
+// A 2XX IS NOT PROOF THE GATEWAY UNDERSTOOD THE REQUEST. The Gateway serves this app at "/" and
+// falls UNKNOWN page paths back to index.html, so a Gateway from before the skill library answers
+// /gateway/skills with 200 and the app's own HTML shell - not a 404. Believed at face value, the
+// preview would render a web page as a skill's instructions. Every read here asserts the content
+// type it was promised, and an app-shell answer is reported as what it actually means.
+function notTheSkillLibrary(saw: string): GatewayError {
+  return new GatewayError(
+    502,
+    `This Gateway does not serve the skill library yet - it answered with ${saw} instead of skill ` +
+      "data, which happens when it is running a build from before the library existed. Upgrade or " +
+      "redeploy the Gateway.",
+  );
+}
+
+function contentType(res: Response): string {
+  return (res.headers.get("Content-Type") ?? "").split(";")[0].trim().toLowerCase();
+}
+
 async function gatewayErrorFrom(res: Response, label: string): Promise<GatewayError> {
   let detail = `${res.status}`;
   try {
@@ -85,6 +103,7 @@ export async function getSkills(signal?: AbortSignal): Promise<SkillDefinition[]
     signal,
   });
   if (!res.ok) throw await gatewayErrorFrom(res, "GET /gateway/skills");
+  if (contentType(res) !== "application/json") throw notTheSkillLibrary(contentType(res) || "an unlabelled body");
   const body = (await res.json()) as { skills?: SkillDefinition[] } | null;
   const skills = body?.skills;
   if (skills === undefined) throw new GatewayError(res.status, "GET /gateway/skills returned no skills field");
@@ -99,6 +118,7 @@ export async function getSkill(id: string, signal?: AbortSignal): Promise<SkillD
     signal,
   });
   if (!res.ok) throw await gatewayErrorFrom(res, `GET /gateway/skills/${id}`);
+  if (contentType(res) !== "application/json") throw notTheSkillLibrary(contentType(res) || "an unlabelled body");
   return (await res.json()) as SkillDefinition;
 }
 
@@ -114,6 +134,9 @@ export async function getSkillBody(id: string, version?: number, signal?: AbortS
     signal,
   });
   if (!res.ok) throw await gatewayErrorFrom(res, `GET /gateway/skills/${id}/body`);
+  // The one that matters most: without this, the preview renders the app's own HTML shell as the
+  // skill's instructions, and it looks like it worked.
+  if (contentType(res) === "text/html") throw notTheSkillLibrary("its own web app page");
   return await res.text();
 }
 
@@ -125,6 +148,7 @@ export async function getSkillVersions(id: string, signal?: AbortSignal): Promis
     signal,
   });
   if (!res.ok) throw await gatewayErrorFrom(res, `GET /gateway/skills/${id}/versions`);
+  if (contentType(res) !== "application/json") throw notTheSkillLibrary(contentType(res) || "an unlabelled body");
   const body = (await res.json()) as { versions?: SkillVersionInfo[] } | null;
   return body?.versions ?? [];
 }

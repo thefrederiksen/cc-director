@@ -37,10 +37,14 @@ def _flat(text: str) -> str:
 
 
 def _fake_response(status_code: int, json_body=None, text: str = "") -> MagicMock:
+    """A stand-in for a real response, INCLUDING its Content-Type. The header is not decoration: the
+    client asserts it, because a Gateway from before the skill library answers 200 with its web app
+    page and a fake without headers would let that slip through untested."""
     resp = MagicMock(spec=requests.Response)
     resp.status_code = status_code
     resp.content = b"x" if (json_body is not None or text) else b""
     resp.text = text
+    resp.headers = {"Content-Type": "text/markdown" if (text and json_body is None) else "application/json"}
     if json_body is not None:
         resp.json.return_value = json_body
     else:
@@ -294,3 +298,82 @@ class TestList:
             result = runner.invoke(app, ["skill", "list", "--json"])
 
         assert json.loads(result.output)["skills"][0]["id"] == "move-session"
+
+
+class TestAPreLibraryGatewayIsNotBelieved:
+    """The Gateway serves the Cockpit at "/" and falls unknown page paths back to index.html, so a
+    Gateway from before the skill library answers /gateway/skills with HTTP 200, Content-Type
+    text/html and the app shell - never a 404. That is the live state of every machine whose Gateway
+    has not been upgraded, so these are the rollout window's tests.
+
+    The dangerous direction is not the error: it is being BELIEVED. Without the content-type
+    assertion, `skill get` prints a web page into an agent's context as the literal text of a skill,
+    and it looks like it worked.
+    """
+
+    APP_SHELL = '<!doctype html><html><head><title>DevThrottle Cockpit</title></head><body><div id="root"></div></body></html>'
+
+    @staticmethod
+    def _shell_response() -> MagicMock:
+        resp = MagicMock(spec=requests.Response)
+        resp.status_code = 200
+        resp.content = TestAPreLibraryGatewayIsNotBelieved.APP_SHELL.encode()
+        resp.text = TestAPreLibraryGatewayIsNotBelieved.APP_SHELL
+        resp.headers = {"Content-Type": "text/html; charset=utf-8"}
+        resp.json.side_effect = ValueError("not json")
+        return resp
+
+    def test_skill_get_refuses_the_app_shell_instead_of_printing_it_as_instructions(self, capsys):
+        with patch.object(skill_ops.SkillClient, "_request") as request:
+            request.return_value = self._shell_response()
+            result = runner.invoke(app, ["skill", "get", "move-session"])
+
+        assert result.exit_code == 1
+        combined = _flat(result.output + capsys.readouterr().err)
+        # Nothing of the page reached standard output as a skill.
+        assert "<!doctype html" not in combined
+        assert "DevThrottle Cockpit</title>" not in combined
+        # And the reason is stated the way the agent hitting it needs to read it.
+        assert "does not serve the skill library yet" in combined
+        assert "Do NOT treat what it returned as a skill" in combined
+
+    def test_skill_list_says_the_gateway_is_not_deployed_rather_than_raising_a_traceback(self):
+        with patch.object(skill_ops.SkillClient, "_request") as request:
+            request.return_value = self._shell_response()
+            result = runner.invoke(app, ["skill", "list"])
+
+        assert result.exit_code == 1
+        assert "does not serve the skill library yet" in _flat(result.output)
+
+    def test_a_body_labelled_json_that_is_not_json_is_reported_not_raised(self):
+        resp = MagicMock(spec=requests.Response)
+        resp.status_code = 200
+        resp.content = b"{ truncated"
+        resp.text = "{ truncated"
+        resp.headers = {"Content-Type": "application/json"}
+        resp.json.side_effect = ValueError("Expecting property name")
+        with patch.object(skill_ops.SkillClient, "_request") as request:
+            request.return_value = resp
+            result = runner.invoke(app, ["skill", "list"])
+
+        assert result.exit_code == 1
+        assert "could not be parsed" in _flat(result.output)
+
+    def test_a_real_markdown_body_still_passes_through_untouched(self, capsys):
+        resp = MagicMock(spec=requests.Response)
+        resp.status_code = 200
+        resp.content = BODY.encode()
+        resp.text = BODY
+        resp.headers = {"Content-Type": "text/markdown; charset=utf-8"}
+        head = MagicMock(spec=requests.Response)
+        head.status_code = 200
+        head.content = b"{}"
+        head.headers = {"Content-Type": "application/json"}
+        head.json.return_value = HEAD
+
+        with patch.object(skill_ops.SkillClient, "_request") as request:
+            request.side_effect = [head, resp]
+            skill_ops.get_skill("move-session", None)
+
+        # The guard must not cost the thing it protects: a real body is still byte for byte.
+        assert capsys.readouterr().out == BODY
