@@ -128,6 +128,11 @@ public partial class MainWindow : Window
     private FileSystemWatcher? _screenshotWatcher;
     private DispatcherTimer? _screenshotDebounceTimer;
     private string? _screenshotsDirectory;
+
+    // Serializes screenshots-panel reloads. A reload tears down the watcher and builds a new one, so two
+    // overlapping reloads (impatient Refresh clicks, or Refresh while the wizard's save reloads) would
+    // leave an orphaned watcher raising events at the panel forever.
+    private readonly SemaphoreSlim _screenshotReloadGate = new(1, 1);
     // The image file types the Screenshots panel loads and clears. Kept in one place so listing
     // (LoadScreenshotViewModels) and Clear All (DeleteAllScreenshots) agree on what a screenshot is.
     private static readonly string[] ScreenshotExtensions = { ".png", ".jpg", ".jpeg", ".bmp", ".gif" };
@@ -394,7 +399,9 @@ public partial class MainWindow : Window
         var app = global::Avalonia.Application.Current as App;
         var options = app?.SessionManager?.Options ?? app?.Options
             ?? throw new InvalidOperationException("AgentOptions not loaded.");
-        var dialog = new FirstRunWizardDialog(options);
+        // The wizard's Screenshots step writes the folder into config; hand it the panel reload so the
+        // thumbnails appear behind the wizard the moment the folder is confirmed.
+        var dialog = new FirstRunWizardDialog(options, ReloadScreenshotsPanelAsync);
         await dialog.ShowDialog<bool?>(this);
         return dialog.WantsNewSession;
     }
@@ -5286,6 +5293,7 @@ public partial class MainWindow : Window
     {
         FileLog.Write("[MainWindow] InitializeScreenshotsPanelAsync: starting");
 
+        await _screenshotReloadGate.WaitAsync();
         try
         {
             // Idempotent: tear down any previous watcher/timer and clear the list so a reload
@@ -5342,6 +5350,10 @@ public partial class MainWindow : Window
         {
             FileLog.Write($"[MainWindow] InitializeScreenshotsPanelAsync FAILED: {ex.Message}");
         }
+        finally
+        {
+            _screenshotReloadGate.Release();
+        }
     }
 
     private static List<ScreenshotViewModel> LoadScreenshotViewModels(string directory)
@@ -5394,10 +5406,17 @@ public partial class MainWindow : Window
             _screenshots.Add(vm);
     }
 
+    /// <summary>
+    /// Refresh re-reads the CONFIGURED folder, not just the files in the folder resolved at startup.
+    /// <see cref="RefreshScreenshots"/> re-lists the cached <c>_screenshotsDirectory</c>, which is the
+    /// right thing for the file watcher but useless after the folder itself changes - a user who set
+    /// the folder in the wizard clicked Refresh and kept getting the old, empty one. This is the
+    /// button the user reaches for when the panel looks wrong, so it re-resolves and re-watches.
+    /// </summary>
     private void BtnRefreshScreenshots_Click(object? sender, RoutedEventArgs e)
     {
         FileLog.Write("[MainWindow] BtnRefreshScreenshots_Click");
-        _ = RefreshScreenshots();
+        _ = ReloadScreenshotsPanelAsync();
     }
 
     private async void BtnClearScreenshots_Click(object? sender, RoutedEventArgs e)

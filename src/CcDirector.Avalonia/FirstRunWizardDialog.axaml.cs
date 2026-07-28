@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -69,6 +70,10 @@ public partial class FirstRunWizardDialog : Window
     private bool _shotsDetectRan;
     private CancellationTokenSource? _shotsWatchCts;
 
+    // Re-points the live screenshots panel after the Screenshots step writes the folder. Null when
+    // no panel is listening (the wizard opened from a context that owns none).
+    private readonly Func<Task>? _reloadScreenshots;
+
     // Tools step: the shipped cc-* toolbelt, read from the embedded manifest catalog. The screen
     // explains that DevThrottle maintains these itself; while any are still installing it polls so
     // rows flip to Ready live - the same state the main window's corner indicator tracks.
@@ -106,10 +111,17 @@ public partial class FirstRunWizardDialog : Window
 
     public FirstRunWizardDialog() : this(new AgentOptions()) { }
 
-    public FirstRunWizardDialog(AgentOptions options)
+    /// <param name="options">The agent options the Agents and Tools steps read.</param>
+    /// <param name="reloadScreenshots">
+    /// Re-points the main window's screenshots panel at the folder just confirmed. Passed in by
+    /// whoever owns that panel (MainWindow, directly or through Settings) so the Screenshots step
+    /// pays off while the wizard is still open instead of only after the next restart.
+    /// </param>
+    public FirstRunWizardDialog(AgentOptions options, Func<Task>? reloadScreenshots = null)
     {
         FileLog.Write("[FirstRunWizardDialog] Constructor: initializing");
         _options = options ?? throw new ArgumentNullException(nameof(options));
+        _reloadScreenshots = reloadScreenshots;
 
         // All seven canonical steps are present: the onboarding is one JOURNEY (your workforce ->
         // what we watch over -> show don't type -> with you everywhere -> the payoff -> done), and
@@ -991,7 +1003,7 @@ public partial class FirstRunWizardDialog : Window
             if (best is not null)
             {
                 var count = await Task.Run(() => ScreenshotLocator.CountImages(best.Path));
-                SetScreenshotsFolder(best.Path, best.Provenance, count);
+                await SetScreenshotsFolderAsync(best.Path, best.Provenance, count);
             }
             else
             {
@@ -1008,8 +1020,11 @@ public partial class FirstRunWizardDialog : Window
         }
     }
 
-    /// <summary>Adopt a folder as the screenshots choice and render its provenance + proof line.</summary>
-    private void SetScreenshotsFolder(string path, string provenance, int imageCount)
+    /// <summary>
+    /// Adopt a folder as the screenshots choice and render its provenance, proof line, and thumbnails.
+    /// Returns once the thumbnails are drawn (internal so the strip is provable without driving the UI).
+    /// </summary>
+    internal Task SetScreenshotsFolderAsync(string path, string provenance, int imageCount)
     {
         _shotsSelectedPath = path;
         ShotsPathText.Text = path;
@@ -1022,6 +1037,81 @@ public partial class FirstRunWizardDialog : Window
         ShotsProvenanceText.Text = $"{provenance} - {proof}.";
         if (_model.Current == WizardStep.Screenshots)
             PrimaryButton.Content = "Use this folder";
+
+        // A count is a claim; the thumbnails are the evidence. Drawn off the UI thread, so a folder
+        // with hundreds of images does not stall the step.
+        ShotsPreviewStrip.IsVisible = false;
+        return LoadScreenshotPreviewsAsync(path);
+    }
+
+    /// <summary>
+    /// Draw the newest few images from <paramref name="path"/> under the proof line, so confirming the
+    /// folder is a matter of recognising your own screenshots rather than trusting a number. A folder
+    /// with no images simply shows no strip. Late results for a folder the user has already changed
+    /// away from are dropped.
+    /// </summary>
+    private async Task LoadScreenshotPreviewsAsync(string path)
+    {
+        const int MaxPreviews = 4;
+        try
+        {
+            var bitmaps = await Task.Run(() => Directory.EnumerateFiles(path)
+                .Where(ScreenshotLocator.IsImageFile)
+                .OrderByDescending(File.GetLastWriteTime)
+                .Take(MaxPreviews)
+                .Select(LoadPreviewThumbnail)
+                .Where(b => b is not null)
+                .Select(b => b!)
+                .ToList());
+
+            // The user may have browsed to another folder while this was decoding - that folder's own
+            // load owns the strip now.
+            if (!string.Equals(_shotsSelectedPath, path, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            ShotsPreviewRow.Children.Clear();
+            foreach (var bitmap in bitmaps)
+            {
+                ShotsPreviewRow.Children.Add(new Border
+                {
+                    Background = Brush("#F5F6F8"),
+                    BorderBrush = Brush("#E6E8EC"),
+                    BorderThickness = new global::Avalonia.Thickness(1),
+                    CornerRadius = new global::Avalonia.CornerRadius(8),
+                    ClipToBounds = true,
+                    Child = new Image
+                    {
+                        Source = bitmap,
+                        Height = 78,
+                        Stretch = Stretch.Uniform,
+                    },
+                });
+            }
+
+            ShotsPreviewStrip.IsVisible = ShotsPreviewRow.Children.Count > 0;
+            FileLog.Write($"[FirstRunWizardDialog] LoadScreenshotPreviewsAsync: {ShotsPreviewRow.Children.Count} preview(s) from {path}");
+        }
+        catch (Exception ex)
+        {
+            // The folder is the point of this step, not the preview - a folder we cannot read still
+            // reports its path and provenance above, so the step stays usable.
+            FileLog.Write($"[FirstRunWizardDialog] LoadScreenshotPreviewsAsync FAILED for {path}: {ex.Message}");
+        }
+    }
+
+    /// <summary>Decode one thumbnail at preview height. Null for a file that is not a readable image.</summary>
+    private static global::Avalonia.Media.Imaging.Bitmap? LoadPreviewThumbnail(string file)
+    {
+        try
+        {
+            using var stream = File.OpenRead(file);
+            return global::Avalonia.Media.Imaging.Bitmap.DecodeToHeight(stream, 156);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[FirstRunWizardDialog] LoadPreviewThumbnail skipped {file}: {ex.Message}");
+            return null;
+        }
     }
 
     private async void BtnBrowseScreenshots_Click(object? sender, RoutedEventArgs e)
@@ -1039,7 +1129,7 @@ public partial class FirstRunWizardDialog : Window
                 CancelScreenshotWatch();
                 var path = result[0].Path.LocalPath;
                 var count = await Task.Run(() => ScreenshotLocator.CountImages(path));
-                SetScreenshotsFolder(path, "Chosen by you", count);
+                await SetScreenshotsFolderAsync(path, "Chosen by you", count);
             }
         }
         catch (Exception ex)
@@ -1078,7 +1168,7 @@ public partial class FirstRunWizardDialog : Window
             if (landed is not null)
             {
                 var count = await Task.Run(() => ScreenshotLocator.CountImages(landed));
-                SetScreenshotsFolder(landed, "Detected from the screenshot you just took", count);
+                await SetScreenshotsFolderAsync(landed, "Detected from the screenshot you just took", count);
             }
             CancelScreenshotWatch();
         }
@@ -1116,12 +1206,30 @@ public partial class FirstRunWizardDialog : Window
             return;
         }
 
-        var path = _shotsSelectedPath;
+        await ConfirmScreenshotsFolderAsync(_shotsSelectedPath);
+    }
+
+    /// <summary>
+    /// Write the folder to config AND re-point the live screenshots panel at it, in that order.
+    /// Writing alone is not enough: the panel resolved its folder once at startup, so without this
+    /// the user finishes the Screenshots step and the panel still shows the old (on a fresh install,
+    /// empty) folder until the next restart - the step promises immediate value and delivered none.
+    ///
+    /// Internal so the write-then-reload seam is provable without driving the wizard's UI.
+    /// </summary>
+    internal async Task ConfirmScreenshotsFolderAsync(string path)
+    {
         FileLog.Write($"[FirstRunWizardDialog] SaveScreenshotsFolderAsync: {path}");
         await Task.Run(() => CcDirectorConfigService.MergePatch(new JsonObject
         {
             ["screenshots"] = new JsonObject { ["source_directory"] = path },
         }));
+
+        if (_reloadScreenshots is not null)
+        {
+            await _reloadScreenshots();
+            FileLog.Write("[FirstRunWizardDialog] SaveScreenshotsFolderAsync: screenshots panel reloaded");
+        }
     }
 
     // ---- Morning report step (the promise screen) ---------------------------------------------------
