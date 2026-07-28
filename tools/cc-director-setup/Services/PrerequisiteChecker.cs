@@ -47,6 +47,17 @@ public static class PrerequisiteChecker
             },
             new PrerequisiteInfo
             {
+                Name = CcDirector.Setup.Engine.PrerequisiteNames.Git,
+                IsRecommended = true,
+                Description = "Recommended: DevThrottle reads your repositories with git - branch, "
+                    + "changed-file counts and the Repositories view. Without it those stay blank.",
+                IsRequired = false,
+                CanAutoInstall = true,
+                WingetId = "Git.Git",
+                InstallUrl = "https://git-scm.com/download/win"
+            },
+            new PrerequisiteInfo
+            {
                 Name = CcDirector.Setup.Engine.PrerequisiteNames.Python,
                 IsRecommended = true,
                 Description = "Recommended: Python 3.11 or higher, for your own scripts. The cc-* tools "
@@ -131,6 +142,9 @@ public static class PrerequisiteChecker
                     break;
                 case "Claude Code":
                     CheckExecutable(item, "claude", "--version");
+                    break;
+                case "Git":
+                    CheckExecutable(item, "git", "--version");
                     break;
                 case "Python":
                     CheckPython(item);
