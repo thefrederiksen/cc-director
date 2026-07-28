@@ -306,6 +306,23 @@ internal static class MachineEndpoints
                 return Results.BadRequest(new { error = "repoPath is required" });
             if (ReqTenant(ctx, boundary) is not { } tenant) return NoTenant();
 
+            // Re-enter the caller tenant scope for the spawn, and hold it across the await. Everything
+            // downstream resolves the tenant AMBIENTLY rather than by argument: the target resolver lists the
+            // machine Directors within the current tenant, the auto-launch reaches only this tenant launcher,
+            // and the create rides GatewayHost.SendCommandAsync, which resolves the Director tunnel connection
+            // in the current tenant and DROPS the command when no scope is in effect.
+            //
+            // THIS IS DEFENCE IN DEPTH, NOT A FIX - AND THE FIX READING WAS TESTED AND DISPROVED, so do not
+            // restore it. On hosted the request is ALREADY inside this exact scope: GatewayHost.cs registers a
+            // hosted-only middleware that resolves ResolveRequestTenant(ctx) and wraps the whole pipeline in
+            // EnterScope. ReqTenant above calls that same resolver, so whenever it yields a tenant the
+            // middleware has already entered it. An earlier reading held that the mission and workflow-run
+            // reads above ran unscoped and would throw deny-by-default on hosted; that was checked by putting
+            // this line back BELOW those reads and running the hosted workflow-run tests, which stayed green.
+            // What this line buys is that the route does not depend on an outer middleware for a fail-closed
+            // property. Scopes nest and restore on dispose, so re-entering the same tenant costs nothing.
+            using var tenantScope = boundary is null ? null : boundary.EnterScope(tenant);
+
             StampOriginFromDeviceKey(req, ctx);
 
             // Gateway Cleanup mission (Wave 4b): a mission-scoped spawn is validated against the Gateway's OWN
@@ -360,21 +377,6 @@ internal static class MachineEndpoints
                     req.WorkflowVersion = seatRun.WorkflowVersion;
                 }
             }
-
-            // ENTER THE CALLER'S TENANT SCOPE FOR THE WHOLE SPAWN, AND HOLD IT ACROSS THE AWAIT. Everything
-            // downstream of here resolves the tenant AMBIENTLY rather than by argument: the target resolver
-            // lists the machine's Directors within the current tenant, the auto-launch reaches only this
-            // tenant's launcher, and the create rides GatewayHost.SendCommandAsync, which resolves the
-            // Director's tunnel connection in the current tenant and DROPS the command when there is no scope.
-            //
-            // That last one is why the scope is not optional and why its absence was invisible. An HTTP
-            // request does NOT enter a tenant scope on this Gateway - only the endpoints that need one enter
-            // it, individually - so before this line the spawn ran unscoped: on hosted the resolver would
-            // throw its deny-by-default, and had it not, the create would have been silently discarded and
-            // reported to the caller as an unreachable Director. This is the ONLY route in the family that
-            // resolves its tenant ambiently instead of by argument, because it is the only one that hands off
-            // to machinery (the resolver and the tunnel) whose tenant seam is the ambient scope.
-            using var tenantScope = boundary is null ? null : boundary.EnterScope(tenant);
 
             var (ok, dto, error, _) = await spawner.SpawnOnMachineAsync(machine, req, ct);
             if (!ok || dto is null)
