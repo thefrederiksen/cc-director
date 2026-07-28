@@ -9,12 +9,13 @@ public static class PrerequisiteNames
 {
     public const string DotNetRuntime = ".NET 10 Runtime";
     public const string ClaudeCode = "Claude Code";
+    public const string Git = "Git";
     public const string Python = "Python";
     public const string NodeJs = "Node.js";
     public const string Tailscale = "Tailscale";
 
     /// <summary>The rows that are recommended - checked and offered, but never gating.</summary>
-    public static readonly IReadOnlyList<string> Recommended = [ClaudeCode, Python, NodeJs];
+    public static readonly IReadOnlyList<string> Recommended = [ClaudeCode, Git, Python, NodeJs];
 }
 
 /// <summary>One recommended prerequisite and whether the checker accepted it.</summary>
@@ -52,6 +53,8 @@ public static class CapabilityNotice
             "the Claude agent is unavailable - your other coding agent still works",
         PrerequisiteNames.ClaudeCode =>
             "no coding agent is set up yet, so your board has nothing to run",
+        PrerequisiteNames.Git =>
+            "DevThrottle cannot read your repositories, so branch and change counts stay blank",
         PrerequisiteNames.Python =>
             "your own Python scripts will not run (the cc-* tools bring their own Python)",
         PrerequisiteNames.NodeJs =>

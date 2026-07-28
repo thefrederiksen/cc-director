@@ -86,12 +86,30 @@ public class PrerequisiteClassificationTests
     }
 
     [Fact]
-    public void CreateChecklist_RecommendedRowsAreExactlyTheThree()
+    public void CreateChecklist_RecommendedRowsAreExactlyTheRecommendedNames()
     {
         var recommended = PrerequisiteChecker.CreateChecklist(InstallRole.Gateway)
             .Where(p => p.IsRecommended).Select(p => p.Name).ToList();
 
         Assert.Equal(PrerequisiteNames.Recommended, recommended);
+    }
+
+    [Fact]
+    public void CreateChecklist_GitIsRecommendedAndAutoInstallable()
+    {
+        // The Director shells out to git in six production paths (repository status, sync state,
+        // write operations, the Wingman). A clean Windows machine has no git, and the failure is
+        // SILENT - the count degrades to unknown and the reason goes to a log file only. So the
+        // one place a user can be told is the Prerequisites screen, where it can also be installed.
+        var git = PrerequisiteChecker.CreateChecklist(InstallRole.Workstation)
+            .Single(p => p.Name == PrerequisiteNames.Git);
+
+        Assert.False(git.IsRequired);          // DevThrottle starts and runs without it
+        Assert.True(git.IsRecommended);        // but a user who skips it has a real, named gap
+        Assert.Equal("Recommended", git.ImportanceLabel);
+        Assert.True(git.CanAutoInstall);
+        Assert.Equal("Git.Git", git.WingetId);
+        Assert.False(string.IsNullOrWhiteSpace(git.InstallUrl));
     }
 
     [Fact]
