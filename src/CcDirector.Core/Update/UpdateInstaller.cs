@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Reflection;
+using CcDirector.Core.Instances;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
@@ -176,7 +177,8 @@ public static class UpdateInstaller
     /// </summary>
     public static void LaunchRelauncher(string stagedExecutable, string installTarget)
     {
-        FileLog.Write($"[UpdateInstaller] LaunchRelauncher: staged={stagedExecutable}, target={installTarget}");
+        var slug = InstanceContext.Slug;
+        FileLog.Write($"[UpdateInstaller] LaunchRelauncher: staged={stagedExecutable}, target={installTarget}, instance={slug}");
         var psi = new ProcessStartInfo
         {
             FileName = stagedExecutable,
@@ -185,18 +187,29 @@ public static class UpdateInstaller
         psi.ArgumentList.Add("--apply-update");
         psi.ArgumentList.Add(installTarget);
         psi.ArgumentList.Add(Environment.ProcessId.ToString());
+
+        // Which instance is updating, carried as an ARGUMENT rather than left to the inherited
+        // CC_DIRECTOR_ROOT, so the build we finally relaunch can be handed a clean environment and
+        // still come back as this instance. A build older than this argument ignores the extra token.
+        psi.ArgumentList.Add(slug);
+
+        // The relauncher itself KEEPS the inherited override on purpose: it reads and clears this
+        // instance's updater state, which lives in this instance's home.
         Process.Start(psi);
     }
 
     /// <summary>
-    /// Entry point for the hidden "<c>--apply-update &lt;targetPath&gt; &lt;parentPid&gt;</c>"
+    /// Entry point for the hidden "<c>--apply-update &lt;targetPath&gt; &lt;parentPid&gt; [instanceSlug]</c>"
     /// mode. Waits for the parent to exit, replaces the installed build with this
     /// (staged) one, relaunches it, and returns a process exit code.
+    ///
+    /// <paramref name="instanceSlug"/> is absent when the update was launched by a build older than
+    /// the argument; the relaunch then carries no instance and the new process resolves the default.
     /// </summary>
-    public static int ApplyUpdate(string targetPath, int parentPid)
+    public static int ApplyUpdate(string targetPath, int parentPid, string? instanceSlug = null)
     {
         FileLog.Start();
-        FileLog.Write($"[UpdateInstaller] ApplyUpdate: target={targetPath}, parentPid={parentPid}, self={Environment.ProcessPath}");
+        FileLog.Write($"[UpdateInstaller] ApplyUpdate: target={targetPath}, parentPid={parentPid}, instance={instanceSlug ?? "(none)"}, self={Environment.ProcessPath}");
 
         WaitForProcessExit(parentPid, TimeSpan.FromSeconds(30));
 
@@ -218,7 +231,7 @@ public static class UpdateInstaller
         // self-check at the same time (issue #242).
         ClearStagedState();
         ArmHealthCheck(versionBeingInstalled);
-        Relaunch(targetPath);
+        Relaunch(targetPath, instanceSlug);
 
         FileLog.Write("[UpdateInstaller] ApplyUpdate: complete");
         FileLog.Stop();
@@ -470,12 +483,52 @@ public static class UpdateInstaller
         FileLog.Write($"[UpdateInstaller] SwapMac: installed staged bundle at {targetApp}");
     }
 
-    private static void Relaunch(string targetPath)
+    private static void Relaunch(string targetPath, string? instanceSlug)
     {
+        var psi = BuildRelaunchStartInfo(targetPath, instanceSlug);
+        FileLog.Write($"[UpdateInstaller] Relaunch: {psi.FileName} {string.Join(' ', psi.ArgumentList)}");
+        Process.Start(psi);
+    }
+
+    /// <summary>
+    /// How the freshly-installed build is started after an update, and the one place that decides it.
+    ///
+    /// The child must NOT inherit <c>CC_DIRECTOR_ROOT</c>. A running Director sets that variable to its
+    /// own instance home, so a relaunched build that inherited it would read its own home as the
+    /// machine-wide root and settle one level deeper - a brand-new, empty data tree, which reads to the
+    /// user as "the update wiped my Director and started the setup wizard again". The instance travels
+    /// as <c>--instance &lt;slug&gt;</c> instead, so identity is carried deliberately rather than by
+    /// inheritance. Same rule, same reason, as <c>InstanceProcess.Launch</c>.
+    ///
+    /// Pure, so the environment scrub is provable without starting a process.
+    /// </summary>
+    public static ProcessStartInfo BuildRelaunchStartInfo(string targetPath, string? instanceSlug)
+    {
+        // UseShellExecute must stay false: the environment block can only be edited on a direct start.
+        var psi = new ProcessStartInfo
+        {
+            FileName = OperatingSystem.IsMacOS() ? "/usr/bin/open" : targetPath,
+            UseShellExecute = false,
+        };
+
         if (OperatingSystem.IsMacOS())
-            Run("/usr/bin/open", targetPath);
-        else
-            Process.Start(new ProcessStartInfo { FileName = targetPath, UseShellExecute = true });
+        {
+            psi.ArgumentList.Add(targetPath);
+            if (!string.IsNullOrWhiteSpace(instanceSlug))
+            {
+                psi.ArgumentList.Add("--args");
+                psi.ArgumentList.Add("--instance");
+                psi.ArgumentList.Add(instanceSlug);
+            }
+        }
+        else if (!string.IsNullOrWhiteSpace(instanceSlug))
+        {
+            psi.ArgumentList.Add("--instance");
+            psi.ArgumentList.Add(instanceSlug);
+        }
+
+        psi.Environment.Remove("CC_DIRECTOR_ROOT");
+        return psi;
     }
 
     private static void ClearStagedState()
