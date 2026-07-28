@@ -189,7 +189,30 @@
 
   <h1>The central skill library</h1>
   <p class="sub">Implementation plan and screens - devthrottle_internal issue 995.</p>
-  <p class="meta">2026-07-28 &middot; supersedes the mockup page of the same date &middot; design settled with the owner, not yet built</p>
+  <p class="meta">2026-07-28 &middot; supersedes the mockup page of the same date &middot; design settled with the owner; steps one to three BUILT, step four held behind them</p>
+
+  <div class="note good">
+    <b>Status, so this page does not go stale the moment it lands.</b> Steps one, two and three are
+    built and merged with this document: the Gateway holds and serves the register, the briefing
+    carries the index through all three delivery paths, eleven command line verbs work against a real
+    Gateway, and the Skills page is in the Cockpit. Step four - taking skill installation out of the
+    installer - is finished on its own branch and deliberately unmerged until this lands, because an
+    installer that deploys no skills, on machines with nothing to fetch them from, is worse than
+    either state alone. The library only reaches real machines once a Gateway running this build is
+    deployed; merging alone changes nothing for anyone.
+  </div>
+
+  <div class="note warn">
+    <b>One ruling changed during the build, and it is the interesting one.</b> The plan below said the
+    owner's switch would work like the workflow switch, which lets a PINNED read through so a seated
+    run's conduct cannot vanish mid-run. That is wrong for skills: nothing pins a skill across time,
+    and <span class="mono">skill get</span> resolves the head version and then asks for it BY NUMBER -
+    so the exemption made the switch bypassable by the exact command every agent uses. It was found by
+    switching a skill off on a live Gateway and watching it serve the body anyway. Off now means off
+    on every read through the agent path, pinned or not, and the supporting files go with it. The
+    shape of the workflow register transferred; the ruling behind it did not, and assuming it would
+    was the mistake both times it happened in this feature.
+  </div>
 
   <div class="note">
     <b>What it is.</b> A central repository of skills that lives on the Gateway and is served to every
@@ -249,10 +272,13 @@
 
       <dt>Offline, and skills that stay local</dt>
       <dd>
-        A fetched skill is held for the life of that session so an agent does not re-fetch what it
-        just read, and nothing is kept between sessions. If the Gateway cannot be reached the fetch
-        FAILS LOUDLY and says so - no silently stale copy, no half-working fallback. Local skills are
-        untouched and win any name clash, which is how the agent harnesses already resolve it.
+        A fetch resolves the current version from the Gateway EVERY time; if the Gateway cannot be
+        reached the fetch FAILS LOUDLY and says so, including the instruction not to proceed from
+        memory - no silently stale copy, no half-working fallback. AS BUILT: a skill's body is never
+        stored, and its supporting files are written to a cache keyed by (skill, version) and verified
+        by content hash, because a script has to exist on disk to be run. That cache can never serve
+        one version's files as another's, and it is never consulted instead of fetching. Local skills
+        are untouched and win any name clash, which is how the agent harnesses already resolve it.
       </dd>
     </dl>
   </div>
