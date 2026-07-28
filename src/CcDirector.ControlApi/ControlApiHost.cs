@@ -284,6 +284,18 @@ public sealed class ControlApiHost : IAsyncDisposable
         {
             FileLog.Write($"[ControlApiHost] workflow-index refresh FAILED (keeping the last-known cache): {ex.Message}");
         }
+        // A SEPARATE try, deliberately: sharing one with the workflow refresh above would mean a
+        // Gateway that fails the workflow read silently skips the skill read entirely, and the machine
+        // would lose its skill index for a reason that has nothing to do with skills. Each index
+        // fails on its own and keeps its own last-known cache.
+        try
+        {
+            await new SkillIndexStore().RefreshAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[ControlApiHost] skill-index refresh FAILED (keeping the last-known cache): {ex.Message}");
+        }
     }
 
     /// <summary>

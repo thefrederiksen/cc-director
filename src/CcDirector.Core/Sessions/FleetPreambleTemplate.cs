@@ -55,6 +55,8 @@ public static class FleetPreambleTemplate
         "\n" +
         "[WORKFLOW_INDEX]\n" +
         "\n" +
+        "[SKILL_INDEX]\n" +
+        "\n" +
         "THE CODE YOU WRITE IS THE OWNER'S. NEVER SIGN IT. Do not put your name, your model, your vendor,\n" +
         "or any assistant on ANYTHING you produce - no 'Co-authored-by' trailer naming Claude, Codex, Pi,\n" +
         "Gemini, Copilot, Cursor, Grok or any agent; no 'Generated with' line; no robot emoji; no mention\n" +

@@ -21,6 +21,7 @@ export type NavIconName =
   | "directors"
   | "schedule"
   | "workflows"
+  | "skills"
   | "dictionary"
   | "voice-recorder"
   | "transcription"
@@ -92,6 +93,13 @@ const PAINT: Record<NavIconName, JSX.Element> = {
       <rect x="3" y="3" width="8" height="8" rx="2" />
       <rect x="13" y="13" width="8" height="8" rx="2" />
       <path d="M7 11v4a2 2 0 0 0 2 2h4" />
+    </>
+  ),
+  // A wrench: a capability an agent reaches for mid-task.
+  skills: (
+    <>
+      <path d="M14.7 6.3a4 4 0 0 0 5 5l-8.4 8.4a2.1 2.1 0 0 1-3-3Z" />
+      <path d="M14.7 6.3 17.5 3.5" />
     </>
   ),
   // A book.

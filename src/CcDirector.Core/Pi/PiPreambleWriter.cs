@@ -58,7 +58,8 @@ public static class PiPreambleWriter
         try
         {
             text = FleetPreamble.BuildForSession(sessionId, name, machine, repoPath, user, store,
-                workflowIndex: store is null ? new WorkflowIndexStore() : null);
+                workflowIndex: store is null ? new WorkflowIndexStore() : null,
+                skillIndex: store is null ? new SkillIndexStore() : null);
         }
         catch (Exception ex) when (ex is InjectedTextUnavailableException or FleetPreambleTemplateException)
         {

@@ -74,6 +74,9 @@ const NAV_MAIN: ReadonlyArray<NavItem> = [
   { to: "/directors", label: "Directors", icon: "directors" },
   { to: "/schedule", label: "Schedule", icon: "schedule" },
   { to: "/workflows", label: "Workflows", icon: "workflows" },
+  // Skills sits beside Workflows: two lists on one shelf. A workflow governs how a whole mission is
+  // run; a skill is a capability an agent reaches for mid-task (devthrottle_internal issue 995).
+  { to: "/skills", label: "Skills", icon: "skills" },
   { to: "/dictionary", label: "Dictionary", icon: "dictionary" },
   { to: "/transcripts", label: "Voice Recorder", icon: "voice-recorder" },
   { to: "/transcription", label: "Transcription", icon: "transcription" },

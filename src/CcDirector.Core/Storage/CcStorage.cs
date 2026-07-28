@@ -223,6 +223,13 @@ public static class CcStorage
     public static string WorkflowIndexCache() =>
         Path.Combine(ToolConfig("director"), "workflow-index-cache.json");
 
+    /// <summary>The Director's cached SKILL index (the central skill library):
+    /// config/director/skill-index-cache.json. The few-line discoverability block that rides the
+    /// fleet preamble - names and one line each, never bodies. The library itself lives on the
+    /// Gateway (GET /gateway/skills) and a skill's body is fetched only when it is used.</summary>
+    public static string SkillIndexCache() =>
+        Path.Combine(ToolConfig("director"), "skill-index-cache.json");
+
     /// <summary>Dictation root: base/dictation/. Holds the user dictionary plus the
     /// recordings/ and sessions/ subfolders.</summary>
     public static string Dictation() => Path.Combine(Base(), "dictation");

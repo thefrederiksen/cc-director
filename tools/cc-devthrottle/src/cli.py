@@ -17,6 +17,7 @@ from . import mission_ops
 from . import schedule_ops
 from . import settings_ops
 from . import setup_ops
+from . import skill_ops
 from . import workflow_ops
 from .session_ops import (
     ask_session,
@@ -66,6 +67,11 @@ workflow_app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
 )
+skill_app = typer.Typer(
+    help="Read and author fleet Skills (central capabilities held on the Gateway, fetched on use).",
+    add_completion=False,
+    no_args_is_help=True,
+)
 setup_app = typer.Typer(
     help="Install, update, and repair DevThrottle.", add_completion=False, no_args_is_help=True
 )
@@ -96,6 +102,7 @@ app.add_typer(message_app, name="message")
 app.add_typer(settings_app, name="settings")
 app.add_typer(schedule_app, name="schedule")
 app.add_typer(workflow_app, name="workflow")
+app.add_typer(skill_app, name="skill")
 app.add_typer(setup_app, name="setup")
 app.add_typer(email_app, name="email")
 app.add_typer(diag_app, name="diag")
@@ -411,6 +418,76 @@ _ACTIONS = [
         "command": "cc-devthrottle schedule endpoint",
         "mutatesState": False,
         "args": [],
+    },
+    {
+        "id": "skill-list",
+        "description": "List the fleet's Skills - central capabilities held on the Gateway, one line each.",
+        "command": "cc-devthrottle skill list",
+        "mutatesState": False,
+        "args": [],
+    },
+    {
+        "id": "skill-get",
+        "description": "Print a Skill's full instructions - run this when you are ABOUT TO USE it, and follow what it says.",
+        "command": "cc-devthrottle skill get <id>",
+        "mutatesState": False,
+        "args": [{"name": "id", "required": True}, {"name": "version", "required": False}],
+    },
+    {
+        "id": "skill-show",
+        "description": "Show one Skill's metadata without its body.",
+        "command": "cc-devthrottle skill show <id>",
+        "mutatesState": False,
+        "args": [{"name": "id", "required": True}, {"name": "version", "required": False}],
+    },
+    {
+        "id": "skill-versions",
+        "description": "Show a Skill's version history.",
+        "command": "cc-devthrottle skill versions <id>",
+        "mutatesState": False,
+        "args": [{"name": "id", "required": True}],
+    },
+    {
+        "id": "skill-pull",
+        "description": "Pull a Skill into a directory (skill.json + SKILL.md + files/) for editing.",
+        "command": 'cc-devthrottle skill pull <id> --dir "<dir>"',
+        "mutatesState": False,
+        "args": [{"name": "id", "required": True}, {"name": "dir", "required": True}],
+    },
+    {
+        "id": "skill-push",
+        "description": "Push a directory as the Skill's DRAFT. No agent sees it until you publish.",
+        "command": 'cc-devthrottle skill push <id> --dir "<dir>" [--note "<what changed>"]',
+        "mutatesState": True,
+        "args": [{"name": "id", "required": True}, {"name": "dir", "required": True}],
+    },
+    {
+        "id": "skill-publish",
+        "description": "Publish a Skill's draft - live for every agent on every machine, immediately.",
+        "command": "cc-devthrottle skill publish <id>",
+        "mutatesState": True,
+        "args": [{"name": "id", "required": True}],
+    },
+    {
+        "id": "skill-clone",
+        "description": "Clone a Skill into one of your own - how a read-only built-in is customized.",
+        "command": "cc-devthrottle skill clone <id> <new-id>",
+        "mutatesState": True,
+        "args": [{"name": "id", "required": True}, {"name": "new-id", "required": True}],
+    },
+    {
+        "id": "skill-enable",
+        "description": "Make a Skill available again - back in every agent's briefing.",
+        "command": "cc-devthrottle skill enable <id>",
+        "mutatesState": True,
+        "args": [{"name": "id", "required": True}],
+    },
+    {
+        "id": "skill-disable",
+        "description": "Switch a Skill off - left out of every briefing, fetch refused, nothing deleted.",
+        "command": "cc-devthrottle skill disable <id>",
+        "mutatesState": True,
+        "args": [{"name": "id", "required": True}],
     },
     {
         "id": "workflow-list",
@@ -1203,6 +1280,130 @@ def schedule_main(
 ) -> None:
     """Manage Gateway schedules."""
     schedule_ops.set_gateway_override(gateway)
+
+
+@skill_app.callback()
+def skill_main(
+    gateway: Optional[str] = typer.Option(
+        None,
+        "--gateway",
+        help="Override the Gateway base URL.",
+    ),
+) -> None:
+    """Read and author fleet Skills (central capabilities held on the Gateway, fetched on use)."""
+    skill_ops.set_gateway_override(gateway)
+
+
+@skill_app.command("list")
+def skill_list(
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
+) -> None:
+    """List every Skill the fleet holds - one line each, no bodies."""
+    skill_ops.list_skills(json_output)
+
+
+@skill_app.command("get")
+def skill_get(
+    skill_id: str = typer.Argument(..., help="The skill id (e.g. move-session)."),
+    version: Optional[int] = typer.Option(
+        None, "--version", "-v", help="A specific published version instead of the current one."
+    ),
+) -> None:
+    """Print a Skill's full instructions - run this when you are ABOUT TO USE the skill, and follow
+    what it says. Supporting files are written to this machine and their paths printed after the
+    body. Fails loudly if the Gateway cannot be reached; never proceed from memory."""
+    skill_ops.get_skill(skill_id, version)
+
+
+@skill_app.command("show")
+def skill_show(
+    skill_id: str = typer.Argument(..., help="The skill id."),
+    version: Optional[int] = typer.Option(
+        None, "--version", "-v", help="A specific version instead of the published one."
+    ),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
+) -> None:
+    """Show one Skill's metadata without its body."""
+    skill_ops.show_skill(skill_id, version, json_output)
+
+
+@skill_app.command("versions")
+def skill_versions(
+    skill_id: str = typer.Argument(..., help="The skill id."),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
+) -> None:
+    """Show a Skill's version history, newest first."""
+    skill_ops.list_versions(skill_id, json_output)
+
+
+@skill_app.command("pull")
+def skill_pull(
+    skill_id: str = typer.Argument(..., help="The skill id."),
+    directory: str = typer.Option(..., "--dir", "-d", help="Directory to write the skill into."),
+    version: Optional[int] = typer.Option(
+        None,
+        "--version",
+        "-v",
+        help="A specific version (default: the draft if one exists, else the published version).",
+    ),
+) -> None:
+    """Pull a Skill into a directory (skill.json + SKILL.md + files/) for editing."""
+    skill_ops.pull_skill(skill_id, directory, version)
+
+
+@skill_app.command("push")
+def skill_push(
+    skill_id: str = typer.Argument(..., help="The skill id."),
+    directory: str = typer.Option(..., "--dir", "-d", help="Directory holding the skill files."),
+    note: Optional[str] = typer.Option(None, "--note", "-n", help="One line on what changed."),
+    force: bool = typer.Option(
+        False, "--force", help="Push without a hash sidecar, overwriting deliberately."
+    ),
+) -> None:
+    """Push a directory as the Skill's DRAFT. No agent sees it until you publish."""
+    skill_ops.push_skill(skill_id, directory, note, force)
+
+
+@skill_app.command("publish")
+def skill_publish(
+    skill_id: str = typer.Argument(..., help="The skill id."),
+) -> None:
+    """Publish the Skill's draft - live for every agent on every machine on its next fetch."""
+    skill_ops.publish_skill(skill_id)
+
+
+@skill_app.command("clone")
+def skill_clone(
+    skill_id: str = typer.Argument(..., help="The skill to copy."),
+    new_id: str = typer.Argument(..., help="The new skill id."),
+) -> None:
+    """Clone a Skill into one of your own - how a read-only built-in is customized."""
+    skill_ops.clone_skill(skill_id, new_id)
+
+
+@skill_app.command("enable")
+def skill_enable(
+    skill_id: str = typer.Argument(..., help="The skill id."),
+) -> None:
+    """Make a Skill available again - back in every agent's briefing."""
+    skill_ops.set_skill_enabled(skill_id, True)
+
+
+@skill_app.command("disable")
+def skill_disable(
+    skill_id: str = typer.Argument(..., help="The skill id."),
+) -> None:
+    """Switch a Skill off - left out of every briefing, fetch refused, nothing deleted."""
+    skill_ops.set_skill_enabled(skill_id, False)
+
+
+@skill_app.command("delete")
+def skill_delete(
+    skill_id: str = typer.Argument(..., help="The skill id."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Do not ask for confirmation."),
+) -> None:
+    """Archive a Skill (never a built-in). Its versions remain readable by explicit version."""
+    skill_ops.delete_skill(skill_id, yes)
 
 
 @workflow_app.callback()

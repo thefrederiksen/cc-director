@@ -78,7 +78,7 @@ internal static class ControlEndpoints
             {
                 var text = FleetPreamble.BuildForSession(
                     session.Id.ToString(), name, Environment.MachineName, session.RepoPath, user,
-                    workflowIndex: new WorkflowIndexStore());
+                    workflowIndex: new WorkflowIndexStore(), skillIndex: new SkillIndexStore());
                 text = AppendSeatParagraph(text, session);
                 return Results.Text(text, "text/plain");
             }
@@ -127,7 +127,7 @@ internal static class ControlEndpoints
             {
                 text = FleetPreamble.BuildForSession(
                     session.Id.ToString(), name, Environment.MachineName, session.RepoPath, user,
-                    workflowIndex: new WorkflowIndexStore());
+                    workflowIndex: new WorkflowIndexStore(), skillIndex: new SkillIndexStore());
                 text = AppendSeatParagraph(text, session);
             }
             catch (Exception ex) when (ex is InjectedTextUnavailableException or FleetPreambleTemplateException)

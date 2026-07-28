@@ -49,11 +49,23 @@ public static class SystemCapabilityAllowlist
     /// </summary>
     public const string SharedWorkflowLibraryRead = "shared-workflow-library-read";
 
+    /// <summary>
+    /// The shared SKILL library read (devthrottle_internal issue 995): every tenant's skill register
+    /// serves the DevThrottle-maintained BUILT-IN skills from the shared library partition (the
+    /// reserved System tenant, where <see cref="StartupSystemSeeding"/> put them) in UNION with the
+    /// tenant's own skills. The mechanism is <c>SkillStore</c> resolving a skill id's OWNING partition
+    /// through an explicitly library-scoped context captured at construction - never by entering the
+    /// System scope. The reach is exactly the workflow library's: one foreign partition, built-in rows
+    /// only, READ-ONLY on every request path, with the boot-time seeder the sole library writer.
+    /// </summary>
+    public const string SharedSkillLibraryRead = "shared-skill-library-read";
+
     private static readonly HashSet<string> _names = new(StringComparer.Ordinal)
     {
         FleetDirectorList,
         StartupSystemSeeding,
         SharedWorkflowLibraryRead,
+        SharedSkillLibraryRead,
     };
 
     /// <summary>Every named cross-tenant / System-scope capability, in one review-gated place.</summary>

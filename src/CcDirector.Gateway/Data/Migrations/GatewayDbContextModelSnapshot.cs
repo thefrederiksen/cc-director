@@ -955,6 +955,172 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.ToTable("session_spend", (string)null);
                 });
 
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SkillEntity", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("Id")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("Archived")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("Enabled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(true);
+
+                    b.Property<bool>("IsBuiltIn")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("LatestVersion")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("PublishedVersion")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ShippedContentHash")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("TenantId", "Id");
+
+                    b.HasIndex("TenantId");
+
+                    b.ToTable("skills", (string)null);
+                });
+
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SkillFileEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ContentHash")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("TenantId")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<Guid>("VersionId")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("VersionId");
+
+                    b.ToTable("skill_files", (string)null);
+                });
+
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SkillTenantOverrideEntity", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("SkillId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("UpdatedBy")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("TenantId", "SkillId");
+
+                    b.HasIndex("TenantId");
+
+                    b.ToTable("skill_tenant_overrides", (string)null);
+                });
+
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SkillVersionEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("AuthoredBy")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("BodyMarkdown")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ChangeNote")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ContentHash")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("PublishedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("SkillId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Summary")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("TenantId")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tenant_id");
+
+                    b.PrimitiveCollection<string>("Triggers")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "SkillId", "Version")
+                        .IsUnique();
+
+                    b.ToTable("skill_versions", (string)null);
+                });
+
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SnoozeEntity", b =>
                 {
                     b.Property<string>("TenantId")
