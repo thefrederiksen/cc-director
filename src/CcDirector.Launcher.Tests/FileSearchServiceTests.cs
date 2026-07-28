@@ -130,6 +130,24 @@ public sealed class FileSearchServiceTests : IDisposable
         Assert.Equal("limit", result.Dto.TruncationReason);
     }
 
+    /// <summary>
+    /// A walk that finished abandons nothing. The field exists because a walker CAN fail to return at all -
+    /// a macOS folder under privacy consent blocks in the kernel rather than denying - and a search that gave
+    /// up on a root must say so rather than quietly returning less. This pins the ordinary case so the
+    /// reporting cannot drift to "always zero" or "always non-zero"; the blocking case itself is not
+    /// reproducible on demand and is verified on real macOS hardware instead.
+    /// </summary>
+    [Fact]
+    public void Search_WalkThatFinished_AbandonsNoRoots()
+    {
+        CreateFile("thing.txt");
+
+        var result = Search("thing.txt");
+
+        Assert.Equal(0, result.Dto.AbandonedRoots);
+        Assert.False(result.Dto.Truncated);
+    }
+
     [Fact]
     public void Search_CompletedWalk_ReportsTheRootsItSearchedAndTheDirectoriesItVisited()
     {

@@ -28,14 +28,29 @@ public sealed class AppCatalogTests : IDisposable
         catch (IOException) { /* a temporary directory that outlives the test run is not a test failure */ }
     }
 
-    /// <summary>The application file extension this operating system's catalogue collects.</summary>
-    private static string AppExtension => OperatingSystem.IsWindows() ? ".lnk" : ".desktop";
-
+    /// <summary>
+    /// Create one application entry of whatever kind THIS operating system's catalogue actually collects.
+    ///
+    /// The three platforms do not merely differ in extension, which is what an earlier version of this helper
+    /// assumed - it created a ".desktop" file on anything that was not Windows, and every one of these tests
+    /// failed on macOS because a macOS application is a ".app" BUNDLE DIRECTORY and the catalogue is right to
+    /// ignore a file by that name. The product code was correct and the helper was wrong, which is the more
+    /// dangerous way round: it looked like nine real failures.
+    /// </summary>
     private string CreateApp(string name, string? subdirectory = null)
     {
         var directory = subdirectory is null ? _root : Path.Combine(_root, subdirectory);
         Directory.CreateDirectory(directory);
-        var path = Path.Combine(directory, name + AppExtension);
+
+        if (OperatingSystem.IsMacOS())
+        {
+            // A bundle is a directory, and the catalogue reports the directory itself as one item.
+            var bundle = Path.Combine(directory, name + ".app");
+            Directory.CreateDirectory(bundle);
+            return bundle;
+        }
+
+        var path = Path.Combine(directory, name + (OperatingSystem.IsWindows() ? ".lnk" : ".desktop"));
         File.WriteAllText(path, "");
         return path;
     }

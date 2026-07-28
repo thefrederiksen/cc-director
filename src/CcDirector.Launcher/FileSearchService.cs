@@ -36,6 +36,13 @@ public sealed class FileSearchService
     public const int DefaultTimeoutMilliseconds = 20_000;
 
     /// <summary>
+    /// How long past the cooperative deadline the search waits for its walkers before abandoning them. It
+    /// exists so a merely SLOW walker gets a chance to notice the deadline and stop itself - which counts as
+    /// finishing - while a walker blocked in a system call that never returns is given up on.
+    /// </summary>
+    private const int JoinGraceMilliseconds = 2_000;
+
+    /// <summary>
     /// A safety ceiling on how deep the walk descends. Reparse points are already stepped over, so this exists
     /// only for a filesystem that manages to nest pathologically without them.
     /// </summary>
@@ -137,34 +144,90 @@ public sealed class FileSearchService
         // One walker per root: the roots are usually separate physical devices, so walking them together is
         // most of the wall-clock saving available here. They share the counters, the deadline and the ceiling,
         // so the bounds apply to the search as a whole rather than once per drive.
-        Parallel.ForEach(roots, new ParallelOptions { CancellationToken = CancellationToken.None }, root =>
+        //
+        // THE DEADLINE IS ENFORCED AT THE JOIN, NOT ONLY INSIDE THE WALK, AND THAT IS THE WHOLE POINT OF THIS
+        // SHAPE. The walk checks the cancellation token between directories, which is enough only while the
+        // walk keeps RETURNING from the filesystem. On macOS it does not always: a directory guarded by the
+        // operating system's privacy consent - Documents, Desktop, Downloads and the like - does not fail to
+        // open when the launcher lacks that consent. The open call BLOCKS IN THE KERNEL INDEFINITELY. A thread
+        // inside that call never reaches another token check, so a cooperative deadline cannot reach it, and
+        // an ordinary parallel loop would wait on that thread forever - the whole search would never answer.
+        // Verified on macOS: opening one such folder hung with no timeout and no processor use, and did so
+        // identically outside .NET, so it is the system call and not the runtime.
+        //
+        // So the walkers run on their own background threads and the search waits on a countdown with a
+        // timeout. When the countdown expires, whatever has been found is returned and the stuck thread is
+        // ABANDONED - it is a background thread, so it cannot hold the process open, and the alternative is an
+        // answer that never comes. The abandonment is counted and reported rather than hidden.
+        //
+        // The unreadable-directory reporting elsewhere in this class assumes a failed open RETURNS an error.
+        // That assumption is sound on Windows and on Linux; this is the one path where it is not, which is why
+        // it is handled here rather than there.
+        var finished = new CountdownEvent(roots.Count);
+        foreach (var root in roots)
         {
-            foreach (var file in WalkRoot(root, linked.Token, counters, skippedPaths))
+            var capturedRoot = root;
+            var worker = new Thread(() =>
             {
-                var candidate = matchWholePath ? file.FullName : file.Name;
-                if (!pattern.IsMatch(candidate)) continue;
-
-                if (Interlocked.Increment(ref found) > effectiveLimit)
+                try
                 {
-                    Volatile.Write(ref hitLimit, true);
-                    return;
+                    foreach (var file in WalkRoot(capturedRoot, linked.Token, counters, skippedPaths))
+                    {
+                        var candidate = matchWholePath ? file.FullName : file.Name;
+                        if (!pattern.IsMatch(candidate)) continue;
+
+                        if (Interlocked.Increment(ref found) > effectiveLimit)
+                        {
+                            Volatile.Write(ref hitLimit, true);
+                            return;
+                        }
+
+                        hits.Enqueue(new FileHitDto
+                        {
+                            Path = file.FullName,
+                            Name = file.Name,
+                            SizeBytes = file.Length,
+                            ModifiedUtc = file.LastWriteTimeUtc,
+                        });
+                    }
                 }
-
-                hits.Enqueue(new FileHitDto
+                catch (Exception ex)
                 {
-                    Path = file.FullName,
-                    Name = file.Name,
-                    SizeBytes = file.Length,
-                    ModifiedUtc = file.LastWriteTimeUtc,
-                });
-            }
-        });
+                    FileLog.Write($"[FileSearchService] walker for {capturedRoot} FAILED: {ex.Message}");
+                }
+                finally
+                {
+                    // A walker abandoned at the deadline may still finish long afterwards and signal then. The
+                    // countdown is deliberately never disposed for exactly that reason: signalling a disposed
+                    // countdown would throw on a thread with no handler, which on a background thread takes the
+                    // whole launcher down.
+                    try { finished.Signal(); }
+                    catch (ObjectDisposedException) { }
+                    catch (InvalidOperationException) { }
+                }
+            })
+            {
+                IsBackground = true,
+                Name = $"file-search:{capturedRoot}",
+            };
+            worker.Start();
+        }
+
+        // The grace is on top of the cooperative deadline so a walker that is merely SLOW gets the chance to
+        // stop itself and be counted as complete; only a walker that is genuinely stuck is abandoned.
+        var allWalkersFinished = finished.Wait(effectiveTimeout + JoinGraceMilliseconds);
+        var abandonedRoots = allWalkersFinished ? 0 : finished.CurrentCount;
 
         stopwatch.Stop();
 
+        if (!allWalkersFinished)
+            FileLog.Write($"[FileSearchService] Search: {abandonedRoots} of {roots.Count} walkers did not return by " +
+                          "the deadline and were abandoned - on macOS this is the privacy-consent block; the " +
+                          "launcher needs Full Disk Access for those folders to be searchable.");
+
         // The ceiling is reported ahead of the deadline when both were reached: a caller that hit the ceiling
         // gets the same advice - narrow the query - whether or not time also ran out.
-        var timedOut = deadline.IsCancellationRequested;
+        var timedOut = deadline.IsCancellationRequested || !allWalkersFinished;
         var truncationReason = Volatile.Read(ref hitLimit) ? "limit" : timedOut ? "timeout" : null;
 
         var result = new FileSearchResultDto
@@ -178,6 +241,7 @@ public sealed class FileSearchService
             Truncated = truncationReason is not null,
             TruncationReason = truncationReason,
             UnreadableDirectories = counters.UnreadableDirectories,
+            AbandonedRoots = abandonedRoots,
         };
 
         FileLog.Write($"[FileSearchService] Search: returned={result.Files.Count}, visited={result.DirectoriesVisited}, " +

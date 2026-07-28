@@ -103,4 +103,17 @@ public sealed class FileSearchResultDto
     /// than listed, because a whole-machine walk hits thousands of them and the list would dwarf the
     /// results.</summary>
     public int UnreadableDirectories { get; set; }
+
+    /// <summary>
+    /// How many roots were still being walked when the deadline expired and were given up on, so their
+    /// contents are missing from this answer entirely.
+    ///
+    /// This is separate from <see cref="UnreadableDirectories"/> because it is a different fact: an unreadable
+    /// directory REFUSED and said so, while an abandoned root never answered at all. On macOS that is the
+    /// ordinary cause - a folder under the operating system's privacy consent (Documents, Desktop, Downloads)
+    /// does not deny an unauthorised open, it blocks in the kernel and never returns. The launcher needs Full
+    /// Disk Access for those folders to be searchable; without it they are silent rather than forbidden, and
+    /// this count is the only sign they were skipped.
+    /// </summary>
+    public int AbandonedRoots { get; set; }
 }
