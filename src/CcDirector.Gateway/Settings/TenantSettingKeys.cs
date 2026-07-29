@@ -103,12 +103,30 @@ public static class TenantSettingKeys
     /// </summary>
     public const string SpokenLanguage = "spoken_language";
 
+    /// <summary>
+    /// The voice this account has last chosen FOR EACH LANGUAGE, as one JSON object keyed by language
+    /// code: <c>{"en":"bm_george","fr":"ff_siwis","es":"ef_dora"}</c> - issue #1010. Like
+    /// <see cref="SpokenLanguage"/> there is no operator global default; a language nobody has chosen a
+    /// voice for falls back to that language's own default voice.
+    ///
+    /// ONE OBJECT PER ACCOUNT RATHER THAN ONE KEY PER LANGUAGE, and it is stored per language rather than
+    /// as a single current voice, because that is what removes the restore logic entirely. Nothing is ever
+    /// overwritten when the language changes, so nothing has to be put back: switch English to French and
+    /// back and the English voice is still whatever it was. The reverted attempt had an automatic switch
+    /// AND a restore step, and the restore was one of the moving parts that made it impossible to reason
+    /// about (devthrottle_internal#547).
+    ///
+    /// This holds a VOICE, and only ever a voice. It cannot hold a model: a voice id is meaningless to
+    /// anything but the one engine that already serves English.
+    /// </summary>
+    public const string SpokenVoiceByLanguage = "spoken_voice_by_language";
+
     /// <summary>Every key this resolver serves, for validation and enumeration.</summary>
     public static readonly IReadOnlySet<string> All = new HashSet<string>(StringComparer.Ordinal)
     {
         WingmanModel, WingmanFastModel, TtsModel, TtsVoice,
         CarModeModel, CarModeEndPhrase, SnoozePresets, SnoozeDefaultMinutes, TimeZone, InjectedText,
         VoiceModeAll, DictationSuggestionsInDailyEmail, DictationEmailCadence, DailyReportCadence,
-        SpokenLanguage,
+        SpokenLanguage, SpokenVoiceByLanguage,
     };
 }

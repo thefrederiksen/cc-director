@@ -2974,6 +2974,25 @@ a.banner-btn {
   height: 20px;
 }
 
+/* The Language choices STACK on a phone. Three side by side is right on a desktop and wrong here: each
+   choice carries a second line under it, so three columns either wrap unevenly or squeeze the words. One
+   per row also gives each choice a full-width tap target, which is the whole reason this block exists. */
+.screen .settings-langs {
+  flex-direction: column;
+  gap: 14px;
+}
+.screen .settings-lang input {
+  width: 20px;
+  height: 20px;
+}
+.screen .settings-lang-name {
+  font-size: 15px;
+}
+.screen .settings-lang-note,
+.screen .settings-sample {
+  font-size: 13px;
+}
+
 /* The read-only rows stack too, for the same reason the fields do: a 140px label column plus a model
    id does not fit, and the value is the part worth reading. */
 .screen .settings-row {

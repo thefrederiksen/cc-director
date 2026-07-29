@@ -1,5 +1,6 @@
 import { AiTab } from "./AiTab";
 import { CarModeTab } from "./CarModeTab";
+import { LanguageTab } from "./LanguageTab";
 import { NotificationsTab } from "./NotificationsTab";
 import { TranscriptionTab } from "./TranscriptionTab";
 import { visibleTabs, type Surface, type TabId } from "./tabs";
@@ -52,6 +53,8 @@ export function SettingsTabPanel({ tab, accountHref, transcriptionHealthHref }: 
       return <NotificationsTab />;
     case "ai":
       return <AiTab accountHref={accountHref} />;
+    case "language":
+      return <LanguageTab />;
     case "transcription":
       return <TranscriptionTab healthHref={transcriptionHealthHref} />;
     case "carmode":

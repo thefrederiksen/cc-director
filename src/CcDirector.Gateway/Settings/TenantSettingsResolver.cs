@@ -48,9 +48,77 @@ public sealed class TenantSettingsResolver
         return NonEmptyOverride(tenant, key) ?? WingmanModelConfig.Resolve(mode, role);
     }
 
-    /// <summary>The tenant's text-to-speech voice, or the operator global default when unset.</summary>
+    /// <summary>
+    /// The tenant's text-to-speech voice - ALWAYS A VOICE THAT SPEAKS THIS ACCOUNT'S LANGUAGE (issue
+    /// #1010).
+    ///
+    /// This is the single read every synthesis path already went through, which is why the language is
+    /// applied HERE rather than at each call site: the Language tab has to change what a session actually
+    /// sounds like, and a voice chosen anywhere else would be a second place to remember. A French
+    /// account read out by an English voice is the same class of failure as a French account answered in
+    /// English - the setting appears to work and the product does not.
+    ///
+    /// The order, and why each step is where it is:
+    ///   1. THE VOICE THIS ACCOUNT CHOSE FOR THIS LANGUAGE, when it is still a voice of that language.
+    ///      Validated on every read, so a voice retired upstream, or one written by a newer Gateway,
+    ///      degrades to step 2 or 3 instead of being sent to an engine that answers 422 - which reaches
+    ///      the listener as silence rather than as an error.
+    ///   2. ENGLISH ONLY: the account's existing <c>tts_voice</c> override, else the operator global
+    ///      default. This is the whole of the old behaviour, unchanged, and it is deliberately reachable
+    ///      only in English. An account that has never opened the Language tab is English by default and
+    ///      therefore resolves EXACTLY as it did before this setting existed - including a voice id that
+    ///      is not in our own list, which a self-hosted operator may legitimately have set.
+    ///   3. THE LANGUAGE'S DEFAULT VOICE, for French and Spanish. Never the English override: an English
+    ///      voice cannot read French, so falling through to it would be worse than any default.
+    ///
+    /// It picks a VOICE and never an engine. The engine is <see cref="TtsModel"/>, resolved separately and
+    /// with no knowledge of the language - the two concepts never meet, and
+    /// <c>SpokenLanguageContractTests</c> fails the build if they ever do in one method
+    /// (devthrottle_internal#547).
+    /// </summary>
     public string TtsVoice(TenantId tenant, TranscriptionMode mode)
-        => NonEmptyOverride(tenant, TenantSettingKeys.TtsVoice) ?? TtsVoiceConfig.Resolve(mode);
+    {
+        var language = SpokenLanguage(tenant);
+        var chosen = SpokenVoice(tenant, language);
+        if (chosen is not null) return chosen;
+        if (language == Speech.SpokenLanguages.English)
+            return NonEmptyOverride(tenant, TenantSettingKeys.TtsVoice) ?? TtsVoiceConfig.Resolve(mode);
+        return Speech.SpokenVoices.Default(language).Id;
+    }
+
+    /// <summary>
+    /// The voice this tenant has chosen for <paramref name="language"/>, or null when it has chosen none
+    /// - and also null when the stored id is not a voice of that language, so a caller can never be
+    /// handed a voice that cannot speak the words it is about to be given.
+    /// </summary>
+    public string? SpokenVoice(TenantId tenant, Speech.SpokenLanguage language)
+    {
+        ArgumentNullException.ThrowIfNull(language);
+        var chosen = SpokenVoicesByLanguage(tenant);
+        if (!chosen.TryGetValue(language.Code, out var voice)) return null;
+        return Speech.SpokenVoices.Speaks(language, voice) ? voice.Trim() : null;
+    }
+
+    /// <summary>
+    /// Every voice choice this tenant has made, keyed by language code. An empty map when it has made
+    /// none, and ALSO when the stored object cannot be read: a corrupt map degrades to "no choices", which
+    /// is each language's own default voice - a voice that certainly works - never another tenant's value
+    /// and never a crashed turn.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> SpokenVoicesByLanguage(TenantId tenant)
+    {
+        var raw = _store.Get(tenant, TenantSettingKeys.SpokenVoiceByLanguage);
+        if (string.IsNullOrEmpty(raw)) return EmptyVoiceChoices;
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(raw)
+                   ?? EmptyVoiceChoices;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return EmptyVoiceChoices;
+        }
+    }
 
     /// <summary>The tenant's text-to-speech model, or the operator global default when unset.</summary>
     public string TtsModel(TenantId tenant, TranscriptionMode mode)
@@ -306,6 +374,43 @@ public sealed class TenantSettingsResolver
             Speech.SpokenLanguages.Resolve(code).Code, nowUtc);
     }
 
+    /// <summary>
+    /// Remember the voice this tenant wants for ONE language, leaving its choices for the other languages
+    /// exactly as they were (issue #1010). That is the whole mechanism: because a language's voice is never
+    /// overwritten by a change to another language, switching away and back needs no restore step, and there
+    /// is no restore step to get wrong.
+    ///
+    /// A VOICE THAT DOES NOT SPEAK THAT LANGUAGE IS REFUSED, here, where the person can see it - the same
+    /// direction as <see cref="SetSpokenLanguage"/> and for the same reason. Storing an English voice under
+    /// French would leave somebody looking at a screen that says French while an American voice reads French
+    /// words aloud, which is indistinguishable from the setting doing nothing.
+    /// </summary>
+    /// <exception cref="ArgumentException">The voice does not speak that language.</exception>
+    public void SetSpokenVoice(TenantId tenant, Speech.SpokenLanguage language, string voice, DateTime nowUtc)
+    {
+        ArgumentNullException.ThrowIfNull(language);
+        var trimmed = (voice ?? "").Trim();
+        if (!Speech.SpokenVoices.Speaks(language, trimmed))
+        {
+            var owner = Speech.SpokenVoices.LanguageOf(trimmed);
+            throw new ArgumentException(
+                $"'{trimmed}' is not a {language.EnglishName} voice."
+                + (owner is null ? "" : $" It is a {owner.EnglishName} voice.")
+                + " Choose one of: "
+                + string.Join(", ", Speech.SpokenVoices.For(language).Select(v => v.Id)) + ".",
+                nameof(voice));
+        }
+
+        // Read-modify-write of the one object, so the other languages' choices survive. Two settings pages
+        // open at once is the only way this could lose a choice, and the loser is one voice preference on a
+        // screen the person is looking at - not a value anything else depends on.
+        var chosen = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (code, id) in SpokenVoicesByLanguage(tenant)) chosen[code] = id;
+        chosen[language.Code] = trimmed;
+        _store.Set(tenant, TenantSettingKeys.SpokenVoiceByLanguage,
+            System.Text.Json.JsonSerializer.Serialize(chosen), nowUtc);
+    }
+
     /// <summary>Record this tenant's daily-email cadence state after a mention is emitted.</summary>
     public void SetDictationEmailCadence(TenantId tenant, DictationEmailCadenceState state, DateTime nowUtc)
         => _store.Set(tenant, TenantSettingKeys.DictationEmailCadence,
@@ -317,6 +422,11 @@ public sealed class TenantSettingsResolver
     /// ON. The suggestions feature exists to help people who never open Settings, so the one place it reaches
     /// them when they are not in the app has to be on by default.</summary>
     public const bool SuggestionsInDailyEmailDefault = true;
+
+    /// <summary>The "this account has chosen no voice for any language" answer. One shared instance, so the
+    /// common read allocates nothing.</summary>
+    private static readonly IReadOnlyDictionary<string, string> EmptyVoiceChoices =
+        new Dictionary<string, string>(StringComparer.Ordinal);
 
     /// <summary>Parse a stored boolean override; null when absent or not a boolean, so the caller falls back to
     /// the documented default rather than guessing.</summary>

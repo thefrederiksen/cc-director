@@ -230,6 +230,32 @@ public static class SpokenPhrases
         fr: "Dites celles qui s'appliquent, puis dites terminé.",
         es: "Di cuáles se aplican y luego di listo.");
 
+    // ---- The Language tab: the sentence you audition a voice with ------------------------------------
+
+    /// <summary>
+    /// The sample the Language tab speaks when you press Play sample (issue #1010) - the ONE spoken string
+    /// on this list that is heard in a settings screen rather than in a session.
+    ///
+    /// IT IS PER LANGUAGE FOR A REASON, and the reason is not neatness. Auditioning a French voice on an
+    /// English sentence tests the wrong thing: the engine phonemizes what it is given, so English words in
+    /// a French voice tell you nothing about how that voice will read French. The screen also SHOWS this
+    /// sentence beside the button, so the person can see what they are about to hear.
+    ///
+    /// It lives here, with every other fixed spoken sentence, rather than in the settings tab that plays
+    /// it. A sentence held in the client would be spoken content in a file with no accent guard, no
+    /// missing-translation test and no encoding test - three protections this file already has and a
+    /// second home would have to grow again.
+    /// </summary>
+    public static readonly SpokenPhrase SettingsVoiceSample = new(
+        "settings.voice-sample",
+        en: "Hi, I'm your DevThrottle wingman. This is how I'll sound.",
+        // "vous", like every other French phrase here. The second sentence is deliberately about the
+        // VOICE rather than a literal "this is how I sound" - the natural French for auditioning a voice
+        // talks about the voice, and a word-for-word carry-over reads as translated.
+        fr: "Bonjour, je suis votre wingman DevThrottle. Voilà à quoi ressemble ma voix.",
+        // "tu", like every other Spanish phrase here.
+        es: "Hola, soy tu wingman de DevThrottle. Así es como voy a sonar.");
+
     /// <summary>Every phrase above. The completeness test walks this, so a phrase that is not here is
     ///  not covered - which is why <c>SpokenPhraseTests</c> also checks that every public phrase field
     ///  on this class appears in the list.</summary>
@@ -239,6 +265,7 @@ public static class SpokenPhrases
         VoiceTurnBlockedMenu, VoiceTurnBlockedUnreadable,
         WaitingScreenMenu, WaitingScreenMenuNarrationSuffix, NarrationCutNotice,
         MenuOption, MenuOptionRecommended, MenuAnswerSingle, MenuAnswerMultiple,
+        SettingsVoiceSample,
     };
 }
 

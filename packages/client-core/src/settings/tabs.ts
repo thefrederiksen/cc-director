@@ -11,7 +11,7 @@
 /** Which shell is asking. Every caller states it - see visibleTabs. */
 export type Surface = "cockpit" | "mobile";
 
-export type TabId = "notifications" | "ai" | "transcription" | "carmode" | "injectedtext";
+export type TabId = "notifications" | "ai" | "language" | "transcription" | "carmode" | "injectedtext";
 
 interface TabDef {
   id: TabId;
@@ -49,11 +49,16 @@ interface TabDef {
   hidden?: true;
 }
 
-// The full ordered set. The order is the order you meet them: how the fleet reaches you, what it thinks
-// with, how it hears you, the hands-free mode built on all three, and last the text it hands your agents.
+// The full ordered set. The order is the order you meet them: how the fleet reaches you, what language it
+// speaks to you in, how it hears you, the hands-free mode built on all three, and last the text it hands
+// your agents.
+//
+// Language takes the place AI held in the strip (issue #1010). The AI row is still here and still hidden -
+// see the `hidden` note below; the two are separate decisions that happen to concern the same slot.
 const ALL_TABS: TabDef[] = [
   { id: "notifications", label: "Notifications", surface: "all" },
   { id: "ai", label: "AI", surface: "all", hidden: true },
+  { id: "language", label: "Language", surface: "all" },
   { id: "transcription", label: "Transcription", surface: "all" },
   { id: "carmode", label: "Car Mode", surface: "all" },
   { id: "injectedtext", label: "Injected text", surface: "cockpit" },
