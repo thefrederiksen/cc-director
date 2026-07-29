@@ -261,8 +261,9 @@ public sealed class TunnelMechanismProofTests : IAsyncLifetime
         // transport pipe, and the socket buffers fill, then it blocks on its yield - it must NOT run to
         // completion. Frames are at the cap so transport buffers cannot silently absorb the whole stream.
         //
-        // The proof is that the producer's progress STOPS and STAYS stopped below the total while the sink is
-        // held (bounded memory - the Architect's ruling 1), and then drains fully the instant the sink releases.
+        // The proof is that the producer's progress STOPS ramping and STAYS BELOW the total for as long as the
+        // sink is held (bounded memory - the Architect's ruling 1), and then drains fully the instant the sink
+        // releases.
         // (The exact pinning depth is buffer-dependent - on loopback it settles in the low tens because the OS
         // socket and pipe buffers dwarf the 4-deep server channel; over a real slow link it pins far tighter.)
         //
@@ -302,9 +303,21 @@ public sealed class TunnelMechanismProofTests : IAsyncLifetime
             // stay below total - if backpressure were broken the producer would run to completion (caught here).
             var pinned = await PollUntilStableAsync(() => Volatile.Read(ref yielded), total, testTimeout.Token);
 
-            // Now confirm it STAYS pinned for a further window - blocked on its yield, not slowly draining ahead.
+            // Now sample again after a further window, and assert what backpressure actually promises: the
+            // producer cannot outrun a stalled sink WITHOUT BOUND, so however far it got it is still short of
+            // total. It is deliberately NOT asserted that the count is EXACTLY unchanged over this window.
+            // A producer under backpressure is not frozen - it advances in bursts, each time the socket and
+            // pipe buffers drain enough to admit more - so "did not advance for 800 milliseconds" is a temporal
+            // sample, not a permanent property. On a loaded runner a quiet stretch that long can fall in the
+            // middle of the ramp, and the count then moves inside this window: 35 to 57, and 36 to 58, on the
+            // shared continuous-integration runner, on commits that touched nothing under src at all. Widening
+            // either window does not close that gap, it only lowers the probability, because any fixed quiet
+            // period can be exceeded by a slower machine - the previous attempt here was exactly such a
+            // widening. The bound below holds for as long as the sink is held, so it cannot flake, and it still
+            // fails loudly the moment a regression lets the producer run away from a sink that is not draining.
             await Task.Delay(1000, testTimeout.Token);
-            Assert.Equal(pinned, Volatile.Read(ref yielded));
+            var afterWindow = Volatile.Read(ref yielded);
+            Assert.True(afterWindow < total, $"producer ran to {afterWindow}/{total} with the sink stalled (it was at {pinned} a second earlier) - backpressure is broken");
             Assert.True(pinned < total, $"producer ran to {pinned}/{total} with the sink stalled - backpressure is broken");
             Assert.Equal(0, sink.CompletedWrites); // the first write is in-flight (held by the gate); none have completed
         }
