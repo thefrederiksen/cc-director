@@ -147,32 +147,26 @@ public partial class InstallStep : UserControl
         StatusText.Text = status;
     }
 
-    /// <summary>Reveal the Gateway and Cockpit card (Gateway-role installs only).</summary>
-    public void ShowGatewaySection()
+    /// <summary>The launcher tray app is being started (indeterminate - the installer waits on a health probe).</summary>
+    public void SetLauncherStarting()
     {
-        GatewaySection.Visibility = Visibility.Visible;
+        LauncherStatus.Text = "Starting";
+        LauncherStatus.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#007ACC"));
+        LauncherProgress.Visibility = Visibility.Visible;
     }
 
-    /// <summary>The Gateway tray app + Cockpit are being placed (indeterminate - the CLI streams log lines).</summary>
-    public void SetGatewayInstalling()
+    public void SetLauncherRunning()
     {
-        GatewayStatus.Text = "Installing";
-        GatewayStatus.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#007ACC"));
-        GatewayProgress.Visibility = Visibility.Visible;
+        LauncherStatus.Text = "Running";
+        LauncherStatus.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#22C55E"));
+        LauncherProgress.Visibility = Visibility.Collapsed;
     }
 
-    public void SetGatewayDone()
+    public void SetLauncherFailed()
     {
-        GatewayStatus.Text = "Done";
-        GatewayStatus.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#22C55E"));
-        GatewayProgress.Visibility = Visibility.Collapsed;
-    }
-
-    public void SetGatewayFailed()
-    {
-        GatewayStatus.Text = "Failed";
-        GatewayStatus.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#CC4444"));
-        GatewayProgress.Visibility = Visibility.Collapsed;
+        LauncherStatus.Text = "Failed";
+        LauncherStatus.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#CC4444"));
+        LauncherProgress.Visibility = Visibility.Collapsed;
     }
 
     public void ShowProgress()

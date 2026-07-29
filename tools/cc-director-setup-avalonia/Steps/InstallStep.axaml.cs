@@ -96,13 +96,7 @@ public partial class InstallStep : UserControl
         // step has nothing to say about them.
 
         BindItem(_directorItem, DirectorStatus, DirectorProgress, DirectorSize);
-
-        // The launcher row exists only when the runner reports a launcher item (macOS).
-        if (_launcherItem != null)
-        {
-            LauncherCard.IsVisible = true;
-            BindItem(_launcherItem, LauncherStatus, LauncherProgress, LauncherSize);
-        }
+        BindItem(_launcherItem, LauncherStatus, LauncherProgress, LauncherSize);
     }
 
     private static void BindItem(ToolDownloadItem? item, TextBlock status, ProgressBar progress, TextBlock size)
@@ -149,6 +143,11 @@ public partial class InstallStep : UserControl
 
         DirectorStatus.Text = "Up to date";
         DirectorStatus.Foreground = upToDateBrush;
+
+        // The launcher is part of this install too, so it gets the same verdict. Leaving it at
+        // "Pending" on a machine that is already current made the card read as unfinished work.
+        LauncherStatus.Text = "Up to date";
+        LauncherStatus.Foreground = upToDateBrush;
     }
 
     private void RepairButton_Click(object? sender, RoutedEventArgs e)

@@ -24,17 +24,18 @@ public partial class CompleteStep : UserControl
         InitializeComponent();
     }
 
-    public CompleteStep(int installed, int skipped, string installPath, bool isUpdate, bool alreadyUpToDate = false, string? version = null, string? capabilityNotice = null, IReadOnlyList<string>? skippedNames = null)
+    public CompleteStep(int installed, int skipped, string installPath, bool isUpdate, bool alreadyUpToDate = false, string? version = null, string? agentNotice = null, IReadOnlyList<string>? skippedNames = null, bool readyToGo = true)
     {
         InitializeComponent();
 
-        // Recommended prerequisites no longer block the wizard, so this is where the user is told
-        // what they skipped and what it costs them - at the end, next to what they can do about it.
-        if (!string.IsNullOrWhiteSpace(capabilityNotice))
+        // The one thing the wizard still says about the MACHINE rather than about this install: there
+        // is no coding agent on it, so the board has nothing to run. Said here, at the end, next to
+        // what the user can do about it - never as a wall on an earlier screen.
+        if (!string.IsNullOrWhiteSpace(agentNotice))
         {
-            CapabilityNoticeText.Text = capabilityNotice;
+            CapabilityNoticeText.Text = agentNotice;
             CapabilityPanel.IsVisible = true;
-            SetupLog.Write($"[CompleteStep] capability notice shown: {capabilityNotice}");
+            SetupLog.Write($"[CompleteStep] agent notice shown: {agentNotice}");
         }
 
         _installPath = installPath;
@@ -48,23 +49,42 @@ public partial class CompleteStep : UserControl
 
         var versionSuffix = string.IsNullOrEmpty(version) ? "" : $" · v{version.TrimStart('v')}";
 
-        if (alreadyUpToDate)
+        var amberBrush = new SolidColorBrush(Color.FromRgb(0xE0, 0xA0, 0x30));
+
+        // One place computes the verdict and this only renders it. The rule lives in the shared
+        // InstallCompletion so both wizards read a pass the same way - this screen used to decide for
+        // itself, which is how it came to say "Everything went perfectly" about a pass that had not.
+        switch (InstallCompletion.Classify(skipped, alreadyUpToDate))
         {
-            HeadingText.Text = "✓  Already Up to Date";
-            DescriptionText.Text = "DevThrottle is already running the latest version.";
-            SummaryLine.Text = $"Nothing to do{versionSuffix}";
-            PathNote.IsVisible = false;
-        }
-        else if (isUpdate)
-        {
-            HeadingText.Text = "✓  Update Complete";
-            DescriptionText.Text = "Everything went perfectly. You're up to date.";
-            SummaryLine.Text = $"{installed} components updated{versionSuffix}";
-            PathNote.IsVisible = false;
-        }
-        else
-        {
-            SummaryLine.Text = $"{installed} components installed{versionSuffix}";
+            case InstallCompletionKind.AlreadyUpToDate:
+                HeadingText.Text = "✓  Already Up to Date";
+                DescriptionText.Text = "DevThrottle is already running the latest version.";
+                SummaryLine.Text = $"Nothing to do{versionSuffix}";
+                PathNote.IsVisible = false;
+                break;
+
+            case InstallCompletionKind.Success when isUpdate:
+                HeadingText.Text = readyToGo ? "✓  DevThrottle is up to date" : "DevThrottle is up to date - one thing left";
+                DescriptionText.Text = readyToGo
+                    ? "You're ready to go."
+                    : "The update finished. One thing below still needs you.";
+                if (!readyToGo) HeadingText.Foreground = amberBrush;
+                SummaryLine.Text = $"{installed} components updated{versionSuffix}";
+                PathNote.IsVisible = false;
+                break;
+
+            case InstallCompletionKind.Success:
+                // Nothing failed to install - but "ready to go" is a claim about the MACHINE, not about
+                // this install, and it is false while there is no coding agent to run. The markup
+                // defaults cover the genuinely-ready case.
+                if (!readyToGo)
+                {
+                    HeadingText.Text = "DevThrottle is installed - one thing left";
+                    HeadingText.Foreground = amberBrush;
+                    DescriptionText.Text = "Everything installed. One thing below still needs you.";
+                }
+                SummaryLine.Text = $"{installed} components installed{versionSuffix}";
+                break;
         }
 
         // Failure path: surface the problem loudly - amber heading, full summary box,
@@ -73,7 +93,7 @@ public partial class CompleteStep : UserControl
         if (skipped > 0)
         {
             _skippedNames = skippedNames ?? [];
-            var amber = new SolidColorBrush(Color.FromRgb(0xE0, 0xA0, 0x30));
+            var amber = amberBrush;
             HeadingText.Text = isUpdate ? "Update finished with problems" : "Setup finished with problems";
             HeadingText.Foreground = amber;
             // Name what failed - "1 component(s)" tells the user nothing actionable.

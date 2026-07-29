@@ -1,3 +1,4 @@
+using CcDirector.Setup.Engine;
 using CcDirectorSetup.Services;
 using Xunit;
 
@@ -75,23 +76,5 @@ public sealed class GatewayRefreshTests
             () => Task.FromResult(new GatewayTrayLauncher.Result(false, 1, "boom")),
             skippedBefore: 2);
         Assert.Equal(3, outcome.Skipped);
-    }
-}
-
-/// <summary>The pure completion classification the Complete step renders (single-sourced verdict).</summary>
-public sealed class InstallCompletionTests
-{
-    [Fact]
-    public void Classify_AnySkipped_IsProblems()
-    {
-        Assert.Equal(InstallCompletionKind.Problems, InstallCompletion.Classify(skipped: 1, alreadyUpToDate: false));
-        Assert.Equal(InstallCompletionKind.Problems, InstallCompletion.Classify(skipped: 1, alreadyUpToDate: true));
-    }
-
-    [Fact]
-    public void Classify_NoSkipped_UpToDateOrSuccess()
-    {
-        Assert.Equal(InstallCompletionKind.AlreadyUpToDate, InstallCompletion.Classify(skipped: 0, alreadyUpToDate: true));
-        Assert.Equal(InstallCompletionKind.Success, InstallCompletion.Classify(skipped: 0, alreadyUpToDate: false));
     }
 }

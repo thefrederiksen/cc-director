@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
@@ -22,22 +22,23 @@ public partial class CompleteStep : UserControl
         new(System.Windows.Media.Color.FromRgb(0xE0, 0xA0, 0x30));
 
     /// <param name="readyToGo">
-    /// May this screen tell the user they are ready? False when a REQUIRED prerequisite is still
-    /// missing or no coding agent is installed at all - a board with nothing to run is not "ready",
-    /// and saying so next to an amber list of what is missing is the lie this parameter removes.
+    /// May this screen tell the user they are ready? False when no coding agent is installed at all -
+    /// a board with nothing to run is not "ready", and saying so next to an amber note about what is
+    /// missing is the lie this parameter removes.
     /// Computed once by <see cref="InstallCompletion.IsReadyToGo"/>; this screen only renders it.
     /// </param>
-    public CompleteStep(int installed, int skipped, string installPath, string directorExePath, bool isUpdate, bool alreadyUpToDate = false, string? version = null, string? gatewayFailureReason = null, string? capabilityNotice = null, bool readyToGo = true)
+    public CompleteStep(int installed, int skipped, string installPath, string directorExePath, bool isUpdate, bool alreadyUpToDate = false, string? version = null, string? gatewayFailureReason = null, string? agentNotice = null, bool readyToGo = true)
     {
         InitializeComponent();
 
-        // Recommended prerequisites no longer block the wizard, so this is where the user is told
-        // what they skipped and what it costs them - at the end, next to what they can do about it.
-        if (!string.IsNullOrWhiteSpace(capabilityNotice))
+        // The one thing the wizard still says about the MACHINE rather than about this install: there
+        // is no coding agent on it, so the board has nothing to run. Said here, at the end, next to
+        // what the user can do about it - never as a wall on an earlier screen.
+        if (!string.IsNullOrWhiteSpace(agentNotice))
         {
-            CapabilityNoticeText.Text = capabilityNotice;
+            CapabilityNoticeText.Text = agentNotice;
             CapabilityPanel.Visibility = Visibility.Visible;
-            SetupLog.Write($"[CompleteStep] capability notice shown: {capabilityNotice}");
+            SetupLog.Write($"[CompleteStep] agent notice shown: {agentNotice}");
         }
 
         _installPath = installPath;
@@ -50,21 +51,21 @@ public partial class CompleteStep : UserControl
         PathText.Text = installPath;
         LogPathBox.Text = SetupLog.Path;
 
-        var versionSuffix = string.IsNullOrEmpty(version) ? "" : $" · v{version.TrimStart('v')}";
+        var versionSuffix = string.IsNullOrEmpty(version) ? "" : $" Â· v{version.TrimStart('v')}";
 
         // One place computes the verdict; this only renders it (any skipped component reads as
         // Problems, so a failure can never render as "Everything went perfectly").
         switch (InstallCompletion.Classify(skipped, alreadyUpToDate))
         {
             case InstallCompletionKind.AlreadyUpToDate:
-                HeadingText.Text = "✓  Already Up to Date";
+                HeadingText.Text = "âœ“  Already Up to Date";
                 DescriptionText.Text = "DevThrottle is already running the latest version.";
                 SummaryLine.Text = $"Nothing to do{versionSuffix}";
                 PathNote.Visibility = Visibility.Collapsed;
                 break;
 
             case InstallCompletionKind.Success when isUpdate:
-                HeadingText.Text = readyToGo ? "✓  DevThrottle is up to date" : "DevThrottle is up to date - one thing left";
+                HeadingText.Text = readyToGo ? "âœ“  DevThrottle is up to date" : "DevThrottle is up to date - one thing left";
                 DescriptionText.Text = readyToGo
                     ? "You're ready to go."
                     : "The update finished. One thing below still needs you.";

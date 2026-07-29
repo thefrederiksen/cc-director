@@ -27,11 +27,15 @@ jobs:
           dotnet-version: "10.0.x"
 
       - name: Publish for Windows x64
-        # Framework-dependent: requires the .NET 10 runtime on the target (the
-        # installer detects + auto-installs it). Keeps a single small .exe asset.
+        # Self-contained: the .NET runtime ships INSIDE the executable, so no machine has to install
+        # one. macOS has always published this way; Windows did not, which made the runtime the single
+        # thing that could stop a fresh install dead - and the whole reason the wizard had a
+        # Prerequisites screen with a gate on it. The exe grows from about 37 MB to about 118 MB, and
+        # that cost lands on every automatic update, not only the first install. It buys an installer
+        # that cannot dead-end on a clean machine.
         run: >
           dotnet publish src/CcDirector.Avalonia/CcDirector.Avalonia.csproj
-          -c Release -r win-x64 --self-contained false
+          -c Release -r win-x64 --self-contained true
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
           -p:UpdaterEnabled=true
@@ -402,12 +406,15 @@ jobs:
           dotnet-version: "10.0.x"
 
       - name: Publish Launcher tray app for Windows x64
-        # Framework-dependent: requires the .NET 10 ASP.NET Core + desktop runtime on the target.
+        # Self-contained, for the same reason as the Director: the launcher is placed by the installer
+        # on every Windows machine, so it must not need a runtime either. About 29 MB becomes about
+        # 110 MB. The Gateway tray app is deliberately NOT bundled - it is not installed by this
+        # wizard, it is a do-it-yourself install run from the repository.
         # The explicit framework is required once the launcher project multi-targets for macOS
         # (net10.0-windows;net10.0) and is harmless before that.
         run: >
           dotnet publish src/CcDirector.Launcher/CcDirector.Launcher.csproj
-          -c Release -f net10.0-windows -r win-x64 --self-contained false
+          -c Release -f net10.0-windows -r win-x64 --self-contained true
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
 

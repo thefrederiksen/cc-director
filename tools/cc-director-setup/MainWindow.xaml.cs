@@ -12,7 +12,6 @@ namespace CcDirectorSetup;
 public partial class MainWindow : Window
 {
     private int _currentStep = 1;
-    private List<PrerequisiteInfo> _prerequisites = [];
     private int _installedCount;
     private int _skippedCount;
     private string _installPath = "";
@@ -33,19 +32,26 @@ public partial class MainWindow : Window
     private EngineInstallRunner.Prep? _cachedPrep;
 
     private WelcomeStep? _welcomeStep;
-    private PrerequisitesStep? _prerequisitesStep;
     private InstallStep? _installStep;
     private CompleteStep? _completeStep;
 
     private readonly record struct StepUI(Border Circle, TextBlock Label, TextBlock? Number);
 
-    // Wizard steps: 1 Welcome, 2 Prerequisites, 7 Install, 8 Complete. There is one linear path for every
-    // install and update - the installer always lays down the Director set with no account gate (issue
-    // #1807). Ids 3 (the old Gateway-only Sign-in step) and 5 (the old mandatory gateway-join Connect
-    // step) were removed with the account gate, and id 6 (the Skills screen) was removed because it
-    // showed internal identifiers as tick-boxes nobody could tick and asked for no decision - and
-    // the installer places no skills at all now (issue 995). The surviving ids keep their old
-    // numbers so this switch stays stable.
+    // Wizard steps: 1 Welcome, 7 Install, 8 Complete. There is one linear path for every install and
+    // update - the installer always lays down the Director set with no account gate (issue #1807).
+    // Ids 3 (the old Gateway-only Sign-in step) and 5 (the old mandatory gateway-join Connect step)
+    // were removed with the account gate, and id 6 (the Skills screen) was removed because it showed
+    // internal identifiers as tick-boxes nobody could tick and asked for no decision - the installer
+    // places no skills at all now (issue 995).
+    //
+    // Id 2, the Prerequisites screen, is gone as well. It existed for one row with teeth: the .NET
+    // runtime, which the app could not start without. The Windows executables now carry their own
+    // runtime, so nothing this installer places needs anything already on the machine and there is
+    // nothing left to gate on. What remained was advice this wizard could not act on, could not
+    // re-check, and (on macOS) could not even install - and the Director already detects agent tools
+    // in a wizard that can add what it finds to your board.
+    //
+    // The surviving ids keep their old numbers so this switch stays stable.
     private const int StepInstall = 7;
     private const int StepComplete = 8;
 
@@ -168,18 +174,17 @@ public partial class MainWindow : Window
         }
     }
 
-    // The four sidebar rows in display order. Historical ids 3-6 are retired; the remaining circles
-    // are renumbered 1..4 at runtime. This list is aligned with WizardStepFlow.VisibleSteps().
+    // The three sidebar rows in display order. Historical ids 2-6 are retired; the remaining circles
+    // are renumbered 1..3 at runtime. This list is aligned with WizardStepFlow.VisibleSteps().
     private List<StepUI> GetStepUIs() =>
     [
         new(Step1Circle, Step1Label, null),
-        new(Step2Circle, Step2Label, Step2Num),
         new(Step7Circle, Step7Label, Step7Num),
         new(Step8Circle, Step8Label, Step8Num),
     ];
 
-    // The three connector lines between the four rows, in order.
-    private Border[] GetLines() => [Line12, Line23, Line78];
+    // The two connector lines between the three rows, in order.
+    private Border[] GetLines() => [Line17, Line78];
 
     private void ShowStep(int step)
     {
@@ -192,17 +197,13 @@ public partial class MainWindow : Window
         StepContent.Content = step switch
         {
             1 => _welcomeStep ??= BuildWelcomeStep(),
-            2 => _prerequisitesStep ??= new PrerequisitesStep(OnPrerequisitesChecked, _isUpdate, _role),
             StepInstall => _installStep ??= new InstallStep(),
-            StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _directorExePath, _isUpdate, _alreadyUpToDate, _cachedPrep?.Version, _gatewayFailureReason, BuildCapabilityNotice(), IsReadyToGo()),
+            StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _directorExePath, _isUpdate, _alreadyUpToDate, _cachedPrep?.Version, _gatewayFailureReason, BuildAgentNotice(), IsReadyToGo()),
             _ => null
         };
 
         if (step == StepInstall && _isUpdate)
             _installStep?.SetUpdateMode();
-
-        if (step == 2)
-            _prerequisitesStep?.RunChecks();
 
         if (step == StepInstall)
             _ = RunInstallAsync();
@@ -268,11 +269,6 @@ public partial class MainWindow : Window
             NextButton.Content = _isUpdate ? "Updating..." : "Installing...";
             NextButton.IsEnabled = false;
         }
-        else if (_currentStep == 2)
-        {
-            NextButton.Content = "Next";
-            UpdateNextButtonForPrereqs();
-        }
         else
         {
             // Welcome and every other step: nothing to gate on. The Welcome screen makes no
@@ -282,54 +278,27 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnPrerequisitesChecked(List<PrerequisiteInfo> prerequisites)
-    {
-        _prerequisites = prerequisites;
-        UpdateNextButtonForPrereqs();
-    }
-
-    private void UpdateNextButtonForPrereqs()
-    {
-        if (_currentStep != 2) return;
-
-        NextButton.IsEnabled = PrerequisiteChecker.AllRequiredMet(_prerequisites);
-    }
-
     /// <summary>
-    /// The Complete-screen line about recommended prerequisites the user did not install. Left to
-    /// the shared <see cref="CcDirector.Setup.Engine.CapabilityNotice"/> so both wizards say the
-    /// same thing and one test can prove the words. Null when nothing is missing.
+    /// The one line the Complete screen shows about the MACHINE rather than about this install: no
+    /// coding agent is on it, so the board has nothing to run. Null when an agent is present.
+    ///
+    /// This is all that remains of the old capability notice. The other lines it produced were about
+    /// prerequisites the wizard no longer checks, and the Director's own tool detection is where a
+    /// missing agent can actually be dealt with.
     /// </summary>
-    private string? BuildCapabilityNotice()
-    {
-        // IsRecommended, NOT !IsRequired: Tailscale is optional (a deliberate choice, not a gap)
-        // and its own row already says which leg is not ready, so it must never appear here.
-        var recommended = _prerequisites
-            .Where(p => p.IsRecommended)
-            .Select(p => new CcDirector.Setup.Engine.CapabilityStatus(p.Name, p.IsFound))
-            .ToList();
-        return CcDirector.Setup.Engine.CapabilityNotice.Describe(
-            recommended,
-            CcDirector.Setup.Engine.AgentPresence.AnyOtherAgent());
-    }
+    private static string? BuildAgentNotice() =>
+        AgentPresence.AnyAgent()
+            ? null
+            : "No coding agent is set up yet, so your board has nothing to run. "
+              + "DevThrottle checks your tools when it opens and can add the ones it finds.";
 
     /// <summary>
     /// Whether the Complete screen is allowed to say the user is ready to go. The rule lives in
-    /// <see cref="InstallCompletion.IsReadyToGo"/>; this only gathers the three facts it needs.
+    /// <see cref="InstallCompletion.IsReadyToGo"/>; this only gathers the two facts it needs.
     /// A machine with no coding agent at all has nothing to run, so it is not ready however
     /// cleanly the install itself went.
     /// </summary>
-    private bool IsReadyToGo()
-    {
-        var claudeFound = _prerequisites
-            .Any(p => p.Name == CcDirector.Setup.Engine.PrerequisiteNames.ClaudeCode && p.IsFound);
-        var anyAgent = claudeFound || CcDirector.Setup.Engine.AgentPresence.AnyOtherAgent();
-
-        return InstallCompletion.IsReadyToGo(
-            _skippedCount,
-            PrerequisiteChecker.AllRequiredMet(_prerequisites),
-            anyAgent);
-    }
+    private bool IsReadyToGo() => InstallCompletion.IsReadyToGo(_skippedCount, AgentPresence.AnyAgent());
 
     private async Task RunInstallAsync()
     {
@@ -371,12 +340,6 @@ public partial class MainWindow : Window
         VersionText.Text = prep.Version;
         _installStep?.SetItems(prep.Items);
 
-        // A Gateway machine has the tray app + Cockpit (installed/refreshed by the gateway phase below);
-        // show that card up front so the user sees it's part of THIS install/update, not just a
-        // Workstation set. On update the role is the one detected from disk, so a Gateway host shows it too.
-        if (_role == InstallRole.Gateway)
-            _installStep?.ShowGatewaySection();
-
         if (_isUpdate && prep.IsUpToDate)
         {
             SetupLog.Write($"[MainWindow] Already up to date: {prep.Version}");
@@ -387,17 +350,22 @@ public partial class MainWindow : Window
             _installedCount = 0;
             _skippedCount = 0;
 
+            NextButton.IsEnabled = false;
+
             // A Gateway host re-asserts its Gateway + Cockpit even when the Director is already current:
             // the Cockpit can be version-drifted, or the managed tray launch / autostart can be broken
             // (the gateway phase re-extracts the Cockpit, relaunches the tray managed, and re-registers
             // the autostart Run key with --managed). This is what makes re-running the installer reliably
-            // heal a Gateway host whose Cockpit is stuck on "Cockpit starting...".
+            // heal a Gateway host whose Cockpit is stuck on "Cockpit starting...". It has no card of its
+            // own: this wizard installs the Director, and the Gateway is a separate do-it-yourself install.
             if (_role == InstallRole.Gateway)
-            {
-                NextButton.IsEnabled = false;
-                _installStep?.ShowGatewaySection();
                 await RunGatewayTrayInstallAsync(prep);
-            }
+
+            // Re-assert the launcher on an already-current machine too. It is idempotent (start if it is
+            // not up, re-register autostart) and it is what makes the launcher card on this screen tell
+            // the truth instead of sitting at "Pending" forever on the up-to-date path.
+            if (OperatingSystem.IsWindows())
+                await StartLauncherAsync();
 
             NextButton.Content = "Next";
             NextButton.IsEnabled = true;
@@ -436,8 +404,6 @@ public partial class MainWindow : Window
         _cachedPrep = prep;
 
         _installStep?.SetItems(prep.Items);
-        if (_role == InstallRole.Gateway)
-            _installStep?.ShowGatewaySection();
         _installStep?.SetStatus($"Repairing {prep.Version}...");
         _installStep?.ShowProgress();
 
@@ -486,19 +452,25 @@ public partial class MainWindow : Window
     private async Task<bool> StartLauncherAsync()
     {
         SetupLog.Write("[MainWindow] StartLauncherAsync");
-        _installStep?.SetStatus("Starting the Launcher tray app...");
+        _installStep?.SetLauncherStarting();
         try
         {
             var result = await new LauncherTrayInstaller(InstallLayout.Default()).InstallAsync();
             foreach (var s in result.Steps) SetupLog.Write($"[MainWindow]   launcher: {s}");
             SetupLog.Write($"[MainWindow] launcher start success={result.Success}: {result.Message}");
-            if (result.Success) return true;
+            if (result.Success)
+            {
+                _installStep?.SetLauncherRunning();
+                return true;
+            }
+            _installStep?.SetLauncherFailed();
             _installStep?.SetStatus($"ERROR: Launcher tray app failed to start. {result.Message}");
             return false;
         }
         catch (Exception ex)
         {
             SetupLog.Write($"[MainWindow] StartLauncherAsync FAILED: {ex.Message}");
+            _installStep?.SetLauncherFailed();
             _installStep?.SetStatus($"ERROR: Launcher tray app failed to start. {ex.Message}");
             return false;
         }
@@ -507,9 +479,16 @@ public partial class MainWindow : Window
     private async Task RunGatewayTrayInstallAsync(EngineInstallRunner.Prep prep)
     {
         SetupLog.Write("[MainWindow] RunGatewayTrayInstallAsync: shelling the CLI");
-        _installStep?.SetStatus("Installing the Gateway tray app...");
-        _installStep?.SetGatewayInstalling();
 
+        // This wizard installs the Director. The Gateway is a separate, do-it-yourself install run from
+        // the repository, so it gets no card and no name on this screen - but a machine ALREADY installed
+        // as a Gateway host still has its tray app and Cockpit re-asserted here, because leaving them
+        // half-updated is worse than not mentioning them.
+        //
+        // The progress lines the CLI streams go to the log ONLY. They used to be written over the line
+        // under the heading, which is how an up-to-date machine came to read
+        // "Gateway: Launcher tray app installed and running on 7900." instead of its version.
+        //
         // The gateway-outcome -> completion-state transition lives in GatewayRefresh (UI-free, tested):
         // a returned failure AND a thrown failure both add one to the skipped count so the Complete step
         // reports the honest failure instead of "Everything went perfectly." This is the ONLY place the
@@ -518,16 +497,19 @@ public partial class MainWindow : Window
         var outcome = await GatewayRefresh.RunAsync(
             () => launcher.RunAsync(
                 prep.Release,
-                line => Dispatcher.BeginInvoke(() => _installStep?.SetStatus($"Gateway: {line}"))),
+                line => SetupLog.Write($"[MainWindow]   gateway: {line}")),
             _skippedCount);
 
         _skippedCount = outcome.Skipped;
         _gatewayResultMessage = outcome.Message;
         // outcome.Message carries the tailnet Cockpit URL on success, the failure reason on failure.
         _gatewayFailureReason = outcome.Success ? null : outcome.Message;
-        _installStep?.SetStatus(outcome.Message);
-        if (outcome.Success) _installStep?.SetGatewayDone();
-        else _installStep?.SetGatewayFailed();
+
+        // Silence on success (there is no card to update, and the heading line belongs to the Director),
+        // but a FAILURE must still reach the user in words - it is counted as a skip on the Complete
+        // screen, and a counted failure nobody was told about is exactly what we are removing.
+        if (!outcome.Success)
+            _installStep?.SetStatus(outcome.Message);
         SetupLog.Write($"[MainWindow] Gateway install success={outcome.Success}: {outcome.Message} (skipped now {_skippedCount})");
     }
 

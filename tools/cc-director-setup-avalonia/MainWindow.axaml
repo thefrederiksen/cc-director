@@ -1,4 +1,4 @@
-<Window xmlns="https://github.com/avaloniaui"
+﻿<Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="CcDirectorSetup.MainWindow"
         Title="DevThrottle Setup"
@@ -57,7 +57,7 @@
                             Background="#3C3C3C"
                             x:Name="Line12" />
 
-                    <!-- Step 2: Prerequisites -->
+                    <!-- Step 2: Install -->
                     <StackPanel Orientation="Horizontal">
                         <Border x:Name="Step2Circle" Width="28" Height="28" CornerRadius="14"
                                 Background="#3C3C3C">
@@ -66,7 +66,7 @@
                                        HorizontalAlignment="Center" VerticalAlignment="Center"
                                        x:Name="Step2Num" />
                         </Border>
-                        <TextBlock x:Name="Step2Label" Text="Prerequisites"
+                        <TextBlock x:Name="Step2Label" Text="Install"
                                    Foreground="#888888" FontSize="13"
                                    VerticalAlignment="Center" Margin="12,0,0,0" />
                     </StackPanel>
@@ -76,7 +76,7 @@
                             Background="#3C3C3C"
                             x:Name="Line23" />
 
-                    <!-- Step 3: Install -->
+                    <!-- Step 3: Complete -->
                     <StackPanel Orientation="Horizontal">
                         <Border x:Name="Step3Circle" Width="28" Height="28" CornerRadius="14"
                                 Background="#3C3C3C">
@@ -85,26 +85,7 @@
                                        HorizontalAlignment="Center" VerticalAlignment="Center"
                                        x:Name="Step3Num" />
                         </Border>
-                        <TextBlock x:Name="Step3Label" Text="Install"
-                                   Foreground="#888888" FontSize="13"
-                                   VerticalAlignment="Center" Margin="12,0,0,0" />
-                    </StackPanel>
-
-                    <Border Width="2" Height="24" Margin="13,0,0,0"
-                            HorizontalAlignment="Left"
-                            Background="#3C3C3C"
-                            x:Name="Line34" />
-
-                    <!-- Step 4: Complete -->
-                    <StackPanel Orientation="Horizontal">
-                        <Border x:Name="Step4Circle" Width="28" Height="28" CornerRadius="14"
-                                Background="#3C3C3C">
-                            <TextBlock Text="4" Foreground="#888888" FontSize="13"
-                                       FontWeight="SemiBold"
-                                       HorizontalAlignment="Center" VerticalAlignment="Center"
-                                       x:Name="Step4Num" />
-                        </Border>
-                        <TextBlock x:Name="Step4Label" Text="Complete"
+                        <TextBlock x:Name="Step3Label" Text="Complete"
                                    Foreground="#888888" FontSize="13"
                                    VerticalAlignment="Center" Margin="12,0,0,0" />
                     </StackPanel>

@@ -1,4 +1,4 @@
-namespace CcDirectorSetup.Services;
+namespace CcDirector.Setup.Engine;
 
 /// <summary>How the Complete step should read an install/update pass.</summary>
 public enum InstallCompletionKind
@@ -14,11 +14,14 @@ public enum InstallCompletionKind
 }
 
 /// <summary>
-/// Pure completion-state classification for the setup wizard, factored out of the WPF
-/// <c>CompleteStep</c> so the rule is single-sourced and unit-testable. Any skipped (failed) component
-/// reads as <see cref="InstallCompletionKind.Problems"/> - the "finished with problems" state - so a
-/// failure can never be rendered as "Everything went perfectly" or "Already Up to Date." The skipped
-/// count is fed by <see cref="GatewayRefresh"/> so a failed Gateway refresh lands here as Problems.
+/// Pure completion-state classification for the setup wizard. Any skipped (failed) component reads
+/// as <see cref="InstallCompletionKind.Problems"/> - the "finished with problems" state - so a
+/// failure can never be rendered as "Everything went perfectly" or "Already Up to Date."
+///
+/// This lives in the shared engine, not in either wizard, because both wizards must reach the same
+/// verdict from the same facts. It used to live in the Windows project alone, which is how macOS
+/// came to branch for itself and say "Everything went perfectly" about a pass that had not gone
+/// perfectly.
 /// </summary>
 public static class InstallCompletion
 {
@@ -39,14 +42,15 @@ public static class InstallCompletion
     /// May the Complete screen tell the user they are ready to go?
     ///
     /// <see cref="Classify"/> answers "did this install do its job", which is a different question.
-    /// A pass where every component landed can still leave a machine that cannot run anything: a
-    /// required prerequisite may be missing, or there may be no coding agent installed at all. The
-    /// screen said "Everything went perfectly. You're ready to go." in exactly those cases, with
-    /// the amber list of what was missing sitting directly underneath it.
+    /// A pass where every component landed can still leave a machine that cannot run anything,
+    /// because there is no coding agent on it. "You're ready to go" is false then, and the screen
+    /// used to say it anyway.
+    ///
+    /// The wizard no longer checks prerequisites - nothing it places needs anything already on the
+    /// machine - so an agent being present is the only remaining fact this turns on.
     /// </summary>
     /// <param name="skipped">Components that did not install.</param>
-    /// <param name="allRequiredMet">Every REQUIRED prerequisite is present.</param>
-    /// <param name="anyCodingAgentPresent">Claude Code or any other agent command line tool is installed.</param>
-    public static bool IsReadyToGo(int skipped, bool allRequiredMet, bool anyCodingAgentPresent)
-        => skipped == 0 && allRequiredMet && anyCodingAgentPresent;
+    /// <param name="anyCodingAgentPresent">Any agent command line tool the Director drives is installed.</param>
+    public static bool IsReadyToGo(int skipped, bool anyCodingAgentPresent)
+        => skipped == 0 && anyCodingAgentPresent;
 }

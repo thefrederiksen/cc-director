@@ -55,37 +55,17 @@
                                    VerticalAlignment="Center" Margin="12,0,0,0" />
                     </StackPanel>
 
-                    <!-- Line 1-2 -->
+                    <!-- Line 1-7 -->
                     <Border Width="2" Height="24" Margin="13,0,0,0"
                             HorizontalAlignment="Left"
                             Background="{StaticResource StepInactive}"
-                            x:Name="Line12" />
+                            x:Name="Line17" />
 
-                    <!-- Step 2: Prerequisites -->
-                    <StackPanel x:Name="Step2Row" Orientation="Horizontal">
-                        <Border x:Name="Step2Circle" Width="28" Height="28" CornerRadius="14"
-                                Background="{StaticResource StepInactive}">
-                            <TextBlock Text="2" Foreground="{StaticResource DimText}" FontSize="13"
-                                       FontWeight="SemiBold"
-                                       HorizontalAlignment="Center" VerticalAlignment="Center"
-                                       x:Name="Step2Num" />
-                        </Border>
-                        <TextBlock x:Name="Step2Label" Text="Prerequisites"
-                                   Foreground="{StaticResource DimText}" FontSize="13"
-                                   VerticalAlignment="Center" Margin="12,0,0,0" />
-                    </StackPanel>
-
-                    <!-- Line 2-7 -->
-                    <Border Width="2" Height="24" Margin="13,0,0,0"
-                            HorizontalAlignment="Left"
-                            Background="{StaticResource StepInactive}"
-                            x:Name="Line23" />
-
-                    <!-- Step 7 (shown 3rd): Install -->
+                    <!-- Step 7 (shown 2nd): Install -->
                     <StackPanel x:Name="Step7Row" Orientation="Horizontal">
                         <Border x:Name="Step7Circle" Width="28" Height="28" CornerRadius="14"
                                 Background="{StaticResource StepInactive}">
-                            <TextBlock Text="3" Foreground="{StaticResource DimText}" FontSize="13"
+                            <TextBlock Text="2" Foreground="{StaticResource DimText}" FontSize="13"
                                        FontWeight="SemiBold"
                                        HorizontalAlignment="Center" VerticalAlignment="Center"
                                        x:Name="Step7Num" />
@@ -101,11 +81,11 @@
                             Background="{StaticResource StepInactive}"
                             x:Name="Line78" />
 
-                    <!-- Step 8 (shown 4th): Complete -->
+                    <!-- Step 8 (shown 3rd): Complete -->
                     <StackPanel x:Name="Step8Row" Orientation="Horizontal">
                         <Border x:Name="Step8Circle" Width="28" Height="28" CornerRadius="14"
                                 Background="{StaticResource StepInactive}">
-                            <TextBlock Text="4" Foreground="{StaticResource DimText}" FontSize="13"
+                            <TextBlock Text="3" Foreground="{StaticResource DimText}" FontSize="13"
                                        FontWeight="SemiBold"
                                        HorizontalAlignment="Center" VerticalAlignment="Center"
                                        x:Name="Step8Num" />

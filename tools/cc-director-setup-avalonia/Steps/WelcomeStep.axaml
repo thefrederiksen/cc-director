@@ -19,7 +19,7 @@
                        FontWeight="SemiBold"
                        HorizontalAlignment="Center" />
 
-            <TextBlock Text="A toolkit for Claude Code developers"
+            <TextBlock Text="Run every coding agent in parallel"
                        Foreground="#007ACC"
                        FontSize="13"
                        FontWeight="SemiBold"
@@ -30,7 +30,7 @@
                  (issue #1807). The update path overwrites this text with the "Checking for updates /
                  Up to date / Upgrade available" line. -->
             <TextBlock x:Name="DescriptionText"
-                       Text="DevThrottle runs and manages multiple Claude Code sessions side by side, with a full suite of CLI tools for documents, browser automation, email, media, and more. No account is needed to install it."
+                       Text="DevThrottle runs Claude Code, Codex, Gemini and other coding agents side by side on one board, so you can keep several going at once. It tells you the moment one of them needs you. No account is needed to install it."
                        Foreground="#CCCCCC"
                        FontSize="13"
                        TextWrapping="Wrap"
