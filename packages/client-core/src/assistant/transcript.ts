@@ -6,7 +6,7 @@
 // device (CarModeConversationStore), so the page sending nothing but the new turn is correct - this
 // list is what the owner sees, not what the model sees.
 
-import type { CarModeAction } from "../carmode/carModeApi";
+import type { BrainAction } from "../fleetbrain/brainApi";
 
 /** One entry in the on-screen conversation. `error` entries are failures shown in place (a failed
  *  turn stays visible in context rather than vanishing into a toast). */
@@ -14,7 +14,7 @@ export interface AssistantEntry {
   role: "user" | "assistant" | "error";
   text: string;
   /** The fleet actions the brain reports having taken this turn (assistant entries only). */
-  actions?: CarModeAction[];
+  actions?: BrainAction[];
   /** True when the brain is holding a destructive action and waits for a confirm/cancel next turn. */
   pendingConfirmation?: boolean;
 }

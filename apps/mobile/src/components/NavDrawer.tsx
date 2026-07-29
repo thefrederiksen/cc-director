@@ -35,9 +35,6 @@ export function NavDrawer() {
             <Link className="drawer-item" to="/assistant" onClick={close}>
               Assistant
             </Link>
-            <Link className="drawer-item" to="/car" onClick={close}>
-              Car Mode
-            </Link>
             <Link className="drawer-item" to="/recorder" onClick={close}>
               Voice Recorder
             </Link>

@@ -1,5 +1,5 @@
 import { AiTab } from "./AiTab";
-import { CarModeTab } from "./CarModeTab";
+import { AssistantTab } from "./AssistantTab";
 import { LanguageTab } from "./LanguageTab";
 import { NotificationsTab } from "./NotificationsTab";
 import { TranscriptionTab } from "./TranscriptionTab";
@@ -57,8 +57,8 @@ export function SettingsTabPanel({ tab, accountHref, transcriptionHealthHref }: 
       return <LanguageTab />;
     case "transcription":
       return <TranscriptionTab healthHref={transcriptionHealthHref} />;
-    case "carmode":
-      return <CarModeTab />;
+    case "assistant":
+      return <AssistantTab />;
     // Cockpit-only tabs are rendered by the Cockpit shell, not from here: their content is desktop-only
     // code and has no business in the library both shells load. The shell checks for them BEFORE calling
     // this panel (see the Cockpit's SettingsView), so reaching this line means a tab was selected on a

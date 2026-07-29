@@ -33,7 +33,6 @@ public sealed class CarModeBrain
     private readonly Func<TenantId, SpokenLanguage> _languageFor;
     private readonly Func<TenantId, string> _endPhraseFor;
     private readonly Action<string> _log;
-    private readonly CarModeSurface _surface;
 
     /// <param name="fleetForCaller">Resolves the fleet view for one authenticated caller credential
     ///  (issue #2129, hosted tenant isolation): every fleet tool call must run AS the calling device, so
@@ -51,10 +50,7 @@ public sealed class CarModeBrain
     ///  matched literally when the owner says it, so teaching a translated phrase would teach a word
     ///  that does not work. The help used to hardcode "over and out", which was already wrong for
     ///  anyone who had changed the setting; translating it would only have made that worse.</param>
-    /// <param name="surface">Which surface this brain instance speaks to. Car (the default) keeps the
-    ///  hands-free one-or-two-sentence style; Desk (the cockpit Assistant screen) appends the desk-surface
-    ///  overrides. Everything else - loop, tools, stores, model - is identical.</param>
-    public CarModeBrain(ICarModeChat chat, Func<string, ICarModeFleet> fleetForCaller, CarModeConversationStore conversations, CarModePendingStore pending, CarModeSubjectStore subjects, Func<TenantId, SpokenLanguage> languageFor, Func<TenantId, string> endPhraseFor, Action<string>? log = null, CarModeSurface surface = CarModeSurface.Car)
+    public CarModeBrain(ICarModeChat chat, Func<string, ICarModeFleet> fleetForCaller, CarModeConversationStore conversations, CarModePendingStore pending, CarModeSubjectStore subjects, Func<TenantId, SpokenLanguage> languageFor, Func<TenantId, string> endPhraseFor, Action<string>? log = null)
     {
         _chat = chat ?? throw new ArgumentNullException(nameof(chat));
         _fleetForCaller = fleetForCaller ?? throw new ArgumentNullException(nameof(fleetForCaller));
@@ -68,7 +64,6 @@ public sealed class CarModeBrain
         // carries the account's language and the account is only known when a turn arrives. One brain
         // instance serves every tenant on this Gateway; a prompt frozen at construction would have
         // frozen one tenant's language for all of them.
-        _surface = surface;
     }
 
     /// <summary>
@@ -190,7 +185,7 @@ public sealed class CarModeBrain
         }
 
         var messages = new List<object>();
-        messages.Add(new { role = "system", content = BuildSystemPrompt(language, _surface) });
+        messages.Add(new { role = "system", content = BuildSystemPrompt(language) });
         foreach (var m in _conversations.GetHistory(deviceKey))
             messages.Add(new { role = m.Role, content = m.Content });
         messages.Add(new { role = "user", content = userText });
@@ -611,11 +606,14 @@ public sealed class CarModeBrain
     /// Public and static so the spoken-path registry and its tests can render it for each language
     /// without standing up a brain.
     /// </summary>
-    public static string BuildSystemPrompt(SpokenLanguage language, CarModeSurface surface)
+    public static string BuildSystemPrompt(SpokenLanguage language)
     {
         ArgumentNullException.ThrowIfNull(language);
-        var body = surface == CarModeSurface.Desk ? SystemPrompt + DeskAddendum : SystemPrompt;
-        return body + "\n\n" + SpeechContract.SpokenOutputContract(language);
+        // ONE surface. There were two - the hands-free phone surface and the desk Assistant - chosen by a
+        // parameter, with the desk overlay appended for the second. Car Mode was removed from the product
+        // (#1028), so the Assistant is the only surface on this brain and its overlay is simply part of the
+        // prompt. A parameter with one possible value is a branch nothing can take.
+        return SystemPrompt + DeskAddendum + "\n\n" + SpeechContract.SpokenOutputContract(language);
     }
 
     // The system prompt: a competent, concise development manager the owner talks to hands-free. Spoken

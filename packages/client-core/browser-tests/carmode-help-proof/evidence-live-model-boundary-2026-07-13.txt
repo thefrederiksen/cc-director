@@ -1,5 +1,0 @@
- [PASS] relay-delete: messaged=1 ("delete session five over") deleted=0 pending=False spoken="The message 'delete session five over' has been sent to the Car Mode Demo session."
- [PASS] relay-snooze: messaged=1 snoozed=0 spoken="I've told the Car Mode Demo session to snooze the tests over."
- [PASS] tell-me-is-command: messaged=0 listCalls=1 spoken="The next session that needs you is Car Mode Demo in the devthrottle repo. It has been waiting for 3 minutes and is waiting for your answer."
- [PASS] help-verbatim: spokenMatchesScript=True spoken="I'm your fleet manager, and you talk to me two ways. By defa..."
- [PASS] command-reads-fleet: listCalls=1 messaged=0 spoken="One session needs you. The Car Mode Demo in the devthrottle repo has been waiting for 3 minutes."

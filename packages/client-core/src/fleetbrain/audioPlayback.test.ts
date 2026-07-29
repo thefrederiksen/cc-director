@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { playClip } from "./audioPlayback";
 
-// playClip is the single-clip playback leaf the Car Mode turn machine uses. The correctness rule it exists
+// playClip is the single-clip playback leaf every spoken surface uses. The correctness rule it exists
 // to guarantee: a clip's src is assigned EXACTLY ONCE per call, so a clip that is still playing can never be
 // clobbered - the defect that made the phone play only the tail of the reply. These tests drive a fake
 // media element (no jsdom needed) so the invariant is checked without a real audio engine; the real-browser
@@ -73,7 +73,7 @@ describe("playClip", () => {
     expect(audio.srcAssignments).toBe(1);
   });
 
-  it("resolves 'stopped' when the registered stop is invoked (interrupt / End Car Mode)", async () => {
+  it("resolves 'stopped' when the registered stop is invoked (an interrupt, or the surface closing)", async () => {
     const audio = new FakeAudio();
     const ended = vi.fn();
     let stop: () => void = () => {};

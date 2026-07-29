@@ -38,7 +38,6 @@ vi.mock("../api/ai", () => ({
   setWingmanModel: vi.fn(),
   setWingmanFastModel: vi.fn(),
   setCarModeModel: vi.fn(),
-  setCarModeEndPhrase: vi.fn(),
   setTtsModel: vi.fn(),
   setTtsVoice: vi.fn(),
   testChat: vi.fn(),
@@ -127,7 +126,7 @@ describe("the Settings tab strip", () => {
       "Notifications",
       "Language",
       "Transcription",
-      "Car Mode",
+      "Assistant",
     ]);
   });
 
@@ -139,7 +138,7 @@ describe("the Settings tab strip", () => {
       "Notifications",
       "Language",
       "Transcription",
-      "Car Mode",
+      "Assistant",
       "Injected text",
     ]);
   });
@@ -219,17 +218,21 @@ describe("the AI tab, hidden but kept", () => {
 });
 
 describe("what moved off the AI tab", () => {
-  // The phone used to carry the Car Mode model on its AI screen while the desktop carried it on a Car
-  // Mode tab. It is on the Car Mode tab now, on both, and it must not be in two places at once.
-  it("puts the Car Mode model on the Car Mode tab and nowhere else", async () => {
+  // The phone used to carry the fleet-brain model on its AI screen while the desktop carried it on the Car
+  // Mode tab. Car Mode was removed from the product (#1028) and that model went with the surface that still
+  // uses it - the Assistant - so it is on the Assistant tab now, on both surfaces, and in one place only.
+  //
+  // The end phrase and its live tester are NOT here, and that is the deletion being asserted: both were
+  // about hands-free turn-taking, nothing else spoke them, and they went with Car Mode.
+  it("puts the fleet-brain model on the Assistant tab and nowhere else", async () => {
     const { unmount } = mount(<SettingsTabPanel tab="ai" />);
     expect(await screen.findByLabelText("Thinking model")).toBeTruthy();
     expect(screen.queryByLabelText("Model")).toBeNull();
     unmount();
 
-    mount(<SettingsTabPanel tab="carmode" />);
+    mount(<SettingsTabPanel tab="assistant" />);
     expect(await screen.findByLabelText("Model")).toBeTruthy();
-    expect(screen.getByLabelText("End phrase (say this to finish your turn)")).toBeTruthy();
+    expect(screen.queryByLabelText("End phrase (say this to finish your turn)")).toBeNull();
   });
 
   it("keeps the account link off surfaces that have no account page", async () => {

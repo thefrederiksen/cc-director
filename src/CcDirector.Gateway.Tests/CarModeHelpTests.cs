@@ -25,20 +25,4 @@ public sealed class CarModeHelpTests
         Assert.DoesNotContain("\n-", script);
         Assert.DoesNotContain("#", script);
     }
-
-    [Fact]
-    public void CheatSheet_HasTheTwoModes_EachWithHintAndExamples()
-    {
-        var sheet = CarModeHelp.CheatSheet;
-        Assert.Equal(2, sheet.Modes.Count);
-        foreach (var mode in sheet.Modes)
-        {
-            Assert.False(string.IsNullOrWhiteSpace(mode.Title));
-            Assert.False(string.IsNullOrWhiteSpace(mode.Hint));
-            Assert.NotEmpty(mode.Examples);
-            Assert.All(mode.Examples, e => Assert.False(string.IsNullOrWhiteSpace(e)));
-        }
-        Assert.False(string.IsNullOrWhiteSpace(sheet.EndTurn));
-        Assert.False(string.IsNullOrWhiteSpace(sheet.Help));
-    }
 }

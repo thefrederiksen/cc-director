@@ -158,18 +158,19 @@ public sealed class SpokenLanguageContractTests
     }
 
     /// <summary>
-    /// Car Mode - the generator the language never reached - resolves it from the tenant, on both the car
-    /// surface and the cockpit Assistant surface.
+    /// The fleet brain - the generator the language never reached - resolves it from the tenant.
+    ///
+    /// This was a theory over two surfaces, the hands-free phone one and the desk Assistant. Car Mode was
+    /// removed from the product (#1028) and the brain's prompt no longer branches on a surface, so there is
+    /// one case to check and it is the surface that ships.
     /// </summary>
-    [Theory]
-    [InlineData(CarModeSurface.Car)]
-    [InlineData(CarModeSurface.Desk)]
-    public async Task Car_mode_speaks_the_tenants_language_on_both_surfaces(CarModeSurface surface)
+    [Fact]
+    public async Task The_fleet_brain_speaks_the_tenants_language()
     {
         var chat = new RecordingChat("Trois sessions vous attendent.");
         var brain = new CarModeBrain(
             chat, _ => new UnusedFleet(), new CarModeConversationStore(), new CarModePendingStore(_ => { }),
-            new CarModeSubjectStore(_ => { }), _ => SpokenLanguages.French, _ => "over and out", _ => { }, surface);
+            new CarModeSubjectStore(_ => { }), _ => SpokenLanguages.French, _ => "over and out", _ => { });
 
         await brain.RunTurnAsync(TenantId.Local, "device-a", "who needs me", CancellationToken.None);
 

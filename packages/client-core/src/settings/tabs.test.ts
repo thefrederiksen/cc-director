@@ -7,7 +7,7 @@ describe("visibleTabs", () => {
       "notifications",
       "language",
       "transcription",
-      "carmode",
+      "assistant",
     ]);
   });
 
@@ -16,7 +16,7 @@ describe("visibleTabs", () => {
       "notifications",
       "language",
       "transcription",
-      "carmode",
+      "assistant",
       "injectedtext",
     ]);
   });
@@ -58,6 +58,16 @@ describe("visibleTabs", () => {
 
   it("keeps Injected text off the phone - it is Cockpit only (issue #550)", () => {
     expect(visibleTabs("mobile").map((t) => t.id)).not.toContain("injectedtext");
+  });
+
+  // Car Mode was removed from the product (#1028). The tab it used to own is now the Assistant tab - the
+  // one setting it held that was never Car Mode's alone - so "carmode" is a retired id like the others: an
+  // old link lands on the default rather than on a tab that no longer exists.
+  it("no longer offers a Car Mode tab on either surface", () => {
+    for (const surface of ["cockpit", "mobile"] as const) {
+      expect(visibleTabs(surface).map((t) => t.id as string)).not.toContain("carmode");
+      expect(tabFromParam("carmode", surface)).toBe("notifications");
+    }
   });
 
   it("never includes a machine or Privacy tab", () => {

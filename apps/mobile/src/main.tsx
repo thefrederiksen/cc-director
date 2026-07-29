@@ -7,7 +7,6 @@ import { Terminal } from "./pages/Terminal";
 import { Chat } from "./pages/Chat";
 import { FileView } from "./pages/FileView";
 import { VoiceMode } from "./pages/VoiceMode";
-import { CarMode } from "./pages/CarMode";
 import { Assistant } from "./pages/Assistant";
 import { Settings } from "./pages/Settings";
 import { Recorder } from "./pages/Recorder";
@@ -47,7 +46,7 @@ function RequireDeviceKey() {
 function GatedLayout() {
   useScreenWakeLock();
   // THE viewport fit for the whole app: publishes the true visible height as --app-vh, which
-  // .terminal-screen and .car-screen size themselves from. Mounted ONCE here so no screen has to
+  // .terminal-screen sizes itself from. Mounted ONCE here so no screen has to
   // solve "does it fit?" privately again - that is why this bug kept coming back. See the hook.
   useVisibleViewportHeight();
   // Keep-warm heartbeat (P2): hold the direct LAN path open during active use so it never idles back to the relay.
@@ -146,9 +145,10 @@ const router = createBrowserRouter(
           element: <RequireDeviceKey />,
           children: [
             { path: "/", element: <Home /> },
-            // Car Mode (Car Mode mission): its own chrome-less, full-screen route, NOT nested in any
-            // tabbed session view. Hands-free voice control of the whole fleet with a screen wake-lock.
-            { path: "/car", element: <CarMode /> },
+            // /car was Car Mode, removed from the product (#1028). The route stays only to catch an
+            // installed shortcut or a stale service-worker shell and land it on the Assistant - the surface
+            // that still talks to the whole fleet by voice - rather than on a dead route or a blank screen.
+            { path: "/car", element: <Navigate to="/assistant" replace /> },
             // The Assistant (fleet assistant build): fleet-level chat + voice, not tied to any
             // session - the phone view of the same client-core turn machine the cockpit mounts.
             // Distinct from Car Mode: button turns (tap to talk), no auto turn taking, hands-on.

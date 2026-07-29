@@ -67,9 +67,9 @@ const devProxy = proxyTarget
       "/turnbriefs": { target: proxyTarget, changeOrigin: true },
       "/vault": { target: proxyTarget, changeOrigin: true },
       "/push": { target: proxyTarget, changeOrigin: true },
-      "/carmode": { target: proxyTarget, changeOrigin: true },
-      // The Assistant screen: its turn calls POST /assistant/turn (keep-warm reuses /carmode/warmup above).
+      // The Assistant screen: its turn calls POST /assistant/turn and its keep-warm ping POST /brain/warmup.
       "/assistant": { target: proxyTarget, changeOrigin: true },
+      "/brain": { target: proxyTarget, changeOrigin: true },
       // The client error channel: on-screen and uncaught errors report to the Gateway log.
       "/client-errors": { target: proxyTarget, changeOrigin: true },
       "/stats": { target: proxyTarget, changeOrigin: true },

@@ -1159,22 +1159,18 @@ public sealed class CarModeBrainTests
         Assert.Equal(new[] { 30 }, fleet.SpendDays);
     }
 
-    // ---- The desk surface (the cockpit Assistant screen) ----
+    // ---- The one surface: the Assistant ----
 
+    /// <summary>
+    /// The desk overrides are in the prompt, always.
+    ///
+    /// This was a PAIR of tests - one asserting the overrides were appended for the desk surface, one asserting
+    /// the car surface did not carry them - because the prompt branched on a surface parameter. Car Mode was
+    /// removed from the product (#1028), the branch went with it, and what is left to check is that the
+    /// surviving surface still gets its overrides.
+    /// </summary>
     [Fact]
-    public async Task DeskSurface_AppendsTheDeskOverridesToTheSystemPrompt()
-    {
-        var fleet = new FakeFleet();
-        var chat = new ScriptedChat(Speak("Hello."));
-        var brain = new CarModeBrain(chat, _ => fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => SpokenLanguages.English, _ => "over and out", _ => { }, CarModeSurface.Desk);
-
-        await brain.RunTurnAsync(TenantId.Local, "device-a", "hello", CancellationToken.None);
-
-        Assert.Contains("DESK SURFACE OVERRIDES", chat.SeenMessages[0]);
-    }
-
-    [Fact]
-    public async Task CarSurface_DoesNotCarryTheDeskOverrides()
+    public async Task TheAssistantsSystemPrompt_CarriesTheDeskOverrides()
     {
         var fleet = new FakeFleet();
         var chat = new ScriptedChat(Speak("Hello."));
@@ -1182,7 +1178,7 @@ public sealed class CarModeBrainTests
 
         await brain.RunTurnAsync(TenantId.Local, "device-a", "hello", CancellationToken.None);
 
-        Assert.DoesNotContain("DESK SURFACE OVERRIDES", chat.SeenMessages[0]);
+        Assert.Contains("DESK SURFACE OVERRIDES", chat.SeenMessages[0]);
     }
 
     [Fact]

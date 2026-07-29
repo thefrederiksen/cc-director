@@ -1,18 +1,18 @@
-// Car Mode reply playback, extracted from the turn-taking hook so it can be unit-tested on its own AND
-// driven by a real-browser audio-event test (the Car Mode "the whole reply was heard" proof).
+// Single-clip reply playback: the playback leaf every spoken surface uses - the Assistant, the voice-mode
+// clips, and the roster's read-aloud. It was extracted from a turn-taking hook so it could be unit-tested on
+// its own, and it is deliberately free of React and of any one surface's state, so a plain browser harness can
+// import it directly and instrument the <audio> element it plays on.
 //
 // The bug this file exists to prevent: the perf-round first-sentence split played TWO synthesized chunks
 // on ONE reused <audio> element, and on the phone the second chunk's src assignment clobbered the first
-// while it was still playing, so the owner heard only the tail of the reply. The correctness rule that
+// while it was still playing, so the listener heard only the tail of the reply. The correctness rule that
 // replaced it: NEVER assign a clip's src to an element that is still playing an earlier clip. playClip
 // enforces that per element (one src assignment per call), and the turn machine now plays the whole reply
 // as ONE clip, so within a turn there is exactly one src assignment - no clobber is possible.
 //
-// This module is deliberately free of React and of any Car Mode state, so a plain browser harness can
-// import it directly and instrument the <audio> element it plays on.
 
-/** How a single clip's playback ended: it finished on its own, or it was stopped early (a voice/touch
- *  interrupt, or End Car Mode). Both are normal outcomes the turn machine branches on. */
+/** How a single clip's playback ended: it finished on its own, or it was stopped early (a voice or touch
+ *  interrupt, or the surface being closed). Both are normal outcomes a caller branches on. */
 export type PlayOutcome = "ended" | "stopped";
 
 /** The lifecycle stamps a caller wants for diagnostics, fired as the one clip walks its life. Times are
@@ -68,11 +68,11 @@ export function playClip(
     // A play() rejection is the mobile autoplay block (NotAllowedError when the play is not tied to a live
     // user gesture): log the specific reason and mark it so turn diagnostics can show the reply never
     // sounded, then treat it as a stop so the turn loop unwinds and the microphone returns (no silent
-    // stall). The unlock-on-Start-gesture (useCarMode) is what prevents this from happening.
+    // stall). Priming the audio element inside the opening tap gesture is what prevents this.
     void audio.play().catch((error: unknown) => {
       const name = error instanceof Error ? error.name : "unknown";
       const message = error instanceof Error ? error.message : String(error);
-      console.log(`[CarMode] reply audio play() rejected: ${name}: ${message}`);
+      console.log(`[Playback] reply audio play() rejected: ${name}: ${message}`);
       hooks?.onPlayRejected?.(error);
       finish("stopped");
     });

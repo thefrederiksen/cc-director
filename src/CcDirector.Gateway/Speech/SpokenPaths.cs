@@ -57,15 +57,13 @@ public static class SpokenPaths
             "WingmanTranslator.BuildDevThrottlePrompt",
             language => WingmanTranslator.BuildDevThrottlePrompt(language, "what is DevThrottle?")),
 
+        // The fleet brain, one surface: the Assistant. There were two registrations here, one per surface,
+        // until Car Mode was removed from the product (#1028) - the brain's prompt no longer branches, so
+        // there is one path to register.
         new SpokenPath(
-            "Car Mode (CarModeBrain.RunTurnAsync, car surface)",
+            "the Assistant (CarModeBrain.RunTurnAsync)",
             "CarModeBrain.BuildSystemPrompt",
-            language => CarModeBrain.BuildSystemPrompt(language, CarModeSurface.Car)),
-
-        new SpokenPath(
-            "cockpit Assistant (CarModeBrain.RunTurnAsync, desk surface)",
-            "CarModeBrain.BuildSystemPrompt",
-            language => CarModeBrain.BuildSystemPrompt(language, CarModeSurface.Desk)),
+            CarModeBrain.BuildSystemPrompt),
     };
 
     /// <summary>
