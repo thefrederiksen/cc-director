@@ -45,10 +45,29 @@ public sealed record BrowserProfile(
 public static class BrowserLauncher
 {
     /// <summary>
-    /// Standard install locations for each supported browser, in priority order. The first exe
-    /// that exists wins. User-Data directory is the standard per-user Chromium location.
+    /// Standard install locations for each supported browser on THIS operating system, in priority
+    /// order. The first exe that exists wins. User-Data directory is the standard per-user Chromium
+    /// location for that platform.
+    ///
+    /// The desktop Director ships on Windows and macOS, and the two lay Chromium out completely
+    /// differently - a Windows-shaped table asked on a Mac finds nothing and the product reports
+    /// "neither Chrome nor Edge is installed" on a machine holding both. So the table is chosen by
+    /// platform, never guessed at: each branch names only the locations that platform actually uses.
     /// </summary>
     private static IReadOnlyList<(BrowserKind Kind, string DisplayName, string[] ExeCandidates, string UserDataDir)> Candidates()
+    {
+        if (OperatingSystem.IsWindows()) return WindowsCandidates();
+        if (OperatingSystem.IsMacOS()) return MacCandidates();
+
+        // The desktop app is published for Windows and macOS only. Saying so is the honest answer;
+        // inventing Linux paths we have never run against would be a guess dressed as support.
+        FileLog.Write($"[BrowserLauncher] Candidates: no browser table for this platform ({Environment.OSVersion.Platform})");
+        return Array.Empty<(BrowserKind, string, string[], string)>();
+    }
+
+    /// <summary>Exposed internally so the table's shape can be asserted from any host OS - a Windows
+    /// test run is the only place the macOS table would otherwise never be looked at.</summary>
+    internal static IReadOnlyList<(BrowserKind Kind, string DisplayName, string[] ExeCandidates, string UserDataDir)> WindowsCandidates()
     {
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
@@ -71,6 +90,42 @@ public static class BrowserLauncher
                     Path.Combine(programFiles, "Microsoft", "Edge", "Application", "msedge.exe"),
                 },
                 Path.Combine(localAppData, "Microsoft", "Edge", "User Data")),
+        };
+    }
+
+    /// <summary>
+    /// macOS: a browser is an application bundle, and the launchable binary is the one inside
+    /// <c>Contents/MacOS</c> - the <c>.app</c> folder itself is not an executable, so it is the inner
+    /// binary we must record and hand to Process.Start with the automation flags. System-wide
+    /// <c>/Applications</c> comes first because that is where both browsers install by default; the
+    /// per-user <c>~/Applications</c> is checked after, for a copy dragged there instead.
+    ///
+    /// The user-data directory is NOT the Windows shape. macOS Chromium keeps its profiles directly
+    /// under Application Support with no "User Data" level, and Edge uses one flat "Microsoft Edge"
+    /// folder rather than a Microsoft/Edge pair. <c>Local State</c> - the file
+    /// <see cref="GetProfiles"/> reads - sits at the root of these directories exactly as it does on
+    /// Windows.
+    /// </summary>
+    internal static IReadOnlyList<(BrowserKind Kind, string DisplayName, string[] ExeCandidates, string UserDataDir)> MacCandidates()
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var appSupport = Path.Combine(home, "Library", "Application Support");
+
+        static string[] BundlePaths(string home, string bundleName, string binaryName) =>
+            new[]
+            {
+                Path.Combine("/Applications", bundleName, "Contents", "MacOS", binaryName),
+                Path.Combine(home, "Applications", bundleName, "Contents", "MacOS", binaryName),
+            };
+
+        return new (BrowserKind, string, string[], string)[]
+        {
+            (BrowserKind.Chrome, "Google Chrome",
+                BundlePaths(home, "Google Chrome.app", "Google Chrome"),
+                Path.Combine(appSupport, "Google", "Chrome")),
+            (BrowserKind.Edge, "Microsoft Edge",
+                BundlePaths(home, "Microsoft Edge.app", "Microsoft Edge"),
+                Path.Combine(appSupport, "Microsoft Edge")),
         };
     }
 

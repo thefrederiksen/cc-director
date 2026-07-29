@@ -1,0 +1,12 @@
+GET http://127.0.0.1:9310/json/version at 2026-07-29 20:26:14 UTC
+(browser id=agent-browser, launched by AutomationBrowserService.LaunchAsync on this Mac)
+
+{
+   "Browser": "Chrome/150.0.7871.187",
+   "Protocol-Version": "1.3",
+   "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+   "V8-Version": "15.0.245.21",
+   "WebKit-Version": "537.36 (@30f6543ae91e6a860e73b76e3216b663b050f4e5)",
+   "webSocketDebuggerUrl": "ws://127.0.0.1:9310/devtools/browser/e32675cd-5066-4bcb-a61a-cd8f3d0ac7ff"
+}
+
