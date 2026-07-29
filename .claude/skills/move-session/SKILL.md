@@ -86,7 +86,8 @@ Message the source asking for a document at a path you choose. Seven headings:
 2. **Where I got to** - what is finished and PROVEN, kept separate from what is started or merely
    believed.
 3. **The exact next action** - specific enough to act on without asking anyone. Commands and paths,
-   not intentions.
+   not intentions. **If it is blocked on the owner, write the question out verbatim** - a question
+   buried in a paragraph is a question nobody ever asks.
 4. **Decisions and why** - what a newcomer would otherwise re-litigate or get wrong.
 5. **Traps** - dead ends already hit, things that look right and are not.
 6. **State** - branch, worktree, uncommitted work, pull requests, issue numbers, running background
@@ -97,6 +98,15 @@ Message the source asking for a document at a path you choose. Seven headings:
 reader believes the stronger claim. Learned the hard way: a handover said three test projects
 passed - true - while the wider suite had never been built at all, and continuous integration had
 in fact failed.
+
+**Facts you inherited are second-hand - label them.** When a Director is emptied one session at a
+time, the later handovers repeat things learned from the earlier ones. Those were true WHEN WRITTEN
+and nobody has rechecked them since. Separate what you established yourself from what you are
+merely passing on, and put the passed-on claims under heading seven. The last handover of the
+2026-07-28 emptying did this correctly with three questions for the owner: it carried them out of
+five other sessions' documents and said outright that it had not confirmed they were still open. A
+second-hand fact restated with first-hand confidence is how a stale belief outlives every session
+that could have corrected it.
 
 Instruct explicitly: **no secrets.** The first handover produced this way came back carrying a
 virtual machine's administrator password.
@@ -196,8 +206,28 @@ Tell it what it is, point it at the document, make it prove it read it:
 > have no transcript and no memory of that work - everything you know is in one document. Read it
 > now and treat it as your own history: `<path>`. Read the WHOLE document before doing anything, and
 > follow its "exact next action" section - including where it tells you to wait and NOT to act. When
-> you have read it, reply with a short summary of what you are working on and what your very next
-> action is, so the move can be verified - then get started on that action and nothing more.
+> you have read it, reply with `<the demand - below>`, so the move can be verified - then get
+> started on that action and nothing more.
+
+**Make the demand answerable ONLY from the document.** "Summarise what you are working on" is the
+weakest possible check: a session can produce something plausible from its own name and repository
+alone, and a plausible answer passes a verification you meant to be hard. Name three or four
+specific things that exist nowhere but the document - a state, a count, a constraint, the open
+questions:
+
+> ...reply with a short summary of what the work was, what state both Directors are in, what the
+> next action is, and the three questions waiting on the owner
+
+That version was used for the last move of the 2026-07-28 emptying and it is the one to copy. It
+cannot be bluffed, and writing it forces YOU to check that the document actually answers it - which
+is a review of the handover you just commissioned.
+
+**If the owner is at the keyboard, say so in the seed.** A moved session reads "reply so the move
+can be verified" as an instruction to report and then stop. That is right when the move is
+unattended and wrong when the owner is sitting there mid-conversation, waiting - it leaves them
+looking at a session that has gone quiet on them. When the owner is present, add: *the owner is at
+the keyboard and mid-conversation, so pick the thread up with them directly rather than waiting to
+be addressed.*
 
 ## Step 4 - Verify the pickup BEFORE touching the source
 
@@ -228,6 +258,25 @@ text with `appendEnter:true` is a 400.)
 Step 4 passed, so the work now lives on the target. Destroy the original. **Do not ask - the owner
 asked for the move, and a move includes this.** Asking here is how a Director ends up full of parked
 `[MOVED]` sessions and can never be shut down.
+
+**First, relay anything that happened AFTER the document was written.** The source goes on living
+between writing its handover and being closed - it answers one more question, the last other
+session leaves, the owner changes what he wants next. The document is a snapshot and cannot contain
+any of it, and the source is about to be destroyed, so this is the final moment those facts exist
+anywhere. Send them to the target as a closing message and mark them plainly as not being in the
+document:
+
+```bash
+cc-devthrottle message send <targetId> \
+  "Move verified - you are the continuation and I am closing now. Two things not in the document
+   because they happened after I wrote it: <late fact>, <late fact>."
+```
+
+The last move of the 2026-07-28 emptying carried two such facts this way - that the source had been
+asked to move ITSELF, so the old Director was now genuinely empty and the update was the owner's
+immediate next request, and that the installed copy of this very skill was stale and only
+`origin/main` should be followed. Neither was in the handover. Both changed what the target did
+next.
 
 ```bash
 cc-devthrottle session rename <sourceId> "[MOVED -> <where>] <original name>"
@@ -265,6 +314,35 @@ anything the document admitted it had not verified.
 
 When the point of the move was to empty a Director, say how many sessions it has left.
 
+**Collect the owner-blocked questions from every handover and put them as ONE list.** Emptying a
+Director scatters each session's blockers across however many new sessions you created, and a
+question sitting inside a moved session is a question nobody asks. The 2026-07-28 emptying produced
+three - a tag that was never pushed so a release never built, an unanswered design question about
+whether library skills are flat or a folder tree, and a browser sign-in only a human can do - and
+they only reached the owner because the last handover gathered them up. Ask them together, in prose,
+and say which ones you have confirmed are still open.
+
+---
+
+## Moving the LAST session - the self-move
+
+The session that empties a Director is itself running on it, so the final move is the mover moving
+itself. It works, and it was how the 2026-07-28 emptying finished, but three things change:
+
+- **You write your own handover.** You are both the best-informed source there will ever be and the
+  one that cannot be asked follow-up questions later. Apply the right-sizing rules to yourself
+  harder than you would to anyone else.
+- **You cannot verify the pickup by watching, so make the target verify itself TO you.** The seed's
+  reply comes back to the owner, not to you. Use the un-bluffable demand above and read the target's
+  answer before you flag yourself done - a self-move with no gate is just a session deleting itself
+  and hoping.
+- **You send your own closing message and then flag yourself.** Relay the late facts to the target
+  first (step 5), because after `session done` there is nobody left who knows them.
+
+**Do not then update the Director unprompted.** Emptying it makes the update possible; whether to
+run it is the owner's call, and he is the one who will be looking at the first-run wizard if it
+lands in a strange data home.
+
 ---
 
 ## Traps
@@ -295,7 +373,24 @@ machine-specific paths so it can be served unchanged to every agent.
 
 ---
 
-**Skill version:** 4.1 · **Updated:** 2026-07-28
+**Skill version:** 4.2 · **Updated:** 2026-07-28
+**Changes in 4.2** (from emptying an entire Director - seven sessions, finishing with a self-move.
+Several of these were learned from the TARGET's side of a move, which no earlier version could see):
+(1) **The verification demand must be un-bluffable.** "Summarise what you are working on" can be
+answered plausibly from the session name and repository alone, so it passes a check meant to be
+hard. Name specific facts that exist nowhere but the document.
+(2) **Say in the seed when the owner is at the keyboard.** Otherwise the target reads the seed as
+report-then-stop and goes quiet on an owner who is sitting there waiting, mid-conversation.
+(3) **Relay late facts to the target before closing the source.** The handover is a snapshot and the
+source goes on living after writing it; two facts that changed what the target did next existed
+nowhere in the document.
+(4) **Label inherited facts as second-hand.** When a Director is emptied one session at a time, the
+later handovers repeat earlier ones' claims that nobody has rechecked.
+(5) **Write owner-blocked questions out verbatim** in the next-action heading, and **roll them up
+into one list** in the final report - otherwise they scatter across the sessions you created.
+(6) **The self-move** - how the last session on a Director moves itself, why the target must verify
+itself to you rather than the other way round, and why it must not then update the Director
+unprompted.
 **Changes in 4.1** (four fixes from the second real move):
 (1) **Step 0 - should this be moved at all?** A session whose work is finished should be CLOSED, not
 recreated. Found by moving one whose own handover said there was no next action, spending a fresh
