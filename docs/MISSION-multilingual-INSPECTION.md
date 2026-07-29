@@ -65,6 +65,37 @@ Ruling 1 (`docs/MISSION-multilingual-RULINGS.md`) allows accents in spoken conte
 - No spoken content is written raw to a log or console anywhere.
 - ASCII still holds for identifiers, resource keys, comments, log text, and test names.
 
+## Specific items raised during the build - check each one yourself
+
+The Manager surfaced these. Do not take its account of them; verify from the code.
+
+1. **`WingmanMenuLogic.MatchOption` still matches English keywords locally**, with a model fallback
+   said to cover other languages. This is the SAME SHAPE as a real bug the Manager fixed in Phase 2:
+   the spoken confirm gate for an irreversible DELETE matched English words only, so a French account
+   told in French to confirm said "oui" and was not understood. **Prove the fallback actually fires
+   for French and Spanish** rather than assuming it does - and prove nothing silently picks the wrong
+   menu option instead of falling back. If the fallback can be skipped, this is the confirm-gate bug
+   again in a place nobody looked.
+
+2. **Three fixes made beyond the literal issue text.** Each is plausible and each needs checking:
+   the language-blind confirm gate (do negatives still win, in all three languages?); the help script
+   now quoting the *configured* end phrase untranslated; the Car Mode prompt counting relay verbs in
+   the owner's language.
+
+3. **The spoken/displayed boundary.** The mission translates what the product SAYS, not what it
+   DISPLAYS - on-screen text stays English by decision. Check nothing SPOKEN was filed into the
+   "displayed" bucket to avoid translating it. The Car Mode cheat sheet and the menu-guard error line
+   are the claimed display-only cases.
+
+4. **The menu-detect prompt asks for spoken fields in the account language while still returning
+   parseable JSON.** Verify a non-English response still parses, and that a French reading is not a
+   French frame around an English question.
+
+5. **The encoding guard.** The phrase file is UTF-8 with BOM and a test asserts accented characters
+   survive byte-for-byte, checked against `\u` escapes. Confirm the test would actually fail if the
+   file were re-saved as cp1252 - a test decoded the same wrong way as the file under test agrees
+   with the bug instead of catching it.
+
 ## What NOT to do
 
 - Do not fix anything. An inspector who picks up a hammer is no longer an inspector. Report it; the
