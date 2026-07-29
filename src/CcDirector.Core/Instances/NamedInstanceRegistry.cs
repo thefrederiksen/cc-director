@@ -122,6 +122,70 @@ public static class NamedInstanceRegistry
     }
 
     /// <summary>
+    /// The data home of one instance: <c>{SharedRoot}\instances\{slug}</c>. Exposed because deleting an
+    /// instance means deleting that directory, and the caller doing the deleting should not have to
+    /// re-derive the layout.
+    /// </summary>
+    public static string HomeFor(string slug) =>
+        Path.Combine(InstanceContext.SharedRoot, "instances", (slug ?? "").Trim().ToLowerInvariant());
+
+    /// <summary>
+    /// Remove a named instance from the registry and delete its data home - the counterpart of
+    /// <see cref="Create"/>, which registers it and scaffolds that home.
+    ///
+    /// THE DEFAULT CANNOT BE DELETED. It is the instance every ordinary caller means when it names none, it
+    /// is re-created automatically the moment anything asks for the list, and removing its home would take a
+    /// machine's real sessions and settings with it. The request is refused rather than quietly ignored, so a
+    /// caller that meant it finds out.
+    ///
+    /// THE CALLER MUST HAVE STOPPED IT FIRST. This does not look for a running process: the registry knows
+    /// what is registered, not what is running, and a delete that killed a Director as a side effect of a
+    /// bookkeeping call would be the wrong shape. The launcher stops it and then calls this.
+    /// </summary>
+    /// <returns>True when an instance was removed; false when no instance by that name was registered.</returns>
+    public static bool Delete(string slug)
+    {
+        var normalized = (slug ?? "").Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalized))
+            throw new ArgumentException("An instance name is required.", nameof(slug));
+        if (string.Equals(normalized, InstanceContext.DefaultSlug, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("The default instance cannot be deleted.");
+
+        FileLog.Write($"[NamedInstanceRegistry] Delete: slug={normalized}");
+        lock (WriteLock)
+        {
+            var instances = LoadRaw();
+            var existing = instances.FirstOrDefault(i =>
+                string.Equals(i.Name, normalized, StringComparison.OrdinalIgnoreCase));
+
+            // The registry entry goes first. If removing the directory then fails - a file held open, a
+            // permission - the instance is already unregistered, so nothing will start it again and the
+            // leftover directory is inert. The reverse order could delete a machine's data and leave a
+            // registry entry pointing at a home that no longer exists.
+            if (existing is not null)
+            {
+                instances.Remove(existing);
+                SaveRaw(instances);
+            }
+
+            var home = HomeFor(normalized);
+            try
+            {
+                if (Directory.Exists(home)) Directory.Delete(home, recursive: true);
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[NamedInstanceRegistry] Delete: removed the registry entry for {normalized} " +
+                              $"but could NOT delete {home}: {ex.Message}. The instance will not start again; " +
+                              "the directory is left behind and can be removed by hand.");
+            }
+
+            FileLog.Write($"[NamedInstanceRegistry] Delete: slug={normalized}, wasRegistered={existing is not null}");
+            return existing is not null;
+        }
+    }
+
+    /// <summary>
     /// Rename an instance's DISPLAY NAME only. The slug, id, port, home and gateway are
     /// untouched - nothing that identifies or addresses the instance moves.
     /// </summary>

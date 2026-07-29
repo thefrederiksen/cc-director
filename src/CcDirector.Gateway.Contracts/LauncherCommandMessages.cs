@@ -60,6 +60,13 @@ public sealed class LauncherCommand
     /// <summary>For "launch": optional working directory (defaults to the executable's directory).</summary>
     public string? Cwd { get; set; }
 
+    /// <summary>
+    /// For the director lifecycle verbs: WHICH Director instance to act on. Null or empty means the default
+    /// one, so a command from an older Gateway keeps its exact meaning. Naming an instance that has never run
+    /// creates it on start - the Director builds its home the first time, so there is no separate create verb.
+    /// </summary>
+    public string? Instance { get; set; }
+
     /// <summary>For "launch": when true, run headless (no window); when false, GUI mode with clean parentage.</summary>
     public bool Headless { get; set; }
 

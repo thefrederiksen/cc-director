@@ -93,7 +93,7 @@ internal static class LauncherLifecycleRelay
     public static Task<LauncherRelayOutcome> SendDirectorVerbAsync(
         TenantId tenant, string machine, string verb, string? exePath, bool confirmProtected,
         LauncherRegistry launchers, LauncherCommandRouter.SendLauncherCommandAsync? sendLauncherCommand,
-        CancellationToken ct)
+        CancellationToken ct, string? instance = null)
         => SendAsync(
             tenant, machine,
             streamCommand: new LauncherCommand
@@ -101,10 +101,14 @@ internal static class LauncherLifecycleRelay
                 Verb = $"director/{verb}",
                 Path = exePath,
                 ConfirmProtected = confirmProtected,
+                Instance = instance,
             },
             restPath: $"/director/{verb}",
-            // The lifecycle verbs carry NO body on the REST arm - the launcher reads the verb from the path.
-            restBody: null, sendsJsonBody: false, isQuery: false,
+            // The REST arm carries a body ONLY when an instance was named. With none, it posts nothing at
+            // all, exactly as before - so a launcher too old to understand the field sees the request it
+            // has always seen rather than a body it would have to ignore.
+            restBody: instance is null ? null : new { instance },
+            sendsJsonBody: instance is not null, isQuery: false,
             launchers, sendLauncherCommand, ct);
 
     /// <summary>
