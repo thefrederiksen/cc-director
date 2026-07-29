@@ -129,6 +129,27 @@ public sealed class LauncherHost : IAsyncDisposable
         FileLog.Write($"[LauncherHost] Kestrel listening on http://127.0.0.1:{_port} (loopback only)");
     }
 
+    /// <summary>The instance named in an optional request body, or null for the default. The body is
+    /// optional on purpose: every existing caller posts these verbs with NO body at all, and must keep
+    /// working unchanged.</summary>
+    private static async Task<string?> ReadInstanceAsync(HttpContext ctx)
+    {
+        try
+        {
+            if (ctx.Request.ContentLength is null or 0) return null;
+            var dto = await ctx.Request.ReadFromJsonAsync<DirectorVerbDto>(JsonOpts, ctx.RequestAborted);
+            return string.IsNullOrWhiteSpace(dto?.Instance) ? null : dto!.Instance;
+        }
+        catch (Exception)
+        {
+            // An unreadable body means no instance was named, which is the default. A malformed body must not
+            // turn "restart the Director" into an error the caller cannot act on.
+            return null;
+        }
+    }
+
+    private static string Slug(string? instance) => DirectorSupervisor.NormalizeSlug(instance);
+
     private void MapEndpoints(WebApplication app)
     {
         // GET /healthz - public, no auth.
@@ -233,25 +254,29 @@ public sealed class LauncherHost : IAsyncDisposable
             return Results.Json(_fileSearch.Search(query, limit, timeout, ctx.RequestAborted), JsonOpts);
         });
 
-        // POST /director/start
+        // POST /director/start - optional body {"instance": "<name>"}. Naming an instance that has never
+        // run CREATES it: the Director builds its home on first start, so there is no separate create verb.
         app.MapPost("/director/start", async (HttpContext ctx) =>
         {
-            _directorSupervisor.Start();
-            await ctx.Response.WriteAsJsonAsync(new { ok = true, action = "started" }, JsonOpts);
+            var instance = await ReadInstanceAsync(ctx);
+            _directorSupervisor.Start(instance);
+            await ctx.Response.WriteAsJsonAsync(new { ok = true, action = "started", instance = Slug(instance) }, JsonOpts);
         });
 
-        // POST /director/stop
+        // POST /director/stop - optional body {"instance": "<name>"}
         app.MapPost("/director/stop", async (HttpContext ctx) =>
         {
-            await _directorSupervisor.StopAsync(ctx.RequestAborted);
-            await ctx.Response.WriteAsJsonAsync(new { ok = true, action = "stopped" }, JsonOpts);
+            var instance = await ReadInstanceAsync(ctx);
+            await _directorSupervisor.StopAsync(instance, ctx.RequestAborted);
+            await ctx.Response.WriteAsJsonAsync(new { ok = true, action = "stopped", instance = Slug(instance) }, JsonOpts);
         });
 
-        // POST /director/restart
+        // POST /director/restart - optional body {"instance": "<name>"}
         app.MapPost("/director/restart", async (HttpContext ctx) =>
         {
-            await _directorSupervisor.RestartAsync(ctx.RequestAborted);
-            await ctx.Response.WriteAsJsonAsync(new { ok = true, action = "restarted" }, JsonOpts);
+            var instance = await ReadInstanceAsync(ctx);
+            await _directorSupervisor.RestartAsync(instance, ctx.RequestAborted);
+            await ctx.Response.WriteAsJsonAsync(new { ok = true, action = "restarted", instance = Slug(instance) }, JsonOpts);
         });
 
         // POST /shutdown - quit the launcher.
@@ -348,4 +373,10 @@ internal sealed class LaunchRequestDto
     public string? Args { get; init; }
     public string? Cwd { get; init; }
     public bool Headless { get; init; }
+}
+
+/// <summary>Optional body for the director lifecycle verbs: which instance to act on.</summary>
+internal sealed class DirectorVerbDto
+{
+    public string? Instance { get; init; }
 }

@@ -571,6 +571,7 @@ internal static class MachineEndpoints
         // Use JsonDocument to avoid internal-class reflection issues with System.Text.Json.
         // Do NOT gate on ContentLength - transfer-encoded bodies may have no explicit length.
         string? exePathFromBody = null;
+        string? instanceFromBody = null;
         bool? confirmProtectedFromBody = null;
         try
         {
@@ -583,6 +584,13 @@ internal static class MachineEndpoints
                     exePathFromBody = ep.GetString();
                 if (doc.RootElement.TryGetProperty("confirmProtected", out var cp) && cp.ValueKind == JsonValueKind.True)
                     confirmProtectedFromBody = true;
+                // WHICH Director on that machine. Absent means the default one, which is what every caller
+                // before this meant and still means.
+                if (doc.RootElement.TryGetProperty("instance", out var inst) && inst.ValueKind == JsonValueKind.String)
+                {
+                    var named = inst.GetString();
+                    if (!string.IsNullOrWhiteSpace(named)) instanceFromBody = named;
+                }
             }
         }
         catch { /* body is optional */ }
@@ -612,7 +620,7 @@ internal static class MachineEndpoints
         // so a protected-slot action is gated identically whichever arm carries it.
         var outcome = await LauncherLifecycleRelay.SendDirectorVerbAsync(
             tenant, machine, verb, exePathFromBody, confirmProtectedFromBody == true,
-            launchers, sendLauncherCommand, ct);
+            launchers, sendLauncherCommand, ct, instanceFromBody);
         return ToResult(machine, verb, outcome);
     }
 

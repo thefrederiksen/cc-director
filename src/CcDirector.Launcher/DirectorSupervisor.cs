@@ -1,6 +1,7 @@
 using CcDirector.Core.Network;
 using System.Diagnostics;
 using System.Net.Http;
+using CcDirector.Core.Instances;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CcDirector.Setup.Engine;
@@ -64,23 +65,28 @@ public sealed class DirectorSupervisor
     /// whose process belongs to the installed Director, or on Windows a process whose
     /// image path matches). Best-effort: does not prove the Control API is healthy.
     /// </summary>
-    public bool IsRunning => FindDirectorProcess() is not null;
+    public bool IsRunning => IsInstanceRunning(null);
+
+    /// <summary>Whether the Director for one named instance is running. A null or empty name means the
+    /// default instance, so existing callers keep their meaning exactly.</summary>
+    public bool IsInstanceRunning(string? instance) => FindDirectorProcess(instance) is not null;
 
     /// <summary>
     /// Start the installed Director if it is not already running.
     /// Windows: UseShellExecute = true for clean parentage (no pseudo-console inheritance).
     /// macOS: /usr/bin/open so the Director is parented by launchd, not this launcher.
     /// </summary>
-    public void Start()
+    public void Start(string? instance = null)
     {
-        FileLog.Write($"[DirectorSupervisor] Start: target={DirectorExePath}");
+        var slug = NormalizeSlug(instance);
+        FileLog.Write($"[DirectorSupervisor] Start: target={DirectorExePath}, instance={slug}");
 
         if (!DirectorExeExists)
             throw new FileNotFoundException($"Installed Director not found: {DirectorExePath}", DirectorExePath);
 
-        if (FindDirectorProcess() is { } running)
+        if (FindDirectorProcess(slug) is { } running)
         {
-            FileLog.Write($"[DirectorSupervisor] Start: Director already running (pid={running.Id}); skipping");
+            FileLog.Write($"[DirectorSupervisor] Start: instance '{slug}' already running (pid={running.Id}); skipping");
             return;
         }
 
@@ -92,6 +98,11 @@ public sealed class DirectorSupervisor
                 WorkingDirectory = Path.GetDirectoryName(DirectorExePath) ?? "",
                 UseShellExecute = true,
             };
+            // The default instance is started with NO argument, exactly as before, so the ordinary case is
+            // byte-for-byte unchanged. A named one carries --instance, which is also what CREATES it: the
+            // Director builds the home on first start, so "create" and "start" are one operation.
+            if (!IsDefaultSlug(slug))
+                psi.ArgumentList.Add($"--instance={slug}");
 
             using var proc = Process.Start(psi)
                 ?? throw new InvalidOperationException($"Process.Start returned null for: {DirectorExePath}");
@@ -108,6 +119,12 @@ public sealed class DirectorSupervisor
             UseShellExecute = false,
         };
         openPsi.ArgumentList.Add(DirectorExePath);
+        if (!IsDefaultSlug(slug))
+        {
+            // open passes everything after --args to the application itself.
+            openPsi.ArgumentList.Add("--args");
+            openPsi.ArgumentList.Add($"--instance={slug}");
+        }
 
         using var open = Process.Start(openPsi)
             ?? throw new InvalidOperationException($"Process.Start returned null for: /usr/bin/open {DirectorExePath}");
@@ -115,21 +132,25 @@ public sealed class DirectorSupervisor
         if (open.ExitCode != 0)
             throw new InvalidOperationException($"/usr/bin/open exited with code {open.ExitCode} for: {DirectorExePath}");
 
-        FileLog.Write($"[DirectorSupervisor] Start: /usr/bin/open accepted launch of {DirectorExePath}");
+        FileLog.Write($"[DirectorSupervisor] Start: /usr/bin/open accepted launch of {DirectorExePath} (instance={slug})");
     }
 
     /// <summary>
     /// Stop the running Director gracefully via POST /shutdown to its Control API.
     /// Falls back to process kill only when the Control API is unreachable.
     /// </summary>
-    public async Task StopAsync(CancellationToken ct = default)
-    {
-        FileLog.Write("[DirectorSupervisor] StopAsync");
+    public async Task StopAsync(CancellationToken ct = default) => await StopAsync(null, ct);
 
-        var proc = FindDirectorProcess();
+    /// <summary>Stop the Director for one named instance. A null or empty name means the default.</summary>
+    public async Task StopAsync(string? instance, CancellationToken ct = default)
+    {
+        var slug = NormalizeSlug(instance);
+        FileLog.Write($"[DirectorSupervisor] StopAsync: instance={slug}");
+
+        var proc = FindDirectorProcess(slug);
         if (proc is null)
         {
-            FileLog.Write("[DirectorSupervisor] StopAsync: Director not running");
+            FileLog.Write($"[DirectorSupervisor] StopAsync: instance '{slug}' not running");
             return;
         }
 
@@ -144,7 +165,7 @@ public sealed class DirectorSupervisor
         // failure degraded the very signal used to tell a real crash from a clean stop - while looking like it
         // worked every time. The kill remains the fallback, because a Director that cannot be stopped at all
         // would be worse; what changes is that it can no longer happen quietly.
-        var port = FindDirectorPort(proc.Id);
+        var port = FindDirectorPort(proc.Id, slug);
         if (port <= 0)
             FileLog.Write($"[DirectorSupervisor] StopAsync: NO registration found for pid={proc.Id} - cannot reach "
                           + "the Control API, so this stop will FORCE-KILL instead of shutting down gracefully. "
@@ -187,14 +208,18 @@ public sealed class DirectorSupervisor
     /// Restart the Director: stop gracefully, wait, then start fresh.
     /// A staged update is applied automatically by the Director on the next startup.
     /// </summary>
-    public async Task RestartAsync(CancellationToken ct = default)
+    public async Task RestartAsync(CancellationToken ct = default) => await RestartAsync(null, ct);
+
+    /// <summary>Restart the Director for one named instance. A null or empty name means the default.</summary>
+    public async Task RestartAsync(string? instance, CancellationToken ct = default)
     {
-        FileLog.Write("[DirectorSupervisor] RestartAsync");
-        await StopAsync(ct);
+        var slug = NormalizeSlug(instance);
+        FileLog.Write($"[DirectorSupervisor] RestartAsync: instance={slug}");
+        await StopAsync(slug, ct);
         // Brief pause to let file locks release before relaunching.
         await Task.Delay(500, ct);
-        Start();
-        FileLog.Write("[DirectorSupervisor] RestartAsync: Director restarted");
+        Start(slug);
+        FileLog.Write($"[DirectorSupervisor] RestartAsync: instance '{slug}' restarted");
     }
 
     /// <summary>
@@ -204,11 +229,29 @@ public sealed class DirectorSupervisor
     /// and its executable must live inside the installed bundle. MainModule is not used
     /// on macOS (unreliable); the executable path comes from /bin/ps.
     /// </summary>
-    private Process? FindDirectorProcess()
+    private Process? FindDirectorProcess(string? slug = null)
     {
         try
         {
-            if (OperatingSystem.IsWindows())
+            // A NAMED instance is found through its OWN registration directory and nothing else. Every
+            // instance runs the same executable, so the image-path match below cannot distinguish them - it
+            // would return whichever Director it met first and happily stop the wrong one. The registration
+            // is the only evidence that says WHICH instance a process is.
+            foreach (var registration in ReadInstanceRegistrations(slug))
+            {
+                var proc = TryGetLiveProcess(registration.Pid);
+                if (proc is null) continue;
+                if (!OperatingSystem.IsWindows() && !BelongsToInstalledDirector(ExecutablePathForPid(registration.Pid)))
+                    continue;
+                return proc;
+            }
+
+            // Windows fallback for the DEFAULT instance only: a Director that has not written a registration
+            // this launcher can read - an older build, or one whose file was removed - is still found by its
+            // image path, which is the behaviour this had before instances existed. It is deliberately NOT
+            // applied to a named instance: matching on the image path there could return a different
+            // instance's process, and stopping the wrong Director is worse than reporting none.
+            if (OperatingSystem.IsWindows() && IsDefaultSlug(slug))
             {
                 foreach (var proc in Process.GetProcessesByName("cc-director"))
                 {
@@ -223,15 +266,6 @@ public sealed class DirectorSupervisor
                         // MainModule access may fail for elevated processes; skip.
                     }
                 }
-                return null;
-            }
-
-            foreach (var instance in ReadInstanceRegistrations())
-            {
-                var proc = TryGetLiveProcess(instance.Pid);
-                if (proc is null) continue;
-                if (BelongsToInstalledDirector(ExecutablePathForPid(instance.Pid)))
-                    return proc;
             }
         }
         catch (Exception ex)
@@ -245,11 +279,11 @@ public sealed class DirectorSupervisor
     /// Find the installed Director's Control API port: the instance registration whose
     /// Pid is the process we identified as the installed Director. Returns 0 if not found.
     /// </summary>
-    private int FindDirectorPort(int directorPid)
+    private static int FindDirectorPort(int directorPid, string? slug)
     {
         try
         {
-            foreach (var instance in ReadInstanceRegistrations())
+            foreach (var instance in ReadInstanceRegistrations(slug))
             {
                 if (instance.Pid == directorPid && instance.Port > 0)
                     return instance.Port;
@@ -278,6 +312,38 @@ public sealed class DirectorSupervisor
     /// Each running Director writes {DirectorId, Pid, ControlEndpoint, ...}; files of
     /// dead Directors may linger, so callers must verify the Pid is alive.
     /// </summary>
+    /// <summary>
+    /// The one directory a Director running as <paramref name="slug"/> registers in.
+    ///
+    /// This is how a NAMED instance is targeted, and it is the only reliable way. Every instance runs the
+    /// SAME executable, so the image-path match that identifies the installed Director cannot tell two of
+    /// them apart - but each keeps its whole storage under its own home, so the directory a registration was
+    /// found in names the instance that wrote it.
+    /// </summary>
+    internal static string RegistrationDirectoryFor(string? slug) =>
+        Path.Combine(CcStorage.Root(), InstancesFolderName, NormalizeSlug(slug), "config", "director", "instances");
+
+    /// <summary>Registrations belonging to ONE instance, rather than every instance on the machine.</summary>
+    internal static List<InstanceRegistration> ReadInstanceRegistrations(string? slug)
+    {
+        var directories = new List<string> { RegistrationDirectoryFor(slug) };
+
+        // The default instance is also where a pre-1.8 Director registered, before per-instance homes
+        // existed. A machine that has not been restarted since upgrading still has its registration there,
+        // and refusing to look would make the launcher unable to stop a Director it can plainly see.
+        if (IsDefaultSlug(slug))
+            directories.Add(CcStorage.DirectorInstances());
+
+        return ReadRegistrationsIn(directories);
+    }
+
+    /// <summary>Normalise a caller-supplied instance name the same way the Director does.</summary>
+    internal static string NormalizeSlug(string? slug) =>
+        string.IsNullOrWhiteSpace(slug) ? InstanceContext.DefaultSlug : slug.Trim().ToLowerInvariant();
+
+    internal static bool IsDefaultSlug(string? slug) =>
+        string.Equals(NormalizeSlug(slug), InstanceContext.DefaultSlug, StringComparison.OrdinalIgnoreCase);
+
     internal static IEnumerable<string> InstanceRegistrationDirectories()
     {
         // The launcher's own home. Also the path CC_DIRECTOR_INSTANCES_DIR pins, which is how a test aims this
@@ -308,11 +374,16 @@ public sealed class DirectorSupervisor
     /// Each running Director writes {DirectorId, Pid, ControlEndpoint, ...}; files of dead Directors may
     /// linger, so callers must verify the Pid is alive.
     /// </summary>
-    internal static List<InstanceRegistration> ReadInstanceRegistrations()
+    internal static List<InstanceRegistration> ReadInstanceRegistrations() =>
+        ReadRegistrationsIn(InstanceRegistrationDirectories());
+
+    /// <summary>Parse every registration file in the given directories. Shared by the whole-machine scan and
+    /// the instance-scoped one, so the two cannot read the same file differently.</summary>
+    private static List<InstanceRegistration> ReadRegistrationsIn(IEnumerable<string> directories)
     {
         var result = new List<InstanceRegistration>();
 
-        foreach (var dir in InstanceRegistrationDirectories())
+        foreach (var dir in directories)
         {
             if (!Directory.Exists(dir)) continue;
 
