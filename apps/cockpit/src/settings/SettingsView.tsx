@@ -19,9 +19,10 @@ import { InjectedTextTab } from "./InjectedTextTab";
 //                   checks (Test microphone, Test transcription)
 //   Car Mode      - the phone's hands-free fleet control: model, end phrase, live phrase tester
 //
-// The AI tab is no longer in the strip. It named the hosting models to customers, which the hosting
-// layer itself refuses to do, and most of it is inert on the hosted Gateway. It still renders in full at
-// /settings?tab=ai, where it does real work for a self-hosted Gateway - see client-core/settings/tabs.ts.
+// The AI tab is no longer offered - not in the strip, and not by ?tab= either. It named the hosting
+// models to customers, which the hosting layer itself refuses to do, and most of it was inert on the
+// hosted Gateway anyway. The component is kept so this is reversible by one word, not rebuilt from
+// scratch - see client-core/settings/tabs.ts.
 //
 // The Transcription tab is new here and it is the reason the two surfaces were unified: the checks used
 // to live ONLY on the Transcription Health page on the desktop and on two standalone screens on the

@@ -28,24 +28,23 @@ interface TabDef {
    */
   surface: "all" | "cockpit";
   /**
-   * Not listed in the strip, but still REACHABLE by ?tab= on the surfaces it belongs to, and still
-   * rendered in full when reached.
+   * Not offered. The tab is out of the strip, and ?tab= does not resolve to it either - it is simply not
+   * one of this surface's tabs any more, and an old link to it lands on the default like any other id
+   * that is no longer a tab.
    *
-   * This is a narrower thing than removing a tab, and the difference is the whole point of the flag. A
-   * removed tab is gone for everybody. A hidden tab is one we have decided not to put in front of
-   * people, while the panel behind it keeps working for whoever needs it.
+   * Then why keep the row at all, rather than deleting it? Because this is meant to be REVERSIBLE by one
+   * word. The row keeps the tab's identity, its label and its place in the order, and the panel behind it
+   * is still in the codebase and still built - see SettingsTabs. Deleting the row and its component would
+   * be a different, larger decision, and undoing it would be a rewrite rather than an edit.
    *
-   * The AI tab is the reason this exists. On the hosted Gateway it shows model identities straight to
-   * customers, which contradicts a rule the hosting layer already enforces one level down - speech
-   * provider names are replaced with "devthrottle" for every non-admin caller. Most of the tab is inert
-   * on hosted anyway: it says so itself, in its own words, because the live model catalog is refused
-   * there. On a SELF-HOSTED Gateway those same pickers do real work, so deleting the component would
-   * take a working feature away from self-hosters to solve a hosted presentation problem. Hidden, not
-   * deleted.
+   * The AI tab is the reason this exists. It showed hosting model identities straight to customers, which
+   * contradicts a rule the hosting layer already enforces one level down - the real provider is replaced
+   * with "devthrottle" for every caller who is not an admin. Most of the tab is inert on the hosted
+   * Gateway anyway: it says so itself, in its own words, because the live model catalog is refused there.
    *
-   * A hidden tab is still a tab: its stored settings keep being written by its own controls when it is
-   * reached, and keep being read by the product. Hiding a control must never quietly reset what it
-   * holds - those settings live on the Gateway, per account, and nothing in this file touches them.
+   * Hiding a control must never quietly reset what it holds. It does not here: the models this tab used
+   * to set live on the Gateway, per account, are written only when somebody chooses one, and are read by
+   * the product wherever the wingman runs. Nothing in that path goes through this file.
    */
   hidden?: true;
 }
@@ -61,48 +60,40 @@ const ALL_TABS: TabDef[] = [
 ];
 
 /**
- * Every tab this surface OWNS - listed or not. Not exported: it is the input to the two rules below,
- * which are the only two questions a caller gets to ask.
+ * The tabs to show on this surface.
  *
  * `surface` is REQUIRED rather than defaulting to "all": a caller that forgets it fails to compile,
  * instead of a phone quietly inheriting a tab it cannot render. That is the whole safety of this
  * mechanism - a default here would hand the mobile shell the Cockpit's list on the first careless call.
- */
-function tabsOwnedBy(surface: Surface): TabDef[] {
-  return ALL_TABS.filter((t) => t.surface === "all" || t.surface === surface);
-}
-
-/**
- * The tabs to SHOW on this surface - what goes in the strip.
  *
- * Hidden tabs are dropped here and only here. Everything else about them is unchanged, which is what
- * makes hiding one a reversible edit to a single line of ALL_TABS.
+ * Hidden tabs are dropped here, and this is the ONLY place they are dropped - every other rule in this
+ * file works off what this function returns, so hiding a tab needs no second edit anywhere.
  */
 export function visibleTabs(surface: Surface): { id: TabId; label: string }[] {
-  return tabsOwnedBy(surface)
-    .filter((t) => t.hidden !== true)
-    .map((t) => ({ id: t.id, label: t.label }));
+  return ALL_TABS.filter(
+    (t) => (t.surface === "all" || t.surface === surface) && t.hidden !== true,
+  ).map((t) => ({
+    id: t.id,
+    label: t.label,
+  }));
 }
 
 /**
- * Resolve the ?tab= parameter to a tab this surface can actually render. Unknown, missing, retired, or
- * not-on-this-surface values fall to the first VISIBLE tab (Notifications).
+ * Resolve the ?tab= parameter to a tab THIS surface actually shows. Unknown, missing, retired, hidden, or
+ * not-on-this-surface values fall to the first tab (Notifications).
  *
- * It resolves against the tabs this surface OWNS, not the ones it lists, so a hidden tab stays reachable
- * by its own link. That is deliberate, and it is the half of hiding that is easy to leave out: drop a tab
- * from the strip alone and every existing link to it silently lands on Notifications instead, which reads
- * as the page having lost the setting rather than as the tab having been tidied away.
- *
- * It is still filtered by surface, for the same reason visibleTabs is: a phone opening a link to
- * ?tab=injectedtext must land on a real tab, not select a tab whose panel it cannot draw. A deep link is
- * permission to reach a tab this surface owns - never permission to render one it does not.
+ * It is filtered by surface for the same reason visibleTabs is: a phone opening a link to
+ * ?tab=injectedtext must land on a real tab, not select a tab that its own strip does not list and its
+ * own panel cannot draw. A deep link is not permission to render something.
  *
  * "machine", "telemetry", and "privacy" are retired ids (the "This machine" tab left in issue #2022; the
  * old standalone Telemetry page redirected to /settings?tab=telemetry, issue #1405; the Privacy tab was
  * removed by issue #2017). They no longer resolve to a tab, so an old bookmark lands on the default rather
- * than on a tab that no longer exists.
+ * than on a tab that no longer exists. A hidden tab behaves exactly the same way, by the same rule and
+ * with no special case: it is not in the list this reads, so an old link to it lands on the default.
  */
 export function tabFromParam(raw: string | null, surface: Surface): TabId {
-  const match = tabsOwnedBy(surface).find((t) => t.id === raw);
-  return match ? match.id : visibleTabs(surface)[0].id;
+  const shown = visibleTabs(surface);
+  const match = shown.find((t) => t.id === raw);
+  return match ? match.id : shown[0].id;
 }

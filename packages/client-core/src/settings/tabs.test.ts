@@ -69,12 +69,13 @@ describe("tabFromParam", () => {
     }
   });
 
-  // The other half of hiding a tab, and the half that is easy to leave out. Dropping it from the strip
-  // alone would send every existing ?tab=ai link to Notifications instead - which reads as the page
-  // having lost the setting rather than as the tab having been tidied away.
-  it("still resolves the hidden AI tab from its own link, on both surfaces", () => {
+  // A hidden tab is not a back door either: no escape hatch was wanted, so ?tab=ai gets the same
+  // treatment as any other id that is not one of this surface's tabs. Asserted rather than left implied,
+  // because "hidden from the strip but still reachable by its link" is the other thing this could
+  // plausibly have meant, and it is not what was decided.
+  it("does not resolve the hidden AI tab from a link either, on either surface", () => {
     for (const surface of ["cockpit", "mobile"] as const) {
-      expect(tabFromParam("ai", surface)).toBe("ai");
+      expect(tabFromParam("ai", surface)).toBe("notifications");
     }
   });
 

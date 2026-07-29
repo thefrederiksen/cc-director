@@ -130,9 +130,11 @@ describe("the Transcription tab", () => {
   });
 });
 
-// The AI tab left the strip; the panel behind it did not leave the product. On a self-hosted Gateway
-// those pickers do real work, so the component stays and stays reachable by its own link - see tabs.ts.
-describe("the AI tab, hidden from the strip but still rendered when reached", () => {
+// The AI tab is no longer offered anywhere - not in the strip, and not by ?tab= either. The COMPONENT is
+// still here and still built, because hiding it is meant to be reversible by one word rather than by
+// restoring a deleted screen (see tabs.ts). These are the checks that the thing being kept is still whole:
+// mounted directly, it draws in full and it writes nothing.
+describe("the AI tab, hidden but kept", () => {
   it("draws the whole tab, with the account's saved models selected", async () => {
     mount(<SettingsTabPanel tab="ai" />);
 
@@ -146,7 +148,8 @@ describe("the AI tab, hidden from the strip but still rendered when reached", ()
 
   // The classic version of this bug: a control that is no longer in front of anybody quietly writes over
   // what it holds - typically a null - the first time it is drawn. The stored models live on the Gateway
-  // per account, and merely rendering this tab must write NOTHING. Only a person choosing does that.
+  // per account, they are still what the wingman runs on, and merely rendering this tab must write
+  // NOTHING. Only a person choosing does that.
   it("writes no model setting merely by being rendered", async () => {
     mount(<SettingsTabPanel tab="ai" />);
     await screen.findByLabelText("Thinking model");
