@@ -1,5 +1,7 @@
 using CcDirector.Core.Instances;
 using CcDirector.Launcher;
+using CcDirector.Setup.Engine;
+using System.Diagnostics;
 using Xunit;
 
 namespace CcDirector.Launcher.Tests;
@@ -45,13 +47,19 @@ public sealed class DirectorSupervisorNamedInstanceTests : IDisposable
         catch (IOException) { }
     }
 
-    private static void WriteRegistration(string directory, string directorId, int port, int? pid = null)
+    private static void WriteRegistration(
+        string directory,
+        string directorId,
+        int port,
+        int? pid = null,
+        DateTime? startedAt = null)
     {
         Directory.CreateDirectory(directory);
         var json = $$"""
         {
           "DirectorId": "{{directorId}}",
           "Pid": {{pid ?? Environment.ProcessId}},
+          "StartedAt": "{{(startedAt ?? DateTime.UtcNow):O}}",
           "ControlEndpoint": "http://127.0.0.1:{{port}}",
           "Version": "1.8.4"
         }
@@ -158,6 +166,47 @@ public sealed class DirectorSupervisorNamedInstanceTests : IDisposable
         WriteRegistration(DirectorSupervisor.RegistrationDirectoryFor("default"), "d0000000-0000-0000-0000-000000000007", port: 7879);
 
         Assert.Empty(DirectorSupervisor.ReadInstanceRegistrations("never-started"));
+    }
+
+    /// <summary>
+    /// A registration can outlive its process and Windows can later reuse that PID. The replacement can even
+    /// have the installed Director's image path (another named instance does), so the registration's original
+    /// process start time has to be part of the identity. Trusting the PID alone lets a stop/restart/delete for
+    /// one instance act on an unrelated process.
+    /// </summary>
+    [Fact]
+    public void IsInstanceRunning_StaleRegistrationWhosePidWasReused_IsRejected()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        var layout = new InstallLayout(_root);
+        var supervisor = new DirectorSupervisor(layout);
+        Directory.CreateDirectory(Path.GetDirectoryName(supervisor.DirectorExePath)!);
+        File.Copy(Environment.GetEnvironmentVariable("ComSpec")!, supervisor.DirectorExePath);
+
+        using var replacement = Process.Start(new ProcessStartInfo
+        {
+            FileName = supervisor.DirectorExePath,
+            Arguments = "/d /c ping 127.0.0.1 -n 30 > nul",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        })!;
+
+        try
+        {
+            WriteRegistration(
+                DirectorSupervisor.RegistrationDirectoryFor("spare"),
+                "d0000000-0000-0000-0000-000000000010",
+                port: 7999,
+                pid: replacement.Id,
+                startedAt: DateTime.UtcNow.AddDays(-1));
+
+            Assert.False(supervisor.IsInstanceRunning("spare"));
+        }
+        finally
+        {
+            if (!replacement.HasExited) replacement.Kill(entireProcessTree: true);
+        }
     }
 
     /// <summary>

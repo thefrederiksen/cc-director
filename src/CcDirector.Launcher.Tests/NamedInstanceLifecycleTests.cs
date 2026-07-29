@@ -1,6 +1,7 @@
 using CcDirector.Core.Instances;
 using CcDirector.Launcher;
 using CcDirector.Setup.Engine;
+using System.Reflection;
 using Xunit;
 
 namespace CcDirector.Launcher.Tests;
@@ -137,6 +138,37 @@ public sealed class NamedInstanceLifecycleTests : IDisposable
         Assert.True(Directory.Exists(NamedInstanceRegistry.HomeFor("keeper")));
     }
 
+    [Fact]
+    public void Delete_PathTraversalCannotEscapeTheNamedInstanceHome()
+    {
+        NamedInstanceRegistry.Create("spare", GatewayUrl, GatewayToken);
+        var outside = Path.Combine(_root, "outside");
+        Directory.CreateDirectory(outside);
+        var marker = Path.Combine(outside, "must-survive.txt");
+        File.WriteAllText(marker, "machine data");
+
+        var traversal = Path.Combine("spare", "..", "..", "outside");
+        var error = Record.Exception(() => NamedInstanceRegistry.Delete(traversal));
+
+        Assert.True(File.Exists(marker), "an instance slug must never select a directory outside instances/<slug>");
+        Assert.IsType<ArgumentException>(error);
+    }
+
+    [Fact]
+    public void Delete_WhenTheHomeCannotBeRemoved_DoesNotReportSuccessOrForgetTheRegistration()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        NamedInstanceRegistry.Create("spare", GatewayUrl, GatewayToken);
+        var heldPath = Path.Combine(NamedInstanceRegistry.HomeFor("spare"), "held-open.txt");
+        using var held = new FileStream(heldPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+
+        var error = Record.Exception(() => NamedInstanceRegistry.Delete("spare"));
+
+        Assert.NotNull(error);
+        Assert.NotNull(NamedInstanceRegistry.Get("spare"));
+    }
+
     // =====================================================================================================
     // Through the supervisor, which is what the launcher and the Gateway relay actually call
     // =====================================================================================================
@@ -188,6 +220,45 @@ public sealed class NamedInstanceLifecycleTests : IDisposable
         // And nothing half-made was left behind: the instance must not be registered when its creation was
         // refused, or the next start would find a registration with no usable gateway in it.
         Assert.Null(NamedInstanceRegistry.Get("spare"));
+    }
+
+    [Fact]
+    public void Start_TheSameDisplayNameTwice_ReusesTheRegistrySlug()
+    {
+        var supervisor = SupervisorWithGateway();
+        var callerName = DirectorSupervisor.NormalizeSlug("My Spare");
+
+        var first = EnsureRegistered(supervisor, callerName);
+        var second = EnsureRegistered(supervisor, callerName);
+
+        Assert.Equal(first, second);
+        Assert.Single(NamedInstanceRegistry.List(), instance => !instance.IsDefault);
+    }
+
+    [Fact]
+    public async Task Start_TheSameNewNameConcurrently_CreatesOnlyOneInstance()
+    {
+        using var bothLookupsCompleted = new Barrier(2);
+        var supervisor = new DirectorSupervisor(InstallLayout.Default(), () =>
+        {
+            Assert.True(bothLookupsCompleted.SignalAndWait(TimeSpan.FromSeconds(5)));
+            return (GatewayUrl, GatewayToken);
+        });
+
+        var first = Task.Run(() => EnsureRegistered(supervisor, "spare"));
+        var second = Task.Run(() => EnsureRegistered(supervisor, "spare"));
+        var slugs = await Task.WhenAll(first, second);
+
+        Assert.Single(slugs.Distinct(StringComparer.OrdinalIgnoreCase));
+        Assert.Single(NamedInstanceRegistry.List(), instance => !instance.IsDefault);
+    }
+
+    private static string EnsureRegistered(DirectorSupervisor supervisor, string slug)
+    {
+        var method = typeof(DirectorSupervisor).GetMethod(
+            "EnsureRegistered",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        return Assert.IsType<string>(method.Invoke(supervisor, new object[] { slug }));
     }
 
     /// <summary>A file on Windows, an application bundle directory on macOS - whichever this platform's
