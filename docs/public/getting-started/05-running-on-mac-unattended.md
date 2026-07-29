@@ -8,7 +8,7 @@ A Mac mini makes a great always-on fleet machine -- but macOS ships tuned for a 
 
 macOS cannot launch a new graphical application while the screen is locked. When the lock engages, the login window takes ownership of the displays. Your session keeps running -- applications that are already open keep working, and background processes are unaffected -- but any **new** graphical launch cannot bind display resources at startup and fails. The Director is a graphical application, so on a locked Mac the fleet cannot start new Directors, and the Director itself cannot be restarted after an update or crash until a human unlocks the screen.
 
-This is architectural, not a bug, and there is no setting, entitlement, or launchd trick that gets around it. We proved it on our own hardware (a Director launched into a locked session dies instantly with a render-timer error, even from a launch agent placed directly in the graphical user domain), and it matches what Apple's own engineers say on the developer forums: the only third-party code that can put an interface on the lock screen is an authorization plug-in that replaces login screens -- there is no mechanism for launching an application behind the lock. Windows is genuinely different by design: locking a Windows machine just switches which desktop is visible, while the session and its window objects stay fully active underneath -- new processes can still create windows there. That is why CC Director on Windows launches sessions on locked machines without any special setup, and no equivalent exists on macOS.
+This is architectural, not a bug, and there is no setting, entitlement, or launchd trick that gets around it. We proved it on our own hardware (a Director launched into a locked session dies instantly with a render-timer error, even from a launch agent placed directly in the graphical user domain), and it matches what Apple's own engineers say on the developer forums: the only third-party code that can put an interface on the lock screen is an authorization plug-in that replaces login screens -- there is no mechanism for launching an application behind the lock. Windows is genuinely different by design: locking a Windows machine just switches which desktop is visible, while the session and its window objects stay fully active underneath -- new processes can still create windows there. That is why the Director on Windows launches sessions on locked machines without any special setup, and no equivalent exists on macOS.
 
 The industry already solved this. Every commercial Mac build farm -- GitHub's hosted macOS runners, Cirrus Labs images, Buildkite's Amazon EC2 Mac guide, GitLab's MacStadium images -- ships the identical configuration: automatic login, screen lock disabled, screen saver disabled, system sleep disabled, FileVault off. The display may sleep; the session never locks. That is exactly the configuration below.
 
@@ -97,8 +97,8 @@ The high-value privacy permissions live in a database protected by System Integr
 
 | Permission | Grant it to | Needed for |
 |------------|-------------|------------|
-| Full Disk Access | CC Director (and your terminal, if you launch Directors from one) | agents reading anywhere on disk without per-folder prompts |
-| Screen Recording | CC Director | the screenshot features |
+| Full Disk Access | the Director (and your terminal, if you launch Directors from one) | agents reading anywhere on disk without per-folder prompts |
+| Screen Recording | the Director | the screenshot features |
 | Automation | approve prompts as they appear | controlling other applications |
 
 *System Settings path:* Privacy & Security > (each category) > add the app with the + button.

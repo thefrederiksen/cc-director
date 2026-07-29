@@ -1,5 +1,11 @@
 # Installer mission: one product, two platforms
 
+> **Status, 29 July 2026.** Phases 1 to 3 are implemented on branch
+> `installer/orphan-loop` and phase 4's documentation is done. What each item became is recorded
+> against it below. Two items resolved differently than written, and both are corrected in place:
+> item 3.3's `FrameworkDetector` was never a .NET check - it was a second implementation of "is
+> there a coding agent here?" - and item 4.5 was not a bug at all.
+
 Written 2026-07-29 for an agent to run end to end. Sources: the Codex review of pull request
 2263, the macOS install investigation in
 `docs/HANDOVER-mac-installer-launcher-orphan-2026-07-29.md`, and the screen-parity work already
@@ -46,7 +52,7 @@ Phase 4 is repository hygiene the earlier phases break or have already broken.
 
 # Phase 1 - the orphan launcher loop
 
-## 1.1 The uninstall cannot stop a launcher that launchd does not own
+## 1.1 The uninstall cannot stop a launcher that launchd does not own  — DONE
 
 **Scope: macOS.** Windows is already correct and is the model to copy.
 
@@ -70,7 +76,7 @@ launcher running from a developer's repository is never touched - exactly as Win
 **Done looks like.** Start a launcher directly, not under launchd. Run the uninstall. Port 7900 is
 free, no `cc-launcher` process remains, and a fresh install then succeeds. Add the test.
 
-## 1.2 The health probe certifies against whatever holds the port
+## 1.2 The health probe certifies against whatever holds the port  — DONE (shipped in 1.8.5)
 
 **Scope: both.** This is the finding that changed platform when checked.
 
@@ -97,7 +103,7 @@ signal, never the only one.
 **Done looks like.** A test that installs over a RUNNING same-version launcher and expects
 failure. Write it first and watch it pass against today's code - that passing test is the bug.
 
-## 1.3 The first-install branch manufactures the orphan
+## 1.3 The first-install branch manufactures the orphan  — DONE
 
 **Scope: macOS.** This is the other half of 1.1; fixing only the uninstall leaves the factory running.
 
@@ -112,7 +118,7 @@ in 1.1 knows to stop it by process. Do not leave a path that creates an unmanage
 **Done looks like.** After a first install on a clean Mac, the running launcher is a launchd
 service (`launchctl print gui/501/com.devthrottle.cc-launcher` finds it).
 
-## 1.4 A launcher that cannot register autostart still reports healthy
+## 1.4 A launcher that cannot register autostart still reports healthy  — DONE, and tray mode now answers SIGTERM
 
 **Scope: both.** `LauncherCore` is shared; only the mechanism differs (launch agent on macOS, Run
 key on Windows).
@@ -137,7 +143,7 @@ can tell a registered launcher from an unregistered one.
 
 # Phase 2 - screens that say untrue things
 
-## 2.1 The failure reason is computed and thrown away
+## 2.1 The failure reason is computed and thrown away  — DONE
 
 **Scope: both.** Reported as macOS; neither wizard displays it.
 
@@ -158,7 +164,7 @@ Complete screen's failure panel and in the generated issue body.
 anyone opening a log. This is the smallest change in this document and the one that saves the most
 time on every future report.
 
-## 2.2 "Up to date" is decided by the Director version alone
+## 2.2 "Up to date" is decided by the Director version alone  — DONE
 
 **Scope: both.**
 
@@ -178,7 +184,7 @@ date" for a component whose installed version was actually compared.
 **Done looks like.** With a current Director and a deleted launcher, the update path installs the
 launcher and no card claims otherwise.
 
-## 2.3 The Windows launcher card is not bound to its download item
+## 2.3 The Windows launcher card is not bound to its download item  — DONE
 
 **Scope: Windows.** macOS already binds it.
 
@@ -193,7 +199,7 @@ the install screen says the launcher work succeeded.
 **Fix.** Bind the Windows launcher card to the launcher download item as macOS does, and let a
 failed item win: a successful start of a stale binary may not overwrite a failed install.
 
-## 2.4 A release-fetch failure leaves every card at "Pending"
+## 2.4 A release-fetch failure leaves every card at "Pending"  — DONE, both platforms say "Not started"
 
 **Scope: both.** Pre-existing, same class as 2.2.
 
@@ -203,7 +209,7 @@ heading line and enable Retry. `SetItems` was never reached, so every card stays
 **Fix.** On a fetch failure, put the cards in a state that matches reality - not started - and say
 so once in the heading line.
 
-## 2.5 Windows says "1 component(s)", macOS names what failed
+## 2.5 Windows says "1 component(s)", macOS names what failed  — DONE
 
 **Scope: Windows adopts macOS.** This is the last content difference between the two Complete
 screens, and here macOS is better.
@@ -213,7 +219,7 @@ screens, and here macOS is better.
 
 **Fix.** Plumb the skipped names through on Windows and use the macOS wording on both.
 
-## 2.6 The no-agent notice can be false
+## 2.6 The no-agent notice can be false  — DONE
 
 **Scope: both.**
 
@@ -255,7 +261,7 @@ causal link was not established.
 Director - then choose between warning the user to quit (the Windows behaviour) and restarting the
 application afterwards. Do not implement blind.
 
-## 3.2 The opt-in wipe destroys the diagnostics for the failure that follows it
+## 3.2 The opt-in wipe destroys the diagnostics for the failure that follows it  — DONE, logs are copied out first
 
 **Scope: both.**
 
@@ -272,7 +278,7 @@ full wipe.
 
 **Done looks like.** After a wipe uninstall, the previous installation's logs are still readable.
 
-## 3.3 The gateway is left needing a runtime the installer no longer guarantees
+## 3.3 The gateway is left needing a runtime the installer no longer guarantees  — DONE, the gateway is published self-contained too
 
 **Scope: Windows.**
 
@@ -295,21 +301,21 @@ separate gateway pass, not here.
 
 # Phase 4 - repository hygiene
 
-## 4.1 The render harness expects a screen that no longer exists
+## 4.1 The render harness expects a screen that no longer exists  — DONE, and it gained a hermetic --screens run
 
 **Scope: Windows harness.** `tools/harnesses/setup-wizard-render-harness/Program.cs:70` treats the
 first Next as Prerequisites and waits for `RefreshButton`. Next now begins the real install, so the
 harness waits 60 seconds for a control that cannot exist and captures nothing. The repository's end
 to end visual check is broken until this is updated to the three-step flow.
 
-## 4.2 Continuous integration names deleted tests
+## 4.2 Continuous integration names deleted tests  — DONE
 
 **Scope: both.** `.github/workflows/ci.yml:31` still lists `PrerequisiteClassificationTests` and
 `CapabilityNoticeTests`, which pull request 2263 deletes. Stale comments in the same class: the
 Windows rail comment in `MainWindow.xaml:41` still describes four steps renumbered 1-4, and both
 Complete markups still say `CapabilityNotice` renders skipped recommended prerequisites.
 
-## 4.3 The gateway-surface test proves less than it claims
+## 4.3 The gateway-surface test proves less than it claims  — DONE, scope stated and the names pinned with it
 
 **Scope: both.** `tools/cc-director-setup.Tests/InstallerNoGatewaySurfaceTests.cs` scans literal
 `Text=` and `Content=` attributes only. It cannot see labels built in code, bindings, converters,
@@ -319,19 +325,23 @@ tooltips or automation names - and there is a live counterexample: the uninstall
 honestly in the test and extend the scan to the install and complete code-behind, where a leak
 would be a real defect.
 
-## 4.4 The command line installer carries the same wrong assumption
+## 4.4 The command line installer carries the same wrong assumption  — DONE, and its duplicate agent detector is deleted
 
 **Scope: both.** `tools/cc-director-setup-cli/Commands.cs` fails the whole install on
 `if (!launcherStart.Success)`, with a comment stating the assumption 1.2 disproves: "Idempotent: an
 already-running launcher just keeps serving." Fix it with 1.2 so the command line path and the
 wizards agree.
 
-## 4.5 The launcher's log path disagrees with its property list
+## 4.5 The launcher's log path disagrees with its property list  — NOT A BUG
 
-**Scope: macOS.** The property list template points `StandardOutPath` at `logs/launcher/`, a
-directory only `LauncherLaunchdAutostart.EnsureRegistered` creates, while the launcher actually
-writes into `logs/director/`. Tidy while in the area - and note that `logs/launcher/` never
-existing on the Mac mini was itself the evidence that registration died before the write.
+**Scope: macOS. Resolved as not a bug.** The property list points `StandardOutPath` at
+`logs/launcher/` for launchd's capture of standard output and error, which is legitimately separate
+from the launcher's own structured log in `logs/director/`. The directory is created by
+`EnsureRegistered`, which item 1.3 now always calls on a first install. `logs/launcher/` never
+existing on the Mac mini was evidence that the registration died before the write - not evidence of
+a path mismatch. Nothing to change. (That the launcher's own log lands under `logs/director/` is
+still confusing when hunting a launcher problem; moving it is cosmetic and touches shared logging,
+so it belongs with the nice-to-haves.)
 
 ---
 
