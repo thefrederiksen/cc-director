@@ -152,15 +152,51 @@ class SkillClient:
         text = (resp.text or "").strip()
         return text if text else f"Gateway returned HTTP {resp.status_code}"
 
+    # A 2XX IS NOT PROOF THE GATEWAY UNDERSTOOD THE REQUEST. The Gateway serves the Cockpit
+    # single-page app at "/" and falls UNKNOWN page paths back to index.html, so a Gateway that has
+    # never heard of skills answers GET /gateway/skills with HTTP 200, Content-Type text/html, and
+    # ~800 bytes of the app shell - not a 404. That is the live state of every machine whose Gateway
+    # has not been upgraded yet, which is precisely the window this command has to survive.
+    #
+    # Believed at face value it is worse than an error: `skill get` would print the HTML shell into
+    # an agent's context AS THE SKILL'S INSTRUCTIONS, and `skill list` would raise a raw ValueError
+    # traceback. So both read paths assert the content type they were PROMISED, and an app-shell
+    # answer is reported as "this Gateway does not serve the skill library yet" - which is the true
+    # statement, and the one that tells the user what to do about it.
+    def _not_the_skill_library(self, saw: str) -> GatewayError:
+        return GatewayError(
+            f"the Gateway at {self.base_url} answered with {saw} instead of skill data, which means "
+            "it does not serve the skill library yet - it is running a build from before the library "
+            "existed, and the request fell through to its web app. Upgrade or redeploy that Gateway. "
+            "Do NOT treat what it returned as a skill."
+        )
+
+    @staticmethod
+    def _content_type(resp: requests.Response) -> str:
+        return (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+
     def _json_or_raise(self, resp: requests.Response) -> Dict[str, Any]:
         if 200 <= resp.status_code < 300:
             if not resp.content:
                 return {}
-            return resp.json()
+            if self._content_type(resp) != "application/json":
+                raise self._not_the_skill_library(self._content_type(resp) or "an unlabelled body")
+            try:
+                return resp.json()
+            except ValueError as exc:
+                # Labelled JSON that is not JSON: a proxy or error page, never something to act on.
+                raise GatewayError(
+                    f"the Gateway at {self.base_url} returned a body labelled JSON that could not be "
+                    f"parsed: {exc}"
+                ) from exc
         raise GatewayError(self._gateway_message(resp))
 
     def _text_or_raise(self, resp: requests.Response) -> str:
         if 200 <= resp.status_code < 300:
+            # The body and file routes promise markdown and plain text. HTML here is the app shell,
+            # and printing it would put a web page into an agent's context dressed as instructions.
+            if self._content_type(resp) == "text/html":
+                raise self._not_the_skill_library("its web app page")
             return resp.text
         raise GatewayError(self._gateway_message(resp))
 
