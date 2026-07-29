@@ -154,9 +154,16 @@ public sealed class SkillIndexStore
     /// Empty register renders the empty string (no header floating over nothing). ASCII only.
     ///
     /// The block states the ONE thing an agent must understand: these lines are all it gets for free,
-    /// and the instructions are fetched at the moment of use. It also says plainly that the library is
-    /// an ADDITIONAL source and the agent's own local skills still work and win - a central library
-    /// that reads as if it replaced a machine's own skills would be a lie.
+    /// and the body is read only at the moment of use. It also says plainly that the library is an
+    /// ADDITIONAL source and the agent's own local skills still work and win - a central library that
+    /// reads as if it replaced a machine's own skills would be a lie.
+    ///
+    /// The footer says these skills are WRITTEN TO DISK where the agent looks and refreshed from the
+    /// Gateway. It used to say nothing was installed on this machine, which stopped being true the day
+    /// the Director began materializing skill directories - and this sentence is injected into every
+    /// agent in every session, so an inaccuracy here is one the whole fleet is told. The freshness half
+    /// stays because it is the point: a file on disk that goes stale is exactly what a central library
+    /// exists to prevent.
     /// </summary>
     public static string BuildIndexText(IReadOnlyList<RegisterSkill> skills)
     {
@@ -186,9 +193,10 @@ public sealed class SkillIndexStore
             text.Append($"  - {id}: {summary}\n");
             rendered++;
         }
-        text.Append("  Nothing is installed on this machine - skills are fetched, so they are always current. Your\n");
-        text.Append("  own local skills still work and take precedence. Add or improve one: cc-devthrottle skill\n");
-        text.Append("  pull / push / publish (drafts are private; publish is fleet-wide, instantly)\n");
+        text.Append("  These are also written to disk where you look for skills, and refreshed from the Gateway, so\n");
+        text.Append("  they are always current. Your own local skills still work and take precedence. Add or improve\n");
+        text.Append("  one: cc-devthrottle skill pull / push / publish (drafts are private; publish is fleet-wide,\n");
+        text.Append("  instantly)\n");
         return text.ToString().TrimEnd('\n');
     }
 

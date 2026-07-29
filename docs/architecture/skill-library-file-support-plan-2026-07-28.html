@@ -422,10 +422,14 @@
 <p><strong>The frontmatter <code>name</code> is the skill's id, not its display name.</strong> The standard requires a lowercase
         slug matching the directory name, so "Move a session" would fail validation in every agent. The
         display name stays ours.</p>
-<p><strong>Installing copies rather than links.</strong> The plan proposed directory links with a copy where the
-        platform would not allow one. A copy is what shipped: it needs no privilege on any platform, has no
-        link semantics to reason about, and a skill is tens of kilobytes. The reconcile pass makes the
-        duplication cost nothing in correctness.</p>
+<p><strong>Installing copies rather than links - since superseded.</strong> The plan proposed directory links with a
+        copy where the platform would not allow one. Copies were built first, on the grounds that a symlink needs
+        elevation on Windows. That is true and it is incomplete: a directory JUNCTION needs neither administrator
+        rights nor Developer Mode. So the placement was settled on 29 July 2026 as one materialized copy in the
+        shared <code>~/.agents/skills</code>, with a per-skill junction (Windows) or symlink (Linux, macOS) for the
+        two agent families that do not read that path. Three copies is three things that can drift. See
+        <code>skill-placement-2026-07-29.html</code> for the decision, the per-agent path table and the proof that
+        Claude Code discovers a skill through a junction.</p>
 <h2>What this deliberately does not do</h2>
 <ul>
 <li><strong>It does not solve prompt injection.</strong> Skills are a documented injection vector, and shipping

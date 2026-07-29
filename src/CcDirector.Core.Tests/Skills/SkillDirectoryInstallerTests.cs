@@ -8,9 +8,10 @@ namespace CcDirector.Core.Tests.Skills;
 /// <summary>
 /// Installing the fleet's skills where each agent looks for them.
 ///
-/// The three properties worth pinning are the ones that go wrong SILENTLY: overwriting one of the
-/// owner's own skills, leaving a withdrawn skill on disk, and writing a SKILL.md no agent will
-/// actually accept.
+/// The properties worth pinning are the ones that go wrong SILENTLY: overwriting one of the owner's
+/// own skills, leaving a withdrawn skill on disk, writing a SKILL.md no agent will actually accept,
+/// and - now that there is one real copy with links pointing at it - deleting through a link and
+/// emptying the copy every other agent reads.
 /// </summary>
 public sealed class SkillDirectoryInstallerTests : IDisposable
 {
@@ -18,12 +19,26 @@ public sealed class SkillDirectoryInstallerTests : IDisposable
         Path.GetTempPath(), "skill-install-tests-" + Guid.NewGuid().ToString("N"));
 
     private string Store => Path.Combine(_root, "store");
-    private string Target => Path.Combine(_root, "target");
+
+    /// <summary>Stands in for <c>~/.agents/skills</c> - the one directory a skill is written into.</summary>
+    private string Shared => Path.Combine(_root, "shared");
+
+    /// <summary>Stands in for <c>~/.claude/skills</c> - an agent's own directory, which gets links.</summary>
+    private string LinkRoot => Path.Combine(_root, "agent-own");
 
     public void Dispose()
     {
-        if (Directory.Exists(_root))
-            Directory.Delete(_root, recursive: true);
+        if (!Directory.Exists(_root))
+            return;
+        // Every link is unlinked before the sweep. A recursive delete over a tree containing a
+        // junction fails outright on Windows, which is worth knowing in its own right: it is the same
+        // reason the installer removes one of its links as a link and never recursively.
+        foreach (var directory in Directory.GetDirectories(_root, "*", SearchOption.AllDirectories))
+        {
+            if (Directory.Exists(directory) && (File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
+                Directory.Delete(directory, recursive: false);
+        }
+        Directory.Delete(_root, recursive: true);
     }
 
     private static SkillBundle Bundle(
@@ -86,13 +101,68 @@ public sealed class SkillDirectoryInstallerTests : IDisposable
     {
         Directory.CreateDirectory(Store);
         SkillDirectoryInstaller.Materialize(Store, Bundle());
-        Directory.CreateDirectory(Target);
 
-        var installed = InstallInto(Target);
+        var installed = Install();
 
         Assert.Equal(1, installed);
-        Assert.True(File.Exists(Path.Combine(Target, "demo-skill", "SKILL.md")));
-        Assert.True(File.Exists(Path.Combine(Target, "demo-skill", SkillDirectoryInstaller.MarkerFileName)));
+        Assert.True(File.Exists(Path.Combine(Shared, "demo-skill", "SKILL.md")));
+        Assert.True(File.Exists(Path.Combine(Shared, "demo-skill", SkillDirectoryInstaller.MarkerFileName)));
+    }
+
+    [Fact]
+    public void There_is_ONE_copy_and_the_agents_own_directory_holds_a_link_to_it()
+    {
+        // THE PLACEMENT DECISION, PINNED. A skill is materialized once, into the shared directory six
+        // of the eight agent families read natively; the two that do not get a link per skill pointing
+        // at that one copy. Three copies is three things that can drift. The check that matters is that
+        // the entry in the agent's own directory is a LINK - a copy would read identically today and
+        // diverge the first time one side is refreshed and the other is not.
+        Directory.CreateDirectory(Store);
+        SkillDirectoryInstaller.Materialize(Store, Bundle());
+
+        Assert.Equal(1, Install());
+
+        var link = Path.Combine(LinkRoot, "demo-skill");
+        Assert.True(Directory.Exists(link));
+        Assert.NotEqual(0, (int)(File.GetAttributes(link) & FileAttributes.ReparsePoint));
+        // The one copy is reached through it, byte for byte - this is the whole claim.
+        Assert.Equal(
+            File.ReadAllText(Path.Combine(Shared, "demo-skill", "SKILL.md")),
+            File.ReadAllText(Path.Combine(link, "SKILL.md")));
+    }
+
+    [Fact]
+    public void Installing_twice_leaves_one_working_link_and_not_a_broken_one()
+    {
+        // Every session launch runs this. A link scheme that only works the first time would break on
+        // the second session of the day, which is the launch nobody tests.
+        Directory.CreateDirectory(Store);
+        SkillDirectoryInstaller.Materialize(Store, Bundle());
+
+        Install();
+        Assert.Equal(1, Install());
+
+        Assert.True(File.Exists(Path.Combine(LinkRoot, "demo-skill", "SKILL.md")));
+        Assert.Single(Directory.GetDirectories(LinkRoot));
+    }
+
+    [Fact]
+    public void A_copy_left_by_the_previous_scheme_becomes_a_link()
+    {
+        // Machines already carry full copies in the agent's own directory, put there by the scheme this
+        // replaced. Left alone they would be a second copy that never refreshes again - the exact drift
+        // this change exists to remove - so an entry of ours that is not a link is rebuilt as one.
+        Directory.CreateDirectory(Store);
+        SkillDirectoryInstaller.Materialize(Store, Bundle());
+        var stale = Path.Combine(LinkRoot, "demo-skill");
+        Directory.CreateDirectory(stale);
+        File.WriteAllText(Path.Combine(stale, "SKILL.md"), "# OLD COPY\n");
+        File.WriteAllText(Path.Combine(stale, SkillDirectoryInstaller.MarkerFileName), "demo-skill\n1\nold\n");
+
+        Install();
+
+        Assert.NotEqual(0, (int)(File.GetAttributes(stale) & FileAttributes.ReparsePoint));
+        Assert.Contains("# Demo", File.ReadAllText(Path.Combine(stale, "SKILL.md")));
     }
 
     [Fact]
@@ -100,18 +170,25 @@ public sealed class SkillDirectoryInstallerTests : IDisposable
     {
         // THE RULE THIS FEATURE MUST NOT BREAK. The library is an ADDITIONAL source of skills; a
         // machine's own skill wins a name clash. Copying over one of the owner's own skills would be
-        // silent data loss dressed up as a feature.
+        // silent data loss dressed up as a feature. It holds in BOTH directories: the shared one is
+        // also a place the owner may keep skills of their own.
         Directory.CreateDirectory(Store);
         SkillDirectoryInstaller.Materialize(Store, Bundle());
 
-        var mine = Path.Combine(Target, "demo-skill");
-        Directory.CreateDirectory(mine);
-        File.WriteAllText(Path.Combine(mine, "SKILL.md"), "# MY OWN VERSION\n");
+        var mineShared = Path.Combine(Shared, "demo-skill");
+        Directory.CreateDirectory(mineShared);
+        File.WriteAllText(Path.Combine(mineShared, "SKILL.md"), "# MY OWN VERSION\n");
 
-        InstallInto(Target);
+        var mineOwn = Path.Combine(LinkRoot, "demo-skill");
+        Directory.CreateDirectory(mineOwn);
+        File.WriteAllText(Path.Combine(mineOwn, "SKILL.md"), "# MY OWN CLAUDE VERSION\n");
 
-        Assert.Equal("# MY OWN VERSION\n", File.ReadAllText(Path.Combine(mine, "SKILL.md")));
-        Assert.False(File.Exists(Path.Combine(mine, SkillDirectoryInstaller.MarkerFileName)));
+        Install();
+
+        Assert.Equal("# MY OWN VERSION\n", File.ReadAllText(Path.Combine(mineShared, "SKILL.md")));
+        Assert.False(File.Exists(Path.Combine(mineShared, SkillDirectoryInstaller.MarkerFileName)));
+        Assert.Equal("# MY OWN CLAUDE VERSION\n", File.ReadAllText(Path.Combine(mineOwn, "SKILL.md")));
+        Assert.Equal(0, (int)(File.GetAttributes(mineOwn) & FileAttributes.ReparsePoint));
     }
 
     [Fact]
@@ -121,21 +198,43 @@ public sealed class SkillDirectoryInstallerTests : IDisposable
         Directory.CreateDirectory(Store);
         SkillDirectoryInstaller.Materialize(Store, Bundle(id: "keeper"));
         SkillDirectoryInstaller.Materialize(Store, Bundle(id: "withdrawn"));
-        InstallInto(Target);
-        Assert.True(Directory.Exists(Path.Combine(Target, "withdrawn")));
+        Install();
+        Assert.True(Directory.Exists(Path.Combine(Shared, "withdrawn")));
+        Assert.True(Directory.Exists(Path.Combine(LinkRoot, "withdrawn")));
 
         // Somebody else's skill, sitting in the same directory. It is not ours to delete.
-        var theirs = Path.Combine(Target, "not-ours");
+        var theirs = Path.Combine(LinkRoot, "not-ours");
         Directory.CreateDirectory(theirs);
         File.WriteAllText(Path.Combine(theirs, "SKILL.md"), "# theirs\n");
 
         // The Gateway stops serving 'withdrawn'.
         Directory.Delete(Path.Combine(Store, "withdrawn"), recursive: true);
-        InstallInto(Target);
+        Install();
 
-        Assert.False(Directory.Exists(Path.Combine(Target, "withdrawn")));
-        Assert.True(Directory.Exists(Path.Combine(Target, "keeper")));
+        Assert.False(Directory.Exists(Path.Combine(Shared, "withdrawn")));
+        Assert.False(Directory.Exists(Path.Combine(LinkRoot, "withdrawn")));
+        Assert.True(Directory.Exists(Path.Combine(Shared, "keeper")));
+        Assert.True(File.Exists(Path.Combine(LinkRoot, "keeper", "SKILL.md")));
         Assert.True(File.Exists(Path.Combine(theirs, "SKILL.md")));
+    }
+
+    [Fact]
+    public void Removing_a_withdrawn_link_does_not_empty_the_one_real_copy()
+    {
+        // A recursive delete applied to a link deletes what the link POINTS AT. Done here it would
+        // empty the single copy every other agent family reads, and the only symptom would be those
+        // agents quietly losing a skill they never had anything to do with.
+        Directory.CreateDirectory(Store);
+        SkillDirectoryInstaller.Materialize(Store, Bundle(id: "keeper"));
+        Install();
+
+        // 'keeper' stays in the store but the agent's link is reconciled away and back, which is what
+        // happens whenever a name leaves and rejoins the register.
+        Directory.Delete(Path.Combine(LinkRoot, "keeper"), recursive: false);
+        Install();
+
+        Assert.True(File.Exists(Path.Combine(Shared, "keeper", "SKILL.md")));
+        Assert.True(File.Exists(Path.Combine(LinkRoot, "keeper", "SKILL.md")));
     }
 
     [Fact]
@@ -146,17 +245,18 @@ public sealed class SkillDirectoryInstallerTests : IDisposable
         {
             new SkillFileBytes("references/old.md", Encoding.UTF8.GetBytes("old"), false),
         }));
-        InstallInto(Target);
-        Assert.True(File.Exists(Path.Combine(Target, "demo-skill", "references", "old.md")));
+        Install();
+        Assert.True(File.Exists(Path.Combine(LinkRoot, "demo-skill", "references", "old.md")));
 
         SkillDirectoryInstaller.Materialize(Store, Bundle(files: new[]
         {
             new SkillFileBytes("references/new.md", Encoding.UTF8.GetBytes("new"), false),
         }));
-        InstallInto(Target);
+        Install();
 
-        Assert.False(File.Exists(Path.Combine(Target, "demo-skill", "references", "old.md")));
-        Assert.True(File.Exists(Path.Combine(Target, "demo-skill", "references", "new.md")));
+        Assert.False(File.Exists(Path.Combine(Shared, "demo-skill", "references", "old.md")));
+        Assert.False(File.Exists(Path.Combine(LinkRoot, "demo-skill", "references", "old.md")));
+        Assert.True(File.Exists(Path.Combine(LinkRoot, "demo-skill", "references", "new.md")));
     }
 
     [Fact]
@@ -189,16 +289,29 @@ public sealed class SkillDirectoryInstallerTests : IDisposable
     }
 
     [Fact]
-    public void Every_agent_kind_that_has_a_skills_directory_gets_one_that_is_documented()
+    public void Every_agent_kind_writes_to_the_one_shared_directory()
     {
         // Claude Code is the exception that makes this table necessary: it reads ~/.claude/skills and
         // does NOT read the shared ~/.agents/skills path that the others do. Getting this backwards
         // would install everything into a directory Claude Code never looks in - and nothing would
         // fail, it would just silently not work.
-        Assert.All(SkillInstallTargets.For(AgentKind.ClaudeCode),
-            p => Assert.Contains(Path.Combine(".claude", "skills"), p));
-        Assert.All(SkillInstallTargets.For(AgentKind.Cursor),
-            p => Assert.Contains(Path.Combine(".cursor", "skills"), p));
+        foreach (var kind in new[]
+                 {
+                     AgentKind.ClaudeCode, AgentKind.Cursor,
+                     AgentKind.Codex, AgentKind.Gemini, AgentKind.Grok,
+                     AgentKind.Pi, AgentKind.Copilot, AgentKind.OpenCode,
+                 })
+        {
+            var paths = SkillInstallTargets.For(kind);
+            Assert.NotNull(paths);
+            Assert.Contains(Path.Combine(".agents", "skills"), paths!.SharedRoot);
+        }
+
+        // Only the two that do not read the shared path get a directory of their own to link into.
+        Assert.Contains(Path.Combine(".claude", "skills"),
+            SkillInstallTargets.For(AgentKind.ClaudeCode)!.LinkRoot!);
+        Assert.Contains(Path.Combine(".cursor", "skills"),
+            SkillInstallTargets.For(AgentKind.Cursor)!.LinkRoot!);
 
         foreach (var kind in new[]
                  {
@@ -206,17 +319,17 @@ public sealed class SkillDirectoryInstallerTests : IDisposable
                      AgentKind.Pi, AgentKind.Copilot, AgentKind.OpenCode,
                  })
         {
-            Assert.All(SkillInstallTargets.For(kind),
-                p => Assert.Contains(Path.Combine(".agents", "skills"), p));
+            Assert.Null(SkillInstallTargets.For(kind)!.LinkRoot);
         }
 
-        Assert.Empty(SkillInstallTargets.For(AgentKind.RawCli));
+        Assert.Null(SkillInstallTargets.For(AgentKind.RawCli));
     }
 
-    /// <summary>Run the REAL installer against one explicit directory. The target is overridden rather
+    /// <summary>Run the REAL installer against explicit directories. The paths are overridden rather
     /// than the algorithm reimplemented: a test that reimplements what it is testing proves only that
     /// the copy agrees with itself. The override exists so a test never writes into the home directory
     /// of whoever is running it.</summary>
-    private int InstallInto(string target) =>
-        SkillDirectoryInstaller.InstallFor(AgentKind.ClaudeCode, Store, new[] { target });
+    private int Install() =>
+        SkillDirectoryInstaller.InstallFor(
+            AgentKind.ClaudeCode, Store, new SkillInstallPaths(Shared, LinkRoot));
 }

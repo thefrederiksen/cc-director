@@ -158,10 +158,14 @@ two different jobs and now have two different files doing them.
 slug matching the directory name, so "Move a session" would fail validation in every agent. The
 display name stays ours.
 
-**Installing copies rather than links.** The plan proposed directory links with a copy where the
-platform would not allow one. A copy is what shipped: it needs no privilege on any platform, has no
-link semantics to reason about, and a skill is tens of kilobytes. The reconcile pass makes the
-duplication cost nothing in correctness.
+**Installing copies rather than links - since superseded.** The plan proposed directory links with a
+copy where the platform would not allow one. Copies were built first, on the grounds that a symlink
+needs elevation on Windows. That is true and it is incomplete: a directory JUNCTION needs neither
+administrator rights nor Developer Mode. So the placement was settled on 29 July 2026 as one
+materialized copy in the shared `~/.agents/skills`, with a per-skill junction (Windows) or symlink
+(Linux, macOS) for the two agent families that do not read that path. Three copies is three things
+that can drift. See `skill-placement-2026-07-29.html` for the decision, the per-agent path table and
+the proof that Claude Code discovers a skill through a junction.
 
 ## What this deliberately does not do
 

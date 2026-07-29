@@ -127,7 +127,9 @@ and it holds skills we did not write. We link each individual skill inside it:</
 
 <p class="note">This is a change from the first implementation, which copied each skill into up to three per-agent
 directories. Copies were chosen because symlinks need elevation on Windows - true, but junctions do not, and that
-was the missing fact. Three copies means three things that can drift; one copy cannot disagree with itself.</p>
+was the missing fact. Three copies means three things that can drift; one copy cannot disagree with itself. Machines
+already carrying those copies are not left with them: an entry of ours in an agent's own directory that is not a link
+is rebuilt as one on the next launch, so the second copy cannot survive as something that never refreshes again.</p>
 
 <h2>How skills stay current</h2>
 
@@ -195,20 +197,42 @@ or any of the others should be publishable to the library and land intact on the
 <p>Each session's preamble carries one line per skill - name and one-line description only, which is the progressive
 disclosure the standard specifies. The agent loads a skill's body when it decides the skill is relevant.</p>
 
-<p class="warn">The current wording, "Nothing is installed on this machine - skills are fetched, so they are always
-current", needs to change. The freshness half stays true and is the point. The first half stops being accurate once
-files are written to disk, and that sentence is told to every agent in every session. It should say that skills are
-materialized where this agent looks and refreshed from the Gateway.</p>
+<p>The old wording, "Nothing is installed on this machine - skills are fetched, so they are always current", stopped
+being accurate the moment files were written to disk, and that sentence is told to every agent in every session. It
+now reads: <em>These are also written to disk where you look for skills, and refreshed from the Gateway, so they are
+always current.</em> The freshness half is kept deliberately - it is the point.</p>
 
-<h2>Stated plainly: what is not yet verified</h2>
+<h2>The proof: Claude Code discovering a skill through a junction</h2>
+
+<p>Run unelevated on Windows 11 on 29 July 2026, in a directory outside any repository. A skill was written to
+<code>~/.agents/skills/junction-proof-skill/</code> carrying a token that appears <strong>only in the body</strong> of
+its <code>SKILL.md</code>, never in the frontmatter description - so reciting the token proves the body was loaded,
+not merely that a name was listed.</p>
+
+<pre><strong>Control, no junction:</strong>
+  claude -p "Do you have a skill named junction-proof-skill? ... else reply NO SUCH SKILL"
+  -> "I don't have a skill named junction-proof-skill.  NO SUCH SKILL"
+
+<strong>Junction created (mklink /J, elevated=False), then the same question:</strong>
+  -> "Yes - the junction proof token is:  QX7-VELVET-ANVIL-4419"</pre>
+
+<p>The control matters as much as the result: it establishes that the skill was unreachable before the junction
+existed, so the junction is the only path by which the agent reached it - and it independently confirms that Claude
+Code does not read <code>~/.agents/skills</code>, which is the whole reason the link exists. Removing the junction
+afterwards left the real directory untouched, which is the property the installer depends on when it reconciles a
+withdrawn skill away.</p>
+
+<p>The other half of the seam is covered by test: <code>SkillDirectoryInstallerTests</code> asserts that the entry the
+installer creates in the agent's own directory carries the reparse-point attribute and reads back the same bytes as
+the one real copy, that a second launch leaves one working link rather than a broken one, and that a full copy left by
+the previous scheme is rebuilt as a link.</p>
+
+<h2>Stated plainly: what is still not verified</h2>
 
 <ul>
-  <li><strong>Claude Code traversing a Windows junction has not been observed.</strong> A junction is transparent to
-      ordinary file operations and reading through one was verified, but the agent itself has not been watched
-      discovering a skill that way. That is the one test worth running before this ships.</li>
   <li><strong>Cursor's shared-path support is undocumented</strong>, not denied. It is linked rather than trusted.</li>
   <li><strong>The per-agent paths were read from each agent's own documentation</strong>, not exercised end to end
-      against all eight.</li>
+      against all eight. Claude Code is the one exercised against a real binary, above.</li>
 </ul>
 
 <p class="foot">Placement decided 29 July 2026: one directory using the agents standard, with a per-skill link for
