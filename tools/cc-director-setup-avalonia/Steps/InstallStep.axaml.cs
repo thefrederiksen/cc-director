@@ -95,11 +95,19 @@ public partial class InstallStep : UserControl
         // on the machine at all any more (issue 995): they are held on the Gateway and fetched, so this
         // step has nothing to say about them.
 
-        BindItem(_directorItem, DirectorStatus, DirectorProgress, DirectorSize);
-        BindItem(_launcherItem, LauncherStatus, LauncherProgress, LauncherSize);
+        BindItem(_directorItem, DirectorStatus, DirectorProgress, DirectorSize, DirectorDetail);
+        BindItem(_launcherItem, LauncherStatus, LauncherProgress, LauncherSize, LauncherDetail);
     }
 
-    private static void BindItem(ToolDownloadItem? item, TextBlock status, ProgressBar progress, TextBlock size)
+    /// <summary>
+    /// Mirror one component's live state onto its card, including the failure REASON.
+    ///
+    /// The reason was always computed - every failure path in EngineInstallRunner sets StatusDetail -
+    /// and then discarded, because nothing bound it. A user saw the word "Failed" and had to open a
+    /// log to learn that, for example, the launcher was healthy but had not registered its launch
+    /// agent property list.
+    /// </summary>
+    private static void BindItem(ToolDownloadItem? item, TextBlock status, ProgressBar progress, TextBlock size, TextBlock detail)
     {
         if (item is null) return;
         item.PropertyChanged += (_, e) =>
@@ -119,6 +127,11 @@ public partial class InstallStep : UserControl
                 else if (e.PropertyName == nameof(ToolDownloadItem.SizeText))
                 {
                     size.Text = item.SizeText;
+                }
+                else if (e.PropertyName == nameof(ToolDownloadItem.StatusDetail))
+                {
+                    detail.Text = item.StatusDetail;
+                    detail.IsVisible = !string.IsNullOrWhiteSpace(item.StatusDetail);
                 }
             });
         };

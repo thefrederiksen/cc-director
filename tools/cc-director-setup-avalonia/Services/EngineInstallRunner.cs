@@ -78,12 +78,34 @@ public sealed class EngineInstallRunner
 
         var reader = new InstalledStateReader(_layout);
         var installedDirector = reader.Read(ComponentRegistry.Director).Version;
-        var upToDate = installedDirector != null && dAsset != null
-            && VersionUtil.TryParse(installedDirector) is { } iv
-            && VersionUtil.TryParse(dAsset.Version) is { } rv && iv == rv;
+
+        // "Up to date" skips the ENTIRE apply phase, so it has to be true of everything this wizard
+        // installs - not of the Director alone. It used to be the Director alone, which meant a machine
+        // with a current Director and a stale or missing launcher was told it was up to date and the
+        // launcher was never touched, while its card showed a status nothing had checked.
+        var upToDate = IsCurrent(reader, release, ComponentRegistry.Director, ComponentRegistry.Director.MacAsset)
+                       && IsCurrent(reader, release, ComponentRegistry.Launcher, ComponentRegistry.Launcher.MacAsset);
 
         SetupLog.Write($"[EngineInstallRunner] PrepareAsync: version={version}, installedDirector={installedDirector}, upToDate={upToDate}");
         return new Prep(version, release, items, byId, installedDirector, upToDate);
+    }
+
+    /// <summary>
+    /// Is this component's installed version the one in the release? Used to decide "up to date",
+    /// which must hold for EVERY component the wizard installs. A component with no asset in this
+    /// release cannot be out of date - there is nothing to install - so it does not block the verdict.
+    /// </summary>
+    private static bool IsCurrent(InstalledStateReader reader, ResolvedRelease release, Component component, string? assetName)
+    {
+        if (assetName is null) return true;
+        var asset = release.Manifest.TryGetAsset(assetName);
+        if (asset is null) return true;
+
+        var installed = reader.Read(component).Version;
+        return installed != null
+               && VersionUtil.TryParse(installed) is { } iv
+               && VersionUtil.TryParse(asset.Version) is { } rv
+               && iv == rv;
     }
 
     /// <summary>Place the Director, install the tools bundle, install the launcher (macOS),

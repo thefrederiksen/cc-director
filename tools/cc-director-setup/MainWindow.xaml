@@ -38,9 +38,10 @@
                            FontSize="11"
                            Margin="0,0,0,4" />
 
-                <!-- Step indicators. One linear Director-only path (issue #1807): Welcome,
-                     Prerequisites, Install, Complete. Historical ids 3-6 are retired.
-                     The circle numbers are renumbered 1..4 at runtime by UpdateSidebar. -->
+                <!-- Step indicators. One linear Director-only path (issue #1807): Welcome, Install,
+                     Complete. Historical ids 2-6 are retired - 2 was Prerequisites, dropped when the
+                     Windows executables started carrying their own .NET runtime.
+                     The circle numbers are renumbered 1..3 at runtime by UpdateSidebar. -->
                 <StackPanel x:Name="StepIndicators" VerticalAlignment="Top">
                     <!-- Step 1: Welcome -->
                     <StackPanel x:Name="Step1Row" Orientation="Horizontal">

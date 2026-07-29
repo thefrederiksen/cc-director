@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
@@ -51,21 +51,21 @@ public partial class CompleteStep : UserControl
         PathText.Text = installPath;
         LogPathBox.Text = SetupLog.Path;
 
-        var versionSuffix = string.IsNullOrEmpty(version) ? "" : $" Â· v{version.TrimStart('v')}";
+        var versionSuffix = string.IsNullOrEmpty(version) ? "" : $" · v{version.TrimStart('v')}";
 
         // One place computes the verdict; this only renders it (any skipped component reads as
         // Problems, so a failure can never render as "Everything went perfectly").
         switch (InstallCompletion.Classify(skipped, alreadyUpToDate))
         {
             case InstallCompletionKind.AlreadyUpToDate:
-                HeadingText.Text = "âœ“  Already Up to Date";
+                HeadingText.Text = "✓  Already Up to Date";
                 DescriptionText.Text = "DevThrottle is already running the latest version.";
                 SummaryLine.Text = $"Nothing to do{versionSuffix}";
                 PathNote.Visibility = Visibility.Collapsed;
                 break;
 
             case InstallCompletionKind.Success when isUpdate:
-                HeadingText.Text = readyToGo ? "âœ“  DevThrottle is up to date" : "DevThrottle is up to date - one thing left";
+                HeadingText.Text = readyToGo ? "✓  DevThrottle is up to date" : "DevThrottle is up to date - one thing left";
                 DescriptionText.Text = readyToGo
                     ? "You're ready to go."
                     : "The update finished. One thing below still needs you.";
@@ -76,8 +76,8 @@ public partial class CompleteStep : UserControl
 
             case InstallCompletionKind.Success:
                 // Nothing failed to install - but "ready to go" is a claim about the MACHINE, not
-                // about this install, and it is false while a required prerequisite is missing or
-                // there is no coding agent to run. The XAML defaults cover the genuinely-ready case.
+                // about this install, and it is false while there is no coding agent to run. The XAML
+                // defaults cover the genuinely-ready case.
                 if (!readyToGo)
                 {
                     HeadingText.Text = "DevThrottle is installed - one thing left";

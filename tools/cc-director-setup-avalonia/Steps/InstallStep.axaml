@@ -62,6 +62,14 @@
                                          Background="#3C3C3C" Foreground="#007ACC"
                                          IsVisible="False"
                                          Minimum="0" Maximum="100" />
+                            <!-- The failure REASON, when there is one. The engine always computed it and
+                                 nothing ever showed it, so "Failed" sent the user to a log file. -->
+                            <TextBlock x:Name="DirectorDetail"
+                                       Foreground="#F0A030"
+                                       FontSize="11"
+                                       TextWrapping="Wrap"
+                                       Margin="0,6,12,0"
+                                       IsVisible="False" />
                         </StackPanel>
 
                         <StackPanel Grid.Column="1" VerticalAlignment="Center"
@@ -104,6 +112,14 @@
                                          Background="#3C3C3C" Foreground="#007ACC"
                                          IsVisible="False"
                                          Minimum="0" Maximum="100" />
+                            <!-- The failure REASON, when there is one. The engine always computed it and
+                                 nothing ever showed it, so "Failed" sent the user to a log file. -->
+                            <TextBlock x:Name="LauncherDetail"
+                                       Foreground="#F0A030"
+                                       FontSize="11"
+                                       TextWrapping="Wrap"
+                                       Margin="0,6,12,0"
+                                       IsVisible="False" />
                         </StackPanel>
 
                         <StackPanel Grid.Column="1" VerticalAlignment="Center"

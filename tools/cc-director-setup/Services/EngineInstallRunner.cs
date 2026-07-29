@@ -91,11 +91,14 @@ public sealed class EngineInstallRunner
 
         var reader = new InstalledStateReader(_layout);
         var installedDirector = reader.Read(ComponentRegistry.Director).Version;
-        var directorAsset = release.Manifest.TryGetAsset(ComponentRegistry.Director.WindowsAsset);
-        var upToDate = installedDirector != null && directorAsset != null
-            && VersionUtil.TryParse(installedDirector) is { } iv
-            && VersionUtil.TryParse(directorAsset.Version) is { } rv
-            && iv == rv;
+
+        // "Up to date" skips the ENTIRE apply phase, so it has to be true of everything this wizard
+        // installs - not of the Director alone. It used to be the Director alone, which meant a
+        // machine with a current Director and a stale or missing launcher was told it was up to date
+        // and the launcher was never touched. The launcher card then showed a status nothing had
+        // checked.
+        var upToDate = IsComponentCurrent(reader, release, ComponentRegistry.Director)
+                       && IsComponentCurrent(reader, release, ComponentRegistry.Launcher);
 
         SetupLog.Write($"[EngineInstallRunner] PrepareAsync: version={version}, components={components.Count}, " +
                        $"installedDirector={installedDirector}, upToDate={upToDate}");
@@ -179,6 +182,26 @@ public sealed class EngineInstallRunner
         var skipped = prep.Items.Count(i => i.Status is "Skipped" or "Failed");
         SetupLog.Write($"[EngineInstallRunner] ApplyAsync: installed={installed}, skipped={skipped}");
         return (installed, skipped);
+    }
+
+    /// <summary>
+    /// Is this component's installed version the one in the release? Used to decide "up to date",
+    /// which must hold for EVERY component the wizard installs: a per-Director answer let a stale
+    /// launcher through untouched while a card claimed otherwise.
+    ///
+    /// A component with no asset in this release cannot be out of date - there is nothing to install -
+    /// so it does not block the up-to-date verdict.
+    /// </summary>
+    private static bool IsComponentCurrent(InstalledStateReader reader, ResolvedRelease release, Component component)
+    {
+        var asset = release.Manifest.TryGetAsset(component.WindowsAsset);
+        if (asset is null) return true;
+
+        var installed = reader.Read(component).Version;
+        return installed != null
+               && VersionUtil.TryParse(installed) is { } iv
+               && VersionUtil.TryParse(asset.Version) is { } rv
+               && iv == rv;
     }
 
     /// <summary>

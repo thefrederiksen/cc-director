@@ -219,10 +219,16 @@ jobs:
           dotnet-version: "10.0.x"
 
       - name: Publish Gateway tray app for Windows x64
-        # Framework-dependent: requires the .NET 10 ASP.NET Core + desktop runtime on the target.
+        # Self-contained, like the Director and the launcher. This wizard does not install the
+        # gateway - that is a separate do-it-yourself install from the repository - but it DOES
+        # refresh an existing gateway host on update, and the .NET prerequisite gate that used to
+        # protect that path is gone. Framework-dependent here meant setup could replace the gateway,
+        # stop the old process, and then fail to start the new one on a machine without .NET,
+        # leaving the gateway down. About 64 MB becomes about 144 MB on an asset the installer never
+        # downloads, so it costs nothing at install time.
         run: >
           dotnet publish src/CcDirector.GatewayApp/CcDirector.GatewayApp.csproj
-          -c Release -r win-x64 --self-contained false
+          -c Release -r win-x64 --self-contained true
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
 
