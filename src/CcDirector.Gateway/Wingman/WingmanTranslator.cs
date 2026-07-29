@@ -7,6 +7,7 @@ using CcDirector.Core.Drivers;
 using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Speech;
 
 namespace CcDirector.Gateway.Wingman;
 
@@ -81,6 +82,15 @@ public sealed class WingmanTranslator
     /// gloss it, and extends the ban to issue/pull-request/bug NUMBERS (say "three bug fixes are
     /// done", never "eighty-one eleven, eighty-one twelve..."). Prompt-only, per the standing rule
     /// that LLM behaviour is fixed in the prompt, not with a regex pass.
+    ///
+    /// v6 (issue #1008) MOVED TWO RULES OUT of this text and into
+    /// <see cref="SpeechContract.SpokenOutputContract"/>: the no-Markdown rule, and the rule about what
+    /// language to answer in. They left because they were never this contract's business - they bind
+    /// EVERY spoken path, and this text is only one of four. Keeping them here made four copies that
+    /// drifted, and it made THIS text - which a user is explicitly invited to REPLACE with their own
+    /// words (issue #537) - the thing carrying them. A replaced prompt dropped both. The contract is
+    /// now appended after whatever instructions are active, by <see cref="BuildPrompt"/>, so it cannot
+    /// be edited away.
     /// </summary>
     internal const string FidelityPrompt = """
         You are the wingman: you turn a coding agent's written reply into words a person
@@ -175,16 +185,9 @@ public sealed class WingmanTranslator
           cause"; a function like "SweepStale()" becomes "the sweep-stale method". Say what the
           path, URL, heading, or symbol IS and what it DOES - keep the technical meaning, drop
           the punctuation. Never spell out the literal characters.
-        - OUTPUT PLAIN SPOKEN PROSE ONLY - NO MARKDOWN. This is read aloud, so it must contain
-          no formatting characters at all: no asterisks for bold or italics, no hash-mark
-          headings, no numbered or bulleted lists, no backticks, no underscores. Write in
-          flowing sentences. When you need to enumerate, say it in words inside a sentence
-          ("first ... second ... third ..."), never as a "1." / "2." list or a "- " bullet.
-          A person hearing "star star BPMN Studio star star" or "hashtag Root cause" is exactly
-          the failure to avoid - say the words, drop the marks.
-        - The reply may be in ANY language or script. Non-Latin characters are valid
-          content, never corruption. Translate faithfully in the same language; never
-          refuse or say the text cannot be read.
+        - The reply may be in ANY language or script. Non-Latin characters are valid content,
+          never corruption; never refuse or say the text cannot be read. What language you
+          ANSWER in is settled by the spoken output contract below, not by the reply.
         """;
 
     /// <summary>
@@ -193,9 +196,10 @@ public sealed class WingmanTranslator
     /// instructions is shown that the recommended default changed and can switch to it. The content
     /// hash is the real identity; this is the human-facing label.
     /// </summary>
-    public const string DefaultInstructionsVersion = "8";
+    public const string DefaultInstructionsVersion = "9";
 
     private readonly Func<TenantId, WingmanModelRole, CancellationToken, Task<IAgentBrain>> _brainProvider;
+    private readonly Func<TenantId, SpokenLanguage> _languageFor;
     private readonly Action<string> _log;
     private readonly Func<string> _instructions;
 
@@ -207,12 +211,33 @@ public sealed class WingmanTranslator
     /// the ACTIVE wingman instructions at call time - the user's edited/versioned prompt when set,
     /// else the deployed <see cref="FidelityPrompt"/> default; omit it to always use the default.
     /// </summary>
-    public WingmanTranslator(Func<TenantId, WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider, Action<string>? log = null, Func<string>? instructionsProvider = null)
+    /// <param name="languageFor">The language an account is spoken to in, resolved from the tenant at
+    ///  CALL time so a change on the Language tab applies to the next spoken answer with no restart.
+    ///  It is REQUIRED and has no default ON PURPOSE (issue #1008): all three generators on this class
+    ///  already require a tenant, so the compiler - not anybody's memory - is what guarantees the
+    ///  language is available wherever a spoken answer is produced. Production wires
+    ///  <c>TenantSettingsResolver.SpokenLanguage</c>; a test that does not care passes
+    ///  <c>_ =&gt; SpokenLanguages.English</c>, which says so out loud rather than defaulting silently.</param>
+    public WingmanTranslator(
+        Func<TenantId, WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider,
+        Func<TenantId, SpokenLanguage> languageFor,
+        Action<string>? log = null,
+        Func<string>? instructionsProvider = null)
     {
         _brainProvider = brainProvider ?? throw new ArgumentNullException(nameof(brainProvider));
+        _languageFor = languageFor ?? throw new ArgumentNullException(nameof(languageFor));
         _log = log ?? FileLog.Write;
         _instructions = instructionsProvider ?? (() => FidelityPrompt);
     }
+
+    /// <summary>This tenant's spoken language, or a loud failure. A null from the provider is a wiring
+    ///  bug, not a reason to guess English: guessing is how an account set to French gets answered in
+    ///  English and nobody finds out for three reports.</summary>
+    private SpokenLanguage LanguageFor(TenantId tenant)
+        => _languageFor(tenant)
+           ?? throw new InvalidOperationException(
+               "[WingmanTranslator] The spoken-language provider returned null. Every spoken path must "
+               + "resolve a language from its tenant - fix the wiring rather than defaulting to English.");
 
     /// <summary>
     /// Tolerant matchers for the answer delimiters. The model is TOLD to wrap its answer in the
@@ -277,9 +302,10 @@ public sealed class WingmanTranslator
         if (string.IsNullOrWhiteSpace(latestReply))
             throw new ArgumentException("Latest reply is required - there is nothing to translate.", nameof(latestReply));
 
-        _log($"[WingmanTranslator] TranslateWithAsync: instrLen={instructions?.Length ?? 0}, contextLen={recentContext?.Length ?? 0}, replyLen={latestReply.Length}, title={(string.IsNullOrWhiteSpace(sessionTitle) ? "(none)" : sessionTitle)}");
+        _log($"[WingmanTranslator] TranslateWithAsync: instrLen={instructions?.Length ?? 0}, contextLen={recentContext?.Length ?? 0}, replyLen={latestReply.Length}, title={(string.IsNullOrWhiteSpace(sessionTitle) ? "(none)" : sessionTitle)}, language={LanguageFor(tenant).Code}");
 
-        var prompt = BuildPrompt(instructions ?? FidelityPrompt, recentContext ?? "", latestReply, sessionTitle);
+        var language = LanguageFor(tenant);
+        var prompt = BuildPrompt(language, instructions ?? FidelityPrompt, recentContext ?? "", latestReply, sessionTitle);
 
         var brain = await _brainProvider(tenant, WingmanModelRole.Fast, ct);
         AskResult ask;
@@ -294,7 +320,7 @@ public sealed class WingmanTranslator
             await brain.ClearAsync(CancellationToken.None);
         }
 
-        var spoken = CleanupForSpeech(ExtractSpoken(ask.Text));
+        var spoken = SpeechContract.Finish(ExtractSpoken(ask.Text));
         if (string.IsNullOrWhiteSpace(spoken))
             throw new InvalidOperationException(
                 "[WingmanTranslator] The wingman returned an empty spoken translation for a non-empty reply.");
@@ -319,8 +345,9 @@ public sealed class WingmanTranslator
         if (string.IsNullOrWhiteSpace(userMessage))
             throw new ArgumentException("A message is required to ask the wingman.", nameof(userMessage));
 
-        _log($"[WingmanTranslator] AskDirectAsync: userLen={userMessage.Length}");
-        var prompt = BuildDirectPrompt(userMessage);
+        var language = LanguageFor(tenant);
+        _log($"[WingmanTranslator] AskDirectAsync: userLen={userMessage.Length}, language={language.Code}");
+        var prompt = BuildDirectPrompt(language, userMessage);
 
         var brain = await _brainProvider(tenant, WingmanModelRole.Thinking, ct);
         AskResult ask;
@@ -333,7 +360,7 @@ public sealed class WingmanTranslator
             await brain.ClearAsync(CancellationToken.None);
         }
 
-        var spoken = CleanupForSpeech(ExtractSpoken(ask.Text));
+        var spoken = SpeechContract.Finish(ExtractSpoken(ask.Text));
         if (string.IsNullOrWhiteSpace(spoken))
             throw new InvalidOperationException("[WingmanTranslator] The wingman returned an empty answer.");
 
@@ -355,8 +382,9 @@ public sealed class WingmanTranslator
         if (string.IsNullOrWhiteSpace(question))
             throw new ArgumentException("A question is required to ask about DevThrottle.", nameof(question));
 
-        _log($"[WingmanTranslator] AskAboutDevThrottleAsync: questionLen={question.Length}");
-        var prompt = BuildDevThrottlePrompt(question);
+        var language = LanguageFor(tenant);
+        _log($"[WingmanTranslator] AskAboutDevThrottleAsync: questionLen={question.Length}, language={language.Code}");
+        var prompt = BuildDevThrottlePrompt(language, question);
 
         var brain = await _brainProvider(tenant, WingmanModelRole.Thinking, ct);
         AskResult ask;
@@ -369,7 +397,7 @@ public sealed class WingmanTranslator
             await brain.ClearAsync(CancellationToken.None);
         }
 
-        var answer = CleanupForSpeech(ExtractSpoken(ask.Text));
+        var answer = SpeechContract.Finish(ExtractSpoken(ask.Text));
         if (string.IsNullOrWhiteSpace(answer))
             throw new InvalidOperationException("[WingmanTranslator] The wingman returned an empty answer about DevThrottle.");
 
@@ -378,9 +406,12 @@ public sealed class WingmanTranslator
     }
 
     /// <summary>The DevThrottle product/docs Q&amp;A prompt (issue #472). Public so a test can assert
-    /// it grounds the brain as DevThrottle's in-product help and carries the user's question.</summary>
-    public static string BuildDevThrottlePrompt(string question)
+    /// it grounds the brain as DevThrottle's in-product help and carries the user's question. Takes
+    /// the account's <paramref name="language"/> because this answer is spoken (and shown as raw
+    /// text), so it is one of the paths the spoken output contract binds - issue #1008.</summary>
+    public static string BuildDevThrottlePrompt(SpokenLanguage language, string question)
     {
+        ArgumentNullException.ThrowIfNull(language);
         var sb = new StringBuilder();
         sb.Append("You are DevThrottle's in-product help assistant, answering a question typed on the ");
         sb.Append("Learning page of the DevThrottle Cockpit (the fleet web dashboard). DevThrottle ");
@@ -395,10 +426,9 @@ public sealed class WingmanTranslator
         sb.Append("question is not about DevThrottle, say so plainly and point them back to product help.\n");
         sb.Append("- If you are not sure of a specific detail, say so rather than inventing it; never ");
         sb.Append("guess at a feature that may not exist.\n");
-        sb.Append("- Keep it short and readable: a short paragraph, not an essay. Write plain prose only ");
-        sb.Append("- NO Markdown (no asterisks, hash-mark headings, numbered or bulleted lists, or ");
-        sb.Append("backticks); the answer is shown as raw text and may be read aloud, so formatting ");
-        sb.Append("marks show up literally. Enumerate in words inside a sentence, never as a \"1.\" list.\n\n");
+        sb.Append("- Keep it short and readable: a short paragraph, not an essay.\n\n");
+        sb.Append(SpeechContract.SpokenOutputContract(language));
+        sb.Append("\n\n");
         sb.Append("The person asked:\n");
         sb.Append(question.Trim());
         sb.Append("\n\n");
@@ -573,18 +603,19 @@ public sealed class WingmanTranslator
     private static string StripForSpeech(string key)
         => Regex.Replace(key ?? "", @"^\W*(?:\d{1,2}|[A-Za-z])[.)]\s*", "").Trim();
 
-    /// <summary>The direct-to-wingman prompt. Public so a test can assert its contract.</summary>
-    public static string BuildDirectPrompt(string userMessage)
+    /// <summary>The direct-to-wingman prompt. Public so a test can assert its contract. Takes the
+    /// account's <paramref name="language"/> because this answer is spoken - issue #1008.</summary>
+    public static string BuildDirectPrompt(SpokenLanguage language, string userMessage)
     {
+        ArgumentNullException.ThrowIfNull(language);
         var sb = new StringBuilder();
         sb.Append("You are the wingman, talking directly to a person in a spoken back-and-forth ");
         sb.Append("(not relaying a coding session). Answer their message helpfully and briefly, in ");
         sb.Append("words that are natural to hear out loud - no code, paths, or symbols read aloud. ");
-        sb.Append("Output plain spoken prose only - NO Markdown: no asterisks, hash-mark headings, ");
-        sb.Append("numbered or bulleted lists, or backticks. Write in flowing sentences; enumerate ");
-        sb.Append("in words (\"first ... second ...\"), never as a \"1.\" list. ");
         sb.Append("You do NOT edit files or run commands yourself; if the request needs real code ");
         sb.Append("work, say so plainly and suggest sending it to the working session.\n\n");
+        sb.Append(SpeechContract.SpokenOutputContract(language));
+        sb.Append("\n\n");
         sb.Append("The person said:\n");
         sb.Append(userMessage.Trim());
         sb.Append("\n\n");
@@ -610,10 +641,16 @@ public sealed class WingmanTranslator
     /// no session here" case (the draft-prompt A/B path) and omits the block entirely, which the
     /// rule's own escape clause covers - the model is never handed an empty title to voice.
     /// </summary>
-    public static string BuildPrompt(string instructions, string recentContext, string latestReply, string? sessionTitle)
+    public static string BuildPrompt(SpokenLanguage language, string instructions, string recentContext, string latestReply, string? sessionTitle)
     {
+        ArgumentNullException.ThrowIfNull(language);
         var sb = new StringBuilder();
         sb.Append(string.IsNullOrWhiteSpace(instructions) ? FidelityPrompt : instructions);
+        sb.Append("\n\n");
+        // The contract goes AFTER the instructions, always. The instructions may be the user's own
+        // words (issue #537) and will not mention a language or Markdown; appending here rather than
+        // embedding there is what makes those two rules un-editable - see SpeechContract.
+        sb.Append(SpeechContract.SpokenOutputContract(language));
         sb.Append("\n\n");
         if (!string.IsNullOrWhiteSpace(sessionTitle))
         {
@@ -672,75 +709,9 @@ public sealed class WingmanTranslator
         return s;
     }
 
-    /// <summary>
-    /// Deterministic sanitize-for-speech pass (issue #1157 follow-up). The wingman's output is the
-    /// exact string handed to text-to-speech, so any Markdown mark the model leaves in is voiced
-    /// literally - "star star", "hashtag", "dash". The fidelity prompt asks the model not to emit
-    /// Markdown, but a prompt is not a guarantee (the narration runs on the cheaper Fast tier, which
-    /// disobeys it often), so this is the belt to the prompt's suspenders: it removes the FORMATTING
-    /// characters that are never valid spoken words while leaving the real words - including all
-    /// non-Latin scripts and every number - completely untouched. It changes how text is spoken,
-    /// never WHAT is said, so it does not touch the fidelity of the answer.
-    ///
-    /// Stripped/normalized: fenced and inline code, Markdown links and images (kept as their text),
-    /// bold/italic/strikethrough emphasis, hash-mark headings, blockquote markers, bullet and
-    /// numbered-list markers, horizontal rules, and table pipes. Word-internal underscores
-    /// (identifiers like snake_case) are deliberately preserved - only underscores that wrap a word
-    /// as emphasis are removed. Public so tests can prove both the stripping and the passthrough.
-    /// </summary>
-    public static string CleanupForSpeech(string text)
-    {
-        if (string.IsNullOrEmpty(text)) return string.Empty;
-
-        // Fenced code blocks are never spoken - drop them whole (both ``` and ~~~ fences).
-        text = Regex.Replace(text, @"```[\s\S]*?```", " ");
-        text = Regex.Replace(text, @"~~~[\s\S]*?~~~", " ");
-
-        // Images before links so the alt text survives: ![alt](url) -> alt, [text](url) -> text.
-        text = Regex.Replace(text, @"!\[([^\]]*)\]\([^)]*\)", "$1");
-        text = Regex.Replace(text, @"\[([^\]]+)\]\([^)]*\)", "$1");
-
-        // Inline code keeps its inner text (issue #368) - it is often the answer's content; then
-        // remove any stray unpaired backtick so none is read as "backtick".
-        text = Regex.Replace(text, @"`([^`]+)`", "$1");
-        text = text.Replace("`", "");
-
-        // Line-leading block markers: headings, blockquotes, bullets, numbered lists, and rules.
-        // Handled per line so a marker is only stripped where Markdown puts it - at the line start -
-        // and a mid-sentence "step 1." or "a - b" is left alone.
-        var lines = text.Replace("\r\n", "\n").Split('\n');
-        for (var i = 0; i < lines.Length; i++)
-        {
-            var line = lines[i];
-            // A horizontal rule is a line of only -, * or _ (three or more) - drop it entirely.
-            if (Regex.IsMatch(line, @"^\s*([-*_])(?:\s*\1){2,}\s*$")) { lines[i] = ""; continue; }
-            line = Regex.Replace(line, @"^\s*#{1,6}\s+", "");     // ## Heading -> Heading
-            line = Regex.Replace(line, @"^\s*>+\s?", "");          // > quote -> quote
-            line = Regex.Replace(line, @"^\s*[-*+]\s+", "");       // - bullet -> bullet
-            line = Regex.Replace(line, @"^\s*\d{1,3}[.)]\s+", ""); // 1. item / 2) item -> item
-            lines[i] = line;
-        }
-        text = string.Join("\n", lines);
-
-        // Tables: drop separator rows (|---|:--:|) and turn remaining cell pipes into a light pause
-        // so "pipe" is never voiced.
-        text = Regex.Replace(text, @"^\s*\|?[\s:|-]{3,}\|?\s*$", "", RegexOptions.Multiline);
-        text = text.Replace("|", ", ");
-
-        // Emphasis marks. Asterisks: strip the wrappers around bold/italic (**x**, *x*, ***x***),
-        // then any leftover stray asterisk. Underscores: only when they wrap a word at a boundary,
-        // so identifiers like snake_case and file_name keep their underscores. Strikethrough ~~x~~.
-        text = Regex.Replace(text, @"\*{1,3}([^*\n]+?)\*{1,3}", "$1");
-        text = text.Replace("*", "");
-        text = Regex.Replace(text, @"(?<=^|\s)_{1,3}([^_\n]+?)_{1,3}(?=$|\s|[.,!?;:])", "$1");
-        text = Regex.Replace(text, @"~~([^~\n]+?)~~", "$1");
-
-        // Collapse the whitespace the stripping left behind.
-        text = Regex.Replace(text, @"[ \t]{2,}", " ");
-        text = Regex.Replace(text, @"[ \t]+\n", "\n");
-        text = Regex.Replace(text, @"\n{3,}", "\n\n");
-        return text.Trim();
-    }
+    // The sanitize-for-speech pass used to live here as CleanupForSpeech, and that is precisely why
+    // Car Mode never had it: Car Mode does not go through this class. It is now
+    // SpeechContract.Finish, where every spoken path can reach it (issue #1008).
 }
 
 /// <summary>The result of one wingman translation: the spoken text and the brain latency.</summary>

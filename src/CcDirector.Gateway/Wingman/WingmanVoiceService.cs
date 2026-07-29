@@ -282,9 +282,13 @@ public sealed class WingmanVoiceService
         HttpClient? ttsHttpClient = null,
         Func<TenantId, string, string?>? sessionTitleResolver = null)
     {
-        _translator = new WingmanTranslator(brainProvider, instructionsProvider: instructionsProvider);
         _vault = vault ?? throw new ArgumentNullException(nameof(vault));
         _tenantSettings = tenantSettings ?? throw new ArgumentNullException(nameof(tenantSettings));
+        // The account's spoken language comes from the same per-tenant resolver this service already
+        // uses for the voice and the model, read at CALL time so a change on the Language tab applies
+        // to the next narration (issue #1008).
+        _translator = new WingmanTranslator(
+            brainProvider, _tenantSettings.SpokenLanguage, instructionsProvider: instructionsProvider);
         _sessionTitleResolver = sessionTitleResolver;
         // Post-cut: the owning Director is reached through the tunnel-only SessionVerbClient the callers pass
         // into GenerateAsync, so this service holds no Director client.

@@ -2460,11 +2460,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // credential on the request at all, and the machine token is the same identity every client uses.
         Func<string, CarMode.ICarModeFleet> carModeFleetForCaller = callerCredential =>
             new CarMode.LoopbackCarModeFleet(Port, string.IsNullOrEmpty(callerCredential) ? Token : callerCredential);
-        var carModeBrain = new CarMode.CarModeBrain(carModeChat, carModeFleetForCaller, _carModeConversations, _carModePending, _carModeSubjects);
+        var carModeBrain = new CarMode.CarModeBrain(carModeChat, carModeFleetForCaller, _carModeConversations, _carModePending, _carModeSubjects, _tenantSettingsResolver.SpokenLanguage);
         // The cockpit Assistant (POST /assistant/turn): the SAME loop, tools, stores, model, and turn cache
         // as Car Mode, with only the desk-surface speech style. Sharing the stores means a device that uses
         // both surfaces keeps one conversation and one armed-confirmation state - no split-brain.
-        var assistantBrain = new CarMode.CarModeBrain(carModeChat, carModeFleetForCaller, _carModeConversations, _carModePending, _carModeSubjects, surface: CarMode.CarModeSurface.Desk);
+        var assistantBrain = new CarMode.CarModeBrain(carModeChat, carModeFleetForCaller, _carModeConversations, _carModePending, _carModeSubjects, _tenantSettingsResolver.SpokenLanguage, surface: CarMode.CarModeSurface.Desk);
         // Keep-warm (Car Mode performance round): warm the SAME hosted model the brain uses and the SAME
         // text-to-speech target /wingman/tts uses, resolved fresh each warmup so a settings change applies.
         var carModeWarmup = new CarMode.CarModeWarmup(

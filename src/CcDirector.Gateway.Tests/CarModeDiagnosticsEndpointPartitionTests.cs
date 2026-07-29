@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Text.Json;
 using CcDirector.Gateway.Api;
 using CcDirector.Gateway.CarMode;
+using CcDirector.Gateway.Speech;
 using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Pairing;
 using CcDirector.Gateway.Util;
@@ -62,6 +63,7 @@ public sealed class CarModeDiagnosticsEndpointPartitionTests : IAsyncLifetime
             new CarModeConversationStore(_ => { }),
             new CarModePendingStore(_ => { }),
             new CarModeSubjectStore(_ => { }),
+            _ => SpokenLanguages.English,
             _ => { });
         var warmup = new CarModeWarmup(
             _ => ("http://127.0.0.1:1", "model", "key"),

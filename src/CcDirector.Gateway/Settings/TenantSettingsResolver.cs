@@ -171,6 +171,20 @@ public sealed class TenantSettingsResolver
             ? cadence
             : ReportCadences.Default;
 
+    /// <summary>
+    /// The language this tenant is SPOKEN TO in (issue #1008) - the single source every spoken path
+    /// reads, so a language reaches all of them or none of them. Defaults to English when the tenant
+    /// has expressed no choice, and ALSO when the stored code is one this Gateway does not recognize;
+    /// <see cref="Speech.SpokenLanguages.Resolve"/> owns that decision and explains why degrading is
+    /// the right direction for a READ.
+    ///
+    /// This is deliberately the ONLY read of the spoken language in the product. Every spoken path is
+    /// handed a resolver call keyed on the tenant it already had to have, so there is no second place
+    /// a language could be decided and no parameter anyone has to remember to thread.
+    /// </summary>
+    public Speech.SpokenLanguage SpokenLanguage(TenantId tenant)
+        => Speech.SpokenLanguages.Resolve(_store.Get(tenant, TenantSettingKeys.SpokenLanguage));
+
     // ---- writes: validate like the global setters, then persist a per-tenant override -------------------
 
     /// <summary>Set the tenant's wingman model for a role.</summary>
@@ -270,6 +284,27 @@ public sealed class TenantSettingsResolver
     /// one it never touched - and so a later look at the store can tell the two apart.</summary>
     public void SetDailyReportCadence(TenantId tenant, ReportCadence cadence, DateTime nowUtc)
         => _store.Set(tenant, TenantSettingKeys.DailyReportCadence, ReportCadences.Name(cadence), nowUtc);
+
+    /// <summary>
+    /// Set the language this tenant is spoken to in. English is stored EXPLICITLY rather than by
+    /// clearing the override, so "back to English" is a choice this account made and a later look at
+    /// the store can tell it apart from an account that never chose at all.
+    ///
+    /// An unsupported code is REFUSED here, where the person can see it - unlike the read, which
+    /// degrades to English. A write is somebody making a choice; silently storing a language we cannot
+    /// speak would leave them looking at a setting that says French while the product says English,
+    /// which is the "the setting does nothing" report that came in three times on the last attempt.
+    /// </summary>
+    /// <exception cref="ArgumentException">The code is not a language this product speaks.</exception>
+    public void SetSpokenLanguage(TenantId tenant, string code, DateTime nowUtc)
+    {
+        if (!Speech.SpokenLanguages.IsSupported(code))
+            throw new ArgumentException(
+                $"'{code}' is not a language DevThrottle speaks. Supported: "
+                + string.Join(", ", Speech.SpokenLanguages.All.Select(l => l.Code)) + ".", nameof(code));
+        _store.Set(tenant, TenantSettingKeys.SpokenLanguage,
+            Speech.SpokenLanguages.Resolve(code).Code, nowUtc);
+    }
 
     /// <summary>Record this tenant's daily-email cadence state after a mention is emitted.</summary>
     public void SetDictationEmailCadence(TenantId tenant, DictationEmailCadenceState state, DateTime nowUtc)

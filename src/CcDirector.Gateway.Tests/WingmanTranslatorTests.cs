@@ -3,6 +3,7 @@ using CcDirector.AgentBrain;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Drivers;
 using CcDirector.Core.Tenancy;
+using CcDirector.Gateway.Speech;
 using CcDirector.Gateway.Wingman;
 using Xunit;
 using Xunit.Abstractions;
@@ -64,7 +65,7 @@ public sealed class WingmanTranslatorTests
     }
 
     private static WingmanTranslator BuildTranslator(FakeBrain brain)
-        => new((_, _, _) => Task.FromResult<IAgentBrain>(brain), log: _ => { });
+        => new((_, _, _) => Task.FromResult<IAgentBrain>(brain), _ => SpokenLanguages.English, log: _ => { });
 
     [Fact]
     public async Task TranslateAsync_ReturnsTheSpokenTranslation_FromBetweenTheMarkers()
@@ -92,6 +93,7 @@ public sealed class WingmanTranslatorTests
                 roles.Add(role);
                 return Task.FromResult<IAgentBrain>(brain);
             },
+            _ => SpokenLanguages.English,
             log: _ => { });
 
         await translator.TranslateAsync(TenantId.Local, "recent context", "the agent reply to translate", sessionTitle: null);
@@ -117,7 +119,7 @@ public sealed class WingmanTranslatorTests
     public async Task TranslateAsync_ClearsTheContext_EvenWhenTheAskThrows()
     {
         var brain = new ThrowingBrain();
-        var translator = new WingmanTranslator((_, _, _) => Task.FromResult<IAgentBrain>(brain), log: _ => { });
+        var translator = new WingmanTranslator((_, _, _) => Task.FromResult<IAgentBrain>(brain), _ => SpokenLanguages.English, log: _ => { });
 
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => translator.TranslateAsync(TenantId.Local, "q", "some reply", sessionTitle: null));
@@ -176,7 +178,7 @@ public sealed class WingmanTranslatorTests
         // why the title is spoken rather than glued on in code). Pre-mangling it here would just be
         // a second, worse implementation of the SPEAK FOR THE EAR rule.
         var prompt = WingmanTranslator.BuildPrompt(
-            WingmanTranslator.FidelityPrompt, "recent", "the reply", "Athene / Stephanie #2624");
+            SpokenLanguages.English, WingmanTranslator.FidelityPrompt, "recent", "the reply", "Athene / Stephanie #2624");
 
         Assert.Contains("Athene / Stephanie #2624", prompt);
         Assert.Contains("the reply", prompt);
@@ -303,21 +305,24 @@ public sealed class WingmanTranslatorTests
     }
 
     [Fact]
-    public void BuildDirectPrompt_BansMarkdownForTheEar()
+    public void BuildDirectPrompt_CarriesTheOneSpokenOutputContract()
     {
-        // The "hey wingman" path is also spoken, so its prompt carries the same no-Markdown rule.
-        var prompt = WingmanTranslator.BuildDirectPrompt("what is going on?");
-        Assert.Contains("NO Markdown", prompt);
+        // The "hey wingman" path is spoken, so it carries the shared contract rather than its own
+        // hand-written copy of the no-Markdown rule - which is what it used to have, worded
+        // differently from the other three (issue #1008).
+        var prompt = WingmanTranslator.BuildDirectPrompt(SpokenLanguages.English, "what is going on?");
+        Assert.Contains(SpeechContract.SpokenOutputContract(SpokenLanguages.English), prompt);
         Assert.Contains("what is going on?", prompt);
     }
 
     [Fact]
-    public void BuildDevThrottlePrompt_BansMarkdownBecauseTheAnswerIsShownRawAndMaySpeak()
+    public void BuildDevThrottlePrompt_CarriesTheOneSpokenOutputContract()
     {
         // The Learning-page answer is rendered as raw text (no Markdown renderer) and may be read
-        // aloud, so formatting marks would show/voice literally. The prompt must forbid them.
-        var prompt = WingmanTranslator.BuildDevThrottlePrompt("How do I start a session?");
-        Assert.Contains("NO Markdown", prompt);
+        // aloud, so formatting marks would show/voice literally - and it is spoken, so it answers in
+        // the account's language. Both rules come from the one contract.
+        var prompt = WingmanTranslator.BuildDevThrottlePrompt(SpokenLanguages.English, "How do I start a session?");
+        Assert.Contains(SpeechContract.SpokenOutputContract(SpokenLanguages.English), prompt);
     }
 
     [Fact]
@@ -334,7 +339,7 @@ public sealed class WingmanTranslatorTests
         // reply IS the spoken answer (it was told to output only that), so we use it rather than
         // 502 - the reliability fix for the explain/voice-turn path.
         var brain = new NoMarkersBrain();   // returns "just some text with no markers at all"
-        var translator = new WingmanTranslator((_, _, _) => Task.FromResult<IAgentBrain>(brain), log: _ => { });
+        var translator = new WingmanTranslator((_, _, _) => Task.FromResult<IAgentBrain>(brain), _ => SpokenLanguages.English, log: _ => { });
         var result = await translator.TranslateAsync(TenantId.Local, "q", "a reply", sessionTitle: null);
         Assert.Equal("just some text with no markers at all", result.Spoken);
     }
@@ -348,7 +353,7 @@ public sealed class WingmanTranslatorTests
         var raggedOpen = SessionAskRunner.AnswerBeginMarker.TrimEnd('=') + "==";      // "...BEGIN=="
         var raggedClose = "==" + SessionAskRunner.AnswerEndMarker.TrimStart('=');     // "==...END==="
         var brain = new FixedReplyBrain($"{raggedOpen}\nThe session started fine.\n{raggedClose}");
-        var translator = new WingmanTranslator((_, _, _) => Task.FromResult<IAgentBrain>(brain), log: _ => { });
+        var translator = new WingmanTranslator((_, _, _) => Task.FromResult<IAgentBrain>(brain), _ => SpokenLanguages.English, log: _ => { });
 
         var result = await translator.TranslateAsync(TenantId.Local, "q", "a reply", sessionTitle: null);
 
@@ -428,7 +433,7 @@ public sealed class WingmanTranslatorTests
     [Fact]
     public void BuildDevThrottlePrompt_GroundsTheBrainAsDevThrottleHelp_AndCarriesTheQuestion()
     {
-        var prompt = WingmanTranslator.BuildDevThrottlePrompt("How do I start a session?");
+        var prompt = WingmanTranslator.BuildDevThrottlePrompt(SpokenLanguages.English, "How do I start a session?");
 
         Assert.Contains("DevThrottle's in-product help", prompt);
         Assert.Contains("Answer ONLY about DevThrottle", prompt);
@@ -441,7 +446,7 @@ public sealed class WingmanTranslatorTests
     public void CleanupForSpeech_StripsCodeFencesButKeepsInlineIdentifierText()
     {
         var input = "Here is the change:\n```csharp\nvar x = 1;\n```\nIt updates `timeoutMs` to thirty seconds.";
-        var cleaned = WingmanTranslator.CleanupForSpeech(input);
+        var cleaned = SpeechContract.Finish(input);
 
         Assert.DoesNotContain("```", cleaned);
         Assert.DoesNotContain("var x = 1;", cleaned);
@@ -452,7 +457,7 @@ public sealed class WingmanTranslatorTests
     public void CleanupForSpeech_LeavesNonLatinTextUntouched()
     {
         const string korean = "로그인 버그를 수정했습니다. 모든 테스트가 통과했습니다.";
-        Assert.Equal(korean, WingmanTranslator.CleanupForSpeech(korean));
+        Assert.Equal(korean, SpeechContract.Finish(korean));
     }
 
     [Fact]
@@ -460,7 +465,7 @@ public sealed class WingmanTranslatorTests
     {
         // The exact bug: **BPMN Studio** was voiced as "star star BPMN Studio star star". The
         // deterministic pass removes the emphasis wrappers but keeps the words.
-        var cleaned = WingmanTranslator.CleanupForSpeech("**BPMN Studio** is the *best* option here.");
+        var cleaned = SpeechContract.Finish("**BPMN Studio** is the *best* option here.");
 
         Assert.DoesNotContain("*", cleaned);
         Assert.Contains("BPMN Studio", cleaned);
@@ -470,7 +475,7 @@ public sealed class WingmanTranslatorTests
     [Fact]
     public void CleanupForSpeech_StripsHeadingHashMarks_KeepingTheHeadingWords()
     {
-        var cleaned = WingmanTranslator.CleanupForSpeech("## Root cause\nThe panel path was wrong.");
+        var cleaned = SpeechContract.Finish("## Root cause\nThe panel path was wrong.");
 
         Assert.DoesNotContain("#", cleaned);
         Assert.Contains("Root cause", cleaned);
@@ -481,7 +486,7 @@ public sealed class WingmanTranslatorTests
     public void CleanupForSpeech_StripsBulletAndNumberedListMarkers()
     {
         var input = "Here is the plan:\n- First, patch the auth flow.\n- Then rerun the tests.\n1. Build.\n2) Ship.";
-        var cleaned = WingmanTranslator.CleanupForSpeech(input);
+        var cleaned = SpeechContract.Finish(input);
 
         Assert.Contains("First, patch the auth flow.", cleaned);
         Assert.Contains("Then rerun the tests.", cleaned);
@@ -498,7 +503,7 @@ public sealed class WingmanTranslatorTests
     {
         // snake_case is an identifier - its underscores are content and must survive. A word wrapped
         // in underscores for italics (_emphasis_) is a mark and must go.
-        var cleaned = WingmanTranslator.CleanupForSpeech("The _urgent_ fix touches snake_case_name.");
+        var cleaned = SpeechContract.Finish("The _urgent_ fix touches snake_case_name.");
 
         Assert.Contains("snake_case_name", cleaned); // identifier underscores preserved
         Assert.Contains("urgent", cleaned);
@@ -508,7 +513,7 @@ public sealed class WingmanTranslatorTests
     [Fact]
     public void CleanupForSpeech_StripsMarkdownLinks_KeepingTheLinkText()
     {
-        var cleaned = WingmanTranslator.CleanupForSpeech("See [the release notes](https://example.com/notes) for details.");
+        var cleaned = SpeechContract.Finish("See [the release notes](https://example.com/notes) for details.");
 
         Assert.Contains("the release notes", cleaned);
         Assert.DoesNotContain("https://example.com/notes", cleaned);
@@ -521,7 +526,7 @@ public sealed class WingmanTranslatorTests
         // The pass changes how text is spoken, never the facts. Numbers - including long ones - are
         // the answer's content and must pass through exactly.
         const string input = "All 73 tests passed and the id is 1204987654321.";
-        var cleaned = WingmanTranslator.CleanupForSpeech(input);
+        var cleaned = SpeechContract.Finish(input);
 
         Assert.Contains("73", cleaned);
         Assert.Contains("1204987654321", cleaned);
@@ -539,7 +544,7 @@ public sealed class WingmanTranslatorTests
             "1. Run `dotnet test`\n" +
             "See [the docs](https://example.com).\n" +
             "| Col A | Col B |\n| --- | --- |\n| x | y |";
-        var cleaned = WingmanTranslator.CleanupForSpeech(input);
+        var cleaned = SpeechContract.Finish(input);
 
         Assert.DoesNotContain("*", cleaned);
         Assert.DoesNotContain("#", cleaned);

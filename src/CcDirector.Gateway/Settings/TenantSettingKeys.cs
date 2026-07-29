@@ -89,11 +89,26 @@ public static class TenantSettingKeys
     /// </summary>
     public const string DailyReportCadence = "daily_report_cadence";
 
+    /// <summary>
+    /// The language this account is SPOKEN TO in, stored as the short code (<c>en</c>/<c>fr</c>/<c>es</c>)
+    /// - issue #1008. Like <see cref="VoiceModeAll"/> there is no operator global default to fall back
+    /// to: which language a person wants to be spoken to in is that person's own choice and nobody
+    /// else's, and its default is English, so nothing changes for anyone who never opens the Language
+    /// tab.
+    ///
+    /// Stored as a CODE rather than an engine, a model, or a voice. That is the whole lesson of the
+    /// reverted attempt (devthrottle_internal#547): a language is a choice about words, and the moment
+    /// it becomes a choice about which speech engine runs, it can break speech itself. What this key
+    /// holds can only ever change what the product SAYS, never what says it.
+    /// </summary>
+    public const string SpokenLanguage = "spoken_language";
+
     /// <summary>Every key this resolver serves, for validation and enumeration.</summary>
     public static readonly IReadOnlySet<string> All = new HashSet<string>(StringComparer.Ordinal)
     {
         WingmanModel, WingmanFastModel, TtsModel, TtsVoice,
         CarModeModel, CarModeEndPhrase, SnoozePresets, SnoozeDefaultMinutes, TimeZone, InjectedText,
         VoiceModeAll, DictationSuggestionsInDailyEmail, DictationEmailCadence, DailyReportCadence,
+        SpokenLanguage,
     };
 }

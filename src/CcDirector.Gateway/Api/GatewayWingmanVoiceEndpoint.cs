@@ -143,7 +143,12 @@ internal static class GatewayWingmanVoiceEndpoint
         // status mapping below could only be proven by calling the real provider over the internet.
         var ttsHttp = ttsHttpClient ?? SharedTtsHttp;
 
-        var translator = new WingmanTranslator(brainProvider, instructionsProvider: instructionsProvider);
+        // The account's spoken language comes from the per-tenant resolver this endpoint family already
+        // holds, read at CALL time so a change on the Language tab applies to the next spoken answer
+        // (issue #1008). Every generator on this translator - narration, direct reply, product help -
+        // picks it up from the tenant it already had to have.
+        var translator = new WingmanTranslator(
+            brainProvider, tenantSettings.SpokenLanguage, instructionsProvider: instructionsProvider);
 
         // Post-cut: resolve the owning Director once (from the push store) and reach its session verbs
         // (turns / buffer / prompt) through the tunnel-only SessionVerbClient, so the wingman voice surface
