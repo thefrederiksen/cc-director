@@ -1010,6 +1010,15 @@ namespace CcDirector.Gateway.Data.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("Encoding")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT")
+                        .HasDefaultValue("utf8");
+
+                    b.Property<bool>("Executable")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("FileName")
                         .IsRequired()
                         .HasColumnType("TEXT");
@@ -1062,6 +1071,9 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("AllowedTools")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("AuthoredBy")
                         .IsRequired()
                         .HasColumnType("TEXT");
@@ -1073,12 +1085,24 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.Property<string>("ChangeNote")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("Compatibility")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("ContentHash")
                         .IsRequired()
                         .HasColumnType("TEXT");
 
                     b.Property<DateTime>("CreatedUtc")
                         .HasColumnType("TEXT");
+
+                    b.Property<string>("License")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Metadata")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT")
+                        .HasDefaultValue("{}");
 
                     b.Property<string>("Name")
                         .IsRequired()

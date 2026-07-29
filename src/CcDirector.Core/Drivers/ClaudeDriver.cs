@@ -24,7 +24,20 @@ namespace CcDirector.Core.Drivers;
 /// </summary>
 public sealed class ClaudeDriver : IAgentDriver
 {
-    public const string DefaultArgs = "--dangerously-skip-permissions";
+    /// <summary>
+    /// What Claude launches with when a caller supplies no arguments at all: the automatic
+    /// permission mode, matching the catalog's default preset so every path agrees on what "the
+    /// Claude default" means.
+    /// </summary>
+    public const string DefaultArgs = AgentToolCatalog.ClaudeAutomaticModeArg;
+
+    /// <summary>
+    /// What a HEADLESS Claude launches with - the full bypass, deliberately not the automatic mode
+    /// above. A hosted agent runs with no human attached, so a permission prompt has nobody to
+    /// answer it and the run would simply hang. The interactive default can afford to ask; this one
+    /// cannot, so the difference is stated here rather than left to whichever constant was handy.
+    /// </summary>
+    public const string HeadlessDefaultArgs = AgentToolCatalog.ClaudeSkipPermissionsArg;
 
     private static readonly byte[] EscapeByte = [0x1B];
     private static readonly byte[] CtrlC = [0x03];

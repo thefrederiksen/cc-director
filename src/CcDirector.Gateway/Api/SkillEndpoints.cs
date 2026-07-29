@@ -15,7 +15,7 @@ namespace CcDirector.Gateway.Api;
 ///   GET /gateway/skills                     -> { skills: [ ... ] }   the REGISTER LISTING
 ///   GET /gateway/skills/{id}                -> { ... } | 404
 ///   GET /gateway/skills/{id}/body           raw text/markdown (the agent read path)
-///   GET /gateway/skills/{id}/files/{name}   raw text/plain
+///   GET /gateway/skills/{id}/files/{**path}  raw file bytes (text/plain, or octet-stream if binary)
 ///
 /// THE LISTING IS THE FEATURE. It carries id, name, one line, triggers, version and hash - and no
 /// bodies - because it is what every session's launch briefing is rendered from. The body is fetched
@@ -75,14 +75,19 @@ internal static class SkillEndpoints
             return body is null ? NotFound(id) : Results.Text(body, "text/markdown");
         }));
 
-        app.MapGet("/gateway/skills/{id}/files/{fileName}", (string id, string fileName, int? version) =>
+        // A CATCH-ALL segment, because a skill is a directory: the file being asked for is
+        // "references/tracing.md", not a bare name, and a single-segment route parameter would simply
+        // fail to match it. Binary files are served as bytes with an octet-stream content type - a
+        // skill can carry an image, an archive or a compiled program, and serving those as text would
+        // corrupt them on the way out.
+        app.MapGet("/gateway/skills/{id}/files/{**filePath}", (string id, string filePath, int? version) =>
             Guard(() =>
             {
-                var content = store.GetFileContent(id, fileName, version);
-                return content is null
-                    ? Results.Json(new { error = $"no file '{fileName}' on skill '{id}'" },
+                var file = store.GetFile(id, filePath, version);
+                return file is null
+                    ? Results.Json(new { error = $"no file '{filePath}' on skill '{id}'" },
                         statusCode: StatusCodes.Status404NotFound)
-                    : Results.Text(content, "text/plain");
+                    : Results.Bytes(file.Bytes, file.ContentType);
             }));
 
         // ---- authoring ----------------------------------------------------------------------------

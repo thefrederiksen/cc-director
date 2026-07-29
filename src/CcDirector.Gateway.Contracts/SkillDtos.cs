@@ -60,11 +60,31 @@ public sealed class SkillDto
     public bool Editable { get; set; }
 }
 
-/// <summary>A supporting file carried by a skill version, with full content (authoring payloads).</summary>
+/// <summary>
+/// A supporting file carried by a skill version, with full content (authoring payloads).
+///
+/// A skill is a DIRECTORY in the Agent Skills standard, so <see cref="FileName"/> is a RELATIVE PATH
+/// inside that directory - "references/tracing.md", "scripts/build.sh" - not a bare name. That is what
+/// lets the library hold a real skill rather than a flattened approximation of one.
+/// </summary>
 public sealed class SkillFileDto
 {
+    /// <summary>The file's path relative to the skill's own directory, always with forward slashes.</summary>
     public string FileName { get; set; } = "";
+
+    /// <summary>The file's content: the text itself when <see cref="Encoding"/> is "utf8", or the
+    /// base64 of the file's bytes when it is "base64".</summary>
     public string Content { get; set; } = "";
+
+    /// <summary>How <see cref="Content"/> carries the file: "utf8" (the default, and what an older
+    /// client that omits this field always meant) or "base64" for a binary file - an image, an
+    /// archive, a compiled program. Size limits are applied to the DECODED bytes either way.</summary>
+    public string Encoding { get; set; } = "utf8";
+
+    /// <summary>Whether this file gets the executable bit when written to disk. Honored on Linux and
+    /// macOS and ignored on Windows. A bundled script that a skill tells an agent to run is useless
+    /// without it, and the bit is part of the file's identity, so it is hashed with the content.</summary>
+    public bool Executable { get; set; }
 }
 
 /// <summary>A supporting file in a version-detail response, with its content and hash. The detail
@@ -74,6 +94,12 @@ public sealed class SkillFileInfoDto
     public string FileName { get; set; } = "";
     public string ContentHash { get; set; } = "";
     public string Content { get; set; } = "";
+
+    /// <summary>"utf8" or "base64" - see <see cref="SkillFileDto.Encoding"/>.</summary>
+    public string Encoding { get; set; } = "utf8";
+
+    /// <summary>Whether the file gets the executable bit - see <see cref="SkillFileDto.Executable"/>.</summary>
+    public bool Executable { get; set; }
 }
 
 /// <summary>One row of a skill's version history (no content bodies).</summary>
@@ -100,6 +126,25 @@ public sealed class SkillVersionDetailDto
     public List<string> Triggers { get; set; } = new();
     public string BodyMarkdown { get; set; } = "";
     public List<SkillFileInfoDto> Files { get; set; } = new();
+
+    // ---- the Agent Skills standard's optional frontmatter ----------------------------------------
+    // Held verbatim so a skill authored in any other tool survives a round trip through this library
+    // unchanged, and so SKILL.md can be written back out exactly as its author wrote it.
+
+    /// <summary>The standard's <c>license</c>: a licence name, or the name of a bundled licence file.</summary>
+    public string? License { get; set; }
+
+    /// <summary>The standard's <c>compatibility</c>: environment requirements, if the skill has any.</summary>
+    public string? Compatibility { get; set; }
+
+    /// <summary>The standard's <c>allowed-tools</c>: a space-separated list of pre-approved tools.
+    /// Marked experimental by the specification, and support varies between agents.</summary>
+    public string? AllowedTools { get; set; }
+
+    /// <summary>The standard's <c>metadata</c>: an arbitrary string map for properties the standard
+    /// does not define (author, version, and whatever else a tool chose to record).</summary>
+    public Dictionary<string, string> Metadata { get; set; } = new();
+
     public string ContentHash { get; set; } = "";
     public string AuthoredBy { get; set; } = "";
     public string? ChangeNote { get; set; }
@@ -124,6 +169,18 @@ public sealed class SkillContentRequest
     public List<string>? Triggers { get; set; }
     public string? BodyMarkdown { get; set; }
     public List<SkillFileDto>? Files { get; set; }
+
+    /// <summary>The standard's <c>license</c> frontmatter field.</summary>
+    public string? License { get; set; }
+
+    /// <summary>The standard's <c>compatibility</c> frontmatter field.</summary>
+    public string? Compatibility { get; set; }
+
+    /// <summary>The standard's <c>allowed-tools</c> frontmatter field.</summary>
+    public string? AllowedTools { get; set; }
+
+    /// <summary>The standard's <c>metadata</c> frontmatter map.</summary>
+    public Dictionary<string, string>? Metadata { get; set; }
 
     /// <summary>Who is authoring: a session id, an agent name, or "human:&lt;user&gt;".</summary>
     public string? AuthoredBy { get; set; }

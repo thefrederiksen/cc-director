@@ -26,6 +26,14 @@
             <Setter Property="TextAlignment" Value="Center" />
             <Setter Property="TextWrapping" Value="Wrap" />
         </Style>
+        <!-- The WORKING steps (Gateway, Agents, Tools, Code, Screenshots) are a label above a list, so
+             their title does not need the presence of a hero. At 32 point, with a three-line subtitle
+             under it, the heading furniture ate roughly a third of a 900x640 window and the list below
+             it showed two and a half of eight rows. The hero size is kept for Welcome and Done, which
+             are mostly words and have nothing to crowd. -->
+        <Style Selector="TextBlock.wtitle.step">
+            <Setter Property="FontSize" Value="24" />
+        </Style>
         <Style Selector="TextBlock.wsub">
             <Setter Property="Foreground" Value="#5A616B" />
             <Setter Property="FontSize" Value="16" />
@@ -35,10 +43,40 @@
             <Setter Property="MaxWidth" Value="480" />
             <Setter Property="LineHeight" Value="24" />
         </Style>
+        <!-- Matching subtitle for the working steps: smaller, and wider so the same sentence uses
+             fewer lines rather than more. -->
+        <Style Selector="TextBlock.wsub.step">
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="LineHeight" Value="20" />
+            <Setter Property="MaxWidth" Value="560" />
+        </Style>
         <Style Selector="TextBlock.hint">
             <Setter Property="Foreground" Value="#8A909A" />
             <Setter Property="FontSize" Value="12.5" />
             <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+
+        <!-- The live "what we are doing right now" line that sits under an activity bar. Accent
+             coloured and semi-bold on purpose: a scan has to READ as activity. Before this, every
+             busy state on every step was rendered in the same grey as the static subtitles, so a
+             running scan and a finished one looked identical and users pressed on through. -->
+        <Style Selector="TextBlock.scanline">
+            <Setter Property="Foreground" Value="#0066B8" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="TextAlignment" Value="Center" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+
+        <!-- The activity bar itself, shared by every scanning step. -->
+        <Style Selector="ProgressBar.scanbar">
+            <Setter Property="Height" Value="4" />
+            <Setter Property="MaxWidth" Value="420" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="IsIndeterminate" Value="True" />
+            <Setter Property="Foreground" Value="#0066B8" />
+            <Setter Property="Background" Value="#E6E8EC" />
         </Style>
 
         <!-- Primary accent CTA. -->
@@ -127,8 +165,15 @@
     <Grid Margin="44,32,44,24" RowDefinitions="Auto,*,Auto">
 
         <!-- Progress dots: one per present step, painted done / current / upcoming by code-behind. -->
-        <StackPanel Grid.Row="0" x:Name="DotsPanel" Orientation="Horizontal"
-                    Spacing="8" HorizontalAlignment="Center" Margin="0,4,0,36" />
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="12"
+                    HorizontalAlignment="Center" Margin="0,4,0,30" VerticalAlignment="Center">
+            <StackPanel x:Name="DotsPanel" Orientation="Horizontal" Spacing="8"
+                        VerticalAlignment="Center" />
+            <!-- Naming the step turns the dots from decoration into a position you can read. Seven
+                 identical dots told you where you were only if you counted them. -->
+            <TextBlock x:Name="DotsStepLabel" FontSize="11.5" FontWeight="SemiBold"
+                       Foreground="#8A909A" VerticalAlignment="Center" />
+        </StackPanel>
 
         <!-- Step content. Exactly one child panel is visible at a time. -->
         <Grid Grid.Row="1">
@@ -138,33 +183,19 @@
                  expanded used to push "Set me up" off the bottom of the window. -->
             <Grid x:Name="WelcomePanel" IsVisible="False" RowDefinitions="*,Auto">
                 <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto"
-                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"
+                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,16,0"
                               MaxWidth="580" HorizontalAlignment="Center">
-                    <StackPanel Spacing="16" VerticalAlignment="Center">
-                        <TextBlock Classes="wtitle" Text="Welcome to DevThrottle" />
-                        <TextBlock Classes="wsub"
-                                   Text="You are about three minutes from running your first coding agent. We will show you what comes included - your agents, your code, your morning report - and every step is a take-it-or-leave-it offer. Use what helps, breeze past what doesn't." />
-
-                        <!-- Founder note: two sentences collapsed, one quiet Read more. It must never
-                             delay the "Set me up" click - short by design. -->
-                        <Border Background="#F5F6F8" BorderBrush="#E6E8EC" BorderThickness="1"
-                                CornerRadius="12" Padding="20,16" MaxWidth="540"
-                                HorizontalAlignment="Center" Margin="0,6,0,0">
-                            <StackPanel Spacing="8">
-                                <TextBlock FontSize="13.5" Foreground="#5A616B" TextWrapping="Wrap"
-                                           LineHeight="21"
-                                           Text="I built DevThrottle because running agents was never the hard part. The hard part was getting to Friday and realizing the week went to the wrong things. DevThrottle keeps the books - so that stops happening." />
-                                <TextBlock x:Name="FounderMoreText" FontSize="13.5" Foreground="#5A616B"
-                                           TextWrapping="Wrap" LineHeight="21" IsVisible="False"
-                                           Text="Agents multiply what you can build, and they multiply the bookkeeping with it: branches, worktrees, half-finished work, sessions waiting on you. DevThrottle carries that administration for you and reports back every morning with what happened and what needs your attention. Give it one small task today, then read tomorrow's report. That is the whole loop." />
-                                <Grid ColumnDefinitions="*,Auto">
-                                    <TextBlock Grid.Column="0" FontSize="12.5" Foreground="#8A909A"
-                                               Text="- Soren, founder" VerticalAlignment="Center" />
-                                    <Button Grid.Column="1" x:Name="FounderMoreLink" Classes="quietLink"
-                                            Content="Read more" Click="BtnFounderMore_Click" />
-                                </Grid>
-                            </StackPanel>
-                        </Border>
+                    <StackPanel Spacing="12" VerticalAlignment="Center">
+                        <TextBlock x:Name="WelcomeTitle" Classes="wtitle" Text="Let's get you set up" />
+                        <TextBlock x:Name="WelcomeSubText" Classes="wsub" />
+                        <!-- What this wizard is about to cover, one row each. The screen's whole job is
+                             to say WHY we are asking, and a scannable list is the shape people read.
+                             It replaces a founder note that talked about the product's philosophy:
+                             someone who has just installed software wants to know what the next three
+                             minutes are for, not to hear from the founder. On a re-run the same rows
+                             carry the machine's CURRENT state instead. -->
+                        <StackPanel x:Name="WelcomeAgendaPanel" Spacing="7" MaxWidth="540"
+                                    HorizontalAlignment="Stretch" />
                     </StackPanel>
                 </ScrollViewer>
 
@@ -181,12 +212,19 @@
             <!-- ===================== AGENTS ===================== -->
             <Grid x:Name="AgentsPanel" IsVisible="False" RowDefinitions="Auto,Auto,Auto,*,Auto">
                 <TextBlock Grid.Row="0" Classes="eyebrow" Text="YOUR WORKFORCE" />
-                <TextBlock Grid.Row="1" x:Name="AgentsTitle" Classes="wtitle"
+                <TextBlock Grid.Row="1" x:Name="AgentsTitle" Classes="wtitle step"
                            Text="Your agents" Margin="0,0,0,10" />
-                <TextBlock Grid.Row="2" x:Name="AgentsStatusText" Classes="wsub"
-                           Text="Scanning this machine for coding agents..." Margin="0,0,0,20" />
+                <!-- Activity block. The bar and the accent line are visible only WHILE the scan runs;
+                     the status line beneath carries the wait request during the scan and the result
+                     afterwards. -->
+                <StackPanel Grid.Row="2" Spacing="9" Margin="0,0,0,20">
+                    <ProgressBar x:Name="AgentsScanBar" Classes="scanbar" IsVisible="False" />
+                    <TextBlock x:Name="AgentsScanLine" Classes="scanline" IsVisible="False" />
+                    <TextBlock x:Name="AgentsStatusText" Classes="wsub step"
+                               Text="Scanning this machine for coding agents..." />
+                </StackPanel>
                 <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto"
-                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"
+                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,16,0"
                               MaxWidth="600" HorizontalAlignment="Center">
                     <StackPanel x:Name="AgentsListPanel" Spacing="8" MaxWidth="560"
                                 HorizontalAlignment="Stretch" />
@@ -223,38 +261,67 @@
             <!-- ===================== TOOLS (the toolbelt, maintained automatically) ===================== -->
             <Grid x:Name="ToolsPanel" IsVisible="False" RowDefinitions="Auto,Auto,Auto,Auto,*,Auto">
                 <TextBlock Grid.Row="0" Classes="eyebrow" Text="YOUR TOOLBELT" />
-                <TextBlock Grid.Row="1" x:Name="ToolsTitle" Classes="wtitle"
+                <TextBlock Grid.Row="1" x:Name="ToolsTitle" Classes="wtitle step"
                            Text="Tools, maintained for you" Margin="0,0,0,10" />
-                <TextBlock Grid.Row="2" Classes="wsub" Margin="0,0,0,10"
+                <TextBlock Grid.Row="2" Classes="wsub step" Margin="0,0,0,8"
                            Text="DevThrottle ships command tools you and your agents use every day - and it installs and updates them itself. You never run an updater." />
                 <TextBlock Grid.Row="3" x:Name="ToolsStatusText" FontSize="13" FontWeight="SemiBold"
                            Foreground="#1A7F37" HorizontalAlignment="Center" TextAlignment="Center"
                            Margin="0,0,0,14" Text="" />
                 <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto"
-                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"
+                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,16,0"
                               MaxWidth="640" HorizontalAlignment="Center">
                     <StackPanel x:Name="ToolsListPanel" Spacing="6" MaxWidth="600"
                                 HorizontalAlignment="Stretch" />
                 </ScrollViewer>
-                <Button Grid.Row="5" Classes="quietLink" Content="What these tools can do"
-                        HorizontalAlignment="Center" Margin="0,10,0,0"
-                        Click="BtnToolsDocs_Click" />
+                <!-- The repair. A screen that can only REPORT a broken tool is a dead end: before this
+                     the only two states were Ready and "Installing...", so a tool that would never
+                     install kept its Installing pill for ever while the line above promised it would
+                     finish on its own. Anything still missing after the stall window is named as not
+                     installed and this panel offers the same repair the Home screen runs. -->
+                <StackPanel Grid.Row="5" Spacing="10" Margin="0,10,0,0">
+                    <StackPanel x:Name="ToolsFixPanel" IsVisible="False" Spacing="8">
+                        <Button x:Name="ToolsFixButton" Classes="primaryButton" Content="Fix this now"
+                                HorizontalAlignment="Center" Click="BtnFixTools_Click" />
+                        <TextBlock x:Name="ToolsFixProgress" Classes="hint" IsVisible="False"
+                                   HorizontalAlignment="Center" TextAlignment="Center" MaxWidth="540"
+                                   FontFamily="Consolas, Cascadia Mono, monospace" />
+                    </StackPanel>
+                    <Button Classes="quietLink" Content="What these tools can do"
+                            HorizontalAlignment="Center" Click="BtnToolsDocs_Click" />
+                </StackPanel>
             </Grid>
 
             <!-- ===================== CODE (where your repositories live) ===================== -->
             <Grid x:Name="CodePanel" IsVisible="False" RowDefinitions="Auto,Auto,Auto,*,Auto">
                 <TextBlock Grid.Row="0" Classes="eyebrow" Text="WHAT WE WATCH OVER" />
-                <TextBlock Grid.Row="1" Classes="wtitle" Text="Where does your code live?" Margin="0,0,0,10" />
-                <TextBlock Grid.Row="2" Classes="wsub" Margin="0,0,0,22"
-                           Text="Pick the folder (or folders) where you keep your repositories. This is what DevThrottle keeps the books on - branches, unmerged work, what is waiting on you - and where it offers you repositories when you start an agent." />
+                <TextBlock Grid.Row="1" x:Name="CodeTitle" Classes="wtitle step"
+                           Text="Where does your code live?" Margin="0,0,0,10" />
+                <TextBlock Grid.Row="2" x:Name="CodeSubText" Classes="wsub step" Margin="0,0,0,22"
+                           Text="Anything we find is added for you, so DevThrottle can offer it when you start an agent. Remove any you would rather it left alone." />
                 <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto"
-                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"
+                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,16,0"
                               MaxWidth="640" HorizontalAlignment="Center">
                     <StackPanel MaxWidth="600" HorizontalAlignment="Stretch" Spacing="8">
+                        <!-- Activity block, ABOVE the results. It used to be a single line of the
+                             faintest grey on the screen, sitting UNDER an empty area - so during the
+                             sweep the eye landed on nothing at all. -->
+                        <StackPanel x:Name="CodeScanActivity" IsVisible="False" Spacing="9" Margin="0,0,0,4">
+                            <ProgressBar x:Name="CodeScanBar" Classes="scanbar" />
+                            <TextBlock x:Name="CodeScanLine" Classes="scanline"
+                                       Text="Looking for repositories in the usual places..." />
+                            <TextBlock Classes="hint" HorizontalAlignment="Center" TextAlignment="Center"
+                                       MaxWidth="480"
+                                       Text="Please wait while we look - you can also add a folder yourself below at any time." />
+                        </StackPanel>
                         <StackPanel x:Name="CodeSuggestionsPanel" Spacing="8" />
-                        <TextBlock x:Name="CodeScanStatusText" Classes="hint"
-                                   HorizontalAlignment="Center" TextAlignment="Center"
-                                   Text="Checking the usual places for git repositories..." />
+                        <TextBlock x:Name="CodeScanStatusText" Classes="hint" IsVisible="False"
+                                   HorizontalAlignment="Center" TextAlignment="Center" />
+                        <!-- Shown only when the sweep hit its time budget, so "keep looking" is an
+                             offer rather than a hidden retry. -->
+                        <Button x:Name="CodeKeepLookingButton" Classes="quietLink" IsVisible="False"
+                                Content="Keep looking" HorizontalAlignment="Center"
+                                Click="BtnKeepLookingForCode_Click" />
                         <!-- The manual path: always present, works the same on Windows and macOS. -->
                         <Border Background="#FFFFFF" BorderBrush="#E6E8EC" BorderThickness="1"
                                 CornerRadius="10" Padding="16,13">
@@ -284,22 +351,26 @@
                 </ScrollViewer>
                 <!-- The proof number: how many repositories the added folders will surface. -->
                 <StackPanel Grid.Row="4" x:Name="CodeTotalPanel" IsVisible="False" Margin="0,14,0,0">
-                    <TextBlock x:Name="CodeTotalCount" FontSize="34" FontWeight="Bold"
+                    <TextBlock x:Name="CodeTotalCount" FontSize="30" FontWeight="Bold"
                                Foreground="#16181D" HorizontalAlignment="Center"
                                FontFamily="Segoe UI Variable Display, Segoe UI, Inter" />
-                    <TextBlock Text="repositories will be available when you start an agent"
-                               FontSize="12.5" Foreground="#8A909A" HorizontalAlignment="Center" />
+                    <!-- Names the folders the total is across. The list scrolls, so on a machine with
+                         several folders the user sees three rows and a total they cannot reconcile
+                         against them - a number nobody can check is a number they have to take on
+                         trust. Saying "across 8 folders" makes it explicable without scrolling. -->
+                    <TextBlock x:Name="CodeTotalCaption" FontSize="12.5" Foreground="#8A909A"
+                               HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" />
                 </StackPanel>
             </Grid>
 
             <!-- ===================== SCREENSHOTS ===================== -->
             <Grid x:Name="ScreenshotsPanel" IsVisible="False" RowDefinitions="Auto,Auto,Auto,*">
                 <TextBlock Grid.Row="0" Classes="eyebrow" Text="SHOW, DON'T TYPE" />
-                <TextBlock Grid.Row="1" Classes="wtitle" Text="Where do your screenshots go?" Margin="0,0,0,10" />
-                <TextBlock Grid.Row="2" Classes="wsub" Margin="0,0,0,26"
+                <TextBlock Grid.Row="1" Classes="wtitle step" Text="Where do your screenshots go?" Margin="0,0,0,10" />
+                <TextBlock Grid.Row="2" Classes="wsub step" Margin="0,0,0,18"
                            Text="Snap a screen, then drag the screenshot straight onto an agent - the fastest way to show it exactly what you mean. DevThrottle watches one folder for new screenshots." />
                 <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto"
-                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"
+                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,16,0"
                               MaxWidth="640" HorizontalAlignment="Center">
                 <StackPanel MaxWidth="600" Spacing="14" VerticalAlignment="Top"
                             HorizontalAlignment="Stretch">
@@ -321,6 +392,11 @@
                     <!-- Provenance + proof line: WHERE this answer came from and how many images live there. -->
                     <TextBlock x:Name="ShotsProvenanceText" Classes="hint"
                                HorizontalAlignment="Center" TextAlignment="Center" MaxWidth="540" />
+
+                    <!-- Counting the images and decoding the newest few are two full passes over the
+                         folder, and on a large (or cloud-backed) screenshots folder that is a real
+                         wait. Without this the step showed one static line and looked dead. -->
+                    <ProgressBar x:Name="ShotsBusyBar" Classes="scanbar" IsVisible="False" />
 
                     <!-- Proof you can SEE: the newest images from the chosen folder, drawn as soon as the
                          folder is picked. Hidden when the folder holds no images. -->
@@ -353,22 +429,31 @@
 
             <!-- ===================== GATEWAY (native, hosted-first per the mockup) ===================== -->
             <Grid x:Name="GatewayPanel" IsVisible="False" RowDefinitions="Auto,Auto,Auto,*">
-                <TextBlock Grid.Row="0" Classes="eyebrow" Text="WITH YOU EVERYWHERE" />
-                <TextBlock Grid.Row="1" Classes="wtitle" Text="Connect your gateway" Margin="0,0,0,10" />
-                <TextBlock Grid.Row="2" Classes="wsub" Margin="0,0,0,24"
+                <TextBlock Grid.Row="0" Classes="eyebrow" Text="YOUR ACCOUNT" />
+                <TextBlock Grid.Row="1" x:Name="GatewayTitle" Classes="wtitle step"
+                           Text="Connect your gateway" Margin="0,0,0,10" />
+                <TextBlock Grid.Row="2" x:Name="GatewaySubText" Classes="wsub step" Margin="0,0,0,24"
                            Text="The gateway is what lets you check on your agents from your phone, use voice, and get your morning report. Signing in takes seconds." />
                 <Grid Grid.Row="3">
 
                     <!-- Choice view: one dominant hosted card (pre-selected), two quiet alternatives.
                          Scrolls so the cards stay reachable on a short window. -->
                     <ScrollViewer x:Name="GatewayChoiceView" VerticalScrollBarVisibility="Auto"
-                                  HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"
+                                  HorizontalScrollBarVisibility="Disabled" Padding="0,0,16,0"
                                   MaxWidth="640" HorizontalAlignment="Center">
                     <StackPanel MaxWidth="600" Spacing="14"
                                 VerticalAlignment="Top" HorizontalAlignment="Stretch">
-                        <Border x:Name="GatewayHostedCard" Cursor="Hand"
+                        <!-- Focusable and key-operable, with an accessible name. These three cards were
+                             bare Borders carrying only PointerPressed: not focusable, exposing no
+                             invoke pattern, and therefore unreachable by keyboard or screen reader -
+                             so choosing a gateway, the one commercial step in the product, could not
+                             be done without a mouse at all. -->
+                        <Border x:Name="GatewayHostedCard" Cursor="Hand" Focusable="True"
+                                AutomationProperties.Name="Hosted gateway, recommended. We run it for you - sign in and this machine is enrolled."
                                 Background="#F2F8FD" BorderBrush="#0066B8" BorderThickness="2"
                                 CornerRadius="12" Padding="22,20"
+                                KeyDown="GatewayCard_KeyDown"
+                                GotFocus="GatewayCard_GotFocus"
                                 PointerPressed="GatewayHostedCard_Pressed">
                             <StackPanel Spacing="6">
                                 <StackPanel Orientation="Horizontal" Spacing="10">
@@ -390,9 +475,12 @@
                         </Border>
 
                         <Grid ColumnDefinitions="*,14,*">
-                            <Border Grid.Column="0" x:Name="GatewaySelfHostCard" Cursor="Hand"
+                            <Border Grid.Column="0" x:Name="GatewaySelfHostCard" Cursor="Hand" Focusable="True"
+                                    AutomationProperties.Name="Self-hosted gateway. Run your own gateway and join it. For advanced setups."
                                     Background="#FFFFFF" BorderBrush="#E6E8EC" BorderThickness="1"
                                     CornerRadius="10" Padding="16,13"
+                                    KeyDown="GatewayCard_KeyDown"
+                                    GotFocus="GatewayCard_GotFocus"
                                     PointerPressed="GatewaySelfHostCard_Pressed">
                                 <StackPanel Spacing="3">
                                     <TextBlock Text="Self-hosted gateway" FontSize="13.5" FontWeight="SemiBold"
@@ -401,9 +489,12 @@
                                                Text="Run your own gateway and join it. For advanced setups." />
                                 </StackPanel>
                             </Border>
-                            <Border Grid.Column="2" x:Name="GatewayNotNowCard" Cursor="Hand"
+                            <Border Grid.Column="2" x:Name="GatewayNotNowCard" Cursor="Hand" Focusable="True"
+                                    AutomationProperties.Name="Not now. Local-only on this machine. Connect any time from Settings."
                                     Background="#FFFFFF" BorderBrush="#E6E8EC" BorderThickness="1"
                                     CornerRadius="10" Padding="16,13"
+                                    KeyDown="GatewayCard_KeyDown"
+                                    GotFocus="GatewayCard_GotFocus"
                                     PointerPressed="GatewayNotNowCard_Pressed">
                                 <StackPanel Spacing="3">
                                     <TextBlock Text="Not now" FontSize="13.5" FontWeight="SemiBold"
@@ -430,12 +521,20 @@
                     <!-- Connected view: the earned success state. -->
                     <StackPanel x:Name="GatewayConnectedView" IsVisible="False" Spacing="10"
                                 VerticalAlignment="Center" HorizontalAlignment="Center">
-                        <Border Background="#E5F3E9" CornerRadius="999" Padding="14,5"
-                                HorizontalAlignment="Center">
-                            <TextBlock Text="Connected" FontSize="13" FontWeight="Bold" Foreground="#1A7F37" />
+                        <Border x:Name="GatewayConnectedBadge" Background="#E5F3E9" CornerRadius="999"
+                                Padding="14,5" HorizontalAlignment="Center">
+                            <TextBlock x:Name="GatewayConnectedBadgeText" Text="Connected"
+                                       FontSize="13" FontWeight="Bold" Foreground="#1A7F37" />
                         </Border>
                         <TextBlock x:Name="GatewayConnectedHostText" FontSize="13.5" Foreground="#5A616B"
                                    HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" />
+                        <!-- Only offered when the machine was ALREADY enrolled before this run: a
+                             gateway that works is not a question to re-ask, but changing it must
+                             still be possible. Hidden after an enrolment done in this run, where
+                             the choice was just made. -->
+                        <Button x:Name="GatewayChangeLink" Classes="quietLink" IsVisible="False"
+                                Content="Connect a different gateway" HorizontalAlignment="Center"
+                                Click="GatewayChange_Click" />
                     </StackPanel>
 
                     <!-- Failure view: plain-English reason, readable on white, with a retry. -->
@@ -464,7 +563,7 @@
                  close button as the only way out of the wizard. -->
             <Grid x:Name="DonePanel" IsVisible="False" RowDefinitions="*,Auto">
                 <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto"
-                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"
+                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,16,0"
                               MaxWidth="560" HorizontalAlignment="Center">
                     <StackPanel Spacing="18" VerticalAlignment="Center">
                         <TextBlock Classes="wtitle" Text="You are ready" />
@@ -477,13 +576,19 @@
                         </Border>
                     </StackPanel>
                 </ScrollViewer>
-                <StackPanel Grid.Row="1" Spacing="16" HorizontalAlignment="Center" Margin="0,16,0,0">
-                    <Button x:Name="DoneStartButton" Classes="primaryButton"
-                            Content="Start my first agent" HorizontalAlignment="Center"
-                            Click="BtnStartFirstAgent_Click" />
+                <!-- The finish actions sit on ONE row, laid out the way the footer lays out every other
+                     step: the quiet alternative on the left of the primary, not stacked beneath it.
+                     Stacked, they pushed the receipt up and left the real footer with a hole where
+                     every other screen has its button - the last screen of onboarding was the one
+                     screen whose furniture did not match. -->
+                <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="20"
+                            HorizontalAlignment="Center" Margin="0,14,0,0" VerticalAlignment="Center">
                     <Button x:Name="DoneBoardLink" Classes="quietLink"
-                            Content="Take me to the board" HorizontalAlignment="Center"
+                            Content="Take me to the board" VerticalAlignment="Center"
                             Click="BtnPrimary_Click" />
+                    <Button x:Name="DoneStartButton" Classes="primaryButton"
+                            Content="Start my first agent"
+                            Click="BtnStartFirstAgent_Click" />
                 </StackPanel>
             </Grid>
         </Grid>

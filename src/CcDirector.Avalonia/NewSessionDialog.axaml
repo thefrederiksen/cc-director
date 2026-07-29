@@ -240,6 +240,7 @@
                                                FontSize="11" Foreground="#888888" Padding="8,5" />
                                     <Button Grid.Column="3" Content="X"
                                             Click="BtnRemoveRepo_Click"
+                                            IsVisible="{Binding CanRemove}"
                                             Tag="{Binding Path}"
                                             Width="24" Height="24"
                                             Background="Transparent"

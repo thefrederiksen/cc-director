@@ -110,13 +110,20 @@ describe("SkillsView", () => {
     expect(getSkillBody.mock.calls[0][1]).toBe(5);
   });
 
-  it("offers Clone on a built-in and never an edit affordance", async () => {
+  it("offers Clone everywhere, and the edit affordance ONLY where the Gateway says editable", async () => {
     render(<SkillsView />);
     await screen.findByText("move-session");
 
     // Cloning is how a read-only built-in is customized, so the action is on every row.
     expect(screen.getAllByRole("button", { name: /^Clone / }).length).toBe(2);
-    expect(screen.queryByRole("button", { name: /^Edit /i })).toBeNull();
+
+    // THE RULE THIS PINS (rule 7 - the client is dumb): editability is the GATEWAY's verdict,
+    // rendered verbatim and never derived here. The built-in sends editable:false and gets no way to
+    // edit its files at all - a button whose write would be refused reads as broken. The tenant's own
+    // skill sends editable:true and gets one.
+    const editButtons = screen.getAllByRole("button", { name: /^Edit the files of / });
+    expect(editButtons.length).toBe(1);
+    expect(editButtons[0].getAttribute("aria-label")).toContain("Our rules");
   });
 
   it("asks before switching a skill off, then calls the Gateway with an actor", async () => {

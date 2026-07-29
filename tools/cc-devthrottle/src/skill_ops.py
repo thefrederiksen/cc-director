@@ -15,11 +15,18 @@ withdrawn instructions is exactly the failure the central library exists to make
 
 The authoring loop round-trips a directory, like workflows:
 
-    <dir>/skill.json       metadata: id, name, summary, triggers
+    <dir>/skill.json       metadata: id, name, summary, triggers, the Agent Skills standard's
+                           frontmatter fields, and which files are executable
     <dir>/SKILL.md         the body an agent reads
-    <dir>/files/*          optional supporting files
+    <dir>/<anything>       the supporting files, at their own relative paths - "references/tracing.md"
+                           is a file called tracing.md inside a references directory, because a skill
+                           is a DIRECTORY in the Agent Skills standard and every agent this product
+                           supervises reads that same shape
     <dir>/.skill-hash      sidecar written by pull; sent as If-Match on push so a stale copy is
                            refused instead of clobbering a concurrent author
+
+A push sends text files as text and everything else base64-encoded, so an image, an archive or a
+compiled command-line program survives the round trip byte for byte.
 """
 
 from __future__ import annotations
@@ -50,7 +57,6 @@ LOOPBACK_DEFAULT = "http://127.0.0.1:7878"
 TIMEOUT_SECONDS = 15
 SKILL_JSON = "skill.json"
 SKILL_MD = "SKILL.md"
-FILES_DIR = "files"
 HASH_SIDECAR = ".skill-hash"
 
 console = Console()
@@ -275,19 +281,35 @@ def _client() -> SkillClient:
     return SkillClient(base_url=gateway_override)
 
 
-def _safe_file_name(name: str) -> str:
-    """Refuse any server-supplied file name that is not a bare name. The Gateway validates names on
-    write, but this command must not trust that: a misconfigured, older, or hostile server must not
-    be able to steer a write outside the pull or cache directory."""
-    if (
-        not name
-        or name in (".", "..")
-        or "/" in name
-        or "\\" in name
-        or ":" in name
-        or name != name.strip()
-    ):
-        raise GatewayError(f"the Gateway returned an unsafe file name: '{name}'.")
+RESERVED_WINDOWS_NAMES = {
+    "con", "prn", "aux", "nul",
+    "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+    "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+}
+
+
+def _safe_relative_path(name: str) -> str:
+    """Refuse any server-supplied file path that could write outside the skill's own directory.
+
+    A skill is a DIRECTORY, so 'references/tracing.md' is an ordinary and expected path here. The
+    Gateway validates paths on write, but this command MUST NOT trust that: a misconfigured, older,
+    or hostile server must not be able to steer a write anywhere but under the target directory. This
+    is the same rule the Gateway enforces, enforced again at the point where bytes hit this disk.
+    """
+    if not name or name != name.strip():
+        raise GatewayError(f"the Gateway returned an unsafe file path: '{name}'.")
+    if "\\" in name or ":" in name or name.startswith("/") or name.endswith("/"):
+        raise GatewayError(f"the Gateway returned an unsafe file path: '{name}'.")
+    segments = name.split("/")
+    if len(segments) > 5:
+        raise GatewayError(f"the Gateway returned a file path nested too deeply: '{name}'.")
+    for segment in segments:
+        if not segment or segment in (".", ".."):
+            raise GatewayError(f"the Gateway returned an unsafe file path: '{name}'.")
+        if segment.split(".")[0].lower() in RESERVED_WINDOWS_NAMES:
+            raise GatewayError(
+                f"the Gateway returned a file path using a reserved Windows device name: '{name}'."
+            )
     return name
 
 
@@ -300,6 +322,90 @@ def _write_exact(path: Path, text: str) -> None:
 def _read_exact(path: Path) -> str:
     with path.open("r", encoding="utf-8", newline="") as handle:
         return handle.read()
+
+
+def _clear_supporting_files(root: Path) -> None:
+    """Remove every supporting file and empty directory under `root`, keeping only the body and this
+    command's own bookkeeping. A pull must mirror the server, and an additive write would let a file
+    somebody deleted on the Gateway live on locally and be pushed straight back."""
+    keep = {SKILL_JSON, HASH_SIDECAR, SKILL_MD}
+    for path in sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+        if path.is_file() and path.relative_to(root).as_posix() not in keep:
+            path.unlink()
+        elif path.is_dir() and not any(path.iterdir()):
+            path.rmdir()
+
+
+def _write_skill_file(root: Path, entry: Dict[str, Any]) -> Path:
+    """Write one supporting file under `root` at its own relative path, creating the directories it
+    needs, decoding base64 content, and setting the executable bit where the platform has one."""
+    import base64
+    import stat
+
+    relative = _safe_relative_path(entry["fileName"])
+    target = root / Path(relative)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    encoding = (entry.get("encoding") or "utf8").strip().lower()
+    if encoding == "base64":
+        target.write_bytes(base64.b64decode(entry.get("content") or "", validate=True))
+    elif encoding == "utf8":
+        _write_exact(target, entry.get("content") or "")
+    else:
+        raise GatewayError(
+            f"the Gateway sent file '{relative}' with an encoding this command does not know "
+            f"('{encoding}'). Upgrade cc-devthrottle."
+        )
+
+    # Windows has no executable bit; on Linux and macOS a bundled script the skill tells an agent to
+    # run is useless without it.
+    if entry.get("executable") and os.name != "nt":
+        mode = target.stat().st_mode
+        target.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return target
+
+
+def _read_tree(root: Path, executable_paths: List[str]) -> List[Dict[str, Any]]:
+    """Read a skill directory's supporting files: every file under `root` at any depth, EXCEPT the
+    two bookkeeping files this command owns (skill.json and the hash sidecar) and the body itself.
+
+    Text is sent as text and everything else base64-encoded, so an image, an archive or a compiled
+    program survives the trip intact. A file is treated as text when its bytes decode as UTF-8 and
+    contain no NUL - the test is on the CONTENT, not the extension, because a .md file can be
+    anything and a .bin can be plain text.
+
+    WHO OWNS THE EXECUTABLE BIT depends on the platform, and it has to, because Windows does not have
+    one. On Linux and macOS the FILESYSTEM is authoritative, so `chmod +x` is how you mark a script
+    and `chmod -x` genuinely unmarks it. On Windows the filesystem cannot carry the answer at all, so
+    the `executable` list in skill.json is authoritative - which is exactly what a pull writes there.
+    Neither platform silently invents a bit it cannot know.
+    """
+    import base64
+
+    skipped = {SKILL_JSON, HASH_SIDECAR, SKILL_MD}
+    files: List[Dict[str, Any]] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if relative in skipped:
+            continue
+        data = path.read_bytes()
+        entry: Dict[str, Any] = {"fileName": relative}
+        try:
+            if b"\x00" in data:
+                raise UnicodeDecodeError("utf-8", data, 0, 1, "contains a NUL byte")
+            entry["content"] = data.decode("utf-8")
+            entry["encoding"] = "utf8"
+        except UnicodeDecodeError:
+            entry["content"] = base64.b64encode(data).decode("ascii")
+            entry["encoding"] = "base64"
+        if os.name == "nt":
+            entry["executable"] = relative in set(executable_paths)
+        else:
+            entry["executable"] = bool(path.stat().st_mode & 0o111)
+        files.append(entry)
+    return files
 
 
 def _pick_authoring_version(versions: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -413,29 +519,36 @@ def _materialize(skill_id: str, version: int, detail: Dict[str, Any]) -> List[Pa
     """
     files = detail.get("files") or []
     for f in files:
-        _safe_file_name(f["fileName"])
+        _safe_relative_path(f["fileName"])
 
     local_app_data = os.environ.get("LOCALAPPDATA") or str(Path.home() / ".local" / "share")
-    root = Path(local_app_data) / "cc-director" / "skills" / skill_id / str(version)
-    hash_file = root / HASH_SIDECAR
+    versions_root = Path(local_app_data) / "cc-director" / "skills" / skill_id
+    # The materialized directory IS the skill's own directory - SKILL.md at its root and every file
+    # at the path the body's relative links point at ("references/tracing.md" lands at
+    # references/tracing.md). A flattened copy, or one nested under an extra folder, would make every
+    # relative link in every skill wrong.
+    root = versions_root / str(version)
+    # The hash sidecar sits BESIDE the directory, not inside it: inside, it would be a file the skill
+    # did not put there, and it could collide with one the skill did.
+    hash_file = versions_root / f"{version}.hash"
     expected = detail.get("contentHash", "")
 
     intact = (
         hash_file.is_file()
         and hash_file.read_text(encoding="utf-8").strip() == expected
-        and all((root / FILES_DIR / f["fileName"]).is_file() for f in files)
+        and (root / SKILL_MD).is_file()
+        and all((root / Path(f["fileName"])).is_file() for f in files)
     )
     if not intact:
+        if root.is_dir():
+            shutil.rmtree(root)
         root.mkdir(parents=True, exist_ok=True)
-        files_dir = root / FILES_DIR
-        if files_dir.is_dir():
-            shutil.rmtree(files_dir)
-        files_dir.mkdir()
+        _write_exact(root / SKILL_MD, detail.get("bodyMarkdown") or "")
         for f in files:
-            _write_exact(files_dir / _safe_file_name(f["fileName"]), f.get("content") or "")
+            _write_skill_file(root, f)
         hash_file.write_text(expected, encoding="utf-8")
 
-    return [root / FILES_DIR / f["fileName"] for f in files]
+    return [root / Path(f["fileName"]) for f in files]
 
 
 def show_skill(skill_id: str, version: Optional[int], json_output: bool) -> None:
@@ -528,24 +641,32 @@ def pull_skill(skill_id: str, directory: str, version: Optional[int]) -> None:
     target = Path(directory)
     target.mkdir(parents=True, exist_ok=True)
 
+    files = detail.get("files") or []
     metadata = {
         "id": detail.get("skillId", skill_id),
         "name": detail.get("name", ""),
         "summary": detail.get("summary", ""),
         "triggers": detail.get("triggers") or [],
+        # The Agent Skills standard's own frontmatter, carried so a pulled skill can be pushed back
+        # without losing what its author wrote.
+        "license": detail.get("license"),
+        "compatibility": detail.get("compatibility"),
+        "allowedTools": detail.get("allowedTools"),
+        "metadata": detail.get("metadata") or {},
+        # Which files are executable. On Windows this list IS the answer, because the filesystem has
+        # no bit to read; on Linux and macOS the bit on disk wins and this is a record of what was
+        # pulled.
+        "executable": sorted(f["fileName"] for f in files if f.get("executable")),
     }
     (target / SKILL_JSON).write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     _write_exact(target / SKILL_MD, detail.get("bodyMarkdown") or "")
-    # The files directory mirrors the SERVER exactly: clear it first, so a file another author
-    # deleted on the Gateway does not survive locally and get resurrected by the next push.
-    files_dir = target / FILES_DIR
-    if files_dir.is_dir():
-        shutil.rmtree(files_dir)
-    files = detail.get("files") or []
-    if files:
-        files_dir.mkdir()
-        for f in files:
-            _write_exact(files_dir / _safe_file_name(f["fileName"]), f.get("content") or "")
+
+    # The directory mirrors the SERVER exactly: every supporting file this pull did not write is
+    # removed first, so a file another author deleted on the Gateway does not survive locally and get
+    # resurrected by the next push. Only OUR bookkeeping files and the body are spared.
+    _clear_supporting_files(target)
+    for entry in files:
+        _write_skill_file(target, entry)
     (target / HASH_SIDECAR).write_text(detail.get("contentHash", ""), encoding="utf-8")
 
     console.print(f"Pulled '{skill_id}' v{version} ({detail.get('status')}) into {target.resolve()}")
@@ -581,12 +702,16 @@ def _read_directory(skill_id: str, directory: str, note: Optional[str]) -> Dict[
     body_path = source / SKILL_MD
     body = _read_exact(body_path) if body_path.is_file() else ""
 
-    files: List[Dict[str, str]] = []
-    files_dir = source / FILES_DIR
-    if files_dir.is_dir():
-        for path in sorted(files_dir.iterdir()):
-            if path.is_file():
-                files.append({"fileName": path.name, "content": _read_exact(path)})
+    executable = metadata.get("executable") or []
+    if not isinstance(executable, list):
+        raise GatewayError(
+            f"{SKILL_JSON} has an 'executable' entry that is not a list of file paths."
+        )
+    files = _read_tree(source, [str(p) for p in executable])
+
+    standard_metadata = metadata.get("metadata") or {}
+    if not isinstance(standard_metadata, dict):
+        raise GatewayError(f"{SKILL_JSON} has a 'metadata' entry that is not an object.")
 
     return {
         "id": skill_id,
@@ -595,6 +720,10 @@ def _read_directory(skill_id: str, directory: str, note: Optional[str]) -> Dict[
         "triggers": metadata.get("triggers") or [],
         "bodyMarkdown": body,
         "files": files,
+        "license": metadata.get("license"),
+        "compatibility": metadata.get("compatibility"),
+        "allowedTools": metadata.get("allowedTools"),
+        "metadata": standard_metadata,
         "authoredBy": default_authored_by(),
         "changeNote": note,
     }

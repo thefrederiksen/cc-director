@@ -67,7 +67,7 @@ public static class BuiltInSkillSeeder
     public static string ShippedHash(SkillDefinition definition) =>
         SkillContentHash.ForBundle(
             definition.Name, definition.Summary, definition.Triggers,
-            BuiltInSkills.BodyFor(definition.Id), Array.Empty<(string, string)>());
+            BuiltInSkills.BodyFor(definition.Id), Array.Empty<SkillContentHash.HashedFile>());
 
     /// <summary>Build a fully-populated PUBLISHED version row from the running binary's shipped
     /// content, so "what shipped content becomes as a version row" has exactly one definition.</summary>

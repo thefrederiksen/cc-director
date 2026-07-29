@@ -296,6 +296,17 @@ public sealed class ControlApiHost : IAsyncDisposable
         {
             FileLog.Write($"[ControlApiHost] skill-index refresh FAILED (keeping the last-known cache): {ex.Message}");
         }
+        // And the skills THEMSELVES, materialized to disk so the next session launch can put them
+        // where its agent looks. Its own try for the same reason as above: the index and the bodies
+        // fail independently, and losing one must not silently cost the other.
+        try
+        {
+            await new CcDirector.Core.Skills.SkillStoreRefresh().RefreshAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[ControlApiHost] skill store refresh FAILED (keeping the current store): {ex.Message}");
+        }
     }
 
     /// <summary>

@@ -88,11 +88,11 @@ public partial class AgentEditorDialog : Window
     private static IReadOnlyList<string> AllTypeLabels =>
         TypeOptions.Select(o => o.Label).ToList();
 
-    private static IReadOnlyList<string> CodexPermissionModes =>
-        AgentPluginRegistry.Get(AgentKind.Codex).CommandPresets.Select(preset => preset.Name).ToArray();
+    private static IReadOnlyList<string> PermissionModes(AgentKind type) =>
+        AgentPluginRegistry.Get(type).CommandPresets.Select(preset => preset.Name).ToArray();
 
-    private static IReadOnlyList<string> CodexPermissionModesWithCustom =>
-        CodexPermissionModes.Append(CustomPermissionMode).ToArray();
+    private static IReadOnlyList<string> PermissionModesWithCustom(AgentKind type) =>
+        PermissionModes(type).Append(CustomPermissionMode).ToArray();
 
     private const string CustomPermissionMode = "Custom command line";
 
@@ -181,29 +181,30 @@ public partial class AgentEditorDialog : Window
         _syncingPermissions = true;
         try
         {
-            var isCodex = type == AgentKind.Codex;
-            PermissionsPanel.IsVisible = isCodex;
+            // The permissions shortcut is offered for EVERY agent that actually has a permission
+            // choice to make - that is, more than one preset. It used to be hard-coded to Codex, so
+            // the same choice was buried in the Advanced preset dropdown for every other agent.
+            var hasChoice = HasPermissionChoice(type);
+            PermissionsPanel.IsVisible = hasChoice;
             if (PresetRow is not null)
-                PresetRow.IsVisible = !isCodex;
+                PresetRow.IsVisible = !hasChoice;
 
-            PermissionsCombo.ItemsSource = isCodex
-                ? SelectedLaunchMode() == LaunchMode.Custom ? CodexPermissionModesWithCustom : CodexPermissionModes
+            PermissionsCombo.ItemsSource = hasChoice
+                ? SelectedLaunchMode() == LaunchMode.Custom ? PermissionModesWithCustom(type) : PermissionModes(type)
                 : Array.Empty<string>();
-            PermissionsCombo.SelectedItem = isCodex
+            PermissionsCombo.SelectedItem = hasChoice
                 ? SelectedLaunchMode() == LaunchMode.Custom
                     ? CustomPermissionMode
-                    : CodexPermissionModeForPreset(PresetCombo?.SelectedItem as string ?? "")
+                    : PermissionModeForPreset(type, PresetCombo?.SelectedItem as string ?? "")
                 : null;
 
             if (PermissionsHintText is not null)
             {
-                PermissionsHintText.Text = !isCodex
+                PermissionsHintText.Text = !hasChoice
                     ? ""
                     : SelectedLaunchMode() == LaunchMode.Custom
                         ? "Custom command line mode ignores presets. Include every permission flag yourself."
-                        : string.Equals(PermissionsCombo.SelectedItem as string, CodexFullAccessPresetName(), StringComparison.OrdinalIgnoreCase)
-                            ? "Full access launches Codex without sandbox restrictions or approval prompts. Use it only for trusted repos."
-                            : "Standard launches Codex with its normal permissions behavior.";
+                        : PermissionHintFor(type, PermissionsCombo.SelectedItem as string ?? "");
             }
         }
         finally
@@ -212,16 +213,42 @@ public partial class AgentEditorDialog : Window
         }
     }
 
-    private static string CodexPermissionModeForPreset(string preset) =>
-        string.Equals(preset, CodexFullAccessPresetName(), StringComparison.OrdinalIgnoreCase)
-            ? CodexFullAccessPresetName()
-            : AgentPluginRegistry.Get(AgentKind.Codex).DefaultCommandPreset.Name;
+    /// <summary>True when this agent has more than one preset, i.e. a permission posture to pick.</summary>
+    private static bool HasPermissionChoice(AgentKind type) =>
+        AgentPluginRegistry.Contains(type) && AgentPluginRegistry.Get(type).CommandPresets.Count > 1;
 
-    private static string CodexFullAccessPresetName() =>
-        AgentPluginRegistry.Get(AgentKind.Codex).CommandPresets
-            .FirstOrDefault(preset => !string.Equals(preset.Name, AgentPluginRegistry.Get(AgentKind.Codex).DefaultCommandPreset.Name, StringComparison.OrdinalIgnoreCase))
-            ?.Name
-        ?? AgentPluginRegistry.Get(AgentKind.Codex).DefaultCommandPreset.Name;
+    /// <summary>
+    /// The preset the permissions dropdown should show for a stored preset name. A name this build
+    /// does not know resolves to the agent's default, which is what the launch will use too.
+    /// </summary>
+    private static string PermissionModeForPreset(AgentKind type, string preset)
+    {
+        var plugin = AgentPluginRegistry.Get(type);
+        var canonical = AgentToolCatalog.CanonicalPresetName(type, preset);
+        return plugin.CommandPresets.Any(p => string.Equals(p.Name, canonical, StringComparison.OrdinalIgnoreCase))
+            ? canonical
+            : plugin.DefaultCommandPreset.Name;
+    }
+
+    /// <summary>
+    /// What the selected preset means, described from the arguments it actually contributes rather
+    /// than from its name - so the sentence cannot disagree with the launch.
+    /// </summary>
+    private static string PermissionHintFor(AgentKind type, string presetName)
+    {
+        var preset = AgentPluginRegistry.Get(type).CommandPresets
+            .FirstOrDefault(p => string.Equals(p.Name, presetName, StringComparison.OrdinalIgnoreCase));
+        if (preset is null)
+            return "";
+
+        if (preset.Arguments.Length == 0)
+            return $"{preset.Name} launches with the tool's own permissions behavior, which stops to ask for approval.";
+
+        var unattended = AgentToolCatalog.UnattendedPermissionArg(type);
+        return unattended is not null && preset.Arguments.Contains(unattended, StringComparison.OrdinalIgnoreCase)
+            ? $"{preset.Name} launches with {preset.Arguments}, so the agent works without stopping for approval. Use it only for trusted repositories."
+            : $"{preset.Name} launches with {preset.Arguments}.";
+    }
 
     private void SelectPresetByName(string presetName)
     {
@@ -272,10 +299,11 @@ public partial class AgentEditorDialog : Window
         if (_loading || _syncingPermissions)
             return;
 
-        if (SelectedType() != AgentKind.Codex)
+        var type = SelectedType();
+        if (!HasPermissionChoice(type))
             return;
 
-        var selected = PermissionsCombo.SelectedItem as string ?? AgentPluginRegistry.Get(AgentKind.Codex).DefaultCommandPreset.Name;
+        var selected = PermissionsCombo.SelectedItem as string ?? AgentPluginRegistry.Get(type).DefaultCommandPreset.Name;
         if (string.Equals(selected, CustomPermissionMode, StringComparison.OrdinalIgnoreCase))
             return;
 
@@ -410,21 +438,14 @@ public partial class AgentEditorDialog : Window
         if (EffectivePermissionsText is null)
             return;
 
-        if (type == AgentKind.Codex)
-        {
-            EffectivePermissionsText.Text = config.LaunchMode == LaunchMode.Custom
-                ? "Custom command line"
-                : string.Equals(config.PresetName, CodexFullAccessPresetName(), StringComparison.OrdinalIgnoreCase)
-                    ? "Full access"
-                    : "Standard";
-            return;
-        }
-
+        // Report the preset the LAUNCH will actually use, resolved the same way the launch resolves
+        // it (legacy names mapped, unknown names falling back to the default). Echoing the stored
+        // string would show a name that no longer selects anything.
         EffectivePermissionsText.Text = config.LaunchMode == LaunchMode.Custom
             ? "Custom command line"
             : string.IsNullOrWhiteSpace(config.PresetName)
-                ? "Catalog default"
-                : config.PresetName;
+                ? AgentPluginRegistry.Get(type).DefaultCommandPreset.Name
+                : PermissionModeForPreset(type, config.PresetName);
     }
 
     private void BtnToggleAdvanced_Click(object? sender, RoutedEventArgs e)

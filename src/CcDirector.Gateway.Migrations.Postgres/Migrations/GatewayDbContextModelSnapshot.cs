@@ -1029,6 +1029,15 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("Encoding")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("utf8");
+
+                    b.Property<bool>("Executable")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("FileName")
                         .IsRequired()
                         .HasColumnType("text");
@@ -1082,6 +1091,9 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("AllowedTools")
+                        .HasColumnType("text");
+
                     b.Property<string>("AuthoredBy")
                         .IsRequired()
                         .HasColumnType("text");
@@ -1093,12 +1105,24 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.Property<string>("ChangeNote")
                         .HasColumnType("text");
 
+                    b.Property<string>("Compatibility")
+                        .HasColumnType("text");
+
                     b.Property<string>("ContentHash")
                         .IsRequired()
                         .HasColumnType("text");
 
                     b.Property<DateTime>("CreatedUtc")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("License")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Metadata")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("{}");
 
                     b.Property<string>("Name")
                         .IsRequired()

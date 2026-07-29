@@ -11,10 +11,7 @@ namespace CcDirector.Core.AgentPlugins;
 public sealed class CopilotAgentPlugin : IAgentPlugin
 {
     private static readonly IReadOnlyList<AgentCommandPreset> Presets =
-    [
-        new(AgentToolCatalog.StandardPresetName, ""),
-        new(AgentToolCatalog.CopilotAutomaticPresetName, AgentToolCatalog.CopilotAllowAllArg),
-    ];
+        AgentToolCatalog.GetEntry(AgentKind.Copilot).Presets;
 
     private static readonly AgentPluginSettingsMetadata SettingsMetadata = new(
         "GitHub Copilot",

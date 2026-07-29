@@ -144,7 +144,7 @@ class TestGet:
             skill_ops.get_skill("with-files", None)
 
         out = capsys.readouterr().out
-        written = tmp_path / "cc-director" / "skills" / "with-files" / "3" / "files" / "helper.py"
+        written = tmp_path / "cc-director" / "skills" / "with-files" / "3" / "helper.py"
         # A script has to exist on disk to be run, so the file lands and its ABSOLUTE path is named.
         assert written.is_file()
         assert written.read_text(encoding="utf-8") == "print('hello')\n"
@@ -165,13 +165,13 @@ class TestGet:
         skill_ops._materialize("with-files", 4, v4)
 
         root = tmp_path / "cc-director" / "skills" / "with-files"
-        assert (root / "3" / "files" / "helper.py").read_text(encoding="utf-8") == "print('hello')\n"
-        assert (root / "4" / "files" / "helper.py").read_text(encoding="utf-8") == "print('newer')\n"
+        assert (root / "3" / "helper.py").read_text(encoding="utf-8") == "print('hello')\n"
+        assert (root / "4" / "helper.py").read_text(encoding="utf-8") == "print('newer')\n"
 
     def test_a_half_deleted_cache_is_rewritten_not_reported_as_intact(self, tmp_path, monkeypatch):
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
         skill_ops._materialize("with-files", 3, DETAIL_WITH_FILES)
-        written = tmp_path / "cc-director" / "skills" / "with-files" / "3" / "files" / "helper.py"
+        written = tmp_path / "cc-director" / "skills" / "with-files" / "3" / "helper.py"
         written.unlink()
 
         skill_ops._materialize("with-files", 3, DETAIL_WITH_FILES)
@@ -191,7 +191,7 @@ class TestGet:
             skill_ops._materialize("with-files", 3, evil)
             assert False, "an unsafe file name must be refused"
         except skill_ops.GatewayError as ex:
-            assert "unsafe file name" in str(ex)
+            assert "unsafe file path" in str(ex)
         assert not (tmp_path / "cc-director" / "skills" / "escape.py").exists()
 
 
@@ -235,25 +235,34 @@ class TestDirectoryRoundTrip:
         assert metadata["id"] == "with-files"
         assert metadata["triggers"] == ["run the helper"]
         assert (tmp_path / "SKILL.md").read_text(encoding="utf-8") == DETAIL_WITH_FILES["bodyMarkdown"]
-        assert (tmp_path / "files" / "helper.py").read_text(encoding="utf-8") == "print('hello')\n"
+        # The file lands at its own path inside the skill directory - a skill IS a directory, and the
+        # body's relative links point at these paths.
+        assert (tmp_path / "helper.py").read_text(encoding="utf-8") == "print('hello')\n"
         assert (tmp_path / ".skill-hash").read_text(encoding="utf-8") == "bundle-hash-3"
 
         body = skill_ops._read_directory("with-files", str(tmp_path), note="n")
         assert body["bodyMarkdown"] == DETAIL_WITH_FILES["bodyMarkdown"]
         assert body["summary"] == "Carries a helper."
         assert body["triggers"] == ["run the helper"]
-        assert body["files"] == [{"fileName": "helper.py", "content": "print('hello')\n"}]
+        assert body["files"] == [
+            {
+                "fileName": "helper.py",
+                "content": "print('hello')\n",
+                "encoding": "utf8",
+                "executable": False,
+            }
+        ]
 
     def test_pull_mirrors_the_server_so_a_deleted_file_does_not_come_back(self, tmp_path):
-        (tmp_path / "files").mkdir(parents=True)
-        (tmp_path / "files" / "stale.py").write_text("old", encoding="utf-8")
+        (tmp_path / "references").mkdir(parents=True)
+        (tmp_path / "references" / "stale.py").write_text("old", encoding="utf-8")
 
         with patch.object(skill_ops.SkillClient, "_request") as request:
             request.return_value = _fake_response(200, dict(DETAIL_WITH_FILES, files=[]))
             skill_ops.pull_skill("with-files", str(tmp_path), 3)
 
         # Otherwise the next push would resurrect a file another author deleted on the Gateway.
-        assert not (tmp_path / "files" / "stale.py").exists()
+        assert not (tmp_path / "references" / "stale.py").exists()
 
     def test_push_without_a_sidecar_is_refused_rather_than_clobbering(self, tmp_path):
         (tmp_path / "SKILL.md").write_text("# mine", encoding="utf-8")
@@ -377,3 +386,121 @@ class TestAPreLibraryGatewayIsNotBelieved:
 
         # The guard must not cost the thing it protects: a real body is still byte for byte.
         assert capsys.readouterr().out == BODY
+
+
+class TestASkillIsADirectory:
+    """A skill is a DIRECTORY in the Agent Skills standard - SKILL.md plus any files and
+    subdirectories - and every agent this product supervises reads exactly that shape. These pin the
+    command line to it, because a flattened or lossy round trip would quietly corrupt real skills."""
+
+    def test_a_tree_with_a_binary_and_a_script_round_trips_byte_for_byte(self, tmp_path):
+        import base64
+        import os
+
+        raw = bytes([0x89, 0x50, 0x4E, 0x47, 0x00, 0xFF, 0xFE, 0x7F])
+        detail = dict(
+            DETAIL_WITH_FILES,
+            files=[
+                {"fileName": "references/tracing.md", "contentHash": "a", "content": "# Tracing\n",
+                 "encoding": "utf8", "executable": False},
+                {"fileName": "assets/logo.png", "contentHash": "b",
+                 "content": base64.b64encode(raw).decode("ascii"), "encoding": "base64",
+                 "executable": False},
+                {"fileName": "scripts/build.sh", "contentHash": "c", "content": "#!/bin/sh\necho hi\n",
+                 "encoding": "utf8", "executable": True},
+            ],
+        )
+
+        with patch.object(skill_ops.SkillClient, "_request") as request:
+            request.return_value = _fake_response(200, detail)
+            skill_ops.pull_skill("with-files", str(tmp_path), 3)
+
+        # Subdirectories are real directories on disk, and the binary is bytes, not mangled text.
+        assert (tmp_path / "references" / "tracing.md").read_text(encoding="utf-8") == "# Tracing\n"
+        assert (tmp_path / "assets" / "logo.png").read_bytes() == raw
+        assert (tmp_path / "scripts" / "build.sh").is_file()
+
+        # The executable bit is recorded where the platform can actually keep it: in the filesystem on
+        # Linux and macOS, in skill.json on Windows, which has no such bit to read back.
+        metadata = json.loads((tmp_path / "skill.json").read_text(encoding="utf-8"))
+        assert metadata["executable"] == ["scripts/build.sh"]
+        if os.name != "nt":
+            assert os.stat(tmp_path / "scripts" / "build.sh").st_mode & 0o111
+
+        # And pushing the directory back reproduces exactly what the Gateway sent.
+        body = skill_ops._read_directory("with-files", str(tmp_path), note=None)
+        by_path = {f["fileName"]: f for f in body["files"]}
+        assert set(by_path) == {"references/tracing.md", "assets/logo.png", "scripts/build.sh"}
+        assert by_path["assets/logo.png"]["encoding"] == "base64"
+        assert base64.b64decode(by_path["assets/logo.png"]["content"]) == raw
+        assert by_path["references/tracing.md"]["encoding"] == "utf8"
+        assert by_path["scripts/build.sh"]["executable"] is True
+
+    def test_the_standards_frontmatter_survives_the_round_trip(self, tmp_path):
+        detail = dict(
+            DETAIL_WITH_FILES,
+            license="Apache-2.0",
+            compatibility="Requires git and jq",
+            allowedTools="Bash(git:*) Read",
+            metadata={"author": "example-org", "version": "1.0"},
+        )
+
+        with patch.object(skill_ops.SkillClient, "_request") as request:
+            request.return_value = _fake_response(200, detail)
+            skill_ops.pull_skill("with-files", str(tmp_path), 3)
+
+        body = skill_ops._read_directory("with-files", str(tmp_path), note=None)
+        assert body["license"] == "Apache-2.0"
+        assert body["compatibility"] == "Requires git and jq"
+        assert body["allowedTools"] == "Bash(git:*) Read"
+        assert body["metadata"] == {"author": "example-org", "version": "1.0"}
+
+    def test_the_materialized_cache_is_a_real_skill_directory(self, tmp_path, monkeypatch):
+        # The body's relative links say "references/tracing.md", so the cache has to put the file
+        # THERE. A flattened cache would make every link in every skill wrong.
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        detail = dict(
+            DETAIL_WITH_FILES,
+            files=[{"fileName": "references/tracing.md", "contentHash": "a", "content": "# Tracing\n",
+                    "encoding": "utf8", "executable": False}],
+        )
+
+        paths = skill_ops._materialize("with-files", 3, detail)
+
+        root = tmp_path / "cc-director" / "skills" / "with-files" / "3"
+        assert (root / "references" / "tracing.md").read_text(encoding="utf-8") == "# Tracing\n"
+        assert (root / "SKILL.md").read_text(encoding="utf-8") == DETAIL_WITH_FILES["bodyMarkdown"]
+        assert paths == [root / "references" / "tracing.md"]
+        # The hash sidecar sits BESIDE the directory: inside, it would be a file the skill did not put
+        # there, and it could collide with one the skill did.
+        assert (tmp_path / "cc-director" / "skills" / "with-files" / "3.hash").is_file()
+
+    def test_a_server_supplied_path_that_escapes_the_directory_is_refused(self, tmp_path, monkeypatch):
+        # The Gateway validates paths on write, but this command does not TRUST that: an older,
+        # misconfigured or hostile server must not be able to steer a write outside the target.
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        for bad in ("../escape.py", "references/../../escape.py", "/etc/passwd", "nul", "C:/x.dll"):
+            evil = dict(
+                DETAIL_WITH_FILES,
+                files=[{"fileName": bad, "contentHash": "x", "content": "bad", "encoding": "utf8"}],
+            )
+            try:
+                skill_ops._materialize("with-files", 3, evil)
+                assert False, f"an unsafe file path must be refused: {bad}"
+            except skill_ops.GatewayError as ex:
+                assert "unsafe file path" in str(ex) or "reserved Windows device name" in str(ex)
+        assert not (tmp_path / "cc-director" / "skills" / "escape.py").exists()
+
+    def test_an_encoding_this_version_does_not_know_fails_loudly(self, tmp_path, monkeypatch):
+        # Not guessed at, and not silently written as text: a file written from an encoding we do not
+        # understand is a corrupt file that looks fine.
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        detail = dict(
+            DETAIL_WITH_FILES,
+            files=[{"fileName": "x.bin", "contentHash": "x", "content": "zzz", "encoding": "rot13"}],
+        )
+        try:
+            skill_ops._materialize("with-files", 3, detail)
+            assert False, "an unknown encoding must fail"
+        except skill_ops.GatewayError as ex:
+            assert "encoding this command does not know" in str(ex)

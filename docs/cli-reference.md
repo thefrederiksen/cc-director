@@ -648,6 +648,11 @@ COMMANDS:
   session spawn    Open a new session on the local Director.
   message send     Send a message to one session, or broadcast with all.
   message ask      Ask one session a question and print its answer.
+  skill list       List every skill in the fleet library.
+  skill get        Print a skill in full, ready to follow.
+  skill pull       Pull a skill into a directory for editing.
+  skill push       Push a directory back as the skill's draft.
+  skill publish    Publish a draft - live fleet-wide, immediately.
   settings show    Display current settings.
   settings get     Get a specific setting value.
   settings set     Set a configuration value.
@@ -745,6 +750,70 @@ OPTIONS:
 
 Prints the new session's short id and full GUID; the session then appears in
 `cc-devthrottle session list`. A non-existent repository path exits non-zero with a clear error.
+
+### Skill Commands
+
+Read and author the fleet's skills. A skill is a directory in the Agent Skills standard - `SKILL.md`
+at its root plus any files it needs - held centrally on the Gateway and placed on each machine where
+every agent already looks. Publishing makes a skill live across the whole fleet immediately.
+
+```
+USAGE: cc-devthrottle skill COMMAND [ARGS]...
+
+COMMANDS:
+  list      List every skill in the library.
+  get       Print a skill in full - the body an agent follows.
+  show      Show one skill's register entry.
+  versions  List a skill's versions.
+  pull      Write a skill into a directory for editing.
+  push      Send a directory back as the skill's DRAFT.
+  publish   Publish the draft - live for every agent on every machine.
+  clone     Copy a skill under a new id (how a built-in is customised).
+  enable    Switch a skill on for the fleet.
+  disable   Switch a skill off - it is removed from disk on the next session launch.
+  delete    Delete a skill.
+```
+
+```
+USAGE: cc-devthrottle skill get ID [OPTIONS]
+
+ARGUMENTS:
+  ID  The skill id, for example move-session [required]
+
+OPTIONS:
+  --version INTEGER  A specific version instead of the published one
+```
+
+There is no offline fallback, deliberately: `skill get` resolves the current published version from
+the Gateway every time, and fails plainly if the Gateway cannot be reached. A stale skill that looks
+current is worse than a missing one that announces itself.
+
+```
+USAGE: cc-devthrottle skill pull ID --dir DIRECTORY [OPTIONS]
+USAGE: cc-devthrottle skill push ID --dir DIRECTORY [OPTIONS]
+
+OPTIONS (pull):
+  --dir     -d  Directory to write the skill into [required]
+  --version     A specific version instead of the published one
+
+OPTIONS (push):
+  --dir     -d  Directory holding the skill files [required]
+  --note    -n  One line on what changed
+  --force       Push even though the copy is stale
+```
+
+A pull writes an authoring directory:
+
+| File | Holds |
+|---|---|
+| `skill.json` | The register metadata - id, name, summary, triggers, the standard's frontmatter fields, and which files are executable |
+| `SKILL.md` | The body an agent reads |
+| Everything else | The supporting files, each at its own relative path (`references/tracing.md` is a file `tracing.md` inside a `references` directory) |
+| `.skill-hash` | Written by pull, sent back on push so a stale copy is refused rather than clobbering a concurrent author |
+
+A push sends text as text and everything else base64-encoded, so an image, an archive or a compiled
+program survives the round trip byte for byte. A push updates the DRAFT only - no agent sees it until
+`skill publish`.
 
 ### Selftest
 

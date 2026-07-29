@@ -11,10 +11,7 @@ namespace CcDirector.Core.AgentPlugins;
 public sealed class CursorAgentPlugin : IAgentPlugin
 {
     private static readonly IReadOnlyList<AgentCommandPreset> Presets =
-    [
-        new(AgentToolCatalog.StandardPresetName, ""),
-        new(AgentToolCatalog.CursorAutomaticPresetName, AgentToolCatalog.CursorForceArg),
-    ];
+        AgentToolCatalog.GetEntry(AgentKind.Cursor).Presets;
 
     private static readonly AgentPluginSettingsMetadata SettingsMetadata = new(
         "Cursor",
