@@ -102,9 +102,9 @@ public sealed class SkillDirectoryInstallerTests : IDisposable
         Directory.CreateDirectory(Store);
         SkillDirectoryInstaller.Materialize(Store, Bundle());
 
-        var installed = Install();
+        var placement = Install();
 
-        Assert.Equal(1, installed);
+        Assert.Equal(1, placement.Reachable);
         Assert.True(File.Exists(Path.Combine(Shared, "demo-skill", "SKILL.md")));
         Assert.True(File.Exists(Path.Combine(Shared, "demo-skill", SkillDirectoryInstaller.MarkerFileName)));
     }
@@ -120,7 +120,7 @@ public sealed class SkillDirectoryInstallerTests : IDisposable
         Directory.CreateDirectory(Store);
         SkillDirectoryInstaller.Materialize(Store, Bundle());
 
-        Assert.Equal(1, Install());
+        Assert.Equal(1, Install().Reachable);
 
         var link = Path.Combine(LinkRoot, "demo-skill");
         Assert.True(Directory.Exists(link));
@@ -140,7 +140,7 @@ public sealed class SkillDirectoryInstallerTests : IDisposable
         SkillDirectoryInstaller.Materialize(Store, Bundle());
 
         Install();
-        Assert.Equal(1, Install());
+        Assert.Equal(1, Install().Reachable);
 
         Assert.True(File.Exists(Path.Combine(LinkRoot, "demo-skill", "SKILL.md")));
         Assert.Single(Directory.GetDirectories(LinkRoot));
@@ -276,8 +276,13 @@ public sealed class SkillDirectoryInstallerTests : IDisposable
     public void Nothing_is_installed_when_the_store_has_never_been_filled()
     {
         // A Director that has never reached the Gateway installs nothing and says so. It does NOT
-        // fail, because a session must still launch.
-        Assert.Equal(0, SkillDirectoryInstaller.InstallFor(AgentKind.ClaudeCode, Path.Combine(_root, "missing")));
+        // fail, because a session must still launch - but it must not read as healthy either.
+        var placement = SkillDirectoryInstaller.InstallFor(AgentKind.ClaudeCode, Path.Combine(_root, "missing"));
+
+        Assert.Equal(0, placement.Reachable);
+        Assert.True(placement.StoreMissing);
+        Assert.False(placement.IsComplete);
+        Assert.Contains("the Gateway has not been reached", placement.Describe());
     }
 
     [Fact]
@@ -285,7 +290,150 @@ public sealed class SkillDirectoryInstallerTests : IDisposable
     {
         Directory.CreateDirectory(Store);
         SkillDirectoryInstaller.Materialize(Store, Bundle());
-        Assert.Equal(0, SkillDirectoryInstaller.InstallFor(AgentKind.RawCli, Store));
+
+        var placement = SkillDirectoryInstaller.InstallFor(AgentKind.RawCli, Store);
+
+        Assert.Equal(0, placement.Reachable);
+        // Nothing was EXPECTED of it, so it is not a fault and must not warn - a raw terminal has
+        // nowhere to put a skill, and warning about it every launch would train people to ignore the
+        // warning that matters.
+        Assert.True(placement.NothingExpected);
+    }
+
+    [Fact]
+    public void A_skill_that_cannot_reach_the_agent_is_reported_not_swallowed()
+    {
+        // THE FAILURE THIS WHOLE RESULT TYPE EXISTS FOR. Measured on a real machine: every built-in
+        // name was occupied in the Claude Code directory, so NOTHING was linked, and the only symptom
+        // was an agent reading a two-month-old copy. Everything looked healthy. A placement that falls
+        // short has to be able to say so.
+        Directory.CreateDirectory(Store);
+        SkillDirectoryInstaller.Materialize(Store, Bundle(id: "keeper"));
+
+        // The owner's own skill of the same name, with more than one file so the one-time reclaim
+        // leaves it strictly alone.
+        var theirs = Path.Combine(LinkRoot, "keeper");
+        Directory.CreateDirectory(theirs);
+        File.WriteAllText(Path.Combine(theirs, "SKILL.md"), "# MINE\n");
+        File.WriteAllText(Path.Combine(theirs, "notes.md"), "mine too\n");
+
+        var placement = Install();
+
+        Assert.Equal(1, placement.Held);
+        Assert.Equal(0, placement.Reachable);
+        Assert.True(placement.IsTotalFailure);
+        Assert.False(placement.IsComplete);
+        var problem = Assert.Single(placement.Problems);
+        Assert.Equal("keeper", problem.SkillId);
+        Assert.Equal(SkillPlacementFault.Shadowed, problem.Fault);
+        // The sentence a human reads has to name the count, the skill and what to do about it.
+        var said = placement.Describe();
+        Assert.Contains("only 0 of 1", said);
+        Assert.Contains("keeper", said);
+        Assert.Contains("rename or remove it", said);
+        // ...and the owner's own skill is still completely untouched.
+        Assert.Equal("# MINE\n", File.ReadAllText(Path.Combine(theirs, "SKILL.md")));
+    }
+
+    [Fact]
+    public void A_complete_placement_says_nothing_is_wrong()
+    {
+        Directory.CreateDirectory(Store);
+        SkillDirectoryInstaller.Materialize(Store, Bundle());
+
+        var placement = Install();
+
+        Assert.True(placement.IsComplete);
+        Assert.Empty(placement.Problems);
+        Assert.Equal(placement.Held, placement.Reachable);
+    }
+
+    [Fact]
+    public void The_retired_installers_leftover_is_moved_aside_ONCE_so_the_fleet_copy_can_land()
+    {
+        // The retired setup wizard wrote ~/.claude/skills/<name>/SKILL.md with no marker, so the
+        // ownership rule cannot tell it from a hand-written skill and refuses to replace it - which
+        // left the central library unable to reach Claude Code on every machine that ever ran it.
+        Directory.CreateDirectory(Store);
+        SkillDirectoryInstaller.Materialize(Store, Bundle(id: "move-session"));
+
+        var leftover = Path.Combine(LinkRoot, "move-session");
+        Directory.CreateDirectory(leftover);
+        File.WriteAllText(Path.Combine(leftover, "SKILL.md"), "# STALE INSTALLER COPY\n");
+
+        var placement = SkillDirectoryInstaller.InstallFor(
+            AgentKind.ClaudeCode, Store, new SkillInstallPaths(Shared, LinkRoot), Stamp);
+
+        // The fleet copy is now reachable...
+        Assert.True(placement.IsComplete);
+        Assert.Contains("# Demo", File.ReadAllText(Path.Combine(LinkRoot, "move-session", "SKILL.md")));
+        // ...and NOTHING was destroyed - the old copy is on disk OUTSIDE the skills root.
+        var aside = Directory.GetDirectories(SkillDirectoryInstaller.SupersededRootFor(LinkRoot), "move-session-*");
+        Assert.Single(aside);
+        Assert.Equal("# STALE INSTALLER COPY\n", File.ReadAllText(Path.Combine(aside[0], "SKILL.md")));
+        // THE FLAW THIS PINS, found by watching it happen on a real machine: moved aside WITHIN the
+        // skills root, the old copy is still somewhere the agent scans and comes straight back as a
+        // skill under a mangled name. Three of them appeared in a live session's skill list.
+        Assert.Empty(Directory.GetDirectories(LinkRoot, "*superseded*"));
+    }
+
+    [Fact]
+    public void The_reclaim_runs_once_and_never_takes_a_name_again()
+    {
+        // "One-time" has to mean it. After the migration has run for a directory, a skill the owner
+        // puts there later wins the name for good - otherwise the reclaim is not a migration, it is a
+        // standing licence to take names, and the promise that a machine's own skill wins is worthless.
+        Directory.CreateDirectory(Store);
+        SkillDirectoryInstaller.Materialize(Store, Bundle(id: "demo-skill"));
+        SkillDirectoryInstaller.InstallFor(
+            AgentKind.ClaudeCode, Store, new SkillInstallPaths(Shared, LinkRoot), Stamp);
+
+        // The owner now writes their OWN skill of that name, in the same single-file shape.
+        var link = Path.Combine(LinkRoot, "demo-skill");
+        Directory.Delete(link, recursive: false);
+        Directory.CreateDirectory(link);
+        File.WriteAllText(Path.Combine(link, "SKILL.md"), "# WRITTEN BY THE OWNER\n");
+
+        var placement = SkillDirectoryInstaller.InstallFor(
+            AgentKind.ClaudeCode, Store, new SkillInstallPaths(Shared, LinkRoot), Stamp);
+
+        Assert.Equal("# WRITTEN BY THE OWNER\n", File.ReadAllText(Path.Combine(link, "SKILL.md")));
+        Assert.Single(placement.Problems);
+        Assert.Equal(SkillPlacementFault.Shadowed, placement.Problems[0].Fault);
+    }
+
+    [Fact]
+    public void The_reclaim_leaves_anything_that_is_not_the_retired_installers_shape()
+    {
+        // Narrow on purpose: no marker, exactly one file, named SKILL.md. A directory with anything
+        // else in it is somebody's real work and is never moved, migration or not.
+        Directory.CreateDirectory(Store);
+        SkillDirectoryInstaller.Materialize(Store, Bundle(id: "demo-skill"));
+
+        var mine = Path.Combine(LinkRoot, "demo-skill");
+        Directory.CreateDirectory(Path.Combine(mine, "references"));
+        File.WriteAllText(Path.Combine(mine, "SKILL.md"), "# MINE\n");
+        File.WriteAllText(Path.Combine(mine, "references", "notes.md"), "mine\n");
+
+        SkillDirectoryInstaller.InstallFor(
+            AgentKind.ClaudeCode, Store, new SkillInstallPaths(Shared, LinkRoot), Stamp);
+
+        Assert.Equal("# MINE\n", File.ReadAllText(Path.Combine(mine, "SKILL.md")));
+        Assert.False(Directory.Exists(SkillDirectoryInstaller.SupersededRootFor(LinkRoot)));
+    }
+
+    [Fact]
+    public void A_SessionManager_does_not_touch_the_running_users_skills_unless_told_to()
+    {
+        // THE DEFAULT THAT STOPS A TEST RUN EDITING A REAL MACHINE. Placement writes into the home
+        // directory of whoever is running the process. Several tests in this suite call CreateSession,
+        // so while placement was unconditional a full test run reorganised a developer's own
+        // ~/.claude/skills - links created, leftovers moved aside - with nobody asking it to. The app
+        // opts in; a plain SessionManager must not.
+        var manager = new CcDirector.Core.Sessions.SessionManager(
+            new CcDirector.Core.Configuration.AgentOptions());
+
+        Assert.False(manager.PlacesSkillsOnLaunch);
     }
 
     [Fact]
@@ -329,7 +477,11 @@ public sealed class SkillDirectoryInstallerTests : IDisposable
     /// than the algorithm reimplemented: a test that reimplements what it is testing proves only that
     /// the copy agrees with itself. The override exists so a test never writes into the home directory
     /// of whoever is running it.</summary>
-    private int Install() =>
+    private SkillPlacement Install() =>
         SkillDirectoryInstaller.InstallFor(
-            AgentKind.ClaudeCode, Store, new SkillInstallPaths(Shared, LinkRoot));
+            AgentKind.ClaudeCode, Store, new SkillInstallPaths(Shared, LinkRoot), Stamp);
+
+    /// <summary>The one-time reclaim's record, per test, so one test's migration never silences
+    /// another's - and so no test writes the real stamp into the developer's own storage.</summary>
+    private string Stamp => Path.Combine(_root, "reclaimed.txt");
 }

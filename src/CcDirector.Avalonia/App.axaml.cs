@@ -351,7 +351,9 @@ public partial class App : Application
         log($"CC Director (Avalonia) starting (SandboxMode={SandboxMode}), log file: {FileLog.CurrentLogPath}");
 
         UpdateSplashStatus(splash, "Initializing sessions...");
-        SessionManager = new SessionManager(Options, log);
+        // The ONE place skill placement is turned on. It writes into the user's own home directory, so
+        // it is opt-in and the running app is what opts in - see SessionManager.PlacesSkillsOnLaunch.
+        SessionManager = new SessionManager(Options, log) { PlacesSkillsOnLaunch = true };
         SessionManager.ScanForOrphans();
 
         // Workspaces replace session restore -- clear persisted data

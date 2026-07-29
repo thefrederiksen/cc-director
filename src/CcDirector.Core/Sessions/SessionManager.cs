@@ -135,6 +135,19 @@ public sealed class SessionManager : IDisposable
             _ => ReapPendingDeletions(), null, DeletionReaperIntervalMs, DeletionReaperIntervalMs);
     }
 
+    /// <summary>
+    /// Whether launching a session also writes the fleet's skills onto this machine.
+    ///
+    /// OFF BY DEFAULT, AND THE DEFAULT IS THE POINT. Placement writes into the USER'S OWN home
+    /// directory - it creates and removes entries under <c>~/.agents/skills</c> and <c>~/.claude/skills</c>.
+    /// Anything that constructs a SessionManager and launches a session would do that to whoever is
+    /// running it, which for a test suite means the developer's own machine. That is not hypothetical:
+    /// a full Core test run reorganised a real machine's Claude Code skills, because several tests call
+    /// CreateSession and CreateSession placed skills unconditionally. The app turns this on; nothing
+    /// else does, so every test is hermetic without having to remember to be.
+    /// </summary>
+    public bool PlacesSkillsOnLaunch { get; init; }
+
     /// <summary>Invoke OnSessionCreated. Public so external endpoint mappers (web Control API)
     /// can announce sessions they created without going through CreateSession overloads.</summary>
     public void RaiseSessionCreated(Session session)
@@ -665,14 +678,25 @@ public sealed class SessionManager : IDisposable
             // session that will not start. A launch must never fail because a capability that is
             // ADDITIONAL to the session could not be installed, so the failure is recorded and the
             // session starts with whatever skills it already had.
-            try
+            //
+            // A PLACEMENT THAT FELL SHORT IS REPORTED, NOT SWALLOWED. The point of a central library is
+            // that a skill published on the Gateway is one the agent can actually read; when that stops
+            // being true nothing throws, nothing turns red, and the only symptom is an agent working
+            // from instructions nobody meant it to have. So the outcome is inspected and said out loud
+            // in the session's own log, which is the one place the person starting the session looks.
+            if (PlacesSkillsOnLaunch)
             {
-                CcDirector.Core.Skills.SkillDirectoryInstaller.InstallFor(agent.Kind);
-            }
-            catch (Exception ex)
-            {
-                _log?.Invoke($"Skills were not installed for this session: {ex.Message}");
-                FileLog.Write($"[SessionManager] skill install FAILED (session still launching): {ex}");
+                try
+                {
+                    var placement = CcDirector.Core.Skills.SkillDirectoryInstaller.InstallFor(agent.Kind);
+                    if (!placement.IsComplete && !placement.NothingExpected)
+                        _log?.Invoke(placement.Describe());
+                }
+                catch (Exception ex)
+                {
+                    _log?.Invoke($"Skills were not installed for this session: {ex.Message}");
+                    FileLog.Write($"[SessionManager] skill install FAILED (session still launching): {ex}");
+                }
             }
 
             // Resolve the agent command to a concrete executable path before spawning.

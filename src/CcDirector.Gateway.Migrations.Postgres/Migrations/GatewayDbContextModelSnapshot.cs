@@ -1059,6 +1059,50 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.ToTable("skill_files", "gateway");
                 });
 
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SkillPlacementStateEntity", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("DirectorId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("AgentKind")
+                        .HasColumnType("text");
+
+                    b.Property<int>("Held")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("MachineName")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("ObservedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ProblemsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("Reachable")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("ReceivedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("StoreMissing")
+                        .HasColumnType("boolean");
+
+                    b.HasKey("TenantId", "DirectorId", "AgentKind");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "ReceivedAtUtc");
+
+                    b.ToTable("skill_placement_state", "gateway");
+                });
+
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SkillTenantOverrideEntity", b =>
                 {
                     b.Property<string>("TenantId")
