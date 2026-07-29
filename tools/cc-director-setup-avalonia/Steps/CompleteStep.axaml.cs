@@ -18,13 +18,14 @@ public partial class CompleteStep : UserControl
     private int _skipped;
     private bool _isUpdate;
     private IReadOnlyList<string> _skippedNames = [];
+    private IReadOnlyList<string> _skippedReasons = [];
 
     public CompleteStep()
     {
         InitializeComponent();
     }
 
-    public CompleteStep(int installed, int skipped, string installPath, bool isUpdate, bool alreadyUpToDate = false, string? version = null, string? agentNotice = null, IReadOnlyList<string>? skippedNames = null, bool readyToGo = true)
+    public CompleteStep(int installed, int skipped, string installPath, bool isUpdate, bool alreadyUpToDate = false, string? version = null, string? agentNotice = null, IReadOnlyList<string>? skippedNames = null, bool readyToGo = true, IReadOnlyList<string>? skippedReasons = null)
     {
         InitializeComponent();
 
@@ -58,13 +59,13 @@ public partial class CompleteStep : UserControl
         {
             case InstallCompletionKind.AlreadyUpToDate:
                 HeadingText.Text = "✓  Already Up to Date";
-                DescriptionText.Text = "DevThrottle is already running the latest version.";
+                DescriptionText.Text = "The Director is already running the latest version.";
                 SummaryLine.Text = $"Nothing to do{versionSuffix}";
                 PathNote.IsVisible = false;
                 break;
 
             case InstallCompletionKind.Success when isUpdate:
-                HeadingText.Text = readyToGo ? "✓  DevThrottle is up to date" : "DevThrottle is up to date - one thing left";
+                HeadingText.Text = readyToGo ? "✓  Director is up to date" : "Director is up to date - one thing left";
                 DescriptionText.Text = readyToGo
                     ? "You're ready to go."
                     : "The update finished. One thing below still needs you.";
@@ -79,7 +80,7 @@ public partial class CompleteStep : UserControl
                 // defaults cover the genuinely-ready case.
                 if (!readyToGo)
                 {
-                    HeadingText.Text = "DevThrottle is installed - one thing left";
+                    HeadingText.Text = "Director is installed - one thing left";
                     HeadingText.Foreground = amberBrush;
                     DescriptionText.Text = "Everything installed. One thing below still needs you.";
                 }
@@ -93,6 +94,7 @@ public partial class CompleteStep : UserControl
         if (skipped > 0)
         {
             _skippedNames = skippedNames ?? [];
+            _skippedReasons = skippedReasons ?? [];
             var amber = amberBrush;
             HeadingText.Text = isUpdate ? "Update finished with problems" : "Setup finished with problems";
             HeadingText.Foreground = amber;
@@ -103,7 +105,9 @@ public partial class CompleteStep : UserControl
                 1 => _skippedNames[0],
                 _ => string.Join(", ", _skippedNames),
             };
-            DescriptionText.Text = $"{what} did not install. DevThrottle may still work, but please report this.";
+            var why = _skippedReasons.Count > 0 ? "\n" + string.Join("\n", _skippedReasons) : "";
+            DescriptionText.Text =
+                $"{what} did not install. The Director may still work, but please report this.{why}";
             SummaryLine.IsVisible = false;
             FailurePanel.IsVisible = true;
             if (_skippedNames.Count > 0) SkippedText.Text = $"{skipped} ({string.Join(", ", _skippedNames)})";
@@ -155,6 +159,12 @@ public partial class CompleteStep : UserControl
     private string BuildIssueBody(string os)
     {
         var sb = new StringBuilder();
+        if (_skippedReasons.Count > 0)
+        {
+            sb.AppendLine("## Why it failed");
+            foreach (var reason in _skippedReasons) sb.AppendLine($"- {reason}");
+            sb.AppendLine();
+        }
         sb.AppendLine("## What happened");
         sb.AppendLine("<!-- Briefly describe the problem. -->");
         sb.AppendLine();

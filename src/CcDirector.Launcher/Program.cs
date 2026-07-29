@@ -40,6 +40,26 @@ public static class Program
 
         FileLog.Write($"[Program] CC Launcher starting (port={LauncherAppOptions.Port}), log: {FileLog.CurrentLogPath}");
 
+        // TRAY MODE MUST ANSWER SIGTERM TOO.
+        //
+        // Headless mode has handled it from the start (see RunHeadless), and tray mode never did -
+        // so the launcher a person actually runs ignored the one signal every tool uses to ask a
+        // process to stop. The orphan investigated on 2026-07-29 was a tray-mode instance: it
+        // ignored SIGTERM and had to be killed. launchd bootout sends SIGTERM, our own uninstaller
+        // asks politely first, and an operator at a terminal reaches for kill before kill -9; a
+        // process that ignores all three is unmanageable by design rather than by accident.
+        //
+        // Shutting the classic desktop lifetime down is what lets the normal exit path run, so the
+        // Gateway is unregistered and the log is closed instead of the process simply vanishing.
+        using var sigtermTray = System.Runtime.InteropServices.PosixSignalRegistration.Create(
+            System.Runtime.InteropServices.PosixSignal.SIGTERM,
+            ctx =>
+            {
+                ctx.Cancel = true;
+                FileLog.Write("[Program] SIGTERM received - shutting the tray launcher down");
+                RequestTrayShutdown();
+            });
+
         try
         {
             return BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
@@ -65,9 +85,62 @@ public static class Program
         }
         finally
         {
+            _shutdownCompleted = true;
             FileLog.Write("[Program] CC Launcher exited");
             FileLog.Stop();
         }
+    }
+
+    /// <summary>
+    /// Ask the running tray application to shut down, from a signal handler. Marshalled onto the
+    /// user-interface thread because that is the only thread allowed to stop the lifetime; if the
+    /// application is not up yet (a signal during startup) the process exits directly, which is the
+    /// honest thing to do rather than ignoring the signal.
+    /// </summary>
+    /// <summary>Set when the normal exit path has finished, so the SIGTERM watchdog stands down instead
+    /// of force-exiting a shutdown that is working.</summary>
+    private static volatile bool _shutdownCompleted;
+
+    private static void RequestTrayShutdown()
+    {
+        // Deliberately NOT a blocking call on the user-interface thread. Asking the desktop lifetime to
+        // shut down runs the tray controller's disposal, which waits synchronously on an asynchronous
+        // stop - so posting Shutdown to that thread and waiting could wedge the process precisely where
+        // this handler is supposed to make it stoppable. Signal handlers must not be able to hang.
+        //
+        // So: ask nicely on a background thread, give it a bounded moment, then exit regardless. A
+        // launcher that will not stop cleanly still stops.
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                if (Avalonia.Application.Current?.ApplicationLifetime
+                    is Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime lifetime)
+                {
+                    Avalonia.Threading.Dispatcher.UIThread.Post(() => lifetime.Shutdown());
+                }
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[Program] SIGTERM: could not ask the lifetime to shut down: {ex.Message}");
+            }
+        });
+
+        // The watchdog exists so a wedged shutdown cannot ignore the signal for ever - but it must not
+        // cut a clean shutdown short either. The downstream steps have their own bounds (a Gateway
+        // unregister allows five seconds, the host stop two, on top of an unbounded stream stop), so the
+        // budget is generous and the exit is cancelled the moment shutdown actually finishes.
+        _ = Task.Run(async () =>
+        {
+            for (var waited = TimeSpan.Zero; waited < TimeSpan.FromSeconds(25); waited += TimeSpan.FromMilliseconds(250))
+            {
+                if (_shutdownCompleted) return;
+                await Task.Delay(250);
+            }
+            FileLog.Write("[Program] SIGTERM: shutdown did not complete in 25s - exiting anyway");
+            FileLog.Stop();
+            Environment.Exit(0);
+        });
     }
 
     /// <summary>

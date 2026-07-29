@@ -78,7 +78,7 @@ public partial class UninstallStep : UserControl
     {
         var items = new List<string>
         {
-            "The DevThrottle app and all cc-* CLI tools",
+            "The Director and all cc-* CLI tools",
             OperatingSystem.IsMacOS()
                 ? "The shell PATH entries and tool shims"
                 : "The PATH entry for the tools",

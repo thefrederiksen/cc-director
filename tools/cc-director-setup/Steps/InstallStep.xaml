@@ -39,8 +39,8 @@
 
         <ScrollViewer VerticalScrollBarVisibility="Auto">
             <StackPanel>
-                <!-- The main app. Called DevThrottle here, which is what the user downloaded and
-                     what every other screen calls it - cc-director is the name of the executable. -->
+                <!-- The application is the Director. That is what it is called everywhere else in the
+                     product; DevThrottle is the product, and cc-director.exe is just the file name. -->
                 <Border Background="#2A2D2E" CornerRadius="6" Padding="16" Margin="0,0,0,12">
                     <Grid>
                         <Grid.ColumnDefinitions>
@@ -49,7 +49,7 @@
                         </Grid.ColumnDefinitions>
 
                         <StackPanel Grid.Column="0">
-                            <TextBlock Text="DevThrottle"
+                            <TextBlock Text="Director"
                                        Foreground="White"
                                        FontSize="16"
                                        FontWeight="SemiBold" />
@@ -99,11 +99,11 @@
                         </Grid.ColumnDefinitions>
 
                         <StackPanel Grid.Column="0">
-                            <TextBlock Text="cc-launcher"
+                            <TextBlock Text="Launcher"
                                        Foreground="White"
                                        FontSize="16"
                                        FontWeight="SemiBold" />
-                            <TextBlock Text="Keeps DevThrottle available in the background"
+                            <TextBlock Text="Keeps the Director available in the background"
                                        Foreground="#888888"
                                        FontSize="12"
                                        Margin="0,2,0,0" />
@@ -147,7 +147,7 @@
                                        Foreground="White"
                                        FontSize="16"
                                        FontWeight="SemiBold" />
-                            <TextBlock Text="Your cc-* command-line tools finish setting up the first time you open DevThrottle."
+                            <TextBlock Text="Your cc-* command-line tools finish setting up the first time you open the Director."
                                        Foreground="#888888"
                                        FontSize="12"
                                        TextWrapping="Wrap"

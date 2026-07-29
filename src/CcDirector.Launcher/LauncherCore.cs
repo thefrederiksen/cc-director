@@ -110,32 +110,102 @@ public sealed class LauncherCore : IAsyncDisposable
     public async ValueTask DisposeAsync() => await StopAsync();
 
     /// <summary>
+    /// Why this launcher is not registered to start at login, or null when it is (or was never
+    /// asked to be). READ BY /healthz AND /status: a launcher whose autostart registration failed
+    /// must not look identical to one that is properly managed.
+    ///
+    /// This exists because of a Mac that could not install anything. The registration failed, the
+    /// failure was caught, one line went to a log, and the launcher carried on reporting perfect
+    /// health. Nothing else on the machine or in the fleet could tell that launcher from a managed
+    /// one - so the installer certified it, the uninstaller could not stop it, and every later
+    /// install collided with it. The state was invisible, which is what made it survive.
+    /// </summary>
+    public static string? AutostartFailure { get; private set; }
+
+    /// <summary>
+    /// Has the autostart state been decided yet? Until it has, "no failure" is not the same as
+    /// "healthy" - headless mode starts its web host BEFORE registering, so /healthz answered
+    /// autostartOk=true during a window when nothing had been checked at all.
+    /// </summary>
+    public static bool AutostartChecked { get; private set; }
+
+    /// <summary>
+    /// Is this launcher registered to start at login? Distinct from <see cref="AutostartFailure"/>:
+    /// autostart turned OFF on purpose is not a failure, but it is also NOT registered - and reporting
+    /// "ok" for it left the fleet unable to tell a managed launcher from an unmanaged one, which is the
+    /// whole point of publishing this.
+    /// </summary>
+    public static bool AutostartRegistered { get; private set; }
+
+    /// <summary>
+    /// Record the autostart state from somewhere other than startup - the tray's own enable/disable
+    /// toggle. Without this the API kept reporting a startup-era failure after the user had fixed it,
+    /// or healthy after a later toggle failed.
+    /// </summary>
+    public static void RecordAutostartState(string? failure, bool registered)
+    {
+        // Written in this order so a reader that sees Checked=true cannot then read a stale failure.
+        AutostartFailure = failure;
+        AutostartRegistered = registered;
+        AutostartChecked = true;
+        FileLog.Write($"[LauncherCore] autostart state recorded: registered={registered}, "
+                      + $"failure={failure ?? "none"}");
+    }
+
+    /// <summary>
     /// Register the start-at-login autostart for the current executable (the Run key on
-    /// Windows, the launchd launch agent on macOS), honoring --no-autostart. Failures
-    /// only log - autostart must never take the launcher down.
+    /// Windows, the launchd launch agent on macOS), honoring --no-autostart.
+    ///
+    /// A failure does NOT take the launcher down - it is still useful without autostart - but it is
+    /// recorded in <see cref="AutostartFailure"/> and reported over the launcher's own API. Silence
+    /// was the defect.
     /// </summary>
     public static void RegisterAutostartSafe()
     {
         if (!LauncherAppOptions.RegisterAutostart)
         {
             FileLog.Write("[LauncherCore] Autostart registration skipped (--no-autostart)");
+            // Not a failure - it was not asked for - but NOT registered either.
+            RecordAutostartState(failure: null, registered: false);
             return;
         }
 
-        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS()) return;
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS())
+        {
+            RecordAutostartState(failure: null, registered: false);   // no mechanism on this platform
+            return;
+        }
 
         try
         {
             var exePath = Environment.ProcessPath
                           ?? Process.GetCurrentProcess().MainModule?.FileName
                           ?? throw new InvalidOperationException("Could not resolve own exe path for autostart");
+            // EnsureRegistered returns FALSE for "already correct, nothing written" on both platforms, so
+            // its return value cannot be read as success or failure. Ask the machine what the state IS.
+            // Getting this wrong would have reported every normally-registered launcher as broken from
+            // its second login onward - and on macOS from the FIRST run, because the installer now
+            // registers the agent before the launcher starts.
             if (OperatingSystem.IsWindows())
                 LauncherAutostart.EnsureRegistered(exePath, LauncherAppOptions.AutostartArguments());
             else
                 LauncherLaunchdAutostart.EnsureRegistered(exePath, LauncherAppOptions.AutostartArguments());
+
+            var registered = OperatingSystem.IsWindows()
+                ? LauncherAutostart.IsRegistered()
+                : LauncherLaunchdAutostart.IsRegistered();
+
+            RecordAutostartState(
+                registered
+                    ? null
+                    : (OperatingSystem.IsWindows()
+                        ? "the autostart Run key is not present after registering"
+                        : "the launch agent property list is not present after registering"),
+                registered);
         }
         catch (Exception ex)
         {
+            RecordAutostartState(ex.Message, registered: false);
             FileLog.Write($"[LauncherCore] Autostart registration FAILED: {ex.Message}");
         }
     }

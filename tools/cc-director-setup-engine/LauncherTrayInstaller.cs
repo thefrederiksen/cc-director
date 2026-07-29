@@ -140,7 +140,12 @@ public sealed class LauncherTrayInstaller
             try
             {
                 var path = p.MainModule?.FileName ?? "";
-                if (!path.StartsWith(_layout.LauncherDir, StringComparison.OrdinalIgnoreCase)) continue;
+                // A directory boundary is required: a bare prefix also matches a sibling such as
+                // "<LauncherDir>-dev", which is somebody else's launcher. Same bug as the one fixed in
+                // LauncherStopper, in a second copy of the same idea.
+                var installedPrefix = _layout.LauncherDir.TrimEnd(
+                    Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                if (!path.StartsWith(installedPrefix, StringComparison.OrdinalIgnoreCase)) continue;
                 p.Kill(entireProcessTree: true);
                 p.WaitForExit(5000);
                 stopped++;

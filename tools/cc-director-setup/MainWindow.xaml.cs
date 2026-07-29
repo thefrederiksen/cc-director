@@ -198,7 +198,7 @@ public partial class MainWindow : Window
         {
             1 => _welcomeStep ??= BuildWelcomeStep(),
             StepInstall => _installStep ??= new InstallStep(),
-            StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _directorExePath, _isUpdate, _alreadyUpToDate, _cachedPrep?.Version, _gatewayFailureReason, BuildAgentNotice(), IsReadyToGo()),
+            StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _directorExePath, _isUpdate, _alreadyUpToDate, _cachedPrep?.Version, _gatewayFailureReason, BuildAgentNotice(), IsReadyToGo(), SkippedComponentNames(), SkippedComponentReasons()),
             _ => null
         };
 
@@ -300,6 +300,26 @@ public partial class MainWindow : Window
     /// </summary>
     private bool IsReadyToGo() => InstallCompletion.IsReadyToGo(_skippedCount, AgentPresence.AnyAgent());
 
+    /// <summary>Which components did not install, by name, so the Complete screen can say WHICH one -
+    /// a count is not something the reader can act on.</summary>
+    private IReadOnlyList<string> SkippedComponentNames() =>
+        ComponentDisplayName.For(
+            _cachedPrep?.Items
+                .Where(i => i.Status is "Skipped" or "Failed")
+                .Select(i => i.Name) ?? []);
+
+    /// <summary>
+    /// WHY each component failed, as the engine already worked it out. Every failure path sets
+    /// StatusDetail; the install card shows it, and without this the Complete screen and the generated
+    /// issue lost it again - so a report said "Launcher did not install" and nothing more, which is the
+    /// information-loss this whole change exists to remove.
+    /// </summary>
+    private IReadOnlyList<string> SkippedComponentReasons() =>
+        _cachedPrep?.Items
+            .Where(i => i.Status is "Skipped" or "Failed" && !string.IsNullOrWhiteSpace(i.StatusDetail))
+            .Select(i => $"{ComponentDisplayName.For(i.Name)}: {i.StatusDetail}")
+            .ToList() ?? [];
+
     private async Task RunInstallAsync()
     {
         SetupLog.Write("[MainWindow] RunInstallAsync: starting");
@@ -322,6 +342,7 @@ public partial class MainWindow : Window
         catch (GitHubRateLimitException ex)
         {
             SetupLog.Write($"[MainWindow] RunInstallAsync: prepare FAILED (rate limit): {ex.Message}");
+            _installStep?.SetNotStarted();
             _installStep?.SetStatus(ex.UserMessage());
             NextButton.Content = "Retry";
             NextButton.IsEnabled = true;
@@ -330,6 +351,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             SetupLog.Write($"[MainWindow] RunInstallAsync: prepare FAILED: {ex.Message}");
+            _installStep?.SetNotStarted();
             _installStep?.SetStatus("ERROR: Could not fetch release info from GitHub.");
             NextButton.Content = "Retry";
             NextButton.IsEnabled = true;
@@ -364,8 +386,18 @@ public partial class MainWindow : Window
             // Re-assert the launcher on an already-current machine too. It is idempotent (start if it is
             // not up, re-register autostart) and it is what makes the launcher card on this screen tell
             // the truth instead of sitting at "Pending" forever on the up-to-date path.
-            if (OperatingSystem.IsWindows())
-                await StartLauncherAsync();
+            //
+            // A FAILURE here counts. This path used to discard the result and show "Already Up to Date"
+            // even when the launcher's health, identity or autostart check had just failed - the same
+            // false success the non-up-to-date path correctly refuses.
+            if (OperatingSystem.IsWindows() && !await StartLauncherAsync())
+            {
+                _skippedCount++;
+                _alreadyUpToDate = false;
+                NextButton.Content = "Retry";
+                NextButton.IsEnabled = true;
+                return;
+            }
 
             NextButton.Content = "Next";
             NextButton.IsEnabled = true;

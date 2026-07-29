@@ -1,6 +1,6 @@
 # Tools Overview
 
-CC Director includes command-line tools for document conversion, media processing, email, browser automation, social media, desktop automation, fleet/session workflows, and AI workflows. All tools are installed to `%LOCALAPPDATA%\cc-director\bin\` and are available on your PATH.
+DevThrottle includes command-line tools for document conversion, media processing, email, browser automation, social media, desktop automation, fleet/session workflows, and AI workflows. All tools are installed to `%LOCALAPPDATA%\cc-director\bin\` and are available on your PATH.
 
 ## Quick Reference
 

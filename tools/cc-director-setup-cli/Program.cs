@@ -8,18 +8,32 @@ namespace CcDirector.Setup.Cli;
 /// The headless CLI front-end over CcDirector.Setup.Engine. Same engine the UI
 /// uses, so a human and an agent install/update identically (decision D1).
 ///
-/// Exit codes: 0 ok, 1 runtime error, 2 usage error, 3 prerequisite missing.
+/// Exit codes are a CONTRACT for the scripts and coding agents that drive this: see ExitCodes.
 /// </summary>
 public static class Program
 {
-    private const int ExitOk = 0;
-    private const int ExitError = 1;
-    private const int ExitUsage = 2;
-    private const int ExitPrereqMissing = 3;
+    private const int ExitOk = ExitCodes.Ok;
+    private const int ExitError = ExitCodes.Error;
+    private const int ExitUsage = ExitCodes.Usage;
+    private const int ExitPrereqMissing = ExitCodes.PrerequisiteMissing;
 
     public static async Task<int> Main(string[] argv)
     {
-        var args = CliArgs.Parse(argv);
+        // Parsing is INSIDE the guarded region. A usage error must leave with the documented code 2 -
+        // the whole reason an unattended caller can branch on it. Parsing outside this handler made a
+        // malformed command line exit with an unhandled exception instead.
+        CliArgs args;
+        try
+        {
+            args = CliArgs.Parse(argv);
+        }
+        catch (UsageException ux)
+        {
+            Console.Error.WriteLine($"Error: {ux.Message}");
+            Console.Error.WriteLine();
+            Help();
+            return ExitUsage;
+        }
 
         // `--help` is a flag, so "uninstall --help" parses as the uninstall command with a help flag.
         // Short-circuit to usage BEFORE dispatching, so appending --help to ANY command shows help

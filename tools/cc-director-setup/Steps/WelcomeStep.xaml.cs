@@ -25,8 +25,8 @@ public partial class WelcomeStep : UserControl
             // Gateway. The type comes from InstalledRoleDetector (a first-install choice is never
             // re-asked); a fresh install no longer makes this choice at all (issue #1807).
             InstalledRoleText.Text = installedRole == InstallRole.Gateway
-                ? "Gateway -- DevThrottle app, all CLI tools, plus the Gateway tray app and Cockpit web UI. There should be only one Gateway."
-                : "Workstation -- DevThrottle app + all CLI tools on this machine. Connects to a Gateway; it is not the Gateway itself.";
+                ? "Gateway -- the Director, all CLI tools, plus the Gateway tray app and Cockpit web UI. There should be only one Gateway."
+                : "Workstation -- the Director + all CLI tools on this machine. Connects to a Gateway; it is not the Gateway itself.";
             InstalledRolePanel.Visibility = Visibility.Visible;
 
             if (installedVersion != null)

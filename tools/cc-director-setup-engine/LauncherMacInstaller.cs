@@ -88,19 +88,37 @@ public sealed class LauncherMacInstaller
         }
         else
         {
-            // First install: start the launcher directly. On startup it writes and bootstraps its
-            // own launch agent property list (RunAtLoad + KeepAlive + --managed), which we verify
-            // below - the same self-registration contract as the Windows Run key.
+            // FIRST INSTALL: register the launch agent here and let launchd start it.
+            //
+            // This used to start the launcher directly and rely on the launcher registering its own
+            // agent afterwards. That is where every unmanageable launcher came from: a process launchd
+            // does not own, which the uninstall could not stop because it only asked launchd - so the
+            // machine kept an orphan holding the launcher port and no later install could succeed. On
+            // the machine where this was found the self-registration had also failed silently, so the
+            // direct start was the only thing that ran, and it created exactly the process nothing
+            // could clean up.
+            //
+            // Registering first inverts that: launchd owns the launcher from the very first install,
+            // the property-list check below passes for a real reason, and the uninstall's launchd path
+            // is sufficient for launchers created this way.
+            steps.Add("registering the launch agent so launchd owns the launcher from the first install");
             try
             {
-                startedPid = _startProcess(launcherBinary, LauncherTrayInstaller.InstalledArguments, _layout.LauncherDir);
-                steps.Add($"started launcher process id {startedPid} ({LauncherTrayInstaller.InstalledArguments})");
+                if (!LauncherLaunchdAutostart.EnsureRegistered(launcherBinary, LauncherTrayInstaller.InstalledArguments))
+                    return Fail(steps, "Could not register the launcher launch agent, so launchd would not own it. "
+                                       + "Refusing to start it directly: that is what leaves a launcher no uninstall can stop.");
+                steps.Add($"registered and bootstrapped the launch agent ({LauncherLaunchdAutostart.Label})");
             }
             catch (Exception ex)
             {
-                return Fail(steps, $"Failed to start the launcher: {ex.Message}");
+                return Fail(steps, $"Could not register the launcher launch agent: {ex.Message}");
             }
         }
+
+        // Ask launchd which process it is running, so the health check below can demand an answer from
+        // THAT process. Both branches now end with launchd owning the launcher, so both can do this -
+        // previously the kickstart branch had no process to expect and trusted the version alone.
+        startedPid = TryGetLaunchdPid(steps);
 
         // Identity-verified health: the answer must come from THE PROCESS WE JUST STARTED, not from
         // whatever holds the port. This is the check that failed on Sorens-Mac-mini: the installer
@@ -114,6 +132,17 @@ public sealed class LauncherMacInstaller
         // the remaining gap; it is recorded in docs/MISSION-installer-both-platforms-2026-07-29.md.
         var expectedVersion = new InstalledStateReader(_layout).Read(ComponentRegistry.Launcher).Version;
         var healthUrl = $"http://127.0.0.1:{LauncherTrayInstaller.LauncherDefaultPort}/healthz";
+
+        // No process to expect means we cannot tell our launcher from a stranger on the port, and the
+        // version cannot tell them apart either (build metadata is stripped before comparison). Fail
+        // rather than certify: a same-version orphan holding the port is the exact case that bricked a
+        // machine, and "we could not check" must not read as "it is fine".
+        if (startedPid == 0)
+            return Fail(steps, "launchd did not report which process is running the launcher, so this install "
+                               + "cannot verify that the launcher answering on port "
+                               + $"{LauncherTrayInstaller.LauncherDefaultPort} is the one just placed. "
+                               + $"Check {_layout.LogsDir} and re-run.");
+
         var health = await LauncherHealthProbe.WaitForHealthyAsync(_http, healthUrl, expectedVersion, _healthTimeout, ct, startedPid);
         if (health is null)
         {
@@ -144,15 +173,19 @@ public sealed class LauncherMacInstaller
     /// is not actually loaded (a property list left behind without a bootstrap - for example a
     /// crash between writing the file and loading it), kickstart fails; the launcher is then
     /// started directly, and on startup it re-bootstraps its own agent. That direct start is the
-    /// documented first-install path, not a fallback that hides a defect.
+    /// A registered agent that refuses to start is a real failure and is reported as one - it is
+    /// never worked around by starting the launcher outside launchd.
     /// </summary>
+    [SupportedOSPlatform("macos")]
     private void RestartUnderLaunchd(List<string> steps)
     {
         var (uidExit, uidOutput) = _runCommand("/usr/bin/id", "-u");
         if (uidExit != 0 || !int.TryParse(uidOutput.Trim(), out var uid))
         {
-            steps.Add($"could not resolve the user id (exit {uidExit}); starting the launcher directly");
-            StartDirectly(steps);
+            // No silent direct start. Falling back to one is precisely how a launcher launchd does
+            // not own comes into existence, and nothing can stop those afterwards. The property-list
+            // check that follows fails this install with a reason the user can read.
+            steps.Add($"could not resolve the user id (exit {uidExit}) - cannot restart the launch agent");
             return;
         }
 
@@ -164,16 +197,75 @@ public sealed class LauncherMacInstaller
             return;
         }
 
+        // A registered agent that will not start is a real failure. Re-register, which bootstraps it,
+        // and if that will not work either say so rather than starting an unmanaged process.
         EngineLog.Write($"[LauncherMacInstaller] launchctl kickstart failed (exit {kickExit}): {kickOutput.Trim()}");
-        steps.Add($"launchctl kickstart failed (exit {kickExit}); the agent is not loaded - starting the launcher directly so it re-registers itself");
-        StartDirectly(steps);
+        steps.Add($"launchctl kickstart failed (exit {kickExit}) - re-registering the launch agent");
+        try
+        {
+            if (LauncherLaunchdAutostart.EnsureRegistered(
+                    _layout.PathFor(ComponentRegistry.Launcher), LauncherTrayInstaller.InstalledArguments))
+                steps.Add("re-registered and bootstrapped the launch agent");
+            else
+                steps.Add("could NOT re-register the launch agent");
+        }
+        catch (Exception ex)
+        {
+            steps.Add($"could NOT re-register the launch agent: {ex.Message}");
+        }
     }
 
-    private void StartDirectly(List<string> steps)
+    /// <summary>
+    /// Which process is launchd running for our label? Parsed from launchctl print, whose output
+    /// carries a "pid = NNNN" field while the service is up. Returns 0 when it cannot be determined,
+    /// which the health check reads as "no process to expect".
+    /// </summary>
+    private int TryGetLaunchdPid(List<string> steps)
     {
-        var launcherBinary = _layout.PathFor(ComponentRegistry.Launcher);
-        var pid = _startProcess(launcherBinary, LauncherTrayInstaller.InstalledArguments, _layout.LauncherDir);
-        steps.Add($"started launcher process id {pid} ({LauncherTrayInstaller.InstalledArguments})");
+        var (uidExit, uidOutput) = _runCommand("/usr/bin/id", "-u");
+        if (uidExit != 0 || !int.TryParse(uidOutput.Trim(), out var uid))
+        {
+            steps.Add($"could not resolve the user id (exit {uidExit}) - cannot ask launchd which process it runs");
+            return 0;
+        }
+
+        // A freshly bootstrapped job does not have a process id the instant launchctl is asked, so a
+        // single look returns 0 - and 0 means "expect nothing", which lets any responder on the port
+        // certify the install. That is exactly the hole this was meant to close, so wait for it.
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (DateTime.UtcNow < deadline)
+        {
+            var (printExit, printOutput) = _runCommand(
+                "/bin/launchctl", $"print gui/{uid}/{LauncherLaunchdAutostart.Label}");
+            if (printExit == 0)
+            {
+                var pid = ParseLaunchdPid(printOutput);
+                if (pid > 0)
+                {
+                    steps.Add($"launchd is running the launcher as process {pid}");
+                    return pid;
+                }
+            }
+            Thread.Sleep(500);
+        }
+
+        steps.Add("launchd did not report a process id for the launcher within ten seconds");
+        return 0;
+    }
+
+    /// <summary>Testable parse of a launchctl print block: the "pid = NNNN" field, or 0.</summary>
+    public static int ParseLaunchdPid(string launchctlPrintOutput)
+    {
+        if (string.IsNullOrEmpty(launchctlPrintOutput)) return 0;
+        foreach (var raw in launchctlPrintOutput.Split('\n'))
+        {
+            var line = raw.Trim();
+            if (!line.StartsWith("pid ", StringComparison.Ordinal)) continue;
+            var eq = line.IndexOf('=');
+            if (eq < 0) continue;
+            if (int.TryParse(line[(eq + 1)..].Trim(), out var pid) && pid > 0) return pid;
+        }
+        return 0;
     }
 
     /// <summary>Starts the launcher as a plain detached child: no shell, no redirected pipes (a

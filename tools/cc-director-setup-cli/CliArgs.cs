@@ -12,7 +12,9 @@ public sealed class CliArgs
     private readonly HashSet<string> _flags;
 
     private static readonly HashSet<string> KnownFlags =
-        new(StringComparer.OrdinalIgnoreCase) { "json", "dry-run", "help", "hosted" };
+        // "version" is here because the dispatcher accepts "--version" as a way to ask the version.
+        // Strict parsing without it turned a documented, working command line into a crash.
+        new(StringComparer.OrdinalIgnoreCase) { "json", "dry-run", "help", "hosted", "version" };
 
     private CliArgs(string command, List<string> positionals, Dictionary<string, string> options, HashSet<string> flags)
     {
@@ -21,6 +23,16 @@ public sealed class CliArgs
         _options = options;
         _flags = flags;
     }
+
+    /// <summary>
+    /// Options that TAKE A VALUE. Kept beside <see cref="KnownFlags"/> so the parser can tell "you
+    /// forgot the value" from "that is a switch" from "that is not a thing" - three different mistakes
+    /// that all used to look like a successful command.
+    /// </summary>
+    private static readonly HashSet<string> KnownOptions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "component", "gateway", "log-file", "manifest", "release-dir", "role", "root", "tools",
+    };
 
     public static CliArgs Parse(string[] argv)
     {
@@ -36,13 +48,26 @@ public sealed class CliArgs
             if (a.StartsWith("--", StringComparison.Ordinal))
             {
                 var key = a[2..];
-                if (KnownFlags.Contains(key) || i + 1 >= argv.Length || argv[i + 1].StartsWith("--", StringComparison.Ordinal))
+                if (KnownFlags.Contains(key))
                 {
                     flags.Add(key);
                 }
+                else if (KnownOptions.Contains(key))
+                {
+                    // A known option with no value is a MISTAKE, not a flag. Treating it as one meant
+                    // "install --role" quietly installed the default role and "install --release-dir"
+                    // quietly went to GitHub instead of the directory the caller asked for - an
+                    // unattended install doing something other than what it was told, and reporting
+                    // success. Scripts and agents cannot see that; an exit code they can.
+                    if (i + 1 >= argv.Length || argv[i + 1].StartsWith("--", StringComparison.Ordinal))
+                        throw new UsageException($"--{key} needs a value.");
+                    options[key] = argv[++i];
+                }
                 else
                 {
-                    options[key] = argv[++i];
+                    // An unknown option is a mistake too. Accepting it silently means a typo in an
+                    // agent's command line looks like a successful install of something else.
+                    throw new UsageException($"Unknown option --{key}.");
                 }
             }
             else

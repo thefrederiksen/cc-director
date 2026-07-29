@@ -129,24 +129,38 @@ public sealed class Uninstaller
             RemoveTailscaleServe(steps, errors);
         }
 
-        // The Launcher tray app ships to both roles: stop it and remove its autostart Run key before
-        // the directory delete unlocks its exe.
+        // The launcher ships to both roles. Stop it BY PROCESS, on BOTH platforms, before the
+        // directory delete - and before any wipe, because the token that lets us ask it politely
+        // lives inside the tree a wipe removes.
+        //
+        // macOS used to only ask launchd to boot the service out. That does nothing for a launcher
+        // launchd never started, and reported success, so the product manufactured a process its own
+        // uninstaller could not remove and every later install collided with it. LauncherStopper is
+        // the shared fix; the launchd unregister below still runs, because a launchd-owned launcher
+        // must also lose its property list or launchd resurrects a binary the next step deletes.
+        // AUTOSTART FIRST, then the process. On macOS the launch agent has KeepAlive, so a launcher
+        // killed while launchd still owns its job is simply restarted - and the restart binds the port
+        // again after the stop has already reported success. Unregistering first removes the thing that
+        // would resurrect it.
         if (OperatingSystem.IsWindows())
         {
-            progress?.Report("Stopping the Launcher tray app");
-            StopLauncherTrayApp(steps);
             progress?.Report("Removing the Launcher autostart");
             RemoveLauncherAutostart(steps, errors);
         }
         else if (OperatingSystem.IsMacOS())
         {
-            // launchd owns the launcher on macOS: boot the agent out (which stops the process) and
-            // delete its property list, or launchd would resurrect a binary the next step deletes.
-            progress?.Report("Stopping the Launcher launch agent");
+            progress?.Report("Removing the Launcher launch agent");
             try
             {
-                if (LauncherLaunchdAutostart.Unregister())
+                // VERIFIED: a nonzero bootout used to be logged and reported as success. A job still
+                // loaded keeps its KeepAlive definition, so launchd restarts the launcher after the stop
+                // below has already been certified - and the restart binds the port again while the
+                // files are being deleted.
+                if (LauncherLaunchdAutostart.UnregisterVerified(out var agentFailure))
                     steps.Add("Removed the Launcher launch agent (launchd)");
+                else
+                    errors.Add($"Launcher launch agent: {agentFailure}. launchd may restart the launcher, "
+                               + "so this uninstall cannot be trusted to have stopped it.");
             }
             catch (Exception ex)
             {
@@ -154,8 +168,27 @@ public sealed class Uninstaller
             }
         }
 
+        progress?.Report("Stopping the launcher");
+        var stop = new LauncherStopper(_layout).Stop();
+        steps.AddRange(stop.Steps);
+        if (!stop.Stopped)
+            errors.Add("The installed launcher is still running. A later install will collide with it. "
+                       + "See the steps above for what was tried.");
+
         progress?.Report("Removing the app and CLI tools");
-        RemoveDirectories(role, steps, errors);
+        if (stop.Stopped)
+        {
+            RemoveDirectories(role, steps, errors);
+        }
+        else
+        {
+            // Deleting the binary of a process that is still running is exactly how the original
+            // orphan became unstoppable: a live launcher serving a port from files that no longer
+            // existed, which no uninstall could then identify. Leave the files, say so, and let the
+            // user stop it and re-run.
+            steps.Add("SKIPPED removing the app and CLI tools: the launcher is still running, and "
+                      + "deleting its files while it runs is what creates an unstoppable launcher");
+        }
 
         if (OperatingSystem.IsWindows())
         {
@@ -185,8 +218,20 @@ public sealed class Uninstaller
         // whole per-user data root. Deliberately destructive, so it only runs when asked.
         if (deleteData)
         {
-            progress?.Report("Removing your data");
-            WipeUserData(steps, errors);
+            if (stop.Stopped)
+            {
+                progress?.Report("Removing your data");
+                WipeUserData(steps, errors);
+            }
+            else
+            {
+                // The wipe deletes the WHOLE per-user root, and the launcher directory lives inside it -
+                // so wiping would delete the binary and the token of a process we could not stop, which
+                // is precisely the state that made the original orphan impossible to identify or
+                // authenticate to. The deletion gate above is worthless if this path ignores it.
+                steps.Add("SKIPPED removing your data: the launcher is still running, and the wipe would "
+                          + "delete the files and token of a process nothing can then stop");
+            }
         }
 
         var ok = errors.Count == 0;
@@ -211,15 +256,110 @@ public sealed class Uninstaller
             return;
         }
         if (!Directory.Exists(root)) { steps.Add($"data: not present ({root})"); return; }
+
+        // Keep the logs. They are the only account of how this installation behaved, and a wipe is
+        // very often followed by an install that fails BECAUSE of what the old one did - which is
+        // exactly what happened on the Mac: the line explaining a failed autostart registration was
+        // in a log deleted while a process still held it open, and on macOS a deleted-but-open file
+        // cannot be read from another process without root. That cause is permanently unknown.
+        var kept = PreserveLogs(root, steps, errors);
+
         try
         {
             Directory.Delete(root, recursive: true);
-            steps.Add($"removed all data: {root}");
+            steps.Add(kept is null
+                ? $"removed all data: {root}"
+                : $"removed all data: {root} (logs kept at {kept})");
         }
         catch (Exception ex)
         {
             errors.Add($"data ({root}): {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Copy <c>logs/</c> out of the root about to be deleted, into a sibling that survives the wipe.
+    /// Best effort by design: failing to keep the logs must not stop the uninstall the user asked for,
+    /// but it is reported so nobody later believes logs exist when they do not.
+    /// </summary>
+    /// <returns>Where the logs were kept, or null when there were none or the copy failed.</returns>
+    public string? PreserveLogs(string root, List<string> steps, List<string> errors)
+    {
+        ArgumentNullException.ThrowIfNull(steps);
+        ArgumentNullException.ThrowIfNull(errors);
+
+        var logs = System.IO.Path.Combine(root, "logs");
+        if (!Directory.Exists(logs)) return null;
+
+        // A sibling of the root, named for what it is. Not inside the root - that is the thing going away.
+        var parent = System.IO.Path.GetDirectoryName(System.IO.Path.TrimEndingDirectorySeparator(root));
+        if (string.IsNullOrEmpty(parent)) return null;
+        // NOT named after the root. "cc-director-logs-kept" would be a string PREFIX of the
+        // "cc-director" root, which quietly defeats any prefix-based "is this inside the root"
+        // check - including the one guarding the wipe itself.
+        // Unique per wipe: a fixed name would have the second uninstall overwrite the first one's
+        // logs, and the whole point is not to lose them. Resolved and re-checked below, because a
+        // symbolic link or junction called this could point back inside the root about to be deleted.
+        // Unique even within the same second: two wipes a second apart would otherwise share a
+        // directory and overwrite each other's logs, which is the loss this exists to prevent.
+        var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture);
+        var destination = System.IO.Path.Combine(parent, $"devthrottle-logs-kept-{stamp}");
+        for (var n = 2; Directory.Exists(destination) || File.Exists(destination); n++)
+            destination = System.IO.Path.Combine(parent, $"devthrottle-logs-kept-{stamp}-{n}");
+
+        try
+        {
+            if (Directory.Exists(destination))
+            {
+                // A link target may be RELATIVE, and relative to the LINK's directory - not to this
+                // process's working directory, which is what GetFullPath would assume.
+                var info = new DirectoryInfo(destination);
+                var resolved = info.LinkTarget is { } target
+                    ? System.IO.Path.GetFullPath(target, info.Parent?.FullName ?? parent)
+                    : System.IO.Path.GetFullPath(destination);
+                if (resolved.StartsWith(System.IO.Path.GetFullPath(root), StringComparison.OrdinalIgnoreCase))
+                {
+                    steps.Add($"not keeping the logs: {destination} resolves back inside {root}, which is being deleted");
+                    return null;
+                }
+            }
+
+            CopyDirectory(logs, destination);
+            steps.Add($"kept the previous installation's logs at {destination}");
+            return destination;
+        }
+        catch (Exception ex)
+        {
+            // Reported, never silent - but NOT an error, because that would flip the whole uninstall to
+            // failure over a courtesy copy, telling the user their uninstall failed when it did exactly
+            // what they asked.
+            steps.Add($"could not keep the logs ({logs}): {ex.Message}");
+            return null;
+        }
+    }
+
+    private static void CopyDirectory(string source, string destination)
+    {
+        Directory.CreateDirectory(destination);
+        foreach (var file in Directory.EnumerateFiles(source))
+        {
+            var target = System.IO.Path.Combine(destination, System.IO.Path.GetFileName(file));
+            try
+            {
+                File.Copy(file, target, overwrite: true);
+            }
+            catch (IOException)
+            {
+                // A log still held open by a live process can refuse a plain copy; read it with
+                // sharing instead. This is the case that matters - the log we most want is the one
+                // belonging to the process that is still running.
+                using var input = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var output = new FileStream(target, FileMode.Create, FileAccess.Write, FileShare.None);
+                input.CopyTo(output);
+            }
+        }
+        foreach (var dir in Directory.EnumerateDirectories(source))
+            CopyDirectory(dir, System.IO.Path.Combine(destination, System.IO.Path.GetFileName(dir)));
     }
 
     /// <summary>Remove DevThrottle's scheduled tasks if present (issue #257). Absent tasks are
@@ -332,33 +472,6 @@ public sealed class Uninstaller
         {
             errors.Add($"autostart Run key: {ex.Message}");
         }
-    }
-
-    /// <summary>
-    /// Stop the INSTALLED Launcher tray app so its exe unlocks before the directory delete. Scoped
-    /// strictly to a process whose image lives under the install-owned Launcher dir - a dev launcher
-    /// running from a repo is never touched.
-    /// </summary>
-    [SupportedOSPlatform("windows")]
-    private void StopLauncherTrayApp(List<string> steps)
-    {
-        var stopped = 0;
-        foreach (var p in Process.GetProcessesByName("cc-launcher"))
-        {
-            try
-            {
-                var path = p.MainModule?.FileName ?? "";
-                if (!path.StartsWith(_layout.LauncherDir, StringComparison.OrdinalIgnoreCase)) continue;
-                p.Kill(entireProcessTree: true);
-                p.WaitForExit(5000);
-                stopped++;
-            }
-            catch (Exception ex) { EngineLog.Write($"[Uninstaller] stop cc-launcher pid={p.Id}: {ex.Message}"); }
-            finally { p.Dispose(); }
-        }
-        steps.Add(stopped > 0
-            ? $"stopped {stopped} installed Launcher process(es)"
-            : "Launcher tray app: not running");
     }
 
     [SupportedOSPlatform("windows")]

@@ -135,6 +135,17 @@ public sealed class LauncherHost : IAsyncDisposable
         app.MapGet("/healthz", () =>
         {
             var uptimeS = (long)(DateTime.UtcNow - _startedAt).TotalSeconds;
+            // autostartOk is part of health on purpose. A launcher that did not register itself is
+            // running but NOT managed, and reporting plain "ok" for both states is what let an
+            // unmanageable launcher pass for a healthy one on the machine where this was found.
+            //
+            // Read ONCE into locals: two reads of a mutable static can produce a response that
+            // disagrees with itself (ok=true alongside a failure string).
+            // Read Checked FIRST: RecordAutostartState writes failure and registered before setting it,
+            // so a reader that sees Checked=true is guaranteed the other two are the same generation.
+            var autostartChecked = LauncherCore.AutostartChecked;
+            var autostartFailure = LauncherCore.AutostartFailure;
+            var autostartRegistered = LauncherCore.AutostartRegistered;
             return Results.Json(new
             {
                 ok = true,
@@ -142,6 +153,13 @@ public sealed class LauncherHost : IAsyncDisposable
                 pid = Environment.ProcessId,
                 uptimeS,
                 userInterface = _userInterfaceState,
+                // Null, not true, until it has actually been decided - saying "ok" about a question
+                // nobody has asked yet is the same class of lie this field exists to remove.
+                // Registered is the fleet-visible fact: autostart turned off on purpose is not a
+                // failure, but it is not "ok" either.
+                autostartOk = autostartChecked ? autostartFailure is null && autostartRegistered : (bool?)null,
+                autostartRegistered = autostartChecked ? autostartRegistered : (bool?)null,
+                autostartFailure,
             }, JsonOpts);
         });
 
@@ -149,6 +167,9 @@ public sealed class LauncherHost : IAsyncDisposable
         app.MapGet("/status", () =>
         {
             var uptimeS = (long)(DateTime.UtcNow - _startedAt).TotalSeconds;
+            var statusAutostartChecked = LauncherCore.AutostartChecked;
+            var statusAutostartFailure = LauncherCore.AutostartFailure;
+            var statusAutostartRegistered = LauncherCore.AutostartRegistered;
             return Results.Json(new
             {
                 launcher = new
@@ -159,6 +180,11 @@ public sealed class LauncherHost : IAsyncDisposable
                     uptimeS,
                     startedAtUtc = _startedAt,
                     userInterface = _userInterfaceState,
+                    autostartOk = statusAutostartChecked
+                        ? statusAutostartFailure is null && statusAutostartRegistered
+                        : (bool?)null,
+                    autostartRegistered = statusAutostartChecked ? statusAutostartRegistered : (bool?)null,
+                    autostartFailure = statusAutostartFailure,
                 },
                 director = new
                 {
