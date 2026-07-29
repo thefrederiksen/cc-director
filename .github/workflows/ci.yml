@@ -5,10 +5,68 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+
+# A newer pull-request push makes the older run stale. Main-branch runs use a unique run identifier,
+# so they are never cancelled. Release builds live in release.yml and are unaffected.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    name: Decide which builds are needed
+    runs-on: ubuntu-latest
+    outputs:
+      run_dotnet: ${{ steps.classify.outputs.run_dotnet }}
+      run_web: ${{ steps.classify.outputs.run_web }}
+      reason: ${{ steps.classify.outputs.reason }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed paths
+        id: classify
+        shell: pwsh
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $allZeroes = "0000000000000000000000000000000000000000"
+          if ([string]::IsNullOrWhiteSpace($env:BASE_SHA) -or
+              [string]::IsNullOrWhiteSpace($env:HEAD_SHA) -or
+              $env:BASE_SHA -eq $allZeroes) {
+            $paths = @()
+          } else {
+            $paths = @(git diff --name-only --diff-filter=ACDMRT $env:BASE_SHA $env:HEAD_SHA)
+            if ($LASTEXITCODE -ne 0) {
+              throw "Could not determine changed paths."
+            }
+          }
+
+          $classification = ./scripts/ci/classify-changes.ps1 -Path $paths | ConvertFrom-Json
+          $runDotNet = $classification.run_dotnet.ToString().ToLowerInvariant()
+          $runWeb = $classification.run_web.ToString().ToLowerInvariant()
+          "run_dotnet=$runDotNet" >> $env:GITHUB_OUTPUT
+          "run_web=$runWeb" >> $env:GITHUB_OUTPUT
+          "reason=$($classification.reason)" >> $env:GITHUB_OUTPUT
+
+          "### Build decision" >> $env:GITHUB_STEP_SUMMARY
+          "Changed paths: $($classification.path_count)" >> $env:GITHUB_STEP_SUMMARY
+          "" >> $env:GITHUB_STEP_SUMMARY
+          "| Build | Required |" >> $env:GITHUB_STEP_SUMMARY
+          "|---|---|" >> $env:GITHUB_STEP_SUMMARY
+          "| Microsoft .NET | $runDotNet |" >> $env:GITHUB_STEP_SUMMARY
+          "| Web | $runWeb |" >> $env:GITHUB_STEP_SUMMARY
+          "" >> $env:GITHUB_STEP_SUMMARY
+          "Reason: $($classification.reason)" >> $env:GITHUB_STEP_SUMMARY
+
   build-and-test:
     name: Build & Test (.NET)
+    needs: changes
+    if: needs.changes.outputs.run_dotnet == 'true' && (github.event_name == 'push' || github.event.pull_request.draft == false)
     runs-on: windows-latest
 
     steps:
@@ -58,6 +116,8 @@ jobs:
   # platform-independent unit tests and a Vite build, and Ubuntu runners are quicker and cheaper.
   web:
     name: Build & Test (web)
+    needs: changes
+    if: needs.changes.outputs.run_web == 'true' && (github.event_name == 'push' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
 
     steps:
@@ -95,3 +155,49 @@ jobs:
 
       - name: Build the Cockpit
         run: npm run build --workspace @devthrottle/cockpit
+
+  decision:
+    name: Continuous integration decision
+    if: always()
+    needs: [changes, build-and-test, web]
+    runs-on: ubuntu-latest
+    env:
+      CHANGE_DECISION: ${{ needs.changes.result }}
+      DOTNET_DECISION: ${{ needs.build-and-test.result }}
+      WEB_DECISION: ${{ needs.web.result }}
+      RUN_DOTNET: ${{ needs.changes.outputs.run_dotnet }}
+      RUN_WEB: ${{ needs.changes.outputs.run_web }}
+      READY_FOR_FULL_VALIDATION: ${{ github.event_name == 'push' || github.event.pull_request.draft == false }}
+      REASON: ${{ needs.changes.outputs.reason }}
+    steps:
+      - name: Require every selected build
+        shell: pwsh
+        run: |
+          $ready = $env:READY_FOR_FULL_VALIDATION -eq "true"
+          $dotNetRequired = $ready -and $env:RUN_DOTNET -eq "true"
+          $webRequired = $ready -and $env:RUN_WEB -eq "true"
+          $failures = [System.Collections.Generic.List[string]]::new()
+
+          if ($env:CHANGE_DECISION -ne "success") {
+            $failures.Add("Changed-path classification ended as $($env:CHANGE_DECISION).")
+          }
+          if ($dotNetRequired -and $env:DOTNET_DECISION -ne "success") {
+            $failures.Add("The Microsoft .NET build was required but ended as $($env:DOTNET_DECISION).")
+          }
+          if ($webRequired -and $env:WEB_DECISION -ne "success") {
+            $failures.Add("The web build was required but ended as $($env:WEB_DECISION).")
+          }
+
+          "### Final decision" >> $env:GITHUB_STEP_SUMMARY
+          "Ready for full validation: $ready" >> $env:GITHUB_STEP_SUMMARY
+          "" >> $env:GITHUB_STEP_SUMMARY
+          "| Build | Selected | Result |" >> $env:GITHUB_STEP_SUMMARY
+          "|---|---|---|" >> $env:GITHUB_STEP_SUMMARY
+          "| Microsoft .NET | $dotNetRequired | $($env:DOTNET_DECISION) |" >> $env:GITHUB_STEP_SUMMARY
+          "| Web | $webRequired | $($env:WEB_DECISION) |" >> $env:GITHUB_STEP_SUMMARY
+          "" >> $env:GITHUB_STEP_SUMMARY
+          "Reason: $($env:REASON)" >> $env:GITHUB_STEP_SUMMARY
+
+          if ($failures.Count -gt 0) {
+            throw ($failures -join " ")
+          }

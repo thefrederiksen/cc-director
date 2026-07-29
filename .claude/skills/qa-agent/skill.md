@@ -189,9 +189,11 @@ If ANY criterion fails or a regression/method violation is found:
 1. Write a **specific, reproducible defect**: which criterion failed, the exact steps, Expected vs
    Actual, and the screenshot proving the failure. Vague fails ("doesn't work") are not allowed -
    the Developer Agent must be able to act on it directly.
-2. Commit the failure screenshot(s) under `docs/cencon/proof/issue-<n>/` and reference them.
+2. Commit the failure screenshot(s) under `docs/cencon/proof/issue-<n>/` and reference them. Finish
+   the entire investigation first, then push the proof batch once so the next Developer receives it.
 3. Comment, then label `flow:qa-failed`:
 ```bash
+git push   # one push after every failure artifact is committed; proof-only changes use the cheap gate
 gh issue comment <ID> --repo example-org/devthrottle --body "$(cat defect.md)"
 gh issue edit <ID> --repo example-org/devthrottle --add-label flow:qa-failed --remove-label flow:ready-qa
 git status --porcelain   # MUST be empty - your failure screenshots are committed, the PR code stays put
@@ -210,8 +212,10 @@ it in a known state, then stop:
 
 1. Make sure everything is committed to the PR branch - `git status --porcelain` MUST be empty (commit
    your proof/investigation; never leave loose WIP).
-2. Ensure the PR exists and is up to date on the remote (`git push`). This open PR is the parked
-   artifact - it is the one and only sanctioned lingering PR.
+2. Ensure the pull request exists. If local commits are ahead of the remote, push the complete proof
+   and investigation batch once. If the remote is already current, do not make a ceremonial push.
+   This open pull request is the parked artifact - it is the one and only sanctioned lingering pull
+   request.
 3. Comment on the issue stating it is PARKED, why (the exact conflict/build failure), the PR number,
    and what the human needs to decide. Then label `flow:needs-human`:
    ```bash

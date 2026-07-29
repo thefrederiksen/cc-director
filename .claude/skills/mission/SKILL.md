@@ -98,6 +98,13 @@ anywhere. Work that exists in one place is work you are one crash away from losi
 mission branch current and pushed is mission hygiene, in the same way that leaving the site tidy is
 part of building, not a favour to anyone.
 
+**Push safety without build churn.** Make local commits whenever they help, but make one remote push
+at a completed Manager handoff boundary after code, tests, proof, and the compact handoff note are
+ready. Do not split those artifacts into separate pushes. Do not open a pull request at the start of
+a mission merely to make the branch visible: open it when a coherent slice is ready for inspection,
+or keep it draft while the mission still expects more pushes. Recovery still wins over thrift - push
+before a reset when work would otherwise exist on only one machine.
+
 **The authority chain, stated once:**
 
 - Work accumulates on the mission branch. That is the ordinary operation of a mission and the
@@ -187,10 +194,10 @@ lives in the branch and the files.
 - The Architect keeps a short, current handoff note on disk (a few lines: the phase, the branch, what
   is done and pushed, what the next Worker task is, the acceptance row it proves). This note is the
   ONLY thing a fresh Manager needs.
-- To reset: make the outgoing Manager commit and push everything first (law 2 - never kill
-  uncommitted work), kill it, seat a new Manager named `Mission - Manager`, and hand it ONLY the
-  compact note plus a pointer to the mission brief and this workflow. Not the transcript. Not the
-  history. Just enough to keep going.
+- To reset: make the outgoing Manager commit everything, including proof and the compact handoff
+  note, then push that completed batch once (law 2 - never kill uncommitted work). Kill it, seat a
+  new Manager named `Mission - Manager`, and hand it ONLY the compact note plus a pointer to the
+  mission brief and this workflow. Not the transcript. Not the history. Just enough to keep going.
 - The Inspector is even more disposable: seated fresh for each inspection, given the diff to inspect
   and the sharp questions, and gone when its written review lands. Never keep an Inspector idle
   between phases.

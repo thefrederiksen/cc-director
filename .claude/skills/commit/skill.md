@@ -31,6 +31,13 @@ The four supporting rules (see the TRUNK DEVELOPMENT section of the global CLAUD
   concurrent agent uses its own worktree off origin/main.
 - Never commit directly on main. If the checkout is on main, create a branch first.
 
+## One remote build request per coherent batch
+
+Local commits are checkpoints; a push requests shared GitHub validation. Complete all known code,
+tests, proof, and applicable local checks before the first push. Do not push intermediate progress
+or a proof-only follow-up when both can be sent together. If remote checks expose a defect, gather
+and locally validate the complete known correction batch before pushing once more.
+
 ## Triggers
 
 Invoke with /commit or when user asks to commit changes.
@@ -109,7 +116,7 @@ If the checkout is on main, create a branch FIRST - never commit on main:
   git worktree add ../<repo>-wt-<short-desc> -b <type>/<short-desc> origin/main
   then cd into it. (See the "Shared checkout" rules in the global CLAUDE.md.)
 
-STEP 6: Commit and push
+STEP 6: Commit, then send one remote build request
 
 Stage the specific files using git add with each filename.
 Never use git add . or git add -A.
@@ -122,7 +129,7 @@ EOF
 
 Run git status to verify commit succeeded.
 
-Push with: git push -u origin HEAD.
+After every known file and local check is complete, push once with: git push -u origin HEAD.
 
 If push fails due to remote changes, run git pull --rebase then git push.
 
@@ -133,8 +140,9 @@ commit (Step 4), drive it home:
 
 1. Open the pull request: gh pr create --fill (or with a title/body matching recent PRs).
 2. Wait for checks to go green: gh pr checks <number> --watch.
-   - If checks fail, fix the failure and push a NEW commit (never amend, never --no-verify),
-     then re-watch. Report the failure to the user if it is not quick and mechanical.
+   - If checks fail, gather every known correction, validate the whole correction batch locally,
+     and push the NEW commits together (never amend, never --no-verify), then re-watch. Report the
+     failure to the user if it is not quick and mechanical.
 3. Merge with squash once green: gh pr merge <number> --squash --delete-branch.
    (delete_branch_on_merge is ON, but --delete-branch is explicit and harmless.)
 4. Park the checkout back on main:

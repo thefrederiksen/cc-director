@@ -206,31 +206,35 @@ git rev-parse --abbrev-ref HEAD   # confirm you are on issue-<n>-short-desc, in 
 
 Only when every acceptance criterion is met, the build is clean, and you have proof:
 
-1. **Commit the IMPLEMENTATION first** - every source/test file you changed goes onto the PR branch.
-   The handoff artifact is committed code, NEVER uncommitted working-tree edits. Open the PR if one
-   does not exist yet (`git push -u origin HEAD` then `gh pr create`).
+1. **Commit the IMPLEMENTATION locally first** - every source/test file you changed goes onto the
+   pull request branch. The handoff artifact is committed code, NEVER uncommitted working-tree edits.
+   Do NOT push or open the pull request yet: the implementation and its proof are one remote build
+   request.
 2. **Build the HTML report** - what was implemented, each acceptance criterion with its proof, the
    screenshots, the CenCon-impact statement, and an explicit "I believe this is finished."
 3. **Commit proof to the PR branch** under `docs/cencon/proof/issue-<n>/` (e.g. `report.html`,
    `before.png`, `after.png`). Committing to the PR branch is authorized; **do NOT merge to main**
    (only the human / the QA role inside the loop merges).
-4. **Post an issue comment** linking the proof repo-relative and the PR, using this comment format:
+4. **CLEAN-TREE AND ONE-PUSH GATE (mandatory).** Verify that implementation, tests, and proof are all
+   committed, then push them together once. You may NOT hand off with uncommitted work in progress
+   or unpushed commits:
+   ```bash
+   git status --porcelain   # MUST be empty - if not, commit/clean it before continuing
+   git stash list           # MUST show no stash you created - stashing is NOT a clean tree
+   git push -u origin HEAD  # ONE push after the complete handoff batch is locally ready
+   ```
+   If the pull request does not exist, create it only after that push (`gh pr create`). If it already
+   exists, do not make a ceremonial second push: the single push above updated it. If
+   `git status --porcelain` prints anything, you are not done: commit the remaining files (they are
+   part of your change) or, if they are stray, remove them - but the tree MUST be empty before you
+   proceed. **Never `git stash` to make the tree look empty** - a stash hides your work in progress
+   and hands quality assurance (and the human) a mess; commit it to the pull request branch instead.
+   Handing quality assurance a dirty tree or a stash is a defect.
+5. **Post an issue comment** linking the proof repo-relative and the PR, using this comment format:
    Release Notes, Changes, How to Test, Expected Result, Before/After:
    ```
    Proof: docs/cencon/proof/issue-<n>/report.html  (PR #<pr>)
    ```
-5. **CLEAN-TREE GATE (mandatory, before the label swap).** Verify the working tree is empty and the
-   branch is pushed - you may NOT hand off with uncommitted WIP or unpushed commits:
-   ```bash
-   git status --porcelain   # MUST be empty - if not, commit/clean it before continuing
-   git stash list           # MUST show no stash you created - stashing is NOT a clean tree
-   git push                 # the PR branch must be up to date on the remote
-   ```
-   If `git status --porcelain` prints anything, you are not done: commit the remaining files (they
-   are part of your change) or, if they are stray, remove them - but the tree MUST be empty before
-   you proceed. **Never `git stash` to make the tree look empty** - a stash hides your WIP and hands
-   QA (and the human) a mess; commit it to the PR branch instead. Handing QA a dirty tree or a stash
-   is a defect.
 6. **Swap the label** to `flow:ready-qa`, releasing whichever working-state label the issue carried.
    Inside the `implementation-loop` the issue is `flow:in-progress` (the loop's issue-level claim,
    issue #298); standalone it may still be `flow:ready-dev`. Remove BOTH so no working-state label
