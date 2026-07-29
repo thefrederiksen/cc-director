@@ -31,7 +31,8 @@
         { "id": "wingman-and-voice", "title": "Wingman and Voice", "file": "features/05-wingman-and-voice.md" },
         { "id": "mobile", "title": "Mobile and In-Car", "file": "features/06-mobile.md" },
         { "id": "dialogs", "title": "Key Dialogs", "file": "features/07-dialogs.md" },
-        { "id": "injected-text", "title": "Injected Text", "file": "features/08-injected-text.md" }
+        { "id": "injected-text", "title": "Injected Text", "file": "features/08-injected-text.md" },
+        { "id": "skills", "title": "Skills", "file": "features/09-skills.md" }
       ]
     },
     {
