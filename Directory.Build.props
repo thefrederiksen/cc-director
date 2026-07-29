@@ -18,4 +18,49 @@
   <PropertyGroup>
     <Version>1.8.4</Version>
   </PropertyGroup>
+
+  <!--
+    THE MUTATION-PROOF PIN GUARD, linked into every test assembly in the repository.
+
+    It refuses to START a run that has been declared part of a mutation proof - a baseline or a mutation
+    arm - when the working tree is not exactly what that proof pinned, and it records what it verified to a
+    ledger that outlives the working tree. Every other run is admitted untouched. The full reasoning, and
+    the incident that produced it, are at the top of MutationProofPinGuard.cs; read that before changing
+    anything here.
+
+    WHY IT IS LINKED FROM HERE RATHER THAN LISTED IN EACH TEST PROJECT: so a test project added next year
+    is covered without anybody remembering. The guard exists because a rule that has to be remembered is
+    not a mechanism, and wiring that has to be remembered is the same mistake one level down.
+
+    WHY THE CONDITION IS ON THE PROJECT NAME AND NOT ON IsTestProject: one of the seven existing test
+    projects (CcDirector.Terminal.Avalonia.Tests) does not set IsTestProject, so keying on that flag would
+    have silently skipped it - and a guard that silently covers six of seven assemblies looks exactly like
+    a guard that covers all of them.
+  -->
+  <ItemGroup Condition="$(MSBuildProjectName.EndsWith('.Tests'))">
+    <Compile Include="$(MSBuildThisFileDirectory)src\TestInfrastructure\MutationProofPinGuard.cs"
+             Link="TestInfrastructure\MutationProofPinGuard.cs" />
+    <!--
+      The per-assembly sentinel, and ONLY the sentinel. Every assembly must prove its own copy of the
+      module initializer woke up, because one that silently does not run leaves no trace and every other
+      test in the assembly still passes.
+
+      The guard's BEHAVIOURAL suite is deliberately NOT here - it builds real git repositories and launches
+      real processes, and running that seven times buys no coverage while changing the load and the test
+      scheduling in assemblies that have nothing to do with this mechanism. See
+      MutationProofPinGuardArmedTests for the incident that prompted the split.
+    -->
+    <Compile Include="$(MSBuildThisFileDirectory)src\TestInfrastructure\MutationProofPinGuardArmedTests.cs"
+             Link="TestInfrastructure\MutationProofPinGuardArmedTests.cs" />
+  </ItemGroup>
+
+  <!--
+    The guard's behavioural suite, compiled into exactly one assembly. Core.Tests because it is the
+    fastest of the seven to build and run, has no user-interface threading requirements, and is where
+    this unit's proofs have been driven throughout.
+  -->
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'CcDirector.Core.Tests'">
+    <Compile Include="$(MSBuildThisFileDirectory)src\TestInfrastructure\MutationProofPinGuardTests.cs"
+             Link="TestInfrastructure\MutationProofPinGuardTests.cs" />
+  </ItemGroup>
 </Project>
