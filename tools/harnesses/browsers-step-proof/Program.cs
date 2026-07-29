@@ -127,13 +127,15 @@ internal static class Program
         }
         Console.WriteLine($"debug port answered: {probe.Result.ReplaceLineEndings(" ").Trim()}");
 
-        // One more repaint with the browser RUNNING, for the record.
-        var refresh2 = (Task)typeof(FirstRunWizardDialog)
-            .GetMethod("RefreshBrowsersScreenAsync", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .Invoke(dialog, null)!;
-        PumpUntil(() => refresh2.IsCompleted, TimeSpan.FromSeconds(30), "the post-launch refresh");
-        Pump();
-        Capture(dialog, "browsers-step-running");
+        // The wizard paints "created" and "running" identically (signed-in is the state it cares
+        // about), so a screenshot cannot evidence that the browser was up. The debug port response
+        // is the evidence - keep it as a text artifact beside the screenshots.
+        var cdpProofPath = IoPath.Combine(_outDir, "cdp-json-version.txt");
+        File.WriteAllText(cdpProofPath,
+            $"GET http://127.0.0.1:{launch.Result.Port}/json/version at {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC\n"
+            + $"(browser id={created.Id}, launched by AutomationBrowserService.LaunchAsync on this Mac)\n\n"
+            + probe.Result + "\n");
+        Console.WriteLine($"saved {IoPath.GetFileName(cdpProofPath)}");
 
         // ---- Clean up: stop the browser we started, remove the sandboxed record -----------------
         var stop = Task.Run(() => AutomationBrowserService.StopAsync(created.Id));
