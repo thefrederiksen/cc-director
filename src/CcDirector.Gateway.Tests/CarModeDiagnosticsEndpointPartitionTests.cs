@@ -64,6 +64,7 @@ public sealed class CarModeDiagnosticsEndpointPartitionTests : IAsyncLifetime
             new CarModePendingStore(_ => { }),
             new CarModeSubjectStore(_ => { }),
             _ => SpokenLanguages.English,
+            _ => "over and out",
             _ => { });
         var warmup = new CarModeWarmup(
             _ => ("http://127.0.0.1:1", "model", "key"),
@@ -80,7 +81,10 @@ public sealed class CarModeDiagnosticsEndpointPartitionTests : IAsyncLifetime
         var requireToken = new AuthMiddleware.RequireToken { Token = SharedMachineToken, Devices = devices };
         _app.Use(async (ctx, next) => await AuthMiddleware.Run(ctx, requireToken, next));
 
-        CarModeEndpoint.Map(_app, brain, brain, new CarModeTurnCache(_ => { }), diagnostics, warmup, null!);
+        // Both the tenant boundary and the settings resolver are null here, and deliberately: these
+        // tests drive the diagnostics routes only, which touch neither. The help route is the one that
+        // reads settings (the spoken language and the end phrase) and it is never called from here.
+        CarModeEndpoint.Map(_app, brain, brain, new CarModeTurnCache(_ => { }), diagnostics, warmup, null!, null!);
         await _app.StartAsync();
         _baseAddress = $"http://127.0.0.1:{BoundPort.Of(_app)}";
     }

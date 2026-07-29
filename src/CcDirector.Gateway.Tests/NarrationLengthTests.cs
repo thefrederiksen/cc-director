@@ -1,4 +1,5 @@
 using CcDirector.Gateway.HostedAi;
+using CcDirector.Gateway.Speech;
 using CcDirector.Gateway.Wingman;
 using Xunit;
 
@@ -22,7 +23,7 @@ public class NarrationLengthTests
         // A real narration (~30 seconds spoken) must never be touched. If this ever trips, the guard
         // has become a product limit, which is the bug it replaced.
         var text = new string('a', 550);
-        var result = NarrationText.LimitForSpeech(text, out var wasCut);
+        var result = NarrationText.LimitForSpeech(text, SpokenLanguages.English, out var wasCut);
         Assert.False(wasCut);
         Assert.Equal(text, result);
     }
@@ -32,7 +33,7 @@ public class NarrationLengthTests
     {
         // 4,969 chars: the worst real case on 2026-07-15, which lost ~55 seconds under the old 4000
         // cap. It is well inside the guard now, so it is spoken in full.
-        var result = NarrationText.LimitForSpeech(new string('a', 4969), out var wasCut);
+        var result = NarrationText.LimitForSpeech(new string('a', 4969), SpokenLanguages.English, out var wasCut);
         Assert.False(wasCut);
         Assert.Equal(4969, result.Length);
     }
@@ -43,7 +44,7 @@ public class NarrationLengthTests
         // The guard fires only for a runaway. When it does, the listener MUST hear that they are
         // missing something - being cut off mid-word in silence is the defect.
         var text = string.Join(" ", Enumerable.Repeat("word", 5000));   // ~25,000 chars
-        var result = NarrationText.LimitForSpeech(text, out var wasCut);
+        var result = NarrationText.LimitForSpeech(text, SpokenLanguages.English, out var wasCut);
 
         Assert.True(wasCut);
         Assert.Contains("as much as I can read out", result);
@@ -58,7 +59,7 @@ public class NarrationLengthTests
         // The old behaviour was a bare text[..4000], which cut mid-word and made truncation sound
         // like a crash. Whatever we cut, the last spoken word must be a whole word.
         var text = string.Join(" ", Enumerable.Repeat("indistinguishable", 2000));
-        var result = NarrationText.LimitForSpeech(text, out var wasCut);
+        var result = NarrationText.LimitForSpeech(text, SpokenLanguages.English, out var wasCut);
 
         Assert.True(wasCut);
         var spokenPart = result[..result.IndexOf(" That is as much as I can read out", StringComparison.Ordinal)];
@@ -72,7 +73,7 @@ public class NarrationLengthTests
         // Cut at the end of a thought where we can, so the listener hears something whole before
         // being told the rest is missing.
         var text = string.Join(" ", Enumerable.Repeat("The agent changed the timeout.", 1000));
-        var result = NarrationText.LimitForSpeech(text, out var wasCut);
+        var result = NarrationText.LimitForSpeech(text, SpokenLanguages.English, out var wasCut);
 
         Assert.True(wasCut);
         var spokenPart = result[..result.IndexOf(" That is as much as I can read out", StringComparison.Ordinal)];
@@ -82,9 +83,9 @@ public class NarrationLengthTests
     [Fact]
     public void LimitForSpeech_NullOrEmpty_IsSafe()
     {
-        Assert.Equal("", NarrationText.LimitForSpeech(null, out var cutNull));
+        Assert.Equal("", NarrationText.LimitForSpeech(null, SpokenLanguages.English, out var cutNull));
         Assert.False(cutNull);
-        Assert.Equal("", NarrationText.LimitForSpeech("", out var cutEmpty));
+        Assert.Equal("", NarrationText.LimitForSpeech("", SpokenLanguages.English, out var cutEmpty));
         Assert.False(cutEmpty);
     }
 

@@ -2,6 +2,7 @@ using CcDirector.Core.Configuration;
 using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.CarMode;
+using CcDirector.Gateway.Settings;
 using CcDirector.Gateway.HostedAi;
 using CcDirector.Gateway.Tenancy;
 using CcDirector.Gateway.Util;
@@ -40,9 +41,13 @@ namespace CcDirector.Gateway.Api;
 /// </summary>
 internal static class CarModeEndpoint
 {
+    /// <param name="tenantSettings">Per-account settings. The help route reads two of them: the spoken
+    ///  LANGUAGE (the script is spoken, so it is spoken in the account's language - issue #1009) and the
+    ///  configured END PHRASE, which the script quotes and which is never translated because the owner
+    ///  has to say it literally for a turn to end.</param>
     public static void Map(IEndpointRouteBuilder app, CarModeBrain brain, CarModeBrain assistantBrain,
         CarModeTurnCache turnCache, CarModeDiagnosticsStore diagnostics, CarModeWarmup warmup,
-        HostedTenantBoundary tenantBoundary)
+        HostedTenantBoundary tenantBoundary, TenantSettingsResolver tenantSettings)
     {
         // Keep-warm (Car Mode performance round): the browser calls this the instant the owner taps Start,
         // and every few minutes WHILE Car Mode is open, so the hosted model + text-to-speech are hot before
@@ -68,16 +73,26 @@ internal static class CarModeEndpoint
         // is instant, reliable, and costs no credits (no model round trip). The spoken "help" / "what can you
         // do" path goes through the brain's get_help tool instead, which returns the SAME script verbatim, so
         // both triggers say the identical thing. Behind the host-wide device-key gate like the other routes.
-        app.MapGet("/carmode/help", () => Results.Json(new
+        app.MapGet("/carmode/help", (HttpContext ctx) =>
         {
-            spoken = CarModeHelp.Script,
+            // The spoken script needs the account's language and end phrase, so this route resolves a
+            // tenant like every other data route rather than serving one global English answer.
+            var tenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (tenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" },
+                    statusCode: StatusCodes.Status403Forbidden);
+            return Results.Json(new
+            {
+                spoken = CarModeHelp.SpokenScript(
+                    tenantSettings.SpokenLanguage(tenant.Value), tenantSettings.CarModeEndPhrase(tenant.Value)),
             cheatSheet = new
             {
                 modes = CarModeHelp.CheatSheet.Modes.Select(m => new { title = m.Title, hint = m.Hint, examples = m.Examples }),
                 endTurn = CarModeHelp.CheatSheet.EndTurn,
                 help = CarModeHelp.CheatSheet.Help,
-            },
-        }));
+                },
+            });
+        });
 
         // The turn route, mapped twice over the SAME loop, stores, and cache: /carmode/turn drives the car
         // brain (hands-free, one or two spoken sentences) and /assistant/turn drives the desk brain (the

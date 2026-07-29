@@ -451,16 +451,17 @@ public sealed class WingmanTranslator
     {
         RequireTenant(tenant);
         if (string.IsNullOrWhiteSpace(terminalText)) return new WingmanMenu { IsMenu = false };
-        _log($"[WingmanTranslator] DetectMenuAsync: terminalLen={terminalText.Length}");
+        var language = LanguageFor(tenant);
+        _log($"[WingmanTranslator] DetectMenuAsync: terminalLen={terminalText.Length}, language={language.Code}");
 
         var brain = await _brainProvider(tenant, WingmanModelRole.Fast, ct);
         AskResult ask;
-        try { ask = await brain.AskAsync(BuildMenuDetectPrompt(terminalText), ct); }
+        try { ask = await brain.AskAsync(BuildMenuDetectPrompt(language, terminalText), ct); }
         finally { await brain.ClearAsync(CancellationToken.None); }
 
         var menu = ParseMenu(ExtractSpoken(ask.Text));
         if (menu.IsMenu && menu.Options.Count == 0) menu.IsMenu = false;   // a menu with no options is not actionable
-        if (menu.IsMenu) menu.Spoken = BuildMenuSpoken(menu);
+        if (menu.IsMenu) menu.Spoken = BuildMenuSpoken(language, menu);
         _log($"[WingmanTranslator] DetectMenuAsync: isMenu={menu.IsMenu}, options={menu.Options.Count}");
         return menu;
     }
@@ -497,9 +498,20 @@ public sealed class WingmanTranslator
             throw new ArgumentException("Wingman runtime selection requires an explicit tenant.", nameof(tenant));
     }
 
-    /// <summary>The menu-detection prompt. Public so a test can assert its contract.</summary>
-    public static string BuildMenuDetectPrompt(string terminalText)
+    /// <summary>
+    /// The menu-detection prompt. Public so a test can assert its contract.
+    ///
+    /// A SPOKEN-FIELD path (issue #1009): its OUTPUT is JSON that code parses, so the plain-spoken-prose
+    /// rule must not be applied to it - "output no formatting characters" would break the JSON and menu
+    /// handling decides whether a keypress lands in somebody's terminal. But two of its FIELDS, the
+    /// question and each option's note, are read aloud verbatim by <see cref="BuildMenuSpoken"/>. So the
+    /// language rule alone is applied, scoped to those fields. Without this, a French account heard a
+    /// French frame wrapped around an English question, which is exactly the "English fragment in a
+    /// French session" the owner ruled out.
+    /// </summary>
+    public static string BuildMenuDetectPrompt(SpokenLanguage language, string terminalText)
     {
+        ArgumentNullException.ThrowIfNull(language);
         // Menus render at the BOTTOM of the screen; the tail is enough and keeps the call fast.
         var tail = terminalText.Length > 4000 ? terminalText[^4000..] : terminalText;
         var sb = new StringBuilder();
@@ -518,6 +530,12 @@ public sealed class WingmanTranslator
         sb.AppendLine("- selectionMode: \"single\" to pick one; \"multiple\" for a pick-any checklist (then each send");
         sb.AppendLine("  is just the toggle number and submit=\"\\r\" completes). For single, submit=\"\".");
         sb.AppendLine("- Use ONLY what is on the screen. Never invent options. Never read code or symbols aloud.");
+        sb.AppendLine();
+        sb.AppendLine("The \"question\" and each option's \"note\" are READ ALOUD to the person word for word, so");
+        sb.AppendLine("write those two fields under this rule. It applies to their CONTENT only - the surrounding");
+        sb.AppendLine("JSON, the field names, and each option's \"key\" and \"send\" are machine-read and stay exactly");
+        sb.AppendLine("as they appear on the screen:");
+        sb.AppendLine(SpeechContract.SpeakInLanguageRule(language));
         sb.AppendLine();
         sb.AppendLine("Terminal (bottom of the screen):");
         sb.AppendLine("---");
@@ -578,24 +596,38 @@ public sealed class WingmanTranslator
         catch (JsonException) { return new WingmanMenu { IsMenu = false }; }
     }
 
-    /// <summary>Build the speakable reading of a menu: the question, each option (recommended +
-    /// note), and how to answer. Public so a test can assert the ear-friendly wording.</summary>
-    public static string BuildMenuSpoken(WingmanMenu menu)
+    /// <summary>
+    /// Build the speakable reading of a menu: the question, each option (recommended + note), and how to
+    /// answer. Public so a test can assert the ear-friendly wording.
+    ///
+    /// REBUILT FOR ISSUE #1009. It used to compose the reading by gluing English fragments - the word
+    /// "Option", then the number, then ": ", then the label, then " (recommended)" - and the issue names
+    /// it as the one thing that "cannot be translated as written". It is right: word order, agreement and
+    /// where a recommendation goes are per-language decisions, and code that concatenates fragments has
+    /// already made them for English. So each language now owns the FINISHED SENTENCE
+    /// (<see cref="SpokenPhrases.MenuOption"/> and friends) and this method only chooses which sentence
+    /// and fills in the number and the label.
+    ///
+    /// The question and the per-option note are the MODEL's words, extracted from the screen, and they
+    /// arrive in the account's language because <see cref="BuildMenuDetectPrompt"/> asks for them that
+    /// way. That is what stops a French reading from being a French frame around English content.
+    /// </summary>
+    public static string BuildMenuSpoken(SpokenLanguage language, WingmanMenu menu)
     {
+        ArgumentNullException.ThrowIfNull(language);
         var sb = new StringBuilder();
         if (!string.IsNullOrWhiteSpace(menu.Question)) sb.Append(menu.Question.Trim()).Append(' ');
         for (var i = 0; i < menu.Options.Count; i++)
         {
             var o = menu.Options[i];
-            sb.Append("Option ").Append(i + 1).Append(": ").Append(StripForSpeech(o.Key));
-            if (o.Recommended) sb.Append(" (recommended)");
-            sb.Append('.');
+            var sentence = o.Recommended ? SpokenPhrases.MenuOptionRecommended : SpokenPhrases.MenuOption;
+            sb.Append(sentence.In(language, i + 1, StripForSpeech(o.Key)));
             if (!string.IsNullOrWhiteSpace(o.Note)) sb.Append(' ').Append(o.Note!.Trim().TrimEnd('.')).Append('.');
             sb.Append(' ');
         }
         sb.Append(menu.SelectionMode == "multiple"
-            ? "Say which ones apply, then say done."
-            : "Say the number, or the option.");
+            ? SpokenPhrases.MenuAnswerMultiple.In(language)
+            : SpokenPhrases.MenuAnswerSingle.In(language));
         return sb.ToString().Trim();
     }
 

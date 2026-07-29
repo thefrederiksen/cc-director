@@ -1,3 +1,5 @@
+using CcDirector.Gateway.Speech;
+
 namespace CcDirector.Gateway.CarMode;
 
 /// <summary>
@@ -19,20 +21,39 @@ namespace CcDirector.Gateway.CarMode;
 /// </summary>
 public static class CarModeHelp
 {
-    /// <summary>The curated spoken explanation, read aloud verbatim by both help triggers. One or two short
-    ///  paragraphs of plain spoken prose - it names the two ways to talk to Car Mode, the key commands, a
-    ///  concrete relay example, how to end a turn, and that help is always available.</summary>
-    public const string Script =
-        "I'm your fleet manager, and you talk to me two ways. "
-        + "By default you command me - ask who needs you, read me the next one, snooze it, approve it, or remove it. "
-        + "To talk to a session instead, start with tell, answer, reply, or message, and name it - "
-        + "like, tell the devthrottle session to run the tests. Whatever you say after that goes straight into that session. "
-        + "Say over and out when you're done, and ask for help any time.";
+    /// <summary>
+    /// The curated spoken explanation, read aloud verbatim by both help triggers. One or two short
+    /// paragraphs of plain spoken prose - it names the two ways to talk to Car Mode, the key commands, a
+    /// concrete relay example, how to end a turn, and that help is always available.
+    ///
+    /// It became a method in issue #1009. It is SPOKEN, so it is spoken in the account's language, and
+    /// the words themselves live with every other fixed spoken sentence in
+    /// <see cref="SpokenPhrases.CarModeHelpScript"/>.
+    ///
+    /// <paramref name="endPhrase"/> is the tenant's CONFIGURED end phrase, and it is not translated. The
+    /// owner has to say that phrase for a turn to end and it is matched literally, so the help has to
+    /// teach the phrase that actually works. This also fixes a defect that predates the translation: the
+    /// script used to hardcode "over and out" while the phrase was a setting, so it taught the wrong word
+    /// to anyone who had changed it.
+    /// </summary>
+    public static string SpokenScript(SpokenLanguage language, string endPhrase)
+    {
+        ArgumentNullException.ThrowIfNull(language);
+        if (string.IsNullOrWhiteSpace(endPhrase))
+            throw new ArgumentException("The configured Car Mode end phrase is required - the spoken help "
+                + "quotes it, and a help script that omits it teaches no way to end a turn.", nameof(endPhrase));
+        return SpokenPhrases.CarModeHelpScript.In(language, endPhrase.Trim());
+    }
 
     /// <summary>The glanceable, on-screen version of the same content: the two addressing modes with a few
-    ///  example phrases each, plus how to end a turn and how to get help. Same words as <see cref="Script"/>,
-    ///  laid out so the owner can read it when stopped or learning (Architect decision 5: spoken primary,
-    ///  plus a small cheat-sheet). Kept simple on purpose.</summary>
+    ///  example phrases each, plus how to end a turn and how to get help. Same content as
+    ///  <see cref="SpokenScript"/>, laid out so the owner can read it when stopped or learning (Architect
+    ///  decision 5: spoken primary, plus a small cheat-sheet). Kept simple on purpose.
+    ///
+    ///  IT STAYS IN ENGLISH, deliberately. The mission translates what the product SAYS, not what it
+    ///  DISPLAYS - every other label, button and screen in the product is English, and translating this
+    ///  one card would read as a half-finished translation rather than a feature. If the interface is
+    ///  ever localized, this is one of the first things in it.</summary>
     public static readonly CarModeCheatSheet CheatSheet = new(
         Modes: new[]
         {

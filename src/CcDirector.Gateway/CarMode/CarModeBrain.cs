@@ -31,6 +31,7 @@ public sealed class CarModeBrain
     private readonly CarModePendingStore _pending;
     private readonly CarModeSubjectStore _subjects;
     private readonly Func<TenantId, SpokenLanguage> _languageFor;
+    private readonly Func<TenantId, string> _endPhraseFor;
     private readonly Action<string> _log;
     private readonly CarModeSurface _surface;
 
@@ -45,10 +46,15 @@ public sealed class CarModeBrain
     ///  a developer had to remember to pass. Now the compiler asks. Production wires
     ///  <c>TenantSettingsResolver.SpokenLanguage</c>; a test that does not care passes
     ///  <c>_ =&gt; SpokenLanguages.English</c>, which says so out loud.</param>
+    /// <param name="endPhraseFor">The tenant's configured phrase that ends a Car Mode turn, which the
+    ///  spoken help script quotes back (issue #1009). It is a SETTING and is never translated - it is
+    ///  matched literally when the owner says it, so teaching a translated phrase would teach a word
+    ///  that does not work. The help used to hardcode "over and out", which was already wrong for
+    ///  anyone who had changed the setting; translating it would only have made that worse.</param>
     /// <param name="surface">Which surface this brain instance speaks to. Car (the default) keeps the
     ///  hands-free one-or-two-sentence style; Desk (the cockpit Assistant screen) appends the desk-surface
     ///  overrides. Everything else - loop, tools, stores, model - is identical.</param>
-    public CarModeBrain(ICarModeChat chat, Func<string, ICarModeFleet> fleetForCaller, CarModeConversationStore conversations, CarModePendingStore pending, CarModeSubjectStore subjects, Func<TenantId, SpokenLanguage> languageFor, Action<string>? log = null, CarModeSurface surface = CarModeSurface.Car)
+    public CarModeBrain(ICarModeChat chat, Func<string, ICarModeFleet> fleetForCaller, CarModeConversationStore conversations, CarModePendingStore pending, CarModeSubjectStore subjects, Func<TenantId, SpokenLanguage> languageFor, Func<TenantId, string> endPhraseFor, Action<string>? log = null, CarModeSurface surface = CarModeSurface.Car)
     {
         _chat = chat ?? throw new ArgumentNullException(nameof(chat));
         _fleetForCaller = fleetForCaller ?? throw new ArgumentNullException(nameof(fleetForCaller));
@@ -56,6 +62,7 @@ public sealed class CarModeBrain
         _pending = pending ?? throw new ArgumentNullException(nameof(pending));
         _subjects = subjects ?? throw new ArgumentNullException(nameof(subjects));
         _languageFor = languageFor ?? throw new ArgumentNullException(nameof(languageFor));
+        _endPhraseFor = endPhraseFor ?? throw new ArgumentNullException(nameof(endPhraseFor));
         _log = log ?? FileLog.Write;
         // The system prompt is now built PER TURN rather than once in this constructor, because it
         // carries the account's language and the account is only known when a turn arrives. One brain
@@ -165,14 +172,14 @@ public sealed class CarModeBrain
             _pending.Clear(deviceKey);
             if (CarModeConfirm.IsAffirmative(userText))
             {
-                var (spokenDone, action) = await ExecuteConfirmedAsync(fleet, armed, timer, ct);
+                var (spokenDone, action) = await ExecuteConfirmedAsync(fleet, armed, language, timer, ct);
                 _conversations.Append(deviceKey, userText, spokenDone);
                 _log($"[CarModeBrain] confirmed {armed.Tool} for {armed.TargetName}");
                 return new CarModeTurnResponse { Spoken = spokenDone, Actions = new[] { action } };
             }
             if (CarModeConfirm.IsNegative(userText))
             {
-                var spokenCancel = $"Okay, I left {armed.TargetName} alone.";
+                var spokenCancel = SpokenPhrases.CarModeDeleteCancelled.In(language, armed.TargetName);
                 _conversations.Append(deviceKey, userText, spokenCancel);
                 _log($"[CarModeBrain] cancelled {armed.Tool} for {armed.TargetName}");
                 return new CarModeTurnResponse { Spoken = spokenCancel };
@@ -265,7 +272,7 @@ public sealed class CarModeBrain
                     // identical to what the Help button plays (GET /carmode/help), reliably complete, and it
                     // teaches the command-vs-relay addressing model. The model's job was only to classify the
                     // intent; the content is server-owned. This is terminal, like speak_answer.
-                    finalSpoken = CarModeHelp.Script;
+                    finalSpoken = CarModeHelp.SpokenScript(language, _endPhraseFor(tenant));
                     messages.Add(new { role = "tool", tool_call_id = call.Id, content = "{\"status\":\"spoken\"}" });
                     continue;
                 }
@@ -285,7 +292,7 @@ public sealed class CarModeBrain
 
         // The model never settled on an answer within the round cap: a loud, specific failure, not a guess.
         _log("[CarModeBrain] round cap reached without a final answer");
-        var giveUp = "I'm having trouble answering that right now. Please try again.";
+        var giveUp = SpokenPhrases.CarModeGiveUp.In(language);
         _conversations.Append(deviceKey, userText, giveUp);
         return new CarModeTurnResponse { Spoken = giveUp, Actions = actions, PendingConfirmation = armedThisTurn };
     }
@@ -535,13 +542,16 @@ public sealed class CarModeBrain
 
     /// <summary>Execute a destructive action the owner has just confirmed out loud, returning the spoken
     ///  acknowledgement and the action record. A fleet failure throws (a loud, specific, spoken failure).</summary>
-    private async Task<(string Spoken, CarModeActionRecord Action)> ExecuteConfirmedAsync(ICarModeFleet fleet, CarModePendingAction pending, TurnTimer timer, CancellationToken ct)
+    private async Task<(string Spoken, CarModeActionRecord Action)> ExecuteConfirmedAsync(ICarModeFleet fleet, CarModePendingAction pending, SpokenLanguage language, TurnTimer timer, CancellationToken ct)
     {
         switch (pending.Tool)
         {
             case "delete":
                 await timer.TimeFleetAsync(() => fleet.DeleteSessionAsync(pending.SessionId, ct));
-                return ($"Done. I deleted {pending.TargetName}.", new CarModeActionRecord("delete_session", $"Deleted {pending.TargetName}."));
+                // The SPOKEN half is translated; the action RECORD is not. The record is a machine-read
+                // audit line that lands in logs and diagnostics, and the accents ruling keeps those ASCII.
+                return (SpokenPhrases.CarModeDeleteDone.In(language, pending.TargetName),
+                    new CarModeActionRecord("delete_session", $"Deleted {pending.TargetName}."));
             default:
                 throw new InvalidOperationException($"Unknown pending action \"{pending.Tool}\".");
         }
@@ -645,7 +655,9 @@ public sealed class CarModeBrain
         + "\"what is it doing\", \"snooze it\", \"approve it\", \"remove it\" are all commands to YOU - you act "
         + "on the fleet yourself with the read and act tools.\n"
         + "- The owner is RELAYING words INTO a session ONLY when he starts with a relay verb - TELL, ANSWER, "
-        + "REPLY, MESSAGE, or SAY TO - AND aims it at a session (a name, or \"it\"/\"that one\"). Then call "
+        + "REPLY, MESSAGE, or SAY TO, or THE EQUIVALENT VERB IN WHATEVER LANGUAGE HE IS SPEAKING (the "
+        + "spoken help teaches these verbs in his own language, so that is what he will say) - AND aims it "
+        + "at a session (a name, or \"it\"/\"that one\"). Then call "
         + "message_session and send the words he gave, exactly. Examples: \"tell the devthrottle session to "
         + "run the tests\", \"answer it, yes go ahead\", \"reply to Local Files that it can continue\".\n"
         + "- \"Tell me\", \"read me\", \"give me\", \"show me\" are NOT relays - the target is YOU (\"me\"), so "

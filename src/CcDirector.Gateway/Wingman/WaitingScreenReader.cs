@@ -20,25 +20,18 @@ namespace CcDirector.Gateway.Wingman;
 /// </summary>
 internal static class WaitingScreenReader
 {
-    /// <summary>
-    /// What the wingman says when it will not answer because a menu owns the screen. The person is in
-    /// voice mode - possibly driving - so this states the situation and the ONE thing that unblocks it,
-    /// with no jargon and no option numbers (phase 1 does not read the options aloud).
-    /// </summary>
-    public const string MenuSpoken =
-        "This session is waiting on a menu, and I can't pick an option for you yet. "
-        + "Open the session in the Cockpit or on your machine and choose one, then I can carry on from here.";
+    // The two SPOKEN lines this reader used to hold as English constants moved to SpokenPhrases with
+    // issue #1009 - the product speaks them, so they exist in every language it speaks. They are
+    // SpokenPhrases.WaitingScreenMenu and SpokenPhrases.WaitingScreenMenuNarrationSuffix, and both are
+    // reached through a language resolved from the account's tenant.
 
-    /// <summary>The short line for a card or a toast - the same fact as <see cref="MenuSpoken"/>, sized
-    /// for a screen rather than a speaker.</summary>
+    /// <summary>The short line for a card or a toast - the same fact as
+    /// <see cref="Speech.SpokenPhrases.WaitingScreenMenu"/>, sized for a screen rather than a speaker.
+    /// It stays ENGLISH: the mission translates what the product SAYS, not what it DISPLAYS, and every
+    /// other label in the product is English.</summary>
     public const string MenuMessage =
         "This session is waiting on a menu. Open it in the Cockpit or on your machine and pick an option - "
         + "voice can't answer a menu yet.";
-
-    /// <summary>The sentence appended to a turn's spoken narration when the turn ended on a menu, so the
-    /// person hears it as the turn is read out instead of discovering it when their reply goes nowhere.</summary>
-    public const string MenuNarrationSuffix =
-        " Heads up - this session is now waiting on a menu, so you'll need to open it and pick an option; I can't answer that by voice yet.";
 
     /// <summary>
     /// Read the live screen grid for <paramref name="sid"/> and classify it. A read that throws, or that

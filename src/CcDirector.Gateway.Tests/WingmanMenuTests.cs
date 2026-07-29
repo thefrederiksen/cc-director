@@ -1,3 +1,4 @@
+using CcDirector.Gateway.Speech;
 using CcDirector.Gateway.Wingman;
 using Xunit;
 
@@ -259,10 +260,13 @@ public sealed class WingmanMenuTests
     [Fact]
     public void BuildMenuSpoken_ReadsQuestionOptionsAndHowToAnswer()
     {
-        var s = WingmanTranslator.BuildMenuSpoken(PermissionMenu());
+        var s = WingmanTranslator.BuildMenuSpoken(SpokenLanguages.English, PermissionMenu());
         Assert.Contains("Do you want to proceed?", s);
         Assert.Contains("Option 1: Yes", s);              // the leading "1." marker is stripped for speech
-        Assert.Contains("(recommended)", s);
+        // The recommendation is now a WHOLE SENTENCE rather than a "(recommended)" tag welded onto the
+        // end of the option line (issue #1009): where a recommendation goes, and how it agrees, is a
+        // per-language decision, and a tag glued on in code has already made it for English.
+        Assert.Contains("That is the recommended option.", s);
         Assert.Contains("Say the number", s);
     }
 }

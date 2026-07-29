@@ -69,28 +69,35 @@ public static class SpokenPaths
     };
 
     /// <summary>
-    /// Prompt builders in the Gateway that are DELIBERATELY not spoken paths, each named as
+    /// <summary>
+    /// SPOKEN-FIELD paths: the output as a whole is machine-read, but named FIELDS inside it are read
+    /// aloud verbatim. They carry <see cref="SpeechContract.SpeakInLanguageRule"/> and NOT the whole
+    /// contract, because "output plain spoken prose only, no formatting characters" would break the
+    /// envelope the machine parses.
+    ///
+    /// This category exists because the alternative was worse in both directions. Applying the full
+    /// contract would have broken menu handling, which decides whether a keypress lands in somebody's
+    /// terminal. Applying nothing left a French account hearing a French frame wrapped around an English
+    /// question - the "English fragment in a French session" the owner ruled out on issue #1009.
+    /// </summary>
+    public static readonly IReadOnlyList<SpokenPath> SpokenFieldPaths = new[]
+    {
+        new SpokenPath(
+            "menu reading, extracted fields (WingmanTranslator.DetectMenuAsync)",
+            "WingmanTranslator.BuildMenuDetectPrompt",
+            language => WingmanTranslator.BuildMenuDetectPrompt(language, "1. Yes  2. No")),
+    };
+
+    /// <summary>
+    /// Prompt builders in the Gateway that are DELIBERATELY not spoken at all, each named as
     /// <c>TypeName.MethodName</c> with the reason. The completeness guard reads this list, so adding an
     /// entry here is a one-line, review-visible act - the same shape the tenant-isolation gate uses for
-    /// its global-table allowlist. There is no silent third category.
+    /// its global-table allowlist. There is no silent fourth category.
     ///
-    /// Every entry below produces MACHINE-READ text, and appending "output plain spoken prose only" to
-    /// any of them would break the thing that reads it. The menu pair matters most: menu handling
-    /// decides whether a keypress is sent into somebody's terminal, which is not a place to be clever.
-    ///
-    /// THE HONEST GAP, WRITTEN DOWN RATHER THAN HIDDEN: the menu-detect prompt returns a <c>question</c>
-    /// and per-option <c>note</c> that ARE later spoken, by <c>WingmanTranslator.BuildMenuSpoken</c>,
-    /// which also glues fixed English words ("Option one", "recommended", "Say the number, or the
-    /// option") around them. That whole path is still English today. It is issue #1009's work - the
-    /// issue names <c>BuildMenuSpoken</c> explicitly and says it must be restructured to select whole
-    /// translated sentences rather than assemble fragments - and it is listed here so that nobody reads
-    /// this file and concludes the product is fully covered when it is not yet.
+    /// Both entries produce MACHINE-READ text, and nothing they produce ever reaches a person's ears.
     /// </summary>
     public static readonly IReadOnlyDictionary<string, string> NotSpokenOutput = new Dictionary<string, string>(StringComparer.Ordinal)
     {
-        ["WingmanTranslator.BuildMenuDetectPrompt"] =
-            "Returns JSON for the menu machinery to parse, not words to say. Its question/note fields are "
-            + "spoken later through BuildMenuSpoken and are still English - issue #1009.",
         ["WingmanTranslator.BuildMenuMapPrompt"] =
             "Returns a single option number for code to act on. Nothing it produces is ever spoken.",
         ["DictionarySuggestionScreen.BuildPrompt"] =

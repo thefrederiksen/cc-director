@@ -1,3 +1,5 @@
+using CcDirector.Gateway.Speech;
+
 namespace CcDirector.Gateway.Wingman;
 
 /// <summary>
@@ -39,27 +41,29 @@ internal static class NarrationText
     /// </summary>
     public const int MaxChars = 12_000;
 
-    /// <summary>What the listener hears instead of being cut off mid-word in silence. Plain spoken
-    /// prose, no markup - it is appended to text going straight to synthesis.</summary>
-    private const string CutNotice =
-        " That is as much as I can read out. This summary was too long, so the rest is not spoken - "
-        + "open the session to read the full reply.";
+    // What the listener hears instead of being cut off mid-word in silence lives with every other
+    // fixed spoken sentence, in SpokenPhrases.NarrationCutNotice (issue #1009) - it is SPOKEN, so it is
+    // spoken in the account's language. Telling someone in English that their French summary was cut is
+    // the exact "English fragment in a French session" the owner ruled out.
 
     /// <summary>
     /// Bound <paramref name="text"/> for synthesis. Returns the text unchanged when it is within
     /// <see cref="MaxChars"/>. Otherwise it cuts at the last sentence end (falling back to a word
-    /// boundary, never mid-word) and appends <see cref="CutNotice"/> so the cut is AUDIBLE.
+    /// boundary, never mid-word) and appends <see cref="SpokenPhrases.NarrationCutNotice"/>, in the
+    /// account's language, so the cut is AUDIBLE.
     /// </summary>
     /// <param name="wasCut">True when the text was shortened - the caller should say so in its log,
     /// because a cut is a defect worth seeing, not routine.</param>
-    public static string LimitForSpeech(string? text, out bool wasCut)
+    public static string LimitForSpeech(string? text, SpokenLanguage language, out bool wasCut)
     {
+        ArgumentNullException.ThrowIfNull(language);
         wasCut = false;
         if (string.IsNullOrEmpty(text) || text.Length <= MaxChars) return text ?? "";
 
         wasCut = true;
+        var cutNotice = SpokenPhrases.NarrationCutNotice.In(language);
         // Leave room for the notice so the result stays near the ceiling the deadline is derived from.
-        var budget = MaxChars - CutNotice.Length;
+        var budget = MaxChars - cutNotice.Length;
         var head = text[..budget];
 
         // Prefer the last sentence end, so the listener hears a whole thought before being told the
@@ -67,14 +71,14 @@ internal static class NarrationText
         // for pages would be cut absurdly short.
         var lastStop = head.LastIndexOfAny(new[] { '.', '!', '?' });
         if (lastStop >= budget * 2 / 3)
-            return head[..(lastStop + 1)] + CutNotice;
+            return head[..(lastStop + 1)] + cutNotice;
 
         // No usable sentence end: fall back to the last word boundary. Never cut mid-word - that is
         // the old behaviour, and it is what made the truncation sound like a crash.
         var lastSpace = head.LastIndexOf(' ');
         if (lastSpace >= budget * 2 / 3)
-            return head[..lastSpace].TrimEnd() + CutNotice;
+            return head[..lastSpace].TrimEnd() + cutNotice;
 
-        return head.TrimEnd() + CutNotice;
+        return head.TrimEnd() + cutNotice;
     }
 }

@@ -912,7 +912,7 @@ public sealed class WingmanVoiceService
             var spoken = t.Spoken;
             if (await WaitingScreenReader.IsMenuAsync(route, sid, ct))
             {
-                spoken += WaitingScreenReader.MenuNarrationSuffix;
+                spoken += Speech.SpokenPhrases.WaitingScreenMenuNarrationSuffix.In(_tenantSettings.SpokenLanguage(tenant));
                 FileLog.Write($"[WingmanVoiceService] narration announces a waiting menu: sid={sid}");
             }
             await StoreSpokenAsync(tenant, sid, spoken, lastReply, ct);
@@ -980,7 +980,7 @@ public sealed class WingmanVoiceService
         // has none, months after we stopped calling OpenAI. The real length control is now the
         // wingman's own instructions (a ~30-second spoken budget) - a summary is short because we
         // asked for a summary, not because we cut an essay in half.
-        var input = NarrationText.LimitForSpeech(text, out var wasCut);
+        var input = NarrationText.LimitForSpeech(text, _tenantSettings.SpokenLanguage(tenant), out var wasCut);
         if (wasCut)
             FileLog.Write($"[WingmanVoiceService] narration EXCEEDED {NarrationText.MaxChars} chars " +
                           $"({text.Length}) - spoken text cut and the listener told. The wingman is not summarising.");

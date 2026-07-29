@@ -63,6 +63,32 @@ public sealed class SpokenLanguageContractTests
     }
 
     /// <summary>
+    /// A SPOKEN-FIELD path carries the language rule, and deliberately NOT the plain-prose rule.
+    ///
+    /// Both halves are load-bearing and they pull against each other. Without the language rule, a French
+    /// account hears a French frame wrapped around an English question - the "English fragment in a French
+    /// session" the owner ruled out. With the prose rule, "output no formatting characters at all" would
+    /// break the JSON envelope the menu machinery parses, and menu handling decides whether a keypress
+    /// lands in somebody's terminal.
+    ///
+    /// Revert-proof both ways: drop the language rule and the first assertion goes red; append the whole
+    /// contract instead and the second does.
+    /// </summary>
+    [Fact]
+    public void Every_spoken_field_path_carries_the_language_rule_but_not_the_prose_rule()
+    {
+        Assert.NotEmpty(SpokenPaths.SpokenFieldPaths);
+
+        foreach (var path in SpokenPaths.SpokenFieldPaths)
+        foreach (var language in SpokenLanguages.All)
+        {
+            var prompt = path.Render(language);
+            Assert.Contains(SpeechContract.SpeakInLanguageRule(language), prompt);
+            Assert.DoesNotContain(SpeechContract.PlainSpokenProseRule, prompt);
+        }
+    }
+
+    /// <summary>
     /// The language actually CHANGES the prompt. Without this, a contract that silently rendered the same
     /// English text for all three languages would pass the test above and prove nothing.
     /// </summary>
@@ -143,7 +169,7 @@ public sealed class SpokenLanguageContractTests
         var chat = new RecordingChat("Trois sessions vous attendent.");
         var brain = new CarModeBrain(
             chat, _ => new UnusedFleet(), new CarModeConversationStore(), new CarModePendingStore(_ => { }),
-            new CarModeSubjectStore(_ => { }), _ => SpokenLanguages.French, _ => { }, surface);
+            new CarModeSubjectStore(_ => { }), _ => SpokenLanguages.French, _ => "over and out", _ => { }, surface);
 
         await brain.RunTurnAsync(TenantId.Local, "device-a", "who needs me", CancellationToken.None);
 
@@ -186,7 +212,7 @@ public sealed class SpokenLanguageContractTests
         var chat = new RecordingChat("**Three sessions** need you.\n- the first one\n## Next steps");
         var brain = new CarModeBrain(
             chat, _ => new UnusedFleet(), new CarModeConversationStore(), new CarModePendingStore(_ => { }),
-            new CarModeSubjectStore(_ => { }), _ => SpokenLanguages.English, _ => { });
+            new CarModeSubjectStore(_ => { }), _ => SpokenLanguages.English, _ => "over and out", _ => { });
 
         var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "who needs me", CancellationToken.None);
 
@@ -304,7 +330,8 @@ public sealed class SpokenLanguageContractTests
     [Fact]
     public void Every_prompt_builder_in_the_gateway_is_registered_or_named_as_not_spoken()
     {
-        var registered = SpokenPaths.All.Select(p => p.Builder).ToHashSet(StringComparer.Ordinal);
+        var registered = SpokenPaths.All.Concat(SpokenPaths.SpokenFieldPaths)
+            .Select(p => p.Builder).ToHashSet(StringComparer.Ordinal);
         var unaccounted = new List<string>();
 
         foreach (var builder in AllPromptBuilders())
@@ -329,6 +356,7 @@ public sealed class SpokenLanguageContractTests
     {
         var declared = AllPromptBuilders();
         var claimed = SpokenPaths.All.Select(p => p.Builder)
+            .Concat(SpokenPaths.SpokenFieldPaths.Select(p => p.Builder))
             .Concat(SpokenPaths.NotSpokenOutput.Keys)
             .Distinct(StringComparer.Ordinal);
 
