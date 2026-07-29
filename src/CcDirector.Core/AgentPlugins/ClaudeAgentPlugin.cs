@@ -10,11 +10,11 @@ namespace CcDirector.Core.AgentPlugins;
 /// </summary>
 public sealed class ClaudeAgentPlugin : IAgentPlugin
 {
+    // Taken from the catalog rather than restated here: the catalog is the single place that decides
+    // an agent's permission presets and which one is the default. Two hand-kept copies is how the
+    // Codex default drifted from the intent in the first place.
     private static readonly IReadOnlyList<AgentCommandPreset> Presets =
-    [
-        new(AgentToolCatalog.ClaudeAutomaticPresetName, AgentToolCatalog.ClaudeSkipPermissionsArg),
-        new(AgentToolCatalog.StandardPresetName, ""),
-    ];
+        AgentToolCatalog.GetEntry(AgentKind.ClaudeCode).Presets;
 
     private static readonly AgentPluginSettingsMetadata SettingsMetadata = new(
         "Claude Code",

@@ -809,7 +809,9 @@ public sealed class GatewayHost : IAsyncDisposable
             new HostedAgentOptions
             {
                 WorkingDirectory = Path.Combine(CcStorage.Root(), "brain"),
-                AgentArgs = $"{ClaudeDriver.DefaultArgs} --model {BrainModel}",
+                // Headless: the brain has no human to answer a permission prompt, so it takes the
+                // full bypass rather than the interactive automatic default (see ClaudeDriver).
+                AgentArgs = $"{ClaudeDriver.HeadlessDefaultArgs} --model {BrainModel}",
                 Log = FileLog.Write,
             },
             // Construct the hosted brain through HostedAgent.For - the single guard for which agent kinds

@@ -9,7 +9,7 @@ namespace CcDirector.Core.Tests.Configuration;
 /// Tests for <see cref="AgentLaunchDefaults.ResolveDefaultArgs"/> (issue #1017): a session created
 /// via the Control API / CLI with no explicit args must inherit the SAME default agent settings the
 /// desktop New Session dialog applies - the selected entry's preset and default model PLUS the
-/// dialog's Bypass-permissions default (ON) - so it is not born prompting for approval on
+/// dialog's run-without-approval default (ON) - so it is not born prompting for approval on
 /// everything. Shares an isolated CC_DIRECTOR_ROOT (xUnit runs a class's methods sequentially) via
 /// the CcStorageRoot collection, mirroring AgentEntryTests.
 /// </summary>
@@ -17,7 +17,9 @@ namespace CcDirector.Core.Tests.Configuration;
 public sealed class AgentLaunchDefaultsTests : IDisposable
 {
     private const string ClaudeSkip = "--dangerously-skip-permissions";
+    private const string ClaudeAuto = "--permission-mode auto";
     private const string CopilotAllow = "--allow-all";
+    private const string CodexFullAccess = "--dangerously-bypass-approvals-and-sandbox";
 
     private readonly string _root;
     private readonly string? _prevRoot;
@@ -48,8 +50,8 @@ public sealed class AgentLaunchDefaultsTests : IDisposable
     public void ResolveDefaultArgs_ClaudeStandardEntry_AppliesBypassDefault()
     {
         // The user configured the Standard (permission-prompting) preset, but the dialog's
-        // Bypass-permissions checkbox defaults to ON, so a UI-created session launches bypassed.
-        // A spawned session with no args must match: Standard preset (no args) + the bypass flag.
+        // run-without-approval checkbox defaults to ON, so a UI-created session launches unattended.
+        // A spawned session with no args must match: Standard preset (no args) + the automatic mode.
         SeedConfig("""
         {
           "agent": {
@@ -63,14 +65,14 @@ public sealed class AgentLaunchDefaultsTests : IDisposable
 
         var args = AgentLaunchDefaults.ResolveDefaultArgs(AgentKind.ClaudeCode, new AgentOptions());
 
-        Assert.Equal(ClaudeSkip, args);
+        Assert.Equal(ClaudeAuto, args);
     }
 
     [Fact]
-    public void ResolveDefaultArgs_ClaudeAutomaticEntry_DoesNotDoubleBypass()
+    public void ResolveDefaultArgs_ClaudeLegacyAutomaticEntry_KeepsSkipPermissions()
     {
-        // The "Automatic (skip permissions)" preset already carries the bypass flag; the default
-        // must not append a second copy.
+        // "Automatic (skip permissions)" is the OLD label for the skip-permissions preset. Nothing
+        // is migrated: the entry keeps the flag it always had, and nothing is appended on top.
         SeedConfig("""
         {
           "agent": {
@@ -85,10 +87,33 @@ public sealed class AgentLaunchDefaultsTests : IDisposable
         var args = AgentLaunchDefaults.ResolveDefaultArgs(AgentKind.ClaudeCode, new AgentOptions());
 
         Assert.Equal(ClaudeSkip, args);
+        Assert.DoesNotContain(ClaudeAuto, args);
     }
 
     [Fact]
-    public void ResolveDefaultArgs_ClaudeStandardWithModel_IncludesModelAndBypass()
+    public void ResolveDefaultArgs_ClaudeSkipPermissionsEntry_KeepsIt_AndDoesNotAddAutomatic()
+    {
+        // A deliberate "Skip permissions" choice is preserved exactly - the unattended default must
+        // not bolt --permission-mode auto onto a line that already settles the question.
+        SeedConfig("""
+        {
+          "agent": {
+            "entries": [
+              { "type": "ClaudeCode", "enabled": true, "executable_path": "C:/tools/claude.cmd",
+                "preset_id": "Skip permissions", "launch_mode": "Guided" }
+            ]
+          }
+        }
+        """);
+
+        var args = AgentLaunchDefaults.ResolveDefaultArgs(AgentKind.ClaudeCode, new AgentOptions());
+
+        Assert.Equal(ClaudeSkip, args);
+        Assert.DoesNotContain(ClaudeAuto, args);
+    }
+
+    [Fact]
+    public void ResolveDefaultArgs_ClaudeStandardWithModel_IncludesModelAndUnattended()
     {
         // Mirrors the real desktop default: Standard preset + a default model + the bypass default,
         // so a spawned session runs on the chosen model (not the 200K bare default) AND is usable
@@ -107,7 +132,7 @@ public sealed class AgentLaunchDefaultsTests : IDisposable
         var args = AgentLaunchDefaults.ResolveDefaultArgs(AgentKind.ClaudeCode, new AgentOptions());
 
         Assert.Contains("--model opus[1m]", args);
-        Assert.Contains(ClaudeSkip, args);
+        Assert.Contains(ClaudeAuto, args);
     }
 
     [Fact]
@@ -131,6 +156,109 @@ public sealed class AgentLaunchDefaultsTests : IDisposable
 
         Assert.Contains("--model opus[1m]", args);
         Assert.DoesNotContain(ClaudeSkip, args);
+        Assert.DoesNotContain(ClaudeAuto, args);
+    }
+
+    [Fact]
+    public void ResolveDefaultArgs_CodexBypassPermissionsFalse_LaunchesWithoutFullAccess()
+    {
+        // The refusal direction of the same switch: declining unattended permissions must actually
+        // withhold the flag, or the parameter is decorative in the other direction.
+        SeedConfig("""
+        {
+          "agent": {
+            "entries": [
+              { "type": "Codex", "enabled": true, "executable_path": "C:/tools/codex.cmd",
+                "preset_id": "Standard", "launch_mode": "Guided" }
+            ]
+          }
+        }
+        """);
+
+        var args = AgentLaunchDefaults.ResolveDefaultArgs(AgentKind.Codex, new AgentOptions(), bypassPermissions: false);
+
+        Assert.Equal("", args);
+    }
+
+    [Fact]
+    public void ResolveDefaultArgs_GeminiStandardEntry_AppliesYolo()
+    {
+        SeedConfig("""
+        {
+          "agent": {
+            "entries": [
+              { "type": "Gemini", "enabled": true, "executable_path": "C:/tools/gemini.cmd",
+                "preset_id": "Standard", "launch_mode": "Guided" }
+            ]
+          }
+        }
+        """);
+
+        var args = AgentLaunchDefaults.ResolveDefaultArgs(AgentKind.Gemini, new AgentOptions());
+
+        Assert.Equal("--yolo", args);
+    }
+
+    [Fact]
+    public void ResolveDefaultArgs_GrokStandardEntry_AppliesAlwaysApprove()
+    {
+        SeedConfig("""
+        {
+          "agent": {
+            "entries": [
+              { "type": "Grok", "enabled": true, "executable_path": "C:/tools/grok.exe",
+                "preset_id": "Standard", "launch_mode": "Guided" }
+            ]
+          }
+        }
+        """);
+
+        var args = AgentLaunchDefaults.ResolveDefaultArgs(AgentKind.Grok, new AgentOptions());
+
+        Assert.Equal("--always-approve", args);
+    }
+
+    [Fact]
+    public void ResolveDefaultArgs_PiEntry_StaysEmpty_BecausePiHasNoSuchFlag()
+    {
+        // Pi's --approve only trusts project-local files; it is not an approval bypass. Inventing a
+        // flag here would launch Pi with an argument it does not understand.
+        SeedConfig("""
+        {
+          "agent": {
+            "entries": [
+              { "type": "Pi", "enabled": true, "executable_path": "C:/tools/pi.exe",
+                "preset_id": "Standard", "launch_mode": "Guided" }
+            ]
+          }
+        }
+        """);
+
+        var args = AgentLaunchDefaults.ResolveDefaultArgs(AgentKind.Pi, new AgentOptions());
+
+        Assert.Equal("", args);
+    }
+
+    [Fact]
+    public void ResolveDefaultArgs_CustomLaunchModeOverride_IsNeverAmended()
+    {
+        // A hand-written command line is the user's own; the unattended default must not append to
+        // it even when it carries no permission flag we recognize.
+        SeedConfig("""
+        {
+          "agent": {
+            "entries": [
+              { "type": "Codex", "enabled": true, "executable_path": "C:/tools/codex.cmd",
+                "preset_id": "Standard", "args_override": "--sandbox read-only",
+                "launch_mode": "Custom" }
+            ]
+          }
+        }
+        """);
+
+        var args = AgentLaunchDefaults.ResolveDefaultArgs(AgentKind.Codex, new AgentOptions());
+
+        Assert.Equal("--sandbox read-only", args);
     }
 
     [Fact]
@@ -159,7 +287,7 @@ public sealed class AgentLaunchDefaultsTests : IDisposable
         Assert.Contains("--model sonnet", args);
         Assert.DoesNotContain("opus", args);
         Assert.DoesNotContain("haiku", args);
-        Assert.Contains(ClaudeSkip, args);
+        Assert.Contains(ClaudeAuto, args);
     }
 
     [Fact]
@@ -180,7 +308,7 @@ public sealed class AgentLaunchDefaultsTests : IDisposable
 
         var args = AgentLaunchDefaults.ResolveDefaultArgs(AgentKind.ClaudeCode, new AgentOptions());
 
-        Assert.Equal(ClaudeSkip, args);
+        Assert.Equal(ClaudeAuto, args);
     }
 
     [Fact]
@@ -205,10 +333,12 @@ public sealed class AgentLaunchDefaultsTests : IDisposable
     }
 
     [Fact]
-    public void ResolveDefaultArgs_CodexEntry_NoBypassFlag()
+    public void ResolveDefaultArgs_CodexStandardEntry_AppliesFullAccess()
     {
-        // Codex has no permission-bypass flag, so the default is just its preset (Standard = empty).
-        // This confirms the bypass default is applied only to kinds that actually have such a flag.
+        // THE REGRESSION TEST. This previously asserted "" and was titled NoBypassFlag, on the false
+        // premise that Codex has no permission flag - so a Codex session spawned by an agent launched
+        // sandboxed and prompted on every tool call while the log claimed defaults had been applied.
+        // An entry left on Standard must still come up able to work unattended.
         SeedConfig("""
         {
           "agent": {
@@ -222,15 +352,14 @@ public sealed class AgentLaunchDefaultsTests : IDisposable
 
         var args = AgentLaunchDefaults.ResolveDefaultArgs(AgentKind.Codex, new AgentOptions());
 
-        Assert.Equal("", args);
+        Assert.Equal(CodexFullAccess, args);
     }
 
     [Fact]
     public void ResolveDefaultArgs_NoEntryForKind_FallsBackToCatalogDefaultPreset()
     {
         // Codex is not in the configured library, so there is no entry to read. The per-tool config
-        // load then supplies the catalog default preset (Codex's default is Standard = no args), and
-        // Codex has no bypass flag, so the result is empty.
+        // load then supplies the catalog default preset, which is now Full access.
         SeedConfig("""
         {
           "agent": {
@@ -244,7 +373,7 @@ public sealed class AgentLaunchDefaultsTests : IDisposable
 
         var args = AgentLaunchDefaults.ResolveDefaultArgs(AgentKind.Codex, new AgentOptions());
 
-        Assert.Equal("", args);
+        Assert.Equal(CodexFullAccess, args);
     }
 
     [Fact]

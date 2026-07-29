@@ -634,21 +634,20 @@ public partial class NewSessionDialog : Window
         var entry = SelectedAgentEntry;
         var agentKind = entry?.Type ?? AgentKind.ClaudeCode;
 
-        // The Bypass-permissions checkbox maps to each agent's permission-bypass flag:
-        // Claude's --dangerously-skip-permissions, Cursor's --force (issue #517), and GitHub
-        // Copilot's --allow-all (issue #625). It is enabled for those agents and disabled (with a
-        // neutral label) for agents that have no such per-session flag, so the UI never misleads.
-        var isClaude = agentKind == AgentKind.ClaudeCode;
-        var isCursor = agentKind == AgentKind.Cursor;
-        var isCopilot = agentKind == AgentKind.Copilot;
+        // The run-without-approval checkbox maps to each agent's unattended-permission flag, which
+        // the catalog owns per agent (Claude --permission-mode auto, Codex
+        // --dangerously-bypass-approvals-and-sandbox, Gemini --yolo, Grok --always-approve, Cursor
+        // --force, Copilot --allow-all). It is enabled for every agent that HAS one and shows the
+        // exact flag, so the checkbox never claims something the launch will not do. Pi and OpenCode
+        // have no such flag, so it is disabled with a label that says why rather than a promise the
+        // launch cannot keep.
+        var unattendedArg = AgentToolCatalog.UnattendedPermissionArg(agentKind);
         if (BypassPermissionsCheckBox is not null)
         {
-            BypassPermissionsCheckBox.IsEnabled = isClaude || isCursor || isCopilot;
-            BypassPermissionsCheckBox.Content = isCursor
-                ? "Bypass permission prompts (--force)"
-                : isCopilot
-                    ? "Bypass permission prompts (--allow-all)"
-                    : "Bypass permission prompts";
+            BypassPermissionsCheckBox.IsEnabled = unattendedArg is not null;
+            BypassPermissionsCheckBox.Content = unattendedArg is not null
+                ? $"Run without approval prompts ({unattendedArg})"
+                : "Run without approval prompts (this agent has no such option)";
         }
 
         // Show the custom-CLI command/args panel only when a Custom CLI entry is selected, and

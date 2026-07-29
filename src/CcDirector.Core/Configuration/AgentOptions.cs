@@ -8,10 +8,10 @@ public class AgentOptions
     public string ClaudePath { get; set; } = "claude";
 
     /// <summary>
-    /// Default extra command-line arguments for Claude Code. The recommended default is the
-    /// STANDARD command line (no <c>--dangerously-skip-permissions</c>) so a freshly configured
-    /// Claude launches with the safe, permission-prompting behavior (issue #391). The
-    /// "Automatic (skip permissions)" preset is opt-in via the Tools page, never the default.
+    /// Default extra command-line arguments for Claude Code. Empty here: the permission posture is
+    /// decided by the agent entry's preset (whose catalog default is "Automatic",
+    /// <c>--permission-mode auto</c>), not by this field. It stays for callers that pin an explicit
+    /// argument string of their own.
     /// </summary>
     public string DefaultClaudeArgs { get; set; } = "";
     public int DefaultBufferSizeBytes { get; set; } = 2_097_152; // 2 MB

@@ -8,19 +8,19 @@ namespace CcDirector.Core.Tests.Configuration;
 public class AgentToolConfigTests
 {
     [Fact]
-    public void FromCatalogDefaults_Claude_IsAutomaticEnabledWithSkipPermissions()
+    public void FromCatalogDefaults_Claude_IsAutomaticEnabledWithAutomaticMode()
     {
-        // Issue #436 (supersedes #391): a fresh Claude config defaults to Automatic.
+        // A fresh Claude config defaults to Automatic (--permission-mode auto), not to bypass.
         var config = AgentToolConfig.FromCatalogDefaults(AgentKind.ClaudeCode);
 
         Assert.Equal(AgentToolCatalog.ClaudeAutomaticPresetName, config.PresetName);
         Assert.True(config.Enabled);
         Assert.Equal("", config.ArgsOverride);
-        Assert.Equal(AgentToolCatalog.ClaudeSkipPermissionsArg, config.ResolveEffectiveArguments());
+        Assert.Equal(AgentToolCatalog.ClaudeAutomaticModeArg, config.ResolveEffectiveArguments());
     }
 
     [Fact]
-    public void ResolveEffectiveArguments_AutomaticPreset_AddsSkipPermissions()
+    public void ResolveEffectiveArguments_AutomaticPreset_AddsAutomaticMode()
     {
         var config = new AgentToolConfig
         {
@@ -28,7 +28,7 @@ public class AgentToolConfigTests
             PresetName = AgentToolCatalog.ClaudeAutomaticPresetName,
         };
 
-        Assert.Equal(AgentToolCatalog.ClaudeSkipPermissionsArg, config.ResolveEffectiveArguments());
+        Assert.Equal(AgentToolCatalog.ClaudeAutomaticModeArg, config.ResolveEffectiveArguments());
     }
 
     [Fact]
@@ -54,9 +54,9 @@ public class AgentToolConfigTests
             PresetName = "no-such-preset",
         };
 
-        // Falls back to the catalog default preset (issue #436: Automatic = skip-permissions),
+        // Falls back to the catalog default preset (Automatic = --permission-mode auto),
         // never throwing.
-        Assert.Equal(AgentToolCatalog.ClaudeSkipPermissionsArg, config.ResolveEffectiveArguments());
+        Assert.Equal(AgentToolCatalog.ClaudeAutomaticModeArg, config.ResolveEffectiveArguments());
     }
 
     [Fact]
@@ -72,7 +72,7 @@ public class AgentToolConfigTests
     }
 
     [Fact]
-    public void ResolveEffectiveCommandLineArguments_AutomaticPreset_HasSkipPermissions()
+    public void ResolveEffectiveCommandLineArguments_AutomaticPreset_HasAutomaticMode()
     {
         var config = new AgentToolConfig
         {
@@ -80,7 +80,7 @@ public class AgentToolConfigTests
             PresetName = AgentToolCatalog.ClaudeAutomaticPresetName,
         };
 
-        Assert.Equal(AgentToolCatalog.ClaudeSkipPermissionsArg, config.ResolveEffectiveCommandLineArguments());
+        Assert.Equal(AgentToolCatalog.ClaudeAutomaticModeArg, config.ResolveEffectiveCommandLineArguments());
     }
 
     [Fact]
@@ -101,9 +101,9 @@ public class AgentToolConfigTests
         var config = AgentToolConfig.FromCatalogDefaults(AgentKind.Codex);
 
         Assert.Equal(AgentKind.Codex, config.Tool);
-        Assert.Equal(AgentToolCatalog.StandardPresetName, config.PresetName);
+        Assert.Equal(AgentToolCatalog.CodexFullAccessPresetName, config.PresetName);
         Assert.Equal("", config.DefaultModel);
-        Assert.Equal("", config.ResolveEffectiveCommandLineArguments());
+        Assert.Equal(AgentToolCatalog.CodexFullAccessArg, config.ResolveEffectiveCommandLineArguments());
     }
 
     [Fact]
@@ -116,7 +116,7 @@ public class AgentToolConfigTests
             DefaultModel = "opus",
         };
 
-        Assert.Equal($"{AgentToolCatalog.ClaudeSkipPermissionsArg} --model opus", config.ResolveEffectiveCommandLineArguments());
+        Assert.Equal($"{AgentToolCatalog.ClaudeAutomaticModeArg} --model opus", config.ResolveEffectiveCommandLineArguments());
     }
 
     [Fact]
@@ -193,7 +193,7 @@ public class AgentToolConfigTests
         };
 
         Assert.Equal(
-            $"{AgentToolCatalog.ClaudeSkipPermissionsArg} --model opus[1m]",
+            $"{AgentToolCatalog.ClaudeAutomaticModeArg} --model opus[1m]",
             config.ResolveEffectiveCommandLineArguments());
     }
 
@@ -219,7 +219,7 @@ public class AgentToolConfigTests
             Assert.Equal(AgentToolCatalog.ClaudeAutomaticPresetName, loaded.PresetName);
             Assert.Equal("claude-opus-4", loaded.DefaultModel);
             Assert.False(loaded.Enabled);
-            Assert.Equal(AgentToolCatalog.ClaudeSkipPermissionsArg, loaded.ResolveEffectiveArguments());
+            Assert.Equal(AgentToolCatalog.ClaudeAutomaticModeArg, loaded.ResolveEffectiveArguments());
         }
         finally
         {
@@ -238,11 +238,11 @@ public class AgentToolConfigTests
         {
             var loaded = AgentToolConfig.Load(AgentKind.ClaudeCode);
 
-            // Issue #436: a fresh machine with no saved config now defaults to Automatic
+            // A fresh machine with no saved config defaults to Automatic
             // (skip permissions), enabled.
             Assert.Equal(AgentToolCatalog.ClaudeAutomaticPresetName, loaded.PresetName);
             Assert.True(loaded.Enabled);
-            Assert.Equal(AgentToolCatalog.ClaudeSkipPermissionsArg, loaded.ResolveEffectiveArguments());
+            Assert.Equal(AgentToolCatalog.ClaudeAutomaticModeArg, loaded.ResolveEffectiveArguments());
         }
         finally
         {

@@ -66,9 +66,15 @@ public sealed class AgentToolConfig
             return "";
 
         var plugin = AgentPluginRegistry.Get(Tool);
+
+        // A preset name persisted by an older build may have been renamed since; map it to the name
+        // this catalog uses so the entry resolves to the preset it MEANT, rather than dropping
+        // through to the default below - which would be silent and indistinguishable from a typo.
+        var presetName = AgentToolCatalog.CanonicalPresetName(Tool, PresetName ?? "");
+
         foreach (var preset in plugin.CommandPresets)
         {
-            if (string.Equals(preset.Name, PresetName, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(preset.Name, presetName, StringComparison.OrdinalIgnoreCase))
                 return preset.Arguments;
         }
 
