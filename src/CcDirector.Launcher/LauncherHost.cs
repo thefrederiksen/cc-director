@@ -22,6 +22,7 @@ namespace CcDirector.Launcher;
 ///   POST /director/start  -> start installed Director
 ///   POST /director/stop   -> stop installed Director
 ///   POST /director/restart -> restart installed Director
+///   POST /director/delete  -> {instance} -> stop, unregister and remove a named instance
 ///   POST /shutdown        -> quit the launcher
 ///
 /// Discovery: writes {port, token, pid} to
@@ -277,6 +278,32 @@ public sealed class LauncherHost : IAsyncDisposable
             var instance = await ReadInstanceAsync(ctx);
             await _directorSupervisor.RestartAsync(instance, ctx.RequestAborted);
             await ctx.Response.WriteAsJsonAsync(new { ok = true, action = "restarted", instance = Slug(instance) }, JsonOpts);
+        });
+
+        // POST /director/delete - {"instance": "<name>"} - stop it, unregister it, remove its data home.
+        // The default instance is refused: it is the machine's real Director.
+        app.MapPost("/director/delete", async (HttpContext ctx) =>
+        {
+            var instance = await ReadInstanceAsync(ctx);
+            if (instance is null)
+            {
+                ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await ctx.Response.WriteAsJsonAsync(new { error = "instance is required for delete" }, JsonOpts);
+                return;
+            }
+
+            try
+            {
+                var removed = await _directorSupervisor.DeleteAsync(instance, ctx.RequestAborted);
+                await ctx.Response.WriteAsJsonAsync(
+                    new { ok = true, action = "deleted", instance = Slug(instance), removed }, JsonOpts);
+            }
+            catch (InvalidOperationException ex)
+            {
+                // Refusing to delete the default is a caller error, not a fault - answer with the reason.
+                ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await ctx.Response.WriteAsJsonAsync(new { error = ex.Message }, JsonOpts);
+            }
         });
 
         // POST /shutdown - quit the launcher.

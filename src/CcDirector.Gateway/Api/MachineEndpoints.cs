@@ -30,6 +30,7 @@ namespace CcDirector.Gateway.Api;
 ///   POST /machines/{machine}/director/start         relay -> launcher POST /director/start
 ///   POST /machines/{machine}/director/stop          relay -> launcher POST /director/stop
 ///   POST /machines/{machine}/launch                 relay -> launcher POST /launch
+///   POST /machines/{machine}/delete-instance        relay -> launcher POST /director/delete
 ///   GET  /machines/{machine}/apps                   relay -> launcher GET /apps
 ///   GET  /machines/{machine}/files                  relay -> launcher GET /files
 ///
@@ -440,6 +441,15 @@ internal static class MachineEndpoints
         {
             FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/director/stop: caller={ctx.Connection.RemoteIpAddress}");
             return await RelayDirectorLifecycleAsync(machine, "stop", ctx, launchers, sendLauncherCommand, boundary, ct);
+        });
+
+        // POST /machines/{machine}/delete-instance - stop, unregister and remove a NAMED Director instance
+        // on that machine. Deliberately not a DELETE verb on a machine path: it removes one instance, not
+        // the machine, and a reader of the route table should not have to guess which.
+        app.MapPost("/{machine}/delete-instance", async (string machine, HttpContext ctx, CancellationToken ct) =>
+        {
+            FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/delete-instance: caller={ctx.Connection.RemoteIpAddress}");
+            return await RelayDirectorLifecycleAsync(machine, "delete", ctx, launchers, sendLauncherCommand, boundary, ct);
         });
 
         // POST /machines/{machine}/launch - relay a generic launch request to the launcher.

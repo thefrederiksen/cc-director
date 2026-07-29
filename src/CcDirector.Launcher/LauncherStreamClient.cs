@@ -137,6 +137,12 @@ public sealed class LauncherStreamClient : IAsyncDisposable
                     await _supervisor.RestartAsync(cmd.Instance);
                     return LauncherCommandResult.Ok();
 
+                case "director/delete":
+                    if (string.IsNullOrWhiteSpace(cmd.Instance))
+                        return LauncherCommandResult.Fail(LauncherCommandStatus.BadRequest, "instance is required for delete");
+                    await _supervisor.DeleteAsync(cmd.Instance);
+                    return LauncherCommandResult.Ok();
+
                 case "launch":
                 {
                     // The same resolution rule the loopback route uses, so a launch asked for over the stream

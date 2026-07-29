@@ -1,6 +1,7 @@
 using CcDirector.Core.Network;
 using System.Diagnostics;
 using System.Net.Http;
+using CcDirector.Core.Configuration;
 using CcDirector.Core.Instances;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
@@ -39,13 +40,30 @@ public sealed class DirectorSupervisor
 {
     private readonly InstallLayout _layout;
     private readonly HttpClient _http;
+    private readonly Func<(string Url, string Token)> _machineGateway;
 
     public DirectorSupervisor() : this(InstallLayout.Default()) { }
 
-    public DirectorSupervisor(InstallLayout layout)
+    public DirectorSupervisor(InstallLayout layout) : this(layout, null) { }
+
+    /// <param name="machineGateway">
+    /// How to find the gateway THIS MACHINE is connected to. A named instance created here inherits it, which
+    /// is what makes the new instance reachable: an instance with no gateway can be started and stopped and
+    /// then never talked to, which is not an instance anybody can use. The launcher runs at the shared root,
+    /// so its own configuration IS the machine's - the gateway that issued the create is the gateway the
+    /// instance gets. Injected so a test can supply one without a configured machine.
+    /// </param>
+    public DirectorSupervisor(InstallLayout layout, Func<(string Url, string Token)>? machineGateway)
     {
         _layout = layout ?? throw new ArgumentNullException(nameof(layout));
         _http = new HttpClient(GatewayHttp.Handler()) { Timeout = TimeSpan.FromSeconds(5) };
+        _machineGateway = machineGateway ?? DefaultMachineGateway;
+    }
+
+    private static (string Url, string Token) DefaultMachineGateway()
+    {
+        var config = GatewayConfig.Load();
+        return (config.Url ?? "", config.Token ?? "");
     }
 
     /// <summary>
@@ -90,6 +108,15 @@ public sealed class DirectorSupervisor
             return;
         }
 
+        // Starting a name nobody has used CREATES the instance - and it is created through the registry, not
+        // by letting the Director build a bare home for itself. That distinction is the whole difference
+        // between a usable instance and a useless one: the registry assigns it a port, records it so the
+        // launcher and every other instance can see it, and scaffolds its configuration with THIS MACHINE'S
+        // gateway. A Director started with a bare slug gets none of that - it comes up unregistered and
+        // connected to nothing, so it can be stopped and started and never actually talked to.
+        if (!IsDefaultSlug(slug))
+            slug = EnsureRegistered(slug);
+
         if (OperatingSystem.IsWindows())
         {
             var psi = new ProcessStartInfo
@@ -133,6 +160,57 @@ public sealed class DirectorSupervisor
             throw new InvalidOperationException($"/usr/bin/open exited with code {open.ExitCode} for: {DirectorExePath}");
 
         FileLog.Write($"[DirectorSupervisor] Start: /usr/bin/open accepted launch of {DirectorExePath} (instance={slug})");
+    }
+
+    /// <summary>
+    /// Make sure a named instance exists in the registry, creating it if it does not, and return the slug it
+    /// is actually registered under.
+    ///
+    /// The returned slug matters: the registry derives its own from the display name and makes it unique, so
+    /// it is the authority on what this instance is called. Assuming the caller's spelling would leave the
+    /// launcher starting one name and the Director registered under another.
+    /// </summary>
+    private string EnsureRegistered(string slug)
+    {
+        var existing = NamedInstanceRegistry.Get(slug);
+        if (existing is not null) return existing.Name;
+
+        var (url, token) = _machineGateway();
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            // No gateway on this machine to inherit. Creating anyway would produce exactly the unreachable
+            // instance this path exists to prevent, so it is refused with the reason rather than half-made.
+            throw new InvalidOperationException(
+                $"Cannot create instance '{slug}': this machine has no gateway configured, so the new " +
+                "instance would have nothing to connect to. Configure the machine's gateway first.");
+        }
+
+        var created = NamedInstanceRegistry.Create(slug, url, token);
+        FileLog.Write($"[DirectorSupervisor] EnsureRegistered: created instance slug={created.Name}, " +
+                      $"port={created.Port}, gateway={url}");
+        return created.Name;
+    }
+
+    /// <summary>
+    /// Delete a named instance: stop it if it is running, then remove its registration and its data home.
+    ///
+    /// It is stopped FIRST, and gracefully, because the alternative is deleting the data out from under a
+    /// live Director - which loses whatever it had not yet written and leaves it running against a home that
+    /// no longer exists. The default instance is refused by the registry; this is for the throwaway ones.
+    /// </summary>
+    /// <returns>True when an instance was removed; false when nothing by that name was registered.</returns>
+    public async Task<bool> DeleteAsync(string? instance, CancellationToken ct = default)
+    {
+        var slug = NormalizeSlug(instance);
+        FileLog.Write($"[DirectorSupervisor] DeleteAsync: instance={slug}");
+
+        if (IsDefaultSlug(slug))
+            throw new InvalidOperationException("The default instance cannot be deleted.");
+
+        await StopAsync(slug, ct);
+        var removed = NamedInstanceRegistry.Delete(slug);
+        FileLog.Write($"[DirectorSupervisor] DeleteAsync: instance={slug}, removed={removed}");
+        return removed;
     }
 
     /// <summary>
