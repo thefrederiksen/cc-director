@@ -59,20 +59,39 @@ public static class CodeFolderScout
                 candidates.Add(Path.Combine(home, name));
         }
 
-        if (OperatingSystem.IsWindows())
+        // Code kept OUTSIDE the home directory. This is not an edge case - it is where most of the
+        // repositories on the author's own machine live (C:\Repos, C:\ReposBPMN, C:\ReposFred, D:\Dev),
+        // and none of them would be found by the home-directory probes above.
+        //
+        // Both platforms get an arm. Windows sweeps the top level of every fixed drive; macOS has no
+        // drive letters, so the equivalents are the filesystem root (where a /Projects or /Code is
+        // occasionally kept) and every mounted volume under /Volumes, which is where an external or
+        // second disk appears. Without the macOS arm this screen found far less on a Mac than on
+        // Windows, for no reason the user could see.
+        // One stalled container must not cost the user every other one. A mounted network volume under
+        // /Volumes, or a disconnected drive on Windows, can block inside Directory.GetDirectories for
+        // a long time - and that call takes no cancellation token, so the scan's overall time budget
+        // cannot interrupt it once it is inside. What we CAN do is stop starting new ones: each
+        // container is given its own short budget, and a container that overruns is abandoned and
+        // logged rather than allowed to hold up the rest.
+        foreach (var container in TopLevelContainers())
         {
-            foreach (var drive in SafeFixedDriveRoots())
+            try
             {
-                try
+                var listing = Task.Run(() => Directory.GetDirectories(container));
+                if (!listing.Wait(PerContainerListTimeout))
                 {
-                    foreach (var dir in Directory.GetDirectories(drive))
-                        if (NameSuggestsCode(Path.GetFileName(dir)))
-                            candidates.Add(dir);
+                    FileLog.Write($"[CodeFolderScout] {container} did not answer within {PerContainerListTimeout.TotalSeconds:0}s - skipped (a stalled or disconnected volume)");
+                    continue;
                 }
-                catch (Exception ex)
-                {
-                    FileLog.Write($"[CodeFolderScout] cannot list {drive}: {ex.Message}");
-                }
+
+                foreach (var dir in listing.Result)
+                    if (NameSuggestsCode(Path.GetFileName(dir)))
+                        candidates.Add(dir);
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[CodeFolderScout] cannot list {container}: {ex.GetBaseException().Message}");
             }
         }
 
@@ -88,6 +107,39 @@ public static class CodeFolderScout
         }
         FileLog.Write($"[CodeFolderScout] CandidateRoots -> {result.Count} folder(s)");
         return result;
+    }
+
+    /// <summary>
+    /// The places to sweep for code folders that live outside the home directory, one top-level
+    /// listing each. Windows: every fixed drive root. macOS: the filesystem root and each mounted
+    /// volume. Anywhere else: nothing, so the caller simply falls back to the home-directory probes.
+    /// </summary>
+    /// <summary>
+    /// How long one top-level listing may take before it is abandoned. Deliberately much shorter than
+    /// the caller's whole-scan budget, because a stalled volume cannot be cancelled once entered - the
+    /// only defence is to stop waiting on it.
+    /// </summary>
+    private static readonly TimeSpan PerContainerListTimeout = TimeSpan.FromSeconds(3);
+
+    private static IEnumerable<string> TopLevelContainers()
+    {
+        if (OperatingSystem.IsWindows())
+            return SafeFixedDriveRoots();
+
+        if (!OperatingSystem.IsMacOS())
+            return Array.Empty<string>();
+
+        var containers = new List<string> { "/" };
+        try
+        {
+            if (Directory.Exists("/Volumes"))
+                containers.AddRange(Directory.GetDirectories("/Volumes"));
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[CodeFolderScout] cannot list /Volumes: {ex.Message}");
+        }
+        return containers;
     }
 
     /// <summary>

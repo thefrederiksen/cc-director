@@ -1,4 +1,4 @@
-using CcDirector.Core.Utilities;
+﻿using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Onboarding;
 
@@ -58,14 +58,25 @@ public sealed class FirstRunWizardModel
     /// always re-ordered to this sequence, so step order is guaranteed regardless of which interim or
     /// absent steps a given release includes.
     /// </summary>
+    /// <remarks>
+    /// The gateway comes FIRST, before anything about this machine. Connecting is who you are, and
+    /// everything after it is configuration of one particular computer - so identity leads, and the
+    /// machine questions follow. It also puts the one step that carries real value for the user (their
+    /// agents on their phone, voice, the morning report) where it will actually be seen rather than
+    /// five screens in, after the attention has gone.
+    ///
+    /// This does NOT make the gateway a gate. "Not now" stays exactly as prominent as it was: the
+    /// Director installs and runs with no account, and a first screen that reads as sign-up-to-continue
+    /// would change what the product is.
+    /// </remarks>
     public static readonly IReadOnlyList<WizardStep> CanonicalOrder = new[]
     {
         WizardStep.Welcome,
+        WizardStep.Gateway,
         WizardStep.Agents,
         WizardStep.Tools,
         WizardStep.Code,
         WizardStep.Screenshots,
-        WizardStep.Gateway,
         WizardStep.Done,
     };
 

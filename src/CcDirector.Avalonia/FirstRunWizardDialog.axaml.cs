@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Controls.Shapes;
 using Avalonia.Input;
@@ -61,6 +62,14 @@ public partial class FirstRunWizardDialog : Window
     private bool _gatewayConnected;
     private CancellationTokenSource? _hostedEnrollCts;
 
+    // A gateway that is ALREADY configured when the step opens. Read once, from the saved config, so
+    // a re-run does not ask the user to enroll a machine that is already enrolled. Before this,
+    // _gatewayConnected was a this-run-only flag and the step always opened on the choice cards
+    // offering "Sign in and connect" - while the Done receipt, which does read the saved config,
+    // printed "Gateway connected" two screens later. One wizard, two answers, same run.
+    private bool _gatewayExistingChecked;
+    private bool _gatewayWasAlreadyConnected;
+
     // The existing join-an-existing-gateway flow, embedded only behind the self-hosted advanced path.
     private Controls.GatewayConnectionPanel? _gatewayPanel;
 
@@ -81,13 +90,49 @@ public partial class FirstRunWizardDialog : Window
     private int _toolsReadyCount;
     private int _toolsTotalCount;
 
-    // Code step: the roots store the board and New Session read, the folders added this run
-    // (path -> repo count, drives the proof number), and the one-shot suggestion scan.
+    // When the wait for a still-missing tool began, and how long it may run before the screen stops
+    // calling it "Installing" and calls it what it is. "Installing..." was the ONLY thing this screen
+    // could say about an absent tool, so a tool that would never arrive kept that pill for ever while
+    // the status line went on promising it would finish on its own.
+    private DateTime? _toolsWaitStartedUtc;
+    private bool _toolsRepairing;
+    private bool _toolsStalled;
+    private const int ToolsStallSeconds = 45;
+
+    // Code step: the ROOT DIRECTORY store - the registered base folders the repository model scans.
+    // It is NOT what New Session reads; New Session reads the repository registry and, since this
+    // change, unions in the repositories the model found under these roots. (Two comments here used to
+    // claim this store was "what the board and New Session read". It never was, and that false comment
+    // is how a wizard receipt reading "12 repositories - Done" came to be followed by a New Session
+    // dialog reading "No repositories yet".) Plus the folders registered this run (path -> repository
+    // count, which drives the proof number) and the one-shot suggestion scan.
     private readonly RootDirectoryStore _rootStore = new();
     private bool _rootStoreLoaded;
     private readonly Dictionary<string, int> _codeAddedRoots = new(StringComparer.OrdinalIgnoreCase);
     private bool _codeScanRan;
     private CancellationTokenSource? _codeScanCts;
+
+    // Set whenever this run registers or un-registers a root, so leaving the step can republish them
+    // to the running application once instead of once per folder.
+    private bool _codeRootsChanged;
+
+    // Serializes writes to the roots file. The sweep publishes its finds in a burst - seven folders
+    // within four milliseconds on a real machine - and each registration rewrites the whole
+    // root-directories.json. Run concurrently they collide on the file and MOST OF THEM LOSE: an
+    // unserialized version of this registered two of seven and logged "the process cannot access the
+    // file" for the other five, which on screen looked simply like folders that were never found.
+    private readonly SemaphoreSlim _codeStoreGate = new(1, 1);
+
+    // Folders the user has explicitly REMOVED this run. Without this record, removing a folder only
+    // deletes it from _codeAddedRoots - so a suggestion for the same path arriving later from the
+    // still-running sweep looks brand new and is silently registered again. The user's opt-out has to
+    // outlive the scan that is still producing results behind it.
+    private readonly HashSet<string> _codeRejectedRoots = new(StringComparer.OrdinalIgnoreCase);
+
+    // Every registration started by the sweep. The sweep's own completion says only that DISCOVERY
+    // finished; the writes it queued behind the gate may still be running. The step must not report
+    // itself done, and must not publish to the rest of the application, until these have landed.
+    private readonly List<Task> _codePendingWrites = new();
 
     // Set when the user says there is no code on this machine yet (a new laptop). It changes nothing
     // on disk - it only stops the step, and the Done receipt, from reading as a failure.
@@ -95,6 +140,24 @@ public partial class FirstRunWizardDialog : Window
 
     // True once the completion marker has been written, so OnClosed does not write it twice.
     private bool _marked;
+
+    // True from the moment the window closes. Several operations here await slow work - the tool
+    // catalog read, a tool repair, a folder registration - and their continuations resume on the user
+    // interface thread AFTER the window may have gone. Without this, a continuation could start a
+    // fresh polling timer on a closed dialog and keep it alive, updating controls nobody can see.
+    private volatile bool _closed;
+
+    // True once the user has reached the end of the wizard by any deliberate route (finishing on Done,
+    // or the whole-wizard skip on Welcome). A plain window close BEFORE that is an accident, not a
+    // decision, and must not retire the wizard - see OnClosed.
+    private bool _leftDeliberately;
+
+    /// <summary>
+    /// True when this is a REVIEW run rather than a first run - onboarding was already completed on
+    /// this machine, so the user opened the wizard on purpose from Settings. Every screen that has
+    /// something already set up should say so rather than asking for it again.
+    /// </summary>
+    private readonly bool _isReview;
 
     /// <summary>
     /// True when the user chose "Start my first agent" on the Done screen, so the caller opens the
@@ -122,8 +185,14 @@ public partial class FirstRunWizardDialog : Window
         // the Morning report screen is the promise the rest of the story builds to.
         _model = new FirstRunWizardModel(FirstRunWizardModel.CanonicalOrder);
 
+        // The completion marker is what separates a first run from a deliberate re-run: it is written
+        // when the user leaves the wizard, and it is the same fact that decides whether the wizard
+        // auto-opens at launch. Read once, here, so every screen can be told which run this is.
+        _isReview = !FirstRunWizardModel.ShouldShow();
+
         InitializeComponent();
         BuildDots();
+        BuildWelcomeScreen();
         ShowStep(_model.Current);
     }
 
@@ -183,6 +252,10 @@ public partial class FirstRunWizardDialog : Window
             CancelScreenshotWatch();
         if (step != WizardStep.Tools)
             StopToolsPoll();
+        // Leaving the Code step is the moment the folders chosen there have to become real to the rest
+        // of the application - once, not once per folder.
+        if (step != WizardStep.Code && _codeRootsChanged)
+            _ = PublishCodeRootsAsync();
 
         RefreshDots();
 
@@ -202,15 +275,25 @@ public partial class FirstRunWizardDialog : Window
         {
             case WizardStep.Welcome:
                 // Primary ("Set me up") and the quiet whole-wizard skip live in the content panel.
-                FooterNote.Text = "Takes about 3 minutes. Every step is optional, and everything can be changed later in Settings.";
+                FooterNote.Text = _isReview
+                    ? "Changing something here changes it everywhere. Nothing is reset."
+                    : "Takes about 3 minutes. Every step is optional, and everything can be changed later in Settings.";
                 FooterNote.IsVisible = true;
                 break;
 
             case WizardStep.Agents:
-                PrimaryButton.Content = "Use these agents";
                 PrimaryButton.IsVisible = true;
                 if (!_agentScanRan)
+                {
+                    // ScanAgentsAsync owns the button while it runs - it must NOT be pressable, see
+                    // the note there.
                     _ = ScanAgentsAsync();
+                }
+                else
+                {
+                    PrimaryButton.Content = "Use these agents";
+                    PrimaryButton.IsEnabled = _model.AgentsFound;
+                }
                 break;
 
             case WizardStep.Tools:
@@ -239,6 +322,7 @@ public partial class FirstRunWizardDialog : Window
 
             case WizardStep.Gateway:
                 PrimaryButton.IsVisible = true;
+                AdoptExistingGateway();
                 RefreshGatewayChoiceUi();
                 break;
 
@@ -360,12 +444,32 @@ public partial class FirstRunWizardDialog : Window
 
     // ---- Agents step -------------------------------------------------------------------------------
 
+    /// <summary>
+    /// Find this machine's coding agents and show them.
+    ///
+    /// The primary button is held DISABLED for the whole scan, and that is the point of this method's
+    /// shape. It used to stay live: the step made it visible without ever disabling it, and its
+    /// enabled state was only set from the result at the very end - so a user who pressed
+    /// "Use these agents" while the scan was still running ran <see cref="AcceptAgentsAsync"/> against
+    /// the still-empty suggestion list, added nothing, and advanced. The wizard said it was using
+    /// their agents and configured none, silently.
+    ///
+    /// The rows are also built TWICE on purpose: once the moment detection returns, so the user can
+    /// see what was found, and again after the version probes land. The probes run one after another
+    /// and each is bounded by its plugin's validation timeout, so waiting for all of them before
+    /// drawing anything left the screen blank for the sum of every probe.
+    /// </summary>
     private async Task ScanAgentsAsync()
     {
         FileLog.Write("[FirstRunWizardDialog] ScanAgentsAsync");
-        AgentsTitle.Text = "Your agents";
-        AgentsStatusText.Text = "Scanning this machine for coding agents...";
+        AgentsTitle.Text = "Looking for your coding agents";
+        AgentsScanBar.IsVisible = true;
+        AgentsScanLine.IsVisible = true;
+        AgentsScanLine.Text = "Checking this machine...";
+        AgentsStatusText.Text = "Please wait for this to finish. Your agents are only detected and set up correctly once the check completes.";
         AgentsEmptyActions.IsVisible = false;
+        AgentsListPanel.Children.Clear();
+        SetAgentsPrimaryBusy(true);
         try
         {
             var (suggestions, existing) = await Task.Run(() =>
@@ -382,10 +486,16 @@ public partial class FirstRunWizardDialog : Window
             var anyFound = suggestions.Any(s => s.Found) || existing.Count > 0;
             _model.SetAgentsFound(anyFound);
 
+            // Draw what we have now, with the version cell still pending, so the list builds in front
+            // of the user instead of appearing all at once at the end.
+            BuildAgentRows(suggestions, existing, new Dictionary<AgentKind, string>());
+
             // Probe each found agent's version so the rows read "v2.1.4 - path": the version is the
             // proof the detection is real, not a guess. Best-effort - a probe that fails or times
             // out just leaves the row without a version.
-            var versions = await ProbeVersionsAsync(suggestions);
+            var versions = await ProbeVersionsAsync(
+                suggestions,
+                name => AgentsScanLine.Text = $"Checking {name}...");
             BuildAgentRows(suggestions, existing, versions);
 
             var foundCount = suggestions.Count(s => s.Found);
@@ -403,7 +513,7 @@ public partial class FirstRunWizardDialog : Window
             // Zero agents: the one step Continue does not pass. The product cannot work without an
             // agent, so the in-place install (or the honest deferral) is the way forward.
             AgentsEmptyActions.IsVisible = !anyFound;
-            PrimaryButton.IsEnabled = anyFound;
+            SetAgentsPrimaryBusy(false, enabled: anyFound);
 
             FileLog.Write($"[FirstRunWizardDialog] ScanAgentsAsync: found={foundCount}, anyFound={anyFound}");
         }
@@ -411,15 +521,40 @@ public partial class FirstRunWizardDialog : Window
         {
             FileLog.Write($"[FirstRunWizardDialog] ScanAgentsAsync FAILED: {ex.Message}");
             AgentsStatusText.Text = $"Agent scan failed: {ex.Message}";
+            // A failed scan must not leave the user stranded on a dead button - re-checking and the
+            // install path are still open to them.
+            AgentsEmptyActions.IsVisible = true;
+            SetAgentsPrimaryBusy(false, enabled: false);
         }
     }
 
-    /// <summary>Version-probe every found agent (bounded per-tool by the plugin's validation timeout).</summary>
-    private async Task<Dictionary<AgentKind, string>> ProbeVersionsAsync(IReadOnlyList<ToolDetectionSuggestion> suggestions)
+    /// <summary>
+    /// Hold (or release) the footer button for the agent scan. Guarded on the current step because the
+    /// footer button is shared by every screen: a user who presses Back mid-scan must not have the
+    /// step they landed on relabelled "Checking..." when this scan finally returns.
+    /// </summary>
+    private void SetAgentsPrimaryBusy(bool busy, bool enabled = false)
+    {
+        if (_model.Current != WizardStep.Agents) return;
+        AgentsScanBar.IsVisible = busy;
+        AgentsScanLine.IsVisible = busy;
+        PrimaryButton.Content = busy ? "Checking..." : "Use these agents";
+        PrimaryButton.IsEnabled = !busy && enabled;
+    }
+
+    /// <summary>
+    /// Version-probe every found agent (bounded per-tool by the plugin's validation timeout), naming
+    /// each one to <paramref name="onProbing"/> as it starts so the screen can say which agent it is
+    /// working on rather than showing an unchanging line for the whole run.
+    /// </summary>
+    private async Task<Dictionary<AgentKind, string>> ProbeVersionsAsync(
+        IReadOnlyList<ToolDetectionSuggestion> suggestions,
+        Action<string>? onProbing = null)
     {
         var versions = new Dictionary<AgentKind, string>();
         foreach (var s in suggestions.Where(s => s.Found))
         {
+            onProbing?.Invoke(s.DisplayName);
             try
             {
                 var test = await _detectionService.TestToolAsync(s.Tool, s.ResolvedPath);
@@ -455,6 +590,7 @@ public partial class FirstRunWizardDialog : Window
                 alreadyAdded ? "In list" : "Ready",
                 ready: true));
         }
+
 
         var notFound = suggestions.Where(s => !s.Found).Select(s => s.DisplayName).ToList();
         if (notFound.Count > 0)
@@ -643,34 +779,64 @@ public partial class FirstRunWizardDialog : Window
     /// </summary>
     private async Task RefreshToolsScreenAsync()
     {
+        // A repair owns the screen while it runs; the poll must not redraw underneath it.
+        if (_toolsRepairing || _closed) return;
+
         try
         {
             var catalog = await Task.Run(() => new ToolCatalogService().GetCatalog());
+            // The catalog read is slow enough that the window can be gone by the time it returns.
+            if (_closed) return;
             _toolsTotalCount = catalog.Count;
             _toolsReadyCount = catalog.Count(t => t.IsAvailable);
 
             ToolsTitle.Text = $"{_toolsTotalCount} tools, maintained for you";
 
+            var missingCount = _toolsTotalCount - _toolsReadyCount;
+            if (missingCount > 0)
+                _toolsWaitStartedUtc ??= DateTime.UtcNow;
+
+            // A tool still absent after the stall window is not "installing" in any sense the user
+            // would recognise, and saying so for ever is a promise the screen cannot keep. Past that
+            // point it is named as not installed and the repair is offered.
+            var stalled = missingCount > 0
+                && _toolsWaitStartedUtc is not null
+                && (DateTime.UtcNow - _toolsWaitStartedUtc.Value).TotalSeconds >= ToolsStallSeconds;
+            // Recorded so the Done receipt reports the same three states this screen does.
+            _toolsStalled = stalled;
+
             ToolsListPanel.Children.Clear();
             foreach (var tool in catalog)
             {
-                ToolsListPanel.Children.Add(AgentRow(
-                    tool.Name,
-                    tool.Description,
-                    tool.IsAvailable ? "Ready" : "Installing...",
-                    ready: tool.IsAvailable));
+                var pill = tool.IsAvailable ? "Ready" : stalled ? "Not installed" : "Installing...";
+                var detail = tool.IsAvailable || !stalled
+                    ? tool.Description
+                    : $"{tool.Description} - this one did not install";
+                ToolsListPanel.Children.Add(AgentRow(tool.Name, detail, pill, ready: tool.IsAvailable));
             }
 
-            if (_toolsReadyCount == _toolsTotalCount)
+            ToolsFixPanel.IsVisible = stalled;
+
+            if (missingCount == 0)
             {
                 ToolsStatusText.Text = $"All {_toolsTotalCount} tools are installed and up to date.";
                 ToolsStatusText.Foreground = Brush("#1A7F37");
+                _toolsWaitStartedUtc = null;
+                StopToolsPoll();
+            }
+            else if (stalled)
+            {
+                ToolsStatusText.Text = missingCount == 1
+                    ? "1 tool did not install. Repairing takes about a minute - you can continue while it runs."
+                    : $"{missingCount} tools did not install. Repairing takes about a minute - you can continue while it runs.";
+                ToolsStatusText.Foreground = Brush("#DC2626");
                 StopToolsPoll();
             }
             else
             {
+                // Both halves of the trade, so continuing is an informed choice rather than a guess.
                 ToolsStatusText.Text =
-                    $"{_toolsReadyCount} of {_toolsTotalCount} ready - DevThrottle is installing the rest now. It finishes on its own; you don't have to wait.";
+                    $"{_toolsReadyCount} of {_toolsTotalCount} ready. Wait here and all of them will be working before you finish. Continue and DevThrottle finishes the rest in the background on its own.";
                 ToolsStatusText.Foreground = Brush("#0066B8");
                 StartToolsPoll();
             }
@@ -683,8 +849,67 @@ public partial class FirstRunWizardDialog : Window
         }
     }
 
+    /// <summary>
+    /// Repair the shipped tools from this screen - the SAME transaction the Home screen's Fix button
+    /// runs (<see cref="ToolUpdater.RepairPythonToolsAsync"/>), with its progress streamed here. The
+    /// outcome is reported ON THE SCREEN either way: a repair that fails silently reverting to the
+    /// same red row is exactly the dead end this step had before.
+    /// </summary>
+    private async void BtnFixTools_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[FirstRunWizardDialog] BtnFixTools_Click");
+        if (_toolsRepairing) return;
+        _toolsRepairing = true;
+        StopToolsPoll();
+        ToolsFixButton.IsEnabled = false;
+        ToolsFixProgress.IsVisible = true;
+        ToolsFixProgress.Text = "Starting the repair...";
+        try
+        {
+            var layout = InstallLayout.Default();
+            var progress = new Progress<string>(line => ToolsFixProgress.Text = line);
+            var result = await Task.Run(() => new ToolUpdater(layout).RepairPythonToolsAsync(progress));
+            FileLog.Write($"[FirstRunWizardDialog] BtnFixTools_Click: success={result.Success}, msg={result.Message}");
+
+            _toolsRepairing = false;
+            // A repair takes about a minute. The user may well have closed the wizard in the meantime;
+            // the repair still ran and still mattered, but there is no screen left to report it on.
+            if (_closed) return;
+            if (result.Success)
+            {
+                // Start the wait clock again so anything still absent gets a fair window before it is
+                // called a failure a second time.
+                _toolsWaitStartedUtc = null;
+                ToolsFixProgress.Text = "Repair finished. Checking the tools again...";
+                await RefreshToolsScreenAsync();
+                if (_toolsReadyCount == _toolsTotalCount)
+                    ToolsFixProgress.IsVisible = false;
+                else
+                    ToolsFixProgress.Text = "The repair ran but some tools are still missing. Continue - DevThrottle keeps retrying in the background - or see the tools documentation below.";
+            }
+            else
+            {
+                ToolsFixProgress.Text = $"The repair did not succeed: {result.Message}";
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[FirstRunWizardDialog] BtnFixTools_Click FAILED: {ex.Message}");
+            _toolsRepairing = false;
+            ToolsFixProgress.Text = $"The repair could not run: {ex.Message}";
+        }
+        finally
+        {
+            _toolsRepairing = false;
+            ToolsFixButton.IsEnabled = true;
+        }
+    }
+
     private void StartToolsPoll()
     {
+        // A catalog read or a repair that returns after the window has gone must not resurrect the
+        // poll: the timer would hold the closed dialog alive and keep refreshing controls forever.
+        if (_closed || _model.Current != WizardStep.Tools) return;
         if (_toolsPollTimer is not null) return;
         FileLog.Write("[FirstRunWizardDialog] StartToolsPoll");
         _toolsPollTimer = new global::Avalonia.Threading.DispatcherTimer
@@ -723,51 +948,114 @@ public partial class FirstRunWizardDialog : Window
     /// Populate the Code step: show any roots already registered (a re-run wizard tells the truth),
     /// then stream in verified suggestions from the shallow scout scan - never a full drive walk.
     /// </summary>
-    private async Task ScanCodeFoldersAsync()
+    private async Task ScanCodeFoldersAsync(int budgetSeconds = 10)
     {
-        FileLog.Write("[FirstRunWizardDialog] ScanCodeFoldersAsync");
+        FileLog.Write($"[FirstRunWizardDialog] ScanCodeFoldersAsync: budget={budgetSeconds}s");
         _codeScanRan = true;
+        CodeScanActivity.IsVisible = true;
+        CodeScanLine.Text = "Looking for repositories in the usual places...";
+        CodeScanStatusText.IsVisible = false;
+        CodeKeepLookingButton.IsVisible = false;
         try
         {
             await EnsureRootStoreLoadedAsync();
 
-            // Roots that already exist (Settings, a previous run) appear first, marked Added.
-            foreach (var root in _rootStore.Roots)
+            // Roots that already exist (Settings, a previous run) appear first.
+            foreach (var root in _rootStore.Roots.ToList())
             {
                 if (_codeAddedRoots.ContainsKey(root.Path)) continue;
                 var count = await Task.Run(() => CodeFolderScout.CountRepos(root.Path));
                 _codeAddedRoots[root.Path] = count;
-                CodeSuggestionsPanel.Children.Add(CodeRow(root.Path, count, alreadyAdded: true));
+                CodeSuggestionsPanel.Children.Add(CodeRow(root.Path));
             }
             UpdateCodeTotal();
 
             _codeScanCts?.Cancel();
-            _codeScanCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            _codeScanCts = new CancellationTokenSource(TimeSpan.FromSeconds(budgetSeconds));
 
             // Progress<T> posts each suggestion onto the UI thread as the background sweep finds it.
+            // Each one is REGISTERED as it arrives, not offered: a folder we know about is a folder we
+            // can keep the books on and make recommendations against, and an Add button on every row
+            // was missed even by the person who wrote the screen - four folders holding seventeen
+            // repositories went past unregistered. Opting OUT is the deliberate act now.
             var progress = new Progress<CodeFolderSuggestion>(s =>
             {
+                CodeScanLine.Text = $"Looking for repositories - checking {s.Path}";
                 if (_codeAddedRoots.ContainsKey(s.Path)) return;
+                // A folder the user has already removed stays removed, however late the sweep reports it.
+                if (_codeRejectedRoots.Contains(s.Path)) return;
                 if (CodeSuggestionsPanel.Children.OfType<Border>().Any(b => Equals(b.Tag as string, s.Path))) return;
-                CodeSuggestionsPanel.Children.Add(CodeRow(s.Path, s.RepoCount, alreadyAdded: false));
+                _codePendingWrites.Add(AutoAddCodeRootAsync(s.Path, s.RepoCount));
             });
 
             await CodeFolderScout.ScanAsync(progress, _codeScanCts.Token);
 
-            CodeScanStatusText.Text = CodeSuggestionsPanel.Children.Count > 0
-                ? "That is everywhere we checked - add anything else below."
-                : "No repositories found in the usual places. Browse to where your code lives.";
+            // Discovery is done; the registrations it queued may not be. Waiting here is what makes
+            // "that is everywhere we checked" true, and what guarantees the folders are on disk before
+            // anything downstream is told to go and read them.
+            await WaitForPendingCodeWritesAsync();
+
+            CodeScanActivity.IsVisible = false;
+            CodeScanStatusText.IsVisible = true;
+            if (CodeSuggestionsPanel.Children.Count > 0)
+            {
+                CodeTitle.Text = "We found your code";
+                CodeScanStatusText.Text = "That is everywhere we checked - add anything else with Browse below.";
+            }
+            else
+            {
+                CodeScanStatusText.Text = "No repositories found in the usual places. Browse to where your code lives.";
+            }
         }
         catch (OperationCanceledException)
         {
-            FileLog.Write("[FirstRunWizardDialog] ScanCodeFoldersAsync: scan cancelled/timed out");
-            CodeScanStatusText.Text = "That is everywhere we checked - add anything else below.";
+            // The sweep ran out of its time budget. It did NOT finish, and it must not claim it did:
+            // this branch used to write the identical "that is everywhere we checked" sentence the
+            // completed scan writes, so a scan cut off part way through a large disk told the user it
+            // had been exhaustive and there was no way to tell the two apart.
+            FileLog.Write($"[FirstRunWizardDialog] ScanCodeFoldersAsync: scan hit its {budgetSeconds}s budget");
+            CodeScanActivity.IsVisible = false;
+            CodeScanStatusText.IsVisible = true;
+            CodeScanStatusText.Text =
+                $"We stopped looking after {budgetSeconds} seconds, so this may not be everything. Keep looking, or add a folder with Browse below.";
+            CodeKeepLookingButton.IsVisible = true;
         }
         catch (Exception ex)
         {
             FileLog.Write($"[FirstRunWizardDialog] ScanCodeFoldersAsync FAILED: {ex.Message}");
+            CodeScanActivity.IsVisible = false;
+            CodeScanStatusText.IsVisible = true;
             CodeScanStatusText.Text = $"Folder scan failed: {ex.Message}";
         }
+    }
+
+    /// <summary>
+    /// Wait for every registration the sweep queued. Each one is started from a progress callback and
+    /// serialized behind the store gate, so the sweep's own completion proves only that DISCOVERY has
+    /// finished - the writes can still be in flight behind it.
+    /// </summary>
+    private async Task WaitForPendingCodeWritesAsync()
+    {
+        if (_codePendingWrites.Count == 0) return;
+        var pending = _codePendingWrites.ToArray();
+        _codePendingWrites.Clear();
+        try
+        {
+            await Task.WhenAll(pending);
+        }
+        catch (Exception ex)
+        {
+            // Each registration already logs its own failure; this only stops one bad folder taking
+            // the whole wait down.
+            FileLog.Write($"[FirstRunWizardDialog] WaitForPendingCodeWritesAsync: a registration failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>Run the sweep again with a longer budget, after it reported that it stopped early.</summary>
+    private void BtnKeepLookingForCode_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[FirstRunWizardDialog] BtnKeepLookingForCode_Click");
+        _ = ScanCodeFoldersAsync(budgetSeconds: 60);
     }
 
     private async Task EnsureRootStoreLoadedAsync()
@@ -777,9 +1065,47 @@ public partial class FirstRunWizardDialog : Window
         _rootStoreLoaded = true;
     }
 
-    /// <summary>One suggestion row: the folder, its verified repo count, and Add (or the Added pill).</summary>
-    private Border CodeRow(string path, int repoCount, bool alreadyAdded)
+    /// <summary>
+    /// Make the folders chosen on this step real to the RUNNING application.
+    ///
+    /// The wizard writes through its own <see cref="RootDirectoryStore"/> instance, so the copy the
+    /// application loaded at startup is stale the moment a folder is registered here, and the
+    /// repository model behind New Session has never scanned the new root. Without this the wizard
+    /// would persist the folders correctly to disk and the user would still see nothing until the
+    /// next restart.
+    /// </summary>
+    private async Task PublishCodeRootsAsync()
     {
+        _codeRootsChanged = false;
+        // Publishing a half-written set of roots is worse than publishing late: the rescan would run
+        // over whatever happened to have landed, and New Session would show a subset. Wait for the
+        // writes first. Nothing here touches the user interface, so it is safe after the window closes.
+        await WaitForPendingCodeWritesAsync();
+        try
+        {
+            if (global::Avalonia.Application.Current is not App app) return;
+            app.RootDirectoryStore.Load();
+            app.StartRepositoryRescan();
+            FileLog.Write($"[FirstRunWizardDialog] PublishCodeRoots: {app.RootDirectoryStore.Roots.Count} root(s) republished, rescan started");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[FirstRunWizardDialog] PublishCodeRoots FAILED: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// One registered folder: the path, its verified repository count, and Remove. Every row on this
+    /// screen is already registered - there is no Add, because there is no un-added state to act on.
+    ///
+    /// The count is READ FROM <see cref="_codeAddedRoots"/> rather than passed in, so the number on the
+    /// row and the total underneath the list cannot come from different places. The total is a sum of
+    /// that same dictionary, which makes "the rows do not add up to the total" impossible to express
+    /// rather than merely absent today. Callers must register the folder before drawing its row.
+    /// </summary>
+    private Border CodeRow(string path)
+    {
+        var repoCount = _codeAddedRoots.TryGetValue(path, out var known) ? known : 0;
         var text = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
         text.Children.Add(new TextBlock
         {
@@ -791,7 +1117,7 @@ public partial class FirstRunWizardDialog : Window
         });
         text.Children.Add(new TextBlock
         {
-            Text = repoCount == 1 ? "1 git repository found" : $"{repoCount} git repositories found",
+            Text = repoCount == 1 ? "1 git repository" : $"{repoCount} git repositories",
             Foreground = Brush("#8A909A"),
             FontSize = 11,
         });
@@ -800,24 +1126,16 @@ public partial class FirstRunWizardDialog : Window
         global::Avalonia.Controls.Grid.SetColumn(text, 0);
         grid.Children.Add(text);
 
-        Control action;
-        if (alreadyAdded)
+        var removeButton = new Button
         {
-            action = AddedPill();
-        }
-        else
-        {
-            var addButton = new Button
-            {
-                Content = "Add",
-                Classes = { "dialogButton" },
-                VerticalAlignment = VerticalAlignment.Center,
-            };
-            addButton.Click += async (_, _) => await AddCodeRootAsync(path, repoCount, addButton);
-            action = addButton;
-        }
-        global::Avalonia.Controls.Grid.SetColumn(action, 1);
-        grid.Children.Add(action);
+            Content = "Remove",
+            Classes = { "dialogButton" },
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        AutomationProperties.SetName(removeButton, $"Remove {path} from the folders DevThrottle watches");
+        removeButton.Click += async (_, _) => await RemoveCodeRootAsync(path, removeButton);
+        global::Avalonia.Controls.Grid.SetColumn(removeButton, 1);
+        grid.Children.Add(removeButton);
 
         return new Border
         {
@@ -831,28 +1149,17 @@ public partial class FirstRunWizardDialog : Window
         };
     }
 
-    private static Border AddedPill() => new()
+    /// <summary>
+    /// Register a folder the scan found and draw its row, in that order. The row claims the folder is
+    /// registered, so it must be true by the time the row appears - a row that says "added" while the
+    /// write is still pending becomes a lie the moment the user closes the window.
+    /// </summary>
+    private async Task AutoAddCodeRootAsync(string path, int repoCount)
     {
-        Background = Brush("#E5F3E9"),
-        CornerRadius = new global::Avalonia.CornerRadius(999),
-        Padding = new global::Avalonia.Thickness(10, 3),
-        VerticalAlignment = VerticalAlignment.Center,
-        Child = new TextBlock
-        {
-            Text = "Added",
-            Foreground = Brush("#1A7F37"),
-            FontSize = 11,
-            FontWeight = FontWeight.SemiBold,
-        },
-    };
-
-    /// <summary>Register a base folder in the same roots store the board and New Session read.</summary>
-    private async Task AddCodeRootAsync(string path, int repoCount, Button addButton)
-    {
-        FileLog.Write($"[FirstRunWizardDialog] AddCodeRootAsync: {path}");
+        FileLog.Write($"[FirstRunWizardDialog] AutoAddCodeRootAsync: {path} ({repoCount} repositories)");
+        await _codeStoreGate.WaitAsync();
         try
         {
-            addButton.IsEnabled = false;
             await EnsureRootStoreLoadedAsync();
 
             var duplicate = _rootStore.Roots.Any(r =>
@@ -867,37 +1174,88 @@ public partial class FirstRunWizardDialog : Window
             }
 
             _codeAddedRoots[path] = repoCount;
-            SwapCodeRowActionToAdded(path);
+            _codeRootsChanged = true;
+            if (!CodeSuggestionsPanel.Children.OfType<Border>().Any(b => Equals(b.Tag as string, path)))
+                CodeSuggestionsPanel.Children.Add(CodeRow(path));
             UpdateCodeTotal();
             if (_model.Current == WizardStep.Code)
                 PrimaryButton.Content = "Looks right";
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[FirstRunWizardDialog] AddCodeRootAsync FAILED: {ex.Message}");
-            addButton.IsEnabled = true;
+            FileLog.Write($"[FirstRunWizardDialog] AutoAddCodeRootAsync FAILED for {path}: {ex.Message}");
+        }
+        finally
+        {
+            _codeStoreGate.Release();
         }
     }
 
-    /// <summary>Replace a row's Add button with the Added pill after a successful add.</summary>
-    private void SwapCodeRowActionToAdded(string path)
+    /// <summary>Un-register a folder the user does not want watched, and drop its row.</summary>
+    private async Task RemoveCodeRootAsync(string path, Button removeButton)
     {
-        var row = CodeSuggestionsPanel.Children.OfType<Border>().FirstOrDefault(b => Equals(b.Tag as string, path));
-        if (row?.Child is not Grid grid) return;
-        var button = grid.Children.OfType<Button>().FirstOrDefault();
-        if (button is null) return;
-        grid.Children.Remove(button);
-        var pill = AddedPill();
-        global::Avalonia.Controls.Grid.SetColumn(pill, 1);
-        grid.Children.Add(pill);
+        FileLog.Write($"[FirstRunWizardDialog] RemoveCodeRootAsync: {path}");
+        await _codeStoreGate.WaitAsync();
+        try
+        {
+            removeButton.IsEnabled = false;
+            await EnsureRootStoreLoadedAsync();
+
+            var index = _rootStore.Roots
+                .Select((r, i) => (r, i))
+                .Where(t => string.Equals(
+                    System.IO.Path.GetFullPath(t.r.Path),
+                    System.IO.Path.GetFullPath(path),
+                    StringComparison.OrdinalIgnoreCase))
+                .Select(t => (int?)t.i)
+                .FirstOrDefault();
+
+            if (index is not null)
+                await Task.Run(() => _rootStore.Remove(index.Value));
+
+            _codeAddedRoots.Remove(path);
+            // Remember the rejection, so a suggestion for this same folder arriving later from the
+            // still-running sweep does not quietly register it again.
+            _codeRejectedRoots.Add(path);
+            _codeRootsChanged = true;
+            var row = CodeSuggestionsPanel.Children.OfType<Border>().FirstOrDefault(b => Equals(b.Tag as string, path));
+            if (row is not null)
+                CodeSuggestionsPanel.Children.Remove(row);
+            UpdateCodeTotal();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[FirstRunWizardDialog] RemoveCodeRootAsync FAILED: {ex.Message}");
+            removeButton.IsEnabled = true;
+        }
+        finally
+        {
+            _codeStoreGate.Release();
+        }
     }
 
-    /// <summary>The proof number: repositories across every added folder.</summary>
+    /// <summary>
+    /// The proof number: repositories across every registered folder, WITH the number of folders it is
+    /// summed over. The list scrolls, so the total is usually shown beside only two or three of the
+    /// rows that make it up; naming the folder count is what lets the user reconcile the two without
+    /// scrolling the whole list.
+    /// </summary>
     private void UpdateCodeTotal()
     {
         var total = _codeAddedRoots.Values.Sum();
+        var folders = _codeAddedRoots.Count;
         CodeTotalPanel.IsVisible = total > 0;
         CodeTotalCount.Text = total.ToString();
+
+        // The breakdown, so the headline number can be checked against its parts from the log alone.
+        // The list scrolls, so on a machine with several folders the screen never shows every row that
+        // makes up the total at once.
+        FileLog.Write(
+            $"[FirstRunWizardDialog] UpdateCodeTotal: {total} across {folders} folder(s) = "
+            + string.Join(" + ", _codeAddedRoots.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key}:{kv.Value}")));
+        CodeTotalCaption.Text = folders == 1
+            ? "repositories in this folder, available when you start an agent"
+            : $"repositories across these {folders} folders, available when you start an agent";
     }
 
     private async void BtnBrowseCodeFolder_Click(object? sender, RoutedEventArgs e)
@@ -921,20 +1279,10 @@ public partial class FirstRunWizardDialog : Window
                 return (resolved, CodeFolderScout.CountRepos(resolved));
             });
 
+            // Already registered (the sweep found it, or a previous run did) - nothing to do.
             if (_codeAddedRoots.ContainsKey(path)) return;
 
-            var existingRow = CodeSuggestionsPanel.Children.OfType<Border>().FirstOrDefault(b => Equals(b.Tag as string, path));
-            if (existingRow is not null)
-            {
-                // It was already suggested - adding it is what the user meant.
-                var button = (existingRow.Child as Grid)?.Children.OfType<Button>().FirstOrDefault();
-                if (button is not null)
-                    await AddCodeRootAsync(path, count, button);
-                return;
-            }
-
-            CodeSuggestionsPanel.Children.Add(CodeRow(path, count, alreadyAdded: true));
-            await AddCodeRootAsync(path, count, new Button());
+            await AutoAddCodeRootAsync(path, count);
         }
         catch (Exception ex)
         {
@@ -967,11 +1315,34 @@ public partial class FirstRunWizardDialog : Window
     {
         FileLog.Write("[FirstRunWizardDialog] DetectScreenshotsForWizardAsync");
         _shotsDetectRan = true;
+        ShotsBusyBar.IsVisible = true;
         try
         {
+            // A folder already chosen on this machine WINS over anything detection would guess.
+            // Detection used to run unconditionally, which meant a returning user who had once browsed
+            // to a custom folder was shown the detector's guess instead, under a button reading "Use
+            // this folder" - and pressing Continue wrote the guess over their deliberate choice.
+            var configured = ReadConfiguredScreenshotsFolder();
+            if (!string.IsNullOrWhiteSpace(configured) && Directory.Exists(configured))
+            {
+                FileLog.Write($"[FirstRunWizardDialog] DetectScreenshotsForWizardAsync: keeping the configured folder {configured}");
+                ShotsPathText.Text = configured;
+                ShotsProvenanceText.Text = "Currently in use - counting the images in it...";
+                var configuredCount = await Task.Run(() => ScreenshotLocator.CountImages(configured));
+                await SetScreenshotsFolderAsync(configured, "Currently in use", configuredCount);
+                return;
+            }
+
             var best = await Task.Run(() => ScreenshotLocator.DetectCandidates().FirstOrDefault());
             if (best is not null)
             {
+                // Show the answer BEFORE the slow part. Counting every image in the folder and then
+                // decoding the newest few are two full passes over it, and on a large or cloud-backed
+                // folder that is a real wait - during which the step used to show nothing but the
+                // static "Looking for your screenshots folder..." line and looked dead.
+                ShotsPathText.Text = best.Path;
+                ShotsProvenanceText.Text = $"{best.Provenance} - counting the images in it...";
+
                 var count = await Task.Run(() => ScreenshotLocator.CountImages(best.Path));
                 await SetScreenshotsFolderAsync(best.Path, best.Provenance, count);
             }
@@ -987,6 +1358,25 @@ public partial class FirstRunWizardDialog : Window
             FileLog.Write($"[FirstRunWizardDialog] DetectScreenshotsForWizardAsync FAILED: {ex.Message}");
             ShotsPathText.Text = "No screenshots folder found";
             ShotsProvenanceText.Text = $"Detection failed: {ex.Message}";
+        }
+        finally
+        {
+            ShotsBusyBar.IsVisible = false;
+        }
+    }
+
+    /// <summary>The screenshots folder already saved in config, or null when none is set.</summary>
+    private static string? ReadConfiguredScreenshotsFolder()
+    {
+        try
+        {
+            var path = CcDirectorConfigService.ReadRaw()["screenshots"]?["source_directory"]?.GetValue<string>();
+            return string.IsNullOrWhiteSpace(path) ? null : path;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[FirstRunWizardDialog] ReadConfiguredScreenshotsFolder failed: {ex.Message}");
+            return null;
         }
     }
 
@@ -1202,15 +1592,205 @@ public partial class FirstRunWizardDialog : Window
         }
     }
 
-    // ---- Welcome: founder note ----------------------------------------------------------------------
+    // ---- Welcome ------------------------------------------------------------------------------------
 
-    private void BtnFounderMore_Click(object? sender, RoutedEventArgs e)
+    /// <summary>
+    /// Build the Welcome screen for whichever run this is.
+    ///
+    /// FIRST RUN: state plainly what the next three minutes are for - one row per thing the wizard
+    /// covers, each naming what it buys the user. That is the screen's whole job. It used to open with
+    /// a note from the founder about why the product exists; somebody who has just installed software
+    /// wants to know what is about to be asked of them, not to be talked to.
+    ///
+    /// REVIEW RUN: the same rows carry the machine's CURRENT state, because a returning user is here
+    /// to check or change something, and telling them they are "three minutes from running their first
+    /// coding agent" when they already have four agents configured is simply false.
+    /// </summary>
+    private void BuildWelcomeScreen()
     {
-        FounderMoreText.IsVisible = !FounderMoreText.IsVisible;
-        FounderMoreLink.Content = FounderMoreText.IsVisible ? "Show less" : "Read more";
+        WelcomeAgendaPanel.Children.Clear();
+
+        if (_isReview)
+        {
+            WelcomeTitle.Text = "Review your setup";
+            // Says what actually happens. The earlier wording promised "nothing is redone unless you
+            // ask", which the Code step then broke the moment it was reached: it sweeps for folders and
+            // registers what it finds, with no confirmation. Persisting configuration as a side effect
+            // of INSPECTION is bad enough without the previous screen having promised it would not.
+            WelcomeSubText.Text =
+                "Everything below is already set up. Nothing here is reset - but any new code folders we find as you walk through will be added.";
+            WelcomeSetupButton.Content = "Review each step";
+            WelcomeSkipLink.Content = "Close - everything is already set up";
+            FooterNote.Text = "Changing something here changes it everywhere. Nothing is reset.";
+
+            // Cheap reads only: this screen must paint instantly. Anything that needs a scan (the
+            // agent probe, the repository sweep) belongs on its own step, not here.
+            foreach (var row in ReviewSummaryRows())
+                WelcomeAgendaPanel.Children.Add(row);
+            return;
+        }
+
+        WelcomeTitle.Text = "Let's get you set up";
+        WelcomeSubText.Text =
+            "Four quick things, so DevThrottle knows this machine. Skip any of them - all of it can be changed later.";
+        WelcomeSetupButton.Content = "Set me up";
+        WelcomeSkipLink.Content = "Skip setup and figure it out myself";
+
+        // Same order the steps come in - the gateway leads.
+        AddAgendaRow("Your gateway", "Your agents on your phone, voice, and the morning report");
+        AddAgendaRow("Your coding agents", "Find the ones already installed, or install one now");
+        AddAgendaRow("Where your code lives", "So DevThrottle can offer you repositories and keep the books on them");
+        AddAgendaRow("Screenshots", "So you can show an agent what you mean instead of describing it");
+    }
+
+    /// <summary>The review run's state summary, read from what is already on disk. No scans.</summary>
+    private IEnumerable<Control> ReviewSummaryRows()
+    {
+        var rows = new List<Control>();
+
+        // Same order as the steps: the gateway leads.
+        var gateway = GatewayConfig.Load();
+        rows.Add(AgentRow(
+            "Your gateway",
+            gateway.IsEnabled ? gateway.Url : "Not connected - phone access and the morning report need one",
+            gateway.IsEnabled ? "Connected" : "None",
+            ready: gateway.IsEnabled));
+
+        var agentCount = 0;
+        try
+        {
+            agentCount = AgentEntryStore.ReadCurrentEntries().Count;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[FirstRunWizardDialog] ReviewSummaryRows: agent read failed: {ex.Message}");
+        }
+        rows.Add(AgentRow(
+            "Your coding agents",
+            agentCount > 0 ? "Configured and ready to use" : "None configured yet",
+            agentCount > 0 ? $"{agentCount} set up" : "None",
+            ready: agentCount > 0));
+
+        var rootCount = 0;
+        try
+        {
+            var store = new RootDirectoryStore();
+            store.Load();
+            rootCount = store.Roots.Count;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[FirstRunWizardDialog] ReviewSummaryRows: roots read failed: {ex.Message}");
+        }
+        rows.Add(AgentRow(
+            "Where your code lives",
+            rootCount > 0 ? "DevThrottle is keeping the books on these" : "No folders added yet",
+            rootCount == 1 ? "1 folder" : rootCount > 0 ? $"{rootCount} folders" : "None",
+            ready: rootCount > 0));
+
+        return rows;
+    }
+
+    private void AddAgendaRow(string name, string what) =>
+        WelcomeAgendaPanel.Children.Add(new Border
+        {
+            Background = Brush("#FFFFFF"),
+            BorderBrush = Brush("#E6E8EC"),
+            BorderThickness = new global::Avalonia.Thickness(1),
+            CornerRadius = new global::Avalonia.CornerRadius(10),
+            Padding = new global::Avalonia.Thickness(15, 9),
+            Child = StackOf(
+                new TextBlock
+                {
+                    Text = name,
+                    Foreground = Brush("#16181D"),
+                    FontSize = 13,
+                    FontWeight = FontWeight.SemiBold,
+                    TextWrapping = TextWrapping.Wrap,
+                },
+                new TextBlock
+                {
+                    Text = what,
+                    Foreground = Brush("#8A909A"),
+                    FontSize = 11,
+                    TextWrapping = TextWrapping.Wrap,
+                }),
+        });
+
+    private static StackPanel StackOf(params Control[] children)
+    {
+        var panel = new StackPanel { Spacing = 2 };
+        foreach (var child in children)
+            panel.Children.Add(child);
+        return panel;
     }
 
     // ---- Gateway step (native, hosted-first) -------------------------------------------------------
+
+    // The step's opening copy, kept so "connect a different gateway" can put it back after the
+    // connected state has rewritten it.
+    private const string GatewayChoiceTitle = "Connect your gateway";
+    private const string GatewayChoiceSub =
+        "The gateway is what lets you check on your agents from your phone, use voice, and get your morning report. Signing in takes seconds.";
+
+    /// <summary>
+    /// A gateway that is already configured is not a question. Read the saved gateway once, when the
+    /// step opens, and if this machine is already enrolled open on the connected state with Continue
+    /// as the action - reconnecting stays available, but as a quiet secondary link.
+    ///
+    /// Without this the step had no idea what the machine's actual state was: its connected flag was
+    /// set only by an enrolment performed during THIS run, so re-running the wizard on an enrolled
+    /// machine showed the choice cards and offered "Sign in and connect" - while
+    /// <see cref="BuildDoneReceipt"/>, which does read the saved config, printed "Gateway connected"
+    /// two screens later. The same run said both.
+    /// </summary>
+    private void AdoptExistingGateway()
+    {
+        if (_gatewayExistingChecked) return;
+        _gatewayExistingChecked = true;
+
+        var config = GatewayConfig.Load();
+        if (!config.IsEnabled)
+        {
+            FileLog.Write("[FirstRunWizardDialog] AdoptExistingGateway: no gateway configured");
+            return;
+        }
+
+        FileLog.Write($"[FirstRunWizardDialog] AdoptExistingGateway: gateway already configured as {config.Url}");
+        _gatewayConnected = true;
+        _gatewayWasAlreadyConnected = true;
+
+        // What we KNOW is that a gateway address is saved. We have not reached it, authenticated, or
+        // confirmed this machine is still enrolled - IsEnabled is true for any non-blank string. So the
+        // screen states the configuration and nothing more. Saying "phone access, voice and the morning
+        // report are working" would be a claim about three subsystems on the strength of one saved
+        // string, and it would be wrong for exactly the user who most needs to know: someone whose
+        // address is stale, mistyped, or whose machine was un-enrolled.
+        GatewayTitle.Text = "Your gateway is already set up";
+        GatewaySubText.Text =
+            "This machine is configured to use the gateway below, so there is nothing to do here. If it is not working, connect it again.";
+        GatewayConnectedHostText.Text = config.Url;
+        // Not "Connected" - we have not checked. This badge is only earned by an enrolment that
+        // succeeded in THIS run, which is the one case we have actually observed working.
+        GatewayConnectedBadgeText.Text = "Set up";
+        GatewayConnectedBadge.Background = Brush("#F5F6F8");
+        GatewayConnectedBadgeText.Foreground = Brush("#5A616B");
+        GatewayChangeLink.IsVisible = true;
+        ShowGatewayView(GatewayConnectedView);
+    }
+
+    /// <summary>Deliberately go back to the choice cards from the already-connected state.</summary>
+    private void GatewayChange_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[FirstRunWizardDialog] GatewayChange_Click");
+        _gatewayConnected = false;
+        _gatewayWasAlreadyConnected = false;
+        GatewayTitle.Text = GatewayChoiceTitle;
+        GatewaySubText.Text = GatewayChoiceSub;
+        GatewayChangeLink.IsVisible = false;
+        ShowGatewayView(GatewayChoiceView);
+        RefreshGatewayChoiceUi();
+    }
 
     /// <summary>Paint the three choice cards and the primary CTA from the current selection.</summary>
     private void RefreshGatewayChoiceUi()
@@ -1236,6 +1816,11 @@ public partial class FirstRunWizardDialog : Window
         card.BorderBrush = Brush(selected ? "#0066B8" : "#E6E8EC");
         card.BorderThickness = new global::Avalonia.Thickness(selected && emphasized ? 2 : selected ? 1.5 : 1);
         card.Background = Brush(selected ? "#F2F8FD" : "#FFFFFF");
+
+        // The selection has to be readable without seeing the border. A Border is not a radio button
+        // and exposes no selected state, so the state is carried in the accessible help text - the one
+        // channel a screen reader will actually read out.
+        AutomationProperties.SetHelpText(card, selected ? "Selected" : "Not selected. Press Enter to choose it.");
     }
 
     private void SelectGatewayChoice(GatewayChoice choice)
@@ -1248,6 +1833,40 @@ public partial class FirstRunWizardDialog : Window
     private void GatewayHostedCard_Pressed(object? sender, PointerPressedEventArgs e) => SelectGatewayChoice(GatewayChoice.Hosted);
     private void GatewaySelfHostCard_Pressed(object? sender, PointerPressedEventArgs e) => SelectGatewayChoice(GatewayChoice.SelfHost);
     private void GatewayNotNowCard_Pressed(object? sender, PointerPressedEventArgs e) => SelectGatewayChoice(GatewayChoice.NotNow);
+
+    /// <summary>
+    /// Space or Enter picks the focused card - the keyboard equivalent of clicking it. Tab already
+    /// reaches the cards now that they are focusable; without this they could be reached and not used.
+    /// </summary>
+    private void GatewayCard_KeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key is not (Key.Space or Key.Enter)) return;
+        if (!TryChoiceForCard(sender, out var choice)) return;
+        SelectGatewayChoice(choice);
+        e.Handled = true;
+    }
+
+    /// <summary>
+    /// Focus alone does NOT change the choice. Tabbing through the options to read them must not
+    /// silently move the selection - a keyboard or screen-reader user has to be able to review all
+    /// three before committing, exactly as a mouse user can. Space or Enter is the commit.
+    /// </summary>
+    private void GatewayCard_GotFocus(object? sender, GotFocusEventArgs e)
+    {
+        // Announce what is focused and whether it is the current choice, since a Border exposes no
+        // selection state of its own.
+        if (TryChoiceForCard(sender, out var choice) && sender is Border card)
+            AutomationProperties.SetHelpText(card, choice == _gatewayChoice ? "Selected" : "Not selected. Press Enter to choose it.");
+    }
+
+    private bool TryChoiceForCard(object? sender, out GatewayChoice choice)
+    {
+        if (ReferenceEquals(sender, GatewayHostedCard)) { choice = GatewayChoice.Hosted; return true; }
+        if (ReferenceEquals(sender, GatewaySelfHostCard)) { choice = GatewayChoice.SelfHost; return true; }
+        if (ReferenceEquals(sender, GatewayNotNowCard)) { choice = GatewayChoice.NotNow; return true; }
+        choice = GatewayChoice.Hosted;
+        return false;
+    }
 
     /// <summary>Show exactly one of the gateway step's sub-views (choice / connecting / connected / failed / advanced).</summary>
     private void ShowGatewayView(Control view)
@@ -1300,6 +1919,10 @@ public partial class FirstRunWizardDialog : Window
             await host.ReapplyGatewayAsync();
 
             _gatewayConnected = true;
+            // Earned: this enrolment just succeeded against the live gateway in this run.
+            GatewayConnectedBadgeText.Text = "Connected";
+            GatewayConnectedBadge.Background = Brush("#E5F3E9");
+            GatewayConnectedBadgeText.Foreground = Brush("#1A7F37");
             GatewayConnectedHostText.Text = $"This machine is enrolled with {GatewayConfig.Load().Url}";
             ShowGatewayView(GatewayConnectedView);
             FileLog.Write("[FirstRunWizardDialog] hosted enroll succeeded");
@@ -1418,7 +2041,12 @@ public partial class FirstRunWizardDialog : Window
         // Gateway row.
         var gatewayUrl = GatewayConfig.Load().Url;
         if (!string.IsNullOrWhiteSpace(gatewayUrl))
-            DoneReceiptPanel.Children.Add(ReceiptRow("Gateway connected", gatewayUrl, done: true));
+            // A gateway that was already connected before this run is reported as UNCHANGED, not as
+            // something this run achieved - a receipt that claims credit for work it did not do is
+            // the same class of untruth as the step that used to ask for it again.
+            DoneReceiptPanel.Children.Add(_gatewayWasAlreadyConnected
+                ? ReceiptRow("Gateway", gatewayUrl, done: true, pillText: "Unchanged")
+                : ReceiptRow("Gateway connected", gatewayUrl, done: true));
         else
             DoneReceiptPanel.Children.Add(ReceiptRow(
                 "No gateway", "Connect one from Settings for phone access and your morning report", done: false));
@@ -1426,9 +2054,21 @@ public partial class FirstRunWizardDialog : Window
         // Tools row (only when the Tools screen was seen, so the numbers are real).
         if (_toolsTotalCount > 0)
         {
-            DoneReceiptPanel.Children.Add(_toolsReadyCount == _toolsTotalCount
-                ? ReceiptRow($"{_toolsTotalCount} tools ready", "Installed and kept current automatically", done: true)
-                : ReceiptRow("Tools installing", "Finishes on its own in the background", done: false));
+            // Three states here, not two, because the Tools screen has three. Reducing a tool that
+            // FAILED to install back to "installing - finishes on its own" would repeat on the last
+            // screen the exact false promise the third state was added to remove, and would contradict
+            // the screen the user saw two steps earlier.
+            if (_toolsReadyCount == _toolsTotalCount)
+                DoneReceiptPanel.Children.Add(ReceiptRow(
+                    $"{_toolsTotalCount} tools ready", "Installed and kept current automatically", done: true));
+            else if (_toolsStalled)
+                DoneReceiptPanel.Children.Add(ReceiptRow(
+                    $"{_toolsTotalCount - _toolsReadyCount} of {_toolsTotalCount} tools did not install",
+                    "Repair them from Settings > Tools - they will not finish on their own",
+                    done: false, pillText: "Needs you"));
+            else
+                DoneReceiptPanel.Children.Add(ReceiptRow(
+                    "Tools installing", "Finishes on its own in the background", done: false));
         }
 
         // Browsers row: a pointer, not a task. Browser setup lives in the left rail (the Browsers
@@ -1510,6 +2150,7 @@ public partial class FirstRunWizardDialog : Window
     internal async Task FinishAsync(bool wantsNewSession)
     {
         FileLog.Write($"[FirstRunWizardDialog] FinishAsync: wantsNewSession={wantsNewSession}");
+        _leftDeliberately = true;
         await Task.Run(FirstRunWizardModel.MarkComplete);
         _marked = true;
         WantsNewSession = wantsNewSession;
@@ -1517,19 +2158,35 @@ public partial class FirstRunWizardDialog : Window
     }
 
     /// <summary>
-    /// A plain window close (the title-bar X) still counts as leaving the wizard, so write the marker
-    /// if a finish path did not already - the wizard must never nag twice.
+    /// Closing the window is only a DECISION when the user has already reached the end by a deliberate
+    /// route - finishing on Done, or the whole-wizard skip on Welcome. Both of those write the marker
+    /// themselves before they close.
+    ///
+    /// A plain title-bar close part way through is an ACCIDENT, and it no longer retires the wizard.
+    /// It used to: the marker was written here unconditionally, so an interrupted first run - which is
+    /// exactly when someone closes a window - permanently stopped the wizard ever offering itself
+    /// again, and the only way back was a button buried under the Agents tab in Settings. A user who
+    /// genuinely does not want it has the skip link on the first screen, which is unambiguous.
+    ///
+    /// A REVIEW run never writes anything here: the marker is already set, and re-running from
+    /// Settings must not change that either way.
     /// </summary>
     protected override void OnClosed(EventArgs e)
     {
+        _closed = true;
         _hostedEnrollCts?.Cancel();
         _claudeInstallCts?.Cancel();
         _shotsWatchCts?.Cancel();
         _codeScanCts?.Cancel();
         StopToolsPoll();
-        if (!_marked)
+        // Closing while still ON the Code step must not strand the folders it registered - and a
+        // registration that is STILL IN FLIGHT must not be stranded either, which is why this runs
+        // whenever writes are outstanding rather than only when the changed flag is already set.
+        if (_codeRootsChanged || _codePendingWrites.Count > 0)
+            _ = PublishCodeRootsAsync();
+        if (!_marked && _leftDeliberately)
         {
-            FileLog.Write("[FirstRunWizardDialog] OnClosed: writing completion marker (window closed without finishing)");
+            FileLog.Write("[FirstRunWizardDialog] OnClosed: writing completion marker (left deliberately)");
             try
             {
                 FirstRunWizardModel.MarkComplete();
@@ -1539,6 +2196,10 @@ public partial class FirstRunWizardDialog : Window
             {
                 FileLog.Write($"[FirstRunWizardDialog] OnClosed marker write FAILED: {ex.Message}");
             }
+        }
+        else if (!_marked)
+        {
+            FileLog.Write("[FirstRunWizardDialog] OnClosed: window closed part way through - marker NOT written, the wizard will offer itself again");
         }
         base.OnClosed(e);
     }

@@ -169,14 +169,14 @@
                 <Grid RowDefinitions="Auto,*">
                     <StackPanel Grid.Row="0" Spacing="8" Margin="0,4,14,8">
                         <TextBlock Classes="sectionTitle" Text="Agents" />
-                        <TextBlock Classes="hint" Text="Your agents, in the order they appear in New Session. Each entry is a configured agent CLI - you can add several of the same type (e.g. two Claude entries with different presets). Use the Up/Down arrows to reorder, Add Agent to create one, and Edit to set the executable, command-line preset, model, and arguments. The Setup wizard can scan this machine for known tools." />
+                        <TextBlock Classes="hint" Text="Your agents, in the order they appear in New Session. Each entry is a configured agent CLI - you can add several of the same type (e.g. two Claude entries with different presets). Use the Up/Down arrows to reorder, Add Agent to create one, and Edit to set the executable, command-line preset, model, and arguments. The Setup wizard re-runs the full setup - agents, tools, code folders, screenshots and the gateway - leaving anything already set up alone." />
                         <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">
                             <Button x:Name="AddAgentButton" Classes="dialogButton" Content="+ Add Agent"
                                     Width="120" Click="BtnAddAgent_Click"
                                     ToolTip.Tip="Add a new agent entry to the list" />
                             <Button x:Name="RunWizardButton" Classes="dialogButton" Content="Setup wizard..."
                                     Width="150" Click="BtnRunWizard_Click"
-                                    ToolTip.Tip="Scan this machine for known tools and add the ones it finds with their recommended settings" />
+                                    ToolTip.Tip="Re-run the full setup: agents, tools, where your code lives, screenshots, and the gateway. Anything already set up is left alone." />
                             <TextBlock x:Name="AgentToolsStatus" Text="" Foreground="#888888"
                                        FontSize="11" TextWrapping="Wrap" VerticalAlignment="Center"
                                        IsVisible="False" />

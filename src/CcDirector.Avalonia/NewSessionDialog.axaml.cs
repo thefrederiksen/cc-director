@@ -549,16 +549,11 @@ public partial class NewSessionDialog : Window
             Height = screen.WorkingArea.Height * 0.7 / screen.Scaling;
         }
 
-        if (_registry != null && _registry.Repositories.Count > 0)
+        _allRepos = BuildRepositoryList();
+        if (_allRepos.Count > 0)
         {
-            _allRepos = _registry.Repositories.ToList();
             ApplyRepoSort();
             RepoList.ItemsSource = _allRepos;
-            FileLog.Write($"[NewSessionDialog] Loaded {_allRepos.Count} repositories");
-        }
-        else
-        {
-            _allRepos = new List<RepositoryConfig>();
         }
         UpdateRepoEmptyState();
 
@@ -577,6 +572,81 @@ public partial class NewSessionDialog : Window
 
     // Parameterless constructor for XAML designer
     public NewSessionDialog() : this(null, null) { }
+
+    /// <summary>
+    /// The repositories this dialog offers: the ones you have USED, in their recency order, then every
+    /// other repository under your registered root folders, alphabetically, deduplicated by path.
+    ///
+    /// It used to be the registry alone. That made the end of onboarding untrue: the setup wizard
+    /// registers ROOT FOLDERS, the registry only ever holds repositories you have actually opened, and
+    /// nothing bridged the two - so the wizard's receipt said "12 repositories - Done" and the New
+    /// Session dialog it opened one click later said "No repositories yet". The bridge is the
+    /// repository model, which has already scanned those roots and is warm from cache at startup.
+    ///
+    /// The union is done HERE, at display time, rather than by writing the scan into the registry:
+    /// the registry is the recently-used list, and filling it with hundreds of never-opened
+    /// repositories would destroy the ordering that makes it useful. Recency stays on top; the long
+    /// tail sits beneath it and is reachable through the search box.
+    /// </summary>
+    private List<RepositoryConfig> BuildRepositoryList()
+    {
+        var used = _registry?.Repositories.ToList() ?? new List<RepositoryConfig>();
+        var seen = new HashSet<string>(
+            used.Select(r => NormalizeRepoPath(r.Path)),
+            StringComparer.OrdinalIgnoreCase);
+
+        var discovered = new List<RepositoryConfig>();
+        try
+        {
+            var monitor = (global::Avalonia.Application.Current as App)?.RepositoryMonitor;
+            if (monitor is not null)
+            {
+                foreach (var status in monitor.Snapshot())
+                {
+                    if (string.IsNullOrWhiteSpace(status.Path)) continue;
+                    if (!seen.Add(NormalizeRepoPath(status.Path))) continue;
+                    discovered.Add(new RepositoryConfig
+                    {
+                        Name = string.IsNullOrWhiteSpace(status.Name)
+                            ? System.IO.Path.GetFileName(status.Path.TrimEnd(System.IO.Path.DirectorySeparatorChar))
+                            : status.Name,
+                        Path = status.Path,
+                        // Deliberately null: these have never been opened, so they carry no recency and
+                        // sort below everything that has.
+                        LastUsed = null,
+                        // Found under a watched folder rather than chosen. The list hides Remove on
+                        // these: removing one would only drop it from the recently-used store, and the
+                        // very next rebuild would find it again under the same folder - a button that
+                        // undoes itself reads as broken.
+                        IsDiscovered = true,
+                    });
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // The recently-used list is the load-bearing half. A repository model that cannot be read
+            // must not take the whole dialog down - but it does say so in the log.
+            FileLog.Write($"[NewSessionDialog] ERROR reading the repository model: {ex.Message}");
+        }
+
+        discovered.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+        used.AddRange(discovered);
+        FileLog.Write($"[NewSessionDialog] Loaded {used.Count} repositories ({used.Count - discovered.Count} recently used, {discovered.Count} found under your folders)");
+        return used;
+    }
+
+    private static string NormalizeRepoPath(string path)
+    {
+        try
+        {
+            return System.IO.Path.GetFullPath(path).TrimEnd(System.IO.Path.DirectorySeparatorChar);
+        }
+        catch
+        {
+            return path;
+        }
+    }
 
     /// <summary>
     /// Build the agent picker (issue #490) from the ENABLED <c>agent.entries</c> (#489), in stored
@@ -1157,7 +1227,7 @@ public partial class NewSessionDialog : Window
             if (_registry != null)
             {
                 _registry.TryAdd(folderPath);
-                _allRepos = _registry.Repositories.ToList();
+                _allRepos = BuildRepositoryList();
                 ApplyRepoSort();
                 ApplyRepoFilter();
                 UpdateRepoEmptyState();
@@ -1178,7 +1248,7 @@ public partial class NewSessionDialog : Window
         if (_registry != null)
         {
             _registry.Remove(path);
-            _allRepos = _registry.Repositories.ToList();
+            _allRepos = BuildRepositoryList();
             ApplyRepoSort();
             ApplyRepoFilter();
             UpdateRepoEmptyState();
