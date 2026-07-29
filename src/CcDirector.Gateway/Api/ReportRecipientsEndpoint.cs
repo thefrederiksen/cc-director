@@ -1,4 +1,6 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Settings;
 using CcDirector.Gateway.Tenancy;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -25,46 +27,64 @@ namespace CcDirector.Gateway.Api;
 /// was at mint time and it is nullable; a recipient with nothing to send to is not a recipient, and
 /// returning an empty address would invite the sender to try anyway.
 ///
-/// WHAT THIS DOES NOT DECIDE: whether a given account WANTS the email. There is no such setting yet,
-/// and it is NOT coming from the first-run wizard - that step was removed (issue #996) because the
-/// wizard runs once per director per machine while this preference is one per ACCOUNT, so it was
-/// asked N times and the answers never reconciled. Until the account-scoped setting exists the report
-/// is simply daily, and the email itself carries the instructions for changing or stopping it.
+/// WHETHER AN ACCOUNT WANTS THE EMAIL IS DECIDED HERE (issue #1000). An account that set its report
+/// cadence to Off is not on this list, so it is not mailed. The filtering is in THIS one place - the
+/// single answer to "who should be mailed" - and not in the sender, so every future channel inherits the
+/// same answer instead of each one re-deriving it. An account that has never touched the setting is
+/// included: the default is daily, which is what everyone received before the setting existed.
 ///
-/// When the setting does exist, the filtering belongs HERE - one place that answers "who should be
-/// mailed" - and not in the sender, so that every future channel inherits the same answer instead of
-/// each one re-deriving it.
+/// The preference is per ACCOUNT and lives on the Gateway because that is the only scope it is true at.
+/// It was once asked by the first-run wizard, which runs once per director per machine - so it was asked
+/// N times for one email address and the answers never reconciled. That step was removed (issue #996);
+/// this is where the question ended up.
 /// </summary>
 internal static class ReportRecipientsEndpoint
 {
     /// <summary>The route. Exact-match public in <c>AuthMiddleware</c>; this endpoint carries its own gate.</summary>
     public const string Path = "/gateway/reports/recipients";
 
-    public static void Map(IEndpointRouteBuilder app, TenantRegistry tenants)
+    public static void Map(IEndpointRouteBuilder app, TenantRegistry tenants, TenantSettingsResolver settings)
     {
         ArgumentNullException.ThrowIfNull(tenants);
+        ArgumentNullException.ThrowIfNull(settings);
 
-        app.MapGet(Path, (HttpContext ctx) => Handle(ctx, tenants));
+        app.MapGet(Path, (HttpContext ctx) => Handle(ctx, tenants, settings));
 
         FileLog.Write($"[ReportRecipientsEndpoint] mapped {Path} (service-token authorized, read-only)");
     }
 
-    internal static IResult Handle(HttpContext ctx, TenantRegistry tenants)
+    internal static IResult Handle(HttpContext ctx, TenantRegistry tenants, TenantSettingsResolver settings)
     {
         // Reuses the report endpoint's gate rather than repeating it: one token, one rule, and no
         // chance of the two drifting so that the recipient list is guarded less well than the reports.
         if (MorningReportEndpoint.ServiceTokenDenial(ctx) is { } denial) return denial;
 
-        var recipients = tenants.ListAll()
+        var addressed = tenants.ListAll()
             .Where(t => !string.IsNullOrWhiteSpace(t.Email))
+            .ToList();
+
+        // The account's own answer to "do you want this mail" (issue #1000), asked per tenant. An account
+        // that never chose is daily, so this removes nobody until somebody deliberately turns it off.
+        var wanted = addressed
+            .Where(t => settings.DailyReportCadence(new TenantId(t.TenantId)) != ReportCadence.Off)
+            .ToList();
+
+        var recipients = wanted
             .Select(t => new { account = t.Email!.Trim(), email = t.Email!.Trim() })
+            // Two accounts may legitimately carry one address, and they may disagree about wanting the
+            // mail. Dropping the duplicate AFTER the filter is what makes "one account still wants it"
+            // win over "the other turned it off" - the address is mailed once, which is the only answer
+            // that serves both, and silence would be an opt-out one account never asked for.
             .DistinctBy(r => r.email, StringComparer.OrdinalIgnoreCase)
             .OrderBy(r => r.email, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        // Count only - the addresses themselves are personally identifying and this log is not the
-        // place for them (the tenants table says the email is never logged).
-        FileLog.Write($"[ReportRecipientsEndpoint] served {recipients.Count} recipient(s)");
+        // Counts only - the addresses themselves are personally identifying and this log is not the
+        // place for them (the tenants table says the email is never logged). The opted-out count is
+        // logged beside the served count so a shrinking list has a stated reason and is never mistaken
+        // for accounts going missing.
+        FileLog.Write($"[ReportRecipientsEndpoint] served {recipients.Count} recipient(s); " +
+                      $"{addressed.Count - wanted.Count} account(s) have the report turned off");
         return Results.Json(new { recipients });
     }
 }

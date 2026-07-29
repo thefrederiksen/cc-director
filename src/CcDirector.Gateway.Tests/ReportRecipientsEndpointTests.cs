@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json;
 using CcDirector.Gateway.Api;
+using CcDirector.Gateway.Settings;
 using CcDirector.Gateway.Tenancy;
 using CcDirector.Gateway.Tests.Data;
 using Microsoft.AspNetCore.Http;
@@ -38,6 +39,10 @@ public sealed class ReportRecipientsEndpointTests : IDisposable
 
     private TenantRegistry Registry() => new(_h.Open());
 
+    /// <summary>The per-tenant settings over the SAME database as the registry, so a cadence written for a
+    /// minted tenant is the one the endpoint reads back (issue #1000).</summary>
+    private TenantSettingsResolver Settings() => new(new TenantSettingsStore(_h.Open()));
+
     /// <summary>An IResult needs a service provider to execute, exactly as the report endpoint's own
     /// tests build one.</summary>
     private static readonly IServiceProvider Services =
@@ -64,7 +69,7 @@ public sealed class ReportRecipientsEndpointTests : IDisposable
         Environment.SetEnvironmentVariable(MorningReportEndpoint.ServiceTokenEnvVar, null);
 
         var ctx = Ctx();
-        var (status, _) = await ExecuteAsync(ReportRecipientsEndpoint.Handle(ctx, Registry()), ctx);
+        var (status, _) = await ExecuteAsync(ReportRecipientsEndpoint.Handle(ctx, Registry(), Settings()), ctx);
 
         Assert.Equal(StatusCodes.Status503ServiceUnavailable, status);
     }
@@ -73,7 +78,7 @@ public sealed class ReportRecipientsEndpointTests : IDisposable
     public async Task WithTheWrongToken_ItRefuses()
     {
         var ctx = Ctx("not-the-token");
-        var (status, _) = await ExecuteAsync(ReportRecipientsEndpoint.Handle(ctx, Registry()), ctx);
+        var (status, _) = await ExecuteAsync(ReportRecipientsEndpoint.Handle(ctx, Registry(), Settings()), ctx);
 
         Assert.Equal(StatusCodes.Status401Unauthorized, status);
     }
@@ -82,7 +87,7 @@ public sealed class ReportRecipientsEndpointTests : IDisposable
     public async Task WithNoAuthorizationHeaderAtAll_ItRefuses()
     {
         var ctx = Ctx(bearer: null);
-        var (status, _) = await ExecuteAsync(ReportRecipientsEndpoint.Handle(ctx, Registry()), ctx);
+        var (status, _) = await ExecuteAsync(ReportRecipientsEndpoint.Handle(ctx, Registry(), Settings()), ctx);
 
         Assert.Equal(StatusCodes.Status401Unauthorized, status);
     }
@@ -95,7 +100,7 @@ public sealed class ReportRecipientsEndpointTests : IDisposable
         registry.MintOrLookupBySubject("subject-1", "leaked@example.com");
 
         var ctx = Ctx("wrong");
-        var (_, body) = await ExecuteAsync(ReportRecipientsEndpoint.Handle(ctx, registry), ctx);
+        var (_, body) = await ExecuteAsync(ReportRecipientsEndpoint.Handle(ctx, registry, Settings()), ctx);
 
         Assert.DoesNotContain("leaked@example.com", body.ToString(), StringComparison.OrdinalIgnoreCase);
     }
@@ -108,7 +113,7 @@ public sealed class ReportRecipientsEndpointTests : IDisposable
         registry.MintOrLookupBySubject("subject-2", "bob@example.com");
 
         var ctx = Ctx();
-        var (_, body) = await ExecuteAsync(ReportRecipientsEndpoint.Handle(ctx, registry), ctx);
+        var (_, body) = await ExecuteAsync(ReportRecipientsEndpoint.Handle(ctx, registry, Settings()), ctx);
         var emails = body.GetProperty("recipients").EnumerateArray()
             .Select(r => r.GetProperty("email").GetString()).ToList();
 
@@ -125,7 +130,7 @@ public sealed class ReportRecipientsEndpointTests : IDisposable
         registry.MintOrLookupBySubject("subject-with", "real@example.com");
 
         var ctx = Ctx();
-        var (_, body) = await ExecuteAsync(ReportRecipientsEndpoint.Handle(ctx, registry), ctx);
+        var (_, body) = await ExecuteAsync(ReportRecipientsEndpoint.Handle(ctx, registry, Settings()), ctx);
         var recipients = body.GetProperty("recipients").EnumerateArray().ToList();
 
         Assert.Equal("real@example.com", Assert.Single(recipients).GetProperty("email").GetString());
@@ -141,7 +146,7 @@ public sealed class ReportRecipientsEndpointTests : IDisposable
         registry.MintOrLookupBySubject("subject-2", "SAME@example.com");
 
         var ctx = Ctx();
-        var (_, body) = await ExecuteAsync(ReportRecipientsEndpoint.Handle(ctx, registry), ctx);
+        var (_, body) = await ExecuteAsync(ReportRecipientsEndpoint.Handle(ctx, registry, Settings()), ctx);
 
         Assert.Single(body.GetProperty("recipients").EnumerateArray());
     }
@@ -150,7 +155,91 @@ public sealed class ReportRecipientsEndpointTests : IDisposable
     public async Task WithNoAccountsAtAll_ItReturnsAnEmptyListRatherThanFailing()
     {
         var ctx = Ctx();
-        var (_, body) = await ExecuteAsync(ReportRecipientsEndpoint.Handle(ctx, Registry()), ctx);
+        var (_, body) = await ExecuteAsync(ReportRecipientsEndpoint.Handle(ctx, Registry(), Settings()), ctx);
+
+        Assert.Empty(body.GetProperty("recipients").EnumerateArray());
+    }
+
+    // ---- the account's own answer to "do you want this mail" (issue #1000) ---------------------------
+
+    [Fact]
+    public async Task AnAccountThatTurnedTheReportOff_IsNotMailed()
+    {
+        var registry = Registry();
+        var settings = Settings();
+        var quiet = registry.MintOrLookupBySubject("subject-quiet", "quiet@example.com");
+        registry.MintOrLookupBySubject("subject-wants", "wants@example.com");
+        settings.SetDailyReportCadence(quiet, ReportCadence.Off, DateTime.UtcNow);
+
+        var ctx = Ctx();
+        var (_, body) = await ExecuteAsync(ReportRecipientsEndpoint.Handle(ctx, registry, settings), ctx);
+        var emails = body.GetProperty("recipients").EnumerateArray()
+            .Select(r => r.GetProperty("email").GetString()).ToList();
+
+        Assert.Equal(new[] { "wants@example.com" }, emails);
+    }
+
+    [Fact]
+    public async Task AnAccountThatNeverChose_IsStillMailed()
+    {
+        // The default is daily, so switching this setting on cannot silently stop anybody's report. This is
+        // the arm that would catch a filter written the wrong way round - one that mailed only accounts
+        // holding an explicit "daily", which is nobody on the day it ships.
+        var registry = Registry();
+        registry.MintOrLookupBySubject("subject-untouched", "untouched@example.com");
+
+        var ctx = Ctx();
+        var (_, body) = await ExecuteAsync(ReportRecipientsEndpoint.Handle(ctx, registry, Settings()), ctx);
+        var emails = body.GetProperty("recipients").EnumerateArray()
+            .Select(r => r.GetProperty("email").GetString()).ToList();
+
+        Assert.Equal(new[] { "untouched@example.com" }, emails);
+    }
+
+    [Fact]
+    public async Task AnAccountThatTurnedTheReportBackOn_IsMailedAgain()
+    {
+        var registry = Registry();
+        var settings = Settings();
+        var tenant = registry.MintOrLookupBySubject("subject-returning", "returning@example.com");
+        settings.SetDailyReportCadence(tenant, ReportCadence.Off, DateTime.UtcNow);
+        settings.SetDailyReportCadence(tenant, ReportCadence.Daily, DateTime.UtcNow);
+
+        var ctx = Ctx();
+        var (_, body) = await ExecuteAsync(ReportRecipientsEndpoint.Handle(ctx, registry, settings), ctx);
+
+        Assert.Equal("returning@example.com",
+            Assert.Single(body.GetProperty("recipients").EnumerateArray()).GetProperty("email").GetString());
+    }
+
+    [Fact]
+    public async Task OneAddressOnTwoAccounts_OneOfWhichWantsIt_IsStillMailedOnce()
+    {
+        // Silence here would be an opt-out the second account never asked for; two copies would be the
+        // duplicate the endpoint already refuses. One copy is the only answer that serves both.
+        var registry = Registry();
+        var settings = Settings();
+        var off = registry.MintOrLookupBySubject("subject-1", "shared@example.com");
+        registry.MintOrLookupBySubject("subject-2", "shared@example.com");
+        settings.SetDailyReportCadence(off, ReportCadence.Off, DateTime.UtcNow);
+
+        var ctx = Ctx();
+        var (_, body) = await ExecuteAsync(ReportRecipientsEndpoint.Handle(ctx, registry, settings), ctx);
+
+        Assert.Equal("shared@example.com",
+            Assert.Single(body.GetProperty("recipients").EnumerateArray()).GetProperty("email").GetString());
+    }
+
+    [Fact]
+    public async Task EveryAccountTurningItOff_LeavesAnEmptyList_NotEveryAccount()
+    {
+        var registry = Registry();
+        var settings = Settings();
+        foreach (var (subject, email) in new[] { ("s1", "a@example.com"), ("s2", "b@example.com") })
+            settings.SetDailyReportCadence(registry.MintOrLookupBySubject(subject, email), ReportCadence.Off, DateTime.UtcNow);
+
+        var ctx = Ctx();
+        var (_, body) = await ExecuteAsync(ReportRecipientsEndpoint.Handle(ctx, registry, settings), ctx);
 
         Assert.Empty(body.GetProperty("recipients").EnumerateArray());
     }
@@ -164,7 +253,7 @@ public sealed class ReportRecipientsEndpointTests : IDisposable
         registry.MintOrLookupBySubject("s2", "bob@example.com");
 
         var ctx = Ctx();
-        var (_, body) = await ExecuteAsync(ReportRecipientsEndpoint.Handle(ctx, registry), ctx);
+        var (_, body) = await ExecuteAsync(ReportRecipientsEndpoint.Handle(ctx, registry, Settings()), ctx);
         var emails = body.GetProperty("recipients").EnumerateArray()
             .Select(r => r.GetProperty("email").GetString()).ToList();
 

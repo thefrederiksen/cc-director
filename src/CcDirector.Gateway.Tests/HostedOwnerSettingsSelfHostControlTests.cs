@@ -10,6 +10,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Tenancy;
+using CcDirector.Gateway.Settings;
 using CcDirector.Gateway.Tenancy;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -34,10 +35,10 @@ namespace CcDirector.Gateway.Tests;
 ///
 /// AND IT ASSERTS A POSITIVE FACT PER ROUTE, NOT THE ABSENCE OF THE REFUSAL. "The refusal string is not
 /// in the body" is satisfied by an empty 200, by a single-page-application shell, and by a route that was
-/// deleted - it proves nothing about the route being alive. All twenty-two routes are proved by one of:
-///   - its REAL PAYLOAD, field by field (the eight read routes);
+/// deleted - it proves nothing about the route being alive. All twenty-four routes are proved by one of:
+///   - its REAL PAYLOAD, field by field (the nine read routes);
 ///   - an INDEPENDENTLY RE-READ EFFECT - the value is written over the wire and then read back out of the
-///     configuration store through the Core config class, not out of the response (ten write routes);
+///     configuration store through the Core config class, not out of the response (eleven write routes);
 ///   - a SEEDED TRANSITION off a sentinel the effect cannot produce, where the effect is a RESET rather
 ///     than a stored value (the provider, one route);
 ///   - SERVED-AND-REACHES-A-HANDLER, the deliberately NARROWED claim for the one route that can carry no
@@ -47,7 +48,7 @@ namespace CcDirector.Gateway.Tests;
 ///     day a second mode is added, so the narrowing cannot go stale (one route);
 ///   - a HANDLER-UNIQUE RECEIPT: a status and message only that one handler can produce, where the route
 ///     has no readable effect to assert - the two credential-resolution routes (two routes).
-/// Eight plus ten plus one plus one plus two is twenty-two. No route is left over, and none is proved
+/// Nine plus eleven plus one plus one plus two is twenty-four. No route is left over, and none is proved
 /// only by the absence of the refusal.
 ///
 /// Issue #2022 removed the five machine-scoped routes this control once also covered - brain restart (the
@@ -129,6 +130,7 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
                          {
                              "gateway/settings",
                              "gateway/snooze-default",
+                             "gateway/daily-report",
                              "gateway/injected-text",
                              "gateway/snooze-presets",
                              "gateway/time-zone",
@@ -142,7 +144,7 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The eight read routes, each asserted by the REAL PAYLOAD it carries - the fields, and where a field
+    /// The nine read routes, each asserted by the REAL PAYLOAD it carries - the fields, and where a field
     /// has an independently knowable value, that value. Format facts (status, media type) are asserted
     /// BEFORE the body is parsed, on this side too: if a route were gone, the Gateway's single-page
     /// -application fallback would answer with HTML and parsing first would turn that finding into a crash.
@@ -178,8 +180,9 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
                 Assert.Equal(new[]
                 {
                     "snoozeDefaultMinutes", "snoozePresets",
-                    "snoozeMaxPresets", "timeZone", "timeZoneMachineDefault",
+                    "snoozeMaxPresets", "timeZone", "timeZoneMachineDefault", "dailyReportCadence",
                 }, properties);
+                Assert.Equal(ReportCadences.DailyName, root.GetProperty("dailyReportCadence").GetString());
                 Assert.True(root.GetProperty("snoozePresets").GetArrayLength() > 0);
                 Assert.Equal(SnoozePresetsConfig.MaxPresets, root.GetProperty("snoozeMaxPresets").GetInt32());
                 break;
@@ -187,6 +190,14 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
             case "gateway/snooze-default":
                 Assert.Equal(new[] { "minutes" }, properties);
                 Assert.Equal(SnoozeDefaultConfig.Get(), root.GetProperty("minutes").GetInt32());
+                break;
+
+            case "gateway/daily-report":
+                // The account's report cadence (issue #1000). Its independently knowable value is the
+                // documented default - daily - because a Gateway nobody has configured must still be
+                // mailing everyone who has an address, exactly as it did before the setting existed.
+                Assert.Equal(new[] { "cadence" }, properties);
+                Assert.Equal(ReportCadences.DailyName, root.GetProperty("cadence").GetString());
                 break;
 
             case "gateway/injected-text":
@@ -247,6 +258,9 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
                 data.Add(hosted, "PUT", "gateway/injected-text", "{\"use_yours\":true,\"yours\":\"words from another tenant\"}", "injected-text", "words from another tenant");
                 data.Add(hosted, "PUT", "gateway/snooze-presets", "{\"presets\":[15,30,60],\"defaultMinutes\":30}", "snooze-presets", "15,30,60");
                 data.Add(hosted, "PUT", "gateway/time-zone", "{\"timeZone\":\"America/New_York\"}", "time-zone", "America/New_York");
+                // "off" is the value that is distinguishable from the default, so the re-read proves a write
+                // rather than a no-op.
+                data.Add(hosted, "PUT", "gateway/daily-report", "{\"cadence\":\"off\"}", "daily-report", "off");
                 // transcription-mode is NOT here - it needs a seeded starting value to be distinguishable
                 // from a no-op, so it has its own test below.
                 data.Add(hosted, "PUT", "gateway/tts-voice", "{\"voice\":\"shimmer\"}", "tts-voice", "shimmer");
@@ -276,6 +290,7 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
         "injected-text" => _gateway.TenantSettingsResolver.InjectedText(TenantId.Local).Yours ?? "",
         "snooze-presets" => string.Join(",", _gateway.TenantSettingsResolver.SnoozePresets(TenantId.Local)),
         "time-zone" => _gateway.TenantSettingsResolver.TimeZone(TenantId.Local),
+        "daily-report" => ReportCadences.Name(_gateway.TenantSettingsResolver.DailyReportCadence(TenantId.Local)),
         "transcription-mode" => TranscriptionModeConfig.Get().ToConfigString(),
         "tts-voice" => _gateway.TenantSettingsResolver.TtsVoice(TenantId.Local, TranscriptionModeConfig.Get()),
         "wingman-model" => _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, TranscriptionModeConfig.Get(), WingmanModelRole.Thinking),
@@ -451,6 +466,33 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
     // receipt. Those endpoints no longer exist, so there is nothing to serve. The brain-restart SEAM
     // (GatewayHost.BrainRestartAction) stays for the automatic recovery path, but it is no longer reachable
     // over HTTP.
+    /// <summary>
+    /// An unknown report cadence is REFUSED and CHANGES NOTHING (issue #1000). The second half is the half
+    /// that matters: a handler that answered 400 after having already written would leave the account on a
+    /// schedule it never asked for while telling it the request failed. The stored value is re-read out of
+    /// the resolver, not out of the response.
+    /// </summary>
+    [Theory]
+    [InlineData("{\"cadence\":\"weekly\"}")]
+    [InlineData("{\"cadence\":\"\"}")]
+    [InlineData("{\"cadence\":null}")]
+    [InlineData("{}")]
+    public async Task An_unknown_report_cadence_is_refused_and_leaves_the_setting_alone(string body)
+    {
+        DeclareSelfHost(null);
+
+        // Start from a value that is NOT the default, so a write that wrongly went through would be visible
+        // either way - as a change to daily, or as a change to the unknown value.
+        (await _http.PutAsync("gateway/daily-report",
+            new StringContent("{\"cadence\":\"off\"}", Encoding.UTF8, "application/json")))
+            .EnsureSuccessStatusCode();
+
+        var refused = await _http.PutAsync("gateway/daily-report",
+            new StringContent(body, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, refused.StatusCode);
+        Assert.Equal(ReportCadence.Off, _gateway.TenantSettingsResolver.DailyReportCadence(TenantId.Local));
+    }
 }
 
 /// <summary>
@@ -562,4 +604,5 @@ public sealed class HostedOwnerSettingsSelfHostProbeTests : IAsyncLifetime
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
     }
+
 }

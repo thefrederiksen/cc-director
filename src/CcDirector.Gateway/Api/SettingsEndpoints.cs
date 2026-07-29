@@ -22,8 +22,9 @@ namespace CcDirector.Gateway.Api;
 ///
 ///   SERVE ON HOSTED (per-account, resolve the caller tenant, 403 if unresolved):
 ///   GET  /gateway/settings        -> { snoozeDefaultMinutes, snoozePresets, snoozeMaxPresets,
-///                                       timeZone, timeZoneMachineDefault }
+///                                       timeZone, timeZoneMachineDefault, dailyReportCadence }
 ///   GET+PUT /gateway/snooze-default, /gateway/snooze-presets, /gateway/time-zone
+///   GET+PUT /gateway/daily-report               (per-account report cadence; issue #1000)
 ///   GET  /gateway/ai-provider     -> { provider, wingmanModel, wingmanFastModel, carModeModel,
 ///                                       carModeEndPhrase, transcriptionModel, ttsModel, ttsVoice, voices[],
 ///                                       catalogAvailable }
@@ -183,7 +184,54 @@ internal static class SettingsEndpoints
                 // "automatic" resolves to.
                 timeZone = host.TenantSettingsResolver.TimeZone(t.Value),
                 timeZoneMachineDefault = Core.Configuration.TimeZoneConfig.MachineDefault(),
+                // How often this account wants the daily report email (issue #1000): "daily" or "off".
+                // Sent as the cadence NAME, not a boolean, because the question is how often and a third
+                // answer (weekly) is waiting on the report being able to summarize a range.
+                dailyReportCadence = Settings.ReportCadences.Name(
+                    host.TenantSettingsResolver.DailyReportCadence(t.Value)),
             });
+        });
+
+        // How often this account wants the daily report email (issue #1000, follow-up to
+        // devthrottle_internal#996). Per ACCOUNT, because the report is one person and one email: the
+        // first-run wizard used to ask it once per machine, so the same person answered it once per
+        // install and no answer could win. Read by ReportRecipientsEndpoint when the sender asks who to
+        // mail, so a change applies to the next morning's send with no Gateway restart.
+        app.MapGet("/gateway/daily-report", (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, host.TenantBoundary);
+            if (t is null) return TenantRequired();
+            return Results.Json(new
+            {
+                cadence = Settings.ReportCadences.Name(host.TenantSettingsResolver.DailyReportCadence(t.Value)),
+            });
+        });
+
+        app.MapPut("/gateway/daily-report", async (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, host.TenantBoundary);
+            if (t is null) return TenantRequired();
+            try
+            {
+                var body = await JsonSerializer.DeserializeAsync<DailyReportBody>(
+                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
+                // An unknown cadence is REFUSED, never rounded to the nearest one this Gateway knows. A
+                // silent round would answer "saved" and then mail on a schedule the caller did not ask for.
+                if (!Settings.ReportCadences.TryParse(body?.Cadence, out var cadence))
+                    return Results.BadRequest(new
+                    {
+                        error = $"body {{ \"cadence\": \"...\" }} is required, one of: {string.Join(", ", Settings.ReportCadences.AllNames)}",
+                    });
+
+                host.TenantSettingsResolver.SetDailyReportCadence(t.Value, cadence, DateTime.UtcNow);
+                FileLog.Write($"[SettingsEndpoints] daily_report_cadence set to {Settings.ReportCadences.Name(cadence)} for tenant={t.Value.ToLogString()}");
+                return Results.Json(new { cadence = Settings.ReportCadences.Name(cadence) });
+            }
+            catch (JsonException ex)
+            {
+                FileLog.Write($"[SettingsEndpoints] PUT /gateway/daily-report bad JSON: {ex.Message}");
+                return Results.BadRequest(new { error = "invalid JSON" });
+            }
         });
 
         // The per-user default snooze length in minutes (Snooze Length mission,
@@ -590,4 +638,5 @@ internal static class SettingsEndpoints
     private sealed record SnoozeDefaultBody(int? Minutes);
     private sealed record SnoozePresetsBody(int[]? Presets, int? DefaultMinutes);
     private sealed record TimeZoneBody(string? TimeZone);
+    private sealed record DailyReportBody(string? Cadence);
 }

@@ -2553,8 +2553,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // (the caller is a server with no device key); it carries its own bearer service token from
         // REPORT_SERVICE_TOKEN and resolves the named account to exactly one tenant. Read-only.
         Api.MorningReportEndpoint.Map(_app, _morningReport, TenantRegistry, _tenantBoundary);
-        // Who that report goes to: every account on this Gateway, behind the same service token.
-        Api.ReportRecipientsEndpoint.Map(_app, TenantRegistry);
+        // Who that report goes to: every account on this Gateway that has an address and has not turned the
+        // report off (issue #1000), behind the same service token.
+        Api.ReportRecipientsEndpoint.Map(_app, TenantRegistry, _tenantSettingsResolver);
 
         // Gateway Centralization Phase 2 (issue #638): GET /account/status answers "is the Gateway
         // signed in to DevThrottle, and as whom?" computed ENTIRELY LOCALLY from the Gateway-hosted

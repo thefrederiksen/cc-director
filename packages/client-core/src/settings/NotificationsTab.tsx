@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
-import { setSnoozePresets, setTimeZone, type SnoozePresets } from "./settingsClient";
+import {
+  setDailyReportCadence,
+  setSnoozePresets,
+  setTimeZone,
+  type ReportCadence,
+  type SnoozePresets,
+} from "./settingsClient";
 import { formatSnoozeLength, snoozeDraftFrom, snoozeMinutesFrom, type SnoozeUnit } from "./snoozeFormat";
 import { ACCOUNT_SCOPE, CardHead, errText, useGatewaySettings } from "./settingsShared";
 import { disablePush, enablePush, isPushSubscribed, notificationPermission, pushSupported } from "../push/register";
@@ -22,6 +28,7 @@ export function NotificationsTab() {
       <SnoozeCard />
       <TimeZoneCard />
       <NotificationsCard />
+      <DailyReportCard />
     </>
   );
 }
@@ -352,6 +359,75 @@ function NotificationsCard() {
           this on.
         </p>
       )}
+      {msg !== "" && <div className="settings-msg">{msg}</div>}
+    </section>
+  );
+}
+
+// ---- The daily report email (issue #1000) ---------------------------------------------------------
+//
+// How often this ACCOUNT gets the morning report - the last of the "how the fleet reaches you" settings,
+// and the only one that reaches you when you are not in the app at all, so it sits at the end of the tab.
+//
+// This question used to be asked by the first-run wizard, which runs once per director per machine: one
+// person with three machines answered it three times for one email address, and nothing read the answer
+// anyway. It belongs here because the Gateway is the only place the preference is true at - one account,
+// one address, one answer - and it is read by the Gateway itself when the sender asks who to mail.
+//
+// Two choices, not three. The wizard also offered Weekly; the report covers one calendar day, so weekly
+// would mail a Monday and call it a week. It comes back when the report can summarize a range.
+export function DailyReportCard() {
+  const { settings, setSettings, error, busy, msg, runSave } = useGatewaySettings();
+
+  if (error !== null) {
+    return <div className="settings-error">Could not load the daily report setting: {error}</div>;
+  }
+  if (settings === null) {
+    return <p className="settings-loading">Loading...</p>;
+  }
+
+  const choose = (cadence: ReportCadence) => {
+    if (busy || cadence === settings.dailyReportCadence) return;
+    void runSave(async () => {
+      const applied = await setDailyReportCadence(cadence);
+      setSettings({ ...settings, dailyReportCadence: applied });
+      return applied === "off"
+        ? "Off. You will not get the daily report email."
+        : "On. The report arrives every morning at 7:00 Eastern.";
+    });
+  };
+
+  return (
+    <section className="settings-card">
+      <CardHead title="Daily report" scope={ACCOUNT_SCOPE} />
+      <p className="settings-hint">
+        A short email every morning at 7:00 Eastern: what your sessions did yesterday and what is waiting
+        on you. It goes to your account&apos;s email address, so this is one setting for the whole account -
+        every device you sign in on shows the same choice. Read when the email is sent, so a change applies
+        to the next morning.
+      </p>
+      <div className="settings-field">
+        <label className="settings-check">
+          <input
+            type="radio"
+            name="daily-report-cadence"
+            checked={settings.dailyReportCadence === "daily"}
+            disabled={busy}
+            onChange={() => choose("daily")}
+          />
+          Send it every morning
+        </label>
+        <label className="settings-check">
+          <input
+            type="radio"
+            name="daily-report-cadence"
+            checked={settings.dailyReportCadence === "off"}
+            disabled={busy}
+            onChange={() => choose("off")}
+          />
+          Do not send it
+        </label>
+      </div>
       {msg !== "" && <div className="settings-msg">{msg}</div>}
     </section>
   );
