@@ -6,9 +6,11 @@ namespace CcDirector.Setup.Cli;
 /// <summary>Implements each CLI command over the engine. Thin: no business logic lives here.</summary>
 internal static class Commands
 {
-    private const int Ok = 0;
-    private const int Error = 1;
-    private const int PrereqMissing = 3;
+    // The numbers live in ExitCodes - a contract scripts and agents branch on, not private
+    // constants duplicated per file (they were, in two files, with nothing pinning them).
+    private const int Ok = ExitCodes.Ok;
+    private const int Error = ExitCodes.Error;
+    private const int PrereqMissing = ExitCodes.PrerequisiteMissing;
 
     // ---- component scope helpers ------------------------------------------
 
@@ -170,35 +172,44 @@ internal static class Commands
         return Ok;
     }
 
+    /// <summary>
+    /// Is there a coding agent on this machine? Nothing else is checked, because nothing else is
+    /// needed: the Director and the launcher carry their own .NET runtime, the cc-* tools bring their
+    /// own Python, and the tunnel-only architecture opens no inbound port, so no mesh network or
+    /// firewall change is involved either.
+    ///
+    /// The answer comes from the shared <see cref="AgentPresence"/> - the same code the wizards use -
+    /// so the two install paths cannot disagree. This command used to have its own detector that knew
+    /// only Claude and Codex and looked only at PATH, while the wizards knew all eight agents and also
+    /// looked where installers actually put them. One product, one answer.
+    /// </summary>
     public static int Prereqs(bool json)
     {
-        // Tailscale is deliberately NOT checked: it is not a product requirement. The
-        // tunnel-only architecture means the Director and launcher dial OUT to the Gateway
-        // and no inbound port is ever opened, so nothing on this machine needs a mesh
-        // network, a VPN, or a firewall change.
-        var statuses = FrameworkDetector.DetectAll();
-        var anyFound = statuses.Any(s => s.Found);
+        var found = AgentPresence.AnyAgent();
 
         if (json)
         {
             Program.WriteJson(new
             {
-                satisfied = anyFound,
-                frameworks = statuses.Select(s => new { name = s.Name, found = s.Found, location = s.Location }),
+                satisfied = found,
+                codingAgentPresent = found,
+                agentsChecked = AgentPresence.AgentCommands,
+                searched = AgentPresence.SearchDirectories(),
             });
-            return anyFound ? Ok : PrereqMissing;
+            return found ? Ok : PrereqMissing;
         }
 
-        Console.WriteLine("Agent framework check:");
-        foreach (var s in statuses)
-            Console.WriteLine($"  {s.Name,-8} {(s.Found ? $"found ({s.Location})" : "not found")}");
+        Console.WriteLine(found
+            ? "Coding agent: found."
+            : "Coding agent: none found.");
 
-        if (!anyFound)
+        if (!found)
         {
             Console.WriteLine();
-            Console.WriteLine("No agent framework detected. Install one, then re-run:");
-            Console.WriteLine($"  Claude Code: {FrameworkDetector.ClaudeInstallUrl}");
-            Console.WriteLine($"  Codex:       {FrameworkDetector.CodexInstallUrl}");
+            Console.WriteLine("DevThrottle runs coding agents, so it needs at least one to be useful.");
+            Console.WriteLine($"Looked for: {string.Join(", ", AgentPresence.AgentCommands)}");
+            Console.WriteLine("Install one and re-run this check. The Director also detects agents when it opens,");
+            Console.WriteLine("and can add what it finds to your board.");
             return PrereqMissing;
         }
         return Ok;

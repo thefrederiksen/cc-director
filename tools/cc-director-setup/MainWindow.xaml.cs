@@ -198,7 +198,7 @@ public partial class MainWindow : Window
         {
             1 => _welcomeStep ??= BuildWelcomeStep(),
             StepInstall => _installStep ??= new InstallStep(),
-            StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _directorExePath, _isUpdate, _alreadyUpToDate, _cachedPrep?.Version, _gatewayFailureReason, BuildAgentNotice(), IsReadyToGo()),
+            StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _directorExePath, _isUpdate, _alreadyUpToDate, _cachedPrep?.Version, _gatewayFailureReason, BuildAgentNotice(), IsReadyToGo(), SkippedComponentNames()),
             _ => null
         };
 
@@ -300,6 +300,14 @@ public partial class MainWindow : Window
     /// </summary>
     private bool IsReadyToGo() => InstallCompletion.IsReadyToGo(_skippedCount, AgentPresence.AnyAgent());
 
+    /// <summary>Which components did not install, by name, so the Complete screen can say WHICH one -
+    /// a count is not something the reader can act on.</summary>
+    private IReadOnlyList<string> SkippedComponentNames() =>
+        _cachedPrep?.Items
+            .Where(i => i.Status is "Skipped" or "Failed")
+            .Select(i => i.Name)
+            .ToList() ?? [];
+
     private async Task RunInstallAsync()
     {
         SetupLog.Write("[MainWindow] RunInstallAsync: starting");
@@ -322,6 +330,7 @@ public partial class MainWindow : Window
         catch (GitHubRateLimitException ex)
         {
             SetupLog.Write($"[MainWindow] RunInstallAsync: prepare FAILED (rate limit): {ex.Message}");
+            _installStep?.SetNotStarted();
             _installStep?.SetStatus(ex.UserMessage());
             NextButton.Content = "Retry";
             NextButton.IsEnabled = true;
@@ -330,6 +339,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             SetupLog.Write($"[MainWindow] RunInstallAsync: prepare FAILED: {ex.Message}");
+            _installStep?.SetNotStarted();
             _installStep?.SetStatus("ERROR: Could not fetch release info from GitHub.");
             NextButton.Content = "Retry";
             NextButton.IsEnabled = true;

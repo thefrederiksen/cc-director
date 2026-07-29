@@ -27,7 +27,7 @@ public partial class CompleteStep : UserControl
     /// missing is the lie this parameter removes.
     /// Computed once by <see cref="InstallCompletion.IsReadyToGo"/>; this screen only renders it.
     /// </param>
-    public CompleteStep(int installed, int skipped, string installPath, string directorExePath, bool isUpdate, bool alreadyUpToDate = false, string? version = null, string? gatewayFailureReason = null, string? agentNotice = null, bool readyToGo = true)
+    public CompleteStep(int installed, int skipped, string installPath, string directorExePath, bool isUpdate, bool alreadyUpToDate = false, string? version = null, string? gatewayFailureReason = null, string? agentNotice = null, bool readyToGo = true, IReadOnlyList<string>? skippedNames = null)
     {
         InitializeComponent();
 
@@ -94,14 +94,25 @@ public partial class CompleteStep : UserControl
                 var amber = AmberBrush;
                 HeadingText.Text = isUpdate ? "Update finished with problems" : "Setup finished with problems";
                 HeadingText.Foreground = amber;
+                // NAME what failed. "1 component(s) did not install" is a count, not information the
+                // reader can act on. macOS already named the component; this was the last content
+                // difference between the two Complete screens.
+                var names = skippedNames ?? [];
+                var what = names.Count switch
+                {
+                    0 => skipped == 1 ? "One component" : $"{skipped} components",
+                    1 => names[0],
+                    _ => string.Join(", ", names),
+                };
                 // Carry the specific Gateway failure reason onto the final screen when we have it, so a
                 // failed Gateway update tells the user WHY - not just that something did not install.
                 DescriptionText.Text = string.IsNullOrWhiteSpace(gatewayFailureReason)
-                    ? $"{skipped} component(s) did not install. DevThrottle may still work, but please report this."
-                    : $"{skipped} component(s) did not install. DevThrottle may still work, but please report this.\n{gatewayFailureReason}";
+                    ? $"{what} did not install. The Director may still work, but please report this."
+                    : $"{what} did not install. The Director may still work, but please report this.\n{gatewayFailureReason}";
                 SummaryLine.Visibility = Visibility.Collapsed;
                 FailurePanel.Visibility = Visibility.Visible;
-                DetailsHeader.Text = $"{skipped} component(s) did not install - please report this";
+                if (names.Count > 0) SkippedText.Text = $"{skipped} ({string.Join(", ", names)})";
+                DetailsHeader.Text = $"{what} did not install - please report this";
                 DetailsHeader.Foreground = amber;
                 DetailsExpander.IsExpanded = true;
                 break;

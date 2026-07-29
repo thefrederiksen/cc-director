@@ -170,6 +170,20 @@ public partial class InstallStep : UserControl
         OnRepairRequested?.Invoke();
     }
 
+    /// <summary>
+    /// Nothing was attempted - say so. A release fetch that fails (a rate limit, no network) never
+    /// reaches SetItems, so every card sat at "Pending" for ever, which reads as work still in
+    /// progress on a run that has already stopped.
+    /// </summary>
+    public void SetNotStarted()
+    {
+        var dim = SolidColorBrush.Parse("#888888");
+        DirectorStatus.Text = "Not started";
+        DirectorStatus.Foreground = dim;
+        LauncherStatus.Text = "Not started";
+        LauncherStatus.Foreground = dim;
+    }
+
     public void SetStatus(string status)
     {
         StatusText.Text = status;

@@ -224,6 +224,7 @@ public partial class MainWindow : Window
         catch (GitHubRateLimitException ex)
         {
             SetupLog.Write($"[MainWindow] RunInstallAsync: prepare FAILED (rate limit): {ex.Message}");
+            _installStep?.SetNotStarted();
             _installStep?.SetStatus(ex.UserMessage());
             NextButton.Content = "Retry";
             NextButton.IsEnabled = true;
@@ -232,6 +233,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             SetupLog.Write($"[MainWindow] RunInstallAsync: prepare FAILED: {ex.Message}");
+            _installStep?.SetNotStarted();
             _installStep?.SetStatus("ERROR: Could not fetch release info from GitHub.");
             NextButton.Content = "Retry";
             NextButton.IsEnabled = true;
