@@ -24,12 +24,32 @@ Proven end to end 2026-07-28: a session moved onto a newer Director read its han
 restated the work and its constraints, ran the exact next action unprompted, and correctly handled
 the failure that action turned up.
 
+## Step 0 - Should this be moved AT ALL?
+
+**Ask this before anything else. Most sessions on a Director being emptied should be CLOSED, not
+moved.** A move recreates a session and spends a whole fresh context window doing it. That is only
+worth paying when there is work that CONTINUES.
+
+Get the handover first (step 2) - it is cheap and you want the record either way - then read its
+"exact next action":
+
+- **It names real work** -> move it. Continue to step 1.
+- **It says the work is finished, merged, or that there is nothing to do** -> **do not move it.**
+  Keep the document and delete the session (step 5). You emptied a slot for free.
+- **It says the next action is "ask the owner something"** -> do not move it. Put the question to
+  the owner yourself, keep the document, delete the session.
+
+This was learned by getting it wrong: a session was moved whose work was finished and merged, whose
+own handover said there was no required next action. A fresh context window was spent recreating a
+session with nothing to do. Closing it would have emptied the same slot at no cost.
+
 ## When NOT to move
 
 - **Never round-trip.** "Move it to the new Director now and back later" rebuilds the session twice
   and loses a little each time. Move it where you want it and leave it.
 - **Never move a session that is working.** Wait for its turn to finish.
-- **Every move costs a fresh context window.** Check usage before moving a fleet.
+- **Every move costs a fresh context window.** Check usage before moving a fleet, and remember that
+  step 0 makes some of them free.
 
 ## The control surface is the GATEWAY, not the Director
 
@@ -148,11 +168,19 @@ the source was NOT on the default. Two things to know:
   permission preset too or the session blocks on a prompt for every action:
   `--args "--dangerously-skip-permissions --model <id>"`.
 
-Then **verify by reading back**, never by trusting the flags you sent:
+Then **verify by reading back**, never by trusting the flags you sent. **Read the target's own
+terminal header - not the Gateway's `currentModel` field.** That field is populated from the tool's
+records and was still empty on a freshly moved target after a completed turn, so a check written
+against it either fails or gets skipped as unavailable. The header is authoritative and immediate:
 
 ```bash
-cc-devthrottle session list --json    # compare the target's agent + currentModel against the source
+CC_DIRECTOR_API=http://127.0.0.1:<targetPort> cc-devthrottle session buffer <targetId> \
+  | grep -o "Opus[^·]*\|Sonnet[^·]*\|Haiku[^·]*" | head -1
+# -> Opus 5 (1M context)     compare against the source's model
 ```
+
+`agent` IS reliable on the Gateway record, so compare that from `session list --json`. Treat
+`currentModel` as a bonus if it happens to be there.
 
 If they differ, stop. Delete the target and start again. A session continuing on a different model
 is not the same session.
@@ -173,9 +201,15 @@ Tell it what it is, point it at the document, make it prove it read it:
 
 ## Step 4 - Verify the pickup BEFORE touching the source
 
+**Always take the TAIL of the buffer, never the whole thing.** A single session's scrollback came
+back at 1.3 MB and had to be spilled to a file. You want the last few turns:
+
 ```bash
-CC_DIRECTOR_API=http://127.0.0.1:<targetPort> cc-devthrottle session buffer <targetId>
+CC_DIRECTOR_API=http://127.0.0.1:<targetPort> cc-devthrottle session buffer <targetId> \
+  | tr -s ' ' | tail -30
 ```
+
+(`tr -s ' '` collapses the terminal's padding, which otherwise makes the output unreadable.)
 
 It **passes** when the target states the work, its constraints and the next action **from the
 document**, then does that action. It **fails** when it guesses, asks what it should be doing, or
@@ -198,10 +232,26 @@ asked for the move, and a move includes this.** Asking here is how a Director en
 ```bash
 cc-devthrottle session rename <sourceId> "[MOVED -> <where>] <original name>"
 cc-devthrottle message send   <sourceId> "Moved and verified. Do nothing further; you are being closed."
-cc-devthrottle session done   <sourceId>     # the Director reaps it shortly
+cc-devthrottle session done   <sourceId>     # FLAGS it; the Director reaps it later
 ```
 
-The rename is for the second or two it remains visible, so anyone watching sees why it vanished.
+The rename is for the time it remains visible, so anyone watching sees why it vanished.
+
+**`session done` is a flag, not a delete, and the reap is asynchronous.** The session stays in the
+fleet list - state `Running`, nothing obviously pending - for a while afterwards. **Poll until it is
+actually absent; do not check once and theorise.** Getting this wrong once already produced a
+confident wrong diagnosis (an invented rule that a hold was required first; the session had simply
+not been reaped yet):
+
+```bash
+i=0; until ! cc-devthrottle session list --json | grep -q "<sourceId>" || [ $i -ge 24 ]; do
+  sleep 10; i=$((i+1)); done
+cc-devthrottle session list --json | grep -q "<sourceId>" \
+  && echo "STILL PRESENT after 4 min - investigate" || echo "DELETED"
+```
+
+Only report the move complete once that says DELETED. If it never goes, say so plainly rather than
+inventing a mechanism to explain it.
 
 **If step 4 did NOT pass, delete nothing.** Leave the source running and untouched, delete the
 failed TARGET instead, and fix the handover document. A source deleted behind a target that cannot
@@ -234,6 +284,9 @@ When the point of the move was to empty a Director, say how many sessions it has
   you have not moved anything - you have duplicated it, and the Director you were emptying is still
   full. Either verification passed, in which case delete, or it did not, in which case fix the
   document and try again.
+- **A slow result is not a broken one.** When something does not happen as fast as you expected -
+  a reap, a model field, a state change - poll it before you explain it. An invented mechanism that
+  fits one observation is worse than saying "it took longer than I thought".
 
 ## Note for the future
 
@@ -242,7 +295,18 @@ machine-specific paths so it can be served unchanged to every agent.
 
 ---
 
-**Skill version:** 4.0 · **Updated:** 2026-07-28
+**Skill version:** 4.1 · **Updated:** 2026-07-28
+**Changes in 4.1** (four fixes from the second real move):
+(1) **Step 0 - should this be moved at all?** A session whose work is finished should be CLOSED, not
+recreated. Found by moving one whose own handover said there was no next action, spending a fresh
+context window on a session with nothing to do. Closing empties the same slot for free.
+(2) **The model check now reads the session's terminal header**, because the Gateway's
+`currentModel` was still empty on a moved target after a completed turn - the check as written in
+4.0 could not be satisfied. `agent` remains reliable from the Gateway record.
+(3) **Deletion is verified by polling until the session is absent.** `session done` is a flag and
+the reap is slow; checking once produced a confident wrong diagnosis (an invented rule that a hold
+was required first).
+(4) **Read the TAIL of the buffer.** One session's scrollback was 1.3 MB.
 **Changes in 4.0:** A move now DELETES the source automatically, gated on verification and nothing
 else. This reverses 3.1's "never kill the source - the user closes it", which defeated the purpose:
 the reason to move sessions is to empty a Director so it can be shut down and updated, and a parked
