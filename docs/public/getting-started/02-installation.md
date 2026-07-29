@@ -157,13 +157,28 @@ On **macOS**, use the **DevThrottle Setup** app via the Terminal command shown a
 
 ## Skills
 
-The installer places no skill files on your machine. DevThrottle's skills are held centrally on the
-Gateway and reach every agent on every machine from there, so a skill is fixed once and is live
-everywhere - no release, and nothing to update or uninstall on your side.
+DevThrottle's skills are held centrally on the Gateway, so a skill is fixed once and is live
+everywhere - no release, and nothing for you to update or uninstall.
+
+The installer itself places no skill files on your machine. DevThrottle downloads them while it runs
+and keeps them current for you:
+
+- **DevThrottle downloads your enabled skills from the Gateway** as soon as it connects, and again
+  about once a minute after that.
+- **It writes each one into `~/.agents/skills`** - the shared folder that Codex, Gemini, Grok, pi,
+  Copilot and opencode all read on their own, with nothing to configure. Claude Code and Cursor do not
+  read that folder, so each skill also gets a shortcut into their own folder pointing at the same copy.
+  There is only ever one copy, so there is nothing that can drift out of step.
+- **Each agent then finds the skills by itself**, through its own skills feature. There is no
+  DevThrottle command in the way.
+- **Switching a skill off removes it from your disk.** DevThrottle matches what is on the machine to
+  what the Gateway is serving, so a skill you turn off is gone the next time a session starts - it
+  cannot keep working from a leftover file.
 
 Your own skills are untouched by all of this. A skill in your personal `~/.claude/skills/` folder, or
 one in a repository's own `.claude/skills/` folder, keeps working exactly as before, and a local skill
-wins if it shares a name with a central one.
+wins if it shares a name with a central one - DevThrottle only ever touches the skills it put there
+itself.
 
 ## Setting Up Email Tools
 
