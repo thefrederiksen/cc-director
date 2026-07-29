@@ -133,19 +133,16 @@ public partial class BrowsersRailGroup : UserControl
         ManageRequested?.Invoke(this, EventArgs.Empty);
     }
 
+    /// <summary>
+    /// Open the Browsers settings, where the install runs (issue #1012). The rail is a narrow strip with
+    /// no room to report a multi-step install honestly - progress, and a failure with its reason and the
+    /// manual page - so it hands over to the screen that has. It no longer opens a GitHub page: the
+    /// product installs the harness itself now.
+    /// </summary>
     private void InstallLink_Click(object? sender, RoutedEventArgs e)
     {
-        try
-        {
-            FileLog.Write($"[BrowsersRailGroup] InstallLink_Click -> {AutomationBrowserViewFold.HarnessInstallUrl}");
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(AutomationBrowserViewFold.HarnessInstallUrl)
-                { UseShellExecute = true });
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[BrowsersRailGroup] InstallLink_Click FAILED: {ex.Message}");
-            Notified?.Invoke(this, $"Could not open the install guide: {ex.Message}");
-        }
+        FileLog.Write("[BrowsersRailGroup] InstallLink_Click -> manage");
+        ManageRequested?.Invoke(this, EventArgs.Empty);
     }
 
     // ---- rows ----

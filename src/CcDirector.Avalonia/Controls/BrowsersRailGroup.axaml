@@ -109,7 +109,7 @@
                  discovered-but-dimmed rows above and this inline install link. -->
             <Button x:Name="InstallLink" Classes="railRow" IsVisible="False"
                     Click="InstallLink_Click"
-                    ToolTip.Tip="Open the Browser Harness install guide in your browser">
+                    ToolTip.Tip="Set up browser control in Settings - DevThrottle installs Browser Harness for you">
                 <TextBlock Text="Install Browser Harness" Foreground="#4A9EFF"
                            FontSize="11" FontWeight="SemiBold" />
             </Button>

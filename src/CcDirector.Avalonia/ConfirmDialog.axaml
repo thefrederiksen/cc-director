@@ -14,7 +14,11 @@
                    TextWrapping="Wrap" />
 
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
-            <Button x:Name="ConfirmButton" Content="Remove" Width="100" Height="30"
+            <!-- MinWidth, never a fixed Width. These buttons carry a label the CALLER supplies, and a
+                 fixed width silently clipped anything longer than "Remove" - the browser sign-in
+                 confirmation read "Done - I am s". A button that truncates its own instruction is worse
+                 than no label at all, so they size to their content and the number is only a floor. -->
+            <Button x:Name="ConfirmButton" Content="Remove" MinWidth="100" Height="30" Padding="14,0"
                     Click="BtnConfirm_Click"
                     Background="#007ACC" Foreground="White"
                     BorderThickness="0"
@@ -22,7 +26,7 @@
                     HorizontalContentAlignment="Center"
                     VerticalContentAlignment="Center"
                     IsDefault="True" />
-            <Button x:Name="CancelButton" Content="Cancel" Width="90" Height="30"
+            <Button x:Name="CancelButton" Content="Cancel" MinWidth="90" Height="30" Padding="14,0"
                     Click="BtnCancel_Click"
                     Background="#3C3C3C" Foreground="#CCCCCC"
                     BorderThickness="0"

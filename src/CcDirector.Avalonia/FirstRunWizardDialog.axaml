@@ -97,6 +97,13 @@
         <Style Selector="Button.primaryButton:pointerover /template/ ContentPresenter">
             <Setter Property="Background" Value="#005BA4" />
         </Style>
+        <!-- A disabled primary must still LOOK like the button it is. The theme's disabled brushes are
+             near-white on this near-white footer, so a step doing work ("Setting up...", "Checking...")
+             appeared to have no primary button at all - the screen read as broken rather than busy. -->
+        <Style Selector="Button.primaryButton:disabled /template/ ContentPresenter">
+            <Setter Property="Background" Value="#9FC4E3" />
+            <Setter Property="TextElement.Foreground" Value="#FFFFFF" />
+        </Style>
 
         <!-- Secondary / neutral button (install guide, re-check). -->
         <Style Selector="Button.dialogButton">
@@ -422,6 +429,60 @@
                                    MaxWidth="480" />
                         <Button Classes="quietLink" Content="Stop watching" HorizontalAlignment="Center"
                                 Click="BtnCancelWatchScreenshot_Click" />
+                    </StackPanel>
+                </StackPanel>
+                </ScrollViewer>
+            </Grid>
+
+            <!-- ===================== BROWSERS (issue #1012) =====================
+                 The step RECOMMENDS setting up now rather than sitting neutral, and names both the
+                 tool and who makes it BEFORE the user accepts - we never put a third party's
+                 software on someone's machine without saying whose it is. The way out is quiet but
+                 real, and it names where "later" happens so it is not a dead end. -->
+            <Grid x:Name="BrowsersPanel" IsVisible="False" RowDefinitions="Auto,Auto,Auto,*">
+                <TextBlock Grid.Row="0" Classes="eyebrow" Text="A BROWSER OF ITS OWN" />
+                <TextBlock Grid.Row="1" Classes="wtitle step" Text="Let your agents use a browser" Margin="0,0,0,10" />
+                <TextBlock Grid.Row="2" Classes="wsub step" Margin="0,0,0,18"
+                           Text="An agent can drive a real browser that is already signed in to your accounts - reading a dashboard, filling in a form, checking a page for you. Setting this up now is much easier than wiring it up later." />
+                <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled" Padding="0,0,16,0"
+                              MaxWidth="640" HorizontalAlignment="Center">
+                <StackPanel MaxWidth="600" Spacing="14" VerticalAlignment="Top"
+                            HorizontalAlignment="Stretch">
+
+                    <!-- The two things this step delivers, each carrying its own live state. -->
+                    <StackPanel x:Name="BrowsersRowsPanel" Spacing="10" />
+
+                    <!-- Real work, shown as it happens: creating the environment and downloading the
+                         harness takes about half a minute, and a screen that sat still through it
+                         would look like nothing was happening. -->
+                    <ProgressBar x:Name="BrowsersBusyBar" Classes="scanbar" IsVisible="False" />
+                    <TextBlock x:Name="BrowsersStatusText" Classes="hint" IsVisible="False"
+                               HorizontalAlignment="Center" TextAlignment="Center" MaxWidth="540" />
+
+                    <!-- A failed install says so and offers the manual page. It NEVER continues as
+                         though it had worked (CLAUDE.md rule 3). This box is the only place the step
+                         shows red, and the retry sits on the same screen. -->
+                    <Border x:Name="BrowsersErrorBox" IsVisible="False" Background="#FDECEC"
+                            BorderBrush="#F5C2C2" BorderThickness="1" CornerRadius="10" Padding="14,12">
+                        <StackPanel Spacing="8">
+                            <TextBlock x:Name="BrowsersErrorText" Foreground="#B42318" FontSize="12.5"
+                                       TextWrapping="Wrap" />
+                            <Button Classes="quietLink" HorizontalAlignment="Left"
+                                    Content="Open the browser-harness install page"
+                                    Click="BtnBrowsersInstallPage_Click" />
+                        </StackPanel>
+                    </Border>
+
+                    <!-- The honest way out. Deliberately quiet next to the primary action, and it
+                         names the rail so "later" is somewhere real rather than a vague promise. -->
+                    <StackPanel x:Name="BrowsersLaterPanel" HorizontalAlignment="Center" Spacing="4">
+                        <Button Classes="quietLink" HorizontalAlignment="Center"
+                                Content="Set up browsers later - I want to get going"
+                                Click="BtnBrowsersLater_Click" />
+                        <TextBlock Classes="hint" HorizontalAlignment="Center" TextAlignment="Center"
+                                   MaxWidth="540"
+                                   Text="Later is fine - the Browsers group in the left rail does the same thing." />
                     </StackPanel>
                 </StackPanel>
                 </ScrollViewer>
