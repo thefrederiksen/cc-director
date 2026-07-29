@@ -39,6 +39,23 @@ public sealed class SkillVersionEntity : GatewayMintedKeyEntity
     /// an agent fetches only when it is about to use the skill.</summary>
     public string BodyMarkdown { get; set; } = "";
 
+    // ---- the Agent Skills standard's optional frontmatter ------------------------------------------
+    // Stored rather than invented, so a skill authored in any other tool round-trips through this
+    // library unchanged and SKILL.md can be written back out as its author wrote it.
+
+    /// <summary>The standard's <c>license</c> field.</summary>
+    public string? License { get; set; }
+
+    /// <summary>The standard's <c>compatibility</c> field: environment requirements.</summary>
+    public string? Compatibility { get; set; }
+
+    /// <summary>The standard's <c>allowed-tools</c> field: space-separated pre-approved tools.</summary>
+    public string? AllowedTools { get; set; }
+
+    /// <summary>The standard's <c>metadata</c> map. Owned type serialized to a JSON column, the same
+    /// pattern <see cref="Triggers"/> uses.</summary>
+    public Dictionary<string, string> Metadata { get; set; } = new();
+
     // ---- provenance -------------------------------------------------------------------------------
 
     /// <summary>SHA-256 over the canonical complete bundle (metadata + triggers + body + ordered file

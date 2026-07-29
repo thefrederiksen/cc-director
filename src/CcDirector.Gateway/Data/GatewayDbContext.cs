@@ -192,6 +192,10 @@ public sealed class GatewayDbContext : DbContext
     /// idempotency record for the legacy-registry migration. GLOBAL, like <see cref="DeviceCredentials"/>.</summary>
     public DbSet<DeviceImportMarkerEntity> DeviceImportMarkers => Set<DeviceImportMarkerEntity>();
 
+    /// <summary>Serializer options for the skill metadata column. One shared instance: constructing
+    /// fresh options per call defeats the serializer's internal caching.</summary>
+    private static readonly System.Text.Json.JsonSerializerOptions MetadataJsonOptions = new();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -311,6 +315,29 @@ public sealed class GatewayDbContext : DbContext
             b.HasIndex(e => new { e.TenantId, e.SkillId, e.Version }).IsUnique();
             // Triggers are a bounded sub-document: a primitive collection serialized to a JSON column.
             b.PrimitiveCollection(e => e.Triggers);
+            // The Agent Skills standard's metadata map. A string-keyed map has no primitive-collection
+            // equivalent, so it converts to a JSON string - provider-agnostic, which is the rule for
+            // this model. The comparer is required, or EF cannot tell that a mutated dictionary is
+            // dirty and the edit would silently not save.
+            b.Property(e => e.Metadata)
+                // An explicit database default of an EMPTY JSON OBJECT, so the migration backfills
+                // every pre-existing version row with something that PARSES. Without it the column
+                // backfills as an empty string, which is not JSON, and every skill written before this
+                // upgrade would fail to read - an upgrade that breaks the existing rows is worse than
+                // the missing feature.
+                .HasDefaultValue(new Dictionary<string, string>())
+                .HasConversion(
+                    v => System.Text.Json.JsonSerializer.Serialize(v, MetadataJsonOptions),
+                    v => System.Text.Json.JsonSerializer
+                        .Deserialize<Dictionary<string, string>>(v, MetadataJsonOptions)
+                        ?? new Dictionary<string, string>(),
+                    new ValueComparer<Dictionary<string, string>>(
+                        (left, right) => left != null && right != null
+                            ? left.Count == right.Count && !left.Except(right).Any()
+                            : left == right,
+                        v => v.OrderBy(e => e.Key, StringComparer.Ordinal)
+                            .Aggregate(0, (acc, e) => HashCode.Combine(acc, e.Key.GetHashCode(), e.Value.GetHashCode())),
+                        v => new Dictionary<string, string>(v)));
         });
 
         modelBuilder.Entity<SkillFileEntity>(b =>
@@ -320,6 +347,9 @@ public sealed class GatewayDbContext : DbContext
             // Read per version; indexed but deliberately NOT a foreign key (independent lifecycle,
             // matching workflow_files).
             b.HasIndex(e => e.VersionId);
+            // Every file written before binary support was text, so the backfill says exactly that
+            // rather than leaving a blank that each reader has to interpret for itself.
+            b.Property(e => e.Encoding).HasDefaultValue("utf8");
         });
 
         modelBuilder.Entity<WorkflowRunEntity>(b =>

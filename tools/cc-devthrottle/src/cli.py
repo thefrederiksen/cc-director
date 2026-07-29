@@ -449,7 +449,7 @@ _ACTIONS = [
     },
     {
         "id": "skill-pull",
-        "description": "Pull a Skill into a directory (skill.json + SKILL.md + files/) for editing.",
+        "description": "Pull a Skill into a directory (skill.json + SKILL.md + its files at their own paths) for editing.",
         "command": 'cc-devthrottle skill pull <id> --dir "<dir>"',
         "mutatesState": False,
         "args": [{"name": "id", "required": True}, {"name": "dir", "required": True}],
@@ -1347,7 +1347,7 @@ def skill_pull(
         help="A specific version (default: the draft if one exists, else the published version).",
     ),
 ) -> None:
-    """Pull a Skill into a directory (skill.json + SKILL.md + files/) for editing."""
+    """Pull a Skill into a directory (skill.json + SKILL.md + its files at their own paths) for editing."""
     skill_ops.pull_skill(skill_id, directory, version)
 
 

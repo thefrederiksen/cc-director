@@ -4,9 +4,15 @@ import {
   createSkill,
   getSkillBody,
   getSkills,
+  getSkillVersionDetail,
+  publishSkill,
+  readFileForSkill,
   setSkillEnabled,
   suggestSkillId,
+  updateSkillDraft,
   type SkillDefinition,
+  type SkillFile,
+  type SkillVersionDetail,
 } from "@devthrottle/client-core/skills/skillsClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 import { markdownToHtml } from "@devthrottle/client-core/history/historyMarkdown";
@@ -30,6 +36,7 @@ export function SkillsView() {
   const [explainerOpen, setExplainerOpen] = useState(false);
   const [preview, setPreview] = useState<SkillDefinition | null>(null);
   const [pendingClone, setPendingClone] = useState<SkillDefinition | null>(null);
+  const [editingFiles, setEditingFiles] = useState<SkillDefinition | null>(null);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -113,6 +120,7 @@ export function SkillsView() {
               }}
               onPreview={() => setPreview(skill)}
               onClone={() => setPendingClone(skill)}
+              onEditFiles={() => setEditingFiles(skill)}
             />
           ))}
           <div className="wf-reg-foot">
@@ -154,6 +162,14 @@ export function SkillsView() {
         }}
         onClose={() => setPendingOff(null)}
       />
+
+      {editingFiles !== null ? (
+        <SkillFilesDialog
+          skill={editingFiles}
+          onClose={() => setEditingFiles(null)}
+          onSaved={() => void load()}
+        />
+      ) : null}
 
       {preview !== null ? (
         <SkillPreviewDialog
@@ -280,11 +296,13 @@ function RegisterRow({
   onFlip,
   onPreview,
   onClone,
+  onEditFiles,
 }: {
   skill: SkillDefinition;
   onFlip: (enabled: boolean) => void;
   onPreview: () => void;
   onClone: () => void;
+  onEditFiles: () => void;
 }) {
   const off = skill.enabled === false;
   const spine = off ? "wf-spine-off" : skill.hasDraft === true ? "wf-spine-draft" : "wf-spine-on";
@@ -343,9 +361,219 @@ function RegisterRow({
         <button className="wf-linklike" onClick={onPreview} aria-label={`Read ${skill.name}`}>
           Read
         </button>
+        {/* The Gateway's editability verdict, rendered verbatim - never re-derived here. A built-in
+            offers no Files button at all, because the write would be refused and a button that
+            cannot work reads as broken. */}
+        {skill.editable === true ? (
+          <button className="wf-linklike" onClick={onEditFiles} aria-label={`Edit the files of ${skill.name}`}>
+            Files
+          </button>
+        ) : null}
         <button className="wf-linklike" onClick={onClone} aria-label={`Clone ${skill.name}`}>
           Clone
         </button>
+      </div>
+    </div>
+  );
+}
+
+// THE FILES OF A SKILL. A skill is a DIRECTORY in the Agent Skills open standard - SKILL.md plus any
+// files and subdirectories - and every agent DevThrottle supervises reads that same shape. So this
+// dialog is a file manager for one skill: add a file at a path, edit a text file here, upload a
+// binary, remove one, then save the draft and publish.
+//
+// Two things it deliberately does. It shows WHICH files are executable, because a skill that carries
+// a program that will run on every machine in the fleet should not be able to acquire one quietly.
+// And it never opens for a built-in, because the Gateway says those are not editable and this client
+// renders that verdict rather than deriving its own.
+function SkillFilesDialog({
+  skill,
+  onClose,
+  onSaved,
+}: {
+  skill: SkillDefinition;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [detail, setDetail] = useState<SkillVersionDetail | null>(null);
+  const [files, setFiles] = useState<SkillFile[]>([]);
+  const [body, setBody] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [newPath, setNewPath] = useState("");
+  const backdrop = useDismissOnBackdrop(onClose);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    void (async () => {
+      try {
+        const version = skill.version ?? 1;
+        const loaded = await getSkillVersionDetail(skill.id, version, ctrl.signal);
+        setDetail(loaded);
+        setFiles(loaded.files);
+        setBody(loaded.bodyMarkdown);
+      } catch (err) {
+        if (!ctrl.signal.aborted) setError(gatewayErrorMessage(err));
+      }
+    })();
+    return () => ctrl.abort();
+  }, [skill.id, skill.version]);
+
+  const save = async (thenPublish: boolean) => {
+    if (detail === null) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await updateSkillDraft(
+        skill.id,
+        {
+          name: detail.name,
+          summary: detail.summary,
+          triggers: detail.triggers,
+          bodyMarkdown: body,
+          files,
+          license: detail.license,
+          compatibility: detail.compatibility,
+          allowedTools: detail.allowedTools,
+          metadata: detail.metadata,
+        },
+        // The hash of the version this edit was made against. The Gateway refuses the write if it is
+        // no longer current, so a concurrent author is never silently overwritten.
+        detail.contentHash,
+        "cockpit:files-editor",
+      );
+      if (thenPublish) await publishSkill(skill.id);
+      onSaved();
+      onClose();
+    } catch (err) {
+      setError(gatewayErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addFiles = async (picked: FileList | null) => {
+    if (picked === null) return;
+    const added: SkillFile[] = [];
+    for (const file of Array.from(picked)) {
+      // webkitRelativePath is set when a whole folder is chosen, so dropping in a directory keeps its
+      // structure instead of flattening it into a pile of loose files.
+      const relative = (file as File & { webkitRelativePath?: string }).webkitRelativePath;
+      const path = relative !== undefined && relative.length > 0
+        ? relative.split("/").slice(1).join("/") || file.name
+        : file.name;
+      added.push(await readFileForSkill(file, path));
+    }
+    setFiles((current) => [
+      ...current.filter((f) => !added.some((a) => a.fileName === f.fileName)),
+      ...added,
+    ]);
+  };
+
+  return (
+    <div className="wf-dialog-backdrop" {...backdrop}>
+      <div className="wf-dialog wf-preview" role="dialog" aria-modal="true" aria-label={`Files of ${skill.name}`}>
+        <h2>{skill.name} - files</h2>
+        {error !== null ? <ErrorBanner message={error} /> : null}
+        {detail === null && error === null ? <LoadingState /> : null}
+        {detail !== null ? (
+          <>
+            <p className="wf-preview-fact">
+              A skill is a directory. <code>SKILL.md</code> is its instructions; everything else sits
+              beside it at its own path, exactly as every agent expects to find it.
+            </p>
+
+            <label className="wf-field">
+              <span>SKILL.md</span>
+              <textarea
+                value={body}
+                rows={12}
+                onChange={(e) => setBody(e.target.value)}
+                aria-label="The skill's instructions"
+              />
+            </label>
+
+            <ul className="wf-file-list">
+              {files.length === 0 ? <li className="wf-off-note">No supporting files yet.</li> : null}
+              {files.map((file) => (
+                <li key={file.fileName}>
+                  <code>{file.fileName}</code>
+                  {file.encoding === "base64" ? <span className="wf-off-note"> binary</span> : null}
+                  {file.executable === true ? <span className="wf-off-note"> executable</span> : null}
+                  {file.encoding !== "base64" ? (
+                    <button
+                      className="wf-linklike"
+                      onClick={() => setEditing(editing === file.fileName ? null : file.fileName)}
+                    >
+                      {editing === file.fileName ? "Done" : "Edit"}
+                    </button>
+                  ) : null}
+                  <button
+                    className="wf-linklike"
+                    onClick={() => setFiles((c) => c.filter((f) => f.fileName !== file.fileName))}
+                    aria-label={`Remove ${file.fileName}`}
+                  >
+                    Remove
+                  </button>
+                  {editing === file.fileName ? (
+                    <textarea
+                      value={file.content}
+                      rows={10}
+                      aria-label={`Content of ${file.fileName}`}
+                      onChange={(e) =>
+                        setFiles((c) =>
+                          c.map((f) => (f.fileName === file.fileName ? { ...f, content: e.target.value } : f)),
+                        )
+                      }
+                    />
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+
+            <div className="wf-dialog-actions">
+              <input
+                type="text"
+                value={newPath}
+                placeholder="references/notes.md"
+                aria-label="Path of a new file"
+                onChange={(e) => setNewPath(e.target.value)}
+              />
+              <Button
+                variant="secondary"
+                disabled={newPath.trim().length === 0}
+                onClick={() => {
+                  setFiles((c) => [...c, { fileName: newPath.trim(), content: "", encoding: "utf8" }]);
+                  setEditing(newPath.trim());
+                  setNewPath("");
+                }}
+              >
+                Add a file
+              </Button>
+              <input
+                type="file"
+                multiple
+                aria-label="Upload files"
+                onChange={(e) => void addFiles(e.target.files)}
+              />
+            </div>
+
+            <div className="wf-dialog-actions">
+              <Button variant="secondary" onClick={onClose} disabled={busy}>
+                Cancel
+              </Button>
+              <Button variant="secondary" onClick={() => void save(false)} disabled={busy}>
+                Save as a draft
+              </Button>
+              {/* Publishing IS the deployment: from that moment every agent that fetches this skill
+                  gets the new content, with nothing to install anywhere. */}
+              <Button onClick={() => void save(true)} disabled={busy}>
+                Save and publish
+              </Button>
+            </div>
+          </>
+        ) : null}
       </div>
     </div>
   );
@@ -358,16 +586,22 @@ function Explainer() {
     <section className="wf-explainer" id="sk-explainer-panel">
       <h2>How skills reach your agents</h2>
       <dl>
-        <dt>nothing is installed</dt>
+        <dt>put where each agent looks</dt>
         <dd>
-          No skill file is written to any machine. Every session is launched knowing the library
-          exists, with one line per skill, and an agent fetches a skill in full only at the moment it
-          uses one.
+          When a session starts, its skills are placed in the folder that agent reads, so it finds
+          them the same way it finds any other skill. They are refreshed every launch and matched to
+          what this page says - switch one off and it is gone from the machine the next time a
+          session starts.
+        </dd>
+        <dt>your own skills always win</dt>
+        <dd>
+          A skill you already keep on a machine is never touched or replaced. This library adds to
+          what a machine has; it never takes it over.
         </dd>
         <dt>every agent, not just one</dt>
         <dd>
-          The same library reaches every agent family, because the briefing that names it is
-          delivered to all of them - not only to the one that reads skill files off disk.
+          The same library reaches every agent family, because they all read the same kind of skill
+          folder - and every session is also told, in one line per skill, what the library holds.
         </dd>
         <dt>no restart, no release</dt>
         <dd>

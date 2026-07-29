@@ -264,7 +264,7 @@ public sealed class SkillStoreTests : IDisposable
         var clone = store.Clone("with-files", "with-files-copy", "test")!;
 
         Assert.Equal(1, clone.FileCount);
-        Assert.Equal("print('x')", store.GetFileContent("with-files-copy", "helper.py", null));
+        Assert.Equal("print('x')", TextOf(store.GetFile("with-files-copy", "helper.py", null)));
     }
 
     // ---- the owner's switch -----------------------------------------------------------------------
@@ -314,9 +314,9 @@ public sealed class SkillStoreTests : IDisposable
 
         // And the files go with it - a switch that stopped the instructions but served the scripts
         // would be half-closed.
-        Assert.Throws<SkillValidationException>(() => store.GetFileContent("mine", "helper.py", null));
+        Assert.Throws<SkillValidationException>(() => store.GetFile("mine", "helper.py", null));
         Assert.Throws<SkillValidationException>(
-            () => store.GetFileContent("mine", "helper.py", published.Version));
+            () => store.GetFile("mine", "helper.py", published.Version));
     }
 
     [Fact]
@@ -408,8 +408,245 @@ public sealed class SkillStoreTests : IDisposable
         Assert.Throws<SkillValidationException>(() => store.CreateDraft(Content(
             id: "bad-file",
             files: new List<SkillFileDto> { new() { FileName = "../escape.md", Content = "x" } })));
-        Assert.Throws<SkillValidationException>(() => store.CreateDraft(Content(
-            id: "bad-ext",
-            files: new List<SkillFileDto> { new() { FileName = "run.exe", Content = "x" } })));
     }
+
+    // ---- a skill is a DIRECTORY -------------------------------------------------------------------
+    // The Agent Skills standard (agentskills.io) says a skill is a directory holding SKILL.md plus
+    // "any additional files or directories", and every agent this product supervises reads exactly
+    // that. These tests pin the store to the standard rather than to a shape of our own.
+
+    [Fact]
+    public void A_skill_holds_files_in_subdirectories()
+    {
+        // The rule this replaces refused a path separator outright, which made TWO skills in this very
+        // repository unstorable: agent-expert keeps nine files under agents/ and playwright-cli keeps
+        // seven under references/.
+        var store = new SkillStore(_h.Open());
+        store.CreateDraft(Content(id: "deep", files: new List<SkillFileDto>
+        {
+            new() { FileName = "references/tracing.md", Content = "# Tracing" },
+            new() { FileName = "scripts/build.sh", Content = "#!/bin/sh\necho hi\n", Executable = true },
+            new() { FileName = "assets/data/table.json", Content = "{}" },
+        }));
+        var published = store.Publish("deep")!;
+
+        Assert.Equal(3, published.FileCount);
+        Assert.Equal("# Tracing", TextOf(store.GetFile("deep", "references/tracing.md", null)));
+        Assert.Equal("{}", TextOf(store.GetFile("deep", "assets/data/table.json", null)));
+
+        // The executable bit survives the round trip - a bundled script a skill tells an agent to run
+        // is useless without it.
+        var script = store.GetFile("deep", "scripts/build.sh", null)!;
+        Assert.True(script.Executable);
+    }
+
+    [Fact]
+    public void A_binary_file_round_trips_byte_for_byte()
+    {
+        // A skill may carry an image, an archive or a compiled program. Bytes that are not valid UTF-8
+        // are the whole point of this test: a text-only store silently mangles them.
+        var bytes = new byte[] { 0x50, 0x4B, 0x03, 0x04, 0x00, 0xFF, 0xFE, 0x80, 0x7F };
+        var store = new SkillStore(_h.Open());
+        store.CreateDraft(Content(id: "binary", files: new List<SkillFileDto>
+        {
+            new()
+            {
+                FileName = "assets/bundle.zip",
+                Content = Convert.ToBase64String(bytes),
+                Encoding = "base64",
+            },
+        }));
+        store.Publish("binary");
+
+        var served = store.GetFile("binary", "assets/bundle.zip", null)!;
+        Assert.Equal(bytes, served.Bytes);
+        // Served as bytes, not as text: serving these through a text encoding would corrupt them, and
+        // the content type is what tells a caller which it is getting.
+        Assert.Equal("application/octet-stream", served.ContentType);
+    }
+
+    [Fact]
+    public void A_script_or_a_program_is_allowed_but_a_shortcut_is_not()
+    {
+        // A REVERSAL, recorded on purpose. The old rule allowed exactly four extensions and refused
+        // everything else, including run.exe - but shipping command-line programs inside a skill is
+        // the point of this feature, so an allow-list was the wrong instrument. What is refused now is
+        // only what cannot be legitimate skill content.
+        var store = new SkillStore(_h.Open());
+        store.CreateDraft(Content(id: "tools", files: new List<SkillFileDto>
+        {
+            new() { FileName = "scripts/run.exe", Content = "AAEC", Encoding = "base64" },
+            new() { FileName = "scripts/setup.ps1", Content = "Write-Output 'hi'" },
+            new() { FileName = "scripts/setup.sh", Content = "echo hi" },
+            new() { FileName = "config.yaml", Content = "key: value" },
+        }));
+        Assert.Equal(4, store.Publish("tools")!.FileCount);
+
+        // A shortcut resolves to a target nobody reviewing the skill can see.
+        Assert.Throws<SkillValidationException>(() => store.CreateDraft(Content(
+            id: "shortcut",
+            files: new List<SkillFileDto> { new() { FileName = "open.lnk", Content = "x" } })));
+    }
+
+    [Fact]
+    public void A_skill_cannot_promote_itself_into_a_plugin()
+    {
+        // Claude Code documents that a skill folder containing .claude-plugin/plugin.json loads as a
+        // PLUGIN, which may then bundle hooks and tool servers. A skill in this library is fetched by
+        // every machine in a fleet, so that promotion must never be something a skill can grant itself
+        // by including a file.
+        var store = new SkillStore(_h.Open());
+
+        var plugin = Assert.Throws<SkillValidationException>(() => store.CreateDraft(Content(
+            id: "sneaky",
+            files: new List<SkillFileDto>
+            {
+                new() { FileName = ".claude-plugin/plugin.json", Content = "{}" },
+            })));
+        Assert.Contains("plugin", plugin.Message);
+
+        Assert.Throws<SkillValidationException>(() => store.CreateDraft(Content(
+            id: "sneaky-two",
+            files: new List<SkillFileDto> { new() { FileName = ".mcp.json", Content = "{}" } })));
+    }
+
+    [Theory]
+    // Traversal and absolute paths would write outside the skill's own directory.
+    [InlineData("../escape.md")]
+    [InlineData("references/../../escape.md")]
+    [InlineData("/etc/passwd")]
+    [InlineData("C:/Windows/System32/x.dll")]
+    // One bundle must mean one thing on every platform.
+    [InlineData("references\\tracing.md")]
+    [InlineData("references//tracing.md")]
+    [InlineData("references/")]
+    // Windows reserves these names in every directory and with any extension.
+    [InlineData("nul")]
+    [InlineData("scripts/nul.txt")]
+    [InlineData("com1/notes.md")]
+    // Deeper than the standard's own advice by a wide margin.
+    [InlineData("a/b/c/d/e/f.md")]
+    public void A_dangerous_file_path_is_refused(string path)
+    {
+        var store = new SkillStore(_h.Open());
+        Assert.Throws<SkillValidationException>(() => store.CreateDraft(Content(
+            id: "unsafe",
+            files: new List<SkillFileDto> { new() { FileName = path, Content = "x" } })));
+    }
+
+    [Theory]
+    // The other direction of the same guard: a rule that refuses everything is not a rule, so the
+    // paths a real skill actually uses must be PROVED to pass.
+    [InlineData("SKILL.md")]
+    [InlineData("references/tracing.md")]
+    [InlineData("scripts/build.sh")]
+    [InlineData("assets/templates/report.html")]
+    [InlineData("agents/_template.md")]
+    [InlineData(".gitignore")]
+    public void A_legitimate_file_path_is_accepted(string path)
+    {
+        var store = new SkillStore(_h.Open());
+        store.CreateDraft(Content(
+            id: "safe",
+            files: new List<SkillFileDto> { new() { FileName = path, Content = "x" } }));
+        Assert.Equal(1, store.Publish("safe")!.FileCount);
+    }
+
+    [Fact]
+    public void Base64_that_will_not_decode_is_refused_at_authoring_time()
+    {
+        // Caught HERE rather than at materialization time, where it would already be a half-written
+        // bundle on somebody's machine.
+        var store = new SkillStore(_h.Open());
+        var ex = Assert.Throws<SkillValidationException>(() => store.CreateDraft(Content(
+            id: "bad-base64",
+            files: new List<SkillFileDto>
+            {
+                new() { FileName = "assets/x.png", Content = "not base64!!", Encoding = "base64" },
+            })));
+        Assert.Contains("base64", ex.Message);
+    }
+
+    [Fact]
+    public void An_unknown_encoding_is_refused_rather_than_guessed()
+    {
+        var store = new SkillStore(_h.Open());
+        Assert.Throws<SkillValidationException>(() => store.CreateDraft(Content(
+            id: "odd-encoding",
+            files: new List<SkillFileDto>
+            {
+                new() { FileName = "notes.md", Content = "x", Encoding = "rot13" },
+            })));
+    }
+
+    [Fact]
+    public void A_file_sent_with_no_encoding_is_text_as_it_always_was()
+    {
+        // The field was added after the first release. A client that omits it is sending exactly what
+        // it always sent, and must keep working.
+        var store = new SkillStore(_h.Open());
+        store.CreateDraft(Content(id: "legacy", files: new List<SkillFileDto>
+        {
+            new() { FileName = "helper.py", Content = "print('x')", Encoding = "" },
+        }));
+        store.Publish("legacy");
+
+        var served = store.GetFile("legacy", "helper.py", null)!;
+        Assert.Equal("print('x')", TextOf(served));
+        Assert.Equal("text/plain; charset=utf-8", served.ContentType);
+    }
+
+    [Fact]
+    public void The_standards_frontmatter_survives_a_round_trip()
+    {
+        // Held rather than invented, so a skill authored in any other tool comes back out identical.
+        var store = new SkillStore(_h.Open());
+        var content = Content(id: "framed");
+        content.License = "Apache-2.0";
+        content.Compatibility = "Requires Python 3.14 and uv";
+        content.AllowedTools = "Bash(git:*) Read";
+        content.Metadata = new Dictionary<string, string> { ["author"] = "example-org", ["version"] = "1.0" };
+        store.CreateDraft(content);
+        var published = store.Publish("framed")!;
+
+        var detail = store.GetVersionDetail("framed", published.Version)!;
+        Assert.Equal("Apache-2.0", detail.License);
+        Assert.Equal("Requires Python 3.14 and uv", detail.Compatibility);
+        Assert.Equal("Bash(git:*) Read", detail.AllowedTools);
+        Assert.Equal("example-org", detail.Metadata["author"]);
+        Assert.Equal("1.0", detail.Metadata["version"]);
+    }
+
+    [Fact]
+    public void Changing_only_a_frontmatter_field_or_the_executable_bit_changes_the_bundle_hash()
+    {
+        // The hash is what a client compares to know whether what it holds is current. A change it
+        // cannot see is a stale copy that believes it is fresh.
+        var store = new SkillStore(_h.Open());
+        var withFile = Content(id: "hashes", files: new List<SkillFileDto>
+        {
+            new() { FileName = "scripts/build.sh", Content = "echo hi" },
+        });
+        var first = store.CreateDraft(withFile).ContentHash;
+
+        var licensed = Content(id: "hashes", files: new List<SkillFileDto>
+        {
+            new() { FileName = "scripts/build.sh", Content = "echo hi" },
+        });
+        licensed.License = "Apache-2.0";
+        var second = store.UpdateDraft("hashes", licensed, null)!.ContentHash;
+        Assert.NotEqual(first, second);
+
+        var executable = Content(id: "hashes", files: new List<SkillFileDto>
+        {
+            new() { FileName = "scripts/build.sh", Content = "echo hi", Executable = true },
+        });
+        executable.License = "Apache-2.0";
+        var third = store.UpdateDraft("hashes", executable, null)!.ContentHash;
+        Assert.NotEqual(second, third);
+    }
+
+    /// <summary>The text of a served file, for the many assertions that are about text content.</summary>
+    private static string? TextOf(SkillStore.SkillFilePayload? payload) =>
+        payload is null ? null : System.Text.Encoding.UTF8.GetString(payload.Bytes);
 }
