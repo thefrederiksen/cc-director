@@ -271,16 +271,22 @@ public sealed class SkillStore
         }
     }
 
-    /// <summary>One supporting file's raw content, resolved like <see cref="GetBody"/> - including
-    /// its off-switch rule. A switched-off skill's FILES must refuse too: a skill is its body and its
-    /// files together, and letting the scripts through while refusing the instructions would leave the
-    /// switch half-closed.</summary>
+    /// <summary>One supporting file resolved for serving: the BYTES that belong on disk and the
+    /// content type to serve them as. Binary files are decoded here, so a caller writes what it is
+    /// given and never has to know how the bytes were stored.</summary>
+    public sealed record SkillFilePayload(string FileName, byte[] Bytes, string ContentType, bool Executable);
+
+    /// <summary>One supporting file, resolved like <see cref="GetBody"/> - including its off-switch
+    /// rule. A switched-off skill's FILES must refuse too: a skill is its body and its files together,
+    /// and letting the scripts through while refusing the instructions would leave the switch
+    /// half-closed. <paramref name="filePath"/> is the file's relative path inside the skill.</summary>
     /// <exception cref="SkillValidationException">The skill exists but is switched OFF.</exception>
-    public string? GetFileContent(string id, string fileName, int? version)
+    public SkillFilePayload? GetFile(string id, string filePath, int? version)
     {
-        if (string.IsNullOrWhiteSpace(fileName))
+        if (string.IsNullOrWhiteSpace(filePath))
             return null;
         var key = NormalizeId(id);
+        var path = filePath.Trim();
         lock (_gate)
         {
             using var ctx = OpenOwningContext(key);
@@ -292,8 +298,19 @@ public sealed class SkillStore
             var row = ResolveVersionRow(ctx, key, version);
             if (row is null)
                 return null;
-            return ctx.SkillFiles.AsNoTracking()
-                .FirstOrDefault(f => f.VersionId == row.Id && f.FileName == fileName)?.Content;
+            var file = ctx.SkillFiles.AsNoTracking()
+                .FirstOrDefault(f => f.VersionId == row.Id && f.FileName == path);
+            if (file is null)
+                return null;
+
+            var isBase64 = SkillValidation.NormalizeEncoding(file.Encoding) == SkillValidation.EncodingBase64;
+            var bytes = isBase64
+                ? Convert.FromBase64String(file.Content)
+                : System.Text.Encoding.UTF8.GetBytes(file.Content);
+            // A binary file served as text would be corrupted by the encoding on the way out, so the
+            // content type follows the stored encoding rather than being guessed from the extension.
+            var contentType = isBase64 ? "application/octet-stream" : "text/plain; charset=utf-8";
+            return new SkillFilePayload(file.FileName, bytes, contentType, file.Executable);
         }
     }
 
@@ -550,6 +567,10 @@ public sealed class SkillStore
                 Summary = sourceVersion.Summary,
                 Triggers = sourceVersion.Triggers.ToList(),
                 BodyMarkdown = sourceVersion.BodyMarkdown,
+                License = sourceVersion.License,
+                Compatibility = sourceVersion.Compatibility,
+                AllowedTools = sourceVersion.AllowedTools,
+                Metadata = new Dictionary<string, string>(sourceVersion.Metadata),
                 ContentHash = sourceVersion.ContentHash, // identical content, identical bundle hash
                 AuthoredBy = string.IsNullOrWhiteSpace(authoredBy) ? "unknown" : authoredBy.Trim(),
                 ChangeNote = $"Cloned from '{sourceKey}' v{sourceVersion.Version}.",
@@ -562,6 +583,8 @@ public sealed class SkillStore
                 VersionId = version.Id,
                 FileName = f.FileName,
                 Content = f.Content,
+                Encoding = f.Encoding,
+                Executable = f.Executable,
                 ContentHash = f.ContentHash,
             }).ToList();
 
@@ -685,12 +708,32 @@ public sealed class SkillStore
     {
         var triggers = (content.Triggers ?? new List<string>()).Select(t => t.Trim()).ToList();
         var body = content.BodyMarkdown ?? "";
+        var metadata = content.Metadata ?? new Dictionary<string, string>();
         var hashedFiles = (content.Files ?? new List<SkillFileDto>())
-            .Select(f => (f.FileName, Content: f.Content ?? "", Hash: SkillContentHash.ForFile(f.Content ?? "")))
+            .Select(f =>
+            {
+                var encoding = SkillValidation.NormalizeEncoding(f.Encoding);
+                var carrier = f.Content ?? "";
+                // Hash the bytes that will land on disk, not the string that carried them - validation
+                // has already proved a base64 payload decodes, so this cannot throw here.
+                var bytes = encoding == SkillValidation.EncodingBase64
+                    ? Convert.FromBase64String(carrier)
+                    : System.Text.Encoding.UTF8.GetBytes(carrier);
+                return new
+                {
+                    f.FileName,
+                    Content = carrier,
+                    Encoding = encoding,
+                    f.Executable,
+                    Hash = SkillContentHash.ForFileBytes(bytes),
+                };
+            })
             .ToList();
         var contentHash = SkillContentHash.ForBundle(
             content.Name!, content.Summary!, triggers, body,
-            hashedFiles.Select(f => (f.FileName, f.Hash)));
+            hashedFiles.Select(f => new SkillContentHash.HashedFile(
+                f.FileName, f.Hash, f.Encoding, f.Executable)),
+            content.License, content.Compatibility, content.AllowedTools, metadata);
 
         var row = existing ?? new SkillVersionEntity
         {
@@ -704,6 +747,10 @@ public sealed class SkillStore
         row.Summary = content.Summary!.Trim();
         row.Triggers = triggers;
         row.BodyMarkdown = body;
+        row.License = content.License;
+        row.Compatibility = content.Compatibility;
+        row.AllowedTools = content.AllowedTools;
+        row.Metadata = metadata;
         row.ContentHash = contentHash;
         row.AuthoredBy = string.IsNullOrWhiteSpace(content.AuthoredBy) ? "unknown" : content.AuthoredBy!;
         row.ChangeNote = content.ChangeNote;
@@ -714,6 +761,8 @@ public sealed class SkillStore
             VersionId = row.Id,
             FileName = f.FileName,
             Content = f.Content,
+            Encoding = f.Encoding,
+            Executable = f.Executable,
             ContentHash = f.Hash,
         }).ToList();
         return (row, files);
@@ -729,12 +778,22 @@ public sealed class SkillStore
         Summary = row.Summary,
         Triggers = row.Triggers.ToList(),
         BodyMarkdown = row.BodyMarkdown,
-        Files = files.Select(f => new SkillFileInfoDto
-        {
-            FileName = f.FileName,
-            ContentHash = f.ContentHash,
-            Content = f.Content,
-        }).ToList(),
+        Files = files
+            // Stable path order, so a pulled directory and a re-pulled one list identically and a
+            // client comparing two detail reads is comparing content, not ordering.
+            .OrderBy(f => f.FileName, StringComparer.Ordinal)
+            .Select(f => new SkillFileInfoDto
+            {
+                FileName = f.FileName,
+                ContentHash = f.ContentHash,
+                Content = f.Content,
+                Encoding = f.Encoding,
+                Executable = f.Executable,
+            }).ToList(),
+        License = row.License,
+        Compatibility = row.Compatibility,
+        AllowedTools = row.AllowedTools,
+        Metadata = new Dictionary<string, string>(row.Metadata),
         ContentHash = row.ContentHash,
         AuthoredBy = row.AuthoredBy,
         ChangeNote = row.ChangeNote,

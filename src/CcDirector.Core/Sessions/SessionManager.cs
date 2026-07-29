@@ -656,6 +656,25 @@ public sealed class SessionManager : IDisposable
                 _log?.Invoke("Wrote Pi fleet preamble and passed it via --append-system-prompt.");
             }
 
+            // Put the fleet's skills where THIS agent looks for them, so it discovers them through its
+            // own skills machinery rather than needing a DevThrottle command. Local and synchronous -
+            // it reconciles against what the last Gateway refresh materialized and never touches the
+            // network, so it cannot slow or block a launch.
+            //
+            // The catch is deliberate and is the only thing standing between a skill problem and a
+            // session that will not start. A launch must never fail because a capability that is
+            // ADDITIONAL to the session could not be installed, so the failure is recorded and the
+            // session starts with whatever skills it already had.
+            try
+            {
+                CcDirector.Core.Skills.SkillDirectoryInstaller.InstallFor(agent.Kind);
+            }
+            catch (Exception ex)
+            {
+                _log?.Invoke($"Skills were not installed for this session: {ex.Message}");
+                FileLog.Write($"[SessionManager] skill install FAILED (session still launching): {ex}");
+            }
+
             // Resolve the agent command to a concrete executable path before spawning.
             // CreateProcess only appends ".exe" to a bare command name, so a CLI installed
             // as a ".cmd" shim (e.g. npm-installed "opencode.cmd") would never be found from

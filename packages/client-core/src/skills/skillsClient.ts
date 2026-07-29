@@ -204,6 +204,121 @@ export async function cloneSkill(
   return (await res.json()) as SkillDefinition;
 }
 
+/** One supporting file of a skill version.
+ *
+ * A skill is a DIRECTORY in the Agent Skills open standard, so `fileName` is a RELATIVE PATH inside
+ * that directory - "references/tracing.md", "scripts/build.sh" - and not a bare name. `content` is the
+ * text itself when `encoding` is "utf8", or the base64 of the file's bytes when it is "base64", which
+ * is how an image, an archive or a compiled program travels. */
+export interface SkillFile {
+  fileName: string;
+  content: string;
+  /** "utf8" (the default) or "base64". */
+  encoding?: string;
+  /** Whether the file gets the executable bit when written on Linux or macOS. */
+  executable?: boolean;
+  contentHash?: string;
+}
+
+/** One version's complete content: the authoring read, and what the editor writes back. */
+export interface SkillVersionDetail {
+  skillId: string;
+  version: number;
+  status: string;
+  name: string;
+  summary: string;
+  triggers: string[];
+  bodyMarkdown: string;
+  files: SkillFile[];
+  license?: string | null;
+  compatibility?: string | null;
+  allowedTools?: string | null;
+  metadata?: Record<string, string>;
+  contentHash: string;
+}
+
+// GET /gateway/skills/{id}/versions/{n} - one version's whole content, files included. This is the
+// AUTHORING read; the register listing never carries content.
+export async function getSkillVersionDetail(
+  id: string,
+  version: number,
+  signal?: AbortSignal,
+): Promise<SkillVersionDetail> {
+  const res = await fetch(
+    `/gateway/skills/${encodeURIComponent(id)}/versions/${version}`,
+    { method: "GET", headers: { Accept: "application/json", ...authHeaders() }, signal },
+  );
+  if (!res.ok) throw await gatewayErrorFrom(res, `GET /gateway/skills/${id}/versions/${version}`);
+  if (contentType(res) !== "application/json") throw notTheSkillLibrary(contentType(res) || "an unlabelled body");
+  return (await res.json()) as SkillVersionDetail;
+}
+
+// PUT /gateway/skills/{id}/draft - replace the draft's content WHOLESALE. Every write sends the
+// complete skill, so there is no partial patch to reason about and no way for the editor and the
+// Gateway to disagree about what a half-applied edit means.
+//
+// The If-Match hash is what stops two authors clobbering each other: it is the hash of the version
+// this edit was made against, and the Gateway refuses the write if that is no longer current. The
+// caller re-reads and reapplies rather than winning by being last.
+export async function updateSkillDraft(
+  id: string,
+  content: {
+    name: string;
+    summary: string;
+    triggers: string[];
+    bodyMarkdown: string;
+    files: SkillFile[];
+    license?: string | null;
+    compatibility?: string | null;
+    allowedTools?: string | null;
+    metadata?: Record<string, string>;
+  },
+  ifMatchHash: string | undefined,
+  authoredBy: string,
+  signal?: AbortSignal,
+): Promise<SkillVersionDetail> {
+  const headers = new Headers({ "Content-Type": "application/json", Accept: "application/json" });
+  for (const [key, value] of Object.entries(authHeaders())) headers.set(key, String(value));
+  if (ifMatchHash) headers.set("If-Match", ifMatchHash);
+  const res = await fetch(`/gateway/skills/${encodeURIComponent(id)}/draft`, {
+    method: "PUT",
+    headers,
+    body: JSON.stringify({ ...content, authoredBy }),
+    signal,
+  });
+  if (!res.ok) throw await gatewayErrorFrom(res, `PUT /gateway/skills/${id}/draft`);
+  return (await res.json()) as SkillVersionDetail;
+}
+
+// POST /gateway/skills/{id}/publish - the fleet-visible act. Until this, nothing an agent reads has
+// changed; after it, every agent that fetches the skill gets the new content with nothing to deploy.
+export async function publishSkill(id: string, signal?: AbortSignal): Promise<SkillDefinition> {
+  const res = await fetch(`/gateway/skills/${encodeURIComponent(id)}/publish`, {
+    method: "POST",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) throw await gatewayErrorFrom(res, `POST /gateway/skills/${id}/publish`);
+  return (await res.json()) as SkillDefinition;
+}
+
+/** Read a browser File as a SkillFile: text stays text, anything else becomes base64.
+ *
+ * The test is on the CONTENT, not the extension, because a .md can hold anything and a .dat can hold
+ * plain text - and getting it wrong corrupts the file silently rather than loudly. */
+export async function readFileForSkill(file: File, relativePath: string): Promise<SkillFile> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  try {
+    if (bytes.includes(0)) throw new Error("binary");
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return { fileName: relativePath, content: text, encoding: "utf8", executable: false };
+  } catch {
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return { fileName: relativePath, content: btoa(binary), encoding: "base64", executable: false };
+  }
+}
+
 /** Suggest a slug id from a display name, for the add dialog. Mirrors the Gateway's id rules. */
 export function suggestSkillId(name: string): string {
   return name

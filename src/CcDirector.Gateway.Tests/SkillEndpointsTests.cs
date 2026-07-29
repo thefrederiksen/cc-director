@@ -252,4 +252,59 @@ public sealed class SkillEndpointsTests : IAsyncLifetime
         Assert.Equal("print('hello')",
             await _http.GetStringAsync("gateway/skills/with-files/files/helper.py"));
     }
+
+    [Fact]
+    public async Task A_file_in_a_subdirectory_is_served_over_the_wire()
+    {
+        // A skill is a DIRECTORY, so the file being asked for is "references/tracing.md" - a path, not
+        // a bare name. A single-segment route parameter would simply not match it, and because this
+        // Gateway answers an unknown PAGE path with the single-page app's HTML shell rather than a
+        // 404, a route that failed to match would come back as a cheerful 200 full of markup. So the
+        // CONTENT TYPE is asserted, not just the status: that is the only thing that tells the two
+        // apart, and it is exactly how this feature shipped a bug once already.
+        await _http.PostAsJsonAsync("gateway/skills", new
+        {
+            id = "nested-files",
+            name = "Nested files",
+            summary = "Carries a reference document in a subdirectory.",
+            bodyMarkdown = "# Nested\n\nSee references/tracing.md.",
+            files = new[] { new { fileName = "references/tracing.md", content = "# Tracing" } },
+            authoredBy = "test",
+        });
+        await _http.PostAsync("gateway/skills/nested-files/publish", null);
+
+        var response = await _http.GetAsync("gateway/skills/nested-files/files/references/tracing.md");
+        response.EnsureSuccessStatusCode();
+        Assert.Equal("text/plain", response.Content.Headers.ContentType!.MediaType);
+        Assert.Equal("# Tracing", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task A_binary_file_is_served_as_bytes_not_as_text()
+    {
+        var bytes = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x00, 0xFF, 0xFE };
+        await _http.PostAsJsonAsync("gateway/skills", new
+        {
+            id = "binary-files",
+            name = "Binary files",
+            summary = "Carries an image.",
+            bodyMarkdown = "# Binary\n\nUse assets/logo.png.",
+            files = new[]
+            {
+                new
+                {
+                    fileName = "assets/logo.png",
+                    content = Convert.ToBase64String(bytes),
+                    encoding = "base64",
+                },
+            },
+            authoredBy = "test",
+        });
+        await _http.PostAsync("gateway/skills/binary-files/publish", null);
+
+        var response = await _http.GetAsync("gateway/skills/binary-files/files/assets/logo.png");
+        response.EnsureSuccessStatusCode();
+        Assert.Equal("application/octet-stream", response.Content.Headers.ContentType!.MediaType);
+        Assert.Equal(bytes, await response.Content.ReadAsByteArrayAsync());
+    }
 }
