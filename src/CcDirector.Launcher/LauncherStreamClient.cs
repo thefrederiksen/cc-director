@@ -122,25 +122,19 @@ public sealed class LauncherStreamClient : IAsyncDisposable
             if (cmd is null)
                 return LauncherCommandResult.Fail(LauncherCommandStatus.BadRequest, "command is required");
 
-            FileLog.Write($"[LauncherStreamClient] Command received: verb={cmd.Verb}, path={cmd.Path ?? "(none)"}, instance={cmd.Instance ?? "(default)"}, confirmProtected={cmd.ConfirmProtected}");
+            FileLog.Write($"[LauncherStreamClient] Command received: verb={cmd.Verb}, path={cmd.Path ?? "(none)"}, confirmProtected={cmd.ConfirmProtected}");
             switch (cmd.Verb)
             {
                 case "director/start":
-                    _supervisor.Start(cmd.Instance);
+                    _supervisor.Start();
                     return LauncherCommandResult.Ok();
 
                 case "director/stop":
-                    await _supervisor.StopAsync(cmd.Instance);
+                    await _supervisor.StopAsync();
                     return LauncherCommandResult.Ok();
 
                 case "director/restart":
-                    await _supervisor.RestartAsync(cmd.Instance);
-                    return LauncherCommandResult.Ok();
-
-                case "director/delete":
-                    if (string.IsNullOrWhiteSpace(cmd.Instance))
-                        return LauncherCommandResult.Fail(LauncherCommandStatus.BadRequest, "instance is required for delete");
-                    await _supervisor.DeleteAsync(cmd.Instance);
+                    await _supervisor.RestartAsync();
                     return LauncherCommandResult.Ok();
 
                 case "launch":

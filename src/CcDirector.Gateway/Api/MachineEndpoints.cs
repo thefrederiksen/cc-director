@@ -30,7 +30,6 @@ namespace CcDirector.Gateway.Api;
 ///   POST /machines/{machine}/director/start         relay -> launcher POST /director/start
 ///   POST /machines/{machine}/director/stop          relay -> launcher POST /director/stop
 ///   POST /machines/{machine}/launch                 relay -> launcher POST /launch
-///   POST /machines/{machine}/delete-instance        relay -> launcher POST /director/delete
 ///   GET  /machines/{machine}/apps                   relay -> launcher GET /apps
 ///   GET  /machines/{machine}/files                  relay -> launcher GET /files
 ///
@@ -443,15 +442,6 @@ internal static class MachineEndpoints
             return await RelayDirectorLifecycleAsync(machine, "stop", ctx, launchers, sendLauncherCommand, boundary, ct);
         });
 
-        // POST /machines/{machine}/delete-instance - stop, unregister and remove a NAMED Director instance
-        // on that machine. Deliberately not a DELETE verb on a machine path: it removes one instance, not
-        // the machine, and a reader of the route table should not have to guess which.
-        app.MapPost("/{machine}/delete-instance", async (string machine, HttpContext ctx, CancellationToken ct) =>
-        {
-            FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/delete-instance: caller={ctx.Connection.RemoteIpAddress}");
-            return await RelayDirectorLifecycleAsync(machine, "delete", ctx, launchers, sendLauncherCommand, boundary, ct);
-        });
-
         // POST /machines/{machine}/launch - relay a generic launch request to the launcher.
         app.MapPost("/{machine}/launch", async (string machine, HttpContext ctx, CancellationToken ct) =>
         {
@@ -581,7 +571,6 @@ internal static class MachineEndpoints
         // Use JsonDocument to avoid internal-class reflection issues with System.Text.Json.
         // Do NOT gate on ContentLength - transfer-encoded bodies may have no explicit length.
         string? exePathFromBody = null;
-        string? instanceFromBody = null;
         bool? confirmProtectedFromBody = null;
         try
         {
@@ -594,13 +583,6 @@ internal static class MachineEndpoints
                     exePathFromBody = ep.GetString();
                 if (doc.RootElement.TryGetProperty("confirmProtected", out var cp) && cp.ValueKind == JsonValueKind.True)
                     confirmProtectedFromBody = true;
-                // WHICH Director on that machine. Absent means the default one, which is what every caller
-                // before this meant and still means.
-                if (doc.RootElement.TryGetProperty("instance", out var inst) && inst.ValueKind == JsonValueKind.String)
-                {
-                    var named = inst.GetString();
-                    if (!string.IsNullOrWhiteSpace(named)) instanceFromBody = named;
-                }
             }
         }
         catch { /* body is optional */ }
@@ -630,7 +612,7 @@ internal static class MachineEndpoints
         // so a protected-slot action is gated identically whichever arm carries it.
         var outcome = await LauncherLifecycleRelay.SendDirectorVerbAsync(
             tenant, machine, verb, exePathFromBody, confirmProtectedFromBody == true,
-            launchers, sendLauncherCommand, ct, instanceFromBody);
+            launchers, sendLauncherCommand, ct);
         return ToResult(machine, verb, outcome);
     }
 
