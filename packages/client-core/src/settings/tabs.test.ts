@@ -2,23 +2,29 @@ import { describe, expect, it } from "vitest";
 import { visibleTabs, tabFromParam } from "./tabs";
 
 describe("visibleTabs", () => {
-  it("shows the four shared tabs on the phone, notifications first", () => {
+  it("shows the three shared tabs on the phone, notifications first", () => {
     expect(visibleTabs("mobile").map((t) => t.id)).toEqual([
       "notifications",
-      "ai",
       "transcription",
       "carmode",
     ]);
   });
 
-  it("shows the same four on the Cockpit, in the same order, plus its own Injected text", () => {
+  it("shows the same three on the Cockpit, in the same order, plus its own Injected text", () => {
     expect(visibleTabs("cockpit").map((t) => t.id)).toEqual([
       "notifications",
-      "ai",
       "transcription",
       "carmode",
       "injectedtext",
     ]);
+  });
+
+  // Hidden on BOTH surfaces, not on one - a tab dropped from the desktop strip and left on the phone
+  // would be precisely the drift this shared list exists to prevent.
+  it("keeps the AI tab out of the strip on both surfaces", () => {
+    for (const surface of ["cockpit", "mobile"] as const) {
+      expect(visibleTabs(surface).map((t) => t.id)).not.toContain("ai");
+    }
   });
 
   // The parity law: the desktop may go DEEPER, never sideways. Every tab the phone shows must also be on
@@ -60,6 +66,16 @@ describe("tabFromParam", () => {
     for (const surface of ["cockpit", "mobile"] as const) {
       expect(tabFromParam(null, surface)).toBe("notifications");
       expect(tabFromParam("nonsense", surface)).toBe("notifications");
+    }
+  });
+
+  // A hidden tab is not a back door either: no escape hatch was wanted, so ?tab=ai gets the same
+  // treatment as any other id that is not one of this surface's tabs. Asserted rather than left implied,
+  // because "hidden from the strip but still reachable by its link" is the other thing this could
+  // plausibly have meant, and it is not what was decided.
+  it("does not resolve the hidden AI tab from a link either, on either surface", () => {
+    for (const surface of ["cockpit", "mobile"] as const) {
+      expect(tabFromParam("ai", surface)).toBe("notifications");
     }
   });
 
