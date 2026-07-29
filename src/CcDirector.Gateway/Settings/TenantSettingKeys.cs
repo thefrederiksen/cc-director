@@ -76,11 +76,24 @@ public static class TenantSettingKeys
     /// </summary>
     public const string DictationEmailCadence = "dictation_email_cadence";
 
+    /// <summary>
+    /// How often this tenant wants the daily report email, stored as the cadence NAME (issue #1000). Like
+    /// <see cref="VoiceModeAll"/> there is no operator global default to fall back to - it is one account's
+    /// choice about one account's mail - and its default is every day, so nothing changes for anyone who
+    /// never opens Settings.
+    ///
+    /// Stored as a NAME rather than a boolean on purpose. The question is "how often", and it already has a
+    /// third answer waiting (weekly, once the report can summarize a range rather than one day). A boolean
+    /// would have to be replaced by a name to admit that third answer, migrating every row already written;
+    /// a name absorbs it as a new value.
+    /// </summary>
+    public const string DailyReportCadence = "daily_report_cadence";
+
     /// <summary>Every key this resolver serves, for validation and enumeration.</summary>
     public static readonly IReadOnlySet<string> All = new HashSet<string>(StringComparer.Ordinal)
     {
         WingmanModel, WingmanFastModel, TtsModel, TtsVoice,
         CarModeModel, CarModeEndPhrase, SnoozePresets, SnoozeDefaultMinutes, TimeZone, InjectedText,
-        VoiceModeAll, DictationSuggestionsInDailyEmail, DictationEmailCadence,
+        VoiceModeAll, DictationSuggestionsInDailyEmail, DictationEmailCadence, DailyReportCadence,
     };
 }

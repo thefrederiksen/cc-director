@@ -102,8 +102,8 @@ public sealed class HostedPerAccountSettingsServeTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The eleven per-account routes that now SERVE on hosted, with a well-formed body for the writes. Reused
-    /// by the serve theory and the unresolved-tenant 403 theory so both drive the identical set.
+    /// The per-account routes that now SERVE on hosted, with a well-formed body for the writes. Reused by the
+    /// serve theory and the unresolved-tenant 403 theory so both drive the identical set.
     /// </summary>
     public static readonly (string Verb, string Path, string? Body)[] ServedRoutes =
     {
@@ -118,6 +118,8 @@ public sealed class HostedPerAccountSettingsServeTests : IAsyncLifetime
         ("PUT", "gateway/ai-provider",              "{\"provider\":\"devthrottle\"}"),
         ("GET", "gateway/tts-voice",                null),
         ("PUT", "gateway/tts-voice",                "{\"voice\":\"shimmer\"}"),
+        ("GET", "gateway/daily-report",             null),
+        ("PUT", "gateway/daily-report",             "{\"cadence\":\"off\"}"),
         ("GET", "gateway/injected-text",            null),
         ("PUT", "gateway/injected-text",            "{\"use_yours\":true,\"yours\":\"words for one account only\"}"),
         ("PUT", "gateway/ai/wingman-model",         "{\"model\":\"m-think\"}"),
@@ -198,6 +200,21 @@ public sealed class HostedPerAccountSettingsServeTests : IAsyncLifetime
 
         Assert.Equal(45, await ReadInt(_httpA, "gateway/snooze-default", "minutes"));
         Assert.NotEqual(45, await ReadInt(_httpB, "gateway/snooze-default", "minutes"));
+    }
+
+    /// <summary>
+    /// ISOLATED - the daily report cadence (issue #1000). A turns its report off; B still gets one. This is
+    /// the property that matters most on shared infrastructure: one account silencing its own mail must never
+    /// silence anybody else's, and the account that never chose keeps the daily default.
+    /// </summary>
+    [Fact]
+    public async Task Daily_report_turned_off_by_one_tenant_does_not_silence_another_on_hosted()
+    {
+        (await OwnerSettingsRoutes.SendAsync(_httpA, "PUT", "gateway/daily-report", "{\"cadence\":\"off\"}"))
+            .EnsureSuccessStatusCode();
+
+        Assert.Equal("off", await ReadString(_httpA, "gateway/daily-report", "cadence"));
+        Assert.Equal("daily", await ReadString(_httpB, "gateway/daily-report", "cadence"));
     }
 
     /// <summary>ISOLATED - the text-to-speech voice. A picks a distinctive voice; B is unaffected.</summary>

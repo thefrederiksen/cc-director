@@ -28,7 +28,18 @@ export interface GatewaySettings {
   timeZone: string;
   // What "automatic" resolves to: the Gateway machine's own zone. Lets the page show it and offer a reset.
   timeZoneMachineDefault: string;
+  // How often this account wants the daily report email (issue #1000). One value for the account, not for
+  // this device or this machine: the report is one person and one email, which is exactly why the question
+  // left the first-run wizard, where it was asked once per install.
+  dailyReportCadence: ReportCadence;
 }
+
+/**
+ * How often the daily report email is sent. "weekly" is deliberately absent: the report covers one calendar
+ * day, so a weekly send could only mail one day and call it a week. Add it here when the Gateway can
+ * summarize a range - the wire value is a name precisely so that costs nothing stored.
+ */
+export type ReportCadence = "daily" | "off";
 
 async function gatewayErrorFrom(res: Response, label: string): Promise<GatewayError> {
   let detail = `${res.status}`;
@@ -88,7 +99,27 @@ export async function getGatewaySettings(signal?: AbortSignal): Promise<GatewayS
       typeof body.timeZoneMachineDefault === "string" && body.timeZoneMachineDefault.length > 0
         ? body.timeZoneMachineDefault
         : "UTC",
+    // Anything this client does not recognize reads as "daily" - the same direction the Gateway takes, and
+    // for the same reason: a card that showed Off because it met a value it did not know would tell the
+    // account its report is stopped when it is not.
+    dailyReportCadence: body.dailyReportCadence === "off" ? "off" : "daily",
   };
+}
+
+// PUT /gateway/daily-report { cadence } - set how often this account gets the daily report email. Read by
+// the Gateway when the sender asks who to mail, so a change applies to the next morning's send. Returns the
+// applied cadence.
+export async function setDailyReportCadence(
+  cadence: ReportCadence,
+  signal?: AbortSignal,
+): Promise<ReportCadence> {
+  const body = await putJson<{ cadence?: string }>(
+    "/gateway/daily-report",
+    "PUT /gateway/daily-report",
+    { cadence },
+    signal,
+  );
+  return body.cadence === "off" ? "off" : "daily";
 }
 
 // PUT /gateway/time-zone { timeZone } - set the display time zone (an IANA id) the private dashboards read

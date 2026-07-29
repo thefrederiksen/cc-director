@@ -155,4 +155,82 @@ public sealed class TenantSettingsResolverTests
         // The default must be one of the presets - the same invariant the global setter enforces.
         Assert.Throws<ArgumentException>(() => r.SetSnoozePresets(TenantA, new[] { 15, 60 }, 999, Now));
     }
+
+    // ---- the daily report cadence (issue #1000) ------------------------------------------------------
+
+    [Fact]
+    public void DailyReportCadence_NoChoice_IsDaily()
+    {
+        using var h = new GatewayDbTestHarness();
+        var r = NewResolver(h);
+
+        // What every account received before this setting existed. A different answer here would silently
+        // stop the report for everybody the moment the setting shipped.
+        Assert.Equal(ReportCadence.Daily, r.DailyReportCadence(TenantA));
+    }
+
+    [Fact]
+    public void DailyReportCadence_Off_RoundTrips()
+    {
+        using var h = new GatewayDbTestHarness();
+        var r = NewResolver(h);
+
+        r.SetDailyReportCadence(TenantA, ReportCadence.Off, Now);
+
+        Assert.Equal(ReportCadence.Off, r.DailyReportCadence(TenantA));
+    }
+
+    [Fact]
+    public void DailyReportCadence_OneTenantsChoice_DoesNotSilenceAnother()
+    {
+        using var h = new GatewayDbTestHarness();
+        var r = NewResolver(h);
+
+        r.SetDailyReportCadence(TenantA, ReportCadence.Off, Now);
+
+        Assert.Equal(ReportCadence.Off, r.DailyReportCadence(TenantA));
+        Assert.Equal(ReportCadence.Daily, r.DailyReportCadence(TenantB));
+    }
+
+    [Fact]
+    public void DailyReportCadence_UnreadableValue_ReadsAsDaily_NotAsSilence()
+    {
+        using var h = new GatewayDbTestHarness();
+        var store = new TenantSettingsStore(h.Open());
+        var r = new TenantSettingsResolver(store);
+
+        // Includes the value a NEWER Gateway would write for weekly, read by one that does not know it yet.
+        // Degrading to mail is recoverable and visible; degrading to silence is neither.
+        foreach (var junk in new[] { "", "   ", "true", "never", "weekly" })
+        {
+            store.Set(TenantA, TenantSettingKeys.DailyReportCadence, junk, Now);
+            Assert.Equal(ReportCadence.Daily, r.DailyReportCadence(TenantA));
+        }
+    }
+
+    [Fact]
+    public void DailyReportCadence_IsStoredUnderTheDocumentedKey_AsTheCadenceName()
+    {
+        using var h = new GatewayDbTestHarness();
+        var store = new TenantSettingsStore(h.Open());
+        var r = new TenantSettingsResolver(store);
+
+        r.SetDailyReportCadence(TenantA, ReportCadence.Off, Now);
+
+        // The stored form is the wire name, so the value the recipients endpoint reads and the value the
+        // settings page sends are the same string, not two spellings that could drift apart.
+        Assert.Equal(ReportCadences.OffName, store.Get(TenantA, TenantSettingKeys.DailyReportCadence));
+    }
+
+    [Fact]
+    public void DailyReportCadence_ChoosingDaily_IsStoredRatherThanLeftAbsent()
+    {
+        using var h = new GatewayDbTestHarness();
+        var store = new TenantSettingsStore(h.Open());
+        var r = new TenantSettingsResolver(store);
+
+        r.SetDailyReportCadence(TenantA, ReportCadence.Daily, Now);
+
+        Assert.Equal(ReportCadences.DailyName, store.Get(TenantA, TenantSettingKeys.DailyReportCadence));
+    }
 }

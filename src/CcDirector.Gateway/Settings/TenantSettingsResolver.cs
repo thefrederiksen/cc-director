@@ -155,6 +155,22 @@ public sealed class TenantSettingsResolver
         }
     }
 
+    /// <summary>
+    /// How often this tenant wants the daily report email (issue #1000). Defaults to
+    /// <see cref="ReportCadences.Default"/> - every day - when the tenant has expressed no choice, which is
+    /// exactly what every account received before the setting existed.
+    ///
+    /// AN UNREADABLE VALUE ALSO READS AS DAILY, and that direction is deliberate. The two ways to be wrong
+    /// are not symmetric: sending a report somebody silenced is visible to them and the mail carries its own
+    /// way out, while silencing a report somebody wants is invisible - they simply stop hearing from the
+    /// product and have nothing to act on. It also makes a Gateway rollback safe: a value written by a newer
+    /// Gateway that this one does not know yet (weekly, when it lands) degrades to mail, not to silence.
+    /// </summary>
+    public ReportCadence DailyReportCadence(TenantId tenant)
+        => ReportCadences.TryParse(_store.Get(tenant, TenantSettingKeys.DailyReportCadence), out var cadence)
+            ? cadence
+            : ReportCadences.Default;
+
     // ---- writes: validate like the global setters, then persist a per-tenant override -------------------
 
     /// <summary>Set the tenant's wingman model for a role.</summary>
@@ -248,6 +264,12 @@ public sealed class TenantSettingsResolver
     /// <summary>Set whether pending suggestions are mentioned in this tenant's daily report email.</summary>
     public void SetSuggestionsInDailyEmail(TenantId tenant, bool include, DateTime nowUtc)
         => _store.Set(tenant, TenantSettingKeys.DictationSuggestionsInDailyEmail, include ? "true" : "false", nowUtc);
+
+    /// <summary>Set how often this tenant wants the daily report email. Daily is stored EXPLICITLY rather
+    /// than by clearing the override, so "back to daily" is a choice this account made and reads the same as
+    /// one it never touched - and so a later look at the store can tell the two apart.</summary>
+    public void SetDailyReportCadence(TenantId tenant, ReportCadence cadence, DateTime nowUtc)
+        => _store.Set(tenant, TenantSettingKeys.DailyReportCadence, ReportCadences.Name(cadence), nowUtc);
 
     /// <summary>Record this tenant's daily-email cadence state after a mention is emitted.</summary>
     public void SetDictationEmailCadence(TenantId tenant, DictationEmailCadenceState state, DateTime nowUtc)
