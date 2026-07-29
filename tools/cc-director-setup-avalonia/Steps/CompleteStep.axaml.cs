@@ -18,13 +18,14 @@ public partial class CompleteStep : UserControl
     private int _skipped;
     private bool _isUpdate;
     private IReadOnlyList<string> _skippedNames = [];
+    private IReadOnlyList<string> _skippedReasons = [];
 
     public CompleteStep()
     {
         InitializeComponent();
     }
 
-    public CompleteStep(int installed, int skipped, string installPath, bool isUpdate, bool alreadyUpToDate = false, string? version = null, string? agentNotice = null, IReadOnlyList<string>? skippedNames = null, bool readyToGo = true)
+    public CompleteStep(int installed, int skipped, string installPath, bool isUpdate, bool alreadyUpToDate = false, string? version = null, string? agentNotice = null, IReadOnlyList<string>? skippedNames = null, bool readyToGo = true, IReadOnlyList<string>? skippedReasons = null)
     {
         InitializeComponent();
 
@@ -93,6 +94,7 @@ public partial class CompleteStep : UserControl
         if (skipped > 0)
         {
             _skippedNames = skippedNames ?? [];
+            _skippedReasons = skippedReasons ?? [];
             var amber = amberBrush;
             HeadingText.Text = isUpdate ? "Update finished with problems" : "Setup finished with problems";
             HeadingText.Foreground = amber;
@@ -103,7 +105,9 @@ public partial class CompleteStep : UserControl
                 1 => _skippedNames[0],
                 _ => string.Join(", ", _skippedNames),
             };
-            DescriptionText.Text = $"{what} did not install. DevThrottle may still work, but please report this.";
+            var why = _skippedReasons.Count > 0 ? "\n" + string.Join("\n", _skippedReasons) : "";
+            DescriptionText.Text =
+                $"{what} did not install. The Director may still work, but please report this.{why}";
             SummaryLine.IsVisible = false;
             FailurePanel.IsVisible = true;
             if (_skippedNames.Count > 0) SkippedText.Text = $"{skipped} ({string.Join(", ", _skippedNames)})";
@@ -155,6 +159,12 @@ public partial class CompleteStep : UserControl
     private string BuildIssueBody(string os)
     {
         var sb = new StringBuilder();
+        if (_skippedReasons.Count > 0)
+        {
+            sb.AppendLine("## Why it failed");
+            foreach (var reason in _skippedReasons) sb.AppendLine($"- {reason}");
+            sb.AppendLine();
+        }
         sb.AppendLine("## What happened");
         sb.AppendLine("<!-- Briefly describe the problem. -->");
         sb.AppendLine();

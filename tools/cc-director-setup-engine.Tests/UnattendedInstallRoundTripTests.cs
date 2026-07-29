@@ -10,20 +10,25 @@ using Xunit;
 namespace CcDirector.Setup.Engine.Tests;
 
 /// <summary>
-/// The unattended install path, end to end, against a local release directory.
+/// The engine's place-and-record step, against a local release directory.
 ///
-/// NOTHING proved this before. There were tests for the command line tool's argument parsing and its
-/// install scope, and none that ran an install and looked at what landed on disk - so every claim
-/// that "the agent path works" rested on hope. This is the path a script or a coding agent takes
-/// (<c>install --release-dir …</c>), and it is the same engine both wizards drive, so a break here is
-/// a break in all three.
+/// Nothing covered this before: there were tests for the command line tool's argument parsing and its
+/// install scope, and none that ran a placement and looked at what landed on disk. It is the same
+/// engine both wizards and the command line installer drive, so a break here breaks all three.
 ///
-/// SCOPE, stated plainly: this exercises the ENGINE - plan, place, record, then remove. It does not
-/// start a process, does not touch the network, and does not run the command line executable itself
-/// (its parsing and its exit codes are pinned separately). What it does prove is that an install
-/// places what it promised and an uninstall takes exactly that away.
+/// SCOPE, stated so nobody reads more into it than it proves. This covers exactly one thing: given a
+/// plan and a release, the runner stages each asset, verifies its hash, places it, and records the
+/// version. It does NOT:
+///   - run the command line executable, or <c>Commands.UpdateAsync</c>, or the planner;
+///   - install the Python tools, finalize an install, start a launcher, or register autostart;
+///   - prove anything about an uninstall (see the note at the end of this file);
+///   - use real component binaries - the fabricated assets are short text files, because the runner
+///     hashes and copies them and never executes them. That is enough for placement and recording,
+///     and it is NOT a substitute for installing a real release on a real machine.
+/// On macOS the Director's release asset is a .zip, which this runner deliberately skips (archive
+/// extraction is the Gateway-side path), so the macOS run covers the launcher only.
 ///
-/// Hermetic: a sandbox root per test, a fabricated release with real files and real hashes.
+/// Hermetic in the ways that matter here: a sandbox root and a fabricated release per test, no network.
 /// </summary>
 public sealed class UnattendedInstallRoundTripTests : IDisposable
 {
@@ -137,11 +142,22 @@ public sealed class UnattendedInstallRoundTripTests : IDisposable
             .ToList();
         var plan = PlanFor(release, components);
 
-        var first = await new UpdateRunner(_layout, components, FromReleaseDir()).ApplyAsync(plan);
-        var second = await new UpdateRunner(_layout, components, FromReleaseDir()).ApplyAsync(plan);
+        var downloads = 0;
+        UpdateRunner.Downloader counted = (item, ct) => { downloads++; return FromReleaseDir()(item, ct); };
+
+        var first = await new UpdateRunner(_layout, components, counted).ApplyAsync(plan);
+        var afterFirst = downloads;
+        var second = await new UpdateRunner(_layout, components, counted).ApplyAsync(plan);
 
         Assert.Equal(0, CountOf(first, ApplyStatus.Failed));
         Assert.Equal(0, CountOf(second, ApplyStatus.Failed));
+
+        // Honest about what this shows: the plan handed in says Install for both runs, so the second run
+        // DOES place the files again. That is the caller's decision, not the runner's - the planner is
+        // what decides there is no work to do, and it is not exercised here. What this pins is that a
+        // repeat is safe and leaves the recorded version correct, which is what an agent that installs,
+        // checks, and installs again depends on.
+        Assert.Equal(afterFirst * 2, downloads);
         var recorded = InstalledManifest.Load(_layout);
         foreach (var c in components)
             Assert.Equal("1.8.6", recorded.Get(c.Id));
@@ -173,28 +189,15 @@ public sealed class UnattendedInstallRoundTripTests : IDisposable
         Assert.Null(InstalledManifest.Load(_layout).Get(components[0].Id));
     }
 
-    // The round trip. An uninstall must take away exactly what the install placed - the state a
-    // machine is left in is what the NEXT install has to cope with, and getting that wrong is what
-    // left a Mac unable to install anything.
-    [Fact]
-    public async Task Uninstall_AfterAnUnattendedInstall_RemovesWhatWasPlaced()
-    {
-        var release = BuildRelease("1.8.6");
-        var components = ComponentRegistry.ForRole(ComponentRegistry.Apps, InstallRole.Workstation)
-            .Where(c => (OperatingSystem.IsWindows() ? c.WindowsAsset : c.MacAsset) is not null)
-            .ToList();
-        await new UpdateRunner(_layout, components, FromReleaseDir()).ApplyAsync(PlanFor(release, components));
-
-        var placed = components.Select(c => _layout.PathFor(c)).ToList();
-        Assert.All(placed, p => Assert.True(File.Exists(p) || Directory.Exists(p)));
-
-        var report = new Uninstaller(_layout).Apply(InstallRole.Workstation);
-
-        // The launcher stop reports against the REAL machine (is anything on the launcher port?), so
-        // the report's overall success is not assertable here. What is assertable, and what matters,
-        // is that the files this install placed are gone.
-        Assert.NotEmpty(report.Steps);
-        foreach (var p in placed)
-            Assert.False(File.Exists(p) || Directory.Exists(p), $"{p} survived the uninstall");
-    }
+    // NOTE: there is deliberately NO uninstall test here.
+    //
+    // One was written and it was dangerous: Uninstaller.Apply reaches machine-GLOBAL locations that are
+    // not derived from the sandbox root - the launcher's autostart Run value, the Add/Remove Programs
+    // entry, the Start Menu shortcut, scheduled tasks, and on macOS the real launch agent. Running it
+    // with a temporary layout removed real registrations from the developer's own machine while
+    // reporting 424 tests green. "Hermetic" was false, and a test that quietly damages the machine it
+    // runs on is worse than no test.
+    //
+    // Proving an uninstall needs either a layout that owns those integration points too (so they can be
+    // pointed at a sandbox) or a throwaway virtual machine. Both are real work and neither is this file.
 }

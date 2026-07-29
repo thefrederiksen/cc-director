@@ -1,6 +1,6 @@
 # Installation
 
-DevThrottle runs on Windows and macOS (Apple Silicon). There are **two ways to install it**, and they do the same work: a graphical wizard, and a command line installer for headless machines, scripts, and AI coding agents.
+DevThrottle runs on Windows and macOS (Apple Silicon). There are **two ways to install it**: a graphical wizard, and a command line installer for headless machines, scripts, and AI coding agents. Both end with the same working machine, with one difference in timing - the wizard leaves the `cc-*` tools to finish setting up the first time you open the Director, while the command line installer provisions them during the install.
 
 **Nothing has to be on the machine first.** The Director and the Launcher carry their own .NET runtime, the `cc-*` tools bring their own Python, and no inbound port is ever opened - so there is no runtime to install, no account needed to install, and no gateway to set up.
 
@@ -75,7 +75,7 @@ These are a contract. Scripts and agents can rely on them.
 | `0` | Done. For `install` and `update` this includes "everything was already current". |
 | `1` | It ran and failed. The output names what failed. |
 | `2` | The command line was wrong - unknown verb, missing value, bad combination. Do not retry. |
-| `3` | Nothing is missing that this tool can install, but there is no coding agent on the machine. |
+| `3` | **`prereqs` only** - there is no coding agent on this machine. `install` never returns this. |
 
 ## Install with an AI coding agent
 
@@ -93,7 +93,8 @@ Install DevThrottle on this machine, unattended.
    Every component should be present, at the version in the release.
 4. Report the version installed, the install path, and the log path.
 
-Exit codes: 0 done, 1 failed, 2 bad command line, 3 no coding agent on this machine.
+Exit codes from install: 0 done, 1 failed, 2 bad command line.
+(3 comes only from the separate `prereqs` check: no coding agent on this machine.)
 
 Do NOT install a .NET runtime - the Director and the Launcher carry their own.
 Do NOT stop or kill any process that is not part of this install.
@@ -108,7 +109,6 @@ Signing in is the one step that needs a person: `<installer> signin` opens a bro
 Open a **new** terminal - one that was already open will not have the new `PATH` - and run:
 
 ```bash
-cc-markdown --version
 cc-excel --version
 cc-hardware
 ```
@@ -202,28 +202,22 @@ Or add it permanently through Windows System Properties > Environment Variables.
 
 ## Multi-Machine Setup (Remote Access)
 
-One Gateway machine runs the fleet view (the Cockpit); every other machine just runs Directors that show up there. Adding a new machine to the fleet is three steps:
+Install DevThrottle on each machine the same way - there is no role to choose during setup. Then connect each one to your gateway:
 
-1. **Install Tailscale** and log into the same tailnet (`winget install tailscale.Tailscale`, then sign in from the tray icon).
-2. **Install DevThrottle** (Workstation role) with the Setup app or `cc-director-setup-cli install`.
-3. **Set the Gateway URL** in the Director's Settings (or `gateway.url` in config.json), pointing at the Gateway machine, e.g. `https://your-gateway.your-tailnet.ts.net`.
+```bash
+devthrottle-setup-cli-win-x64.exe enroll            # your own gateway, discovered automatically
+devthrottle-setup-cli-win-x64.exe enroll --hosted   # DevThrottle's hosted gateway
+```
 
-That is all. The Director registers itself with the Gateway, opens its own Tailscale Serve front door for remote access, and verifies its advertised address actually answers before registering -- there are no manual `tailscale serve` commands and no firewall rules to add.
-
-### How it works (so the troubleshooting below makes sense)
-
-A Director listens on `localhost` only; the single remote path to it is a Tailscale Serve HTTPS mapping on its **own** machine, which each Director now provisions and self-heals for itself. The Director also refuses to register an address that does not demonstrably answer, so a misconfigured machine produces one precise error in its own log instead of a silently dead entry in the fleet.
+Every Director and Launcher dials **out** to the gateway and keeps that connection open. Nothing listens for inbound connections, so there is no port to forward, no firewall rule to add, and no mesh network required.
 
 ### Troubleshooting
 
-| Symptom | Meaning | Fix |
-|---------|---------|-----|
-| Cockpit: "endpoint never answered since registration -- check Tailscale Serve / the Director log on MACHINE" | The Director's machine never opened its HTTPS front door. | On that machine, check the Director log for the exact reason (see rows below); usually Tailscale is missing, logged out, or HTTPS certs are not enabled for the tailnet. |
-| Director log: "tailscale CLI not found" | Tailscale is not installed on the Director's machine. | `winget install tailscale.Tailscale`, log in, restart the Director (or wait -- it retries automatically). |
-| Director log: "tailscale serve --https=PORT failed: ..." | The serve command itself failed; the CLI output is included verbatim. | Most common: HTTPS certificates are not enabled for the tailnet -- enable them in the admin console under DNS -> HTTPS Certificates. |
-| Director log: "NOT registering ... healthz probe timed out" | The mapping exists (or just got created) but the address does not answer yet. | First-ever serve on a machine can take seconds to get its TLS certificate; the Director retries with backoff and registers when it answers. If it never clears, check `tailscale serve status` on that machine. |
-| Cockpit: "unreachable (timeout; cooling down)" | The Director WAS reachable before and went dark (machine asleep, Tailscale down, process gone). | Wake the machine / check Tailscale connectivity; the Gateway re-probes automatically. |
-| Setup app: Tailscale row shows a failing check | Detection-only preflight: CLI missing, daemon stopped/logged out, or no MagicDNS name. | The row text contains the exact command to run; local-only use is unaffected. |
+If a machine does not appear in your fleet, check three things on that machine, in this order:
+
+1. Is the Launcher running? `devthrottle-setup-cli-win-x64.exe status --json` reports it.
+2. Is it enrolled? Re-run `enroll` - it is safe to repeat.
+3. Can it reach the gateway? A proxy that blocks long-lived outbound connections is the usual cause.
 
 ## Next Steps
 

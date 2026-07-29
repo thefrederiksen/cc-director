@@ -5,10 +5,10 @@
         <!-- ===================== CONFIRM ===================== -->
         <DockPanel x:Name="ConfirmView">
             <StackPanel DockPanel.Dock="Top">
-                <TextBlock Text="Uninstall Director"
+                <TextBlock Text="Uninstall DevThrottle"
                            Foreground="White" FontSize="22" FontWeight="SemiBold" />
                 <TextBlock x:Name="ConfirmSubtitle"
-                           Text="This removes the Director and its integration from this Mac."
+                           Text="This removes DevThrottle - the Director, the Launcher, the tools and their integration - from this Mac."
                            Foreground="#CCCCCC" FontSize="13"
                            Margin="0,8,0,0" />
             </StackPanel>

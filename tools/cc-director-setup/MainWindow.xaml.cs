@@ -198,7 +198,7 @@ public partial class MainWindow : Window
         {
             1 => _welcomeStep ??= BuildWelcomeStep(),
             StepInstall => _installStep ??= new InstallStep(),
-            StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _directorExePath, _isUpdate, _alreadyUpToDate, _cachedPrep?.Version, _gatewayFailureReason, BuildAgentNotice(), IsReadyToGo(), SkippedComponentNames()),
+            StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _directorExePath, _isUpdate, _alreadyUpToDate, _cachedPrep?.Version, _gatewayFailureReason, BuildAgentNotice(), IsReadyToGo(), SkippedComponentNames(), SkippedComponentReasons()),
             _ => null
         };
 
@@ -303,9 +303,21 @@ public partial class MainWindow : Window
     /// <summary>Which components did not install, by name, so the Complete screen can say WHICH one -
     /// a count is not something the reader can act on.</summary>
     private IReadOnlyList<string> SkippedComponentNames() =>
+        ComponentDisplayName.For(
+            _cachedPrep?.Items
+                .Where(i => i.Status is "Skipped" or "Failed")
+                .Select(i => i.Name) ?? []);
+
+    /// <summary>
+    /// WHY each component failed, as the engine already worked it out. Every failure path sets
+    /// StatusDetail; the install card shows it, and without this the Complete screen and the generated
+    /// issue lost it again - so a report said "Launcher did not install" and nothing more, which is the
+    /// information-loss this whole change exists to remove.
+    /// </summary>
+    private IReadOnlyList<string> SkippedComponentReasons() =>
         _cachedPrep?.Items
-            .Where(i => i.Status is "Skipped" or "Failed")
-            .Select(i => i.Name)
+            .Where(i => i.Status is "Skipped" or "Failed" && !string.IsNullOrWhiteSpace(i.StatusDetail))
+            .Select(i => $"{ComponentDisplayName.For(i.Name)}: {i.StatusDetail}")
             .ToList() ?? [];
 
     private async Task RunInstallAsync()

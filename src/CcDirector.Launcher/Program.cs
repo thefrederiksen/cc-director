@@ -98,23 +98,36 @@ public static class Program
     /// </summary>
     private static void RequestTrayShutdown()
     {
-        try
+        // Deliberately NOT a blocking call on the user-interface thread. Asking the desktop lifetime to
+        // shut down runs the tray controller's disposal, which waits synchronously on an asynchronous
+        // stop - so posting Shutdown to that thread and waiting could wedge the process precisely where
+        // this handler is supposed to make it stoppable. Signal handlers must not be able to hang.
+        //
+        // So: ask nicely on a background thread, give it a bounded moment, then exit regardless. A
+        // launcher that will not stop cleanly still stops.
+        _ = Task.Run(() =>
         {
-            if (Avalonia.Application.Current?.ApplicationLifetime
-                is Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime lifetime)
+            try
             {
-                Avalonia.Threading.Dispatcher.UIThread.Post(() => lifetime.Shutdown());
-                return;
+                if (Avalonia.Application.Current?.ApplicationLifetime
+                    is Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime lifetime)
+                {
+                    Avalonia.Threading.Dispatcher.UIThread.Post(() => lifetime.Shutdown());
+                }
             }
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[Program] SIGTERM: could not shut the lifetime down cleanly: {ex.Message}");
-        }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[Program] SIGTERM: could not ask the lifetime to shut down: {ex.Message}");
+            }
+        });
 
-        FileLog.Write("[Program] SIGTERM: no running application lifetime - exiting");
-        FileLog.Stop();
-        Environment.Exit(0);
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(8));
+            FileLog.Write("[Program] SIGTERM: shutdown did not complete in time - exiting");
+            FileLog.Stop();
+            Environment.Exit(0);
+        });
     }
 
     /// <summary>

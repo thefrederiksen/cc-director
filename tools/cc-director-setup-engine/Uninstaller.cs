@@ -138,13 +138,10 @@ public sealed class Uninstaller
         // uninstaller could not remove and every later install collided with it. LauncherStopper is
         // the shared fix; the launchd unregister below still runs, because a launchd-owned launcher
         // must also lose its property list or launchd resurrects a binary the next step deletes.
-        progress?.Report("Stopping the launcher");
-        var stop = new LauncherStopper(_layout).Stop();
-        steps.AddRange(stop.Steps);
-        if (!stop.PortFree)
-            errors.Add($"The launcher is still holding port {LauncherTrayInstaller.LauncherDefaultPort}. "
-                       + "A later install will collide with it. See the steps above for what was tried.");
-
+        // AUTOSTART FIRST, then the process. On macOS the launch agent has KeepAlive, so a launcher
+        // killed while launchd still owns its job is simply restarted - and the restart binds the port
+        // again after the stop has already reported success. Unregistering first removes the thing that
+        // would resurrect it.
         if (OperatingSystem.IsWindows())
         {
             progress?.Report("Removing the Launcher autostart");
@@ -164,8 +161,27 @@ public sealed class Uninstaller
             }
         }
 
+        progress?.Report("Stopping the launcher");
+        var stop = new LauncherStopper(_layout).Stop();
+        steps.AddRange(stop.Steps);
+        if (!stop.Stopped)
+            errors.Add("The installed launcher is still running. A later install will collide with it. "
+                       + "See the steps above for what was tried.");
+
         progress?.Report("Removing the app and CLI tools");
-        RemoveDirectories(role, steps, errors);
+        if (stop.Stopped)
+        {
+            RemoveDirectories(role, steps, errors);
+        }
+        else
+        {
+            // Deleting the binary of a process that is still running is exactly how the original
+            // orphan became unstoppable: a live launcher serving a port from files that no longer
+            // existed, which no uninstall could then identify. Leave the files, say so, and let the
+            // user stop it and re-run.
+            steps.Add("SKIPPED removing the app and CLI tools: the launcher is still running, and "
+                      + "deleting its files while it runs is what creates an unstoppable launcher");
+        }
 
         if (OperatingSystem.IsWindows())
         {
@@ -262,18 +278,36 @@ public sealed class Uninstaller
         // NOT named after the root. "cc-director-logs-kept" would be a string PREFIX of the
         // "cc-director" root, which quietly defeats any prefix-based "is this inside the root"
         // check - including the one guarding the wipe itself.
-        var destination = System.IO.Path.Combine(parent, "devthrottle-logs-kept");
+        // Unique per wipe: a fixed name would have the second uninstall overwrite the first one's
+        // logs, and the whole point is not to lose them. Resolved and re-checked below, because a
+        // symbolic link or junction called this could point back inside the root about to be deleted.
+        var destination = System.IO.Path.Combine(
+            parent, $"devthrottle-logs-kept-{DateTime.Now:yyyyMMdd-HHmmss}");
 
         try
         {
+            if (Directory.Exists(destination))
+            {
+                var resolved = new DirectoryInfo(destination).LinkTarget is { } target
+                    ? System.IO.Path.GetFullPath(target)
+                    : System.IO.Path.GetFullPath(destination);
+                if (resolved.StartsWith(System.IO.Path.GetFullPath(root), StringComparison.OrdinalIgnoreCase))
+                {
+                    steps.Add($"not keeping the logs: {destination} resolves back inside {root}, which is being deleted");
+                    return null;
+                }
+            }
+
             CopyDirectory(logs, destination);
             steps.Add($"kept the previous installation's logs at {destination}");
             return destination;
         }
         catch (Exception ex)
         {
-            // Not an error that fails the uninstall - but never silent.
-            errors.Add($"could not keep the logs ({logs}): {ex.Message}");
+            // Reported, never silent - but NOT an error, because that would flip the whole uninstall to
+            // failure over a courtesy copy, telling the user their uninstall failed when it did exactly
+            // what they asked.
+            steps.Add($"could not keep the logs ({logs}): {ex.Message}");
             return null;
         }
     }

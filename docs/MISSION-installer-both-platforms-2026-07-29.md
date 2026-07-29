@@ -1,7 +1,9 @@
 # Installer mission: one product, two platforms
 
-> **Status, 29 July 2026.** Phases 1 to 3 are implemented on branch
-> `installer/orphan-loop` and phase 4's documentation is done. What each item became is recorded
+> **Status, 29 July 2026.** Phases 1 and 2 are implemented on branch `installer/orphan-loop`,
+> phase 3 is implemented EXCEPT item 3.1 - the macOS gate before replacing a running Director, which
+> is deliberately deferred because the handover says reproduce it first and nobody has - and phase 4's
+> documentation is done. What each item became is recorded
 > against it below. Two items resolved differently than written, and both are corrected in place:
 > item 3.3's `FrameworkDetector` was never a .NET check - it was a second implementation of "is
 > there a coding agent here?" - and item 4.5 was not a bug at all.

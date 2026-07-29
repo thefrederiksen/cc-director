@@ -120,7 +120,7 @@ public sealed class LauncherTrayController : IDisposable
         _trayIcon = new TrayIcon
         {
             Icon = new WindowIcon(AssetLoader.Open(new Uri(trayIconAsset))),
-            ToolTipText = "CC Launcher",
+            ToolTipText = "Launcher",
             Menu = menu,
             IsVisible = true,
         };
@@ -182,7 +182,7 @@ public sealed class LauncherTrayController : IDisposable
 
         return new TrayFlyoutModel
         {
-            AppName = "CC Launcher",
+            AppName = "Launcher",
             Icon = _icon,
             StatusTitle = _state switch
             {
@@ -326,6 +326,16 @@ public sealed class LauncherTrayController : IDisposable
                 else
                     LauncherLaunchdAutostart.EnsureRegistered(exePath, LauncherAppOptions.AutostartArguments());
                 FileLog.Write("[LauncherTrayController] Autostart enabled by user");
+
+                // Tell the API what the state IS now. Without this, /healthz and /status kept reporting
+                // the startup-era verdict: a failure the user had just repaired here, or health after a
+                // toggle that silently failed.
+                var registered = OperatingSystem.IsWindows()
+                    ? LauncherAutostart.IsRegistered()
+                    : LauncherLaunchdAutostart.IsRegistered();
+                LauncherCore.RecordAutostartState(registered
+                    ? null
+                    : "autostart was enabled from the tray but is not registered");
             }
             else
             {
@@ -334,11 +344,16 @@ public sealed class LauncherTrayController : IDisposable
                 else
                     LauncherLaunchdAutostart.Unregister();
                 FileLog.Write("[LauncherTrayController] Autostart disabled by user");
+
+                // Turned off ON PURPOSE is not a failure - reporting it as one would cry wolf at a
+                // deliberate choice.
+                LauncherCore.RecordAutostartState(null);
             }
         }
         catch (Exception ex)
         {
             FileLog.Write($"[LauncherTrayController] SetAutostart FAILED: {ex.Message}");
+            LauncherCore.RecordAutostartState($"changing autostart from the tray failed: {ex.Message}");
         }
     }
 
@@ -347,10 +362,10 @@ public sealed class LauncherTrayController : IDisposable
         _state = state;
         var tip = state switch
         {
-            HostState.Starting => "CC Launcher - starting",
-            HostState.Running => $"CC Launcher - running on :{_port}",
-            HostState.Failed => "CC Launcher - failed to start",
-            _ => "CC Launcher",
+            HostState.Starting => "Launcher - starting",
+            HostState.Running => $"Launcher - running on :{_port}",
+            HostState.Failed => "Launcher - failed to start",
+            _ => "Launcher",
         };
         // The flyout reads state live on open; here we only keep the tray tooltip current.
         Dispatcher.UIThread.Post(() =>

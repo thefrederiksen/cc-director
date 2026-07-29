@@ -16,6 +16,7 @@ public partial class CompleteStep : UserControl
     private readonly int _installed;
     private readonly int _skipped;
     private readonly bool _isUpdate;
+    private IReadOnlyList<string> _skippedReasons = [];
 
     /// <summary>The one amber used for "something still needs you" - headline, notice and summary.</summary>
     private static System.Windows.Media.SolidColorBrush AmberBrush =>
@@ -27,7 +28,7 @@ public partial class CompleteStep : UserControl
     /// missing is the lie this parameter removes.
     /// Computed once by <see cref="InstallCompletion.IsReadyToGo"/>; this screen only renders it.
     /// </param>
-    public CompleteStep(int installed, int skipped, string installPath, string directorExePath, bool isUpdate, bool alreadyUpToDate = false, string? version = null, string? gatewayFailureReason = null, string? agentNotice = null, bool readyToGo = true, IReadOnlyList<string>? skippedNames = null)
+    public CompleteStep(int installed, int skipped, string installPath, string directorExePath, bool isUpdate, bool alreadyUpToDate = false, string? version = null, string? gatewayFailureReason = null, string? agentNotice = null, bool readyToGo = true, IReadOnlyList<string>? skippedNames = null, IReadOnlyList<string>? skippedReasons = null)
     {
         InitializeComponent();
 
@@ -98,6 +99,7 @@ public partial class CompleteStep : UserControl
                 // reader can act on. macOS already named the component; this was the last content
                 // difference between the two Complete screens.
                 var names = skippedNames ?? [];
+                _skippedReasons = skippedReasons ?? [];
                 var what = names.Count switch
                 {
                     0 => skipped == 1 ? "One component" : $"{skipped} components",
@@ -106,9 +108,12 @@ public partial class CompleteStep : UserControl
                 };
                 // Carry the specific Gateway failure reason onto the final screen when we have it, so a
                 // failed Gateway update tells the user WHY - not just that something did not install.
-                DescriptionText.Text = string.IsNullOrWhiteSpace(gatewayFailureReason)
-                    ? $"{what} did not install. The Director may still work, but please report this."
-                    : $"{what} did not install. The Director may still work, but please report this.\n{gatewayFailureReason}";
+                // The REASON, not just the name. The engine computed it, the install card showed it, and
+                // this screen used to drop it - sending the user to a log for a sentence we already had.
+                var why = _skippedReasons.Count > 0 ? "\n" + string.Join("\n", _skippedReasons) : "";
+                var gateway = string.IsNullOrWhiteSpace(gatewayFailureReason) ? "" : "\n" + gatewayFailureReason;
+                DescriptionText.Text =
+                    $"{what} did not install. The Director may still work, but please report this.{why}{gateway}";
                 SummaryLine.Visibility = Visibility.Collapsed;
                 FailurePanel.Visibility = Visibility.Visible;
                 if (names.Count > 0) SkippedText.Text = $"{skipped} ({string.Join(", ", names)})";
@@ -158,6 +163,12 @@ public partial class CompleteStep : UserControl
     private string BuildIssueBody()
     {
         var sb = new StringBuilder();
+        if (_skippedReasons.Count > 0)
+        {
+            sb.AppendLine("## Why it failed");
+            foreach (var reason in _skippedReasons) sb.AppendLine($"- {reason}");
+            sb.AppendLine();
+        }
         sb.AppendLine("## What happened");
         sb.AppendLine("<!-- Briefly describe the problem. -->");
         sb.AppendLine();

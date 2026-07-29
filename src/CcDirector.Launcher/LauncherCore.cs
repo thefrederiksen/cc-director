@@ -123,6 +123,25 @@ public sealed class LauncherCore : IAsyncDisposable
     public static string? AutostartFailure { get; private set; }
 
     /// <summary>
+    /// Has the autostart state been decided yet? Until it has, "no failure" is not the same as
+    /// "healthy" - headless mode starts its web host BEFORE registering, so /healthz answered
+    /// autostartOk=true during a window when nothing had been checked at all.
+    /// </summary>
+    public static bool AutostartChecked { get; private set; }
+
+    /// <summary>
+    /// Record the autostart state from somewhere other than startup - the tray's own enable/disable
+    /// toggle. Without this the API kept reporting a startup-era failure after the user had fixed it,
+    /// or healthy after a later toggle failed.
+    /// </summary>
+    public static void RecordAutostartState(string? failure)
+    {
+        AutostartFailure = failure;
+        AutostartChecked = true;
+        FileLog.Write($"[LauncherCore] autostart state recorded: {(failure is null ? "registered" : failure)}");
+    }
+
+    /// <summary>
     /// Register the start-at-login autostart for the current executable (the Run key on
     /// Windows, the launchd launch agent on macOS), honoring --no-autostart.
     ///
@@ -136,33 +155,48 @@ public sealed class LauncherCore : IAsyncDisposable
         {
             FileLog.Write("[LauncherCore] Autostart registration skipped (--no-autostart)");
             AutostartFailure = null;   // not asked for, so not a failure
+            AutostartChecked = true;
             return;
         }
 
-        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS()) return;
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS())
+        {
+            AutostartChecked = true;   // no mechanism on this platform: nothing to fail
+            return;
+        }
 
         try
         {
             var exePath = Environment.ProcessPath
                           ?? Process.GetCurrentProcess().MainModule?.FileName
                           ?? throw new InvalidOperationException("Could not resolve own exe path for autostart");
-            var registered = OperatingSystem.IsWindows()
-                ? LauncherAutostart.EnsureRegistered(exePath, LauncherAppOptions.AutostartArguments())
-                : LauncherLaunchdAutostart.EnsureRegistered(exePath, LauncherAppOptions.AutostartArguments());
+            // EnsureRegistered returns FALSE for "already correct, nothing written" on both platforms, so
+            // its return value cannot be read as success or failure. Ask the machine what the state IS.
+            // Getting this wrong would have reported every normally-registered launcher as broken from
+            // its second login onward - and on macOS from the FIRST run, because the installer now
+            // registers the agent before the launcher starts.
+            if (OperatingSystem.IsWindows())
+                LauncherAutostart.EnsureRegistered(exePath, LauncherAppOptions.AutostartArguments());
+            else
+                LauncherLaunchdAutostart.EnsureRegistered(exePath, LauncherAppOptions.AutostartArguments());
 
-            // EnsureRegistered returning false is a failure too. It used to be discarded, so a
-            // launcher that had NOT registered still reported healthy.
+            var registered = OperatingSystem.IsWindows()
+                ? LauncherAutostart.IsRegistered()
+                : LauncherLaunchdAutostart.IsRegistered();
+
             AutostartFailure = registered
                 ? null
                 : (OperatingSystem.IsWindows()
-                    ? "the autostart Run key was not written"
-                    : "the launch agent property list was not written or not loaded");
+                    ? "the autostart Run key is not present after registering"
+                    : "the launch agent property list is not present after registering");
+            AutostartChecked = true;
             if (AutostartFailure is not null)
                 FileLog.Write($"[LauncherCore] Autostart registration did not take effect: {AutostartFailure}");
         }
         catch (Exception ex)
         {
             AutostartFailure = ex.Message;
+            AutostartChecked = true;
             FileLog.Write($"[LauncherCore] Autostart registration FAILED: {ex.Message}");
         }
     }

@@ -22,6 +22,16 @@ public sealed class CliArgs
         _flags = flags;
     }
 
+    /// <summary>
+    /// Options that TAKE A VALUE. Kept beside <see cref="KnownFlags"/> so the parser can tell "you
+    /// forgot the value" from "that is a switch" from "that is not a thing" - three different mistakes
+    /// that all used to look like a successful command.
+    /// </summary>
+    private static readonly HashSet<string> KnownOptions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "component", "gateway", "log-file", "manifest", "release-dir", "role", "root", "tools",
+    };
+
     public static CliArgs Parse(string[] argv)
     {
         var command = argv.Length > 0 && !argv[0].StartsWith("--", StringComparison.Ordinal) ? argv[0] : "help";
@@ -36,13 +46,26 @@ public sealed class CliArgs
             if (a.StartsWith("--", StringComparison.Ordinal))
             {
                 var key = a[2..];
-                if (KnownFlags.Contains(key) || i + 1 >= argv.Length || argv[i + 1].StartsWith("--", StringComparison.Ordinal))
+                if (KnownFlags.Contains(key))
                 {
                     flags.Add(key);
                 }
+                else if (KnownOptions.Contains(key))
+                {
+                    // A known option with no value is a MISTAKE, not a flag. Treating it as one meant
+                    // "install --role" quietly installed the default role and "install --release-dir"
+                    // quietly went to GitHub instead of the directory the caller asked for - an
+                    // unattended install doing something other than what it was told, and reporting
+                    // success. Scripts and agents cannot see that; an exit code they can.
+                    if (i + 1 >= argv.Length || argv[i + 1].StartsWith("--", StringComparison.Ordinal))
+                        throw new UsageException($"--{key} needs a value.");
+                    options[key] = argv[++i];
+                }
                 else
                 {
-                    options[key] = argv[++i];
+                    // An unknown option is a mistake too. Accepting it silently means a typo in an
+                    // agent's command line looks like a successful install of something else.
+                    throw new UsageException($"Unknown option --{key}.");
                 }
             }
             else

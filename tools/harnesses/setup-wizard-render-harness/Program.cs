@@ -136,7 +136,11 @@ internal static class Program
             ("complete-problems", new CcDirectorSetup.Steps.CompleteStep(
                 installed: 1, skipped: 1, installPath: "/Users/you/Applications/DevThrottle.app",
                 isUpdate: false, alreadyUpToDate: false, version: "1.8.5",
-                agentNotice: null, skippedNames: ["cc-launcher"])),
+                // The DISPLAY name, which is what MainWindow passes (ComponentDisplayName maps the
+                // internal "cc-launcher" id). Passing the raw id here made the screenshot show a name
+                // the product no longer renders.
+                agentNotice: null, skippedNames: ["Launcher"],
+                skippedReasons: ["Launcher: healthy but did not register its launch agent property list"])),
         };
 
         foreach (var (name, step) in states)

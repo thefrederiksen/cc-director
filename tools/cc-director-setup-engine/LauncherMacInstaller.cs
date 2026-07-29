@@ -132,6 +132,17 @@ public sealed class LauncherMacInstaller
         // the remaining gap; it is recorded in docs/MISSION-installer-both-platforms-2026-07-29.md.
         var expectedVersion = new InstalledStateReader(_layout).Read(ComponentRegistry.Launcher).Version;
         var healthUrl = $"http://127.0.0.1:{LauncherTrayInstaller.LauncherDefaultPort}/healthz";
+
+        // No process to expect means we cannot tell our launcher from a stranger on the port, and the
+        // version cannot tell them apart either (build metadata is stripped before comparison). Fail
+        // rather than certify: a same-version orphan holding the port is the exact case that bricked a
+        // machine, and "we could not check" must not read as "it is fine".
+        if (startedPid == 0)
+            return Fail(steps, "launchd did not report which process is running the launcher, so this install "
+                               + "cannot verify that the launcher answering on port "
+                               + $"{LauncherTrayInstaller.LauncherDefaultPort} is the one just placed. "
+                               + $"Check {_layout.LogsDir} and re-run.");
+
         var health = await LauncherHealthProbe.WaitForHealthyAsync(_http, healthUrl, expectedVersion, _healthTimeout, ct, startedPid);
         if (health is null)
         {
@@ -212,14 +223,34 @@ public sealed class LauncherMacInstaller
     private int TryGetLaunchdPid(List<string> steps)
     {
         var (uidExit, uidOutput) = _runCommand("/usr/bin/id", "-u");
-        if (uidExit != 0 || !int.TryParse(uidOutput.Trim(), out var uid)) return 0;
+        if (uidExit != 0 || !int.TryParse(uidOutput.Trim(), out var uid))
+        {
+            steps.Add($"could not resolve the user id (exit {uidExit}) - cannot ask launchd which process it runs");
+            return 0;
+        }
 
-        var (printExit, printOutput) = _runCommand("/bin/launchctl", $"print gui/{uid}/{LauncherLaunchdAutostart.Label}");
-        if (printExit != 0) return 0;
+        // A freshly bootstrapped job does not have a process id the instant launchctl is asked, so a
+        // single look returns 0 - and 0 means "expect nothing", which lets any responder on the port
+        // certify the install. That is exactly the hole this was meant to close, so wait for it.
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (DateTime.UtcNow < deadline)
+        {
+            var (printExit, printOutput) = _runCommand(
+                "/bin/launchctl", $"print gui/{uid}/{LauncherLaunchdAutostart.Label}");
+            if (printExit == 0)
+            {
+                var pid = ParseLaunchdPid(printOutput);
+                if (pid > 0)
+                {
+                    steps.Add($"launchd is running the launcher as process {pid}");
+                    return pid;
+                }
+            }
+            Thread.Sleep(500);
+        }
 
-        var pid = ParseLaunchdPid(printOutput);
-        if (pid > 0) steps.Add($"launchd is running the launcher as process {pid}");
-        return pid;
+        steps.Add("launchd did not report a process id for the launcher within ten seconds");
+        return 0;
     }
 
     /// <summary>Testable parse of a launchctl print block: the "pid = NNNN" field, or 0.</summary>

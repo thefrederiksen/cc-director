@@ -32,3 +32,45 @@ public sealed class ExitCodeContractTests
         Assert.Equal(codes.Length, codes.Distinct().Count());
     }
 }
+
+/// <summary>
+/// The parser must refuse what it used to ignore. A silently-dropped option is worse than an error on
+/// an unattended path: `install --role` with no value quietly installed the DEFAULT role, and
+/// `install --release-dir` quietly went to GitHub instead of the directory the caller named - an
+/// install doing something other than what it was told, and reporting success. An agent cannot see
+/// that; an exit code it can.
+/// </summary>
+public sealed class StrictArgumentParsingTests
+{
+    [Fact]
+    public void AKnownOptionWithNoValue_IsAUsageError()
+    {
+        Assert.Throws<UsageException>(() => CliArgs.Parse(["install", "--role"]));
+        Assert.Throws<UsageException>(() => CliArgs.Parse(["install", "--release-dir"]));
+        // Followed by another option is the same mistake: the value is missing.
+        Assert.Throws<UsageException>(() => CliArgs.Parse(["install", "--role", "--json"]));
+    }
+
+    [Fact]
+    public void AnUnknownOption_IsAUsageError()
+    {
+        Assert.Throws<UsageException>(() => CliArgs.Parse(["status", "--bogus"]));
+        Assert.Throws<UsageException>(() => CliArgs.Parse(["install", "--rolle", "workstation"]));
+    }
+
+    [Fact]
+    public void RealCommandLinesStillParse()
+    {
+        var a = CliArgs.Parse(["install", "--role", "workstation", "--json", "--log-file", "x.log"]);
+        Assert.Equal("install", a.Command);
+        Assert.Equal("workstation", a.Option("role"));
+        Assert.Equal("x.log", a.Option("log-file"));
+        Assert.True(a.HasFlag("json"));
+
+        var b = CliArgs.Parse(["uninstall", "--dry-run"]);
+        Assert.True(b.HasFlag("dry-run"));
+
+        // Flags at the end, with nothing after them, are still flags.
+        Assert.True(CliArgs.Parse(["status", "--json"]).HasFlag("json"));
+    }
+}

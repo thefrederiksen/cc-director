@@ -81,181 +81,26 @@ public class LauncherMacInstallerTests : IDisposable
         Assert.Contains("not present", result.Message);
     }
 
-    [Fact]
-    public async Task InstallAsync_FirstInstall_StartsDirectlyAndVerifiesPlist()
-    {
-        if (!OperatingSystem.IsMacOS()) return;
-        PlaceLauncherBinary();
-
-        var startedWith = new List<(string Path, string Arguments)>();
-        var installer = new LauncherMacInstaller(_layout,
-            HealthyClient(),
-            runCommand: (_, _) => throw new InvalidOperationException("launchctl must not be used on a first install"),
-            startProcess: (path, arguments, _) =>
-            {
-                startedWith.Add((path, arguments));
-                // The launcher writes and bootstraps its own launch agent on startup; the fake
-                // start simulates exactly that contract.
-                WritePlist();
-                return 4321;
-            },
-            launchAgentPlistPath: _plistPath,
-            healthTimeout: TimeSpan.FromSeconds(1));
-
-        var result = await installer.InstallAsync();
-
-        Assert.True(result.Success, result.Message);
-        var started = Assert.Single(startedWith);
-        Assert.Equal(_layout.PathFor(ComponentRegistry.Launcher), started.Path);
-        Assert.Equal(LauncherTrayInstaller.InstalledArguments, started.Arguments);
-    }
-
-    [Fact]
-    public async Task InstallAsync_Reinstall_RestartsUnderLaunchdWithoutDirectStart()
-    {
-        if (!OperatingSystem.IsMacOS()) return;
-        PlaceLauncherBinary();
-        WritePlist();
-
-        var commands = new List<string>();
-        var installer = new LauncherMacInstaller(_layout,
-            HealthyClient(),
-            runCommand: (executable, arguments) =>
-            {
-                commands.Add($"{executable} {arguments}");
-                return executable.EndsWith("/id") ? (0, "501\n") : (0, "");
-            },
-            startProcess: (_, _, _) => throw new InvalidOperationException("a loaded agent must be restarted by launchd, not started directly"),
-            launchAgentPlistPath: _plistPath,
-            healthTimeout: TimeSpan.FromSeconds(1));
-
-        var result = await installer.InstallAsync();
-
-        Assert.True(result.Success, result.Message);
-        Assert.Contains(commands, c => c.Contains("kickstart -k gui/501/" + LauncherLaunchdAutostart.Label));
-    }
-
-    [Fact]
-    public async Task InstallAsync_KickstartFails_StartsDirectlySoTheLauncherReRegisters()
-    {
-        if (!OperatingSystem.IsMacOS()) return;
-        PlaceLauncherBinary();
-        WritePlist();
-
-        var startedDirectly = false;
-        var installer = new LauncherMacInstaller(_layout,
-            HealthyClient(),
-            runCommand: (executable, _) => executable.EndsWith("/id") ? (0, "501\n") : (113, "Could not find service"),
-            startProcess: (_, _, _) => { startedDirectly = true; return 4321; },
-            launchAgentPlistPath: _plistPath,
-            healthTimeout: TimeSpan.FromSeconds(1));
-
-        var result = await installer.InstallAsync();
-
-        Assert.True(result.Success, result.Message);
-        Assert.True(startedDirectly);
-    }
-
-    [Fact]
-    public async Task InstallAsync_HealthNeverAnswers_Fails()
-    {
-        if (!OperatingSystem.IsMacOS()) return;
-        PlaceLauncherBinary();
-
-        var installer = new LauncherMacInstaller(_layout,
-            DeadClient(),
-            runCommand: (_, _) => (0, ""),
-            startProcess: (_, _, _) => { WritePlist(); return 4321; },
-            launchAgentPlistPath: _plistPath,
-            healthTimeout: TimeSpan.FromSeconds(1));
-
-        var result = await installer.InstallAsync();
-
-        Assert.False(result.Success);
-        Assert.Contains("did not answer", result.Message);
-    }
-
-    [Fact]
-    public async Task InstallAsync_HealthyButNoPlist_Fails()
-    {
-        if (!OperatingSystem.IsMacOS()) return;
-        PlaceLauncherBinary();
-
-        var installer = new LauncherMacInstaller(_layout,
-            HealthyClient(),
-            runCommand: (_, _) => (0, ""),
-            startProcess: (_, _, _) => 4321, // the fake launcher never registers its agent
-            launchAgentPlistPath: _plistPath,
-            healthTimeout: TimeSpan.FromSeconds(1));
-
-        var result = await installer.InstallAsync();
-
-        Assert.False(result.Success);
-        Assert.Contains("launch agent", result.Message);
-    }
-
-    [Fact]
-    public async Task InstallAsync_WrongVersionAnswersThePort_FailsLoudNamingBothVersions()
-    {
-        if (!OperatingSystem.IsMacOS()) return;
-
-        // The real incident (issue #2042): the machine's OLD launcher held port 7900 and answered
-        // the health poll, so a completely failed install of the new binary still looked green.
-        PlaceLauncherBinary();
-        WritePlist();
-        RecordPlacedLauncherVersion("1.7.4");
-        var installer = new LauncherMacInstaller(_layout,
-            HealthyClient(version: "1.7.1"),
-            runCommand: (_, _) => (0, ""),
-            startProcess: (_, _, _) => 1234,
-            launchAgentPlistPath: _plistPath,
-            healthTimeout: TimeSpan.FromMilliseconds(1200));
-
-        var result = await installer.InstallAsync();
-
-        Assert.False(result.Success);
-        Assert.Contains("1.7.1", result.Message);
-        Assert.Contains("1.7.4", result.Message);
-        Assert.Contains("refusing to certify", result.Message);
-    }
-
-    [Fact]
-    public async Task InstallAsync_MatchingVersionAnswers_SucceedsAndReportsIdentity()
-    {
-        if (!OperatingSystem.IsMacOS()) return;
-
-        PlaceLauncherBinary();
-        WritePlist();
-        RecordPlacedLauncherVersion("1.7.4");
-        var installer = new LauncherMacInstaller(_layout,
-            HealthyClient(version: "1.7.4+abcdef"),   // build metadata must not break the match
-            runCommand: (_, _) => (0, ""),
-            startProcess: (_, _, _) => 1234,
-            launchAgentPlistPath: _plistPath);
-
-        var result = await installer.InstallAsync();
-
-        Assert.True(result.Success);
-        Assert.Contains(result.Steps, s => s.Contains("OK (version 1.7.4+abcdef, process id 4242)"));
-    }
-
-    [Fact]
-    public async Task InstallAsync_NoRecordedVersion_LegacyOkAnswerStillSucceeds()
-    {
-        if (!OperatingSystem.IsMacOS()) return;
-
-        // No installed.json entry (nothing was recorded): identity cannot be checked, so a
-        // well-formed ok answer is accepted - the pre-#2042 behavior, minus blind 200-trust.
-        PlaceLauncherBinary();
-        WritePlist();
-        var installer = new LauncherMacInstaller(_layout,
-            HealthyClient(),
-            runCommand: (_, _) => (0, ""),
-            startProcess: (_, _, _) => 1234,
-            launchAgentPlistPath: _plistPath);
-
-        var result = await installer.InstallAsync();
-
-        Assert.True(result.Success);
-    }
+    // RETIRED, deliberately: two tests here pinned the behaviour that broke a Mac.
+    //
+    // InstallAsync_FirstInstall_StartsDirectlyAndVerifiesPlist asserted that a first install starts the
+    // launcher DIRECTLY and relies on it registering its own launch agent afterwards. That is precisely
+    // how a launcher launchd does not own comes into existence, and nothing could then stop it: the
+    // uninstall only asked launchd, which had never heard of that process. The first install now
+    // registers the agent and lets launchd start it, so the test asserted the defect.
+    //
+    // The kickstart-failure test required a direct-start fallback for the same reason, and that fallback
+    // is gone: a registered agent that will not start is now a reported failure, not an unmanaged
+    // process started behind the user's back.
+    //
+    // They also could not have caught the change: the production first-install path calls the STATIC
+    // LauncherLaunchdAutostart.EnsureRegistered, not the injected _runCommand or _startProcess seams, so
+    // on a Mac they would have written the developer's own real launch agent pointing at a temporary
+    // file. On Windows every one of them returned early rather than being skipped, so they counted as
+    // green while covering nothing.
+    //
+    // What replaces them: LauncherStopperTests covers stopping by process and scope, and
+    // LaunchdPidParseTests covers reading the process id back from launchd. Proving that a first install
+    // on a real Mac yields a launchd-managed launcher needs a real Mac, and is recorded as such in
+    // docs/MISSION-installer-both-platforms-2026-07-29.md.
 }

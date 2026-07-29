@@ -27,6 +27,7 @@ public partial class MainWindow : Window
     private int _installedCount;
     private int _skippedCount;
     private IReadOnlyList<string> _skippedNames = [];
+    private IReadOnlyList<string> _skippedReasons = [];
     private string _installPath = "";
 
     private readonly bool _isUpdate;
@@ -117,7 +118,7 @@ public partial class MainWindow : Window
         {
             StepWelcome => _welcomeStep ??= BuildWelcomeStep(),
             StepInstall => _installStep ??= new InstallStep(),
-            StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _isUpdate, _alreadyUpToDate, _latestVersion, BuildAgentNotice(), _skippedNames, IsReadyToGo()),
+            StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _isUpdate, _alreadyUpToDate, _latestVersion, BuildAgentNotice(), _skippedNames, IsReadyToGo(), _skippedReasons),
             _ => null
         };
 
@@ -293,7 +294,14 @@ public partial class MainWindow : Window
         var (installed, skipped) = await _runner.ApplyAsync(prep, status);
         _installedCount = installed;
         _skippedCount = skipped;
-        _skippedNames = prep.Items.Where(i => i.Status is "Skipped" or "Failed").Select(i => i.Name).ToList();
+        _skippedNames = ComponentDisplayName.For(
+            prep.Items.Where(i => i.Status is "Skipped" or "Failed").Select(i => i.Name));
+        // WHY, as the engine already worked it out. Without this the Complete screen named the component
+        // and dropped the reason, sending the user to a log for a sentence we already had.
+        _skippedReasons = prep.Items
+            .Where(i => i.Status is "Skipped" or "Failed" && !string.IsNullOrWhiteSpace(i.StatusDetail))
+            .Select(i => $"{ComponentDisplayName.For(i.Name)}: {i.StatusDetail}")
+            .ToList();
 
         _installStep?.SetStatus($"Done - {installed} installed, {skipped} skipped");
         SetupLog.Write($"[MainWindow] ApplyAndFinishAsync: installed={installed}, skipped={skipped}");

@@ -33,22 +33,25 @@ public sealed class LauncherStopperTests
     }
 
     [Fact]
-    public void Stop_NothingOnThePort_SucceedsWithoutTouchingAnything()
+    public void Stop_NothingOfOursRunning_SucceedsWithoutStoppingAnything()
     {
         var root = MakeRoot();
         var listed = false;
         var stopper = new LauncherStopper(LayoutIn(root))
         {
             PortInUse = () => false,
+            PortOwnerPid = () => 0,
             ListLauncherProcesses = () => { listed = true; return []; },
-            RequestQuit = (_, _) => throw new InvalidOperationException("must not ask when nothing is running"),
+            RequestQuit = (_, _) => throw new InvalidOperationException("must not ask when nothing of ours is running"),
             StopProcess = _ => throw new InvalidOperationException("must not stop anything"),
         };
 
         var result = stopper.Stop();
 
-        Assert.True(result.PortFree);
-        Assert.False(listed);
+        Assert.True(result.Stopped);
+        // It DOES enumerate now, always: a launcher that is starting, failed to bind, or listens on
+        // another port holds no port and would otherwise have its files deleted underneath it.
+        Assert.True(listed);
     }
 
     // The polite path, and the ORDER that makes it possible: the token must still be on disk, which
@@ -67,11 +70,19 @@ public sealed class LauncherStopperTests
         var killed = false;
         var running = true;
 
-        var s = new LauncherStopper(LayoutIn(root))
+        var layout = LayoutIn(root);
+        var ourLauncher = new LauncherProcess(4242, Path.Combine(layout.LauncherDir, "cc-launcher") + " --managed");
+        var alive = true;
+
+        var s = new LauncherStopper(layout)
         {
             PortInUse = () => running,
-            RequestQuit = (_, token) => { quitAsked = true; sawToken = token; running = false; return true; },
-            ListLauncherProcesses = () => [],
+            PortOwnerPid = () => 4242,
+            RequestQuit = (_, token) =>
+            {
+                quitAsked = true; sawToken = token; running = false; alive = false; return true;
+            },
+            ListLauncherProcesses = () => alive ? [ourLauncher] : [],
             StopProcess = _ => { killed = true; return true; },
         };
 
@@ -79,7 +90,7 @@ public sealed class LauncherStopperTests
 
         Assert.True(quitAsked);
         Assert.Equal("the-token", sawToken);
-        Assert.True(result.PortFree);
+        Assert.True(result.Stopped);
         Assert.False(killed);   // it went quietly; nothing had to be killed
     }
 
@@ -96,14 +107,17 @@ public sealed class LauncherStopperTests
         var s = new LauncherStopper(layout)
         {
             PortInUse = () => running,
+            PortOwnerPid = () => 34084,
             RequestQuit = (_, _) => throw new InvalidOperationException("there is no token to ask with"),
-            ListLauncherProcesses = () => [new LauncherProcess(34084, Path.Combine(layout.LauncherDir, "cc-launcher"))],
+            ListLauncherProcesses = () => running
+                ? [new LauncherProcess(34084, Path.Combine(layout.LauncherDir, "cc-launcher") + " --managed")]
+                : [],
             StopProcess = pid => { stopped.Add(pid); running = false; return true; },
         };
 
         var result = s.Stop();
 
-        Assert.True(result.PortFree);
+        Assert.True(result.Stopped);
         Assert.Equal([34084], stopped);
     }
 
@@ -118,15 +132,20 @@ public sealed class LauncherStopperTests
         var s = new LauncherStopper(LayoutIn(root))
         {
             PortInUse = () => true,
-            RequestQuit = (_, _) => false,
-            ListLauncherProcesses = () => [new LauncherProcess(999, @"D:\repos\devthrottle\src\CcDirector.Launcher\bin\cc-launcher.exe")],
+            PortOwnerPid = () => 999,
+            RequestQuit = (_, _) => throw new InvalidOperationException(
+                "must not ask a launcher outside the install to quit - it shares the same token file"),
+            ListLauncherProcesses = () => [new LauncherProcess(999, @"D:\repos\devthrottle\src\CcDirector.Launcher\bin\cc-launcher.exe --managed")],
             StopProcess = pid => { stopped.Add(pid); return true; },
         };
 
         var result = s.Stop();
 
         Assert.Empty(stopped);
-        Assert.False(result.PortFree);   // honest: the port is held, and not by us
+        // Nothing of ours was running, so this did not fail at its job - but the steps must say the
+        // port is held by a stranger, because an install will collide with it.
+        Assert.True(result.Stopped);
+        Assert.Contains(result.Steps, x => x.Contains("NOT running from", StringComparison.Ordinal));
     }
 
     // The whole failure was an installer that trusted an attempt. A stop that cannot free the port
@@ -141,17 +160,148 @@ public sealed class LauncherStopperTests
         var s = new LauncherStopper(layout)
         {
             PortInUse = () => true,                 // never frees
+            PortOwnerPid = () => 34084,
             RequestQuit = (_, _) => false,
-            ListLauncherProcesses = () => [new LauncherProcess(34084, Path.Combine(layout.LauncherDir, "cc-launcher"))],
+            // The process survives every attempt - the exact orphan behaviour.
+            ListLauncherProcesses = () => [new LauncherProcess(34084, Path.Combine(layout.LauncherDir, "cc-launcher") + " --managed")],
             StopProcess = _ => true,                // the attempt "succeeded"
         };
 
         var result = s.Stop();
 
-        Assert.False(result.PortFree);
-        Assert.Contains(result.Steps, s2 => s2.Contains("STILL IN USE", StringComparison.Ordinal));
+        Assert.False(result.Stopped);
+        Assert.Contains(result.Steps, x => x.Contains("STILL RUNNING", StringComparison.Ordinal));
+    }
+
+    // FINDING 1, the one that made this whole class useless on the real machine: ps does not quote
+    // paths, and the installed launcher lives under "Library/Application Support" - a path with a
+    // SPACE. Taking the first whitespace-delimited token as the executable produced
+    // "/Users/<user>/Library/Application", which never matched the install directory, so the orphan
+    // was never stopped. The command line is matched as a PREFIX instead.
+    // Revert-proof: parse an executable out of the command line by splitting on space and this reds.
+    [Fact]
+    public void Stop_RecognisesTheInstalledLauncher_WhenItsPathContainsSpaces()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "stopper-" + Guid.NewGuid().ToString("N"),
+                                "Application Support", "cc-director");
+        Directory.CreateDirectory(root);
+        var layout = LayoutIn(root);
+        var stopped = new List<int>();
+        var alive = true;
+
+        var s = new LauncherStopper(layout)
+        {
+            PortInUse = () => alive,
+            PortOwnerPid = () => 34084,
+            RequestQuit = (_, _) => false,
+            ListLauncherProcesses = () => alive
+                ? [new LauncherProcess(34084, Path.Combine(layout.LauncherDir, "cc-launcher") + " --managed")]
+                : [],
+            StopProcess = pid => { stopped.Add(pid); alive = false; return true; },
+        };
+
+        var result = s.Stop();
+
+        Assert.Equal([34084], stopped);
+        Assert.True(result.Stopped);
+    }
+
+    // A sibling directory is not us. "<LauncherDir>-dev/cc-launcher" starts with the same text as
+    // "<LauncherDir>", so a bare prefix comparison would kill somebody else's launcher.
+    [Fact]
+    public void Stop_DoesNotTreatASiblingDirectoryAsTheInstallDirectory()
+    {
+        var root = MakeRoot();
+        var layout = LayoutIn(root);
+        var stopped = new List<int>();
+
+        var s = new LauncherStopper(layout)
+        {
+            PortInUse = () => true,
+            PortOwnerPid = () => 777,
+            RequestQuit = (_, _) => throw new InvalidOperationException("not ours"),
+            ListLauncherProcesses = () => [new LauncherProcess(777, layout.LauncherDir + "-dev/cc-launcher --managed")],
+            StopProcess = pid => { stopped.Add(pid); return true; },
+        };
+
+        s.Stop();
+
+        Assert.Empty(stopped);
+    }
+
+    // FINDING 4: an installed launcher that holds NO port - still starting, failed to bind, or on a
+    // different port - must still be stopped, because its files are about to be deleted underneath it.
+    [Fact]
+    public void Stop_StopsAnInstalledLauncherThatHoldsNoPort()
+    {
+        var root = MakeRoot();
+        var layout = LayoutIn(root);
+        var stopped = new List<int>();
+        var alive = true;
+
+        var s = new LauncherStopper(layout)
+        {
+            PortInUse = () => false,                 // nothing on the port at all
+            PortOwnerPid = () => 0,
+            RequestQuit = (_, _) => throw new InvalidOperationException("nothing is on the port to ask"),
+            ListLauncherProcesses = () => alive
+                ? [new LauncherProcess(5150, Path.Combine(layout.LauncherDir, "cc-launcher") + " --managed")]
+                : [],
+            StopProcess = pid => { stopped.Add(pid); alive = false; return true; },
+        };
+
+        var result = s.Stop();
+
+        Assert.Equal([5150], stopped);
+        Assert.True(result.Stopped);
+    }
+
+    // Two installed launchers: stopping the one that answers on the port is not enough.
+    [Fact]
+    public void Stop_StopsEveryInstalledLauncher_NotJustThePortOwner()
+    {
+        var root = MakeRoot();
+        var layout = LayoutIn(root);
+        var exe = Path.Combine(layout.LauncherDir, "cc-launcher");
+        var live = new List<int> { 100, 200 };
+        var stopped = new List<int>();
+
+        var s = new LauncherStopper(layout)
+        {
+            PortInUse = () => live.Contains(100),
+            PortOwnerPid = () => 100,
+            RequestQuit = (_, _) => false,
+            ListLauncherProcesses = () => live.Select(p => new LauncherProcess(p, exe + " --managed")).ToList(),
+            StopProcess = pid => { live.Remove(pid); stopped.Add(pid); return true; },
+        };
+
+        var result = s.Stop();
+
+        Assert.Equal([100, 200], stopped.OrderBy(x => x).ToList());
+        Assert.True(result.Stopped);
+    }
+
+    // If the machine will not tell us what is running, do not claim success on the strength of a free
+    // port - say the list could not be read.
+    [Fact]
+    public void Stop_WhenTheProcessListCannotBeRead_SaysSo()
+    {
+        var root = MakeRoot();
+        var s = new LauncherStopper(LayoutIn(root))
+        {
+            PortInUse = () => false,
+            PortOwnerPid = () => 0,
+            ListLauncherProcesses = () => throw new InvalidOperationException("ps is unavailable"),
+            RequestQuit = (_, _) => false,
+            StopProcess = _ => false,
+        };
+
+        var result = s.Stop();
+
+        Assert.Contains(result.Steps, x => x.Contains("could not list launcher processes", StringComparison.Ordinal));
     }
 }
+
 
 /// <summary>
 /// A wipe must not destroy the account of how the installation behaved. On the machine investigated,
@@ -205,7 +355,9 @@ public sealed class UninstallerPreservesLogsTests
         var errors = new List<string>();
         try
         {
-            using (var held = new FileStream(openLog, FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
+            // FileShare.Read is what the product's own log writer uses - the earlier ReadWrite made this
+            // test easier than reality.
+            using (var held = new FileStream(openLog, FileMode.Create, FileAccess.Write, FileShare.Read))
             using (var writer = new StreamWriter(held) { AutoFlush = true })
             {
                 writer.WriteLine("still being written");
@@ -213,8 +365,10 @@ public sealed class UninstallerPreservesLogsTests
                 var kept = new Uninstaller(new InstallLayout(root)).PreserveLogs(root, steps, errors);
 
                 Assert.NotNull(kept);
-                Assert.Contains("still being written",
-                    File.ReadAllText(Path.Combine(kept!, "live.log")), StringComparison.Ordinal);
+                var keptLog = Path.Combine(kept!, "live.log");
+                Assert.True(File.Exists(keptLog), "a log held open for writing was not captured");
+                using var reader = new FileStream(keptLog, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                Assert.Contains("still being written", new StreamReader(reader).ReadToEnd(), StringComparison.Ordinal);
             }
         }
         finally

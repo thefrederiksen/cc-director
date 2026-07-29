@@ -138,6 +138,11 @@ public sealed class LauncherHost : IAsyncDisposable
             // autostartOk is part of health on purpose. A launcher that did not register itself is
             // running but NOT managed, and reporting plain "ok" for both states is what let an
             // unmanageable launcher pass for a healthy one on the machine where this was found.
+            //
+            // Read ONCE into locals: two reads of a mutable static can produce a response that
+            // disagrees with itself (ok=true alongside a failure string).
+            var autostartFailure = LauncherCore.AutostartFailure;
+            var autostartChecked = LauncherCore.AutostartChecked;
             return Results.Json(new
             {
                 ok = true,
@@ -145,8 +150,10 @@ public sealed class LauncherHost : IAsyncDisposable
                 pid = Environment.ProcessId,
                 uptimeS,
                 userInterface = _userInterfaceState,
-                autostartOk = LauncherCore.AutostartFailure is null,
-                autostartFailure = LauncherCore.AutostartFailure,
+                // Null, not true, until it has actually been decided - saying "ok" about a question
+                // nobody has asked yet is the same class of lie this field exists to remove.
+                autostartOk = autostartChecked ? autostartFailure is null : (bool?)null,
+                autostartFailure,
             }, JsonOpts);
         });
 
@@ -154,6 +161,8 @@ public sealed class LauncherHost : IAsyncDisposable
         app.MapGet("/status", () =>
         {
             var uptimeS = (long)(DateTime.UtcNow - _startedAt).TotalSeconds;
+            var statusAutostartFailure = LauncherCore.AutostartFailure;
+            var statusAutostartChecked = LauncherCore.AutostartChecked;
             return Results.Json(new
             {
                 launcher = new
@@ -164,8 +173,8 @@ public sealed class LauncherHost : IAsyncDisposable
                     uptimeS,
                     startedAtUtc = _startedAt,
                     userInterface = _userInterfaceState,
-                    autostartOk = LauncherCore.AutostartFailure is null,
-                    autostartFailure = LauncherCore.AutostartFailure,
+                    autostartOk = statusAutostartChecked ? statusAutostartFailure is null : (bool?)null,
+                    autostartFailure = statusAutostartFailure,
                 },
                 director = new
                 {

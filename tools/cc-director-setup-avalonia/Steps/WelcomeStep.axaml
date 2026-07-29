@@ -79,7 +79,7 @@
                  (update mode). Removes the app, tools, PATH, and the launch agent; the
                  user's data is preserved. -->
             <Button x:Name="UninstallButton"
-                    Content="Uninstall Director"
+                    Content="Uninstall DevThrottle"
                     Classes="danger"
                     HorizontalAlignment="Center"
                     Margin="0,24,0,0"
