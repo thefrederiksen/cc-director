@@ -12,6 +12,20 @@ public class RepositoryConfig : INotifyPropertyChanged
     public string Path { get; set; } = string.Empty;
     public DateTime? LastUsed { get; set; }
 
+    /// <summary>
+    /// True when this entry was not chosen by the user but FOUND under one of the folders DevThrottle
+    /// watches. It is not persisted - it is set when the New Session list is built.
+    /// </summary>
+    public bool IsDiscovered { get; set; }
+
+    /// <summary>
+    /// Whether the list should offer to remove this entry. A discovered repository cannot be removed
+    /// from the list: it comes from a watched folder, so it would simply be found again on the next
+    /// rebuild. Offering a Remove that instantly undoes itself is worse than not offering one - to
+    /// stop seeing it, stop watching its folder.
+    /// </summary>
+    public bool CanRemove => !IsDiscovered;
+
     [JsonIgnore]
     public string LastUsedDisplay => LastUsed.HasValue
         ? FormatTimeAgo(LastUsed.Value)

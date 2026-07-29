@@ -107,7 +107,7 @@ public class FirstRunWizardModelTests
         });
 
         Assert.Equal(
-            new[] { WizardStep.Welcome, WizardStep.Agents, WizardStep.Gateway, WizardStep.Done },
+            new[] { WizardStep.Welcome, WizardStep.Gateway, WizardStep.Agents, WizardStep.Done },
             model.Steps);
     }
 
@@ -126,17 +126,39 @@ public class FirstRunWizardModelTests
     public void CreateFull_HasAllSevenStepsInCanonicalOrder()
     {
         var model = FirstRunWizardModel.CreateFull();
-        Assert.Equal(FirstRunWizardModel.CanonicalOrder, model.Steps);
         Assert.Equal(7, model.Count);
 
-        // Tools sits right after Agents: workforce first, then their toolbelt.
-        Assert.Equal(WizardStep.Tools, model.Steps[2]);
+        // The WHOLE sequence, written out, not compared against the production list. Comparing
+        // model.Steps to CanonicalOrder only proves the model did not reorder its own input - it
+        // passes for any order production happens to declare, so it cannot catch an ordering change.
+        // Spot checks on three indexes were not enough either: swapping Agents and Code kept every one
+        // of them true. This is the assertion that fails when the journey changes.
+        Assert.Equal(
+            new[]
+            {
+                WizardStep.Welcome,     // the invitation
+                WizardStep.Gateway,     // who you are, before anything about this machine
+                WizardStep.Agents,      // your workforce
+                WizardStep.Tools,       // their toolbelt
+                WizardStep.Code,        // what we watch over
+                WizardStep.Screenshots, // show, don't type
+                WizardStep.Done,        // the receipt
+            },
+            model.Steps);
+        Assert.Equal(FirstRunWizardModel.CanonicalOrder, model.Steps);
 
-        // Gateway is the last step before Done. It used to be followed by a daily-report frequency
-        // question, which is an ACCOUNT setting and so was asked once per machine with no way to
-        // reconcile the answers (issue #996). The number here is also the number of progress dots,
-        // so a step creeping back in is a failing assertion rather than a silently longer wizard.
-        Assert.Equal(WizardStep.Gateway, model.Steps[^2]);
+        // The gateway is the FIRST thing asked after the welcome: connecting is who you are, and every
+        // step after it configures one particular machine. Identity leads, machine questions follow.
+        Assert.Equal(WizardStep.Gateway, model.Steps[1]);
+
+        // Tools sits right after Agents: workforce first, then their toolbelt.
+        Assert.Equal(WizardStep.Tools, model.Steps[3]);
+
+        // Screenshots is the last step before Done. Done used to be preceded by a daily-report
+        // frequency question, which is an ACCOUNT setting and so was asked once per machine with no
+        // way to reconcile the answers (issue #996). The count here is also the number of progress
+        // dots, so a step creeping back in is a failing assertion rather than a silently longer wizard.
+        Assert.Equal(WizardStep.Screenshots, model.Steps[^2]);
     }
 
     [Fact]
@@ -152,8 +174,11 @@ public class FirstRunWizardModelTests
             WizardStep.Screenshots, WizardStep.Gateway, WizardStep.Done,
         };
 
-        Assert.Equal(machineScoped, Enum.GetValues<WizardStep>());
-        Assert.Equal(machineScoped, FirstRunWizardModel.CanonicalOrder);
+        // The SET is what this rule is about - every declared step must be one a machine can answer.
+        // Presentation order is a separate decision (the gateway now leads), so the two are compared
+        // as sets here rather than as sequences; the exact order is asserted in the test above.
+        Assert.Equal(machineScoped.OrderBy(s => s), Enum.GetValues<WizardStep>().OrderBy(s => s));
+        Assert.Equal(machineScoped.OrderBy(s => s), FirstRunWizardModel.CanonicalOrder.OrderBy(s => s));
     }
 
     [Fact]
@@ -187,10 +212,12 @@ public class FirstRunWizardModelTests
         Assert.True(model.IsFirst);
         Assert.False(model.IsLast);
 
-        Assert.True(model.MoveNext());
-        Assert.Equal(WizardStep.Agents, model.Current);
+        // Canonical order puts the gateway before the agents, whatever order the present-step list
+        // was given in.
         Assert.True(model.MoveNext());
         Assert.Equal(WizardStep.Gateway, model.Current);
+        Assert.True(model.MoveNext());
+        Assert.Equal(WizardStep.Agents, model.Current);
         Assert.True(model.MoveNext());
         Assert.Equal(WizardStep.Done, model.Current);
         Assert.True(model.IsLast);
@@ -201,9 +228,9 @@ public class FirstRunWizardModelTests
 
         // Back walks the same present steps in reverse.
         Assert.True(model.MoveBack());
-        Assert.Equal(WizardStep.Gateway, model.Current);
-        Assert.True(model.MoveBack());
         Assert.Equal(WizardStep.Agents, model.Current);
+        Assert.True(model.MoveBack());
+        Assert.Equal(WizardStep.Gateway, model.Current);
         Assert.True(model.MoveBack());
         Assert.Equal(WizardStep.Welcome, model.Current);
 
@@ -230,7 +257,7 @@ public class FirstRunWizardModelTests
     public void DotState_ReflectsPosition_PastCurrentUpcoming()
     {
         var model = new FirstRunWizardModel(ShellSteps());
-        model.GoTo(WizardStep.Gateway); // index 2 of 4
+        model.GoTo(WizardStep.Agents); // index 2 of 4 (Welcome, Gateway, Agents, Done)
 
         Assert.Equal(WizardDotState.Past, model.DotStateAt(0));
         Assert.Equal(WizardDotState.Past, model.DotStateAt(1));
