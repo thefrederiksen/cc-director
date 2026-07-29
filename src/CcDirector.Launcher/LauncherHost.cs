@@ -135,6 +135,9 @@ public sealed class LauncherHost : IAsyncDisposable
         app.MapGet("/healthz", () =>
         {
             var uptimeS = (long)(DateTime.UtcNow - _startedAt).TotalSeconds;
+            // autostartOk is part of health on purpose. A launcher that did not register itself is
+            // running but NOT managed, and reporting plain "ok" for both states is what let an
+            // unmanageable launcher pass for a healthy one on the machine where this was found.
             return Results.Json(new
             {
                 ok = true,
@@ -142,6 +145,8 @@ public sealed class LauncherHost : IAsyncDisposable
                 pid = Environment.ProcessId,
                 uptimeS,
                 userInterface = _userInterfaceState,
+                autostartOk = LauncherCore.AutostartFailure is null,
+                autostartFailure = LauncherCore.AutostartFailure,
             }, JsonOpts);
         });
 
@@ -159,6 +164,8 @@ public sealed class LauncherHost : IAsyncDisposable
                     uptimeS,
                     startedAtUtc = _startedAt,
                     userInterface = _userInterfaceState,
+                    autostartOk = LauncherCore.AutostartFailure is null,
+                    autostartFailure = LauncherCore.AutostartFailure,
                 },
                 director = new
                 {

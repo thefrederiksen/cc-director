@@ -92,6 +92,47 @@ public sealed class InstallerNoGatewaySurfaceTests
         Assert.Equal([1, 7, 8], WizardStepFlow.VisibleSteps());
     }
 
+    /// <summary>
+    /// The names, pinned. DevThrottle is the PRODUCT; the application it installs is the
+    /// <em>Director</em> and the background app is the <em>Launcher</em>. The install screen used to
+    /// call the application "DevThrottle" and the launcher "cc-launcher" - one wrong, the other a file
+    /// name rather than a name - and the two wizards disagreed with the rest of the product.
+    ///
+    /// Executable names are legitimate where an exact path is needed, so this checks only the strings
+    /// a person reads as a NAME: the card titles, the headings and the buttons.
+    ///
+    /// Revert-proof: rename a card back to DevThrottle or cc-launcher and this goes red.
+    /// </summary>
+    [Fact]
+    public void TheInstalledThingsAreCalledDirectorAndLauncher()
+    {
+        var root = FindRepoRoot();
+        var checkedFiles = 0;
+
+        foreach (var wizard in new[] { "cc-director-setup", "cc-director-setup-avalonia" })
+        {
+            foreach (var file in MarkupFiles(Path.Combine(root, "tools", wizard)))
+            {
+                // The Welcome screen and the window chrome speak for the PRODUCT, which is DevThrottle.
+                if (Path.GetFileName(file).StartsWith("WelcomeStep", StringComparison.OrdinalIgnoreCase)) continue;
+                if (Path.GetFileName(file).StartsWith("MainWindow", StringComparison.OrdinalIgnoreCase)) continue;
+
+                checkedFiles++;
+                foreach (var literal in UserVisibleLiterals(File.ReadAllText(file)))
+                {
+                    Assert.False(literal.Contains("cc-launcher", StringComparison.OrdinalIgnoreCase),
+                        $"{file} shows \"{literal}\" - the background app is called the Launcher; cc-launcher is a file name.");
+                    Assert.False(literal.Contains("cc-director", StringComparison.OrdinalIgnoreCase),
+                        $"{file} shows \"{literal}\" - the application is called the Director; cc-director is a file name.");
+                    Assert.False(literal.Contains("CC Director", StringComparison.Ordinal),
+                        $"{file} shows \"{literal}\" - it is the Director, never CC Director.");
+                }
+            }
+        }
+
+        Assert.True(checkedFiles >= 6, $"Expected the step markup of both wizards, found only {checkedFiles} files.");
+    }
+
     private static IEnumerable<string> MarkupFiles(string project) =>
         Directory.EnumerateFiles(project, "*.*", SearchOption.AllDirectories)
             .Where(f => f.EndsWith(".xaml", StringComparison.OrdinalIgnoreCase)

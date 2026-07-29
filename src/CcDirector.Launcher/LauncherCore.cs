@@ -110,15 +110,32 @@ public sealed class LauncherCore : IAsyncDisposable
     public async ValueTask DisposeAsync() => await StopAsync();
 
     /// <summary>
+    /// Why this launcher is not registered to start at login, or null when it is (or was never
+    /// asked to be). READ BY /healthz AND /status: a launcher whose autostart registration failed
+    /// must not look identical to one that is properly managed.
+    ///
+    /// This exists because of a Mac that could not install anything. The registration failed, the
+    /// failure was caught, one line went to a log, and the launcher carried on reporting perfect
+    /// health. Nothing else on the machine or in the fleet could tell that launcher from a managed
+    /// one - so the installer certified it, the uninstaller could not stop it, and every later
+    /// install collided with it. The state was invisible, which is what made it survive.
+    /// </summary>
+    public static string? AutostartFailure { get; private set; }
+
+    /// <summary>
     /// Register the start-at-login autostart for the current executable (the Run key on
-    /// Windows, the launchd launch agent on macOS), honoring --no-autostart. Failures
-    /// only log - autostart must never take the launcher down.
+    /// Windows, the launchd launch agent on macOS), honoring --no-autostart.
+    ///
+    /// A failure does NOT take the launcher down - it is still useful without autostart - but it is
+    /// recorded in <see cref="AutostartFailure"/> and reported over the launcher's own API. Silence
+    /// was the defect.
     /// </summary>
     public static void RegisterAutostartSafe()
     {
         if (!LauncherAppOptions.RegisterAutostart)
         {
             FileLog.Write("[LauncherCore] Autostart registration skipped (--no-autostart)");
+            AutostartFailure = null;   // not asked for, so not a failure
             return;
         }
 
@@ -129,13 +146,23 @@ public sealed class LauncherCore : IAsyncDisposable
             var exePath = Environment.ProcessPath
                           ?? Process.GetCurrentProcess().MainModule?.FileName
                           ?? throw new InvalidOperationException("Could not resolve own exe path for autostart");
-            if (OperatingSystem.IsWindows())
-                LauncherAutostart.EnsureRegistered(exePath, LauncherAppOptions.AutostartArguments());
-            else
-                LauncherLaunchdAutostart.EnsureRegistered(exePath, LauncherAppOptions.AutostartArguments());
+            var registered = OperatingSystem.IsWindows()
+                ? LauncherAutostart.EnsureRegistered(exePath, LauncherAppOptions.AutostartArguments())
+                : LauncherLaunchdAutostart.EnsureRegistered(exePath, LauncherAppOptions.AutostartArguments());
+
+            // EnsureRegistered returning false is a failure too. It used to be discarded, so a
+            // launcher that had NOT registered still reported healthy.
+            AutostartFailure = registered
+                ? null
+                : (OperatingSystem.IsWindows()
+                    ? "the autostart Run key was not written"
+                    : "the launch agent property list was not written or not loaded");
+            if (AutostartFailure is not null)
+                FileLog.Write($"[LauncherCore] Autostart registration did not take effect: {AutostartFailure}");
         }
         catch (Exception ex)
         {
+            AutostartFailure = ex.Message;
             FileLog.Write($"[LauncherCore] Autostart registration FAILED: {ex.Message}");
         }
     }

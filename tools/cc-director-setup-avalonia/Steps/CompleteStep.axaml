@@ -51,7 +51,7 @@
         <ScrollViewer>
         <StackPanel>
             <TextBlock x:Name="HeadingText"
-                       Text="&#x2713;  DevThrottle is installed"
+                       Text="&#x2713;  Director is installed"
                        Foreground="#22C55E"
                        FontSize="22"
                        FontWeight="SemiBold" />
@@ -73,7 +73,7 @@
                     FontSize="16"
                     FontWeight="SemiBold"
                     HorizontalContentAlignment="Center"
-                    Content="Open DevThrottle"
+                    Content="Open Director"
                     Click="LaunchButton_Click" />
 
             <!-- One quiet summary line on success -->

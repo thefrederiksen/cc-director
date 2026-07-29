@@ -59,13 +59,13 @@ public partial class CompleteStep : UserControl
         {
             case InstallCompletionKind.AlreadyUpToDate:
                 HeadingText.Text = "✓  Already Up to Date";
-                DescriptionText.Text = "DevThrottle is already running the latest version.";
+                DescriptionText.Text = "The Director is already running the latest version.";
                 SummaryLine.Text = $"Nothing to do{versionSuffix}";
                 PathNote.Visibility = Visibility.Collapsed;
                 break;
 
             case InstallCompletionKind.Success when isUpdate:
-                HeadingText.Text = readyToGo ? "✓  DevThrottle is up to date" : "DevThrottle is up to date - one thing left";
+                HeadingText.Text = readyToGo ? "✓  Director is up to date" : "Director is up to date - one thing left";
                 DescriptionText.Text = readyToGo
                     ? "You're ready to go."
                     : "The update finished. One thing below still needs you.";
@@ -80,7 +80,7 @@ public partial class CompleteStep : UserControl
                 // defaults cover the genuinely-ready case.
                 if (!readyToGo)
                 {
-                    HeadingText.Text = "DevThrottle is installed - one thing left";
+                    HeadingText.Text = "Director is installed - one thing left";
                     HeadingText.Foreground = AmberBrush;
                     DescriptionText.Text = "Everything installed. One thing below still needs you.";
                 }

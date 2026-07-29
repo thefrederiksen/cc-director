@@ -48,7 +48,7 @@
 
         <StackPanel>
             <TextBlock x:Name="HeadingText"
-                       Text="&#x2713;  DevThrottle is installed"
+                       Text="&#x2713;  Director is installed"
                        Foreground="#22C55E"
                        FontSize="22"
                        FontWeight="SemiBold"
@@ -70,13 +70,13 @@
                     HorizontalAlignment="Stretch"
                     Margin="0,0,0,12"
                     Cursor="Hand"
-                    AutomationProperties.Name="Open DevThrottle"
+                    AutomationProperties.Name="Open Director"
                     Click="LaunchButton_Click">
                 <Button.Template>
                     <ControlTemplate TargetType="Button">
                         <Border Background="#22C55E" CornerRadius="6"
                                 Padding="20,0">
-                            <TextBlock Text="Open DevThrottle"
+                            <TextBlock Text="Open Director"
                                        Foreground="White"
                                        FontSize="16"
                                        FontWeight="SemiBold"

@@ -82,7 +82,7 @@
                  (update mode). Removes the app, tools, PATH, scheduled tasks, and the
                  Gateway autostart + Tailscale mapping; the user's data is preserved. -->
             <Button x:Name="UninstallButton"
-                    Content="Uninstall DevThrottle"
+                    Content="Uninstall Director"
                     Style="{StaticResource DangerButton}"
                     HorizontalAlignment="Center"
                     Margin="0,24,0,0"

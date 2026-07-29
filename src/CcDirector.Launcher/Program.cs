@@ -40,6 +40,26 @@ public static class Program
 
         FileLog.Write($"[Program] CC Launcher starting (port={LauncherAppOptions.Port}), log: {FileLog.CurrentLogPath}");
 
+        // TRAY MODE MUST ANSWER SIGTERM TOO.
+        //
+        // Headless mode has handled it from the start (see RunHeadless), and tray mode never did -
+        // so the launcher a person actually runs ignored the one signal every tool uses to ask a
+        // process to stop. The orphan investigated on 2026-07-29 was a tray-mode instance: it
+        // ignored SIGTERM and had to be killed. launchd bootout sends SIGTERM, our own uninstaller
+        // asks politely first, and an operator at a terminal reaches for kill before kill -9; a
+        // process that ignores all three is unmanageable by design rather than by accident.
+        //
+        // Shutting the classic desktop lifetime down is what lets the normal exit path run, so the
+        // Gateway is unregistered and the log is closed instead of the process simply vanishing.
+        using var sigtermTray = System.Runtime.InteropServices.PosixSignalRegistration.Create(
+            System.Runtime.InteropServices.PosixSignal.SIGTERM,
+            ctx =>
+            {
+                ctx.Cancel = true;
+                FileLog.Write("[Program] SIGTERM received - shutting the tray launcher down");
+                RequestTrayShutdown();
+            });
+
         try
         {
             return BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
@@ -68,6 +88,33 @@ public static class Program
             FileLog.Write("[Program] CC Launcher exited");
             FileLog.Stop();
         }
+    }
+
+    /// <summary>
+    /// Ask the running tray application to shut down, from a signal handler. Marshalled onto the
+    /// user-interface thread because that is the only thread allowed to stop the lifetime; if the
+    /// application is not up yet (a signal during startup) the process exits directly, which is the
+    /// honest thing to do rather than ignoring the signal.
+    /// </summary>
+    private static void RequestTrayShutdown()
+    {
+        try
+        {
+            if (Avalonia.Application.Current?.ApplicationLifetime
+                is Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime lifetime)
+            {
+                Avalonia.Threading.Dispatcher.UIThread.Post(() => lifetime.Shutdown());
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[Program] SIGTERM: could not shut the lifetime down cleanly: {ex.Message}");
+        }
+
+        FileLog.Write("[Program] SIGTERM: no running application lifetime - exiting");
+        FileLog.Stop();
+        Environment.Exit(0);
     }
 
     /// <summary>
