@@ -111,6 +111,11 @@ public sealed class GatewayDbContext : DbContext
     /// each push; never appended.</summary>
     public DbSet<RepoStateEntity> RepoState => Set<RepoStateEntity>();
 
+    /// <summary>The latest skill-placement outcome per Director and agent family
+    /// (<c>skill_placement_state</c>) - whether the skills this Gateway serves can actually be READ on the
+    /// machines it serves them to. Overwritten on each report; never appended.</summary>
+    public DbSet<SkillPlacementStateEntity> SkillPlacementState => Set<SkillPlacementStateEntity>();
+
     /// <summary>Dismissed dictionary suggestions (<c>dictation_suggestion_dismissals</c>, devthrottle #2075) -
     /// one row per term the tenant told us to stop suggesting, with a snapshot of the evidence so the
     /// "Dismissed terms" screen can still explain why it was once offered. Tenant-scoped.</summary>
@@ -523,6 +528,19 @@ public sealed class GatewayDbContext : DbContext
             b.HasIndex(e => new { e.TenantId, e.ReceivedAtUtc });
         });
 
+        modelBuilder.Entity<SkillPlacementStateEntity>(b =>
+        {
+            b.ToTable("skill_placement_state");
+            // COMPOSITE primary key (tenant_id, DirectorId, AgentKind), for the same reason repo_state uses
+            // one: both non-tenant parts are CALLER-supplied, and two accounts can genuinely run
+            // identically-named Directors. Without tenant_id in the key one account's report would fail to
+            // insert over the other's row and learn from the failure that the row exists.
+            b.HasKey(e => new { e.TenantId, e.DirectorId, e.AgentKind });
+            // The Cockpit reads one tenant's whole placement set at once; index the tenant-leading path so
+            // it rides the global query filter's "tenant_id = @t" prefix rather than scanning cross-tenant.
+            b.HasIndex(e => new { e.TenantId, e.ReceivedAtUtc });
+        });
+
         modelBuilder.Entity<DictationSuggestionDismissalEntity>(b =>
         {
             b.ToTable("dictation_suggestion_dismissals");
@@ -733,6 +751,7 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<DictationSuggestionScanEntity>(modelBuilder);
         ApplyTenantScope<ActivityEventEntity>(modelBuilder);
         ApplyTenantScope<RepoStateEntity>(modelBuilder);
+        ApplyTenantScope<SkillPlacementStateEntity>(modelBuilder);
         ApplyTenantScope<SessionHistoryEntity>(modelBuilder);
         ApplyTenantScope<SessionHistoryRollupEntity>(modelBuilder);
 

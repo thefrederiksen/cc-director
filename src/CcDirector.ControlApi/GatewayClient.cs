@@ -543,6 +543,43 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     }
 
     /// <summary>
+    /// Report whether the skills the Gateway serves could actually be READ on this machine.
+    ///
+    /// The Gateway can see that it served a skill and still be wrong about whether anything can read it -
+    /// only the machine observes that. Without this feed, publishing a skill fleet-wide is done blind, and
+    /// a machine where nothing lands looks exactly like a machine where everything is fine.
+    ///
+    /// FAIL-SAFE, exactly like <see cref="PushRepoStateAsync"/>: a failed push is logged and returns null,
+    /// and the caller tries again on its next cycle. No outbox and no retry queue - this pushes the CURRENT
+    /// outcome, so a lost push is superseded by the next one rather than lost.
+    /// </summary>
+    public async Task<SkillPlacementPushResponse?> PushSkillPlacementAsync(
+        SkillPlacementPushRequest request, CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled) return null;
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.Reports.Count == 0) return new SkillPlacementPushResponse { Stored = 0 };
+
+        try
+        {
+            using var resp = await _http.PostAsJsonAsync("gateway/skills/placement", request, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                FileLog.Write($"[GatewayClient] PushSkillPlacementAsync: POST /gateway/skills/placement " +
+                              $"returned HTTP {(int)resp.StatusCode}");
+                return null;
+            }
+
+            return await resp.Content.ReadFromJsonAsync<SkillPlacementPushResponse>(ct);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayClient] PushSkillPlacementAsync FAILED: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Rename a session anywhere in the fleet via the Gateway's PATCH /sessions/{sid}, which routes the
     /// rename to the owning Director over the tunnel and returns the updated <see cref="SessionDto"/>.
     /// Issue #1490: the Director's loopback POST /fleet/rename relays here for a non-local target. Throws

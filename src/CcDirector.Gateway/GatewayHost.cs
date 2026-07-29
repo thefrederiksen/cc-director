@@ -358,6 +358,10 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly Snooze.SnoozeRegistry _snoozeRegistry;
     private readonly Activity.ActivityEventStore _activityEvents;
     private readonly Reports.RepoStateStore _repoState;
+
+    /// <summary>Whether the skills this Gateway serves can actually be READ on the machines it serves
+    /// them to - reported by each Director, because only the machine can observe it.</summary>
+    private readonly Skills.SkillPlacementStore _skillPlacement;
     private Activity.ActivityRetentionSweep? _activityRetentionSweep;
     // Fills account_hosted_ai_spend by periodically mirroring the cloud credit-debit ledger (issue #1771).
     private Governance.HostedAiSpendSweep? _hostedAiSpendSweep;
@@ -938,6 +942,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // each repository - the one git-hygiene fact the Gateway cannot observe for itself, and the source
         // of the morning report's stale-worktree and unmerged-branch recommendations.
         _repoState = new Reports.RepoStateStore(_gatewayDb);
+        _skillPlacement = new Skills.SkillPlacementStore(_gatewayDb);
         _morningReport = new Reports.MorningReportBuilder(_gatewayDb, PushedSessions, _streamStaleAfter,
             // The repo-state store (issue #2118) is the hygiene rows' source. Passed here rather than
             // resolved inside the builder so the report reads the SAME store the push endpoint writes.
@@ -2805,6 +2810,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // repositories' branches and worktrees. Device-authenticated and tenant-scoped from the caller's
         // own key; write-only, because the sole consumer (the morning report) reads the store in-process.
         Api.RepoStateEndpoints.Map(_app, _repoState, _tenantBoundary);
+        Api.SkillPlacementEndpoints.Map(_app, _skillPlacement, _tenantBoundary);
 
         Mobile.MobileApp.Map(_app, Token);
         // The legacy /m mount: 301 to the canonical /mobile equivalent so installed phone PWAs and

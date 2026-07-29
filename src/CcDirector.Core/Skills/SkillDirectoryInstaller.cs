@@ -119,21 +119,24 @@ public static class SkillDirectoryInstaller
     /// <paramref name="kind"/> implies. Exists so tests exercise this method rather than a copy of it -
     /// the real paths live under the running user's home directory, and a test that wrote there would
     /// scatter skills through the developer's own agent configuration.</param>
-    public static int InstallFor(
-        AgentKind kind, string? storeRoot = null, SkillInstallPaths? pathsOverride = null)
+    public static SkillPlacement InstallFor(
+        AgentKind kind, string? storeRoot = null, SkillInstallPaths? pathsOverride = null,
+        string? reclaimStampPath = null)
     {
         var store = storeRoot ?? StoreRoot();
         var paths = pathsOverride ?? SkillInstallTargets.For(kind);
+        var problems = new List<SkillPlacementProblem>();
+
         if (paths is null)
         {
             FileLog.Write($"[SkillDirectoryInstaller] InstallFor: kind={kind} has no skills directory - nothing installed");
-            return 0;
+            return new SkillPlacement(kind, 0, 0, problems, StoreMissing: false, AgentHasNoSkillsDirectory: true);
         }
         if (!Directory.Exists(store))
         {
             FileLog.Write($"[SkillDirectoryInstaller] InstallFor: kind={kind}, no materialized skills at {store} - " +
                           "nothing installed (the Gateway has not been reached yet)");
-            return 0;
+            return new SkillPlacement(kind, 0, 0, problems, StoreMissing: true, AgentHasNoSkillsDirectory: false);
         }
 
         var held = Directory.GetDirectories(store)
@@ -143,18 +146,135 @@ public static class SkillDirectoryInstaller
         // The copy is reconciled BEFORE the links, and the order is load-bearing: a link is created
         // only for a skill that is already present in the shared directory, so no link is ever made
         // pointing at something that is not there.
-        var materialized = ReconcileCopies(held, paths.SharedRoot);
+        var materialized = ReconcileCopies(held, paths.SharedRoot, problems);
         if (paths.LinkRoot is null)
         {
+            var shared = new SkillPlacement(
+                kind, held.Count, materialized.Count, problems, StoreMissing: false, AgentHasNoSkillsDirectory: false);
             FileLog.Write($"[SkillDirectoryInstaller] InstallFor: kind={kind} reads the shared path, " +
-                          $"installed={materialized.Count} at {paths.SharedRoot}");
-            return materialized.Count;
+                          $"installed={materialized.Count}/{held.Count} at {paths.SharedRoot}");
+            LogIfIncomplete(shared);
+            return shared;
         }
 
-        var linked = ReconcileLinks(paths.SharedRoot, materialized, paths.LinkRoot);
+        ReclaimRetiredInstallerCopies(materialized, paths.LinkRoot, reclaimStampPath ?? DefaultReclaimStampPath());
+        var linked = ReconcileLinks(paths.SharedRoot, materialized, paths.LinkRoot, problems);
+        var result = new SkillPlacement(
+            kind, held.Count, linked, problems, StoreMissing: false, AgentHasNoSkillsDirectory: false);
         FileLog.Write($"[SkillDirectoryInstaller] InstallFor: kind={kind}, materialized={materialized.Count} " +
-                      $"at {paths.SharedRoot}, linked={linked} into {paths.LinkRoot}");
-        return linked;
+                      $"at {paths.SharedRoot}, linked={linked}/{held.Count} into {paths.LinkRoot}");
+        LogIfIncomplete(result);
+        return result;
+    }
+
+    /// <summary>A placement that fell short says so at the top of its own voice, not buried among the
+    /// per-skill lines. The per-skill reasons are already logged where they happen; this is the line
+    /// somebody scanning a log will actually see.</summary>
+    private static void LogIfIncomplete(SkillPlacement placement)
+    {
+        if (!placement.IsComplete && !placement.NothingExpected)
+            FileLog.Write($"[SkillDirectoryInstaller] {placement.Describe()}");
+        // Recorded locally for the Gateway cycle to pick up. Writing a small file is the whole cost this
+        // adds to a launch - the report itself goes out on the network half, which is never on this path.
+        SkillPlacementLog.Record(placement);
+    }
+
+    /// <summary>Where the record lives that the one-time reclaim has already run for a directory.</summary>
+    private static string DefaultReclaimStampPath() =>
+        Path.Combine(CcStorage.Root(), "skills", "reclaimed-retired-installer.txt");
+
+    /// <summary>
+    /// ONE TIME ONLY, ONCE PER DIRECTORY: move aside the copies the RETIRED installer left behind.
+    ///
+    /// Until it was removed, the setup wizard wrote the built-in skills straight into
+    /// <c>~/.claude/skills/&lt;name&gt;/SKILL.md</c>. Those copies carry no marker, because markers did not
+    /// exist yet, so the ownership rule cannot tell them from a skill the owner wrote by hand and
+    /// correctly refuses to replace them. The effect measured on a real machine: all three built-in
+    /// names were occupied, NOTHING was linked, and Claude Code went on reading a two-month-old copy
+    /// while every other agent family read the current one. The central library could not reach the
+    /// one agent most people use. Left alone this never heals - the leftovers outlive every release.
+    ///
+    /// NOTHING IS DELETED. The directory is RENAMED aside with a timestamp, so an owner who really did
+    /// write their own skill of that name loses nothing and can put it back. It runs once per
+    /// directory, recorded in a stamp file, so the "a machine's own skill wins" rule applies unchanged
+    /// from then on - a leftover is a one-off migration, not a standing licence to take names.
+    ///
+    /// The test is deliberately narrow on BOTH axes. The NAME must be one of the three the retired
+    /// installer ever wrote - that list is a closed historical fact, so this can never take a name it
+    /// did not put there - and the SHAPE must be its shape: no marker, exactly one file, named
+    /// SKILL.md. Anything else is somebody's real work and is not touched, migration or not.
+    /// </summary>
+    private static void ReclaimRetiredInstallerCopies(
+        IReadOnlyList<string> names, string linkRoot, string stampPath)
+    {
+        if (HasReclaimed(linkRoot, stampPath))
+            return;
+
+        foreach (var name in names)
+        {
+            if (!RetiredInstallerSkillIds.Contains(name))
+                continue;
+            var candidate = Path.Combine(linkRoot, name);
+            if (!Directory.Exists(candidate) || !LooksLikeRetiredInstallerCopy(candidate))
+                continue;
+
+            // OUT OF THE SKILLS ROOT, not renamed within it. A directory moved aside in place is still
+            // inside a directory the agent scans, so it comes straight back as a skill under a mangled
+            // name - observed live: three "<name>.superseded-by-devthrottle-<stamp>" entries showed up
+            // in a real session's skill list. The backup is a SIBLING of the skills root, so it is on
+            // the same volume (an ordinary move, never a cross-volume copy) and is never scanned.
+            var backupRoot = SupersededRootFor(linkRoot);
+            Directory.CreateDirectory(backupRoot);
+            var movedAside = Path.Combine(backupRoot, $"{name}-{DateTime.Now:yyyyMMdd-HHmmss}");
+            Directory.Move(candidate, movedAside);
+            FileLog.Write($"[SkillDirectoryInstaller] '{name}' in {linkRoot} was a leftover from the retired " +
+                          $"installer and was blocking the fleet copy. Moved to '{movedAside}' - nothing " +
+                          "deleted - and the fleet skill is now linked in its place.");
+        }
+
+        RecordReclaimed(linkRoot, stampPath);
+    }
+
+    /// <summary>
+    /// The only skill names the retired setup wizard ever wrote to disk. A CLOSED list of a historical
+    /// fact, not a policy: the wizard shipped the three built-ins and nothing else, and it no longer
+    /// exists to add a fourth. Keeping the migration to these names is what makes it impossible for it
+    /// to take a name the owner chose - every other name follows the ordinary rule that a machine's own
+    /// skill wins, on the first run and on every run after it.
+    /// </summary>
+    private static readonly HashSet<string> RetiredInstallerSkillIds =
+        new(new[] { "dev-throttle", "fleet-comms", "move-session" }, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Where a superseded leftover is kept: beside the agent's skills directory, never inside
+    /// it. <c>~/.claude/skills</c> becomes <c>~/.claude/skills-superseded-by-devthrottle</c>.</summary>
+    public static string SupersededRootFor(string linkRoot)
+    {
+        var parent = Path.GetDirectoryName(Path.GetFullPath(linkRoot.TrimEnd(
+            Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)))!;
+        return Path.Combine(parent, Path.GetFileName(linkRoot.TrimEnd(
+            Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)) + "-superseded-by-devthrottle");
+    }
+
+    /// <summary>The retired installer's shape: our marker absent, one file, named SKILL.md.</summary>
+    private static bool LooksLikeRetiredInstallerCopy(string directory)
+    {
+        if (File.Exists(Path.Combine(directory, MarkerFileName)))
+            return false;
+        if (Directory.GetDirectories(directory).Length > 0)
+            return false;
+        var files = Directory.GetFiles(directory);
+        return files.Length == 1
+               && string.Equals(Path.GetFileName(files[0]), "SKILL.md", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasReclaimed(string linkRoot, string stampPath) =>
+        File.Exists(stampPath)
+        && File.ReadAllLines(stampPath).Any(l => string.Equals(l.Trim(), linkRoot, StringComparison.OrdinalIgnoreCase));
+
+    private static void RecordReclaimed(string linkRoot, string stampPath)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(stampPath)!);
+        File.AppendAllText(stampPath, linkRoot + Environment.NewLine);
     }
 
     /// <summary>
@@ -162,7 +282,8 @@ public static class SkillDirectoryInstaller
     /// through a link. Returns the skill names that are actually ours in there afterwards, which is
     /// what may be linked: a name the owner already used is not ours to link either.
     /// </summary>
-    private static List<string> ReconcileCopies(IReadOnlyList<string> held, string sharedRoot)
+    private static List<string> ReconcileCopies(
+        IReadOnlyList<string> held, string sharedRoot, List<SkillPlacementProblem> problems)
     {
         Directory.CreateDirectory(sharedRoot);
         var wanted = new HashSet<string>(held.Select(d => Path.GetFileName(d)!), StringComparer.OrdinalIgnoreCase);
@@ -192,6 +313,7 @@ public static class SkillDirectoryInstaller
                 // recorded - a skill quietly not installed is the kind of absence nobody finds.
                 FileLog.Write($"[SkillDirectoryInstaller] '{name}' already exists in {sharedRoot} and was not " +
                               "installed by DevThrottle - leaving it alone; the machine's own skill wins");
+                problems.Add(new SkillPlacementProblem(name, sharedRoot, SkillPlacementFault.Shadowed));
                 continue;
             }
             CopyTree(source, destination);
@@ -205,7 +327,8 @@ public static class SkillDirectoryInstaller
     /// <paramref name="linkRoot"/> itself - that folder is the owner's and holds skills we did not
     /// write - only named entries inside it. Returns how many links the agent can now follow.
     /// </summary>
-    private static int ReconcileLinks(string sharedRoot, IReadOnlyList<string> names, string linkRoot)
+    private static int ReconcileLinks(
+        string sharedRoot, IReadOnlyList<string> names, string linkRoot, List<SkillPlacementProblem> problems)
     {
         Directory.CreateDirectory(linkRoot);
         var wanted = new HashSet<string>(names, StringComparer.OrdinalIgnoreCase);
@@ -229,6 +352,7 @@ public static class SkillDirectoryInstaller
                 {
                     FileLog.Write($"[SkillDirectoryInstaller] '{name}' already exists in {linkRoot} and was not " +
                                   "installed by DevThrottle - leaving it alone; the machine's own skill wins");
+                    problems.Add(new SkillPlacementProblem(name, linkRoot, SkillPlacementFault.Shadowed));
                     continue;
                 }
                 // Ours: either a link from a previous launch or a full copy from the scheme that
@@ -237,8 +361,20 @@ public static class SkillDirectoryInstaller
                 RemoveOurs(destination);
             }
 
-            CreateDirectoryLink(destination, Path.Combine(sharedRoot, name));
-            linked++;
+            // One skill that cannot be linked is recorded and stepped over rather than abandoning the
+            // rest. This is NOT a quiet degrade: the failure lands in the result, the caller warns on
+            // it, and the count says how many actually arrived. Losing the other skills as well would
+            // turn one broken link into a machine with no skills at all.
+            try
+            {
+                CreateDirectoryLink(destination, Path.Combine(sharedRoot, name));
+                linked++;
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[SkillDirectoryInstaller] could not link '{name}' into {linkRoot}: {ex.Message}");
+                problems.Add(new SkillPlacementProblem(name, linkRoot, SkillPlacementFault.LinkFailed));
+            }
         }
         return linked;
     }

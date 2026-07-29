@@ -1,0 +1,80 @@
+using CcDirector.Core.Tenancy;
+using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Skills;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
+
+namespace CcDirector.Gateway.Api;
+
+/// <summary>
+/// The skill-placement feed's front door: Directors report whether the skills this Gateway serves could
+/// actually be READ on their machines, and the Cockpit reads the answer.
+///
+/// THE WRITE IS DEVICE-AUTHENTICATED AND THE TENANT COMES FROM THE KEY, never from the body, so a report
+/// cannot claim to belong to another account's machine. The read is scoped the same way.
+///
+/// A PUSH IS NOT ALLOWED TO BREAK A DIRECTOR. The Director sends this off its launch path and ignores the
+/// answer beyond logging it; this endpoint exists so a fleet-wide blind spot becomes visible, not so a
+/// machine can be stopped from working when the Gateway is unhappy.
+/// </summary>
+internal static class SkillPlacementEndpoints
+{
+    public const string Path = "/gateway/skills/placement";
+
+    public static void Map(IEndpointRouteBuilder app, SkillPlacementStore store,
+        Tenancy.HostedTenantBoundary? tenantBoundary = null, Func<DateTime>? utcNow = null)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        var now = utcNow ?? (() => DateTime.UtcNow);
+
+        app.MapPost(Path, (HttpContext ctx, SkillPlacementPushRequest? request) =>
+        {
+            var tenant = tenantBoundary is null ? TenantId.Local : tenantBoundary.ResolveRequestTenant(ctx);
+            if (tenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" },
+                    statusCode: StatusCodes.Status403Forbidden);
+
+            if (request is null)
+                return Results.BadRequest(new { error = "a skill placement push body is required" });
+            if (string.IsNullOrWhiteSpace(request.DirectorId))
+                return Results.BadRequest(new { error = "directorId is required" });
+
+            var receivedAtUtc = now();
+            try
+            {
+                var stored = store.StoreBatch(
+                    tenant.Value, request.DirectorId, request.MachineName,
+                    request.Reports ?? new(), receivedAtUtc);
+
+                FileLog.Write($"[SkillPlacementEndpoints] POST {Path}: tenant={tenant.Value.ToLogString()} " +
+                              $"director={request.DirectorId} stored={stored}");
+                return Results.Ok(new SkillPlacementPushResponse
+                {
+                    Stored = stored,
+                    ReceivedAtUtc = receivedAtUtc,
+                });
+            }
+            catch (SkillPlacementValidationException ex)
+            {
+                FileLog.Write($"[SkillPlacementEndpoints] rejected a push: {ex.Message}");
+                return Results.BadRequest(new { error = ex.Message });
+            }
+        });
+
+        app.MapGet(Path, (HttpContext ctx) =>
+        {
+            var tenant = tenantBoundary is null ? TenantId.Local : tenantBoundary.ResolveRequestTenant(ctx);
+            if (tenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" },
+                    statusCode: StatusCodes.Status403Forbidden);
+
+            // The rows arrive with their verdict already decided - status, message and ordering - because
+            // what a row MEANS is settled here and rendered verbatim by whoever displays it.
+            return Results.Ok(store.ReadAll(tenant.Value));
+        });
+
+        FileLog.Write($"[SkillPlacementEndpoints] mapped {Path} (POST report, GET fleet view)");
+    }
+}

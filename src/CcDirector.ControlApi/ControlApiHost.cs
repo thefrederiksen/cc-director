@@ -266,7 +266,9 @@ public sealed class ControlApiHost : IAsyncDisposable
     /// purpose - an unreachable Gateway must not crash the host, and a failed refresh leaves the
     /// last-known caches in place for the launch path to read.
     /// </summary>
-    private static async Task RefreshInjectedTextAsync()
+    // An instance method, not static: the skill-placement report at the end of this cycle needs this
+    // Director's own identity and Gateway client to say WHICH machine it is reporting about.
+    private async Task RefreshInjectedTextAsync()
     {
         try
         {
@@ -307,6 +309,58 @@ public sealed class ControlApiHost : IAsyncDisposable
         {
             FileLog.Write($"[ControlApiHost] skill store refresh FAILED (keeping the current store): {ex.Message}");
         }
+        // And REPORT whether the skills we serve could actually be read here. The Gateway can see that it
+        // served a skill and still be wrong about whether any agent can read it - only this machine
+        // observes that, and while nobody reported it a machine where nothing landed looked exactly like a
+        // machine where everything was fine. Its own try, for the same reason as the two above.
+        try
+        {
+            await PushSkillPlacementAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[ControlApiHost] skill placement report FAILED (will retry next cycle): {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Ship what the last session launches observed about skill placement. Reads the Director's own local
+    /// record - written on the launch path, which never touches the network - and pushes the current
+    /// outcome per agent family. Nothing to report is not an error and sends nothing.
+    /// </summary>
+    private async Task PushSkillPlacementAsync()
+    {
+        var records = CcDirector.Core.Skills.SkillPlacementLog.ReadAll();
+        if (records.Count == 0)
+            return;
+
+        var client = _gatewayClient;
+        if (client is null)
+            return;
+
+        var request = new CcDirector.Gateway.Contracts.SkillPlacementPushRequest
+        {
+            DirectorId = DirectorId,
+            MachineName = Environment.MachineName,
+            Reports = records.Select(r => new CcDirector.Gateway.Contracts.SkillPlacementReportDto
+            {
+                AgentKind = r.AgentKind,
+                Held = r.Held,
+                Reachable = r.Reachable,
+                StoreMissing = r.StoreMissing,
+                ObservedAtUtc = r.ObservedAtUtc,
+                Problems = r.Problems.Select(p => new CcDirector.Gateway.Contracts.SkillPlacementProblemDto
+                {
+                    SkillId = p.SkillId,
+                    Target = p.Target,
+                    Fault = p.Fault,
+                }).ToList(),
+            }).ToList(),
+        };
+
+        var response = await client.PushSkillPlacementAsync(request).ConfigureAwait(false);
+        if (response is not null)
+            FileLog.Write($"[ControlApiHost] skill placement reported: {response.Stored} agent(s)");
     }
 
     /// <summary>
