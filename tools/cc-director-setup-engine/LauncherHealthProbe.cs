@@ -9,23 +9,35 @@ public sealed record LauncherHealth(bool Ok, string? Version, int Pid);
 /// Polls a launcher's /healthz until the answering launcher is provably the one just installed
 /// (issue #2042). The old check accepted ANY 200 from the fixed port - so on a machine where a
 /// launcher was already running, a completely failed install of the new binary still reported
-/// "healthy": the poll was answered by the pre-existing process. Liveness is not identity. The
-/// probe reads the version stamped in the health payload and only certifies the install when it
-/// matches the version that was just placed; a mismatched responder at the deadline fails loud,
-/// naming both versions, instead of certifying a stranger.
+/// "healthy": the poll was answered by the pre-existing process. Liveness is not identity.
+///
+/// The version was not enough either, and a Mac proved it. The installer started process 35158; the
+/// answer came from orphan 34084, up for seventy-three minutes from a path the installer had just
+/// overwritten. <see cref="VersionUtil.TryParse"/> strips build metadata, so the orphan's
+/// "1.8.4+71f90bad..." and the freshly placed "1.8.4" compared EQUAL. A version check can only catch
+/// a version CHANGE, which is the case that matters least; on a same-version reinstall it was blind.
+///
+/// So the caller states which PROCESS it started and the answer has to come from that process. The
+/// version stays as a second signal, never the only one.
 /// </summary>
 public static class LauncherHealthProbe
 {
     /// <summary>
-    /// Wait until /healthz at <paramref name="healthUrl"/> answers with ok=true AND, when
-    /// <paramref name="expectedVersion"/> is known, the matching version. Returns the final
-    /// health answer (identity-verified on success), or null when nothing answered at all.
-    /// A responder whose version never matches keeps being polled until the deadline - during a
-    /// kickstart swap the OLD launcher can legitimately answer for a moment before the new one
-    /// takes the port - and is returned as-is at the deadline so the caller can fail loud.
+    /// Wait until /healthz at <paramref name="healthUrl"/> answers with ok=true AND, when known, the
+    /// matching version AND the matching process. Returns the final health answer (identity-verified
+    /// on success), or null when nothing answered at all.
+    ///
+    /// A responder that is not the expected process keeps being polled until the deadline - during a
+    /// swap the OLD launcher can legitimately answer for a moment before the new one takes the port -
+    /// and is returned as-is at the deadline so the caller can fail loud, naming what answered.
     /// </summary>
+    /// <param name="expectedPid">
+    /// The process the caller started, or 0 when it has none to expect (a plain liveness check rather
+    /// than certifying an install). Zero keeps the old version-only behaviour.
+    /// </param>
     public static async Task<LauncherHealth?> WaitForHealthyAsync(
-        HttpClient http, string healthUrl, string? expectedVersion, TimeSpan timeout, CancellationToken ct)
+        HttpClient http, string healthUrl, string? expectedVersion, TimeSpan timeout, CancellationToken ct,
+        int expectedPid = 0)
     {
         ArgumentNullException.ThrowIfNull(http);
         LauncherHealth? last = null;
@@ -38,7 +50,7 @@ public static class LauncherHealthProbe
                 if (resp.IsSuccessStatusCode)
                 {
                     last = Parse(await resp.Content.ReadAsStringAsync(ct));
-                    if (last is { Ok: true } && VersionMatches(expectedVersion, last.Version))
+                    if (Certifies(last, expectedVersion, expectedPid))
                         return last;
                 }
             }
@@ -51,9 +63,21 @@ public static class LauncherHealthProbe
         return last;
     }
 
-    /// <summary>True when the answer certifies the install: ok, and version-matched when one was expected.</summary>
-    public static bool Certifies(LauncherHealth? health, string? expectedVersion) =>
-        health is { Ok: true } && VersionMatches(expectedVersion, health.Version);
+    /// <summary>True when the answer certifies the install: ok, version-matched when one was expected,
+    /// and from the process the caller started when it knows which one that is.</summary>
+    public static bool Certifies(LauncherHealth? health, string? expectedVersion, int expectedPid = 0) =>
+        health is { Ok: true }
+        && VersionMatches(expectedVersion, health.Version)
+        && PidMatches(expectedPid, health.Pid);
+
+    /// <summary>
+    /// Does this answer come from the process the caller started? With no expectation (0) anything
+    /// passes, because there is nothing to compare. With an expectation, an answer carrying NO process
+    /// id fails: a launcher too old to report one cannot be the current binary we just placed, so
+    /// silence is a refusal rather than the benefit of the doubt.
+    /// </summary>
+    public static bool PidMatches(int expected, int reported) =>
+        expected <= 0 || reported == expected;
 
     /// <summary>No expectation always matches (legacy launchers without a version field cannot be
     /// checked); otherwise both sides must parse and compare equal, build metadata ignored.</summary>

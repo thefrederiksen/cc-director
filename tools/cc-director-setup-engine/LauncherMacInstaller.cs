@@ -74,6 +74,10 @@ public sealed class LauncherMacInstaller
         if (!File.Exists(launcherBinary))
             return Fail(steps, $"Launcher binary not present at {launcherBinary}; the file placement must run first.");
 
+        // 0 means "no process to expect": on the launchd branch launchd owns the process and its id
+        // is never learned here.
+        var startedPid = 0;
+
         if (File.Exists(_launchAgentPlistPath))
         {
             // Reinstall or repair: the agent is registered, so launchd owns the process. A
@@ -89,8 +93,8 @@ public sealed class LauncherMacInstaller
             // below - the same self-registration contract as the Windows Run key.
             try
             {
-                var pid = _startProcess(launcherBinary, LauncherTrayInstaller.InstalledArguments, _layout.LauncherDir);
-                steps.Add($"started launcher process id {pid} ({LauncherTrayInstaller.InstalledArguments})");
+                startedPid = _startProcess(launcherBinary, LauncherTrayInstaller.InstalledArguments, _layout.LauncherDir);
+                steps.Add($"started launcher process id {startedPid} ({LauncherTrayInstaller.InstalledArguments})");
             }
             catch (Exception ex)
             {
@@ -98,21 +102,30 @@ public sealed class LauncherMacInstaller
             }
         }
 
-        // Identity-verified health (issue #2042): the answer must come from the launcher version
-        // just placed, not from whatever process happens to hold the port. The expected version is
-        // what the runner recorded for the launcher when it placed the binary moments ago.
+        // Identity-verified health: the answer must come from THE PROCESS WE JUST STARTED, not from
+        // whatever holds the port. This is the check that failed on Sorens-Mac-mini: the installer
+        // started process 35158, the answer came from orphan 34084 which had held the port for
+        // seventy-three minutes from a path just overwritten, and the version comparison could not
+        // tell them apart because build metadata is stripped before versions are compared.
+        //
+        // startedPid is 0 on the launchd-restart branch, where launchd owns the process and this code
+        // never learns its id - so that branch still relies on the version alone. An orphan outside
+        // launchd could still answer there. Reading the id back from launchd after the kickstart is
+        // the remaining gap; it is recorded in docs/MISSION-installer-both-platforms-2026-07-29.md.
         var expectedVersion = new InstalledStateReader(_layout).Read(ComponentRegistry.Launcher).Version;
         var healthUrl = $"http://127.0.0.1:{LauncherTrayInstaller.LauncherDefaultPort}/healthz";
-        var health = await LauncherHealthProbe.WaitForHealthyAsync(_http, healthUrl, expectedVersion, _healthTimeout, ct);
+        var health = await LauncherHealthProbe.WaitForHealthyAsync(_http, healthUrl, expectedVersion, _healthTimeout, ct, startedPid);
         if (health is null)
         {
             steps.Add($"launcher health endpoint on port {LauncherTrayInstaller.LauncherDefaultPort}: no response");
             return Fail(steps, $"Launcher started but did not answer on port {LauncherTrayInstaller.LauncherDefaultPort}. Check {_layout.LogsDir}.");
         }
-        if (!LauncherHealthProbe.Certifies(health, expectedVersion))
+        if (!LauncherHealthProbe.Certifies(health, expectedVersion, startedPid))
         {
-            steps.Add($"launcher health endpoint on port {LauncherTrayInstaller.LauncherDefaultPort}: answered by version {health.Version ?? "unknown"} (process id {health.Pid})");
-            return Fail(steps, $"A launcher is answering on port {LauncherTrayInstaller.LauncherDefaultPort}, but it reports version {health.Version ?? "unknown"}, not the freshly installed {expectedVersion} - refusing to certify this install. Another launcher instance likely holds the port; check {_layout.LogsDir}.");
+            steps.Add($"launcher health endpoint on port {LauncherTrayInstaller.LauncherDefaultPort}: answered by process id {health.Pid} (version {health.Version ?? "unknown"})");
+            return Fail(steps, startedPid > 0
+                ? $"A launcher is answering on port {LauncherTrayInstaller.LauncherDefaultPort}, but it is process {health.Pid} reporting version {health.Version ?? "unknown"} - not the process {startedPid} this install started. Refusing to certify: another launcher instance holds the port. Check {_layout.LogsDir}."
+                : $"A launcher is answering on port {LauncherTrayInstaller.LauncherDefaultPort}, but it reports version {health.Version ?? "unknown"}, not the freshly installed {expectedVersion} - refusing to certify this install. Another launcher instance likely holds the port; check {_layout.LogsDir}.");
         }
         steps.Add($"launcher health endpoint on port {LauncherTrayInstaller.LauncherDefaultPort}: OK (version {health.Version ?? "unversioned"}, process id {health.Pid})");
 
