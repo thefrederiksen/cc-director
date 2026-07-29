@@ -21,7 +21,6 @@ namespace CcDirector.Launcher.Tests;
 ///
 /// These tests are written against the ROOT rather than against either symptom, because one lookup feeds both.
 /// </summary>
-[Collection(DirectorRootCollection.Name)]
 public sealed class DirectorSupervisorInstanceDiscoveryTests : IDisposable
 {
     private readonly string _root;
