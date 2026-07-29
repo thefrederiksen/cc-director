@@ -155,3 +155,5 @@ mobile/public/fixtures/
 # thousands of per-run capture files, never part of the codebase.
 artifacts/
 _inspection/
+codex-review-*.md
+codex-rereview-*.md
