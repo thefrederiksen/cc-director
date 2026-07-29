@@ -165,8 +165,15 @@
     <Grid Margin="44,32,44,24" RowDefinitions="Auto,*,Auto">
 
         <!-- Progress dots: one per present step, painted done / current / upcoming by code-behind. -->
-        <StackPanel Grid.Row="0" x:Name="DotsPanel" Orientation="Horizontal"
-                    Spacing="8" HorizontalAlignment="Center" Margin="0,4,0,36" />
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="12"
+                    HorizontalAlignment="Center" Margin="0,4,0,30" VerticalAlignment="Center">
+            <StackPanel x:Name="DotsPanel" Orientation="Horizontal" Spacing="8"
+                        VerticalAlignment="Center" />
+            <!-- Naming the step turns the dots from decoration into a position you can read. Seven
+                 identical dots told you where you were only if you counted them. -->
+            <TextBlock x:Name="DotsStepLabel" FontSize="11.5" FontWeight="SemiBold"
+                       Foreground="#8A909A" VerticalAlignment="Center" />
+        </StackPanel>
 
         <!-- Step content. Exactly one child panel is visible at a time. -->
         <Grid Grid.Row="1">

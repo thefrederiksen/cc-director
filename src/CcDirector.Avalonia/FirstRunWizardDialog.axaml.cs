@@ -209,11 +209,45 @@ public partial class FirstRunWizardDialog : Window
                 Height = 8,
                 VerticalAlignment = VerticalAlignment.Center,
             };
+
+            // On a REVIEW run the dots are navigation: everything is already set up, so there is no
+            // order left to protect and the user came here to change one specific thing. Clicking a
+            // dot goes straight to that step instead of pressing Continue five times.
+            //
+            // On a FIRST run they stay indicators. A first-timer skipping to a step whose answer
+            // depends on an earlier one is how a machine ends up half configured.
+            if (_isReview)
+            {
+                var target = _model.Steps[i];
+                dot.Cursor = new global::Avalonia.Input.Cursor(global::Avalonia.Input.StandardCursorType.Hand);
+                AutomationProperties.SetName(dot, $"Go to step {i + 1}, {StepDisplayName(target)}");
+                dot.PointerPressed += (_, _) =>
+                {
+                    if (_model.Current == target) return;
+                    FileLog.Write($"[FirstRunWizardDialog] dot navigation to {target}");
+                    _model.GoTo(target);
+                    ShowStep(_model.Current);
+                };
+            }
+
             _dots.Add(dot);
             DotsPanel.Children.Add(dot);
         }
         RefreshDots();
     }
+
+    /// <summary>The user-facing name of a step, used beside the dots and by the dot navigation.</summary>
+    private static string StepDisplayName(WizardStep step) => step switch
+    {
+        WizardStep.Welcome => "Welcome",
+        WizardStep.Gateway => "Your gateway",
+        WizardStep.Agents => "Your agents",
+        WizardStep.Tools => "Tools",
+        WizardStep.Code => "Your code",
+        WizardStep.Screenshots => "Screenshots",
+        WizardStep.Done => "Done",
+        _ => step.ToString(),
+    };
 
     /// <summary>Paint each dot done / current / upcoming from the model's verdict (never re-derived here).</summary>
     private void RefreshDots()
@@ -227,6 +261,8 @@ public partial class FirstRunWizardDialog : Window
                 _ => Brush("#E6E8EC"),
             };
         }
+
+        DotsStepLabel.Text = $"Step {_model.Index + 1} of {_model.Count} - {StepDisplayName(_model.Current)}";
     }
 
     /// <summary>
@@ -587,8 +623,7 @@ public partial class FirstRunWizardDialog : Window
             AgentsListPanel.Children.Add(AgentRow(
                 s.DisplayName,
                 alreadyAdded ? $"Already in your Agents list - {detail}" : detail,
-                alreadyAdded ? "In list" : "Ready",
-                ready: true));
+                RowState.Ready));
         }
 
 
@@ -598,27 +633,69 @@ public partial class FirstRunWizardDialog : Window
             AgentsListPanel.Children.Add(AgentRow(
                 string.Join(", ", notFound),
                 "Not installed - you can add any of these later in Settings.",
-                "Not found",
-                ready: false));
+                RowState.NotSetUp));
         }
     }
 
-    private static Border AgentRow(string name, string sub, string pillText, bool ready)
+    /// <summary>
+    /// The four states a row can be in. One word each, one colour each.
+    ///
+    /// Before this there was a single boolean and fifteen different labels sharing two colours, so a
+    /// tool that FAILED to install wore the same grey pill as an agent that simply is not installed -
+    /// one needs the user to act, the other is fine and expected, and they were indistinguishable.
+    /// Counts wore status colours too: "3 folders" rendered green, as though having three folders were
+    /// a state of health.
+    /// </summary>
+    private enum RowState
     {
+        /// <summary>It works. Nothing to do. Green.</summary>
+        Ready,
+
+        /// <summary>Happening now, and it finishes on its own. Blue.</summary>
+        Working,
+
+        /// <summary>It will not fix itself. Red - and only ever used where the screen also offers the
+        /// action that fixes it, or the colour becomes noise.</summary>
+        NeedsYou,
+
+        /// <summary>Absent and optional. No action implied. Grey.</summary>
+        NotSetUp,
+    }
+
+    private static (string Background, string Foreground) PillColours(RowState state) => state switch
+    {
+        RowState.Ready => ("#E5F3E9", "#1A7F37"),
+        RowState.Working => ("#F2F8FD", "#0066B8"),
+        RowState.NeedsYou => ("#FDECEC", "#DC2626"),
+        _ => ("#F5F6F8", "#8A909A"),
+    };
+
+    private static string PillLabel(RowState state) => state switch
+    {
+        RowState.Ready => "Ready",
+        RowState.Working => "Working",
+        RowState.NeedsYou => "Needs you",
+        _ => "Not set up",
+    };
+
+    private static Border AgentRow(string name, string sub, RowState state)
+    {
+        var (background, foreground) = PillColours(state);
         var pill = new Border
         {
-            Background = Brush(ready ? "#E5F3E9" : "#F5F6F8"),
+            Background = Brush(background),
             CornerRadius = new global::Avalonia.CornerRadius(999),
             Padding = new global::Avalonia.Thickness(10, 3),
             VerticalAlignment = VerticalAlignment.Center,
             Child = new TextBlock
             {
-                Text = pillText,
-                Foreground = Brush(ready ? "#1A7F37" : "#8A909A"),
+                Text = PillLabel(state),
+                Foreground = Brush(foreground),
                 FontSize = 11,
                 FontWeight = FontWeight.SemiBold,
             },
         };
+        var ready = state == RowState.Ready;
 
         var text = new StackPanel { Spacing = 2 };
         text.Children.Add(new TextBlock
@@ -808,11 +885,13 @@ public partial class FirstRunWizardDialog : Window
             ToolsListPanel.Children.Clear();
             foreach (var tool in catalog)
             {
-                var pill = tool.IsAvailable ? "Ready" : stalled ? "Not installed" : "Installing...";
+                var state = tool.IsAvailable ? RowState.Ready
+                    : stalled ? RowState.NeedsYou
+                    : RowState.Working;
                 var detail = tool.IsAvailable || !stalled
                     ? tool.Description
                     : $"{tool.Description} - this one did not install";
-                ToolsListPanel.Children.Add(AgentRow(tool.Name, detail, pill, ready: tool.IsAvailable));
+                ToolsListPanel.Children.Add(AgentRow(tool.Name, detail, state));
             }
 
             ToolsFixPanel.IsVisible = stalled;
@@ -1653,8 +1732,7 @@ public partial class FirstRunWizardDialog : Window
         rows.Add(AgentRow(
             "Your gateway",
             gateway.IsEnabled ? gateway.Url : "Not connected - phone access and the morning report need one",
-            gateway.IsEnabled ? "Connected" : "None",
-            ready: gateway.IsEnabled));
+            gateway.IsEnabled ? RowState.Ready : RowState.NotSetUp));
 
         var agentCount = 0;
         try
@@ -1667,9 +1745,10 @@ public partial class FirstRunWizardDialog : Window
         }
         rows.Add(AgentRow(
             "Your coding agents",
-            agentCount > 0 ? "Configured and ready to use" : "None configured yet",
-            agentCount > 0 ? $"{agentCount} set up" : "None",
-            ready: agentCount > 0));
+            agentCount > 0
+                ? (agentCount == 1 ? "1 agent, configured and ready to use" : $"{agentCount} agents, configured and ready to use")
+                : "None configured yet",
+            agentCount > 0 ? RowState.Ready : RowState.NotSetUp));
 
         var rootCount = 0;
         try
@@ -1684,9 +1763,10 @@ public partial class FirstRunWizardDialog : Window
         }
         rows.Add(AgentRow(
             "Where your code lives",
-            rootCount > 0 ? "DevThrottle is keeping the books on these" : "No folders added yet",
-            rootCount == 1 ? "1 folder" : rootCount > 0 ? $"{rootCount} folders" : "None",
-            ready: rootCount > 0));
+            rootCount > 0
+                ? (rootCount == 1 ? "1 folder - DevThrottle is keeping the books on it" : $"{rootCount} folders - DevThrottle is keeping the books on them")
+                : "No folders added yet",
+            rootCount > 0 ? RowState.Ready : RowState.NotSetUp));
 
         return rows;
     }
@@ -2045,8 +2125,8 @@ public partial class FirstRunWizardDialog : Window
             // something this run achieved - a receipt that claims credit for work it did not do is
             // the same class of untruth as the step that used to ask for it again.
             DoneReceiptPanel.Children.Add(_gatewayWasAlreadyConnected
-                ? ReceiptRow("Gateway", gatewayUrl, done: true, pillText: "Unchanged")
-                : ReceiptRow("Gateway connected", gatewayUrl, done: true));
+                ? ReceiptRow("Gateway", $"{gatewayUrl} - already set up before this run", RowState.Ready)
+                : ReceiptRow("Gateway connected", gatewayUrl, RowState.Ready));
         else
             DoneReceiptPanel.Children.Add(ReceiptRow(
                 "No gateway", "Connect one from Settings for phone access and your morning report", done: false));
@@ -2065,10 +2145,10 @@ public partial class FirstRunWizardDialog : Window
                 DoneReceiptPanel.Children.Add(ReceiptRow(
                     $"{_toolsTotalCount - _toolsReadyCount} of {_toolsTotalCount} tools did not install",
                     "Repair them from Settings > Tools - they will not finish on their own",
-                    done: false, pillText: "Needs you"));
+                    RowState.NeedsYou));
             else
                 DoneReceiptPanel.Children.Add(ReceiptRow(
-                    "Tools installing", "Finishes on its own in the background", done: false));
+                    "Tools installing", "Finishes on its own in the background", RowState.Working));
         }
 
         // Browsers row: a pointer, not a task. Browser setup lives in the left rail (the Browsers
@@ -2088,22 +2168,30 @@ public partial class FirstRunWizardDialog : Window
         DoneReceiptPanel.Children.Add(!string.IsNullOrWhiteSpace(gatewayUrl)
             ? ReceiptRow("Morning report", "Every morning at 7:00 Eastern - the email says how to change or stop it", done: true)
             : ReceiptRow(
-                "Morning report", "Every morning at 7:00 Eastern - once a gateway is connected",
-                done: false, pillText: "Waiting for a gateway"));
+                "Morning report", "Every morning at 7:00 Eastern - waiting for a gateway to be connected",
+                RowState.NotSetUp));
     }
 
     private static Border ReceiptRow(string name, string sub, bool done, string? pillText = null)
+        => ReceiptRow(name, sub, done ? RowState.Ready : RowState.NotSetUp, pillText);
+
+    /// <summary>
+    /// One receipt line. It takes the SAME four states the steps use, so the last screen of onboarding
+    /// cannot mean something different by a colour than the screen the user saw two steps earlier.
+    /// </summary>
+    private static Border ReceiptRow(string name, string sub, RowState state, string? pillText = null)
     {
+        var (background, foreground) = PillColours(state);
         var pill = new Border
         {
-            Background = Brush(done ? "#E5F3E9" : "#F5F6F8"),
+            Background = Brush(background),
             CornerRadius = new global::Avalonia.CornerRadius(999),
             Padding = new global::Avalonia.Thickness(10, 3),
             VerticalAlignment = VerticalAlignment.Center,
             Child = new TextBlock
             {
-                Text = pillText ?? (done ? "Done" : "Later"),
-                Foreground = Brush(done ? "#1A7F37" : "#8A909A"),
+                Text = pillText ?? PillLabel(state),
+                Foreground = Brush(foreground),
                 FontSize = 11,
                 FontWeight = FontWeight.SemiBold,
             },
