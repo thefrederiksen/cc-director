@@ -85,6 +85,7 @@ public static class Program
         }
         finally
         {
+            _shutdownCompleted = true;
             FileLog.Write("[Program] CC Launcher exited");
             FileLog.Stop();
         }
@@ -96,6 +97,10 @@ public static class Program
     /// application is not up yet (a signal during startup) the process exits directly, which is the
     /// honest thing to do rather than ignoring the signal.
     /// </summary>
+    /// <summary>Set when the normal exit path has finished, so the SIGTERM watchdog stands down instead
+    /// of force-exiting a shutdown that is working.</summary>
+    private static volatile bool _shutdownCompleted;
+
     private static void RequestTrayShutdown()
     {
         // Deliberately NOT a blocking call on the user-interface thread. Asking the desktop lifetime to
@@ -121,10 +126,18 @@ public static class Program
             }
         });
 
+        // The watchdog exists so a wedged shutdown cannot ignore the signal for ever - but it must not
+        // cut a clean shutdown short either. The downstream steps have their own bounds (a Gateway
+        // unregister allows five seconds, the host stop two, on top of an unbounded stream stop), so the
+        // budget is generous and the exit is cancelled the moment shutdown actually finishes.
         _ = Task.Run(async () =>
         {
-            await Task.Delay(TimeSpan.FromSeconds(8));
-            FileLog.Write("[Program] SIGTERM: shutdown did not complete in time - exiting");
+            for (var waited = TimeSpan.Zero; waited < TimeSpan.FromSeconds(25); waited += TimeSpan.FromMilliseconds(250))
+            {
+                if (_shutdownCompleted) return;
+                await Task.Delay(250);
+            }
+            FileLog.Write("[Program] SIGTERM: shutdown did not complete in 25s - exiting anyway");
             FileLog.Stop();
             Environment.Exit(0);
         });

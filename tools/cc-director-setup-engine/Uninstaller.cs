@@ -152,8 +152,15 @@ public sealed class Uninstaller
             progress?.Report("Removing the Launcher launch agent");
             try
             {
-                if (LauncherLaunchdAutostart.Unregister())
+                // VERIFIED: a nonzero bootout used to be logged and reported as success. A job still
+                // loaded keeps its KeepAlive definition, so launchd restarts the launcher after the stop
+                // below has already been certified - and the restart binds the port again while the
+                // files are being deleted.
+                if (LauncherLaunchdAutostart.UnregisterVerified(out var agentFailure))
                     steps.Add("Removed the Launcher launch agent (launchd)");
+                else
+                    errors.Add($"Launcher launch agent: {agentFailure}. launchd may restart the launcher, "
+                               + "so this uninstall cannot be trusted to have stopped it.");
             }
             catch (Exception ex)
             {
@@ -211,8 +218,20 @@ public sealed class Uninstaller
         // whole per-user data root. Deliberately destructive, so it only runs when asked.
         if (deleteData)
         {
-            progress?.Report("Removing your data");
-            WipeUserData(steps, errors);
+            if (stop.Stopped)
+            {
+                progress?.Report("Removing your data");
+                WipeUserData(steps, errors);
+            }
+            else
+            {
+                // The wipe deletes the WHOLE per-user root, and the launcher directory lives inside it -
+                // so wiping would delete the binary and the token of a process we could not stop, which
+                // is precisely the state that made the original orphan impossible to identify or
+                // authenticate to. The deletion gate above is worthless if this path ignores it.
+                steps.Add("SKIPPED removing your data: the launcher is still running, and the wipe would "
+                          + "delete the files and token of a process nothing can then stop");
+            }
         }
 
         var ok = errors.Count == 0;
@@ -281,15 +300,22 @@ public sealed class Uninstaller
         // Unique per wipe: a fixed name would have the second uninstall overwrite the first one's
         // logs, and the whole point is not to lose them. Resolved and re-checked below, because a
         // symbolic link or junction called this could point back inside the root about to be deleted.
-        var destination = System.IO.Path.Combine(
-            parent, $"devthrottle-logs-kept-{DateTime.Now:yyyyMMdd-HHmmss}");
+        // Unique even within the same second: two wipes a second apart would otherwise share a
+        // directory and overwrite each other's logs, which is the loss this exists to prevent.
+        var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture);
+        var destination = System.IO.Path.Combine(parent, $"devthrottle-logs-kept-{stamp}");
+        for (var n = 2; Directory.Exists(destination) || File.Exists(destination); n++)
+            destination = System.IO.Path.Combine(parent, $"devthrottle-logs-kept-{stamp}-{n}");
 
         try
         {
             if (Directory.Exists(destination))
             {
-                var resolved = new DirectoryInfo(destination).LinkTarget is { } target
-                    ? System.IO.Path.GetFullPath(target)
+                // A link target may be RELATIVE, and relative to the LINK's directory - not to this
+                // process's working directory, which is what GetFullPath would assume.
+                var info = new DirectoryInfo(destination);
+                var resolved = info.LinkTarget is { } target
+                    ? System.IO.Path.GetFullPath(target, info.Parent?.FullName ?? parent)
                     : System.IO.Path.GetFullPath(destination);
                 if (resolved.StartsWith(System.IO.Path.GetFullPath(root), StringComparison.OrdinalIgnoreCase))
                 {

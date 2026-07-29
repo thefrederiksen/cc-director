@@ -130,15 +130,26 @@ public sealed class LauncherCore : IAsyncDisposable
     public static bool AutostartChecked { get; private set; }
 
     /// <summary>
+    /// Is this launcher registered to start at login? Distinct from <see cref="AutostartFailure"/>:
+    /// autostart turned OFF on purpose is not a failure, but it is also NOT registered - and reporting
+    /// "ok" for it left the fleet unable to tell a managed launcher from an unmanaged one, which is the
+    /// whole point of publishing this.
+    /// </summary>
+    public static bool AutostartRegistered { get; private set; }
+
+    /// <summary>
     /// Record the autostart state from somewhere other than startup - the tray's own enable/disable
     /// toggle. Without this the API kept reporting a startup-era failure after the user had fixed it,
     /// or healthy after a later toggle failed.
     /// </summary>
-    public static void RecordAutostartState(string? failure)
+    public static void RecordAutostartState(string? failure, bool registered)
     {
+        // Written in this order so a reader that sees Checked=true cannot then read a stale failure.
         AutostartFailure = failure;
+        AutostartRegistered = registered;
         AutostartChecked = true;
-        FileLog.Write($"[LauncherCore] autostart state recorded: {(failure is null ? "registered" : failure)}");
+        FileLog.Write($"[LauncherCore] autostart state recorded: registered={registered}, "
+                      + $"failure={failure ?? "none"}");
     }
 
     /// <summary>
@@ -154,14 +165,14 @@ public sealed class LauncherCore : IAsyncDisposable
         if (!LauncherAppOptions.RegisterAutostart)
         {
             FileLog.Write("[LauncherCore] Autostart registration skipped (--no-autostart)");
-            AutostartFailure = null;   // not asked for, so not a failure
-            AutostartChecked = true;
+            // Not a failure - it was not asked for - but NOT registered either.
+            RecordAutostartState(failure: null, registered: false);
             return;
         }
 
         if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS())
         {
-            AutostartChecked = true;   // no mechanism on this platform: nothing to fail
+            RecordAutostartState(failure: null, registered: false);   // no mechanism on this platform
             return;
         }
 
@@ -184,19 +195,17 @@ public sealed class LauncherCore : IAsyncDisposable
                 ? LauncherAutostart.IsRegistered()
                 : LauncherLaunchdAutostart.IsRegistered();
 
-            AutostartFailure = registered
-                ? null
-                : (OperatingSystem.IsWindows()
-                    ? "the autostart Run key is not present after registering"
-                    : "the launch agent property list is not present after registering");
-            AutostartChecked = true;
-            if (AutostartFailure is not null)
-                FileLog.Write($"[LauncherCore] Autostart registration did not take effect: {AutostartFailure}");
+            RecordAutostartState(
+                registered
+                    ? null
+                    : (OperatingSystem.IsWindows()
+                        ? "the autostart Run key is not present after registering"
+                        : "the launch agent property list is not present after registering"),
+                registered);
         }
         catch (Exception ex)
         {
-            AutostartFailure = ex.Message;
-            AutostartChecked = true;
+            RecordAutostartState(ex.Message, registered: false);
             FileLog.Write($"[LauncherCore] Autostart registration FAILED: {ex.Message}");
         }
     }

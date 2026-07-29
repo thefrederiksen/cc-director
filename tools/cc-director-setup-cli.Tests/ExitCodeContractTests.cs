@@ -74,3 +74,33 @@ public sealed class StrictArgumentParsingTests
         Assert.True(CliArgs.Parse(["status", "--json"]).HasFlag("json"));
     }
 }
+
+/// <summary>
+/// The exit code an unattended caller actually receives, from the real entry point.
+///
+/// The parser tests above prove it THROWS on a malformed command line. That is not the contract: the
+/// contract is the NUMBER. When strict parsing was first added, the throw happened outside the handler
+/// that maps a usage error to code 2, so a bad option exited with an unhandled exception and
+/// -532462766 - worse for a script than the silent-default bug it replaced, and no test noticed because
+/// none of them called Main.
+/// </summary>
+public sealed class ExitCodeFromMainTests
+{
+    [Fact]
+    public async Task AMalformedCommandLine_Exits2()
+    {
+        Assert.Equal(ExitCodes.Usage, await Program.Main(["status", "--bogus"]));
+        Assert.Equal(ExitCodes.Usage, await Program.Main(["install", "--role"]));
+    }
+
+    [Fact]
+    public async Task HelpExitsCleanly_AndSoDoesVersion()
+    {
+        // --version is accepted by the dispatcher; strict parsing briefly turned it into a crash.
+        Assert.Equal(ExitCodes.Ok, await Program.Main(["--version"]));
+        Assert.Equal(ExitCodes.Ok, await Program.Main(["version"]));
+        // Asking for help and GETTING it is a success, not a usage error. Code 2 is for a command line
+        // the tool could not carry out.
+        Assert.Equal(ExitCodes.Ok, await Program.Main(["help"]));
+    }
+}

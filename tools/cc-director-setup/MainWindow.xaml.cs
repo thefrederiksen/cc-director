@@ -386,8 +386,18 @@ public partial class MainWindow : Window
             // Re-assert the launcher on an already-current machine too. It is idempotent (start if it is
             // not up, re-register autostart) and it is what makes the launcher card on this screen tell
             // the truth instead of sitting at "Pending" forever on the up-to-date path.
-            if (OperatingSystem.IsWindows())
-                await StartLauncherAsync();
+            //
+            // A FAILURE here counts. This path used to discard the result and show "Already Up to Date"
+            // even when the launcher's health, identity or autostart check had just failed - the same
+            // false success the non-up-to-date path correctly refuses.
+            if (OperatingSystem.IsWindows() && !await StartLauncherAsync())
+            {
+                _skippedCount++;
+                _alreadyUpToDate = false;
+                NextButton.Content = "Retry";
+                NextButton.IsEnabled = true;
+                return;
+            }
 
             NextButton.Content = "Next";
             NextButton.IsEnabled = true;

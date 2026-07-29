@@ -333,9 +333,9 @@ public sealed class LauncherTrayController : IDisposable
                 var registered = OperatingSystem.IsWindows()
                     ? LauncherAutostart.IsRegistered()
                     : LauncherLaunchdAutostart.IsRegistered();
-                LauncherCore.RecordAutostartState(registered
-                    ? null
-                    : "autostart was enabled from the tray but is not registered");
+                LauncherCore.RecordAutostartState(
+                    registered ? null : "autostart was enabled from the tray but is not registered",
+                    registered);
             }
             else
             {
@@ -346,14 +346,15 @@ public sealed class LauncherTrayController : IDisposable
                 FileLog.Write("[LauncherTrayController] Autostart disabled by user");
 
                 // Turned off ON PURPOSE is not a failure - reporting it as one would cry wolf at a
-                // deliberate choice.
-                LauncherCore.RecordAutostartState(null);
+                // deliberate choice - but it is not registered either.
+                LauncherCore.RecordAutostartState(failure: null, registered: false);
             }
         }
         catch (Exception ex)
         {
             FileLog.Write($"[LauncherTrayController] SetAutostart FAILED: {ex.Message}");
-            LauncherCore.RecordAutostartState($"changing autostart from the tray failed: {ex.Message}");
+            LauncherCore.RecordAutostartState(
+                $"changing autostart from the tray failed: {ex.Message}", registered: false);
         }
     }
 

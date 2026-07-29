@@ -165,6 +165,42 @@ public static class LauncherLaunchdAutostart
         return existed;
     }
 
+    /// <summary>
+    /// Unregister, and say whether the job was actually BOOTED OUT. <see cref="Unregister"/> logged a
+    /// nonzero bootout and then reported success, which mattered: a job still loaded keeps its
+    /// KeepAlive definition, so launchd restarts the launcher after a stop has already been certified
+    /// and the restart binds the port again while files are being deleted.
+    /// </summary>
+    /// <param name="failure">Why it could not be unregistered, or null on success.</param>
+    [SupportedOSPlatform("macos")]
+    public static bool UnregisterVerified(out string? failure)
+    {
+        failure = null;
+        EngineLog.Write("[LauncherLaunchdAutostart] UnregisterVerified");
+        var existed = File.Exists(PlistPath);
+
+        if (IsLoaded())
+        {
+            var (exit, text) = ProcessRunner.Run("/bin/launchctl", $"bootout gui/{UserId()}/{Label}");
+            EngineLog.Write($"[LauncherLaunchdAutostart] bootout -> exit={exit} {Trim(text)}");
+            // Still loaded after asking it to go is the case that used to pass for success.
+            if (exit != 0 && IsLoaded())
+                failure = $"launchctl bootout failed (exit {exit}): {Trim(text)}";
+        }
+
+        try
+        {
+            if (existed) File.Delete(PlistPath);
+        }
+        catch (Exception ex)
+        {
+            failure ??= $"could not delete {PlistPath}: {ex.Message}";
+        }
+
+        return failure is null;
+    }
+
+
     /// <summary>Whether launchd currently has the agent loaded in this user's gui domain.</summary>
     [SupportedOSPlatform("macos")]
     public static bool IsLoaded()

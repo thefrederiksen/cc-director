@@ -72,7 +72,7 @@ public partial class UninstallStep : UserControl
     {
         var items = new List<string>
         {
-            "The DevThrottle app and all cc-* CLI tools",
+            "The Director and all cc-* CLI tools",
             "The PATH entry for the tools",
             "Scheduled tasks and the Start Menu shortcut",
         };

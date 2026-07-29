@@ -19,7 +19,21 @@ public static class Program
 
     public static async Task<int> Main(string[] argv)
     {
-        var args = CliArgs.Parse(argv);
+        // Parsing is INSIDE the guarded region. A usage error must leave with the documented code 2 -
+        // the whole reason an unattended caller can branch on it. Parsing outside this handler made a
+        // malformed command line exit with an unhandled exception instead.
+        CliArgs args;
+        try
+        {
+            args = CliArgs.Parse(argv);
+        }
+        catch (UsageException ux)
+        {
+            Console.Error.WriteLine($"Error: {ux.Message}");
+            Console.Error.WriteLine();
+            Help();
+            return ExitUsage;
+        }
 
         // `--help` is a flag, so "uninstall --help" parses as the uninstall command with a help flag.
         // Short-circuit to usage BEFORE dispatching, so appending --help to ANY command shows help

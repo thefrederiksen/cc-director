@@ -12,7 +12,9 @@ public sealed class CliArgs
     private readonly HashSet<string> _flags;
 
     private static readonly HashSet<string> KnownFlags =
-        new(StringComparer.OrdinalIgnoreCase) { "json", "dry-run", "help", "hosted" };
+        // "version" is here because the dispatcher accepts "--version" as a way to ask the version.
+        // Strict parsing without it turned a documented, working command line into a crash.
+        new(StringComparer.OrdinalIgnoreCase) { "json", "dry-run", "help", "hosted", "version" };
 
     private CliArgs(string command, List<string> positionals, Dictionary<string, string> options, HashSet<string> flags)
     {

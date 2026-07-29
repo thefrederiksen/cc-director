@@ -98,8 +98,18 @@ public sealed class LauncherStopper
 
         if (ours.Count == 0)
         {
-            // Nothing of ours is running, so there is nothing for this to fail at. Whatever may hold
-            // the port has already been reported above.
+            if (!listed && portBusy)
+            {
+                // We could not read the process list AND something holds the port. We do not know that
+                // we stopped anything, so we must not say we did - the caller uses this to decide
+                // whether it is safe to delete the launcher's files.
+                steps.Add("cannot confirm the launcher is stopped: the process list is unreadable and "
+                          + $"port {LauncherTrayInstaller.LauncherDefaultPort} is in use");
+                return new Result(false, steps);
+            }
+
+            // Nothing of ours is running. A port held by a stranger is reported above and is not ours
+            // to fail at.
             steps.Add("launcher: nothing of ours to stop");
             return new Result(true, steps);
         }
@@ -111,8 +121,13 @@ public sealed class LauncherStopper
             steps.Add($"launcher token not present at {TokenFilePath} - cannot ask it to quit, "
                       + "stopping it by process instead");
         }
-        else if (portBusy && (portOwner == 0 || ours.Any(p => p.Pid == portOwner)))
+        else if (portBusy && portOwner != 0 && ours.Any(p => p.Pid == portOwner))
         {
+            // ONLY when the owner is positively identified as ours. An unknown owner (health did not
+            // answer, or answered without a process id) is not permission to send a shutdown to whoever
+            // is there: the token is per-user, so a launcher running from a developer's checkout would
+            // accept it. When we cannot tell, we stop our own processes directly instead - which is
+            // scoped by construction.
             var asked = RequestQuit($"http://127.0.0.1:{LauncherTrayInstaller.LauncherDefaultPort}/shutdown", token);
             steps.Add(asked
                 ? "the launcher accepted the quit request"
@@ -133,8 +148,11 @@ public sealed class LauncherStopper
         // Give a killed process a moment to release the port before judging.
         WaitFor(() => Ours(out _).Count == 0, TimeSpan.FromSeconds(5));
 
-        var remaining = Ours(out _);
-        var stopped = remaining.Count == 0;
+        var remaining = Ours(out var listedAtEnd);
+        // The port is part of the verdict, not a log line. If one of ours still holds it, or we cannot
+        // even read the process list while something holds it, we have not finished the job.
+        var portStillBusy = PortInUse();
+        var stopped = listedAtEnd && remaining.Count == 0 && !(portStillBusy && OursHoldsPort());
 
         steps.Add(stopped
             ? "no installed launcher process remains"
@@ -171,6 +189,17 @@ public sealed class LauncherStopper
             listed = false;
             return [];
         }
+    }
+
+    /// <summary>
+    /// Is the launcher port held by one of OUR processes right now? Used in the verdict: a port held by
+    /// a stranger is not our failure, but a port held by our own surviving launcher certainly is.
+    /// </summary>
+    private bool OursHoldsPort()
+    {
+        var owner = PortOwnerPid();
+        if (owner == 0) return false;   // unknown - do not invent a failure
+        return Ours(out _).Any(p => p.Pid == owner);
     }
 
     private string? ReadToken()
