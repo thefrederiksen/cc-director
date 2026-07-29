@@ -163,97 +163,40 @@ public class UninstallerTests : IDisposable
         Assert.Contains(steps, s => s.Contains("not present"));
     }
 
-    // ===== Skill removal (issue #257) - AC8: only OUR skills, never the user's own =====
+    // ===== Skills are not ours to remove (issue 995) =====
+    //
+    // The installer no longer writes skill files onto anyone's machine - skills live on the Gateway
+    // and are fetched - so the uninstaller has nothing of ours in the user's skills folder and must
+    // never reach into it. Any skill file already sitting on an existing machine is the user's file
+    // now, and an uninstall leaves it exactly where it is. These two guards red the moment skill
+    // removal is put back: the first on the engine's public surface, the second on what a real plan
+    // would actually delete.
 
     [Fact]
-    public void RemoveSkills_RemovesOnlyManifestedSkills_LeavesUserSkills()
+    public void Engine_ExposesNoSkillRemovalSurface()
     {
-        // The install recorded only "cc-director" as owned.
-        SkillManifest.RecordInstalled(_layout, new[] { "cc-director" });
+        var engine = typeof(Uninstaller).Assembly;
 
-        // A sandbox skills dir holding BOTH our skill and a user-authored one with no manifest entry.
-        var skills = Path.Combine(_dir, "skills");
-        var ours = Path.Combine(skills, "cc-director");
-        var theirs = Path.Combine(skills, "my-custom-skill");
-        Directory.CreateDirectory(ours);
-        File.WriteAllText(Path.Combine(ours, "SKILL.md"), "ours");
-        Directory.CreateDirectory(theirs);
-        File.WriteAllText(Path.Combine(theirs, "SKILL.md"), "precious user skill");
-
-        var steps = new List<string>();
-        var errors = new List<string>();
-        new Uninstaller(_layout).RemoveSkills(steps, errors, skillsBaseDir: skills);
-
-        Assert.Empty(errors);
-        Assert.False(Directory.Exists(ours));                 // ours removed
-        Assert.True(Directory.Exists(theirs));                // the user's survives
-        Assert.Equal("precious user skill", File.ReadAllText(Path.Combine(theirs, "SKILL.md")));
+        Assert.DoesNotContain(engine.GetTypes(), t => t.Name.Contains("Skill", StringComparison.Ordinal));
+        Assert.Null(typeof(Uninstaller).GetMethod("RemoveSkills"));
+        Assert.DoesNotContain(Enum.GetNames<UninstallKind>(), n => n.Contains("Skill", StringComparison.Ordinal));
     }
 
     [Fact]
-    public void RemoveSkills_NoManifest_RemovesNothing()
+    public void Plan_ListsNothingInsideTheUsersSkillsFolder()
     {
-        var skills = Path.Combine(_dir, "skills");
-        var theirs = Path.Combine(skills, "cc-director"); // same NAME, but no manifest = not ours
-        Directory.CreateDirectory(theirs);
+        // Every path an uninstall would delete, for both roles. None may sit under the per-user
+        // skills tree (%USERPROFILE%\.claude\skills), which is where the retired installer wrote.
+        var skillsTree = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "skills");
 
-        var steps = new List<string>();
-        var errors = new List<string>();
-        new Uninstaller(_layout).RemoveSkills(steps, errors, skillsBaseDir: skills);
-
-        Assert.True(Directory.Exists(theirs));                // never touched without an ownership record
-        Assert.Contains(steps, s => s.Contains("none recorded"));
-    }
-
-    [Fact]
-    public void RemoveSkills_ManifestedButAbsent_ReportsSkipped()
-    {
-        SkillManifest.RecordInstalled(_layout, new[] { "cc-director" });
-        var steps = new List<string>();
-        var errors = new List<string>();
-        new Uninstaller(_layout).RemoveSkills(steps, errors, skillsBaseDir: Path.Combine(_dir, "empty"));
-
-        Assert.Empty(errors);
-        Assert.Contains(steps, s => s.Contains("not present"));
-    }
-
-    [Fact]
-    public void RemoveSkills_MalformedManifest_NeverEscapesOrWipesSkillsTree()
-    {
-        // A hand-corrupted/hostile manifest: blank (would resolve to the skills dir itself),
-        // a parent-escape, a nested path, plus one legit name.
-        Directory.CreateDirectory(_layout.SetupStateDir);
-        File.WriteAllText(_layout.SkillManifestPath, """["", "..\\evil", "a/b", "cc-director"]""");
-
-        var skills = Path.Combine(_dir, "skills");
-        var legit = Path.Combine(skills, "cc-director");
-        var userSkill = Path.Combine(skills, "user-skill");
-        var sibling = Path.Combine(_dir, "evil");           // the "..\evil" target, OUTSIDE skills
-        Directory.CreateDirectory(legit);
-        Directory.CreateDirectory(userSkill);
-        Directory.CreateDirectory(sibling);
-        File.WriteAllText(Path.Combine(userSkill, "SKILL.md"), "user");
-
-        var steps = new List<string>();
-        var errors = new List<string>();
-        new Uninstaller(_layout).RemoveSkills(steps, errors, skillsBaseDir: skills);
-
-        // Only the legit, simple-named, manifested skill is removed.
-        Assert.False(Directory.Exists(legit));
-        // Everything the guard refuses survives: the whole skills tree, the user's skill, the sibling.
-        Assert.True(Directory.Exists(skills));
-        Assert.True(Directory.Exists(userSkill));
-        Assert.True(Directory.Exists(sibling));
-        // The unsafe entries are surfaced as refusals, not silently skipped.
-        Assert.Contains(errors, e => e.Contains("refused"));
-    }
-
-    [Fact]
-    public void Plan_ListsManifestedSkills()
-    {
-        SkillManifest.RecordInstalled(_layout, new[] { "cc-director" });
-        var plan = new Uninstaller(_layout).Plan(InstallRole.Workstation);
-        Assert.Contains(plan, t => t.Kind == UninstallKind.Skill && t.Description.Contains("cc-director"));
+        foreach (var role in new[] { InstallRole.Workstation, InstallRole.Gateway })
+        {
+            var plan = new Uninstaller(_layout).Plan(role);
+            Assert.NotEmpty(plan);
+            Assert.DoesNotContain(plan, (UninstallTarget t) =>
+                t.Path.StartsWith(skillsTree, StringComparison.OrdinalIgnoreCase));
+        }
     }
 
     // ===== Scheduled-task + Tailscale removal route through the report (seam-driven) =====

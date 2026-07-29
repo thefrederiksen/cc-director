@@ -11,11 +11,13 @@ namespace CcDirectorSetup;
 
 public partial class MainWindow : Window
 {
-    // 5-step flow, identical to the Windows wizard (the master, issue #1807):
-    // Welcome -> Prerequisites -> Skills -> Install -> Complete. A fresh install makes no
-    // decision: no profile, no role, no account, no gateway - connecting a gateway is a later,
-    // optional act done from inside the app.
-    private const int StepWelcome = 1, StepPrereq = 2, StepSkills = 3, StepInstall = 4, StepComplete = 5;
+    // 4-step flow, identical to the Windows wizard (the master, issue #1807):
+    // Welcome -> Prerequisites -> Install -> Complete. A fresh install makes no decision: no
+    // profile, no role, no account, no gateway - connecting a gateway is a later, optional act
+    // done from inside the app. The Skills step went with the skill installer (issue 995): skills
+    // are held on the Gateway and fetched, so nothing is placed on the machine and there is
+    // nothing here to choose.
+    private const int StepWelcome = 1, StepPrereq = 2, StepInstall = 3, StepComplete = 4;
 
     private int _currentStep = StepWelcome;
     private List<PrerequisiteInfo> _prerequisites = [];
@@ -36,7 +38,6 @@ public partial class MainWindow : Window
 
     private WelcomeStep? _welcomeStep;
     private PrerequisitesStep? _prerequisitesStep;
-    private SkillsStep? _skillsStep;
     private InstallStep? _installStep;
     private CompleteStep? _completeStep;
 
@@ -65,7 +66,7 @@ public partial class MainWindow : Window
         {
             Title = "DevThrottle Update";
             SubtitleText.Text = "Update";
-            Step4Label.Text = "Update";
+            Step3Label.Text = "Update";
         }
 
         Loaded += MainWindow_Loaded;
@@ -99,10 +100,9 @@ public partial class MainWindow : Window
         new(Step2Circle, Step2Label, Step2Num),
         new(Step3Circle, Step3Label, Step3Num),
         new(Step4Circle, Step4Label, Step4Num),
-        new(Step5Circle, Step5Label, Step5Num),
     ];
 
-    private Border[] GetLines() => [Line12, Line23, Line34, Line45];
+    private Border[] GetLines() => [Line12, Line23, Line34];
 
     private void ShowStep(int step)
     {
@@ -116,7 +116,6 @@ public partial class MainWindow : Window
         {
             StepWelcome => _welcomeStep ??= BuildWelcomeStep(),
             StepPrereq => _prerequisitesStep ??= new PrerequisitesStep(OnPrerequisitesChecked, _isUpdate),
-            StepSkills => _skillsStep ??= new SkillsStep(_isUpdate),
             StepInstall => _installStep ??= new InstallStep(),
             StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _isUpdate, _alreadyUpToDate, _latestVersion, BuildCapabilityNotice(), _skippedNames),
             _ => null
@@ -300,7 +299,7 @@ public partial class MainWindow : Window
         await ApplyAndFinishAsync(_cachedPrep);
     }
 
-    /// <summary>Run the engine apply (Director + tools bundle), install skills, then enable Next.</summary>
+    /// <summary>Run the engine apply (Director + tools bundle), then enable Next.</summary>
     private async Task ApplyAndFinishAsync(EngineInstallRunner.Prep prep)
     {
         var status = new Progress<string>(s => _installStep?.SetStatus(s));
@@ -308,15 +307,6 @@ public partial class MainWindow : Window
         _installedCount = installed;
         _skippedCount = skipped;
         _skippedNames = prep.Items.Where(i => i.Status is "Skipped" or "Failed").Select(i => i.Name).ToList();
-
-        // Skills are per-user markdown downloads, handled outside the binary engine.
-        var skillItems = _installStep?.GetSkillItems() ?? [];
-        if (skillItems.Count > 0)
-        {
-            _installStep?.SetStatus("Installing skills...");
-            await new ToolInstaller().InstallSkillsAsync(skillItems);
-            _installStep?.UpdateSkillsStatus();
-        }
 
         _installStep?.SetStatus($"Done - {installed} installed, {skipped} skipped");
         SetupLog.Write($"[MainWindow] ApplyAndFinishAsync: installed={installed}, skipped={skipped}");

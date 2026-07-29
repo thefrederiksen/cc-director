@@ -119,7 +119,6 @@ class DevThrottleInstaller:
         self.pyenv_dir = self.install_root / "pyenv"
         self.pyenv_scripts_dir = self.pyenv_dir / ("Scripts" if _is_windows() else "bin")
         self.setup_state_dir = self.install_root / "config" / "setup"
-        self.skill_dir = Path(os.environ.get("USERPROFILE", "")) / ".claude" / "skills" / "dev-throttle"
         self.alpha_mode = self._read_alpha_mode()
 
     def _read_alpha_mode(self) -> bool:
@@ -253,8 +252,9 @@ def doctor_data() -> dict:
         "commands": commands,
         "ccDevThrottlePath": cc_resolved,
         "legacyAliases": _legacy_alias_status(),
-        "skillDir": str(installer.skill_dir),
-        "skillInstalled": (installer.skill_dir / "SKILL.md").exists(),
+        # No skill status here: the installer places no skill files (issue 995). Skills are held on
+        # the Gateway, so "is the dev-throttle skill on this disk" is no longer a question about
+        # whether setup worked - reporting it would read as a missing piece of a good install.
         "alphaMode": installer.alpha_mode,
         "problems": problems,
         "repairCommand": "cc-devthrottle setup repair",
@@ -372,8 +372,6 @@ def status(json_output: bool) -> None:
     console.print(f"Bin dir on PATH:  {'yes' if data['binDirOnPath'] else 'no'}")
     console.print(f"cc-devthrottle:   {data['ccDevThrottlePath'] or 'not found'}")
     console.print(f"Tools bundle:     {data['installedBundleVersion'] or 'not recorded'}")
-    console.print(f"Skill dir:        {data['skillDir']}")
-    console.print(f"Skill installed:  {'yes' if data['skillInstalled'] else 'no'}")
     console.print(f"Alpha mode:       {'on' if data['alphaMode'] else 'off'}")
     if data["problems"]:
         console.print("[red]Problems:[/red]")

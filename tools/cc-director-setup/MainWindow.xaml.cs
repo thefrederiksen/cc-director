@@ -43,8 +43,9 @@ public partial class MainWindow : Window
     // install and update - the installer always lays down the Director set with no account gate (issue
     // #1807). Ids 3 (the old Gateway-only Sign-in step) and 5 (the old mandatory gateway-join Connect
     // step) were removed with the account gate, and id 6 (the Skills screen) was removed because it
-    // showed internal identifiers as tick-boxes nobody could tick and asked for no decision. The
-    // surviving ids keep their old numbers so this switch stays stable.
+    // showed internal identifiers as tick-boxes nobody could tick and asked for no decision - and
+    // the installer places no skills at all now (issue 995). The surviving ids keep their old
+    // numbers so this switch stays stable.
     private const int StepInstall = 7;
     private const int StepComplete = 8;
 
@@ -443,20 +444,12 @@ public partial class MainWindow : Window
         await RunEngineApplyAsync(runner, prep, repair: true);
     }
 
-    /// <summary>Apply the prepared release via the engine, install skills, and finalize the UI.</summary>
+    /// <summary>Apply the prepared release via the engine and finalize the UI.</summary>
     private async Task RunEngineApplyAsync(EngineInstallRunner runner, EngineInstallRunner.Prep prep, bool repair)
     {
         var (installed, skipped) = await runner.ApplyAsync(prep);
         _installedCount = installed;
         _skippedCount = skipped;
-
-        _installStep?.SetStatus("Installing skills...");
-        var skillItems = _installStep?.GetSkillItems() ?? [];
-        if (skillItems.Count > 0)
-        {
-            await new SkillInstaller().InstallSkillsAsync(skillItems);
-            _installStep?.UpdateSkillsStatus();
-        }
 
         var verb = repair ? "Repair complete" : "Done";
         _installStep?.SetStatus($"{verb} - {installed} installed, {skipped} skipped");

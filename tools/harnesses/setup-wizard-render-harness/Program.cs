@@ -74,10 +74,6 @@ internal static class Program
         Capture(window, "prerequisites");
         HoverAndCapture(window, FindDescendantButton(window, "RefreshButton"), "prerequisites-recheck-hover");
 
-        ClickNext(window);                       // -> Skills
-        Pump();
-        Capture(window, "skills");
-
         ClickNext(window);                       // -> Install (the REAL engine install runs now)
         Pump();
         Capture(window, "install-running");
@@ -112,7 +108,6 @@ internal static class Program
                     "Stopping the Launcher launch agent",
                     "Removing the app and CLI tools",
                     "Removing the shell PATH entries and shims",
-                    "Removing the DevThrottle skills",
                 })
                 {
                     progress.Report(phase);

@@ -15,7 +15,6 @@ public partial class InstallStep : UserControl
 {
     private ToolDownloadItem? _directorItem;
     private ToolDownloadItem? _launcherItem;
-    private List<SkillItem> _skillItems = [];
 
     public InstallStep()
     {
@@ -92,14 +91,9 @@ public partial class InstallStep : UserControl
         _launcherItem = items.FirstOrDefault(i => i.Name == "cc-launcher");
 
         // The cc-* tools are no longer installed here (the app provisions them on first launch), so the
-        // Tools card is a static note - there are no tool rows to bind or track.
-
-        // Set up skills list
-        _skillItems = ToolInstaller.SkillNames
-            .Select(name => new SkillItem { Name = name })
-            .ToList();
-        SkillList.ItemsSource = _skillItems;
-        SkillsSummary.Text = $"{_skillItems.Count} Claude Code skills";
+        // Tools card is a static note - there are no tool rows to bind or track. Skills are not placed
+        // on the machine at all any more (issue 995): they are held on the Gateway and fetched, so this
+        // step has nothing to say about them.
 
         BindItem(_directorItem, DirectorStatus, DirectorProgress, DirectorSize);
 
@@ -155,8 +149,6 @@ public partial class InstallStep : UserControl
 
         DirectorStatus.Text = "Up to date";
         DirectorStatus.Foreground = upToDateBrush;
-        SkillsStatus.Text = "Up to date";
-        SkillsStatus.Foreground = upToDateBrush;
     }
 
     private void RepairButton_Click(object? sender, RoutedEventArgs e)
@@ -174,15 +166,5 @@ public partial class InstallStep : UserControl
     public void ShowProgress()
     {
         DirectorProgress.IsVisible = true;
-    }
-
-    public List<SkillItem> GetSkillItems() => _skillItems;
-
-    public void UpdateSkillsStatus()
-    {
-        var done = _skillItems.Count(s => s.Status == "Done");
-        SkillsStatus.Text = $"{done} installed";
-        SkillsStatus.Foreground = SolidColorBrush.Parse("#22C55E");
-        SkillsSummary.Text = $"{done}/{_skillItems.Count} skills installed";
     }
 }

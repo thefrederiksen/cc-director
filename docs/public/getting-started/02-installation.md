@@ -155,16 +155,15 @@ auto-updates in place. On **Windows**, install it one of two ways:
 On **macOS**, use the **DevThrottle Setup** app via the Terminal command shown above under
 [macOS](#macos) (Workstation-only; no Gateway on macOS).
 
-## Configure Claude Code Skills
+## Skills
 
-DevThrottle includes Claude Code skills that extend what Claude can do. The installer places them in
-`~/.claude/skills/`, so they are available whenever you run Claude Code. (When working in a clone of
-the repository, the skills in `.claude/skills/` are also available from the repository directory.)
+The installer places no skill files on your machine. DevThrottle's skills are held centrally on the
+Gateway and reach every agent on every machine from there, so a skill is fixed once and is live
+everywhere - no release, and nothing to update or uninstall on your side.
 
-Key skills:
-- `/commit` -- create commits following project standards
-- `/review-code` -- security and PII review before commits
-- `/update-docs` -- keep documentation in sync with code changes
+Your own skills are untouched by all of this. A skill in your personal `~/.claude/skills/` folder, or
+one in a repository's own `.claude/skills/` folder, keeps working exactly as before, and a local skill
+wins if it shares a name with a central one.
 
 ## Setting Up Email Tools
 
