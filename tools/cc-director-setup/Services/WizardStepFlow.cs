@@ -4,16 +4,21 @@ namespace CcDirectorSetup.Services;
 /// Pure navigation policy for the install wizard's step rail. Separated from the WPF
 /// <see cref="MainWindow"/> so the step ordering is unit-testable without a UI.
 ///
-/// The step ids match MainWindow's wizard step numbers: 1 Welcome, 2 Prerequisites,
-/// 7 Install, 8 Complete.
+/// The step ids match MainWindow's wizard step numbers: 1 Welcome, 7 Install, 8 Complete.
 ///
 /// There is now ONE linear path for every install and update. The installer always lays down the
 /// Director set (the DevThrottle app + every cc-* tool + the Launcher) with no role decision and no
 /// account gate; connecting a gateway is a later, optional step done from the app, not here (issue
 /// #1807). So no step is role-aware or update-aware.
 ///
-/// Historical ids 3-6 are retired. The surviving ids keep their old numbers so MainWindow's step
+/// Historical ids 2-6 are retired. The surviving ids keep their old numbers so MainWindow's step
 /// switch remains stable.
+///
+/// Step 2, the Prerequisites screen, is gone. It existed for the one row that could block: the .NET
+/// runtime the app could not start without. The Windows executables now carry their own runtime, so
+/// nothing this installer places needs anything already on the machine. What was left was advice the
+/// installer could not act on or re-check, and the Director detects agent tools itself in a wizard
+/// that can add what it finds.
 ///
 /// Step 6, the Skills screen, is gone too. It listed three internal identifiers as tick-boxes that
 /// could not be ticked, described a completely different set of skills, said "for Claude Code" on a
@@ -24,7 +29,7 @@ namespace CcDirectorSetup.Services;
 public static class WizardStepFlow
 {
     /// <summary>The step ids shown, in order. One linear path for every install and update.</summary>
-    private static readonly int[] Steps = [1, 2, 7, 8];
+    private static readonly int[] Steps = [1, 7, 8];
 
     /// <summary>The step ids shown, in order.</summary>
     public static List<int> VisibleSteps() => [.. Steps];

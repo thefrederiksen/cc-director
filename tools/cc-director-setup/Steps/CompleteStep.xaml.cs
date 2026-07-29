@@ -22,22 +22,23 @@ public partial class CompleteStep : UserControl
         new(System.Windows.Media.Color.FromRgb(0xE0, 0xA0, 0x30));
 
     /// <param name="readyToGo">
-    /// May this screen tell the user they are ready? False when a REQUIRED prerequisite is still
-    /// missing or no coding agent is installed at all - a board with nothing to run is not "ready",
-    /// and saying so next to an amber list of what is missing is the lie this parameter removes.
+    /// May this screen tell the user they are ready? False when no coding agent is installed at all -
+    /// a board with nothing to run is not "ready", and saying so next to an amber note about what is
+    /// missing is the lie this parameter removes.
     /// Computed once by <see cref="InstallCompletion.IsReadyToGo"/>; this screen only renders it.
     /// </param>
-    public CompleteStep(int installed, int skipped, string installPath, string directorExePath, bool isUpdate, bool alreadyUpToDate = false, string? version = null, string? gatewayFailureReason = null, string? capabilityNotice = null, bool readyToGo = true)
+    public CompleteStep(int installed, int skipped, string installPath, string directorExePath, bool isUpdate, bool alreadyUpToDate = false, string? version = null, string? gatewayFailureReason = null, string? agentNotice = null, bool readyToGo = true)
     {
         InitializeComponent();
 
-        // Recommended prerequisites no longer block the wizard, so this is where the user is told
-        // what they skipped and what it costs them - at the end, next to what they can do about it.
-        if (!string.IsNullOrWhiteSpace(capabilityNotice))
+        // The one thing the wizard still says about the MACHINE rather than about this install: there
+        // is no coding agent on it, so the board has nothing to run. Said here, at the end, next to
+        // what the user can do about it - never as a wall on an earlier screen.
+        if (!string.IsNullOrWhiteSpace(agentNotice))
         {
-            CapabilityNoticeText.Text = capabilityNotice;
+            CapabilityNoticeText.Text = agentNotice;
             CapabilityPanel.Visibility = Visibility.Visible;
-            SetupLog.Write($"[CompleteStep] capability notice shown: {capabilityNotice}");
+            SetupLog.Write($"[CompleteStep] agent notice shown: {agentNotice}");
         }
 
         _installPath = installPath;
@@ -75,8 +76,8 @@ public partial class CompleteStep : UserControl
 
             case InstallCompletionKind.Success:
                 // Nothing failed to install - but "ready to go" is a claim about the MACHINE, not
-                // about this install, and it is false while a required prerequisite is missing or
-                // there is no coding agent to run. The XAML defaults cover the genuinely-ready case.
+                // about this install, and it is false while there is no coding agent to run. The XAML
+                // defaults cover the genuinely-ready case.
                 if (!readyToGo)
                 {
                     HeadingText.Text = "DevThrottle is installed - one thing left";

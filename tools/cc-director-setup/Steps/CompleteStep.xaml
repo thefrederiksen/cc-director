@@ -134,8 +134,9 @@
                 </StackPanel>
             </Border>
 
-            <!-- What is missing because a recommended prerequisite was skipped. One shared place
-                 computes the wording (CapabilityNotice); this screen only renders it. -->
+            <!-- The one thing said about the MACHINE rather than about this install: there is no
+                 coding agent on it, so the board has nothing to run. MainWindow computes the
+                 wording from AgentPresence; this screen only renders it. -->
             <Border x:Name="CapabilityPanel" Background="#2A2D2E" CornerRadius="6" Padding="12"
                     Margin="0,0,0,12" Visibility="Collapsed">
                 <TextBlock x:Name="CapabilityNoticeText"

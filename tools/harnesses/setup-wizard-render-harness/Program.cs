@@ -60,6 +60,8 @@ internal static class Program
         if (Array.Exists(args, a => string.Equals(a, "--uninstall-ui", StringComparison.OrdinalIgnoreCase)))
             return RenderUninstallUi();
 
+        var screensOnly = Array.Exists(args, a => string.Equals(a, "--screens", StringComparison.OrdinalIgnoreCase));
+
         var window = new MainWindow { Width = 900, Height = 640 };
         window.Show();
         Pump();
@@ -67,12 +69,24 @@ internal static class Program
         Capture(window, "welcome");
         HoverAndCapture(window, FindButton(window, "NextButton"), "welcome-next-hover");
 
-        ClickNext(window);                       // -> Prerequisites (checks run async)
-        PumpUntil(() => FindDescendantButton(window, "RefreshButton") is { IsEnabled: true }
-                        && NextLabel(window) is "Next",
-            TimeSpan.FromSeconds(60), "prerequisite checks to finish");
-        Capture(window, "prerequisites");
-        HoverAndCapture(window, FindDescendantButton(window, "RefreshButton"), "prerequisites-recheck-hover");
+        // The wizard is three steps: Welcome, Install, Complete. There is no Prerequisites screen -
+        // the executables carry their own .NET runtime, so nothing this installer places needs
+        // anything already on the machine and there is nothing left to gate on. This harness used to
+        // click Next expecting that screen and then wait for a Re-check button that cannot exist.
+        //
+        // --screens stops here: it proves every screen CONSTRUCTS AND RENDERS without touching the
+        // network or installing anything. That is the pre-release check a unit test cannot make - a
+        // wizard that throws on a renamed element passes every test and fails on the first
+        // double-click. The full run (no --screens) still drives the real install end to end.
+        if (screensOnly)
+        {
+            ClickNext(window);                   // -> Install (begins the real install; we only render)
+            Pump();
+            Capture(window, "install-screen");
+            RenderCompleteStates();
+            Console.WriteLine($"RENDER OK (screens only) -> {_outDir}");
+            return 0;
+        }
 
         ClickNext(window);                       // -> Install (the REAL engine install runs now)
         Pump();
@@ -95,6 +109,45 @@ internal static class Program
 
         Console.WriteLine($"RENDER OK -> {_outDir}");
         return 0;
+    }
+
+    /// <summary>
+    /// The Complete screen in every state it can render, built directly. Reaching these through a
+    /// real install would need four installs; the states are pure functions of their arguments, so
+    /// this proves the markup and the code-behind agree for all of them in one pass.
+    /// </summary>
+    private static void RenderCompleteStates()
+    {
+        var noAgent = "No coding agent is set up yet, so your board has nothing to run. "
+                      + "DevThrottle checks your tools when it opens and can add the ones it finds.";
+
+        var states = new (string Name, CcDirectorSetup.Steps.CompleteStep Step)[]
+        {
+            ("complete-installed", new CcDirectorSetup.Steps.CompleteStep(
+                installed: 2, skipped: 0, installPath: "/Users/you/Applications/DevThrottle.app",
+                isUpdate: false, alreadyUpToDate: false, version: "1.8.5")),
+            ("complete-one-thing-left", new CcDirectorSetup.Steps.CompleteStep(
+                installed: 2, skipped: 0, installPath: "/Users/you/Applications/DevThrottle.app",
+                isUpdate: false, alreadyUpToDate: false, version: "1.8.5",
+                agentNotice: noAgent, skippedNames: null, readyToGo: false)),
+            ("complete-already-current", new CcDirectorSetup.Steps.CompleteStep(
+                installed: 0, skipped: 0, installPath: "/Users/you/Applications/DevThrottle.app",
+                isUpdate: true, alreadyUpToDate: true, version: "1.8.5")),
+            ("complete-problems", new CcDirectorSetup.Steps.CompleteStep(
+                installed: 1, skipped: 1, installPath: "/Users/you/Applications/DevThrottle.app",
+                isUpdate: false, alreadyUpToDate: false, version: "1.8.5",
+                agentNotice: null, skippedNames: ["cc-launcher"])),
+        };
+
+        foreach (var (name, step) in states)
+        {
+            var w = new Window { Width = 900, Height = 640, Content = step };
+            w.Show();
+            Pump();
+            Capture(w, name);
+            w.Close();
+            Pump();
+        }
     }
 
     private static int RenderUninstallUi()

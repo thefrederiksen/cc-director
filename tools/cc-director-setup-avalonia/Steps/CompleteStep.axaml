@@ -51,13 +51,13 @@
         <ScrollViewer>
         <StackPanel>
             <TextBlock x:Name="HeadingText"
-                       Text="&#x2713;  Setup Complete"
+                       Text="&#x2713;  DevThrottle is installed"
                        Foreground="#22C55E"
                        FontSize="22"
                        FontWeight="SemiBold" />
 
             <TextBlock x:Name="DescriptionText"
-                       Text="Everything went perfectly. You're ready to go."
+                       Text="You're ready to go."
                        Foreground="#CCCCCC"
                        FontSize="13"
                        Margin="0,12,0,24"
@@ -73,7 +73,7 @@
                     FontSize="16"
                     FontWeight="SemiBold"
                     HorizontalContentAlignment="Center"
-                    Content="Launch Director"
+                    Content="Open DevThrottle"
                     Click="LaunchButton_Click" />
 
             <!-- One quiet summary line on success -->
@@ -119,8 +119,9 @@
             </Border>
 
             <!-- Note about terminal PATH -->
-            <!-- What is missing because a recommended prerequisite was skipped. One shared place
-                 computes the wording (CapabilityNotice); this screen only renders it. -->
+            <!-- The one thing said about the MACHINE rather than about this install: there is no
+                 coding agent on it, so the board has nothing to run. MainWindow computes the
+                 wording from AgentPresence; this screen only renders it. -->
             <Border x:Name="CapabilityPanel" Background="#2A2D2E" CornerRadius="6" Padding="12"
                     Margin="0,0,0,12" IsVisible="False">
                 <TextBlock x:Name="CapabilityNoticeText"
@@ -130,7 +131,7 @@
             </Border>
 
             <TextBlock x:Name="PathNote"
-                       Text="NOTE: Open a new terminal for cc-* commands to be available on PATH."
+                       Text="If you use a terminal: open a new one before running the cc-* commands. Terminals that are already open will not find them yet."
                        Foreground="#666666"
                        FontSize="11"
                        TextWrapping="Wrap" />

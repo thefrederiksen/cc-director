@@ -1,49 +1,121 @@
-using CcDirector.Setup.Engine;
-using CcDirectorSetup.Models;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text.RegularExpressions;
 using CcDirectorSetup.Services;
+using CcDirectorSetup.Steps;
 using Xunit;
 
 namespace CcDirectorSetup.Tests;
 
 /// <summary>
-/// The cc-director installer's FRESH-install path (a Workstation install) shows NOTHING about a gateway.
-/// The fresh install always lays down the Director set (issue #1807) and never mentions a gateway; the
-/// Gateway wording that remains in the wizard is gated behind the update-of-a-Gateway-host path (the
-/// Tailscale prerequisite row, the Install-step Gateway and Cockpit card, the read-only installed-role
-/// line), which a fresh Workstation install never reaches.
+/// This installer installs the Director. It says NOTHING to the user about a gateway or a cockpit -
+/// those are a separate, do-it-yourself install run from the repository.
 ///
-/// This pins the one place a gateway string leaked onto the fresh path: the Prerequisites checklist copy
-/// the person reads on the Prerequisites step. The ".NET 10 Runtime" description used to read "(runs the
-/// Director, Gateway, and Cockpit)" and rendered on every fresh install.
+/// The Windows wizard used to carry a "Gateway &amp; Cockpit" card ("Always-on tray app + fleet
+/// dashboard") on its install screen and streamed the gateway phase's log lines over the heading line,
+/// so an already-current machine read "Gateway: Launcher tray app installed and running on 7900."
+/// where its version belonged. macOS never had either, which is how the same screen came to say two
+/// different things about one product.
 ///
-/// Revert-proof (real production line): restoring "Gateway" to any Workstation-role checklist item's
-/// user-visible copy in <see cref="PrerequisiteChecker.CreateChecklist"/> reds
-/// <see cref="WorkstationPrerequisiteChecklist_CopyIsGatewayFree"/>.
+/// These guards cover BOTH wizards, in the style of <see cref="InstallerNoSkillDeploymentTests"/>: the
+/// Windows one by reflection (this assembly references it) and the markup of both by reading source,
+/// because referencing the Avalonia project here would pull in Avalonia and collide on the shared
+/// CcDirectorSetup.Services namespace.
+///
+/// SCOPE, stated plainly: the markup scan reads user-visible Text/Content literals only. It does not
+/// read code-behind, and one deliberate mention survives there - the read-only "Install type" line on
+/// the Welcome screen, which names the Gateway when describing what an existing machine ALREADY is,
+/// not something this installer offers to do.
+///
+/// Revert-proof: re-adding a Gateway card to either install screen, or a Gateway status method to the
+/// Windows install step, reds these.
 /// </summary>
 public sealed class InstallerNoGatewaySurfaceTests
 {
-    [Fact]
-    public void WorkstationPrerequisiteChecklist_CopyIsGatewayFree()
-    {
-        var checklist = PrerequisiteChecker.CreateChecklist(InstallRole.Workstation);
+    private static readonly string[] ForbiddenWords = ["Gateway", "Cockpit"];
 
-        Assert.NotEmpty(checklist);
-        foreach (var item in checklist)
+    [Fact]
+    public void NeitherWizardsMarkupMentionsAGatewayOrCockpit()
+    {
+        var root = FindRepoRoot();
+        var wizards = new[]
         {
-            // Name and Description are the user-visible copy rendered on the Prerequisites step; neither
-            // may mention a gateway on a fresh Workstation install.
-            Assert.DoesNotContain("gateway", item.Name, StringComparison.OrdinalIgnoreCase);
-            Assert.DoesNotContain("gateway", item.Description, StringComparison.OrdinalIgnoreCase);
+            Path.Combine(root, "tools", "cc-director-setup"),
+            Path.Combine(root, "tools", "cc-director-setup-avalonia"),
+        };
+
+        var checked_ = 0;
+        foreach (var wizard in wizards)
+        {
+            Assert.True(Directory.Exists(wizard), $"A wizard project is missing at {wizard}");
+
+            foreach (var file in MarkupFiles(wizard))
+            {
+                checked_++;
+                foreach (var literal in UserVisibleLiterals(File.ReadAllText(file)))
+                {
+                    foreach (var word in ForbiddenWords)
+                    {
+                        Assert.False(
+                            literal.Contains(word, StringComparison.OrdinalIgnoreCase),
+                            $"{file} shows the user \"{literal}\". This installer installs the Director; "
+                            + "the gateway and the cockpit are a separate do-it-yourself install and are "
+                            + "never named on these screens.");
+                    }
+                }
+            }
         }
+
+        // A scan that found no files would pass vacuously and prove nothing.
+        Assert.True(checked_ >= 8, $"Expected the markup of both wizards, found only {checked_} files.");
     }
 
     [Fact]
-    public void WorkstationPrerequisiteChecklist_HasNoGatewayOnlyTailscaleRow()
+    public void WindowsInstallStep_HasNoGatewayCardSurface()
     {
-        // The Tailscale row is added ONLY for the Gateway role; a fresh Workstation install must not
-        // surface it (its copy is deliberately gateway-centric), so the fresh path stays gateway-free.
-        var checklist = PrerequisiteChecker.CreateChecklist(InstallRole.Workstation);
+        var members = typeof(InstallStep).GetMembers()
+            .Select(m => m.Name)
+            .Where(n => n.Contains("Gateway", StringComparison.Ordinal))
+            .ToList();
 
-        Assert.DoesNotContain(checklist, (PrerequisiteInfo i) => i.Name == "Tailscale");
+        Assert.Empty(members);
+    }
+
+    // The wizard is three steps: Welcome, Install, Complete. The Prerequisites step is gone - the
+    // Windows executables now carry their own .NET, so nothing this installer places needs anything
+    // already on the machine, and there is nothing left for that screen to gate on.
+    [Fact]
+    public void WizardIsThreeSteps()
+    {
+        Assert.Equal([1, 7, 8], WizardStepFlow.VisibleSteps());
+    }
+
+    private static IEnumerable<string> MarkupFiles(string project) =>
+        Directory.EnumerateFiles(project, "*.*", SearchOption.AllDirectories)
+            .Where(f => f.EndsWith(".xaml", StringComparison.OrdinalIgnoreCase)
+                        || f.EndsWith(".axaml", StringComparison.OrdinalIgnoreCase))
+            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}")
+                        && !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}"));
+
+    /// <summary>The Text= and Content= values a person actually reads on screen. Attribute values only,
+    /// so an explanatory comment in the markup is not mistaken for something the user sees.</summary>
+    private static IEnumerable<string> UserVisibleLiterals(string markup) =>
+        Regex.Matches(markup, "(?:Text|Content)=\"([^\"]*)\"")
+            .Select(m => m.Groups[1].Value)
+            .Where(v => !v.StartsWith('{'));   // a binding, not a literal
+
+    private static string FindRepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            if (Directory.Exists(Path.Combine(dir.FullName, "tools", "cc-director-setup-avalonia")))
+                return dir.FullName;
+            dir = dir.Parent;
+        }
+        throw new DirectoryNotFoundException(
+            "Could not locate the repo root (tools/cc-director-setup-avalonia) walking up from " + AppContext.BaseDirectory);
     }
 }

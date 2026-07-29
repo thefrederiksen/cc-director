@@ -18,7 +18,7 @@
                        FontWeight="SemiBold"
                        HorizontalAlignment="Center" />
 
-            <TextBlock Text="Run every coding agent in parallel, on Windows"
+            <TextBlock Text="Run every coding agent in parallel"
                        Foreground="{StaticResource AccentBrush}"
                        FontSize="13"
                        FontWeight="SemiBold"

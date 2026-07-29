@@ -63,11 +63,13 @@ public sealed class LauncherTrayInstaller
         // 2. Start the tray app. It registers its own HKCU Run-key autostart (pointing at itself with
         // the same arguments) on startup, so install-time registration and app self-registration can
         // never disagree.
+        int startedPid;
         try
         {
             var psi = BuildTrayLaunchInfo(launcherExe, _layout.LauncherDir);
             using var p = Process.Start(psi)
                 ?? throw new InvalidOperationException("Process.Start returned null");
+            startedPid = p.Id;
             steps.Add($"started Launcher tray app pid={p.Id} ({InstalledArguments})");
         }
         catch (Exception ex)
@@ -75,21 +77,24 @@ public sealed class LauncherTrayInstaller
             return Fail(steps, $"Failed to start the Launcher tray app: {ex.Message}");
         }
 
-        // 3. Wait for health - identity-verified (issue #2042): the answer must come from the
-        // launcher version just placed, not from whatever process happens to hold the port.
+        // 3. Wait for health - identity-verified: the answer must come from THE PROCESS WE JUST
+        // STARTED, not from whatever holds the port. Version alone could not do this: build metadata
+        // is stripped when versions are compared, so an orphan reporting "1.8.4+abc" and a freshly
+        // placed "1.8.4" matched, and a same-version reinstall certified against the orphan.
         var expectedVersion = new InstalledStateReader(_layout).Read(ComponentRegistry.Launcher).Version;
         var health = await LauncherHealthProbe.WaitForHealthyAsync(
-            _http, $"http://127.0.0.1:{LauncherDefaultPort}/healthz", expectedVersion, TimeSpan.FromSeconds(20), ct);
-        var up = LauncherHealthProbe.Certifies(health, expectedVersion);
+            _http, $"http://127.0.0.1:{LauncherDefaultPort}/healthz", expectedVersion, TimeSpan.FromSeconds(20), ct,
+            expectedPid: startedPid);
+        var up = LauncherHealthProbe.Certifies(health, expectedVersion, startedPid);
         steps.Add(health is null
             ? $"launcher healthz on {LauncherDefaultPort}: no response"
             : up
                 ? $"launcher healthz on {LauncherDefaultPort}: OK (version {health.Version ?? "unversioned"}, process id {health.Pid})"
-                : $"launcher healthz on {LauncherDefaultPort}: answered by version {health.Version ?? "unknown"} (process id {health.Pid}), not the freshly installed {expectedVersion}");
+                : $"launcher healthz on {LauncherDefaultPort}: answered by process id {health.Pid} (version {health.Version ?? "unknown"}), not the process {startedPid} this install started");
         if (!up)
             return Fail(steps, health is null
                 ? $"Launcher tray app started but did not answer on {LauncherDefaultPort}. Check {_layout.LogsDir}."
-                : $"A launcher is answering on port {LauncherDefaultPort}, but it reports version {health.Version ?? "unknown"}, not the freshly installed {expectedVersion} - refusing to certify this install. Another launcher instance likely holds the port; check {_layout.LogsDir}.");
+                : $"A launcher is answering on port {LauncherDefaultPort}, but it is process {health.Pid} reporting version {health.Version ?? "unknown"} - not the process {startedPid} this install started. Refusing to certify: another launcher instance holds the port. Check {_layout.LogsDir}.");
 
         // 4. Verify the autostart Run key (written by the app on startup).
         var registered = LauncherAutostart.IsRegistered();

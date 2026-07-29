@@ -11,16 +11,19 @@ namespace CcDirectorSetup;
 
 public partial class MainWindow : Window
 {
-    // 4-step flow, identical to the Windows wizard (the master, issue #1807):
-    // Welcome -> Prerequisites -> Install -> Complete. A fresh install makes no decision: no
-    // profile, no role, no account, no gateway - connecting a gateway is a later, optional act
-    // done from inside the app. The Skills step went with the skill installer (issue 995): skills
-    // are held on the Gateway and fetched, so nothing is placed on the machine and there is
-    // nothing here to choose.
-    private const int StepWelcome = 1, StepPrereq = 2, StepInstall = 3, StepComplete = 4;
+    // 3-step flow, identical to the Windows wizard (the master, issue #1807):
+    // Welcome -> Install -> Complete. A fresh install makes no decision: no profile, no role, no
+    // account, no gateway - connecting a gateway is a later, optional act done from inside the app.
+    // The Skills step went with the skill installer (issue 995): skills are held on the Gateway and
+    // fetched, so nothing is placed on the machine and there is nothing here to choose.
+    //
+    // The Prerequisites step is gone too. It existed for the one row that could block - the .NET
+    // runtime - and neither app needs one now: macOS always published self-contained and the Windows
+    // executables now do the same. What was left was advice this wizard could not act on or re-check,
+    // and the Director detects agent tools itself in a wizard that can add what it finds to your board.
+    private const int StepWelcome = 1, StepInstall = 2, StepComplete = 3;
 
     private int _currentStep = StepWelcome;
-    private List<PrerequisiteInfo> _prerequisites = [];
     private int _installedCount;
     private int _skippedCount;
     private IReadOnlyList<string> _skippedNames = [];
@@ -37,7 +40,6 @@ public partial class MainWindow : Window
     private readonly InstallRole _role = InstallRole.Workstation;
 
     private WelcomeStep? _welcomeStep;
-    private PrerequisitesStep? _prerequisitesStep;
     private InstallStep? _installStep;
     private CompleteStep? _completeStep;
 
@@ -66,7 +68,7 @@ public partial class MainWindow : Window
         {
             Title = "DevThrottle Update";
             SubtitleText.Text = "Update";
-            Step3Label.Text = "Update";
+            Step2Label.Text = "Update";
         }
 
         Loaded += MainWindow_Loaded;
@@ -99,10 +101,9 @@ public partial class MainWindow : Window
         new(Step1Circle, Step1Label, null),
         new(Step2Circle, Step2Label, Step2Num),
         new(Step3Circle, Step3Label, Step3Num),
-        new(Step4Circle, Step4Label, Step4Num),
     ];
 
-    private Border[] GetLines() => [Line12, Line23, Line34];
+    private Border[] GetLines() => [Line12, Line23];
 
     private void ShowStep(int step)
     {
@@ -115,17 +116,13 @@ public partial class MainWindow : Window
         StepContent.Content = step switch
         {
             StepWelcome => _welcomeStep ??= BuildWelcomeStep(),
-            StepPrereq => _prerequisitesStep ??= new PrerequisitesStep(OnPrerequisitesChecked, _isUpdate),
             StepInstall => _installStep ??= new InstallStep(),
-            StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _isUpdate, _alreadyUpToDate, _latestVersion, BuildCapabilityNotice(), _skippedNames),
+            StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _isUpdate, _alreadyUpToDate, _latestVersion, BuildAgentNotice(), _skippedNames, IsReadyToGo()),
             _ => null
         };
 
         if (step == StepInstall && _isUpdate)
             _installStep?.SetUpdateMode();
-
-        if (step == StepPrereq)
-            _prerequisitesStep?.RunChecks();
 
         if (step == StepInstall)
             _ = RunInstallAsync();
@@ -184,11 +181,6 @@ public partial class MainWindow : Window
             NextButton.Content = _isUpdate ? "Updating..." : "Installing...";
             NextButton.IsEnabled = false;
         }
-        else if (_currentStep == StepPrereq)
-        {
-            NextButton.Content = "Next";
-            UpdateNextButtonForPrereqs();
-        }
         else
         {
             NextButton.Content = "Next";
@@ -196,31 +188,24 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnPrerequisitesChecked(List<PrerequisiteInfo> prerequisites)
-    {
-        _prerequisites = prerequisites;
-        UpdateNextButtonForPrereqs();
-    }
-
-    private void UpdateNextButtonForPrereqs()
-    {
-        if (_currentStep != StepPrereq) return;
-        NextButton.IsEnabled = PrerequisiteChecker.AllRequiredMet(_prerequisites);
-    }
+    /// <summary>
+    /// The one line the Complete screen shows about the MACHINE rather than about this install: no
+    /// coding agent is on it, so the board has nothing to run. Null when an agent is present. Word
+    /// for word what the Windows wizard says.
+    /// </summary>
+    private static string? BuildAgentNotice() =>
+        AgentPresence.AnyAgent()
+            ? null
+            : "No coding agent is set up yet, so your board has nothing to run. "
+              + "DevThrottle checks your tools when it opens and can add the ones it finds.";
 
     /// <summary>
-    /// The Complete-screen line about recommended prerequisites the user did not install. Shared
-    /// with the Windows wizard (<see cref="CapabilityNotice"/>) so both say the same words. Null
-    /// when nothing is missing.
+    /// Whether the Complete screen may say the user is ready to go. The rule lives in the shared
+    /// <see cref="InstallCompletion.IsReadyToGo"/> so both wizards reach the same verdict - this
+    /// screen used to decide for itself, which is how it came to say "Everything went perfectly"
+    /// on a machine with nothing to run.
     /// </summary>
-    private string? BuildCapabilityNotice()
-    {
-        var recommended = _prerequisites
-            .Where(p => p.IsRecommended)
-            .Select(p => new CapabilityStatus(p.Name, p.IsFound))
-            .ToList();
-        return CapabilityNotice.Describe(recommended, AgentPresence.AnyOtherAgent());
-    }
+    private bool IsReadyToGo() => InstallCompletion.IsReadyToGo(_skippedCount, AgentPresence.AnyAgent());
 
     private async Task RunInstallAsync()
     {

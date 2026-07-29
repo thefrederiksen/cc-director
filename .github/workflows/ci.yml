@@ -29,13 +29,16 @@ jobs:
         run: dotnet test cc-director.sln -c Release --no-build --verbosity normal
 
       # The installer's own tests. They are NOT in cc-director.sln, so the step above
-      # never touched them: roughly 455 tests - PrerequisiteClassificationTests,
-      # CapabilityNoticeTests, the uninstaller tests - ran only when someone happened to
-      # invoke them by hand. That included the tests written on 2026-07-27 for the sole
-      # purpose of keeping the six clean-machine install blockers fixed, so a change could
-      # have re-broken the first thing a new user ever sees and CI would have stayed green.
-      # Found while adding the Git prerequisite row (#2242), by running them manually
-      # rather than trusting the green tick. Same shape as the JavaScript gap below.
+      # never touched them: roughly 415 tests - the gateway-surface guard, the wizard step flow,
+      # the uninstaller tests, the completion classification - ran only when someone happened to
+      # invoke them by hand. So a change could have re-broken the first thing a new user ever sees
+      # and CI would have stayed green. Found while adding the Git prerequisite row (#2242), by
+      # running them manually rather than trusting the green tick. Same shape as the JavaScript
+      # gap below.
+      #
+      # The prerequisite and capability-notice tests this comment used to name are gone with the
+      # Prerequisites step itself: the Windows executables carry their own .NET runtime now, so the
+      # installer needs nothing already on the machine and has nothing to check.
       #
       # Built here rather than in the solution build: these are net10.0-windows projects
       # outside the solution, so they restore and build themselves.
