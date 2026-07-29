@@ -2,23 +2,29 @@ import { describe, expect, it } from "vitest";
 import { visibleTabs, tabFromParam } from "./tabs";
 
 describe("visibleTabs", () => {
-  it("shows the four shared tabs on the phone, notifications first", () => {
+  it("shows the three shared tabs on the phone, notifications first", () => {
     expect(visibleTabs("mobile").map((t) => t.id)).toEqual([
       "notifications",
-      "ai",
       "transcription",
       "carmode",
     ]);
   });
 
-  it("shows the same four on the Cockpit, in the same order, plus its own Injected text", () => {
+  it("shows the same three on the Cockpit, in the same order, plus its own Injected text", () => {
     expect(visibleTabs("cockpit").map((t) => t.id)).toEqual([
       "notifications",
-      "ai",
       "transcription",
       "carmode",
       "injectedtext",
     ]);
+  });
+
+  // Hidden on BOTH surfaces, not on one - a tab dropped from the desktop strip and left on the phone
+  // would be precisely the drift this shared list exists to prevent.
+  it("keeps the AI tab out of the strip on both surfaces", () => {
+    for (const surface of ["cockpit", "mobile"] as const) {
+      expect(visibleTabs(surface).map((t) => t.id)).not.toContain("ai");
+    }
   });
 
   // The parity law: the desktop may go DEEPER, never sideways. Every tab the phone shows must also be on
@@ -60,6 +66,15 @@ describe("tabFromParam", () => {
     for (const surface of ["cockpit", "mobile"] as const) {
       expect(tabFromParam(null, surface)).toBe("notifications");
       expect(tabFromParam("nonsense", surface)).toBe("notifications");
+    }
+  });
+
+  // The other half of hiding a tab, and the half that is easy to leave out. Dropping it from the strip
+  // alone would send every existing ?tab=ai link to Notifications instead - which reads as the page
+  // having lost the setting rather than as the tab having been tidied away.
+  it("still resolves the hidden AI tab from its own link, on both surfaces", () => {
+    for (const surface of ["cockpit", "mobile"] as const) {
+      expect(tabFromParam("ai", surface)).toBe("ai");
     }
   });
 

@@ -15,10 +15,13 @@ import { InjectedTextTab } from "./InjectedTextTab";
 //
 //   Notifications - how a session that needs you reaches you: snooze length, display time zone,
 //                   notifications on this device
-//   AI            - the hosted provider, the thinking models, the spoken language, the speech voice
 //   Transcription - the transcription model, how your microphones are measuring, and the two on-demand
 //                   checks (Test microphone, Test transcription)
 //   Car Mode      - the phone's hands-free fleet control: model, end phrase, live phrase tester
+//
+// The AI tab is no longer in the strip. It named the hosting models to customers, which the hosting
+// layer itself refuses to do, and most of it is inert on the hosted Gateway. It still renders in full at
+// /settings?tab=ai, where it does real work for a self-hosted Gateway - see client-core/settings/tabs.ts.
 //
 // The Transcription tab is new here and it is the reason the two surfaces were unified: the checks used
 // to live ONLY on the Transcription Health page on the desktop and on two standalone screens on the
