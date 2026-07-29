@@ -120,17 +120,58 @@ public partial class BrowserSettingsView : UserControl
         await RefreshAsync();
     }
 
-    private void BtnInstallHarness_Click(object? sender, RoutedEventArgs e)
+    /// <summary>
+    /// Install browser-harness on this machine (issue #1012). This button used to open a GitHub install
+    /// page and leave the user to it - which also made the wizard's "set browsers up later, in the
+    /// Browsers group" a promise that led to a documentation page rather than to a working browser. It
+    /// now runs the same installer the wizard runs.
+    /// </summary>
+    private async void BtnInstallHarness_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[BrowserSettingsView] BtnInstallHarness_Click: installing");
+        HarnessInstallButton.IsEnabled = false;
+        HarnessManualLink.IsVisible = false;
+        try
+        {
+            var progress = new Progress<string>(line => StatusText.Text = line);
+            var result = await Task.Run(() => BrowserHarnessInstaller.InstallAsync(progress));
+
+            StatusText.Text = result.Message;
+            if (!result.Success)
+            {
+                // Say what went wrong and offer the manual page. Never re-check and never continue as
+                // though it had worked (CLAUDE.md rule 3).
+                FileLog.Write($"[BrowserSettingsView] BtnInstallHarness_Click FAILED: {result.Message}");
+                HarnessManualLink.IsVisible = true;
+                return;
+            }
+
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[BrowserSettingsView] BtnInstallHarness_Click FAILED: {ex.Message}");
+            StatusText.Text = $"Could not install Browser Harness: {ex.Message}";
+            HarnessManualLink.IsVisible = true;
+        }
+        finally
+        {
+            HarnessInstallButton.IsEnabled = true;
+        }
+    }
+
+    /// <summary>The manual install page, offered only after our own install failed.</summary>
+    private void BtnHarnessInstallPage_Click(object? sender, RoutedEventArgs e)
     {
         try
         {
-            FileLog.Write($"[BrowserSettingsView] BtnInstallHarness_Click -> {AutomationBrowserViewFold.HarnessInstallUrl}");
+            FileLog.Write($"[BrowserSettingsView] BtnHarnessInstallPage_Click -> {AutomationBrowserViewFold.HarnessInstallUrl}");
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(AutomationBrowserViewFold.HarnessInstallUrl)
                 { UseShellExecute = true });
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[BrowserSettingsView] BtnInstallHarness_Click FAILED: {ex.Message}");
+            FileLog.Write($"[BrowserSettingsView] BtnHarnessInstallPage_Click FAILED: {ex.Message}");
             StatusText.Text = $"Could not open the install guide: {ex.Message}";
         }
     }

@@ -25,11 +25,25 @@ internal static class BrowserSignInFlow
         FileLog.Write($"[BrowserSignInFlow] RunAsync: id={view.Id}");
         await Task.Run(() => AutomationBrowserService.SignInAsync(view.Id));
 
+        // Say WHAT to sign in to. The old wording said only "sign in", which left the one instruction
+        // that matters unanswered: a browser profile is worth exactly what it is signed in to, and a
+        // user who signs in to nothing gets a browser their agents cannot do anything useful with.
+        // Both routes are named because both are legitimate - a browser account carries everything at
+        // once, and per-site logins keep the profile to just the accounts it is meant to reach.
+        var accountKind = view.Browser.Equals("Edge", StringComparison.OrdinalIgnoreCase)
+            ? "a Microsoft account"
+            : "a Google account";
+
         var dialog = new ConfirmDialog(
             "Sign in once",
-            $"A \"{view.Name}\" window just opened on its sign-in page. Sign in by hand in that window - " +
-            "DevThrottle never types your credentials. The login is saved in this browser's own profile " +
-            "and lasts until the account signs it out.\n\nWhen you are signed in, click Done.",
+            $"A \"{view.Name}\" window just opened on its sign-in page. Sign in by hand in that window - "
+            + "DevThrottle never types your credentials.\n\n"
+            + $"Sign in to whatever you want this browser to reach: {accountKind} to bring your profile "
+            + "across, or just the individual websites you want an agent to use. Whatever is signed in "
+            + "here is what your agents can drive - nothing else.\n\n"
+            + "The logins are kept in this browser's own profile, apart from your everyday browser, and "
+            + "last until the account signs them out.\n\n"
+            + "When you are signed in, click Done.",
             confirmLabel: "Done - I am signed in",
             cancelLabel: "Not yet");
         var confirmed = await dialog.ShowDialog<bool?>(owner) == true;

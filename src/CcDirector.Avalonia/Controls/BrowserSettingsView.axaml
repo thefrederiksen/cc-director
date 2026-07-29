@@ -37,14 +37,21 @@
                     <TextBlock Text="Turn on browser control" Foreground="#CCCCCC"
                                FontSize="13" FontWeight="SemiBold" />
                     <TextBlock Classes="hint"
-                               Text="To let your agents drive these browsers, install Browser Harness - the open-source tool DevThrottle uses. Your browsers below stay listed and ready; they just cannot be driven until it is installed." />
+                               Text="To let your agents drive these browsers, install Browser Harness - the tool DevThrottle uses to drive them, made by browser-use. DevThrottle installs it for you, into its own environment. Your browsers below stay listed and ready; they just cannot be driven until it is installed." />
                     <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">
-                        <Button Classes="dialogButton" Content="Install Browser Harness"
+                        <Button x:Name="HarnessInstallButton" Classes="dialogButton"
+                                Content="Install Browser Harness"
                                 MinWidth="180" Click="BtnInstallHarness_Click"
-                                ToolTip.Tip="Open the Browser Harness install guide in your browser" />
+                                ToolTip.Tip="Install browser-harness on this machine" />
                         <Button Classes="dialogButton" Content="Check again"
                                 Click="BtnRefresh_Click"
                                 ToolTip.Tip="Re-check whether browser-harness is now on PATH" />
+                        <!-- Offered only when OUR install has failed - the manual route is a fallback for
+                             the user, never a substitute for trying (issue #1012). -->
+                        <Button x:Name="HarnessManualLink" Classes="dialogButton" IsVisible="False"
+                                Content="Open the install page"
+                                Click="BtnHarnessInstallPage_Click"
+                                ToolTip.Tip="Open the browser-harness install guide in your browser" />
                     </StackPanel>
                 </StackPanel>
             </Grid>

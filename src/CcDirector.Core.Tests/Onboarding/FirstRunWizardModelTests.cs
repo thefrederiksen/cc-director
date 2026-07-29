@@ -123,10 +123,10 @@ public class FirstRunWizardModelTests
     }
 
     [Fact]
-    public void CreateFull_HasAllSevenStepsInCanonicalOrder()
+    public void CreateFull_HasAllEightStepsInCanonicalOrder()
     {
         var model = FirstRunWizardModel.CreateFull();
-        Assert.Equal(7, model.Count);
+        Assert.Equal(8, model.Count);
 
         // The WHOLE sequence, written out, not compared against the production list. Comparing
         // model.Steps to CanonicalOrder only proves the model did not reorder its own input - it
@@ -142,6 +142,7 @@ public class FirstRunWizardModelTests
                 WizardStep.Tools,       // their toolbelt
                 WizardStep.Code,        // what we watch over
                 WizardStep.Screenshots, // show, don't type
+                WizardStep.Browsers,    // give an agent a signed-in browser
                 WizardStep.Done,        // the receipt
             },
             model.Steps);
@@ -154,11 +155,15 @@ public class FirstRunWizardModelTests
         // Tools sits right after Agents: workforce first, then their toolbelt.
         Assert.Equal(WizardStep.Tools, model.Steps[3]);
 
-        // Screenshots is the last step before Done. Done used to be preceded by a daily-report
-        // frequency question, which is an ACCOUNT setting and so was asked once per machine with no
-        // way to reconcile the answers (issue #996). The count here is also the number of progress
-        // dots, so a step creeping back in is a failing assertion rather than a silently longer wizard.
-        Assert.Equal(WizardStep.Screenshots, model.Steps[^2]);
+        // Browsers is the last step before Done, and it sits immediately after Screenshots (issue
+        // #1012): both are about how an agent gets context from you, and Browsers is the one step that
+        // can ask for an interactive sign-in, so it goes after everything else has been delivered.
+        // Done must never be preceded by a daily-report frequency question again - that is an ACCOUNT
+        // setting, so it was asked once per machine with no way to reconcile the answers (issue #996).
+        // The count above is also the number of progress dots, so a step creeping back in is a failing
+        // assertion rather than a silently longer wizard.
+        Assert.Equal(WizardStep.Browsers, model.Steps[^2]);
+        Assert.Equal(WizardStep.Screenshots, model.Steps[^3]);
     }
 
     [Fact]
@@ -171,7 +176,7 @@ public class FirstRunWizardModelTests
         var machineScoped = new[]
         {
             WizardStep.Welcome, WizardStep.Agents, WizardStep.Tools, WizardStep.Code,
-            WizardStep.Screenshots, WizardStep.Gateway, WizardStep.Done,
+            WizardStep.Screenshots, WizardStep.Browsers, WizardStep.Gateway, WizardStep.Done,
         };
 
         // The SET is what this rule is about - every declared step must be one a machine can answer.

@@ -23,6 +23,7 @@ public enum WizardStep
     Tools,
     Code,
     Screenshots,
+    Browsers,
     Gateway,
     Done,
 }
@@ -68,6 +69,12 @@ public sealed class FirstRunWizardModel
     /// This does NOT make the gateway a gate. "Not now" stays exactly as prominent as it was: the
     /// Director installs and runs with no account, and a first screen that reads as sign-up-to-continue
     /// would change what the product is.
+    ///
+    /// Browsers comes LAST of the real steps, straight after Screenshots (issue #1012). The two belong
+    /// beside each other - both are about how an agent gets context from you rather than about the agent
+    /// itself - and it is the one step that can ask for a browser sign-in, which is interactive and
+    /// cannot be hurried. Putting it last means the wizard has already delivered everything else before
+    /// it asks for the minute that costs the most.
     /// </remarks>
     public static readonly IReadOnlyList<WizardStep> CanonicalOrder = new[]
     {
@@ -77,6 +84,7 @@ public sealed class FirstRunWizardModel
         WizardStep.Tools,
         WizardStep.Code,
         WizardStep.Screenshots,
+        WizardStep.Browsers,
         WizardStep.Done,
     };
 

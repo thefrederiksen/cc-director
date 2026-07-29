@@ -13,6 +13,7 @@ using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using CcDirector.Core.Agents;
+using CcDirector.Core.Browsers;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.GatewayConnection;
 using System.Text.Json.Nodes;
@@ -138,6 +139,17 @@ public partial class FirstRunWizardDialog : Window
     // on disk - it only stops the step, and the Done receipt, from reading as a failure.
     private bool _codeNoneOnThisMachine;
 
+    // Browsers step (issue #1012): whether browser-harness resolves on this machine, the ONE browser
+    // this step sets up (more are added from the rail - signing in is interactive and cannot be
+    // batched), whether a run is in flight, and the last failure. The failure is held rather than
+    // logged and forgotten because the screen has to keep SAYING it: an install that failed must never
+    // read as one that worked.
+    private bool _browsersHarnessInstalled;
+    private AutomationBrowserView? _browsersView;
+    private bool _browsersBusy;
+    private bool _browsersRefreshed;
+    private string? _browsersError;
+
     // True once the completion marker has been written, so OnClosed does not write it twice.
     private bool _marked;
 
@@ -245,6 +257,7 @@ public partial class FirstRunWizardDialog : Window
         WizardStep.Tools => "Tools",
         WizardStep.Code => "Your code",
         WizardStep.Screenshots => "Screenshots",
+        WizardStep.Browsers => "Browsers",
         WizardStep.Done => "Done",
         _ => step.ToString(),
     };
@@ -279,6 +292,7 @@ public partial class FirstRunWizardDialog : Window
         ToolsPanel.IsVisible = step == WizardStep.Tools;
         CodePanel.IsVisible = step == WizardStep.Code;
         ScreenshotsPanel.IsVisible = step == WizardStep.Screenshots;
+        BrowsersPanel.IsVisible = step == WizardStep.Browsers;
         GatewayPanel.IsVisible = step == WizardStep.Gateway;
         DonePanel.IsVisible = step == WizardStep.Done;
 
@@ -356,6 +370,17 @@ public partial class FirstRunWizardDialog : Window
                     _ = DetectScreenshotsForWizardAsync();
                 break;
 
+            case WizardStep.Browsers:
+                // One of only two steps whose primary button DOES something rather than simply moving
+                // on (the other is Agents with none found). This screen recommends rather than sitting
+                // neutral, so its primary sets browsers up and the way past is the quiet link in the
+                // panel - which is exactly the shape of the recommendation: easy now, fine later.
+                PrimaryButton.IsVisible = true;
+                RefreshBrowsersButton();
+                if (!_browsersRefreshed)
+                    _ = RefreshBrowsersScreenAsync();
+                break;
+
             case WizardStep.Gateway:
                 PrimaryButton.IsVisible = true;
                 AdoptExistingGateway();
@@ -375,6 +400,12 @@ public partial class FirstRunWizardDialog : Window
                 FooterNote.Text = "Everything here can be changed in Settings.";
                 FooterNote.IsVisible = true;
                 BuildDoneReceipt();
+                // On a review run the dots are navigation, so Done can be reached without ever opening
+                // the Browsers step - and the receipt would then report browsers from no reading at
+                // all, which is exactly the always-wrong row this replaced. Read the machine, then
+                // rebuild the receipt with the answer.
+                if (!_browsersRefreshed)
+                    _ = RefreshBrowsersForReceiptAsync();
                 break;
         }
     }
@@ -398,6 +429,15 @@ public partial class FirstRunWizardDialog : Window
                 case WizardStep.Screenshots:
                     await SaveScreenshotsFolderAsync();
                     Advance();
+                    break;
+
+                case WizardStep.Browsers:
+                    // Once the browser is set up the button is an ordinary Continue; until then it is
+                    // the offer itself, and pressing it does the work rather than skipping past it.
+                    if (BrowsersAreReady())
+                        Advance();
+                    else
+                        await SetUpBrowserAsync();
                     break;
 
                 case WizardStep.Gateway:
@@ -1685,6 +1725,256 @@ public partial class FirstRunWizardDialog : Window
     /// to check or change something, and telling them they are "three minutes from running their first
     /// coding agent" when they already have four agents configured is simply false.
     /// </summary>
+    // ---- Browsers step (issue #1012) ---------------------------------------------------------------
+
+    /// <summary>
+    /// True when this step has delivered what it promises: the harness is installed AND one browser has
+    /// actually been signed in. Signed-in is read from the browser's own record rather than from its
+    /// live status, because a browser the user has since closed is still set up - "Stopped" is a
+    /// statement about a process, not about whether the login exists.
+    /// </summary>
+    private bool BrowsersAreReady() => _browsersHarnessInstalled && _browsersView?.LastSignedInUtc is not null;
+
+    /// <summary>
+    /// Read the machine's actual browser state - is the harness resolvable, and is there a browser
+    /// already - then repaint. Both reads happen off the interface thread: the browser fold probes each
+    /// browser's debug port, which is a network round trip.
+    /// </summary>
+    private async Task RefreshBrowsersScreenAsync()
+    {
+        FileLog.Write("[FirstRunWizardDialog] RefreshBrowsersScreenAsync");
+        _browsersRefreshed = true;
+        try
+        {
+            var installed = await Task.Run(AutomationBrowserViewFold.IsHarnessInstalled);
+            var browsers = await Task.Run(() => AutomationBrowserViewFold.ListAsync());
+
+            if (_closed) return;
+
+            _browsersHarnessInstalled = installed;
+            // This step sets up ONE browser (recommendation B-3): signing in is interactive and one at
+            // a time, so a wizard that tried to do three would be the slowest thing in onboarding. Any
+            // others a machine already has are the rail's business, not this screen's.
+            _browsersView = browsers.Count > 0 ? browsers[0] : null;
+            FileLog.Write($"[FirstRunWizardDialog] RefreshBrowsersScreenAsync: harness={installed}, browsers={browsers.Count}");
+        }
+        catch (Exception ex)
+        {
+            // A state read that fails must not paint a state: leave the rows where they were and say
+            // what happened, rather than showing "Not installed" on the strength of a failed check.
+            FileLog.Write($"[FirstRunWizardDialog] RefreshBrowsersScreenAsync FAILED: {ex.Message}");
+            _browsersError = $"Could not read this machine's browser setup: {ex.Message}";
+        }
+
+        if (!_closed) RefreshBrowsersUi();
+    }
+
+    /// <summary>Read the browser state for the Done receipt when the Browsers step was never opened, then
+    /// redraw the receipt so it reports the machine rather than an unread default.</summary>
+    private async Task RefreshBrowsersForReceiptAsync()
+    {
+        await RefreshBrowsersScreenAsync();
+        if (!_closed && _model.Current == WizardStep.Done)
+            BuildDoneReceipt();
+    }
+
+    /// <summary>Repaint the two rows, the busy indicator, the error box and the primary button from the
+    /// state already decided - this method makes no decisions of its own beyond wording.</summary>
+    private void RefreshBrowsersUi()
+    {
+        BrowsersRowsPanel.Children.Clear();
+
+        var harnessState = _browsersError is not null ? RowState.NeedsYou
+            : _browsersHarnessInstalled ? RowState.Ready
+            : _browsersBusy ? RowState.Working
+            : RowState.NotSetUp;
+        BrowsersRowsPanel.Children.Add(AgentRow(
+            "Browser Harness",
+            _browsersHarnessInstalled
+                ? "Installed - the tool that drives the browser, from browser-use"
+                // The vendor is named BEFORE the user accepts (recommendation B-4). We do not put a
+                // third party's software on someone's machine without saying whose it is.
+                : "The tool that drives the browser. From browser-use - we install it for you.",
+            harnessState));
+
+        var signedIn = _browsersView?.LastSignedInUtc is not null;
+        var browserState = signedIn ? RowState.Ready
+            : _browsersView is not null ? RowState.NeedsYou
+            : _browsersBusy ? RowState.Working
+            : RowState.NotSetUp;
+        BrowsersRowsPanel.Children.Add(AgentRow(
+            signedIn && _browsersView is not null ? _browsersView.Name : "One signed-in browser",
+            signedIn && _browsersView is not null
+                ? _browsersView.Subtitle
+                : _browsersView is not null
+                    ? "Created, but nobody has signed in to it yet - sign in and agents can use it"
+                    : "Its own profile and its own login, kept apart from your personal browser",
+            browserState));
+
+        BrowsersBusyBar.IsVisible = _browsersBusy;
+        BrowsersStatusText.IsVisible = _browsersBusy && !string.IsNullOrWhiteSpace(BrowsersStatusText.Text);
+
+        BrowsersErrorBox.IsVisible = _browsersError is not null;
+        BrowsersErrorText.Text = _browsersError ?? "";
+
+        // While work is in flight there is nothing to defer TO - the way out comes back the moment the
+        // step is idle again, whether it succeeded or failed.
+        BrowsersLaterPanel.IsVisible = !_browsersBusy && !BrowsersAreReady();
+
+        RefreshBrowsersButton();
+    }
+
+    /// <summary>
+    /// The single next action this step offers, in the footer's primary button. The footer button is
+    /// SHARED by every step, so this refuses to touch it unless the Browsers step is the one on screen -
+    /// the Done receipt reads browser state too, and without this guard that read would relabel Done's
+    /// button while the user was looking at it.
+    /// </summary>
+    private void RefreshBrowsersButton()
+    {
+        if (_model.Current != WizardStep.Browsers) return;
+
+        if (_browsersBusy)
+        {
+            PrimaryButton.Content = "Setting up...";
+            PrimaryButton.IsEnabled = false;
+            return;
+        }
+
+        PrimaryButton.IsEnabled = true;
+        PrimaryButton.Content = _browsersError is not null ? "Try again"
+            : BrowsersAreReady() ? "Continue"
+            : _browsersView is not null && _browsersHarnessInstalled ? "Sign in to this browser"
+            : "Set up my browser";
+    }
+
+    /// <summary>
+    /// The recommended path, run end to end: install the harness, make one browser with its own profile,
+    /// and take the user through signing it in. The sign-in is PART of this, not a follow-up - a step
+    /// that installed a tool and left the user with nothing signed in would have recommended nothing.
+    ///
+    /// Every stage that can fail stops the run and says why. Nothing here continues as though a failed
+    /// stage had worked (CLAUDE.md rule 3).
+    /// </summary>
+    private async Task SetUpBrowserAsync()
+    {
+        FileLog.Write("[FirstRunWizardDialog] SetUpBrowserAsync");
+        _browsersBusy = true;
+        _browsersError = null;
+        BrowsersStatusText.Text = "";
+        RefreshBrowsersUi();
+
+        try
+        {
+            // 1. The harness. Skipped entirely when the machine already has one - including one the
+            //    user installed themselves, which we never rebuild over the top of.
+            if (!_browsersHarnessInstalled)
+            {
+                var progress = new Progress<string>(line =>
+                {
+                    if (_closed) return;
+                    BrowsersStatusText.Text = line;
+                    BrowsersStatusText.IsVisible = true;
+                });
+
+                var result = await Task.Run(() => BrowserHarnessInstaller.InstallAsync(progress));
+                if (_closed) return;
+
+                if (!result.Success)
+                {
+                    // Say so, and leave the manual install page on screen. The step does NOT go on to
+                    // create a browser: without the harness there would be nothing to drive it with,
+                    // and a green browser row under a failed install would be a lie.
+                    _browsersError = result.Message;
+                    FileLog.Write($"[FirstRunWizardDialog] SetUpBrowserAsync: harness install failed: {result.Message}");
+                    return;
+                }
+
+                _browsersHarnessInstalled = true;
+                BrowsersStatusText.Text = result.Message;
+                RefreshBrowsersUi();
+            }
+
+            // 2. One browser with its own profile and its own port. Reuses whatever this machine
+            //    already has rather than adding a second one nobody asked for.
+            if (_browsersView is null)
+            {
+                BrowsersStatusText.Text = "Creating a browser with its own profile...";
+                BrowsersStatusText.IsVisible = true;
+
+                var kind = await Task.Run(PickBrowserKind);
+                var created = await Task.Run(() => AutomationBrowserService.Create("Agent browser", kind));
+                _browsersView = await Task.Run(() => AutomationBrowserViewFold.FoldAsync(created));
+                if (_closed) return;
+                FileLog.Write($"[FirstRunWizardDialog] SetUpBrowserAsync: created browser id={_browsersView.Id}, kind={kind}");
+            }
+
+            // 3. The human signs in. DevThrottle opens the page and records the confirmation; the
+            //    credentials are typed by the person, in the browser window - that constraint is why
+            //    this step sets up one browser and not several.
+            BrowsersStatusText.Text = "Waiting for you to sign in...";
+            _browsersBusy = false;
+            RefreshBrowsersUi();
+
+            var confirmed = await Controls.BrowserSignInFlow.RunAsync(this, _browsersView);
+            if (_closed) return;
+            FileLog.Write($"[FirstRunWizardDialog] SetUpBrowserAsync: sign-in confirmed={confirmed}");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[FirstRunWizardDialog] SetUpBrowserAsync FAILED: {ex.Message}");
+            _browsersError = ex.Message;
+        }
+        finally
+        {
+            if (!_closed)
+            {
+                _browsersBusy = false;
+                BrowsersStatusText.Text = "";
+                // Re-read rather than assume: the sign-in is recorded by the flow, and the browser's
+                // own record is the only honest source for whether it happened.
+                await RefreshBrowsersScreenAsync();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Which browser to set up. Chrome first because it is what most people have signed in to, Edge
+    /// otherwise. THROWS when neither is installed, naming both - there is nothing to substitute.
+    /// </summary>
+    private static BrowserKind PickBrowserKind()
+    {
+        var installed = BrowserLauncher.DetectBrowsers();
+        if (installed.Any(b => b.Kind == BrowserKind.Chrome)) return BrowserKind.Chrome;
+        if (installed.Any(b => b.Kind == BrowserKind.Edge)) return BrowserKind.Edge;
+        throw new InvalidOperationException(
+            "Neither Chrome nor Edge is installed on this machine, so there is no browser to set up. "
+            + "Install one, then set browsers up from the Browsers group in the left rail.");
+    }
+
+    /// <summary>The honest way out: move on, having done nothing and written nothing. The panel names
+    /// the rail as where this happens instead, so "later" is somewhere real.</summary>
+    private void BtnBrowsersLater_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[FirstRunWizardDialog] BtnBrowsersLater_Click: deferred to the Browsers rail group");
+        Advance();
+    }
+
+    /// <summary>The manual route, offered only when our install failed - never instead of trying.</summary>
+    private void BtnBrowsersInstallPage_Click(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            FileLog.Write($"[FirstRunWizardDialog] BtnBrowsersInstallPage_Click -> {AutomationBrowserViewFold.HarnessInstallUrl}");
+            Process.Start(new ProcessStartInfo(AutomationBrowserViewFold.HarnessInstallUrl) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[FirstRunWizardDialog] BtnBrowsersInstallPage_Click FAILED: {ex.Message}");
+            BrowsersErrorText.Text = $"{_browsersError}\n\nCould not open the install page: {ex.Message}";
+        }
+    }
+
     private void BuildWelcomeScreen()
     {
         WelcomeAgendaPanel.Children.Clear();
@@ -1711,7 +2001,7 @@ public partial class FirstRunWizardDialog : Window
 
         WelcomeTitle.Text = "Let's get you set up";
         WelcomeSubText.Text =
-            "Four quick things, so DevThrottle knows this machine. Skip any of them - all of it can be changed later.";
+            "Five quick things, so DevThrottle knows this machine. Skip any of them - all of it can be changed later.";
         WelcomeSetupButton.Content = "Set me up";
         WelcomeSkipLink.Content = "Skip setup and figure it out myself";
 
@@ -1720,6 +2010,7 @@ public partial class FirstRunWizardDialog : Window
         AddAgendaRow("Your coding agents", "Find the ones already installed, or install one now");
         AddAgendaRow("Where your code lives", "So DevThrottle can offer you repositories and keep the books on them");
         AddAgendaRow("Screenshots", "So you can show an agent what you mean instead of describing it");
+        AddAgendaRow("A browser for your agents", "One browser with its own login, so an agent can read a page or fill in a form for you");
     }
 
     /// <summary>The review run's state summary, read from what is already on disk. No scans.</summary>
@@ -2151,10 +2442,30 @@ public partial class FirstRunWizardDialog : Window
                     "Tools installing", "Finishes on its own in the background", RowState.Working));
         }
 
-        // Browsers row: a pointer, not a task. Browser setup lives in the left rail (the Browsers
-        // group above Repositories) where it is always one click away - the wizard just plants it.
-        DoneReceiptPanel.Children.Add(ReceiptRow(
-            "Browsers", "Give agents a signed-in browser any time - the Browsers group in the left rail", done: false));
+        // Browsers row. This used to print "Later" whatever the machine's state was - advertising copy
+        // wearing a status pill, and it stayed wrong even after the user set a browser up two screens
+        // earlier. It now reports what actually happened (issue #1012).
+        //
+        // Note the deliberate absence of red here: a browser created but never signed in DOES need the
+        // user, but this screen offers no way to fix it, and red where no fix is offered is noise. It
+        // is reported as not set up, naming the rail as where it gets finished.
+        if (_browsersView?.LastSignedInUtc is not null)
+            DoneReceiptPanel.Children.Add(ReceiptRow(
+                $"Browser ready - {_browsersView.Name}",
+                $"{_browsersView.Subtitle} - agents can drive it from now on", RowState.Ready));
+        else if (_browsersView is not null)
+            DoneReceiptPanel.Children.Add(ReceiptRow(
+                $"Browser created - {_browsersView.Name}",
+                "Nobody has signed in to it yet - finish that in the Browsers group in the left rail",
+                RowState.NotSetUp));
+        else if (_browsersHarnessInstalled)
+            DoneReceiptPanel.Children.Add(ReceiptRow(
+                "Browser Harness installed",
+                "No browser set up yet - add one from the Browsers group in the left rail", RowState.NotSetUp));
+        else
+            DoneReceiptPanel.Children.Add(ReceiptRow(
+                "Browsers",
+                "Give agents a signed-in browser any time - the Browsers group in the left rail", done: false));
 
         // Morning report row. There is no longer a frequency question in the wizard - the report is
         // one person, one email, and asking about it once per machine could never reconcile (issue
