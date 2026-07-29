@@ -12,10 +12,7 @@ namespace CcDirector.Core.AgentPlugins;
 public sealed class CodexAgentPlugin : IAgentPlugin
 {
     private static readonly IReadOnlyList<AgentCommandPreset> Presets =
-    [
-        new(AgentToolCatalog.StandardPresetName, ""),
-        new(AgentToolCatalog.CodexFullAccessPresetName, AgentToolCatalog.CodexFullAccessArg),
-    ];
+        AgentToolCatalog.GetEntry(AgentKind.Codex).Presets;
 
     private static readonly AgentPluginSettingsMetadata SettingsMetadata = new(
         "Codex",

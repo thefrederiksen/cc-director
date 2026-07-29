@@ -11,9 +11,7 @@ namespace CcDirector.Core.AgentPlugins;
 public sealed class GrokAgentPlugin : IAgentPlugin
 {
     private static readonly IReadOnlyList<AgentCommandPreset> Presets =
-    [
-        new(AgentToolCatalog.StandardPresetName, ""),
-    ];
+        AgentToolCatalog.GetEntry(AgentKind.Grok).Presets;
 
     private static readonly AgentPluginSettingsMetadata SettingsMetadata = new(
         "Grok",

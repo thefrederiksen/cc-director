@@ -3427,49 +3427,32 @@ public partial class MainWindow : Window
         }
 
         // Per-entry preset/model/args resolve to the same effective command line the Tools/Agents
-        // page previews (issue #436's shared resolver). For Claude the dialog's Bypass-permissions
-        // checkbox still applies on top, because it is a per-session choice, not a stored preset.
+        // page previews (issue #436's shared resolver). The dialog's run-without-approval checkbox
+        // then applies on top, because it is a per-session choice, not a stored preset.
+        //
+        // One catalog-driven block, not a branch per agent: this was three near-identical arms
+        // covering Claude, Cursor and Copilot, and EVERY other agent silently fell through to the
+        // else and launched asking for approval on each tool call. The rule is the same for all of
+        // them, so it is written once and reads the flag from the catalog.
         var entryArgs = selectedEntry.ToToolConfig().ResolveEffectiveCommandLineArguments().Trim();
-        string? agentArgs;
-        if (agentKind == AgentKind.ClaudeCode)
+
+        var launchArgs = entryArgs;
+        if (agentKind == AgentKind.ClaudeCode && dialog.EnableRemoteControl)
+            launchArgs = $"remote-control {launchArgs}".Trim();
+
+        var unattendedArg = AgentToolCatalog.UnattendedPermissionArg(agentKind);
+        if (dialog.BypassPermissions && unattendedArg is not null)
         {
-            var claudeArgs = entryArgs;
-            if (dialog.EnableRemoteControl)
-                claudeArgs = $"remote-control {claudeArgs}".Trim();
-            if (dialog.BypassPermissions)
-                claudeArgs = $"{claudeArgs} {AgentToolCatalog.ClaudeSkipPermissionsArg}".Trim();
-            agentArgs = claudeArgs.Length > 0 ? claudeArgs : null;
+            // Never add a second permission flag to a line that already settles the question - an
+            // entry deliberately set to "Bypass permissions" keeps exactly that, and the default
+            // "Automatic" preset is not doubled.
+            var alreadyDecided = AgentToolCatalog.KnownPermissionArgs(agentKind)
+                .Any(arg => launchArgs.Contains(arg, StringComparison.OrdinalIgnoreCase));
+            if (!alreadyDecided)
+                launchArgs = $"{launchArgs} {unattendedArg}".Trim();
         }
-        else if (agentKind == AgentKind.Cursor)
-        {
-            // Cursor's permission-bypass equivalent is --force (issue #517, AC9). The bypass
-            // checkbox is a per-session opt-in on top of the entry's preset; if the preset
-            // already carries --force (the "Automatic (yolo)" preset), don't add it twice.
-            var cursorArgs = entryArgs;
-            if (dialog.BypassPermissions
-                && !cursorArgs.Contains(AgentToolCatalog.CursorForceArg, StringComparison.Ordinal))
-            {
-                cursorArgs = $"{cursorArgs} {AgentToolCatalog.CursorForceArg}".Trim();
-            }
-            agentArgs = cursorArgs.Length > 0 ? cursorArgs : null;
-        }
-        else if (agentKind == AgentKind.Copilot)
-        {
-            // Copilot's permission-bypass equivalent is --allow-all (issue #625, AC9). The bypass
-            // checkbox is a per-session opt-in on top of the entry's preset; if the preset already
-            // carries --allow-all (the "Automatic (yolo)" preset), don't add it twice.
-            var copilotArgs = entryArgs;
-            if (dialog.BypassPermissions
-                && !copilotArgs.Contains(AgentToolCatalog.CopilotAllowAllArg, StringComparison.Ordinal))
-            {
-                copilotArgs = $"{copilotArgs} {AgentToolCatalog.CopilotAllowAllArg}".Trim();
-            }
-            agentArgs = copilotArgs.Length > 0 ? copilotArgs : null;
-        }
-        else
-        {
-            agentArgs = entryArgs.Length > 0 ? entryArgs : null;
-        }
+
+        var agentArgs = launchArgs.Length > 0 ? launchArgs : null;
 
         // Build the IAgent from the entry. RawCli uses the entry's executable + its raw args
         // (the dialog seeds the Custom CLI boxes from the entry, so the user-edited boxes win).

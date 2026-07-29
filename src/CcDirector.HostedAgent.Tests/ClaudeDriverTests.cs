@@ -40,8 +40,20 @@ public class ClaudeDriverTests
         var spec = new ClaudeDriver().BuildLaunchSpec(baseArgs: null, resumeSessionId: null);
 
         Assert.NotNull(spec.PreassignedSessionId);
-        Assert.Contains("--dangerously-skip-permissions", spec.Arguments);
+        // Claude's no-args default is the automatic permission mode, matching the catalog's default
+        // preset, so every path agrees on what "the Claude default" means.
+        Assert.Contains("--permission-mode auto", spec.Arguments);
+        Assert.DoesNotContain("--dangerously-skip-permissions", spec.Arguments);
         Assert.Contains($"--session-id {spec.PreassignedSessionId}", spec.Arguments);
+    }
+
+    [Fact]
+    public void HeadlessDefaultArgs_KeepsFullBypass_NotTheAutomaticMode()
+    {
+        // A hosted agent has no human to answer a permission prompt, so it must not inherit the
+        // interactive automatic default - it would simply hang on the first approval.
+        Assert.Equal("--dangerously-skip-permissions", ClaudeDriver.HeadlessDefaultArgs);
+        Assert.NotEqual(ClaudeDriver.DefaultArgs, ClaudeDriver.HeadlessDefaultArgs);
     }
 
     [Fact]
