@@ -173,9 +173,15 @@ public class BrowserLauncherTests
     [Fact]
     public void OpenWithProfile_MissingProfileFolder_ThrowsNamingTheProfile()
     {
-        // Use a real existing exe (cmd.exe) so the exe check passes and the profile-folder check fails.
-        var system32 = Environment.GetFolderPath(Environment.SpecialFolder.System);
-        var fakeExe = Path.Combine(system32, "cmd.exe");
+        // Any real existing executable will do - it only has to make the exe check pass so the
+        // profile-folder check is the one that fails. cmd.exe does not exist on a Mac, which turned
+        // this into a red test there (it threw FileNotFoundException for the exe instead), so the
+        // ingredient is chosen per platform. The behaviour under test is platform-neutral and now
+        // actually runs on both, rather than being skipped on one.
+        var fakeExe = OperatingSystem.IsWindows()
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe")
+            : "/bin/sh";
+        Assert.True(File.Exists(fakeExe), $"this test needs a real executable to exist at {fakeExe}");
         var userDataDir = Path.Combine(Path.GetTempPath(), "cc-director-test-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(userDataDir);
         try
