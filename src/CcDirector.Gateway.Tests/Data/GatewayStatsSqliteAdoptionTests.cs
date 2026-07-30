@@ -65,17 +65,43 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
         SqliteConnection.ClearAllPools();
     }
 
-    /// <summary>Write one row into the real version 5 store, so "no row was lost" is a claim with something
-    /// behind it. Written through the OLD code's own connection, in the old code's own shape.</summary>
-    private void SeedOneStatDeltaRow()
+    /// <summary>
+    /// Write rows into the real version 5 store, so "no row was lost" is a claim with something behind it.
+    /// Written through the OLD code's own connection, in the old code's own shape.
+    ///
+    /// EVERY VALUE IS DISTINGUISHABLE FROM EVERY OTHER, and that is the point rather than fussiness. This
+    /// fixture's job is to catch a column mapped to the wrong column, and it can only do that if no two
+    /// columns carry values a swap would leave looking identical. An earlier version of this row set
+    /// <c>is_voice</c> and <c>wingman</c> BOTH to 0 and <c>model_id</c> and <c>checkout_id</c> BOTH to null -
+    /// so a mapping that crossed either pair would have read back correct and every assertion below would
+    /// have passed with the defect sitting in the model.
+    ///
+    /// So: the two booleans differ from each other, the two nullable surrogates carry different non-null
+    /// numbers, the two counts differ, and every string differs. The second row is the one that keeps the
+    /// nullable columns' NULL case covered, since row one no longer does.
+    /// </summary>
+    private void SeedDistinguishableStatDeltaRows()
     {
         using var db = new GatewayStatsDatabase(_path);
-        using var command = db.Connection.CreateCommand();
-        command.CommandText =
-            "INSERT INTO stat_delta(hour_utc, session_id, modality, surface, is_voice, repo_id, wingman, " +
-            "turns, chars, model_id, checkout_id, tenant) " +
-            "VALUES ('2026-07-30T09', 'session-a', 'typed', 'terminal', 0, 1, 0, 7, 42, NULL, NULL, 'local')";
-        command.ExecuteNonQuery();
+
+        using (var command = db.Connection.CreateCommand())
+        {
+            command.CommandText =
+                "INSERT INTO stat_delta(hour_utc, session_id, modality, surface, is_voice, repo_id, wingman, " +
+                "turns, chars, model_id, checkout_id, tenant) " +
+                "VALUES ('2026-07-30T09', 'session-a', 'typed', 'terminal', 1, 3, 0, 7, 42, 11, 22, 'local')";
+            command.ExecuteNonQuery();
+        }
+
+        using (var command = db.Connection.CreateCommand())
+        {
+            command.CommandText =
+                "INSERT INTO stat_delta(hour_utc, session_id, modality, surface, is_voice, repo_id, wingman, " +
+                "turns, chars, model_id, checkout_id, tenant) " +
+                "VALUES ('2026-07-30T10', 'session-b', 'voice', 'mobile', 0, 5, 1, 13, 64, NULL, NULL, 'local')";
+            command.ExecuteNonQuery();
+        }
+
         SqliteConnection.ClearAllPools();
     }
 
@@ -113,11 +139,11 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
         // Pinned to the substance of the failure, not to a whole message: a table this store already owns
         // cannot be created again. Asserting only "it threw" would pass for a connection error too.
         //
-        // The table named is agent_delta rather than the more familiar stat_delta because the baseline
-        // creates the sixteen tables in alphabetical order and dies on the first one - which is exactly the
-        // point, since it never reaches the fifteen behind it either.
+        // It names stat_delta because the baseline creates the sixteen tables in the order schema version 5's
+        // own migration steps introduced them, and stat_delta is the first. It dies there and never reaches
+        // the fifteen behind it - which is the point.
         Assert.Contains("already exists", ex.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("agent_delta", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("stat_delta", ex.Message, StringComparison.Ordinal);
     }
 
     // ---- and the same thing passing, because of adoption -----------------------------------------------
@@ -126,7 +152,7 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
     public void Adopt_RealVersion5Store_StampsBaselineAndLetsTheChainRun()
     {
         BuildRealVersion5Store();
-        SeedOneStatDeltaRow();
+        SeedDistinguishableStatDeltaRows();
 
         using var context = OpenContext();
 
@@ -151,28 +177,49 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
     public void Adopt_RealVersion5Store_KeepsEveryRowItAlreadyHeld()
     {
         BuildRealVersion5Store();
-        SeedOneStatDeltaRow();
+        SeedDistinguishableStatDeltaRows();
 
         using var context = OpenContext();
         Assert.Equal(StatsStoreAdoptionOutcome.Adopted, GatewayStatsSqliteAdoption.Adopt(context).Outcome);
         context.Database.Migrate();
 
-        // Read the pre-existing row back THROUGH THE NEW MODEL. This is the port's real claim in one
-        // assertion: the entity mapping lands on the columns the old code wrote, so the rows already on
-        // self-host disks are readable without being copied or reshaped.
-        var row = Assert.Single(context.StatDeltas.ToList());
-        Assert.Equal("2026-07-30T09", row.HourUtc);
-        Assert.Equal("session-a", row.SessionId);
-        Assert.Equal("typed", row.Modality);
-        Assert.Equal("terminal", row.Surface);
-        Assert.False(row.IsVoice);
-        Assert.Equal(1, row.RepoId);
-        Assert.False(row.Wingman);
-        Assert.Equal(7, row.Turns);
-        Assert.Equal(42, row.Chars);
-        Assert.Null(row.ModelId);
-        Assert.Null(row.CheckoutId);
-        Assert.Equal("local", row.Tenant);
+        // Read the pre-existing rows back THROUGH THE NEW MODEL. This is the port's real claim in one place:
+        // the entity mapping lands on the columns the old code wrote, so the rows already on self-host disks
+        // are readable without being copied or reshaped. It is currently the ONLY place the entity mapping
+        // meets the real on-disk shape, so a wrong ToTable or HasColumnName throws here rather than passing
+        // quietly.
+        var rows = context.StatDeltas.OrderBy(r => r.HourUtc).ToList();
+        Assert.Equal(2, rows.Count);
+
+        var first = rows[0];
+        Assert.Equal("2026-07-30T09", first.HourUtc);
+        Assert.Equal("session-a", first.SessionId);
+        Assert.Equal("typed", first.Modality);
+        Assert.Equal("terminal", first.Surface);
+        Assert.True(first.IsVoice);
+        Assert.Equal(3, first.RepoId);
+        Assert.False(first.Wingman);
+        Assert.Equal(7, first.Turns);
+        Assert.Equal(42, first.Chars);
+        Assert.Equal(11, first.ModelId);
+        Assert.Equal(22, first.CheckoutId);
+        Assert.Equal("local", first.Tenant);
+
+        // The second row carries the opposite of every distinguishable value, and the NULL case for the two
+        // nullable surrogates.
+        var second = rows[1];
+        Assert.Equal("2026-07-30T10", second.HourUtc);
+        Assert.Equal("session-b", second.SessionId);
+        Assert.Equal("voice", second.Modality);
+        Assert.Equal("mobile", second.Surface);
+        Assert.False(second.IsVoice);
+        Assert.Equal(5, second.RepoId);
+        Assert.True(second.Wingman);
+        Assert.Equal(13, second.Turns);
+        Assert.Equal(64, second.Chars);
+        Assert.Null(second.ModelId);
+        Assert.Null(second.CheckoutId);
+        Assert.Equal("local", second.Tenant);
     }
 
     [Fact]
