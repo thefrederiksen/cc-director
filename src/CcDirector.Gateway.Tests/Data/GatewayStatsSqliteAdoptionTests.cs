@@ -525,7 +525,11 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
         using (var context = OpenContext())
         {
             context.Database.Migrate();
-            context.StatDeltas.Add(new Stats.Data.Entities.StatDeltaEntity
+            // Fully qualified from global:: on purpose. The relative form binds BY PROXIMITY: it resolved
+            // to CcDirector.Gateway.Stats only because no CcDirector.Gateway.Tests.Stats namespace existed,
+            // and the moment one does - the read-port tests add exactly that - this stops compiling with
+            // CS0234. Nothing is wrong on either branch alone, which is why it has to be pinned here.
+            context.StatDeltas.Add(new global::CcDirector.Gateway.Stats.Data.Entities.StatDeltaEntity
             {
                 HourUtc = "2026-07-30T09", SessionId = "s1", Modality = "typed", Surface = "terminal",
                 IsVoice = true, RepoId = 3, Wingman = false, Turns = 7, Chars = 42, Tenant = "local",
