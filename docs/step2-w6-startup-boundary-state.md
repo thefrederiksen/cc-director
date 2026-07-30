@@ -288,9 +288,59 @@ INCOMPLETE SCHEMA: incomplete_schema: ... has a HALF-BUILT SCHEMA ... this is NO
 
 Three different sentences sending a reader to three different places: a setting, a database, a disk.
 
+## REFUSED AND UNMODIFIED ARE TWO CLAIMS - the audit, and what it found
+
+A guard that rejects an input has two obligations: to DECLINE it, and to LEAVE IT UNTOUCHED. Almost every
+test written for such a guard asserts only the first. That is not hypothetical here - adoption once certified
+a FOREIGN database as fresh and then wrote sixteen statistics tables and a baseline row into it. The harm was
+the SIDE EFFECT and not the verdict, and a test asserting only that it said no would have passed throughout.
+
+Every refusal on this branch was walked with that lens. The answer was NOT "all already asserted".
+
+**Already covered, and covered properly:** hosted-with-nothing-configured asserts no SQLite file exists AND
+carries a self-host control that DOES create one, so the absence is a refusal rather than a path nobody took;
+the half-built schema seeds a row first and then asserts tables, version stamp, history rows and row count
+all unchanged; and the derived connection is proven to carry the database name unaltered across several
+different names, so a fixture whose name happened to match a substitution could not hide one.
+
+**The gap that was mine, now built and unrun:** every adoption refusal was tested against
+`GatewayStatsSqliteAdoption.Adopt` DIRECTLY, and nothing drove one through `GatewayStatsStore` - which does
+strictly more before and after that call: builds a provider, creates the storage directory, opens a POOLED
+connection, disposes it again on refusal. Each is an opportunity to touch a file the direct tests cannot see,
+and the startup path is what this branch is for.
+`GatewayStatsStoreRefusalLeavesTheStoreUntouchedTests` now runs two refusals through the whole path.
+
+**Two gaps in the adoption tests went to WORKER 2, whose file it is and whose lens found the class.** Worker 2
+had already closed the first before I reported it (`c44b59988`) and closed the second at `b5990d0e9`.
+
+### Nothing-to-check and CANNOT-check are different, and only one of them is a gap
+
+Stated separately because collapsing them would hide an owed proof behind a satisfied one.
+
+- **`StatsConnectionSelection.Resolve` has NOTHING TO CHECK.** It is a pure function: it takes strings and
+  returns a record, and touches no file, no database and no environment variable. Every refusal in the
+  selection layer - blank override, unparseable Gateway connection, hosted with nothing configured - has no
+  side effect to assert about. Adding a "nothing was changed" assertion there would be a guard supplying its
+  own evidence: it could never fail. It is deliberately absent, not forgotten.
+- **The unreachable-PostgreSQL refusal has a CANNOT-CHECK, which is a real gap with a real owner.** Whether
+  anything was written on the PostgreSQL side is UNANSWERABLE from this branch, because the server does not
+  exist in the fixture. The SQLite-file assertion in that test proves no local file appeared and must NOT be
+  read as covering the PostgreSQL side too. Worker 1's rig is where that could be answered.
+
 ## WHAT IS STILL NOT PROVEN
 
 The rows are the Manager's to close, not mine; what follows is what this run does NOT reach.
+
+- **Everything added after the run of 2026-07-30 is UNRUN.** The two refusal tests above, the reason-code
+  guard, and the rebase onto worker 2's head all postdate the run whose output is quoted in this document.
+  The quoted evidence belongs to the tree as it was at `ed966b50c`, not to the current head.
+- **The duplicate reason members are UNRESOLVED and awaiting the Manager.** Worker 2's
+  `MigrationHistoryIncomplete` and this branch's `IncompleteSchema` are the SAME STATE, found independently
+  from opposite ends - worker 2 inside adoption, worker 6 inside the startup boundary. Both are currently in
+  the enum, both have codes so nothing mis-reports meanwhile, and they must collapse into ONE before merge.
+  Two codes for one condition is the distinct-reasons ruling stood on its head: an operator would get a
+  different string for the same fault depending on which path noticed it first, and neither string would be
+  wrong, which is exactly what makes it hard to see.
 
 - **Row 10's roster body is EMPTY, and this SPLIT THE ROW.** The route answered in roster shape with
   statistics dead; enumerating actual sessions needs a pushed snapshot over a tunnel and is a different rig.
