@@ -465,7 +465,7 @@ public sealed class GatewayStatsStore : IDisposable
                     $"{duplicateSignal}): {detail}");
                 return new StatsStoreAdoptionResult(
                     StatsStoreAdoptionOutcome.NotAdoptable,
-                    StatsStoreUnavailableReason.IncompleteSchema,
+                    StatsStoreUnavailableReason.StoreSchemaIncomplete,
                     detail);
             }
 
@@ -707,8 +707,6 @@ public sealed class GatewayStatsStore : IDisposable
         StatsStoreUnavailableReason.IncompatibleSchemaVersion => "incompatible_schema_version",
         StatsStoreUnavailableReason.NotAStatisticsStore => "not_a_statistics_store",
         StatsStoreUnavailableReason.StoreUnreadable => "store_unreadable",
-        StatsStoreUnavailableReason.StoreSchemaIncomplete => "store_schema_incomplete",
-        StatsStoreUnavailableReason.MigrationHistoryIncomplete => "migration_history_incomplete",
         StatsStoreUnavailableReason.InternalError => "internal_error",
         _ => throw new ArgumentOutOfRangeException(nameof(reason), reason,
             "A statistics unavailability reason with no stable code. Add one here - a surface cannot key " +

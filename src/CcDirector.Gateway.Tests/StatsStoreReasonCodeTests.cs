@@ -17,7 +17,7 @@ namespace CcDirector.Gateway.Tests;
 ///
 /// AND IT HAS ALREADY HAPPENED, which is why this is not a hypothetical worry. Worker 2 added
 /// <see cref="StatsStoreUnavailableReason.StoreSchemaIncomplete"/> and
-/// <see cref="StatsStoreUnavailableReason.MigrationHistoryIncomplete"/> on its own branch; worker 6's code
+/// its sibling on its own branch; worker 6's code
 /// map, written before those existed, did not know them. Nothing failed to build. Nobody was told. Two
 /// branches that were each individually correct produced a silent mis-naming the moment they met - which is
 /// the ordinary way this class of defect arrives, and no amount of care by either author would have caught

@@ -189,7 +189,7 @@ public sealed class GatewayStatsStoreMidChainContainmentTests : IDisposable
     /// and reports INCOMPLETE SCHEMA - the state named for what it is.
     /// </summary>
     [Fact]
-    public void HalfBuiltStore_IsContained_AndReportsIncompleteSchema()
+    public void HalfBuiltStore_IsContained_AndReportsAHalfBuiltSchema()
     {
         BuildHalfBuiltStore();
 
@@ -210,10 +210,20 @@ public sealed class GatewayStatsStoreMidChainContainmentTests : IDisposable
         Assert.NotNull(store.Health.LastError);
         Assert.Null(store.Health.LastSuccessfulWrite);
 
-        // THE SENTENCE POINTS AT THE DISK AND SAYS IT IS NOT THE NETWORK. This is the assertion the reason
-        // exists for: a responder reading it must not go and check a database that is perfectly healthy.
-        Assert.Contains("half-built", store.Availability.Detail, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("NOT a network", store.Availability.Detail, StringComparison.Ordinal);
+        // THE SENTENCE MUST NOT SEND THE READER TO THE NETWORK. That is the defect this reason exists for,
+        // and it is asserted as the ABSENCE of the misleading claim rather than the presence of one
+        // particular phrasing.
+        //
+        // The wording used to be pinned positively ("NOT a network"), which was this branch's own sentence.
+        // After the collapse the sentence comes from the adoption step, which points at the store on disk and
+        // says what to do about it without that explicit clause. Pinning my phrase would have meant either a
+        // permanent red or rewriting another seat's operator text to satisfy my test - and the ruling was
+        // about WHERE THE READER IS SENT, not about a form of words. So the guard is: it must name the store,
+        // it must say the store was not changed, and it must NOT carry the network claim that UNREACHABLE
+        // carries. That holds whoever writes the sentence.
+        Assert.DoesNotContain(
+            "database or network problem", store.Availability.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("statistics store", store.Availability.Detail, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("has NOT been changed", store.Availability.Detail, StringComparison.Ordinal);
 
         _out.WriteLine($"CONTAINED: reason={store.Availability.ReasonCode}: {store.Availability.Detail}");
@@ -326,7 +336,15 @@ public sealed class GatewayStatsStoreMidChainContainmentTests : IDisposable
             StringComparison.Ordinal);
         Assert.Contains(
             "rather than a missing setting", unreachable.Availability.Detail, StringComparison.Ordinal);
-        Assert.Contains("NOT a network", incomplete.Availability.Detail, StringComparison.Ordinal);
+
+        // THE CONTRAST IS THE ASSERTION. The unreachable sentence DOES send the reader to the database or
+        // the network; the half-built one must NOT, because there the database is answering and the fault is
+        // on its disk. Asserting the pair together is what makes this meaningful - checking only that the
+        // half-built sentence lacks a phrase would also pass if no sentence anywhere used it.
+        Assert.Contains(
+            "database or network problem", unreachable.Availability.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "database or network problem", incomplete.Availability.Detail, StringComparison.OrdinalIgnoreCase);
 
         _out.WriteLine($"NOT CONFIGURED:   {notConfigured.Availability.ReasonCode}: {notConfigured.Availability.Detail}");
         _out.WriteLine($"UNREACHABLE:      {unreachable.Availability.ReasonCode}: {unreachable.Availability.Detail}");

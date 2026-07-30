@@ -308,7 +308,7 @@ would mean renaming twice and guessing the final name.
 **WHAT DID NOT EXECUTE, named rather than left to be inferred from a failure count.** In each of the three,
 the reason equality is what failed, so every assertion after it never ran:
 
-- `HalfBuiltStore_IsContained_AndReportsIncompleteSchema` - the reason code, the null factory, `CreateContext`
+- `HalfBuiltStore_IsContained_AndReportsAHalfBuiltSchema` - the reason code, the null factory, `CreateContext`
   throwing, all four health fields and the three operator-sentence assertions.
 - `ContainedOpen_ChangesNothingOnDisk` - the failure is INSIDE the `using` block, so the ENTIRE
   unchanged-on-disk section never ran. That section is the whole point of the test, so this claim is
