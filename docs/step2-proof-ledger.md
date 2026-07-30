@@ -310,6 +310,32 @@ three SQLite classes, **all green together on the rebased tree**.
 
 A green belongs to the tree it was run against. Nobody asked it to check.
 
+## The defect that only existed BETWEEN two branches
+
+Worker 6 rebased onto worker 2 and the rebase found something neither branch could have shown alone,
+which is the strongest argument for merging as each branch clears review rather than at the end.
+
+Worker 2 had independently added two reason codes, `StoreSchemaIncomplete` and
+`MigrationHistoryIncomplete`. Worker 6's reason-code map was written before those existed and did not
+know them. **Nothing failed to build** - a C# switch expression over an enum does not require
+exhaustiveness - and nobody was told.
+
+The failure mode is the part that matters. `CodeFor` throws on an unknown member, and on the path that
+matters **that throw lands inside worker 6's own boundary catch, which reports it as UNREACHABLE**. So a
+self-host user with a half-built store ON DISK would have been sent to look at their NETWORK - precisely
+what the two distinct named reasons exist to prevent, arriving through the very mechanism meant to
+guarantee them.
+
+Both codes added, and the guarantee is now MECHANICAL rather than remembered: a test walks
+`Enum.GetValues` and fails when a member has no code, a blank one, or one shared with another, and
+requires every code to stay greppable `lower_snake_case`. It walks the ENUM rather than a list beside
+it, because a list is the same forgettable rule wearing a different hat, and it collects every offender
+so one run names them all.
+
+Worker 6 also corrected a FALSE COMMENT of its own that claimed a missing member "fails to compile". It
+does not. That comment was worth more than the mistake it was hiding, because a reader who believed it
+would never have looked.
+
 ## Nothing on worker 6's branch has run against a REAL PostgreSQL server
 
 Every PostgreSQL assertion on `nosqlite-stats-w6-startup` is about a connection that FAILS - the dead
