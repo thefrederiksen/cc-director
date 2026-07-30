@@ -34,13 +34,27 @@ try:
     from . import __version__
     from .html_generator import generate_html, embed_images_as_base64, AssetEmbedError
     from .pdf_converter import convert_to_pdf
-    from .md_converter import convert_pdf_to_markdown
 except ImportError:
     # Frozen executable mode - use absolute imports
     from src import __version__
     from src.html_generator import generate_html, embed_images_as_base64, AssetEmbedError
     from src.pdf_converter import convert_to_pdf
-    from src.md_converter import convert_pdf_to_markdown
+
+
+def _load_pdf_to_markdown():
+    """Import the PDF-to-Markdown converter, which is the only thing here that needs PyMuPDF.
+
+    PyMuPDF is a 53 MB native extension. Importing it at module load made EVERY cc-pdf invocation
+    pay for it - including ``--version`` and ``--themes``, which are the two commands the Director's
+    tool health check runs and which need nothing from it. Loading it inside the one command that
+    uses it keeps the health check off the heaviest import in the toolbelt, where a cold first run
+    on a fresh install is at its slowest and an antivirus is scanning the file for the first time.
+    """
+    try:
+        from .md_converter import convert_pdf_to_markdown
+    except ImportError:
+        from src.md_converter import convert_pdf_to_markdown
+    return convert_pdf_to_markdown
 
 # Import shared modules - handle both package and frozen modes
 try:
@@ -315,7 +329,7 @@ def to_markdown(
         _progress(f"[blue]Reading:[/blue] {input_file}", quiet)
 
         _progress("[blue]Converting:[/blue] PDF to Markdown", quiet)
-        markdown = convert_pdf_to_markdown(input_file, output, force=force)
+        markdown = _load_pdf_to_markdown()(input_file, output, force=force)
 
         _progress(f"[blue]Writing:[/blue] {output}", quiet)
         output.parent.mkdir(parents=True, exist_ok=True)

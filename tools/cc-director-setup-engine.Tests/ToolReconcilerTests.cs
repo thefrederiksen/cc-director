@@ -458,4 +458,119 @@ public sealed class ToolReconcilerTests : IDisposable
 
         Assert.True(new ToolReconciler(_layout).HasDrift());
     }
+
+    // ---- The heavy repair must survive a real thread hop (issue #1045) ---------------------------------
+    //
+    // Every other heavy-repair double in this file returns Task.FromResult, so the await inside the
+    // reconciler's mutex-guarded block completes SYNCHRONOUSLY and the mutex is released by the same
+    // thread that took it. The real heavy repair downloads a release and runs pip - it always yields, and
+    // its continuation resumes on an arbitrary thread-pool thread. A Windows named mutex has thread
+    // affinity, so releasing it there threw "Object synchronization method was called from an
+    // unsynchronized block of code", the reconciler's catch turned that into ReconcileOutcome.Failed, and
+    // a clean install reported its own successful first-run provision as a failure. The doubles below
+    // yield for real, which is the only thing the older ones do not do.
+
+    /// <summary>
+    /// A heavy-repair delegate whose task is completed by a DIFFERENT, explicitly-created thread. The
+    /// TaskCompletionSource deliberately does NOT use RunContinuationsAsynchronously, so the awaiting
+    /// continuation inside the reconciler runs inline on that foreign thread - which is what makes the
+    /// thread hop deterministic rather than a race the test might win by luck. (A plain
+    /// <c>await Task.Delay</c> is not enough: it schedules the continuation back through the test
+    /// runner's synchronization context and can land on the original thread, so a double built that way
+    /// passes against the broken code and detects nothing.)
+    /// </summary>
+    private sealed class ForeignThreadHeavyRepair
+    {
+        private readonly InstallLayout _layout;
+        public int Calls { get; private set; }
+        public int EnteredOnThreadId { get; private set; }
+        public int CompletedOnThreadId { get; private set; }
+        public ForeignThreadHeavyRepair(InstallLayout layout) => _layout = layout;
+
+        public Task<PythonToolsResult> InvokeAsync(CancellationToken ct)
+        {
+            Calls++;
+            EnteredOnThreadId = Environment.CurrentManagedThreadId;
+            var tcs = new TaskCompletionSource<PythonToolsResult>();
+            var worker = new Thread(() =>
+            {
+                CompletedOnThreadId = Environment.CurrentManagedThreadId;
+                Directory.CreateDirectory(_layout.PyenvScriptsDir);
+                File.WriteAllText(PythonToolsInstaller.ConsoleScriptPath(_layout, "cc-pdf"), "fake-exe");
+                new PythonToolsInstaller(_layout).WriteShims(new[] { "cc-pdf" });
+                var manifest = InstalledManifest.Load(_layout);
+                manifest.Set(PythonToolsInstaller.ComponentId, "1.0.0");
+                manifest.Save(_layout);
+                PythonToolsState.SaveScripts(_layout, new[] { "cc-pdf" });
+                tcs.SetResult(new PythonToolsResult(true, "provisioned", Array.Empty<string>(), 1, "1.0.0"));
+            })
+            { IsBackground = true, Name = "foreign-heavy-repair" };
+            worker.Start();
+            return tcs.Task;
+        }
+    }
+
+    /// <summary>
+    /// Run a reconcile the way the Director does - inside <c>Task.Run</c>, with no synchronization context -
+    /// so awaited continuations resume wherever the runtime puts them rather than being marshalled back by
+    /// the test runner.
+    /// </summary>
+    private static Task<ReconcileResult> ReconcileOffContextAsync(ToolReconciler reconciler)
+        => Task.Run(() => reconciler.ReconcileAsync());
+
+    [Fact]
+    public async Task ReconcileAsync_FirstRunProvision_HeavyRepairResumesOnAnotherThread_ReportsReconciled()
+    {
+        // Nothing on disk at all - the clean-install state, which escalates to the from-nothing provision.
+        var heavy = new ForeignThreadHeavyRepair(_layout);
+
+        var result = await ReconcileOffContextAsync(new ToolReconciler(_layout, heavy.InvokeAsync));
+
+        Assert.Equal(1, heavy.Calls);
+        Assert.NotEqual(heavy.EnteredOnThreadId, heavy.CompletedOnThreadId); // the hop really happened
+        Assert.Null(result.Error);
+        Assert.Equal(ReconcileOutcome.Reconciled, result.Outcome);
+        Assert.Contains(result.Actions, a => a.Contains("first run", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task ReconcileAsync_BrokenVenv_HeavyRepairResumesOnAnotherThread_ReportsReconciled()
+    {
+        // A recorded bundle whose venv lost a console script - the repair escalation, also mutex-guarded.
+        RecordBundleInstalled();
+        RecordExpectedScripts("cc-pdf");
+        var heavy = new ForeignThreadHeavyRepair(_layout);
+
+        var result = await ReconcileOffContextAsync(new ToolReconciler(_layout, heavy.InvokeAsync));
+
+        Assert.Equal(1, heavy.Calls);
+        Assert.NotEqual(heavy.EnteredOnThreadId, heavy.CompletedOnThreadId);
+        Assert.Null(result.Error);
+        Assert.Equal(ReconcileOutcome.Reconciled, result.Outcome);
+    }
+
+    [Fact]
+    public async Task ReconcileAsync_HeavyRepairResumesOnAnotherThread_MutexIsReleasedForTheNextCaller()
+    {
+        // The release must actually happen, not merely not-throw: a mutex left held (or abandoned by a
+        // failed release) would block or corrupt the next Director's reconcile.
+        var heavy = new ForeignThreadHeavyRepair(_layout);
+        await ReconcileOffContextAsync(new ToolReconciler(_layout, heavy.InvokeAsync));
+
+        using var mutex = new Mutex(initiallyOwned: false, ToolReconciler.HeavyRepairMutexName, out _);
+        var acquired = false;
+        try
+        {
+            acquired = mutex.WaitOne(TimeSpan.FromSeconds(1));
+            Assert.True(acquired, "the heavy-repair mutex was still held after the reconcile returned");
+        }
+        catch (AbandonedMutexException)
+        {
+            Assert.Fail("the heavy-repair mutex was abandoned - it was never released by its owning thread");
+        }
+        finally
+        {
+            if (acquired) mutex.ReleaseMutex();
+        }
+    }
 }

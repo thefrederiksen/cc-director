@@ -58,4 +58,59 @@ public class ToolHealthTests
         Assert.Equal(1, s.Broken);
         Assert.True(s.HasProblem); // a broken (expected-but-missing) tool alarms even with no failures
     }
+
+    // ---- Issue #1045: the failure carries its reason, and the two kinds of problem are told apart ----
+
+    [Fact]
+    public void From_FailingTool_KeepsTheReasonItGave()
+    {
+        // "1 fail" alone sent a reader to a log that had kept no record of why. The reason travels WITH
+        // the count now, because the runner already knew it and throwing it away cost a machine rebuild.
+        var s = ToolHealthSummary.From(new[]
+        {
+            Built("cc-html", true),
+            new ToolHealthInput("cc-pdf", true, true, false, "smoke check: timed out after 90s"),
+        });
+
+        var failure = Assert.Single(s.Failures);
+        Assert.Equal("cc-pdf", failure.Name);
+        Assert.Equal("smoke check: timed out after 90s", failure.Reason);
+        Assert.Equal("cc-pdf (smoke check: timed out after 90s)", failure.ToString());
+    }
+
+    [Fact]
+    public void From_ToolPresentButFailing_IsAFaultNotSomethingToReconcile()
+    {
+        // The tool is installed and its own check failed. A reconcile writes shims and rebuilds venvs; it
+        // has no mechanism for this, so it must not be reported as drift to retry.
+        var s = ToolHealthSummary.From(new[]
+        {
+            Built("cc-html", true),
+            new ToolHealthInput("cc-pdf", true, true, false, "smoke check: exit 1"),
+        });
+
+        Assert.True(s.HasFailingTool);
+        Assert.False(s.HasMissingTool);
+    }
+
+    [Fact]
+    public void From_ToolMissing_IsReconcilableDrift()
+    {
+        // A half-install IS a reconcile's job - it writes the shim, or rebuilds the venv behind it.
+        var s = ToolHealthSummary.From(new[] { Built("cc-html", true), NotBuilt("cc-pdf", expected: true) });
+
+        Assert.True(s.HasMissingTool);
+        Assert.False(s.HasFailingTool);
+    }
+
+    [Fact]
+    public void From_NoFailureReasonRecorded_StillNamesTheTool()
+    {
+        // A missing reason must degrade to the bare name, never to an empty row that hides the failure.
+        var s = ToolHealthSummary.From(new[] { Built("cc-pdf", false) });
+
+        var failure = Assert.Single(s.Failures);
+        Assert.Equal("cc-pdf", failure.ToString());
+        Assert.Equal(new[] { "cc-pdf" }, s.Failing);
+    }
 }
