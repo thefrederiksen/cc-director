@@ -143,6 +143,20 @@ public sealed class Session : IDisposable
     /// Defaults to ClaudeCode for sessions created via legacy code paths.</summary>
     public AgentKind AgentKind { get; internal set; } = AgentKind.ClaudeCode;
 
+    /// <summary>
+    /// The executable this session was actually launched with - the resolved path handed to
+    /// CreateProcess, after the agent entry's recorded path and any batch-shim wrapping have been
+    /// applied. Null for sessions that spawn no local process (embedded test backends, remote
+    /// backends).
+    ///
+    /// Recorded because it was not (devthrottle_internal issue #1050): a clean machine launched a
+    /// bare "claude" instead of the absolute path its own wizard had just recorded, and neither the
+    /// log nor the session said which executable had been tried, so the failure was
+    /// indistinguishable from a broken pseudo-console. This is the launch fact a test can pin and an
+    /// operator can read.
+    /// </summary>
+    public string? LaunchExecutable { get; internal set; }
+
     /// <summary>If this session was created as part of a group (issue #225), the shared
     /// group identity its members travel by; null for a solo session. Members of the same
     /// group sort adjacently and drag as one unit. Stamped at creation, immutable.</summary>

@@ -1680,9 +1680,14 @@ public partial class MainWindow : Window
     /// </summary>
     private string? _lastSessionCreateError;
 
-    /// <summary>Construct the <see cref="IAgent"/> strategy for the given agent kind.</summary>
+    /// <summary>
+    /// Construct the <see cref="IAgent"/> strategy for the given agent kind, for the launches where
+    /// no entry was picked by hand (workspace restore, the quick-launch paths). Issue #1050: the
+    /// executable comes from the configured agent entry, so these launches find an agent the
+    /// onboarding wizard installed off PATH exactly as <see cref="CreateAgentForEntry"/> does.
+    /// </summary>
     private IAgent CreateAgent(AgentKind agentKind) =>
-        AgentPluginRegistry.CreateAgent(agentKind, _sessionManager.Options);
+        AgentLaunchDefaults.CreateAgentForKind(agentKind, _sessionManager.Options);
 
     /// <summary>
     /// Build a catalog agent (issue #490) whose executable path is the selected entry's configured

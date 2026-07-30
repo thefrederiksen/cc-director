@@ -394,4 +394,152 @@ public sealed class AgentLaunchDefaultsTests : IDisposable
         Assert.Throws<ArgumentNullException>(
             () => AgentLaunchDefaults.ResolveDefaultArgs(AgentKind.ClaudeCode, null!));
     }
+
+    // ===== The executable, from the SAME entry as the arguments (issue #1050) =====
+    //
+    // The clean-machine install failure: the onboarding wizard installs Claude Code, records the
+    // binary's absolute path on the agent entry, and reports it ready - while the launch path took its
+    // arguments from that entry and its EXECUTABLE from AgentOptions, whose bare "claude" default is
+    // what nothing writes any more. These pin the property that closes it: for a caller that knows
+    // only the KIND, the executable is the one recorded on the entry.
+
+    [Fact]
+    public void CreateAgentForKind_EntryHasPath_LaunchesTheEntrysExecutable()
+    {
+        // The exact clean-install shape: the machine-level ClaudePath is the untouched bare default,
+        // and the only place that knows where the wizard put the binary is the entry.
+        SeedConfig("""
+        {
+          "agent": {
+            "entries": [
+              { "type": "ClaudeCode", "enabled": true,
+                "executable_path": "C:/Users/qa/.local/bin/claude.exe",
+                "preset_id": "Standard", "launch_mode": "Guided" }
+            ]
+          }
+        }
+        """);
+
+        var agent = AgentLaunchDefaults.CreateAgentForKind(AgentKind.ClaudeCode, new AgentOptions());
+
+        Assert.Equal("C:/Users/qa/.local/bin/claude.exe", agent.ExecutablePath);
+        Assert.Equal(AgentKind.ClaudeCode, agent.Kind);
+    }
+
+    [Fact]
+    public void CreateAgentForKind_EntryHasPath_DoesNotUseTheBareDefault()
+    {
+        // Stated separately because the bare default is the failure: "claude" is what CreateProcess
+        // was handed, and it is what must NOT come out of here when an entry knows better.
+        SeedConfig("""
+        {
+          "agent": {
+            "entries": [
+              { "type": "ClaudeCode", "enabled": true,
+                "executable_path": "C:/Users/qa/.local/bin/claude.exe",
+                "preset_id": "Standard", "launch_mode": "Guided" }
+            ]
+          }
+        }
+        """);
+
+        var agent = AgentLaunchDefaults.CreateAgentForKind(AgentKind.ClaudeCode, new AgentOptions());
+
+        Assert.NotEqual("claude", agent.ExecutablePath);
+    }
+
+    [Fact]
+    public void CreateAgentForKind_ArgsAndExecutableComeFromTheSameEntry()
+    {
+        // The defect class in one assertion: two halves that must not be able to come from two
+        // sources. The entry's preset decides the arguments AND the entry's path decides the binary.
+        SeedConfig("""
+        {
+          "agent": {
+            "entries": [
+              { "type": "ClaudeCode", "enabled": true,
+                "executable_path": "C:/Users/qa/.local/bin/claude.exe",
+                "preset_id": "Standard", "launch_mode": "Guided" }
+            ]
+          }
+        }
+        """);
+        var options = new AgentOptions();
+
+        var agent = AgentLaunchDefaults.CreateAgentForKind(AgentKind.ClaudeCode, options);
+        var args = AgentLaunchDefaults.ResolveDefaultArgs(AgentKind.ClaudeCode, options);
+
+        Assert.Equal("C:/Users/qa/.local/bin/claude.exe", agent.ExecutablePath);
+        Assert.Equal(ClaudeAuto, args);
+    }
+
+    [Fact]
+    public void CreateAgentForKind_BlankEntryPath_UsesThePerTypeDefault()
+    {
+        // An entry with no recorded path knows nothing, so the per-type path in AgentOptions is the
+        // only candidate. That is the documented default for a machine with no agent library, and it
+        // is not silent: an unresolvable command is refused by name at launch, never handed to
+        // CreateProcess to fail with a bare error.
+        SeedConfig("""
+        {
+          "agent": {
+            "entries": [
+              { "type": "ClaudeCode", "enabled": true, "executable_path": "",
+                "preset_id": "Standard", "launch_mode": "Guided" }
+            ]
+          }
+        }
+        """);
+
+        var agent = AgentLaunchDefaults.CreateAgentForKind(
+            AgentKind.ClaudeCode, new AgentOptions { ClaudePath = "C:/tools/claude.exe" });
+
+        Assert.Equal("C:/tools/claude.exe", agent.ExecutablePath);
+    }
+
+    [Fact]
+    public void CreateAgentForKind_PrefersTheEnabledEntry()
+    {
+        // Same entry the desktop New Session dialog pre-selects: the first ENABLED one of that kind.
+        SeedConfig("""
+        {
+          "agent": {
+            "entries": [
+              { "type": "ClaudeCode", "enabled": false, "executable_path": "C:/old/claude.exe",
+                "preset_id": "Standard", "launch_mode": "Guided" },
+              { "type": "ClaudeCode", "enabled": true, "executable_path": "C:/current/claude.exe",
+                "preset_id": "Standard", "launch_mode": "Guided" }
+            ]
+          }
+        }
+        """);
+
+        var agent = AgentLaunchDefaults.CreateAgentForKind(AgentKind.ClaudeCode, new AgentOptions());
+
+        Assert.Equal("C:/current/claude.exe", agent.ExecutablePath);
+    }
+
+    [Fact]
+    public void ResolveEntryExecutablePath_NoEntryForKind_ReturnsNull()
+    {
+        SeedConfig("""
+        {
+          "agent": {
+            "entries": [
+              { "type": "ClaudeCode", "enabled": true, "executable_path": "C:/tools/claude.exe",
+                "preset_id": "Standard", "launch_mode": "Guided" }
+            ]
+          }
+        }
+        """);
+
+        Assert.Null(AgentLaunchDefaults.ResolveEntryExecutablePath(AgentKind.Codex, new AgentOptions()));
+    }
+
+    [Fact]
+    public void CreateAgentForKind_NullOptions_Throws()
+    {
+        Assert.Throws<ArgumentNullException>(
+            () => AgentLaunchDefaults.CreateAgentForKind(AgentKind.ClaudeCode, null!));
+    }
 }

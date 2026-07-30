@@ -525,7 +525,12 @@ internal static class SessionCommandExecutor
         }
         else
         {
-            agent = AgentPluginRegistry.CreateAgent(kind, sessionManager.Options);
+            // Issue #1050: the EXECUTABLE comes from the configured agent entry, exactly like the
+            // arguments resolved just below. Building the agent from AgentOptions alone launched the
+            // per-type default - a bare "claude" - and ignored the absolute path the onboarding
+            // wizard had just recorded for the binary it installed, so a clean machine could not
+            // start a session with the agent its own wizard reported as ready.
+            agent = AgentLaunchDefaults.CreateAgentForKind(kind, sessionManager.Options);
         }
 
         // Issue #1017: with no explicit Args, inherit the configured default launch line for this kind

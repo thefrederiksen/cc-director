@@ -5,6 +5,7 @@ using CcDirector.Core.AgentPlugins;
 using CcDirector.Core.Agents;
 using CcDirector.Core.Backends;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Settings;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 
@@ -704,15 +705,38 @@ public sealed class SessionManager : IDisposable
             // as a ".cmd" shim (e.g. npm-installed "opencode.cmd") would never be found from
             // the bare name "opencode". Resolving against PATH+PATHEXT yields the full
             // "...\opencode.cmd" path. CreateProcess still cannot execute a batch shim
-            // directly, so CommandLineLauncher wraps .cmd/.bat through cmd.exe. If the command
-            // cannot be resolved at all we keep the original so the launch fails loudly.
-            var resolvedExe = ExecutableResolver.Resolve(agent.ExecutablePath) ?? agent.ExecutablePath;
+            // directly, so CommandLineLauncher wraps .cmd/.bat through cmd.exe.
+            //
+            // A command that resolves to NOTHING is refused here, by name. It used to be passed
+            // through unchanged "so the launch fails loudly", and it did not fail loudly - it failed
+            // cryptically: devthrottle_internal issue #1050 handed CreateProcess a bare "claude" that
+            // was on no PATH and got back "CreateProcess failed." with no error code, no path, and
+            // nothing for the person to act on. The sentence below names the agent, the command that
+            // was tried, and what to do, and it travels all the way out as the caller's error.
+            var resolvedExe = ExecutableResolver.Resolve(agent.ExecutablePath);
+            if (resolvedExe is null)
+            {
+                var display = ToolDetectionService.DisplayName(agent.Kind);
+                throw new InvalidOperationException(
+                    $"{display} could not be started: the command \"{agent.ExecutablePath}\" is not a file on this " +
+                    "machine and was not found on this Director's PATH. Set this agent's executable path in " +
+                    $"Settings, Agents - or install {display} - and start the session again.");
+            }
             if (!string.Equals(resolvedExe, agent.ExecutablePath, StringComparison.OrdinalIgnoreCase))
                 _log?.Invoke($"Resolved agent command '{agent.ExecutablePath}' to '{resolvedExe}'");
 
             var (launchExe, launchArgs) = CommandLineLauncher.Build(resolvedExe, args);
             if (!string.Equals(launchExe, resolvedExe, StringComparison.OrdinalIgnoreCase))
                 _log?.Invoke($"Launching '{resolvedExe}' via shell: {launchExe} {launchArgs}");
+
+            // The whole launch spec, in the log the person reads when a session will not start, and in
+            // the line immediately before the attempt. Issue #1050 was diagnosed from the outside for
+            // an hour without this: the working RawCli path printed its executable and the failing
+            // Claude path printed none, so the one difference that mattered was the one thing invisible.
+            // Variable NAMES only - the injected set carries agent credentials.
+            _log?.Invoke($"Launching {agent.Kind}: exe={launchExe}, args={(string.IsNullOrEmpty(launchArgs) ? "(none)" : launchArgs)}, " +
+                         $"workingDir={repoPath}, injectedEnv={string.Join(",", envVars.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase))}");
+            session.LaunchExecutable = launchExe;
 
             // Reserve the worktree BEFORE the process starts (inspection round 5). The reserve-write is
             // serialized against the reaper's remove by a machine-wide lock, so a reaper can never

@@ -543,7 +543,10 @@ internal sealed class SessionWriteExecutor : ISessionCommandArea
 
             if (!AgentPluginRegistry.Contains(kind))
                 return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"agent {kind} is not a built-in plugin target");
-            var agent = AgentPluginRegistry.CreateAgent(kind, sessionManager.Options);
+            // Issue #1050: launch the executable recorded on the configured agent entry, not the
+            // per-type default in AgentOptions - on a machine whose agent was installed by the
+            // onboarding wizard, only the entry knows where the binary is.
+            var agent = AgentLaunchDefaults.CreateAgentForKind(kind, sessionManager.Options);
 
             try
             {
