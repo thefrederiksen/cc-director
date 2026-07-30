@@ -310,6 +310,44 @@ three SQLite classes, **all green together on the rebased tree**.
 
 A green belongs to the tree it was run against. Nobody asked it to check.
 
+## A containment that catches EVERYTHING labels our bugs as their infrastructure
+
+The class, not the incident. **A boundary that catches everything cannot distinguish "the store is
+unreachable" from "we have a bug"**, so every programming error inside the containment gets a plausible
+INFRASTRUCTURE label and sends the reader somewhere the fault is not.
+
+Three instances in one day: a `StatsPageEndpoint` catch reporting a null reference as a storage fault;
+the Architect's CI watcher reading a cancelled run as an answer; and a missing enum member reported as
+an unreachable database.
+
+**Ruling: the boundary must separate OUR fault from THEIRS.** Inside the containment, a failure that is
+not a recognised storage or connection failure gets its OWN reason - an internal error, named as ours -
+with the exception type and stack in the log, and it is NEVER reported as unreachable or not-configured.
+A user sent to check their network for a bug in our switch statement is worse off than one told
+"something in our code failed", because the second is at least TRUE and is actionable by them in the
+only way that matters, which is telling us. Owed by worker 6, alongside the reason-code guard.
+
+## Two names for one state is the distinct-reasons ruling stood on its head
+
+Worker 2 and worker 6 independently reached the SAME state from opposite ends - a store whose tables
+exist while its migration history records nothing applied, left by a first migration that died partway.
+Worker 2 detects it inside adoption; worker 6 detected it in the startup boundary before the chain runs.
+
+**Two codes for one condition fails the distinct-reasons rule exactly as badly as one code for two
+conditions.** It is hard to see precisely because NEITHER STRING IS WRONG - an operator simply gets a
+different one depending on which path noticed first.
+
+Collapsed to one member that names the STATE (the store's schema is half-built on disk) rather than the
+MECHANISM (the history records nothing). Naming a reason after its detection route ages badly the moment
+a second route finds the same state - which is what happened here, between two seats, in one afternoon.
+Detection stays in adoption because it sits earlier and knows more; the boundary check is kept as the
+backstop for what adoption cannot see. Worker 2 owns the collapse because it is its file; worker 6 drops
+its duplicate on its next rebase.
+
+Worker 6 did NOT resolve this unilaterally, and that was right: deleting another seat's member during a
+rebase is how one worker silently overwrites another's decision. It left both in with cross-referencing
+notes and working codes, so nothing mis-reported while it waited.
+
 ## The defect that only existed BETWEEN two branches
 
 Worker 6 rebased onto worker 2 and the rebase found something neither branch could have shown alone,
