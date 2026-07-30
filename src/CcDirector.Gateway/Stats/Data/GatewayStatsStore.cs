@@ -472,10 +472,22 @@ public sealed class GatewayStatsStore : IDisposable
     /// <summary>
     /// The stable, machine-readable spelling of a reason. Written out rather than derived from the enum name
     /// so that renaming a member in C# cannot silently change a string an operator greps for or a surface
-    /// keys off - and so that adding a member without a code here fails to compile rather than shipping a
-    /// reason nobody can match on.
+    /// keys off.
+    ///
+    /// A MEMBER WITH NO CODE HERE IS A PROGRAMMING ERROR AND THROWS - and this comment used to claim it
+    /// "fails to compile", which was simply false and was worth more than the mistake it hid. A C# switch
+    /// expression over an enum does NOT fail to compile on a missing member; it throws at RUN TIME. Worse,
+    /// on the one path that matters the throw lands inside the boundary catch above, which reports it as
+    /// UNREACHABLE - so a missing code does not crash loudly, it silently mis-names somebody's disk problem
+    /// as a network problem. That is precisely the failure the named reasons exist to prevent, arriving
+    /// through the mechanism meant to guarantee them.
+    ///
+    /// It happened: worker 2 added two adoption reasons on its own branch and this map did not know them.
+    /// So the guarantee is now MECHANICAL rather than a comment asking to be believed -
+    /// <c>StatsStoreReasonCodeTests</c> walks every member of the enum and fails when one has no code or
+    /// shares another's. A rule that depends on somebody remembering is not a rule.
     /// </summary>
-    private static string CodeFor(StatsStoreUnavailableReason reason) => reason switch
+    public static string CodeFor(StatsStoreUnavailableReason reason) => reason switch
     {
         StatsStoreUnavailableReason.None => "available",
         StatsStoreUnavailableReason.NotConfigured => "not_configured",
@@ -484,6 +496,8 @@ public sealed class GatewayStatsStore : IDisposable
         StatsStoreUnavailableReason.IncompatibleSchemaVersion => "incompatible_schema_version",
         StatsStoreUnavailableReason.NotAStatisticsStore => "not_a_statistics_store",
         StatsStoreUnavailableReason.StoreUnreadable => "store_unreadable",
+        StatsStoreUnavailableReason.StoreSchemaIncomplete => "store_schema_incomplete",
+        StatsStoreUnavailableReason.MigrationHistoryIncomplete => "migration_history_incomplete",
         _ => throw new ArgumentOutOfRangeException(nameof(reason), reason,
             "A statistics unavailability reason with no stable code. Add one here - a surface cannot key " +
             "off a reason it has no spelling for."),
