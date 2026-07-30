@@ -26,47 +26,17 @@ name: Deploy hosted Gateway
 # Runs on ubuntu-latest on purpose: the Azure CLI's build-log renderer crashes on a Windows host
 # (colorama cp1252 cannot encode the U+2713 the build prints); on Linux it streams cleanly and
 # `az acr build` blocks until the remote build finishes, so no polling workaround is needed here.
+#
+# TWO JOBS, ON PURPOSE. `deploy` does everything that CHANGES Azure and holds the serialisation group
+# for that long (plus the few seconds it takes to hand its poll record over); `watch` is the ten-minute
+# post-swap observation and holds nothing. See the
+# comment on the group below - the split is what lets an emergency rollback start while the watch runs.
 
 on:
   # Manual only. A human (or an agent) starts a release deliberately - from the Actions UI or via
   # `gh workflow run`. Nothing here deploys on a push; committing to main never touches production.
   # The branch/tag picked when starting the run is the commit that ships.
   workflow_dispatch:
-
-# SERIALISATION. Everything that touches the live hosted Gateway - this deploy, the rollback
-# (rollback-hosted-gateway.yml) and the slot provisioning/cleanup (provision-hosted-gateway-slots.yml)
-# - shares the ONE group named below. Only one of them can run at a time; the rest queue.
-#
-# Why one group and not one per workflow: production and staging mount the SAME Azure Files share at
-# /home/gateway/cc-director, so any two of these running at once puts two containers on one set of
-# files. On 2026-07-30 a swap overlapped two containers for 144 seconds, which corrupted the SQLite
-# statistics database on that share; GET /sessions then returned HTTP 500 for 32 minutes across the
-# Cockpit, the phone and the command line. Every previous deploy had been rolling the same dice.
-# A deploy racing a rollback, or a deploy racing the provisioning job that starts and stops the
-# staging slot, is the same hazard with more moving parts.
-#
-# Why cancel-in-progress is FALSE. A second release WAITS for the one in flight; it must never cancel
-# it (issue #2222). This used to be true, on the reasoning that the cancel is safe during the
-# ~5-minute build because nothing live has changed yet. That reasoning only holds if the cancel
-# lands during the build, and there is no way to promise it does. On 2026-07-27 one landed INSIDE
-# "Deploy the new image to the staging slot and warm it" - after the staging slot had been started
-# and before anything could stop it. The stop step is skipped on a cancelled run, so the slot was
-# abandoned RUNNING: two Gateway containers on one worker for ten minutes, unattended, with the app
-# degraded the whole time. No probe failed and /healthz never dropped, so nothing caught it.
-# Cancelling a half-finished swap is worse than queueing behind it.
-#
-# Waiting costs a few minutes of build time. Cancelling costs an abandoned slot and a degraded
-# production service. Queue.
-#
-# The cost this accepts: a deploy holds the group for its full run, including the ten-minute
-# post-swap watch, so an emergency swap-back started during a deploy queues behind it. If a rollback
-# is genuinely needed NOW, cancel the deploy run in the Actions user interface first - that releases
-# the group and the rollback starts. Queueing is the right default because the common case is a
-# rollback started against a deploy that is still mid-swap, where running both at once is what
-# breaks production.
-concurrency:
-  group: hosted-gateway-production
-  cancel-in-progress: false
 
 permissions:
   id-token: write   # required for the Azure OIDC login
@@ -86,6 +56,75 @@ jobs:
     name: Build image and deploy via warmed slot swap
     runs-on: ubuntu-latest
     environment: hosted-gateway-production
+
+    # SERIALISATION. Everything that touches the live hosted Gateway - this deploy, the rollback
+    # (rollback-hosted-gateway.yml) and the slot provisioning/cleanup (provision-hosted-gateway-slots.yml)
+    # - shares the ONE group named below. Only one of them can run at a time; another that arrives while
+    # it is running waits. Note the limit, so nobody reads more into this than it gives: GitHub keeps at
+    # most ONE waiting member per group, so if a third contender is dispatched while one is already
+    # waiting, the one that was waiting is cancelled rather than queued behind it. This is GitHub's
+    # documented behaviour, not something measured here. It is not a deep queue - it is a mutual exclusion
+    # lock with a one-slot waiting room.
+    #
+    # Why one group and not one per workflow: production and staging mount the SAME Azure Files share at
+    # /home/gateway/cc-director, so any two of these running at once puts two containers on one set of
+    # files. On 2026-07-30 a swap overlapped two containers for 144 seconds, which corrupted the SQLite
+    # statistics database on that share; GET /sessions then returned HTTP 500 for 32 minutes across the
+    # Cockpit, the phone and the command line. Every previous deploy had been rolling the same dice.
+    # A deploy racing a rollback, or a deploy racing the provisioning job that starts and stops the
+    # staging slot, is the same hazard with more moving parts.
+    #
+    # Why cancel-in-progress is FALSE. A second release WAITS for the one in flight; it must never cancel
+    # it (issue #2222). This used to be true, on the reasoning that the cancel is safe during the
+    # ~5-minute build because nothing live has changed yet. That reasoning only holds if the cancel
+    # lands during the build, and there is no way to promise it does. On 2026-07-27 one landed INSIDE
+    # "Deploy the new image to the staging slot and warm it" - after the staging slot had been started
+    # and before anything could stop it. The stop step is skipped on a cancelled run, so the slot was
+    # abandoned RUNNING: two Gateway containers on one worker for ten minutes, unattended, with the app
+    # degraded the whole time. No probe failed and /healthz never dropped, so nothing caught it.
+    # Cancelling a half-finished swap is worse than queueing behind it.
+    #
+    # Waiting costs a few minutes of build time. Cancelling costs an abandoned slot and a degraded
+    # production service. Queue.
+    #
+    # WHY THE GROUP IS DECLARED HERE, ON THE JOB, AND NOT ON THE WORKFLOW. Declared at workflow level it
+    # was held for the ENTIRE run, including the ten-minute post-swap watch - a stretch that changes
+    # nothing in Azure and only reads. An emergency swap-back started during that watch therefore queued
+    # behind ten minutes of pure observation, and the written workaround was for a human to go and cancel
+    # the deploy run in the Actions user interface first. That is unacceptable for the emergency brake:
+    # a rollback is used exactly when the fleet is already down, and on 2026-07-30 a rollback taking four
+    # minutes instead of sixty-seven seconds was itself a filed defect, because someone had to stop and
+    # read documentation while the fleet was blind.
+    #
+    # So the group covers this job, which is every step that MUTATES - build, the refusal check, starting
+    # and warming the staging slot, the swap, and the settle step that stops staging again (plus its
+    # always() safety net). The passive watch lives in the `watch` job below, which is deliberately NOT
+    # in the group. While anything dangerous is happening a rollback still queues, which is right. Once the
+    # last mutation is done this job only has to hand its poll record to the watch job - a few seconds of
+    # artifact upload - and then the group is released and a rollback runs immediately. The ten minutes of
+    # observation are no longer inside the lock; that is the whole change.
+    #
+    # Note the case this helps most: when the settle step FAILS it deliberately leaves the staging slot
+    # RUNNING as the instant swap-back instance and exits non-zero. That is precisely the moment a
+    # rollback is most urgent, and it is also the moment this job ends and releases the group.
+    #
+    # NOT DONE, and deliberately: making the rollback cancel the deploy. Cancelling a deploy mid-swap can
+    # leave an Azure swap completing server-side while the rollback issues a reverse swap - two swap
+    # operations racing - and a cancelled deploy can abandon the staging slot RUNNING, a permanent second
+    # writer on the shared file share, which is what happened on 2026-07-27. cancel-in-progress stays
+    # false in all three workflows.
+    concurrency:
+      group: hosted-gateway-production
+      cancel-in-progress: false
+
+    # Handed to the `watch` job, which runs on a different runner and so shares nothing else with this one.
+    outputs:
+      short: ${{ steps.short.outputs.short }}
+      build_seconds: ${{ steps.build.outputs.build_seconds }}
+      outgoing_commit: ${{ steps.outgoing.outputs.commit }}
+      readiness_outcome: ${{ steps.readiness.outputs.outcome }}
+      swap_outage_seconds: ${{ steps.readiness.outputs.swap_outage_seconds }}
+      time_to_healthy_seconds: ${{ steps.readiness.outputs.time_to_healthy_seconds }}
 
     steps:
       # Check out the exact commit the run was started against (the branch/tag chosen in the UI, or
@@ -233,10 +272,12 @@ jobs:
           TARGET="${{ steps.short.outputs.short }}"
           LOG=/tmp/swap-poll.log; : > "$LOG"
           # The poller is deliberately NOT killed in this step. It keeps running across the settle check
-          # and the post-swap watch below, because the outage this deploy actually causes happens MINUTES
-          # after the swap returns (issue #2203): the platform starts a fresh production container with the
-          # swapped configuration, that container fails to bind its port, and the platform stops the SITE.
-          # A window that closes 8 seconds after the swap always measured 0.0s and always missed it.
+          # below, because the outage this deploy actually causes happens MINUTES after the swap returns
+          # (issue #2203): the platform starts a fresh production container with the swapped configuration,
+          # that container fails to bind its port, and the platform stops the SITE. A window that closes
+          # 8 seconds after the swap always measured 0.0s and always missed it.
+          # It is stopped at the end of this job and its log handed to the `watch` job as an artifact, which
+          # resumes polling and joins the two records. See "Hand the production poll record to the watch job".
           ( while :; do
               t=$(date +%s.%N)
               body=$(curl -s -m 5 -w '\n%{http_code}' "${GATEWAY_URL}/healthz" 2>/dev/null || printf '\n000')
@@ -271,7 +312,7 @@ jobs:
           echo "time_to_healthy_seconds=$tth" >> "$GITHUB_OUTPUT"
           echo "outcome=healthy" >> "$GITHUB_OUTPUT"
           echo "New image ${TARGET} live in production. Gap ACROSS THE SWAP ITSELF ~${outage}s."
-          echo "This is NOT the deploy's outage - the post-swap watch below measures that."
+          echo "This is NOT the deploy's outage - the post-swap watch job measures that."
           curl -s -m 15 "${GATEWAY_URL}/healthz"; echo
 
       # Return to steady state (one running instance) ONLY after production has proven itself STABLY healthy
@@ -281,6 +322,12 @@ jobs:
       # disturb the other; it is only safe once production is solidly up. Require ~45s of an unbroken streak
       # of clean external 200s on the new commit first. If production does NOT stabilize, LEAVE staging
       # running (it is the instant swap-back instance) and fail loudly so the release is not treated as good.
+      #
+      # This is the last step that changes Azure on the SUCCESS path; the always() safety net below is the
+      # only other writer, and it writes solely when this step did not run. Everything after those two only
+      # reads, and the whole watch lives in a separate ungrouped job, so the serialisation group is released
+      # within seconds of this step finishing - including when it FAILS and leaves staging as the swap-back
+      # instance, which is exactly the moment a rollback is most urgent.
       - name: Confirm production is stable, then stop staging
         id: settle
         run: |
@@ -321,6 +368,9 @@ jobs:
       #   <empty>              -> settle never ran, so nobody owns the slot. Stop it.
       # This is a second line of defence, not the primary fix - a cancelled job is not guaranteed to
       # finish its steps. The primary fix is cancel-in-progress: false above.
+      #
+      # This is the only step after `settle` that can still write to Azure, which is why it is inside the
+      # grouped job rather than in the watch job.
       - name: Always leave the staging slot stopped unless it is the swap-back instance
         if: always()
         run: |
@@ -343,6 +393,90 @@ jobs:
           az webapp stop --resource-group "$AZURE_RG" --name "$APP" --slot "$SLOT" --output none
           echo "Staging stopped."
 
+      # The watch job runs on a DIFFERENT runner, so it cannot see this runner's /tmp or reach into the
+      # background poller. Stop the poller and hand its log over as an artifact; the watch job starts its
+      # own poller and joins the two records into one timeline. The samples carry absolute epoch
+      # timestamps, so joining them is concatenation in order, not a guess.
+      - name: Hand the production poll record to the watch job
+        id: handover
+        if: always() && steps.readiness.outputs.outcome == 'healthy'
+        run: |
+          # The poller is a child of the readiness step's shell, not this one, so `wait` cannot reap it.
+          # Signal it and then watch the process actually disappear before reading the log, otherwise the
+          # last sample can be half-written when it is uploaded.
+          if [ -f /tmp/swap-poll.pid ]; then
+            P=$(cat /tmp/swap-poll.pid)
+            kill "$P" 2>/dev/null || true
+            gone=no
+            for _ in $(seq 1 50); do
+              if kill -0 "$P" 2>/dev/null; then sleep 0.2; else gone=yes; break; fi
+            done
+            if [ "$gone" != "yes" ]; then
+              echo "WARNING: the swap poller (pid $P) did not exit within 10s of SIGTERM. The record uploaded"
+              echo "         below may have a truncated final sample. The watch job joins this file to its own"
+              echo "         samples, so treat the seam as unreliable rather than assuming it is clean."
+            fi
+          fi
+          wc -l /tmp/swap-poll.log
+          echo "Last sample handed over: $(tail -n1 /tmp/swap-poll.log)"
+
+      - name: Upload the production poll record
+        if: always() && steps.readiness.outputs.outcome == 'healthy'
+        uses: actions/upload-artifact@v4
+        with:
+          name: swap-poll-log
+          path: /tmp/swap-poll.log
+          if-no-files-found: error
+
+  # The passive half. It changes NOTHING in Azure - it polls /healthz, reads the site state, diffs the
+  # migration set in git, and writes a report. It is deliberately outside the serialisation group so that
+  # an emergency rollback started during these ten minutes runs immediately instead of queueing behind an
+  # observation. `if: always()` so a deploy that failed before the swap still gets its metrics row.
+  watch:
+    name: Watch production past the swap and report
+    needs: deploy
+    if: always()
+    runs-on: ubuntu-latest
+    environment: hosted-gateway-production
+
+    steps:
+      # FIRST, before checkout or login: resume polling production as quickly as this runner allows. The
+      # deploy job's poller died with that runner, so there is an unavoidable unpolled gap between the two
+      # jobs - runner provisioning, roughly ten to thirty seconds. Starting here rather than after the
+      # setup steps keeps that gap as small as a job boundary permits. The gap is declared, not hidden:
+      # the joined record below cannot see an outage that begins and ends inside it.
+      - name: Resume polling production immediately
+        if: needs.deploy.outputs.readiness_outcome == 'healthy'
+        run: |
+          LOG=/tmp/watch-poll.log; : > "$LOG"
+          ( while :; do
+              t=$(date +%s.%N)
+              body=$(curl -s -m 5 -w '\n%{http_code}' "${GATEWAY_URL}/healthz" 2>/dev/null || printf '\n000')
+              code=$(printf '%s' "$body" | tail -n1)
+              commit=$(printf '%s' "$body" | sed '$d' | jq -r '.commit // empty' 2>/dev/null || echo "")
+              echo "$t $code ${commit:-none}" >> "$LOG"
+              sleep 1
+            done ) & echo "$!" > /tmp/watch-poll.pid
+          echo "Watch-side poller started at $(date -u +%H:%M:%S)."
+
+      # Needed for the migration diff and for the full SHA in the metrics report.
+      - uses: actions/checkout@v5
+
+      - name: Download the production poll record from the deploy job
+        if: needs.deploy.outputs.readiness_outcome == 'healthy'
+        uses: actions/download-artifact@v4
+        with:
+          name: swap-poll-log
+          path: /tmp/deploy-poll
+
+      - name: Azure login (OIDC, no stored secret)
+        if: needs.deploy.outputs.readiness_outcome == 'healthy'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_GW_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_GW_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_GW_SUBSCRIPTION_ID }}
+
       # KEEP WATCHING. This is the step that measures the outage a user actually gets (issue #2203).
       #
       # Every deploy on 2026-07-26 reported 0.0s and every one of them took the live service down two to
@@ -355,14 +489,14 @@ jobs:
       # Two things are watched, because /healthz alone is not enough. Through the whole failing window the
       # front door was still being served by the warmed instance, so an external poll looked perfect while
       # the site was being driven to Stopped underneath it. The SITE STATE is the earlier and truer signal.
+      # `az webapp show` READS; nothing in this step writes.
       - name: Watch production past the swap and measure the true outage
         id: outage
-        if: always() && steps.readiness.outputs.outcome == 'healthy'
+        if: needs.deploy.outputs.readiness_outcome == 'healthy'
         env:
           WATCH_SECONDS: '600'
           MAX_ACCEPTABLE_OUTAGE_SECONDS: '30'
         run: |
-          LOG=/tmp/swap-poll.log
           STATE_LOG=/tmp/site-state.log; : > "$STATE_LOG"
           echo "Watching for ${WATCH_SECONDS}s past the swap (the failure window is 2-4 minutes out)..."
 
@@ -378,12 +512,94 @@ jobs:
             sleep 15
           done
 
-          # Stop the poller that has been running since before the swap.
-          if [ -f /tmp/swap-poll.pid ]; then kill "$(cat /tmp/swap-poll.pid)" 2>/dev/null || true; fi
+          # Stop this job's poller, then join the deploy job's record to it. Both carry absolute epoch
+          # timestamps and the deploy job's samples all precede this job's, so ordering is by construction.
+          # The poller belongs to an earlier step's shell, so `wait` cannot reap it - signal it and watch
+          # the process actually go, or the join can catch a half-written final sample.
+          if [ -f /tmp/watch-poll.pid ]; then
+            P=$(cat /tmp/watch-poll.pid)
+            kill "$P" 2>/dev/null || true
+            gone=no
+            for _ in $(seq 1 50); do
+              if kill -0 "$P" 2>/dev/null; then sleep 0.2; else gone=yes; break; fi
+            done
+            if [ "$gone" != "yes" ]; then
+              echo "WARNING: the watch poller (pid $P) did not exit within 10s of SIGTERM. The joined record"
+              echo "         below may be missing or splitting its final sample. Treat the last second of the"
+              echo "         timeline as unreliable rather than assuming it is clean."
+            fi
+          fi
+          LOG=/tmp/swap-poll.log
+          cat /tmp/deploy-poll/swap-poll.log /tmp/watch-poll.log > "$LOG"
+
+          # DID SOMETHING SWAP UNDERNEATH US? This watch no longer holds the serialisation group, which is
+          # the entire point of the split - so a rollback (or the provisioning job) can legitimately run
+          # while it is watching. Availability alone cannot see that: a swap-back serves a clean 200 from
+          # the OLD commit, so a watch that only counted 200s would report a healthy, un-rolled-back deploy
+          # for a deploy that had just been rolled back. Read the commit, not just the status code.
+          # It says SUPERSEDED, not "rolled back", because the evidence only shows that production stopped
+          # serving what this run deployed. A swap-back is the expected cause, but a newer deploy would look
+          # the same, and naming the evidence after the most likely cause is how a guess becomes a record.
+          # (The metrics field is still called "rollback" so the deploy ledger's columns do not shift; its
+          # VALUES are the honest ones - superseded-during-watch / no / not-measured.)
+          #
+          # KNOWN BLIND SPOT: identity here is the commit, so redeploying the commit that is ALREADY live
+          # cannot see a swap-back - the old and new instances report the same string. Such a run reports
+          # superseded=no when the truthful answer is unanswerable. Telling them apart needs an identity
+          # finer than the commit (a per-run build token in /healthz); until that exists, a same-commit
+          # redeploy's supersession verdict is worth less than the others and this comment is the warning.
+          TARGET="${{ needs.deploy.outputs.short }}"
+
+          # Scan the WHOLE timeline, not just a final sample: once production has served TARGET, any later
+          # 200 carrying a different commit is the supersession. A single closing request would miss a
+          # rollback that was itself swapped over again before the watch ended.
+          # Arm only after TARGET has been served 3 times running. A single sample is not enough: the front
+          # door can flap back to the old instance for a moment during the cutover itself, and calling that
+          # "superseded" would cry rollback on every healthy deploy.
+          # A later "none" counts too - an image that reports no commit is not this deploy either, and
+          # treating it as clean would hide exactly the swap this scan exists to catch.
+          other=$(awk -v t="$TARGET" '
+            !armed && $2=="200" && $3==t { run++; if (run >= 3) armed=1; next }
+            !armed { run=0; next }
+            armed && $2=="200" && $3!=t { print ($3=="" ? "none" : $3); exit }
+          ' "$LOG")
+          serving=$(printf '%s' "$(curl -s -m 10 "${GATEWAY_URL}/healthz" 2>/dev/null)" | jq -r '.commit // empty' 2>/dev/null || echo "")
+          echo "serving_commit_at_end=${serving}" >> "$GITHUB_OUTPUT"
+
+          if [ "$other" = "none" ]; then
+            # Something without commit metadata served production mid-watch. It is not this deploy, but the
+            # sample cannot say what it was, so this is unanswerable rather than a clean bill.
+            echo "superseded=unknown" >> "$GITHUB_OUTPUT"
+            echo "NOTE: mid-watch, production served 200 with NO commit reported. That is not this deploy,"
+            echo "      but the record cannot say what it was. Recorded as unknown, not as clean."
+          elif [ -n "$other" ]; then
+            echo "superseded=yes" >> "$GITHUB_OUTPUT"
+            echo "NOTE: during the watch production served commit '${other}', not the deployed '${TARGET}'."
+            echo "      Something swapped underneath this watch - a rollback (rollback-hosted-gateway.yml"
+            echo "      swap-back) is the expected cause, but a newer deploy looks identical from here."
+            echo "      The availability numbers below are still true; the code now live is NOT this deploy."
+          elif [ -n "$serving" ] && [ "$serving" != "$TARGET" ]; then
+            echo "superseded=yes" >> "$GITHUB_OUTPUT"
+            echo "NOTE: production ended the watch serving commit '${serving}', not the deployed '${TARGET}'."
+          elif [ -z "$serving" ]; then
+            # The live image reports no commit at all. That is the documented first-deploy case (an image
+            # predating the /healthz .commit field), and it makes supersession UNANSWERABLE from here - every
+            # 200 looks the same whoever is serving it. Say unknown; do not bank an unmeasured "no".
+            echo "superseded=unknown" >> "$GITHUB_OUTPUT"
+            echo "NOTE: production reports no commit on /healthz, so this watch CANNOT tell whether the code"
+            echo "      it deployed is still the code being served. Recorded as unknown, not as clean."
+          else
+            echo "superseded=no" >> "$GITHUB_OUTPUT"
+          fi
 
           # The whole record, from before the swap to ten minutes after it. Compute the LONGEST unbroken
           # run of non-200 samples, in seconds, and the total. The poller samples about once a second, so a
           # gap is measured from the last good sample to the next good one.
+          #
+          # The join between the two jobs is a stretch with no samples at all, roughly ten to thirty
+          # seconds. Two 200s either side of it read as continuous, so an outage contained entirely within
+          # that stretch is invisible here. It sits about 75 to 120 seconds after the swap - before the 2-4
+          # minute window this step exists to catch, but the numbers below are a floor, not a ceiling.
           read -r longest total start_of_longest <<EOF
           $(awk '
             $2=="200" {
@@ -431,7 +647,7 @@ jobs:
         id: migration
         if: always()
         run: |
-          OUT="${{ steps.outgoing.outputs.commit }}"
+          OUT="${{ needs.deploy.outputs.outgoing_commit }}"
           if [ -z "$OUT" ]; then
             echo "migration=unknown" >> "$GITHUB_OUTPUT"
             echo "Outgoing commit unknown - cannot diff migrations."
@@ -463,15 +679,50 @@ jobs:
         if: always()
         run: |
           NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          TARGET="${{ steps.short.outputs.short }}"
+          TARGET="${{ needs.deploy.outputs.short }}"
           FULL=$(git rev-parse HEAD)
-          OUTCOME="${{ steps.readiness.outputs.outcome }}"; OUTCOME="${OUTCOME:-failed}"
-          BUILD_S="${{ steps.build.outputs.build_seconds }}"; BUILD_S="${BUILD_S:-}"
-          SWAP_S="${{ steps.readiness.outputs.swap_outage_seconds }}"
+          # The readiness step reports only that the swap put the new commit into production. It is set
+          # BEFORE the settle step, the staging cleanup and the ten-minute watch, so on its own it calls a
+          # run "healthy" that later failed its outage budget or left staging running - a false green in
+          # the deploy ledger, which is the one record we go back and read. Fold in the deploy job's real
+          # result and the watch step's real result. (Pre-existing on main; the split is what finally makes
+          # `needs.deploy.result` available to say it.)
+          OUTCOME="${{ needs.deploy.outputs.readiness_outcome }}"; OUTCOME="${OUTCOME:-failed}"
+          DEPLOY_RESULT="${{ needs.deploy.result }}"
+          OUTAGE_RESULT="${{ steps.outage.outcome }}"
+          SUPERSEDED="${{ steps.outage.outputs.superseded }}"
+
+          # Every way this run can be less than healthy gets its own word. "skipped" matters as much as
+          # "failure": if the checkout, the artifact download, the Azure login or the poller start fails,
+          # the watch never runs, and a record that still said "healthy" would be claiming a ten-minute
+          # observation that never happened.
+          if [ "$OUTCOME" = "healthy" ]; then
+            if [ "$DEPLOY_RESULT" != "success" ]; then
+              OUTCOME="swapped-then-failed"
+            elif [ "$OUTAGE_RESULT" = "failure" ]; then
+              OUTCOME="swapped-then-unavailable"
+            elif [ "$OUTAGE_RESULT" != "success" ]; then
+              OUTCOME="swapped-then-unmeasured"
+            elif [ "$SUPERSEDED" = "yes" ]; then
+              OUTCOME="superseded"
+            elif [ "$SUPERSEDED" = "unknown" ]; then
+              OUTCOME="healthy-but-unverified"
+            fi
+          fi
+
+          # Named for what was observed, not for the cause we assume. Empty means the watch never ran, which
+          # is "not measured" - never "no".
+          case "$SUPERSEDED" in
+            yes)     ROLLBACK="superseded-during-watch" ;;
+            no)      ROLLBACK="no" ;;
+            *)       ROLLBACK="not-measured" ;;
+          esac
+          BUILD_S="${{ needs.deploy.outputs.build_seconds }}"; BUILD_S="${BUILD_S:-}"
+          SWAP_S="${{ needs.deploy.outputs.swap_outage_seconds }}"
           OUTAGE_S="${{ steps.outage.outputs.true_outage_seconds }}"
           TOTAL_S="${{ steps.outage.outputs.total_unavailable_seconds }}"
           STATE_LEFT="${{ steps.outage.outputs.site_state_left_running }}"; STATE_LEFT="${STATE_LEFT:-not-measured}"
-          TTH_S="${{ steps.readiness.outputs.time_to_healthy_seconds }}"
+          TTH_S="${{ needs.deploy.outputs.time_to_healthy_seconds }}"
           MIG="${{ steps.migration.outputs.migration }}"; MIG="${MIG:-unknown}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
@@ -480,7 +731,7 @@ jobs:
             "timestamp_utc": "$NOW",
             "commit_short": "$TARGET",
             "commit_full": "$FULL",
-            "outgoing_commit": "${{ steps.outgoing.outputs.commit }}",
+            "outgoing_commit": "${{ needs.deploy.outputs.outgoing_commit }}",
             "run_id": "${{ github.run_id }}",
             "run_url": "$RUN_URL",
             "outcome": "$OUTCOME",
@@ -491,7 +742,9 @@ jobs:
             "site_state_left_running": "${STATE_LEFT}",
             "time_to_healthy_seconds": "${TTH_S}",
             "migration": "$MIG",
-            "rollback": "no"
+            "deploy_job_result": "${DEPLOY_RESULT}",
+            "serving_commit_at_end": "${{ steps.outage.outputs.serving_commit_at_end }}",
+            "rollback": "$ROLLBACK"
           }
           JSON
 
@@ -510,7 +763,8 @@ jobs:
             echo "| site left Running | ${STATE_LEFT} |"
             echo "| time-to-healthy | ${TTH_S:-?}s |"
             echo "| migration | $MIG |"
-            echo "| rollback | no |"
+            echo "| serving commit at end of watch | ${{ steps.outage.outputs.serving_commit_at_end }} |"
+            echo "| rollback | $ROLLBACK |"
             echo "| run | $RUN_URL |"
             echo ""
             echo "Ledger-ready row (paste into deploy-ledger.md):"
