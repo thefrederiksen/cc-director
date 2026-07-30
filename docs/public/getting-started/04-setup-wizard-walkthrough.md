@@ -1,8 +1,13 @@
 <!--
   SCREENSHOTS ARE PARTIAL. Tracked: thefrederiksen/devthrottle_internal#1053.
 
-  Present: all three installer screens, and the setup wizard's Gateway step (step 2).
-  Missing: setup wizard steps 1 and 3-8, including the zero-agent Agents frame.
+  Present: all three installer screens, and setup wizard steps 2, 3, 4, 5, 6 and 7.
+  Missing: only steps 1 (Welcome) and 8 (Done). Both were captured and both are CLIPPED - their
+  content is cut off at the bottom by the window's own scrollbar - so neither is used. They need a
+  capture in a taller window; nothing else is outstanding.
+  Step 3 is the FOUND state (one agent present) and is captioned as such. The zero-agent frame was
+  lost in run one and would be a useful addition, but the prose describes that state in full and
+  the caption says which state the picture shows, so it is not misleading as it stands.
 
   RESOLUTION, stated plainly because it was reported to me wrongly once: every frame on this page
   came from a 916x679 window (a 1024x768 desktop), NOT from a larger re-shoot. The larger re-shoot
@@ -231,6 +236,10 @@ product is.
 
 ### 3. Your agents
 
+![The setup wizard on step 3 of 8, Your agents, having found one agent](assets/setup-03-agents.png)
+
+*Setup wizard, **step 3 of 8** - Your agents. This machine already had Claude Code, so it shows the found state: the agent, its version and its path, marked Ready, with the seven it did not find listed below as "Not set up". A clean machine sees the empty state described below instead.*
+
 Scans the machine for coding agents -- Claude Code, Codex, Gemini, Copilot, Cursor, Grok, opencode,
 Pi -- and lists what it found.
 
@@ -247,6 +256,10 @@ you three ways forward:
 
 ### 4. Tools
 
+![The setup wizard on step 4 of 8, showing nine tools each marked Ready](assets/setup-04-tools.png)
+
+*Setup wizard, **step 4 of 8** - Tools. The heading carries the count, and each tool has its own row and state.*
+
 The `cc-*` command line tools, which DevThrottle installs and keeps current itself -- you never run
 an updater. The heading carries the count, so it reads **"9 tools, maintained for you"**, and each
 tool has its own row and state.
@@ -258,6 +271,10 @@ If a tool has not arrived, the step offers **Fix this now** -- the same repair t
 > [`status --json`](#verifying-the-install) below if it matters.
 
 ### 5. Your code
+
+![The setup wizard on step 5 of 8, Your code, with no repositories found](assets/setup-05-code.png)
+
+*Setup wizard, **step 5 of 8** - Your code, on a machine with none yet: "No repositories found in the usual places." Neither **Browse...** nor **I don't have code on this machine yet** blocks you.*
 
 Finds your git repositories and adds them, so DevThrottle can offer them when you start an agent.
 Remove any you would rather it left alone.
@@ -271,6 +288,10 @@ Neither one blocks you.
 > required](02-installation.md#recommended-not-required).
 
 ### 6. Screenshots
+
+![The setup wizard on step 6 of 8, Screenshots, reporting no folder found](assets/setup-06-screenshots.png)
+
+*Setup wizard, **step 6 of 8** - Screenshots, on a new machine: "No screenshots folder found". This is the normal first-run state, not an error.*
 
 Snap a screen, drag the image straight onto an agent -- the fastest way to show it exactly what you
 mean. DevThrottle watches one folder for new screenshots.
@@ -286,6 +307,10 @@ does the work for you: press your normal screenshot shortcut and the wizard watc
 lands.
 
 ### 7. Browsers
+
+![The setup wizard on step 7 of 8, Browsers, with both items not set up](assets/setup-07-browsers.png)
+
+*Setup wizard, **step 7 of 8** - Browsers. Two things to set up, and it names who makes the tool before you accept it. The way out sits right there: "Set up browsers later - I want to get going."*
 
 An agent can drive a real browser that is already signed in to your accounts -- reading a dashboard,
 filling in a form, checking a page for you.
