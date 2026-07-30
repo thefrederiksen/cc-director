@@ -133,6 +133,27 @@ public enum StatsStoreUnavailableReason
     /// This is the case the containment boundary exists for. The Gateway boots, serves its roster and serves
     /// its tunnels; only the statistics surface is off, and it says why.</summary>
     Unreachable,
+
+    /// <summary>
+    /// A FAULT IN DEVTHROTTLE'S OWN CODE, not in the operator's database, network or settings.
+    ///
+    /// WHY THIS MEMBER EXISTS, AND IT IS THE MECHANISM BEHIND A WHOLE CLASS OF DEFECT. A containment that
+    /// catches EVERYTHING cannot tell "the store is unreachable" from "we have a bug" - so without this,
+    /// every programming error inside the boundary is handed a plausible INFRASTRUCTURE label and sends the
+    /// reader somewhere the fault is not. It is not hypothetical and it is not rare: on 2026-07-30 it
+    /// happened three times in one day - an endpoint catch reporting a null reference as a storage fault, a
+    /// watcher reading a cancelled run as an answer, and a missing entry in this file's own reason-code map
+    /// reported as an unreachable database.
+    ///
+    /// THE OPERATOR SENTENCE SAYS IT IS OURS, and that is the whole point. A user sent to check their
+    /// network for a bug in our switch statement is worse off than a user told "something in DevThrottle's
+    /// own code failed", because the second is at least TRUE, and it is actionable by them in the only way
+    /// that matters - telling us. The exception type and stack go to the log, never to the surface.
+    ///
+    /// This reason must NEVER be reported as <see cref="Unreachable"/> or <see cref="NotConfigured"/>. Those
+    /// two make a claim about the OPERATOR'S world; this one makes a claim about ours.
+    /// </summary>
+    InternalError,
 }
 
 /// <summary>

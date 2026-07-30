@@ -256,18 +256,43 @@ public sealed class GatewayStatsStore : IDisposable
             // exception TYPE plus the already-redacted target is enough to diagnose, and the full exception
             // is not stringified anywhere.
             provider?.Dispose();
-            var detail =
-                $"The statistics database ({choice.Target}) could not be opened or migrated " +
-                $"({ex.GetType().Name}). The settings name a database, so this is a database or network " +
-                "problem rather than a missing setting. Statistics are unavailable; the Gateway is serving " +
-                "normally and the rest of it is unaffected.";
+
+            // OUR FAULT OR THEIRS. A boundary that catches everything cannot, by itself, tell a database
+            // that is not there from a bug in this file - and if it guesses "database", every programming
+            // error in here gets a plausible infrastructure label and sends the reader somewhere the fault
+            // is not. So the failure is CLASSIFIED before it is named.
+            var theirs = IsStorageFailure(ex);
+
+            var detail = theirs
+                ? $"The statistics database ({choice.Target}) could not be opened or migrated " +
+                  $"({ex.GetType().Name}). The settings name a database, so this is a database or network " +
+                  "problem rather than a missing setting. Statistics are unavailable; the Gateway is serving " +
+                  "normally and the rest of it is unaffected."
+                : "Statistics are unavailable because something in DevThrottle's own code failed while " +
+                  $"opening the statistics store ({ex.GetType().Name}). This is a fault in DevThrottle, NOT " +
+                  "a problem with your database, your network or your settings - checking those will not " +
+                  "help, and reporting it to us will. The details are in the Gateway log. The Gateway is " +
+                  "serving normally and the rest of it is unaffected.";
+
             Availability = Unavailable(
-                StatsStoreUnavailableReason.Unreachable, detail, choice.Source, choice.Target);
+                theirs ? StatsStoreUnavailableReason.Unreachable : StatsStoreUnavailableReason.InternalError,
+                detail, choice.Source, choice.Target);
             _health.RecordFailure(detail);
-            FileLog.Write(
-                $"[GatewayStatsStore] Open FAILED (CONTAINED): source={choice.Source} " +
-                $"target={choice.Target}: {ex.GetType().Name}. Statistics are UNAVAILABLE, " +
-                $"reason={Availability.ReasonCode}. The Gateway starts and serves normally without them.");
+
+            // The STACK is logged for our own faults and not for theirs. For a storage failure the type and
+            // the redacted target are the whole diagnosis and a stack is noise; for a fault in our code the
+            // stack IS the diagnosis, and without it the operator's report reaches us saying only that
+            // something failed. The exception MESSAGE is still never used on either path - a provider echoes
+            // a malformed connection string back in its message, and putting that on a surface or in a log
+            // would publish a credential.
+            FileLog.Write(theirs
+                ? $"[GatewayStatsStore] Open FAILED (CONTAINED): source={choice.Source} " +
+                  $"target={choice.Target}: {ex.GetType().Name}. Statistics are UNAVAILABLE, " +
+                  $"reason={Availability.ReasonCode}. The Gateway starts and serves normally without them."
+                : $"[GatewayStatsStore] Open FAILED (CONTAINED) - INTERNAL ERROR, THIS IS OUR BUG: " +
+                  $"source={choice.Source} target={choice.Target}: {ex.GetType().FullName}. Statistics are " +
+                  $"UNAVAILABLE, reason={Availability.ReasonCode}. The Gateway starts and serves normally " +
+                  $"without them. Stack:{Environment.NewLine}{ex.StackTrace}");
         }
     }
 
@@ -413,6 +438,53 @@ public sealed class GatewayStatsStore : IDisposable
     }
 
     /// <summary>
+    /// Whether a failure caught by the boundary is a STORAGE failure - the operator's database, network or
+    /// file - as opposed to a fault in DevThrottle's own code.
+    ///
+    /// NOT A TYPE-NAME WHITELIST, because a list of spellings rots: it silently reclassifies the day a
+    /// provider renames an exception or a new provider is added, and nothing fails when it does. This asks
+    /// the .NET type SYSTEM instead, using the base types that are the framework's OWN contract for
+    /// "a data provider or the transport underneath it failed":
+    ///
+    ///  - <see cref="System.Data.Common.DbException"/> is the base every ADO.NET provider derives its own
+    ///    exceptions from - <c>NpgsqlException</c> and <c>SqliteException</c> both do - so a new provider is
+    ///    classified correctly without this method being edited.
+    ///  - <see cref="System.Net.Sockets.SocketException"/> and <see cref="IOException"/> are the transport
+    ///    and the local file underneath it.
+    ///  - <see cref="TimeoutException"/> is a wait that expired against something outside this process.
+    ///
+    /// The whole INNER CHAIN is walked, because Entity Framework routinely wraps a provider exception in one
+    /// of its own; a genuine outage that arrived wrapped must not be called our bug.
+    ///
+    /// WHAT THIS RULE CANNOT CLASSIFY, named rather than silently bucketed, because there are real cases in
+    /// the middle and pretending otherwise is how a classifier earns unwarranted trust:
+    ///
+    ///  1. OUR bug thrown while a provider exception is already in flight - our code failing inside a catch,
+    ///     chaining theirs - reads as THEIRS, because their exception is in the chain.
+    ///  2. <see cref="InvalidOperationException"/> from Entity Framework with no inner provider exception
+    ///     reads as OURS. That is right far more often than not - it is the shape of a model or mapping
+    ///     mistake - but a genuinely malformed connection string can surface the same way.
+    ///  3. <see cref="IOException"/> reads as THEIRS, and a bug in our own path handling surfaces as one too.
+    ///
+    /// The bias is deliberate and it is toward NOT crying wolf about the operator's infrastructure: every
+    /// case above that lands wrong lands on the side of a truthful-but-vaguer message rather than sending
+    /// somebody to audit a healthy network.
+    /// </summary>
+    public static bool IsStorageFailure(Exception? exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is System.Data.Common.DbException
+                or System.Net.Sockets.SocketException
+                or IOException
+                or TimeoutException)
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Which of THIS MODEL'S tables already exist in the store, read from the provider's own catalog.
     ///
     /// The expected set comes from the MODEL rather than from a list written out here, so it cannot drift
@@ -498,6 +570,7 @@ public sealed class GatewayStatsStore : IDisposable
         StatsStoreUnavailableReason.StoreUnreadable => "store_unreadable",
         StatsStoreUnavailableReason.StoreSchemaIncomplete => "store_schema_incomplete",
         StatsStoreUnavailableReason.MigrationHistoryIncomplete => "migration_history_incomplete",
+        StatsStoreUnavailableReason.InternalError => "internal_error",
         _ => throw new ArgumentOutOfRangeException(nameof(reason), reason,
             "A statistics unavailability reason with no stable code. Add one here - a surface cannot key " +
             "off a reason it has no spelling for."),

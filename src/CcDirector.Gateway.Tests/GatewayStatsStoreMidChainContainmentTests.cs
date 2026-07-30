@@ -157,10 +157,29 @@ public sealed class GatewayStatsStoreMidChainContainmentTests : IDisposable
 
         _out.WriteLine($"UNCONTAINED: {thrown.GetType().FullName}: {thrown.Message}");
 
-        // Pinned to the substance, not to a whole message: a table this store already owns cannot be created
-        // again. Asserting only "it threw" would pass for a connection error, a locked file or a build fault.
+        // Pinned to the SUBSTANCE: a table this store already owns cannot be created again. Asserting only
+        // "it threw" would pass for a connection error, a locked file or a build fault.
         Assert.Contains("already exists", thrown.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("agent_delta", thrown.Message, StringComparison.Ordinal);
+
+        // The table it names must be one of THIS STORE'S OWN, read from the model rather than written out
+        // here. This assertion used to name agent_delta, because the baseline created the sixteen tables
+        // alphabetically and died on the first - and that went red the moment worker 2 changed the order,
+        // reporting 'table stat_delta already exists'. The test was RIGHT about the substance and WRONG to
+        // pin the order: which table happens to be created first is incidental, and a fixture pinned to an
+        // incidental detail goes red for a reason unconnected to what it measures, which teaches people to
+        // re-run until green.
+        using var model = OpenContext();
+        var ours = model.Model.GetEntityTypes()
+            .Select(t => t.GetTableName())
+            .Where(t => !string.IsNullOrEmpty(t))
+            .Select(t => t!)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        Assert.True(
+            ours.Any(t => thrown.Message.Contains(t, StringComparison.Ordinal)),
+            "The failure did not name any table this store owns, so it is not the collision this test is " +
+            "about: " + thrown.Message);
     }
 
     // ============================================================ the same fault, contained and named
