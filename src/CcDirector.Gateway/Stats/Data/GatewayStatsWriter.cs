@@ -53,6 +53,11 @@ internal sealed class GatewayStatsWriter
     private readonly IDbContextFactory<GatewayStatsDbContext> _contexts;
     private long _statements;
 
+    // The statements, built once for this writer's provider. A fold happens on every roster poll, so building
+    // them per commit would be work and a log line per poll; the provider cannot change under a writer.
+    private StatsUpsertSql? _sql;
+    private readonly object _sqlLock = new();
+
     /// <summary>Every write statement this writer has executed. Counts one per row written plus the prune
     /// statements; Entity Framework may batch several inserts into one round trip, so this is an exact count
     /// of WRITES and an upper bound on round trips. The seam acceptance criterion measures it: an IDLE poll
@@ -91,7 +96,7 @@ internal sealed class GatewayStatsWriter
 
         var tenant = batch.Tenant.Value;
         using var ctx = _contexts.CreateDbContext();
-        var sql = new StatsUpsertSql(ctx);
+        var sql = StatementsFor(ctx);
         using var tx = ctx.Database.BeginTransaction();
 
         // agents_since is per tenant (MTR-08): (tenant, name) is the key, and the stamp is written ONCE and
@@ -217,7 +222,7 @@ internal sealed class GatewayStatsWriter
     public bool DeleteSessionHighWater(string tenant, string sessionId)
     {
         using var ctx = _contexts.CreateDbContext();
-        return Execute(ctx, new StatsUpsertSql(ctx).DeleteSessionHighWater, tenant, sessionId) > 0;
+        return Execute(ctx, StatementsFor(ctx).DeleteSessionHighWater, tenant, sessionId) > 0;
     }
 
     /// <summary>Drop one session's token high-water row for one tenant. Cleaned up on its own, not under the
@@ -226,7 +231,7 @@ internal sealed class GatewayStatsWriter
     public bool DeleteTokenHighWater(string tenant, string sessionId)
     {
         using var ctx = _contexts.CreateDbContext();
-        return Execute(ctx, new StatsUpsertSql(ctx).DeleteTokenHighWater, tenant, sessionId) > 0;
+        return Execute(ctx, StatementsFor(ctx).DeleteTokenHighWater, tenant, sessionId) > 0;
     }
 
     // Mint a surrogate id for each display spelling this batch saw for the first time. An INSERT of a new row
@@ -306,6 +311,20 @@ internal sealed class GatewayStatsWriter
         Execute(ctx, sql.DeleteArchivedTokenDelta, tenant, GatewayStatsDatabase.ArchiveMarker, cutoff);
     }
 
+    private StatsUpsertSql StatementsFor(GatewayStatsDbContext ctx)
+    {
+        lock (_sqlLock)
+        {
+            if (_sql is null)
+            {
+                _sql = new StatsUpsertSql(ctx);
+                FileLog.Write($"[GatewayStatsWriter] StatementsFor: built the write statements for " +
+                              $"provider={ctx.Database.ProviderName}");
+            }
+            return _sql;
+        }
+    }
+
     // Every raw statement passes through here so the count is honest. Positional {0} placeholders are turned
     // into real provider parameters by Entity Framework, so one statement text serves both providers and no
     // value is ever concatenated into SQL.
@@ -360,7 +379,6 @@ internal sealed class StatsUpsertSql
     {
         _postgres = ctx.Database.IsNpgsql();
         _prefix = _postgres ? GatewayStatsDbContext.PostgresSchema + "." : "";
-        FileLog.Write($"[StatsUpsertSql] Build: provider={ctx.Database.ProviderName}, postgres={_postgres}");
     }
 
     private string Table(string name) => _prefix + name;

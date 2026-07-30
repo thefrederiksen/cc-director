@@ -27,14 +27,20 @@ namespace CcDirector.Gateway.Tests.Stats;
 /// commit. If the second writer never blocks, the interleave did not happen and the fact FAILS LOUD instead
 /// of passing on a race that was never run.
 ///
-/// Gated behind <c>CC_GATEWAY_TEST_PG_CONNECTION</c>: unset (the ordinary SQLite test run and CI) every fact
-/// reports SKIPPED and nothing touches a database. Point it at a THROWAWAY local container - never at the
-/// hosted database, which staging shares with production; the guard below refuses any database whose name
+/// Gated behind <c>CC_GATEWAY_TEST_PG_STATS_CONNECTION</c> - the RESTRICTED-role, statistics-database
+/// connection string that <c>scripts/pg-stats-proof-rig.ps1</c> hands out, whose role holds exactly the
+/// hosted role's measured grants and nothing more. With it unset (the ordinary SQLite test run and CI) every
+/// fact reports SKIPPED and nothing touches a database. Point it at a THROWAWAY local container - never at
+/// the hosted database, which staging shares with production; the guard below refuses any database whose name
 /// does not start with "ccpg", and the suite drops and recreates the whole gateway_stats schema.
+///
+/// Stand the rig up with your OWN instance and port - one instance per caller, so no two agents share a
+/// server and nobody's deliberate red is somebody else's privilege change:
+///   powershell -NoProfile -File scripts/pg-stats-proof-rig.ps1 -Instance w4 -Port 55434 -Verb up
 /// </summary>
 public sealed class GatewayStatsWritePathPostgresTests
 {
-    private const string ConnectionEnvVar = "CC_GATEWAY_TEST_PG_CONNECTION";
+    private const string ConnectionEnvVar = "CC_GATEWAY_TEST_PG_STATS_CONNECTION";
     private const string Session = "s-highwater";
     private static readonly TenantId Tenant = TenantId.Local;
 
@@ -43,7 +49,7 @@ public sealed class GatewayStatsWritePathPostgresTests
         public RequiresPostgresFactAttribute()
         {
             if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(ConnectionEnvVar)))
-                Skip = $"Set {ConnectionEnvVar} to a throwaway Postgres connection string to run the write-path proof.";
+                Skip = $"Set {ConnectionEnvVar} (scripts/pg-stats-proof-rig.ps1) to run the write-path proof on real PostgreSQL.";
         }
     }
 
@@ -91,7 +97,7 @@ public sealed class GatewayStatsWritePathPostgresTests
             throw new InvalidOperationException(
                 $"Refusing to drop the statistics schema in the database '{database}': its name must begin " +
                 $"with the throwaway prefix 'ccpg'. Point {ConnectionEnvVar} at a disposable local database " +
-                "(e.g. 'ccpgstats'). The hosted database is shared with production and is never a test target.");
+                "(the rig's ccpgstats_<instance>). The hosted database is shared with production and is never a test target.");
         if (Connection.Contains("supabase", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException(
                 "Refusing to run the write-path proof against a Supabase host. Local throwaway containers only.");
@@ -102,6 +108,12 @@ public sealed class GatewayStatsWritePathPostgresTests
 
     private static long ResolveNothing(string display, IdentityKind kind) =>
         throw new InvalidOperationException($"No identity should need resolving here ({kind}: {display}).");
+
+    private static long ReadOne(IDbContextFactory<GatewayStatsDbContext> factory, Func<GatewayStatsDbContext, long> read)
+    {
+        using var ctx = factory.CreateDbContext();
+        return read(ctx);
+    }
 
     private static void Write(IDbContextFactory<GatewayStatsDbContext> factory, Action<StatsWriteBatch> fill)
     {
@@ -122,7 +134,9 @@ public sealed class GatewayStatsWritePathPostgresTests
         InterleaveAndCommit(
             factory,
             holdsOpen: b => b.HighWater.Add((Session, "typed", "phone", 10, 100)),
-            racesIt: b => b.HighWater.Add((Session, "typed", "phone", 7, 70)));
+            racesIt: b => b.HighWater.Add((Session, "typed", "phone", 7, 70)),
+            witness: (Seed: 5, Held: 10, Raced: 7),
+            readWatermark: () => ReadOne(factory, ctx => ctx.SessionHighwater.Single().Turns));
 
         using var ctx = factory.CreateDbContext();
         var row = ctx.SessionHighwater.Single();
@@ -142,7 +156,9 @@ public sealed class GatewayStatsWritePathPostgresTests
         InterleaveAndCommit(
             factory,
             holdsOpen: b => b.TokenHighWater.Add((Session, 900, 90, 45, 9)),
-            racesIt: b => b.TokenHighWater.Add((Session, 300, 30, 15, 3)));
+            racesIt: b => b.TokenHighWater.Add((Session, 300, 30, 15, 3)),
+            witness: (Seed: 100, Held: 900, Raced: 300),
+            readWatermark: () => ReadOne(factory, ctx => ctx.TokenHighwater.Single().InputTokens));
 
         using var ctx = factory.CreateDbContext();
         var row = ctx.TokenHighwater.Single();
@@ -162,7 +178,9 @@ public sealed class GatewayStatsWritePathPostgresTests
         InterleaveAndCommit(
             factory,
             holdsOpen: b => b.AgentDrivenHighWater.Add((Session, 12, 120)),
-            racesIt: b => b.AgentDrivenHighWater.Add((Session, 6, 60)));
+            racesIt: b => b.AgentDrivenHighWater.Add((Session, 6, 60)),
+            witness: (Seed: 2, Held: 12, Raced: 6),
+            readWatermark: () => ReadOne(factory, ctx => ctx.AgentDrivenHighwater.Single().Turns));
 
         using var ctx = factory.CreateDbContext();
         var row = ctx.AgentDrivenHighwater.Single();
@@ -350,8 +368,26 @@ public sealed class GatewayStatsWritePathPostgresTests
     private static void InterleaveAndCommit(
         IDbContextFactory<GatewayStatsDbContext> factory,
         Action<StatsWriteBatch> holdsOpen,
-        Action<StatsWriteBatch> racesIt)
+        Action<StatsWriteBatch> racesIt,
+        (long Seed, long Held, long Raced) witness,
+        Func<long> readWatermark)
     {
+        // REFUSE A FIXTURE THAT COULD NOT SHOW THE FAILURE, rather than trusting whoever wrote it to have
+        // thought about it - the author is always the last person able to see the gap in their own fixture.
+        // Three numbers have to be ordered for a lost update to be VISIBLE here:
+        //   raced < held   - so the losing writer's value is distinguishable from the winning one at all;
+        //                    equal values would read identically whether the update was lost or kept.
+        //   seed  < raced  - so a lost update is also distinguishable from the second writer having done
+        //                    nothing, which is a different defect with the same reading.
+        Assert.True(witness.Seed < witness.Raced && witness.Raced < witness.Held,
+            $"This fixture cannot show a lost update: seed={witness.Seed}, raced={witness.Raced}, " +
+            $"held={witness.Held}. The racing value must sit strictly between the seed and the held value, " +
+            "or the assertion reads the same whether the update was lost or kept.");
+
+        // And the row must actually be there: a race to UPDATE an existing row and a race to INSERT a new
+        // one are different code paths, and this fact is about the first.
+        Assert.Equal(witness.Seed, readWatermark());
+
         using var firstHasWritten = new ManualResetEventSlim(false);
         Exception? secondFailure = null;
         var second = new Thread(() =>
