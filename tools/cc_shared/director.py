@@ -59,14 +59,40 @@ def _token() -> Optional[str]:
     return None
 
 
-def _extract_error(body: str) -> Optional[str]:
+def _error_message(body: str, code: int) -> str:
+    """What the user reads when a Director call fails (issue #1062).
+
+    TWO body shapes arrive here and BOTH carry the sentence the Director wrote. Its own handlers
+    return `{"error": "..."}`. Anything that reaches ASP.NET's unhandled-exception page instead
+    returns problem-details, which puts the sentence in `detail` - and the old extractor read only
+    `error`, so every problem-details failure arrived as a bare status code. That is how the
+    refusal sentence added in #1050 - naming the agent, the command tried, and the two ways to fix
+    it - was written, travelled across HTTP intact, and was thrown away by the last component: the
+    user saw `HTTP 500 from the Director`, indistinguishable from the bug #1050 had just closed.
+    This is a SHARED helper, so the loss was never spawn-only; it applied to every command routed
+    through `_request` that hit an endpoint answering in problem-details.
+
+    problem-details `title` is deliberately NOT read as that sentence. It is a generic label - "An
+    error occurred while processing your request.", "Not Found" - that says LESS than the status
+    code it would have displaced, so promoting it would trade one uninformative line for a worse
+    one. It is worth showing beside the code, never instead of it.
+    """
+    status = f"HTTP {code} from the Director"
     try:
         obj = json.loads(body)
     except (ValueError, TypeError):
-        return None
-    if isinstance(obj, dict):
-        return obj.get("error") or obj.get("Error")
-    return None
+        return status
+    if not isinstance(obj, dict):
+        return status
+    for key in ("error", "Error", "detail", "Detail"):
+        value = obj.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    for key in ("title", "Title"):
+        value = obj.get(key)
+        if isinstance(value, str) and value.strip():
+            return f"{status}: {value.strip()}"
+    return status
 
 
 def _request(method: str, path: str, body: Optional[dict] = None, timeout: float = 30) -> Any:
@@ -90,7 +116,7 @@ def _request(method: str, path: str, body: Optional[dict] = None, timeout: float
             detail = err.read().decode("utf-8")
         except OSError:
             detail = ""
-        raise DirectorError(_extract_error(detail) or f"HTTP {err.code} from the Director") from err
+        raise DirectorError(_error_message(detail, err.code)) from err
     except urllib.error.URLError as err:
         raise DirectorError(
             f"Cannot reach the Director at {director_base_url()}: {err.reason}"
