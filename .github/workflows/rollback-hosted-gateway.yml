@@ -6,6 +6,11 @@ name: Rollback hosted Gateway
 #                staging slot, so swapping again puts it straight back. This is the fast recovery: seconds,
 #                no rebuild. Only valid right after a bad deploy and before the staging slot is stopped or
 #                overwritten by the next deploy.
+#                If it does NOT restore production, the run exits RED and deliberately LEAVES the staging
+#                slot RUNNING as the only remaining swap target. That is a declared hazard - two containers
+#                on the shared file share - and the run output says so and says how to clear it. It is never
+#                silently green: this lever reporting success without recovering is the one failure that
+#                turns a bad deploy into an unrecoverable one.
 #
 #   downgrade  - abandon slots and return the plan to Basic (B1). Deletes the staging slot first (a slot
 #                cannot exist on Basic). Use only if we decide to stop paying for the Standard tier; it
@@ -82,17 +87,111 @@ jobs:
         run: |
           # The staging slot must be running to be swapped. Start it (a no-op if already up), then swap.
           az webapp start -g "$AZURE_RG" -n "$APP" --slot "$SLOT" -o none
-          az webapp deployment slot swap -g "$AZURE_RG" -n "$APP" \
-            --slot "$SLOT" --target-slot production -o none
+
+          # From here the staging slot is RUNNING, so every exit below leaves a second writer on the
+          # shared mount until something stops it. A bare errexit death here would end the step with the
+          # Azure error and nothing else - the operator would not be told that a slot is now up. Declare it.
+          if ! az webapp deployment slot swap -g "$AZURE_RG" -n "$APP" \
+                 --slot "$SLOT" --target-slot production -o none; then
+            echo "ERROR: the swap FAILED. Production was NOT changed by this run - it is still serving"
+            echo "       whatever it was serving before, so this is not itself an outage."
+            echo ""
+            echo "       BUT THE STAGING SLOT WAS STARTED AND IS STILL RUNNING. That is a SECOND WRITER on"
+            echo "       the shared Azure Files mount at /home/gateway/cc-director - the thing that corrupted"
+            echo "       the statistics database and took GET /sessions down for 32 minutes on 2026-07-30."
+            echo "       It is left up rather than stopped blindly because the swap's failure mode is not"
+            echo "       known here and a stop during a half-finished swap is its own hazard."
+            echo ""
+            echo "       DO THIS NOW - read the slot's real state, then decide:"
+            echo "         az webapp show -g $AZURE_RG -n $APP --slot $SLOT --query state -o tsv"
+            echo "         az webapp stop -g $AZURE_RG -n $APP --slot $SLOT"
+            exit 1
+          fi
           echo "Swapped '$SLOT' back into production. Verifying /healthz..."
+          # RECORD whether recovery was actually observed. This loop used to break on a 200 and then fall
+          # straight through when it never saw one: thirty HTTP 500s and the step carried on, stopped the
+          # staging slot and reported success. The bare diagnostic curl below cannot catch that either - it
+          # has no --fail, so it exits 0 on an HTTP 500. The result was the worst possible shape for an
+          # emergency lever: a swap-back that did NOT restore production reported GREEN while stopping the
+          # only remaining swap target, so the one recovery path left was destroyed and the only evidence
+          # anyone had said it worked. Never infer recovery from "the loop finished".
+          recovered=no
           for i in $(seq 1 30); do
             code=$(curl -s -m 10 -o /dev/null -w "%{http_code}" "${GATEWAY_URL}/healthz" || true)
             echo "attempt $i: HTTP $code"
-            [ "$code" = "200" ] && { echo "Recovered."; break; }
+            if [ "$code" = "200" ]; then
+              recovered=yes
+              echo "Recovered."
+              break
+            fi
             sleep 3
           done
-          curl -s -m 15 "${GATEWAY_URL}/healthz"; echo
-          az webapp stop -g "$AZURE_RG" -n "$APP" --slot "$SLOT" -o none
+
+          # The response body, whatever it is - the diagnostic that says WHY when the code was not 200.
+          # `|| true` is load-bearing, not defensive habit. Steps run under `bash -e`, and this curl fails
+          # at the TRANSPORT level (exit 7 connection refused, exit 28 timeout) precisely when production is
+          # hard down - the common case in the outage this lever exists for. Unguarded, errexit would kill
+          # the step HERE, one line before the verdict below: an unrecovered swap-back would exit red with
+          # the hazard banner never printed, and a RECOVERED one would exit red without stopping staging.
+          # A diagnostic must never decide the outcome.
+          curl -s -m 15 "${GATEWAY_URL}/healthz" || true
+          echo
+
+          if [ "$recovered" != "yes" ]; then
+            echo "ERROR: the swap-back did NOT restore production - /healthz never returned 200 in 30 attempts."
+            echo ""
+            echo "       THE STAGING SLOT HAS BEEN LEFT RUNNING ON PURPOSE. This is a declared hazard, not"
+            echo "       an oversight, and it must be resolved rather than left alone:"
+            echo ""
+            echo "         * It is a SECOND WRITER on the shared Azure Files mount at /home/gateway/cc-director."
+            echo "           Two containers on one set of files is what corrupted the statistics database and"
+            echo "           took GET /sessions down for 32 minutes on 2026-07-30. That risk is running RIGHT NOW."
+            echo "         * It is being accepted only because the alternative is worse. The slot still holds"
+            echo "           the instance that was in production before this swap-back, and it is the only"
+            echo "           remaining swap target - stopping it would leave no recovery path at all. Stopping"
+            echo "           a slot while production is unhealthy is also what caused a 502 outage before."
+            echo "         * This run exits RED so a human is looking within seconds, not in a week. A declared"
+            echo "           hazard with a red run beats an undeclared recovery reporting green."
+            echo "         * This run ending also RELEASES the hosted-gateway-production serialisation group,"
+            echo "           so anything queued behind it can now start while both containers are up. A queued"
+            echo "           DEPLOY is safe - it refuses to start on a staging slot that is not Stopped - but"
+            echo "           the slot provisioning workflow and a second rollback have no such guard. Check"
+            echo "           the Actions queue before you do anything else."
+            echo ""
+            echo "       DO THIS NOW, in order:"
+            echo "         1. Find out why production is still unhealthy - the platform container log for"
+            echo "            $APP has the failing container's own startup output."
+            echo "         2. Decide: swap again, or fix forward and deploy."
+            echo "         3. When production is healthy, return to steady state - ONE running instance:"
+            echo "              az webapp stop -g $AZURE_RG -n $APP --slot $SLOT"
+            echo "       Do not walk away while two containers share that mount."
+            exit 1
+          fi
+
+          # Production recovered. Return to steady state - one running instance. If the stop FAILS, the
+          # slot is still a second writer on the shared mount, and errexit alone would end the step here
+          # with a bare red and no explanation: the identical undeclared-hazard shape as the failure path
+          # above, just reached from the good side. Declare it the same way.
+          if ! az webapp stop -g "$AZURE_RG" -n "$APP" --slot "$SLOT" -o none; then
+            echo "ERROR: production RECOVERED, but stopping the staging slot FAILED."
+            echo ""
+            echo "       THE SWAP-BACK ITSELF WORKED - production is serving again. This is a cleanup"
+            echo "       failure, not a recovery failure, and it still needs you:"
+            echo ""
+            echo "         * The staging slot is very likely STILL RUNNING, which makes it a SECOND WRITER"
+            echo "           on the shared Azure Files mount at /home/gateway/cc-director. Two containers on"
+            echo "           one set of files corrupted the statistics database and took GET /sessions down"
+            echo "           for 32 minutes on 2026-07-30."
+            echo "         * This run ending RELEASES the hosted-gateway-production serialisation group, so"
+            echo "           anything queued can start while both containers are up. A queued DEPLOY refuses"
+            echo "           to start on a slot that is not Stopped; the provisioning workflow and a second"
+            echo "           rollback do not."
+            echo ""
+            echo "       DO THIS NOW - confirm the slot's real state, then stop it:"
+            echo "         az webapp show -g $AZURE_RG -n $APP --slot $SLOT --query state -o tsv"
+            echo "         az webapp stop -g $AZURE_RG -n $APP --slot $SLOT"
+            exit 1
+          fi
           echo "Staging stopped; steady state restored to one running instance."
 
       - name: Downgrade the plan (delete staging, return to Basic)
