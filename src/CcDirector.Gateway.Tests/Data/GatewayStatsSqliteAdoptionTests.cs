@@ -511,7 +511,17 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
         context.Database.Migrate();
         Assert.Empty(context.Database.GetPendingMigrations());
         Assert.Single(context.StatDeltas.ToList());
-        Assert.Single(context.Meta.ToList());
+
+        // meta carries TWO rows, not the one this test seeds. models_since_utc is written by the store's own
+        // version 2 migration when the file is created, so a real version 5 store is never empty of meta -
+        // asserting a single row was this test being wrong about its own fixture's starting state, which is
+        // exactly the thing a fixture built by RUNNING the old code is able to correct.
+        //
+        // Asserted by NAME rather than by count, so it says which rows it means and does not go quietly green
+        // again if some future migration adds a third.
+        var meta = context.Meta.ToList();
+        Assert.Contains(meta, m => m.Name == GatewayStatsDatabase.ModelsSinceKey && m.Tenant == "local");
+        Assert.Contains(meta, m => m.Name == "agents_since_utc" && m.Value == "2026-07-30T00:00:00Z");
     }
 
     /// <summary>
