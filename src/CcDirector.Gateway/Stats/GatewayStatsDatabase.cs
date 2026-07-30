@@ -82,6 +82,14 @@ public sealed class GatewayStatsDatabase : IDisposable
             : path!;
 
         FileLog.Write($"[GatewayStatsDatabase] Open: path={_path}");
+
+        // The no-SQLite-on-hosted rule, enforced at the exact line that broke the 2026-07-30 deploy. This is
+        // the statistics FILE, and a hosted Gateway keeps none: its store is PostgreSQL. Refused BEFORE the
+        // directory is created, so a hosted container does not even leave an empty directory behind on a
+        // share. The refusal is not caught here - the caller decides what an unavailable statistics surface
+        // means, and GatewayHost.OpenInputStats already treats it as non-fatal and names it in the log.
+        CcDirector.Gateway.Data.HostedSqliteGuard.EnsureNotHosted($"gateway statistics database at '{_path}'");
+
         try
         {
             var dir = System.IO.Path.GetDirectoryName(_path);
