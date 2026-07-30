@@ -45,6 +45,20 @@ public sealed class ProcessHost : IDisposable
 
         string commandLine = string.IsNullOrEmpty(args) ? $"\"{exePath}\"" : $"\"{exePath}\" {args}";
 
+        // Say what is about to be launched, BEFORE trying it. A launch that fails leaves nothing else
+        // behind: the only other line is the caller's failure message, and for a whole release the
+        // Claude path printed no executable at all, so there was no way to see from the outside what
+        // CreateProcess was actually handed (devthrottle_internal issue #1050).
+        //
+        // Only the NAMES of the injected variables are recorded, never their values: this dictionary
+        // carries agent credentials (CURSOR_API_KEY, COPILOT_GITHUB_TOKEN), and a launch line is not
+        // the place to write a token to disk.
+        var envNames = environmentVars is null || environmentVars.Count == 0
+            ? "(none)"
+            : string.Join(",", environmentVars.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase));
+        FileLog.Write($"[ProcessHost] Start: exe={exePath}, args={(string.IsNullOrEmpty(args) ? "(none)" : args)}, " +
+                      $"workingDir={workingDir ?? "(inherited)"}, injectedEnv={envNames}");
+
         // Two-call pattern for InitializeProcThreadAttributeList
         var size = IntPtr.Zero;
         InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
@@ -108,7 +122,21 @@ public sealed class ProcessHost : IDisposable
                         ref startupInfo,
                         out _processInfo))
                 {
-                    throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateProcess failed.");
+                    // THE ERROR CODE IS THE DIAGNOSIS - do not drop it. This threw
+                    // "CreateProcess failed." for a whole release, and Win32Exception(code, message)
+                    // returns the MESSAGE from Message, not the system text, so every caller that
+                    // logged ex.Message logged those three words and nothing else. ERROR_FILE_NOT_FOUND,
+                    // ERROR_DIRECTORY and ERROR_NOT_ENOUGH_MEMORY are three different bugs with three
+                    // different fixes, and a clean-machine install failure (devthrottle_internal issue
+                    // #1050) took four eliminations to place because the log distinguished none of them.
+                    // The code, its system text, the command line and the working directory all go in
+                    // the message, so they reach the Director log AND the caller's error response.
+                    var error = Marshal.GetLastWin32Error();
+                    var systemText = new Win32Exception(error).Message;
+                    var detail = $"CreateProcess failed with Win32 error {error} ({systemText}). " +
+                                 $"commandLine={commandLine}, workingDir={workingDir ?? "(inherited)"}";
+                    FileLog.Write($"[ProcessHost] Start FAILED: {detail}");
+                    throw new Win32Exception(error, detail);
                 }
             }
             finally

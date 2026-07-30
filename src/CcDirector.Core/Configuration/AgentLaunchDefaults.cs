@@ -25,9 +25,62 @@ namespace CcDirector.Core.Configuration;
 /// all, silently: a spawn asking for bypassPermissions=true got a Codex launched with an empty
 /// command line, sandboxed and prompting on every tool call, while the log said the default had been
 /// applied. It now covers every agent that HAS such a flag, and says plainly when one does not.
+///
+/// It also owns the EXECUTABLE for those callers (<see cref="CreateAgentForKind"/>), because the
+/// executable and the arguments have to come from the SAME agent entry. They did not, and that is
+/// devthrottle_internal issue #1050: a clean machine could not start a session with the agent its own
+/// wizard had just installed. The wizard records the installed binary's absolute path on the agent
+/// entry (<c>agent.entries[].executable_path</c>) and reports it as ready; nothing writes the legacy
+/// per-type <c>agent.claude_path</c> key any more, so <see cref="AgentOptions.ClaudePath"/> stayed at
+/// its default bare name "claude". The create path took the arguments from the entry and the
+/// executable from <see cref="AgentOptions"/>, so it handed CreateProcess a bare "claude" that does
+/// not resolve when the installer's <c>.local\bin</c> is not on the running Director's PATH - and the
+/// launch died with a bare "CreateProcess failed." The desktop New Session dialog never had the bug
+/// because it always passed the selected entry's path.
 /// </summary>
 public static class AgentLaunchDefaults
 {
+    /// <summary>
+    /// Build the agent for a caller that knows only the agent KIND - a Control API spawn, a handover
+    /// target, a workspace restore - so it launches the executable the machine actually has: the
+    /// path recorded on the configured agent entry, which is the same entry
+    /// <see cref="ResolveDefaultArgs"/> takes the preset and model from.
+    ///
+    /// A kind with no entry, or an entry with a blank path, falls through to the per-type path in
+    /// <see cref="AgentOptions"/> exactly as before - that is the documented default for a machine
+    /// with no agent library, not a fallback that hides a failure. Callers that let the USER pick an
+    /// entry (the desktop New Session dialog) pass that entry's path directly and do not come here.
+    /// </summary>
+    public static IAgent CreateAgentForKind(AgentKind agentKind, AgentOptions options)
+    {
+        if (options is null) throw new ArgumentNullException(nameof(options));
+
+        var entryPath = ResolveEntryExecutablePath(agentKind, options);
+        return AgentPluginRegistry.CreateAgentWithPathOverride(agentKind, options, entryPath);
+    }
+
+    /// <summary>
+    /// The executable path recorded on the configured agent entry for this kind (the first ENABLED
+    /// entry of that kind, then any entry of that kind - the same entry the desktop dialog
+    /// pre-selects), or null when there is no such entry or its path is blank.
+    /// </summary>
+    public static string? ResolveEntryExecutablePath(AgentKind agentKind, AgentOptions options)
+    {
+        if (options is null) throw new ArgumentNullException(nameof(options));
+
+        var entry = FindEntry(agentKind, options);
+        var path = entry?.ExecutablePath?.Trim();
+        if (string.IsNullOrEmpty(path))
+        {
+            FileLog.Write($"[AgentLaunchDefaults] ResolveEntryExecutablePath: {agentKind} has no configured entry path; " +
+                          "launching the per-type default from AgentOptions");
+            return null;
+        }
+
+        FileLog.Write($"[AgentLaunchDefaults] ResolveEntryExecutablePath: {agentKind} resolved from entry id={entry!.Id} to {path}");
+        return path;
+    }
+
     /// <summary>
     /// The default effective launch arguments for the given agent kind, matching what the desktop
     /// New Session dialog launches by default:
@@ -107,9 +160,7 @@ public static class AgentLaunchDefaults
     /// </summary>
     private static string ResolveEntryArgs(AgentKind agentKind, AgentOptions options)
     {
-        var entries = AgentEntryStore.LoadEntries(options);
-        var entry = entries.FirstOrDefault(e => e.Enabled && e.Type == agentKind)
-                    ?? entries.FirstOrDefault(e => e.Type == agentKind);
+        var entry = FindEntry(agentKind, options);
         if (entry is not null)
         {
             var argsFromEntry = entry.ToToolConfig().ResolveEffectiveCommandLineArguments();
@@ -120,5 +171,18 @@ public static class AgentLaunchDefaults
         var args = AgentToolConfig.Load(agentKind).ResolveEffectiveCommandLineArguments();
         FileLog.Write($"[AgentLaunchDefaults] ResolveEntryArgs: {agentKind} no configured entry; per-tool config args=\"{args}\"");
         return args;
+    }
+
+    /// <summary>
+    /// The configured agent-library entry a kind-only launch belongs to: the first ENABLED entry of
+    /// that kind, then any entry of that kind, mirroring what the desktop New Session dialog
+    /// pre-selects. ONE lookup for both the arguments and the executable, so the two can never come
+    /// from different entries again (issue #1050).
+    /// </summary>
+    private static AgentEntry? FindEntry(AgentKind agentKind, AgentOptions options)
+    {
+        var entries = AgentEntryStore.LoadEntries(options);
+        return entries.FirstOrDefault(e => e.Enabled && e.Type == agentKind)
+               ?? entries.FirstOrDefault(e => e.Type == agentKind);
     }
 }
