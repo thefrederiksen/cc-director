@@ -621,6 +621,43 @@ jobs:
             exit 1
           fi
 
+      # The release page publishes OUR WRITTEN NOTES and nothing else.
+      #
+      # This workflow used to switch on the release action's own note GENERATION, which produced a
+      # list of internal pull-request titles. Every correct-looking release page up to v1.9.0 was
+      # a PERSON pasting docs/public/release-notes/<tag>.md over that list afterwards - so the page
+      # has been right by accident, not by design. v1.8.7 is the one that shipped as generated:
+      # four pull-request titles and a compare link, published to strangers. The switch is gone and
+      # a test in CcDirector.Core.Tests keeps it gone, by name.
+      #
+      # A missing notes file STOPS the release here. There is deliberately no fallback that
+      # generates a competing version nobody wrote: a plausible wrong page is worse than no page,
+      # because a page that looks like release notes does not get read.
+      - name: Resolve the written release notes
+        id: notes
+        run: |
+          NOTES="docs/public/release-notes/${GITHUB_REF_NAME}.md"
+          if [ ! -f "$NOTES" ]; then
+            echo "::error title=Release notes missing::$NOTES does not exist at tag $GITHUB_REF_NAME. Write the notes, commit them, and cut the tag again - this workflow does NOT generate release notes."
+            {
+              echo "## Release STOPPED: no written release notes"
+              echo ""
+              echo "Expected \`$NOTES\` at tag \`$GITHUB_REF_NAME\`."
+              echo ""
+              echo "The workflow publishes the notes we wrote and refuses to invent a substitute."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          # A file that exists but says nothing is the same defect wearing a different hat, so the
+          # floor is on CONTENT (non-whitespace characters), not on the file existing.
+          CHARS=$(tr -d '[:space:]' < "$NOTES" | wc -c)
+          if [ "$CHARS" -lt 200 ]; then
+            echo "::error title=Release notes empty::$NOTES has only $CHARS non-whitespace characters. That is a placeholder, not release notes."
+            exit 1
+          fi
+          echo "Publishing $NOTES ($CHARS non-whitespace characters)."
+          echo "path=$NOTES" >> "$GITHUB_OUTPUT"
+
       - name: Download all artifacts
         uses: actions/download-artifact@v7
         with:
@@ -803,13 +840,62 @@ jobs:
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Create GitHub Release
+      # The release is created as a DRAFT with every asset already attached, and published by the
+      # step below. A draft is not "latest" and is not visible to /releases/latest, so no updater
+      # can see this version until it is COMPLETE: "latest" and "complete" become the same moment.
+      #
+      # Publishing first is what gave every release an update-failure window. Measured to the second
+      # on v1.8.8: published 10:48:48Z, assets attached 10:54:11Z - five minutes and twenty-three
+      # seconds in which /releases/latest named a version whose release-manifest.json did not exist.
+      # A launcher checked at 10:54:05Z, before the manifest existed, and failed outright. With hourly
+      # checks that is roughly one machine in eleven losing up to an hour, and a failed check used to
+      # render exactly like being up to date, so nobody noticed.
+      #
+      # draft: true is therefore load-bearing, not a preference. Do not set it back to false to
+      # "save a step" - the second step IS the publish.
+      - name: Create draft release with all assets
+        id: draft
         uses: softprops/action-gh-release@v3
         with:
           name: DevThrottle v${{ steps.version.outputs.version }}
-          draft: false
+          draft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
-          generate_release_notes: true
+          body_path: ${{ steps.notes.outputs.path }}
           files: release-files/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Publish only once the manifest is provably attached. Every updater resolves
+      # release-manifest.json first and treats its absence as "this release is unusable", so a
+      # release published without it is a release nobody can install - and it would take the
+      # "latest" slot away from the previous working one.
+      # Addressed by release ID, not by tag: a DRAFT is not reachable through the by-tag endpoint
+      # (GitHub associates a draft with its tag only on publish), so a tag lookup here would be
+      # asking the wrong question and could answer about the wrong release entirely.
+      - name: Verify the manifest is attached, then publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.draft.outputs.id }}
+        run: |
+          if [ -z "$RELEASE_ID" ]; then
+            echo "::error title=No release id::The draft step produced no release id, so there is nothing to publish and no way to check what was attached."
+            exit 1
+          fi
+
+          ASSETS=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq '[.assets[].name] | join(" ")')
+          echo "Attached assets: $ASSETS"
+          case " $ASSETS " in
+            *" release-manifest.json "*)
+              ;;
+            *)
+              echo "::error title=Manifest not attached::Draft release $GITHUB_REF_NAME has no release-manifest.json. Refusing to publish - it would become 'latest' and no updater could install it."
+              exit 1
+              ;;
+          esac
+
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false >/dev/null
+          echo "Published $GITHUB_REF_NAME with all assets already attached."
+          {
+            echo "## Published"
+            echo "\`$GITHUB_REF_NAME\` left draft with every asset attached, so there is no window in which it is latest but incomplete."
+          } >> "$GITHUB_STEP_SUMMARY"

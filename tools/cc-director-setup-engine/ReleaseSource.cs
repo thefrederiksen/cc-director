@@ -85,6 +85,10 @@ public sealed class ReleaseSource
     /// <see cref="GetReleaseBodyAsync"/>.
     /// </summary>
     /// <exception cref="GitHubRateLimitException">The fetch was rate-limited and retries were exhausted.</exception>
+    /// <exception cref="ReleaseNotReadyException">
+    /// The latest release is published but its release-manifest.json is not attached yet. Callers that
+    /// run on a loop should wait a few minutes and look again rather than treating this as a failure.
+    /// </exception>
     public async Task<ResolvedRelease> FetchLatestAsync(CancellationToken ct)
     {
         var url = $"https://api.github.com/repos/{GitHubRepositoryDefaults.Slug}/releases/latest";
@@ -264,8 +268,18 @@ public sealed class ReleaseSource
             }
         }
 
+        // A published release with no manifest is a release that is not FINISHED, and that is a
+        // different thing from a fetch that went wrong. It used to be raised as a bare
+        // InvalidOperationException, which every caller then logged as "update check failed" - so a
+        // check that was merely five minutes early was indistinguishable from a real fault. Classify
+        // it so a caller can wait it out and say so (see ReleaseNotReadyRetry). The Director's own
+        // updater has the same condition on its own code path; that half is issue #1030.
         if (manifestUrl is null)
-            throw new InvalidOperationException($"Latest release has no {ManifestAssetName} asset.");
+        {
+            var tag = root.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "(untagged)" : "(untagged)";
+            EngineLog.Write($"[ReleaseSource] Release {tag} has {urls.Count} asset(s) but no {ManifestAssetName}; it is published but not complete.");
+            throw new ReleaseNotReadyException(tag, ManifestAssetName);
+        }
 
         var manifestJson = await _http.GetStringAsync(manifestUrl, ct);
         var manifest = ReleaseManifest.Parse(manifestJson);

@@ -2,25 +2,41 @@
 
 ## Overview
 
-CC Director uses GitHub Actions to automate building, testing, and publishing releases. Releases are created entirely from the GitHub web UI -- no local commands required.
+GitHub Actions builds and publishes the release. **A person pushes a tag; nothing else.** The
+workflow creates the release page, attaches every asset, and only then publishes it.
 
 ## How to Release a New Version
 
-1. Go to https://github.com/example-org/devthrottle/releases
-2. Click **"Draft a new release"**
-3. In the **"Choose a tag"** dropdown, type a new tag (e.g., `v1.3.0`) and select **"Create new tag on publish"**
-4. Set the **Target** to `main`
-5. Enter a title (e.g., `CC Director v1.3.0`)
-6. Click **"Generate release notes"** to auto-populate from commits since the last tag
-7. Click **"Publish release"**
+1. **Write the release notes first** at `docs/public/release-notes/v<version>.md` and get them onto
+   `main`. This file IS the release page - it is published verbatim.
+2. Bump `<Version>` in `Directory.Build.props` (the single version source) and merge that to `main`.
+3. Create the tag `v<version>` on that merged commit and push it.
 
-GitHub Actions will automatically:
-- Install .NET 10 SDK
-- Run all unit tests
-- Build the single-file EXE using the 3-step workaround for .NET 10 bugs
-- Attach `cc-director.exe` to the release as a downloadable asset
+That is the whole procedure. The workflow then:
+
+- verifies the tag matches `Directory.Build.props`, and that the written notes exist and say
+  something;
+- builds every component for Windows and macOS and checks the asset list is complete;
+- creates the release **as a draft**, attaches all assets, and publishes it once the manifest is
+  provably attached.
 
 Monitor progress at: https://github.com/example-org/devthrottle/actions
+
+### Two things NOT to do, and why
+
+**Do not create or publish the release yourself in the web interface.** Publishing makes a release
+"latest" the instant you click, while the workflow's assets arrive minutes afterwards. Every updater
+that checks in between sees a newest version with no `release-manifest.json` and fails outright -
+measured on v1.8.8 at five minutes and twenty-three seconds, with a launcher failing six seconds
+before the assets landed. A failed update check used to look exactly like being up to date, so this
+went unnoticed for as long as the project has existed. Pushing the tag and leaving the release alone
+is what closes that window (issue #1079).
+
+**Do not use "Generate release notes".** It produces a list of internal pull-request titles, which
+is what v1.8.7 shipped to strangers. Every release page that looked right before v1.9.0 was a person
+pasting the written notes over that list afterwards - correct by accident. The workflow publishes
+`docs/public/release-notes/<tag>.md` and FAILS when it is absent; it will not invent a substitute,
+because a page that looks like release notes does not get read (issue #1106).
 
 ## Versioning
 
@@ -60,7 +76,9 @@ For local testing, `scripts/release.ps1` still works:
 .\scripts\release.ps1 -SelfContained    # Standalone (~150+ MB)
 ```
 
-Local builds use the version from `CcDirector.Wpf.csproj`. Only CI builds get the tag version.
+The version comes from `Directory.Build.props`, which is the single version source for every
+binary in the release (see `docs/architecture/VERSIONING.md`). The workflow fails the release if
+the tag and that file disagree.
 
 ## Previous Tags
 
@@ -72,4 +90,6 @@ Local builds use the version from `CcDirector.Wpf.csproj`. Only CI builds get th
 
 ## Implementation Status
 
-**Not yet implemented.** The GitHub Actions workflow (`.github/workflows/release.yml`) still needs to be created. See the implementation tasks for details.
+**Live.** `.github/workflows/release.yml` has built and published every release since v1.2.0. The
+"not yet implemented" note that stood here was left over from before the workflow existed and was
+plainly contradicted by every release page in the repository.
