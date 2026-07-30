@@ -222,14 +222,39 @@ public static class GatewayStatsSqliteAdoption
     /// change, and reporting what is actually true.
     /// </summary>
     /// <summary>
-    /// How long to wait for another writer before giving up and reporting the store busy.
+    /// THE INVARIANT: the inner bound must be STRICTLY LESS THAN the outer containment deadline.
     ///
-    /// IT MUST STAY WELL UNDER THE CALLER'S CONTAINMENT DEADLINE - twenty seconds - or the bound is useless:
-    /// the caller stops waiting first and reports a generic "database or network problem", which is precisely
-    /// the operator misdirection this work exists to remove. A local writer lock must arrive as a local
-    /// writer lock.
+    /// This is the relationship that matters, and until it was written down nothing in either file said the
+    /// two numbers had anything to do with each other. A thirty-five second wait inside a twenty second
+    /// containment means the containment CANNOT DO ITS JOB, however correct each piece looks alone: the caller
+    /// gives up first and reports a generic "database or network problem", so a local writer lock reaches the
+    /// operator through the wrong bucket. That is the misdirection this work exists to remove.
+    ///
+    /// It is asserted by a test that PROVOKES a contested acquisition and measures it, not read off these
+    /// numbers - because a configuration setting is a REQUEST, NOT A GUARANTEE. That is how this went wrong
+    /// twice: first an unbounded wait, then a bound set on a knob that does not govern it.
     /// </summary>
-    private const int WriteLockWaitSeconds = 5;
+    public static readonly TimeSpan WriteLockWait = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// The caller's containment deadline, which <see cref="WriteLockWait"/> must stay strictly under.
+    ///
+    /// MIRRORED, NOT OWNED. The real value is the statistics store host's own open deadline; this copy exists
+    /// so the relationship can be asserted from here while that type lives on another branch. WHEN THE TWO
+    /// MEET, REPLACE THIS WITH A DIRECT REFERENCE to it - a mirrored constant is a second place to forget,
+    /// and the test guarding this relationship is only as good as this number being right.
+    /// </summary>
+    public static readonly TimeSpan CallerContainmentDeadline = TimeSpan.FromSeconds(20);
+
+    /// <summary>
+    /// The configured wait, in whole seconds, for the provider timeout.
+    ///
+    /// The ACHIEVED wait is longer than the configured one - measured at 6.9 seconds against a configured 5 -
+    /// because the provider's retry granularity and the native busy handler both add to it. Stated here
+    /// because the last version of this code claimed five and delivered thirty-five, and the next reader will
+    /// otherwise see a five and believe it. Only the measured value means anything.
+    /// </summary>
+    private static int WriteLockWaitSeconds => (int)WriteLockWait.TotalSeconds;
 
     private static StatsStoreAdoptionResult StampUnderLock(
         GatewayStatsDbContext context, IHistoryRepository history, SqliteConnection connection,
