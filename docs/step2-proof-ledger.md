@@ -151,7 +151,33 @@ is that the NEXT startup over that state is survivable; and the 20-second deadli
 cancels, so a HUNG migration keeps running against the database after the Gateway has declared
 statistics unreachable and started serving, meaning a later restart can put a second migration alongside
 one that never died. |
-| 19 | The WHOLE SOLUTION builds and its whole test suite passes, for a COMMIT on this mission | **IN FLIGHT - closes nothing yet** | No whole-suite answer has existed for this mission at any point. Local full-suite runs were banned (they take a fleet-wide lock and starve every other run on the machine) and CI did not fire on these branches, because `ci.yml` triggers only on push to `main` and pull requests based on `main` - so for about two hours there was no whole-suite signal of any kind, and nobody noticed, because the absence of a signal looks exactly like a signal that has not spoken yet. Draft pull request **2319** now makes the trigger fire on every push to `nosqlite-stats`; a draft lands nothing and cannot be merged. Runs are in flight on `2feb674e`, `a3872bfd` and `54633ac6`. **A run IN PROGRESS closes nothing** - the .NET job takes 25 minutes or more, so expect a lag behind each push. The green, when it comes, belongs to a COMMIT and not to the branch or to anyone's memory of a run. Worker 2 separately confirmed lock-free that the whole solution BUILDS with zero warnings at its head, which is a build and explicitly not a test run. |
+| 19 | The WHOLE SOLUTION builds and its whole test suite passes, for a COMMIT on this mission | **A GREEN ARRIVED AND IT PROVED NOTHING ABOUT THE PORT. The row stays OPEN.** | No whole-suite answer has existed for this mission at any point. Local full-suite runs were banned (they take a fleet-wide lock and starve every other run on the machine) and CI did not fire on these branches, because `ci.yml` triggers only on push to `main` and pull requests based on `main` - so for about two hours there was no whole-suite signal of any kind, and nobody noticed, because the absence of a signal looks exactly like a signal that has not spoken yet. Draft pull request **2319** now makes the trigger fire on every push to `nosqlite-stats`; a draft lands nothing and cannot be merged. Runs are in flight on `2feb674e`, `a3872bfd` and `54633ac6`. **THE FALSE GREEN, kept on the record rather than deleted, because a row that records one is worth more
+than a row that never existed.** Run 30567613382 on commit `2feb674e7` returned SUCCESS - a real verdict,
+not a cancellation. It proved nothing about this work. **The mission branch contained ONLY
+DOCUMENTATION**: measured, `git diff origin/main...origin/nosqlite-stats -- src/` was EMPTY, and the
+whole branch was three files and 765 insertions of plan, contract and this ledger. **Not one of the six
+worker branches was merged in.** So the whole solution built and passed with NONE of the Step 2 work
+present - a green for `origin/main` plus my notes.
+
+Both halves of how that happened belong here. The Architect opened the draft pull request specifically
+to give this mission whole-suite coverage, announced that CI now covered the branch, and never checked
+what was ON the branch - the same defect he had corrected himself for two hours earlier, asserting an
+authority exists without verifying it reaches the thing it is aimed at, committed again inside the fix
+for the first one. And I reported CI runs in flight for an hour as though the answer coming would be
+about our work, without checking either; I measured it before recording the row, which is the only
+reason it did not close.
+
+**A cancelled run is ALSO not a result** - it reports `completed` with conclusion `cancelled`, so
+anything matching on status alone reads it as an answer. Only `success`, `failure` or `timed_out` mean
+anything. The Architect's own CI watcher had that defect and would have reported CI DONE on the first
+superseded run.
+
+**The rule this row now carries: a green on the mission branch means what the branch CONTAINED at that
+moment. Every row that closes on a CI result must record WHICH worker branches were present in that
+run.** Branches merge in as each clears independent review, in dependency order, so coverage grows
+incrementally and a regression surfaces against the commit that caused it.
+
+**A run IN PROGRESS closes nothing** - the .NET job takes 25 minutes or more, so expect a lag behind each push. The green, when it comes, belongs to a COMMIT and not to the branch or to anyone's memory of a run. Worker 2 separately confirmed lock-free that the whole solution BUILDS with zero warnings at its head, which is a build and explicitly not a test run. |
 | 20 | The Entity Framework MODEL describes the literal version 5 DDL, so a later table-rebuild migration cannot silently undo it | **OPEN - owed by WORKER 2. This is the Architect's own prediction, arriving.** | Review 4, PROVED BY RUNNING against live model metadata. The raw `Up()` now emits correct version 5 DDL, but the runtime model, the designer's target model and the snapshot were never changed to describe it: all eight `tenant` columns have NO configured model default against a database default of `'local'`; all eight rowid primary keys are non-nullable CLR properties where the real file reports `PRAGMA table_xinfo.notnull = 0`; and the model still uses conventional primary key constraint names. **These are the SAME FOUR DIVERGENCES the first review rejected** - replacing only `Up()` hid them from the baseline output without correcting the chain's target model. The bite lands on the first later SQLite migration needing a table rebuild: scaffolding is diffed from the snapshot, so it can strip `DEFAULT 'local'`, restore named key constraints and restore the rowid difference - **and both equivalence tests stay GREEN, because they rebuild only the baseline and never
 baseline-plus-a-later-model-driven-migration.**
 
