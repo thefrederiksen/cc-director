@@ -160,7 +160,7 @@ public sealed class GatewayAccountEnrollRunner
         {
             EngineLog.Write("[GatewayAccountEnrollRunner] VerifyAndSaveAsync: sign-in cancelled before a credential arrived");
             return OperationResult<MobileEnrollmentResponse>.Fail(
-                "Sign-in was cancelled.");
+                "Sign-in was cancelled. Click \"Sign in to DevThrottle\" to try again.");
         }
         catch (Exception ex)
         {
@@ -203,7 +203,7 @@ public sealed class GatewayAccountEnrollRunner
         {
             EngineLog.Write("[GatewayAccountEnrollRunner] SignInAndDiscoverGatewaysAsync: sign-in cancelled before a credential arrived");
             return OperationResult<IReadOnlyList<DiscoveredGateway>>.Fail(
-                "Sign-in was cancelled.");
+                "Sign-in was cancelled. Click \"Sign in to DevThrottle\" to try again.");
         }
         catch (Exception ex)
         {
@@ -341,7 +341,7 @@ public sealed class GatewayAccountEnrollRunner
         {
             EngineLog.Write("[GatewayAccountEnrollRunner] SignInAndEnrollHostedAsync: sign-in cancelled before a credential arrived");
             return OperationResult<MobileEnrollmentResponse>.Fail(
-                "Sign-in was cancelled.");
+                "Sign-in was cancelled. Click \"Sign in to DevThrottle\" to try again.");
         }
         catch (Exception ex)
         {

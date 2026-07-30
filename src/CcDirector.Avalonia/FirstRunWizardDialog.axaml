@@ -585,10 +585,15 @@
                             </StackPanel>
                         </Border>
 
-                        <RadioButton x:Name="GatewayHostedCard" GroupName="GatewayChoice"
-                                     Classes="gatewayCard emphasized" IsChecked="True"
-                                     AutomationProperties.Name="Hosted gateway, recommended. We run it for you - sign in and this machine is enrolled."
-                                     IsCheckedChanged="GatewayCard_IsCheckedChanged">
+                        <!-- FAULT 4 (injected): back to a Border with Focusable + a name declared on it,
+                             exactly as the defect shipped. Expected to be caught by
+                             EveryOption_IsARealControlWithAnAccessibleName_NotDecoratedText,
+                             EveryOption_IsOneOfASingleChoiceGroup_SoSelectionIsExposedAndExclusive, and
+                             ChoosingAnyOption_MovesTheWizardsChoice_SoTheControlIsWiredNotJustPresent. -->
+                        <Border x:Name="GatewayHostedCard" Cursor="Hand" Focusable="True"
+                                AutomationProperties.Name="Hosted gateway, recommended. We run it for you - sign in and this machine is enrolled."
+                                Background="#F2F8FD" BorderBrush="#0066B8" BorderThickness="2"
+                                CornerRadius="12" Padding="22,20">
                             <StackPanel Spacing="6">
                                 <StackPanel Orientation="Horizontal" Spacing="10">
                                     <TextBlock Text="Hosted gateway" FontSize="17" FontWeight="Bold"
@@ -606,31 +611,31 @@
                                 <TextBlock FontSize="12.5" Foreground="#8A909A"
                                            Text="Part of Pro" />
                             </StackPanel>
-                        </RadioButton>
+                        </Border>
 
                         <Grid ColumnDefinitions="*,14,*">
-                            <RadioButton Grid.Column="0" x:Name="GatewaySelfHostCard" GroupName="GatewayChoice"
-                                         Classes="gatewayCard"
-                                         AutomationProperties.Name="Self-hosted gateway. Run your own gateway and join it. For advanced setups."
-                                         IsCheckedChanged="GatewayCard_IsCheckedChanged">
+                            <Border Grid.Column="0" x:Name="GatewaySelfHostCard" Cursor="Hand" Focusable="True"
+                                    AutomationProperties.Name="Self-hosted gateway. Run your own gateway and join it. For advanced setups."
+                                    Background="#FFFFFF" BorderBrush="#E6E8EC" BorderThickness="1"
+                                    CornerRadius="10" Padding="16,13">
                                 <StackPanel Spacing="3">
                                     <TextBlock Text="Self-hosted gateway" FontSize="13.5" FontWeight="SemiBold"
                                                Foreground="#16181D" />
                                     <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#8A909A"
                                                Text="Run your own gateway and join it. For advanced setups." />
                                 </StackPanel>
-                            </RadioButton>
-                            <RadioButton Grid.Column="2" x:Name="GatewayNotNowCard" GroupName="GatewayChoice"
-                                         Classes="gatewayCard"
-                                         AutomationProperties.Name="Not now. Local-only on this machine. Connect any time from Settings."
-                                         IsCheckedChanged="GatewayCard_IsCheckedChanged">
+                            </Border>
+                            <Border Grid.Column="2" x:Name="GatewayNotNowCard" Cursor="Hand" Focusable="True"
+                                    AutomationProperties.Name="Not now. Local-only on this machine. Connect any time from Settings."
+                                    Background="#FFFFFF" BorderBrush="#E6E8EC" BorderThickness="1"
+                                    CornerRadius="10" Padding="16,13">
                                 <StackPanel Spacing="3">
                                     <TextBlock Text="Not now" FontSize="13.5" FontWeight="SemiBold"
                                                Foreground="#16181D" />
                                     <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#8A909A"
                                                Text="Local-only on this machine. Connect any time from Settings." />
                                 </StackPanel>
-                            </RadioButton>
+                            </Border>
                         </Grid>
                     </StackPanel>
                     </ScrollViewer>

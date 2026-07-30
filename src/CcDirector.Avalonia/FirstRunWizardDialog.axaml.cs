@@ -66,7 +66,7 @@ public partial class FirstRunWizardDialog : Window
     // True while RefreshGatewayChoiceUi is pushing _gatewayChoice INTO the cards' IsChecked. The cards
     // are RadioButtons now, so writing IsChecked raises IsCheckedChanged, which would call straight back
     // into the selection handler. One flag, set around the three writes, keeps the data flowing one way.
-    private bool _syncingGatewayCards;
+    private bool _syncingGatewayCards = false; // FAULT 4 (injected): nothing sets it now.
 
     // A gateway that is ALREADY configured when the step opens. Read once, from the saved config, so
     // a re-run does not ask the user to enroll a machine that is already enrolled. Before this,
@@ -393,7 +393,9 @@ public partial class FirstRunWizardDialog : Window
                 // is where the old cancelled state got STUCK: the step set no sub-view at all, so
                 // whichever one was last visible survived, and after a cancel that was the cards-less
                 // failure view (issue #1070).
-                ClearGatewayFailure();
+                // FAULT 2 (injected): ClearGatewayFailure() removed, so a previous attempt's banner
+                // survives leaving and re-entering the step. Expected to be caught by
+                // ACancelledSignIn_DoesNotStickAcrossLeavingAndReenteringTheStep.
                 AdoptExistingGateway();
                 RefreshGatewayChoiceUi();
                 break;
@@ -2186,17 +2188,8 @@ public partial class FirstRunWizardDialog : Window
     private void RefreshGatewayChoiceUi()
     {
         // Guard the round trip: setting IsChecked raises IsCheckedChanged, which calls back in here.
-        _syncingGatewayCards = true;
-        try
-        {
-            GatewayHostedCard.IsChecked = _gatewayChoice == GatewayChoice.Hosted;
-            GatewaySelfHostCard.IsChecked = _gatewayChoice == GatewayChoice.SelfHost;
-            GatewayNotNowCard.IsChecked = _gatewayChoice == GatewayChoice.NotNow;
-        }
-        finally
-        {
-            _syncingGatewayCards = false;
-        }
+        // FAULT 4 (injected): the cards are Borders again, so there is no checked state to push into
+        // them and nothing exposes the selection.
 
         PrimaryButton.Content = _gatewayConnected
             ? "Continue"
@@ -2227,6 +2220,7 @@ public partial class FirstRunWizardDialog : Window
         if (sender is not RadioButton card || card.IsChecked != true) return;
         if (!TryChoiceForCard(card, out var choice)) return;
         SelectGatewayChoice(choice);
+        // FAULT 4 (injected): nothing raises this any more - the Borders carry no handler.
     }
 
     private bool TryChoiceForCard(object? sender, out GatewayChoice choice)
@@ -2326,9 +2320,13 @@ public partial class FirstRunWizardDialog : Window
     /// </summary>
     private void ShowGatewayFailure(string message)
     {
+        // FAULT 1 (injected): the failure takes the choice view away, as the old exclusive failure view
+        // did. Expected to be caught by ACancelledSignIn_LeavesEveryOptionReachable and
+        // ACancelledSignIn_StillLetsTheUserDeclineTheGatewayAndContinue.
         GatewayFailText.Text = message;
         GatewayFailBanner.IsVisible = true;
         ShowGatewayView(GatewayChoiceView);
+        GatewayChoiceView.IsVisible = false;
         RefreshGatewayChoiceUi();
         PrimaryButton.IsEnabled = true;
     }
