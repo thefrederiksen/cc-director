@@ -131,6 +131,24 @@ question 5).
 
 ### 3.2 Launcher updates the Director
 
+> **PARTLY SUPERSEDED by internal issue #1033 (owner decision, 2026-07-29) - built and shipped.**
+> Everything below about the backup, the health check, the rollback and the version pin is what was
+> built: the bundle swap keeps a backup instead of deleting the old bundle, the backup is released when
+> the build marks itself healthy, the launcher polls the Director's health endpoint with the port from
+> the instance registration files, and a build that never answers is rolled back and pinned.
+>
+> ONE POINT IS NOW WRONG. This section has the launcher call `director/restart` and let the Director's
+> own `UpdateInstaller` apply the staged build during that restart - "the launcher never fights
+> UpdateInstaller". The launcher now does the swap ITSELF: stop, swap, start, and confirm the new
+> version answers. Handing the swap back to the Director is the exact thing #1033 removes, because a
+> Director that replaces its own binary has nothing left to witness whether the relaunch came up - the
+> only process that could check is the one that just exited. The Director no longer applies its own
+> update automatically at all. See `DirectorUpdateApply`, `DirectorUpdateOwner` and
+> `DirectorBuildSwapper`.
+>
+> Still unbuilt from this section: the rescue install (a launcher that downloads and places a Director
+> when none is installed or the bundle is damaged).
+
 The Director keeps its existing self-update (poll, verify, stage). The launcher adds the
 missing safety around it:
 

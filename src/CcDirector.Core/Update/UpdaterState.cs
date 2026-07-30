@@ -88,15 +88,28 @@ public sealed class UpdaterState
     /// Load persisted state. Returns an empty state when the file is missing or
     /// unreadable -- a corrupt state file must never block startup or updates.
     /// </summary>
-    public static UpdaterState Load()
+    public static UpdaterState Load() => LoadFrom(FilePath);
+
+    /// <summary>
+    /// Load persisted state from an explicit file.
+    ///
+    /// This exists because the launcher now owns applying the Director's update (issue #1033), and the
+    /// launcher is NOT the Director: <see cref="FilePath"/> resolves against the calling process's own
+    /// storage home, and the installed Director keeps its whole home one level in, under its instance
+    /// folder. A launcher that asked for "the" updater state would read an empty file at the storage
+    /// root and conclude, every single time, that no update was staged - the feature would look wired
+    /// and never once fire. The launcher finds the Director's file and names it here.
+    /// </summary>
+    public static UpdaterState LoadFrom(string path)
     {
-        FileLog.Write($"[UpdaterState] Load: {FilePath}");
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        FileLog.Write($"[UpdaterState] Load: {path}");
         try
         {
-            if (!File.Exists(FilePath))
+            if (!File.Exists(path))
                 return new UpdaterState();
 
-            var json = File.ReadAllText(FilePath);
+            var json = File.ReadAllText(path);
             return JsonSerializer.Deserialize<UpdaterState>(json, JsonOptions) ?? new UpdaterState();
         }
         catch (Exception ex)
@@ -107,12 +120,20 @@ public sealed class UpdaterState
     }
 
     /// <summary>Persist this state to disk, creating the directory if needed.</summary>
-    public void Save()
+    public void Save() => SaveTo(FilePath);
+
+    /// <summary>
+    /// Persist this state to an explicit file, creating the directory if needed. The launcher writes
+    /// the Director's own state file this way once it has applied or rejected a staged build; see
+    /// <see cref="LoadFrom"/> for why the path cannot be assumed.
+    /// </summary>
+    public void SaveTo(string path)
     {
-        FileLog.Write($"[UpdaterState] Save: stagedVersion={StagedVersion}, dismissedVersion={DismissedVersion}");
-        var dir = Path.GetDirectoryName(FilePath)!;
-        Directory.CreateDirectory(dir);
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        FileLog.Write($"[UpdaterState] Save: {path}, stagedVersion={StagedVersion}, dismissedVersion={DismissedVersion}");
+        var dir = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
         var json = JsonSerializer.Serialize(this, JsonOptions);
-        File.WriteAllText(FilePath, json);
+        File.WriteAllText(path, json);
     }
 }
