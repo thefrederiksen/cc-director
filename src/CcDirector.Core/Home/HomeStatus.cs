@@ -161,9 +161,13 @@ public static class HomeStatusBuilder
                 "No coding agent found - install Claude Code, Codex, Pi, Gemini, or OpenCode",
                 HomeCheckAction.OpenSettings);
 
+        // "ready", not "on PATH". An agent counts when it is launchable, and being on PATH is only one
+        // of the ways it can be - the wizard records an absolute path for an agent it installed off
+        // PATH, and that agent is just as usable. Naming a mechanism the row does not actually know
+        // would be a small lie in the same family as the one this row was fixed for (issue #1047).
         var names = installed.Select(CliLabel);
         return new HomeCheck(AgentRowTitle, HomeCheckLevel.Ok,
-            $"{string.Join(", ", names)} - on PATH", HomeCheckAction.None);
+            $"{string.Join(", ", names)} - ready", HomeCheckAction.None);
     }
 
     /// <summary>
