@@ -3,6 +3,9 @@ using CcDirector.Gateway.Stats;
 using CcDirector.Gateway.Stats.Data;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests.Data;
@@ -212,10 +215,12 @@ public sealed class GatewayStatsSqliteBaselineEquivalenceTests : IDisposable
         return names;
     }
 
-    private static List<Dictionary<string, string?>> Query(SqliteConnection connection, string sql)
+    private static List<Dictionary<string, string?>> Query(
+        SqliteConnection connection, string sql, params (string Name, object Value)[] parameters)
     {
         using var command = connection.CreateCommand();
         command.CommandText = sql;
+        foreach (var (name, value) in parameters) command.Parameters.AddWithValue(name, value);
         var rows = new List<Dictionary<string, string?>>();
         using var reader = command.ExecuteReader();
         while (reader.Read())
@@ -311,6 +316,123 @@ public sealed class GatewayStatsSqliteBaselineEquivalenceTests : IDisposable
 
         foreach (var (table, expectedStructure) in expected)
             Assert.Equal($"{table}:\n{expectedStructure}", $"{table}:\n{actual[table]}");
+    }
+
+    /// <summary>
+    /// THE CASE THE TWO TESTS ABOVE CANNOT SEE: what a LATER, model-driven migration does to an adopted file.
+    ///
+    /// Both of those rebuild ONLY the baseline, so nothing exercised baseline-plus-a-later-migration - and
+    /// that is exactly where the danger is. Entity Framework scaffolds a migration by diffing against the
+    /// SNAPSHOT, and on SQLite many alterations are performed as a full TABLE REBUILD: the table is recreated
+    /// from the model and the rows copied across. Anything the model does not know about is silently dropped
+    /// in that copy. Writing correct version 5 statements in the baseline hid the model's ignorance from the
+    /// baseline's OUTPUT without correcting the model, so the first rebuilding migration would have quietly
+    /// dropped <c>DEFAULT 'local'</c> from the tenant column - and both tests above would have stayed green.
+    ///
+    /// This drives a REAL rebuild through Entity Framework's own SQLite migration generator against the real
+    /// model, rather than through hand-written SQL, because hand-written SQL would be this test supplying its
+    /// own evidence about the mechanism it is meant to be testing.
+    ///
+    /// ---- AN ACCEPTED, MEASURED DIVERGENCE, so that nobody tightens this assertion and loses a day ----
+    ///
+    /// After a provider-driven rebuild the table is NOT byte-identical to version 5, and three things differ.
+    /// These were MEASURED, not assumed:
+    ///
+    ///   1. the rowid key is re-emitted as <c>"id" INTEGER NOT NULL CONSTRAINT "PK_stat_delta" PRIMARY KEY
+    ///      AUTOINCREMENT</c>, so PRAGMA table_info reports notnull 1 where version 5 reports 0;
+    ///   2. the primary key constraint gains a NAME, where version 5's is unnamed;
+    ///   3. EVERY COLUMN IS REORDERED ALPHABETICALLY - chars, checkout_id, hour_utc, ... - instead of version
+    ///      5's declaration order. (This third one was not named by either review; it was found by running
+    ///      the rebuild and looking.)
+    ///
+    /// NONE of the three can be expressed in the Entity Framework model: a key cannot be nullable, a
+    /// constraint name cannot be unset, and column order is emitted by the provider. So this assertion CANNOT
+    /// be tightened to full equality, and an attempt to do so will fail for reasons that have nothing to do
+    /// with a defect.
+    ///
+    /// WHY IT IS INERT, which is the part that makes accepting it legitimate rather than convenient:
+    ///
+    ///   - The version 5 shape claim only has to hold for the BASELINE, because the baseline is what adoption
+    ///     STAMPS. A file that has been rebuilt already carries a migration history table, so adoption can
+    ///     never run on it again. Post-rebuild is post-adoption BY CONSTRUCTION.
+    ///   - Nothing binds to these tables by POSITION. Swept in both directions, over the production code and
+    ///     the frozen pre-port reader: every read is an explicit SELECT column list, there is no SELECT star
+    ///     anywhere against these sixteen tables, every INSERT names its columns (so no write binds
+    ///     positionally, which would corrupt silently rather than fail), and both pragma_table_info readers
+    ///     compare as sorted or as set membership.
+    ///
+    /// If any of that stops being true, this divergence stops being cosmetic and this comment is wrong.
+    /// </summary>
+    [Fact]
+    public void ALaterModelDrivenRebuild_KeepsTheTenantDefaultAndEveryExpectedColumn()
+    {
+        BuildHandRolledDatabase();
+
+        var options = new DbContextOptionsBuilder<GatewayStatsDbContext>()
+            .UseSqlite(new SqliteConnectionStringBuilder { DataSource = _handRolledPath }.ToString())
+            .Options;
+
+        using (var context = new GatewayStatsDbContext(options))
+        {
+            Assert.Equal(StatsStoreAdoptionOutcome.Adopted, GatewayStatsSqliteAdoption.Adopt(context).Outcome);
+            context.Database.Migrate();
+
+            // An alteration SQLite cannot do in place, so the provider must rebuild the table from the model.
+            var rebuild = new AlterColumnOperation
+            {
+                Table = "stat_delta",
+                Name = "chars",
+                ClrType = typeof(long),
+                IsNullable = true,
+                OldColumn = new AddColumnOperation
+                {
+                    Table = "stat_delta", Name = "chars", ClrType = typeof(long), IsNullable = false,
+                },
+            };
+
+            var generator = context.GetService<IMigrationsSqlGenerator>();
+            var model = context.GetService<Microsoft.EntityFrameworkCore.Metadata.IDesignTimeModel>().Model;
+            foreach (var command in generator.Generate(new[] { rebuild }, model))
+                context.Database.ExecuteSqlRaw(command.CommandText);
+        }
+
+        SqliteConnection.ClearAllPools();
+
+        using var check = Open(_handRolledPath);
+
+        // 1. The tenant default SURVIVED the rebuild. This is the assertion the whole test exists for: it is
+        //    what the model now knows and previously did not.
+        var tenant = Query(check, "SELECT name, \"notnull\", dflt_value FROM pragma_table_info('stat_delta')")
+            .Single(r => r["name"] == "tenant");
+        Assert.Equal("'local'", tenant["dflt_value"]);
+        Assert.Equal("1", tenant["notnull"]);
+
+        // 2. Every one of the sixteen tables still holds every column it should, compared as an
+        //    ORDER-INSENSITIVE NAME SET - because the rebuild reorders columns alphabetically and that
+        //    reorder is the accepted divergence described above, not a defect.
+        var handRolledColumns = ExpectedColumnsOfAVersion5Store();
+        foreach (var (table, expectedColumns) in handRolledColumns)
+        {
+            var actual = Query(check, "SELECT name FROM pragma_table_info($t)", ("$t", table))
+                .Select(r => r["name"]!).OrderBy(c => c, StringComparer.Ordinal).ToList();
+            Assert.Equal(expectedColumns.OrderBy(c => c, StringComparer.Ordinal).ToList(), actual);
+        }
+    }
+
+    /// <summary>The columns a version 5 store holds, read from a freshly built one rather than written out
+    /// here, so this cannot drift from what the old code actually creates.</summary>
+    private Dictionary<string, List<string>> ExpectedColumnsOfAVersion5Store()
+    {
+        var reference = Path.Combine(_dir, "reference-v5.db");
+        using (var db = new GatewayStatsDatabase(reference)) { }
+        SqliteConnection.ClearAllPools();
+
+        using var connection = Open(reference);
+        var columns = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var table in TableNames(connection))
+            columns[table] = Query(connection, "SELECT name FROM pragma_table_info($t)", ("$t", table))
+                .Select(r => r["name"]!).ToList();
+        return columns;
     }
 
     /// <summary>

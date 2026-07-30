@@ -174,12 +174,23 @@ model rather than written out as a list, so it cannot drift from the schema the 
 
 | Store state | Outcome |
 |---|---|
-| No file, or an empty file | `FreshStore` - the chain creates the schema |
-| History table already present | `AlreadyTracked` - the steady state on every later startup |
-| Version 5, all sixteen tables | `Adopted` |
+| No file, or a file holding no objects at all | `FreshStore` - the chain creates the schema |
+| History **records the baseline** and the shape matches | `AlreadyTracked` - the steady state on every later startup |
+| History records the baseline but a table or column is now absent | `NotAdoptable`, reason `StoreSchemaIncomplete`, file untouched |
+| History records nothing and the database holds nothing of its own | `FreshStore` - the chain creates the schema |
+| History records something else, or foreign objects are present | `NotAdoptable`, reason `NotAStatisticsStore`, file untouched |
+| History present without the baseline, our tables present | `NotAdoptable`, reason `MigrationHistoryIncomplete`, file untouched |
+| Version 5, all sixteen tables, right columns, no history | `Adopted` |
 | Any other `user_version` | `NotAdoptable`, reason `IncompatibleSchemaVersion`, file untouched |
-| Tables present but not this store's | `NotAdoptable`, reason `NotAStatisticsStore`, file untouched |
+| Version 5 but a table or column is not the right shape | `NotAdoptable`, reason `StoreSchemaIncomplete`, file untouched |
+| Foreign objects present, no history | `NotAdoptable`, reason `NotAStatisticsStore`, file untouched |
 | Unreadable, locked or corrupt | `NotAdoptable`, reason `StoreUnreadable` |
+
+**The presence of a history table is NOT what decides this**, and an earlier version of this table said it
+was. That is the defect a review caught: "the store has a history table" and "the store is at the baseline"
+are different claims. A store that merely *has* a history table can be a foreign database, an interrupted
+migration, or a damaged store, and two of those were previously certified usable - one of them then had
+sixteen tables written into it.
 
 **FAIL LOUD IS NOT FAIL FATAL.** Nothing about a user's FILE throws. A refusal comes back as a result
 carrying a NAMED reason, so the Gateway still starts and still serves its roster with the statistics surface

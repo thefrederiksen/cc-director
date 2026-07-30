@@ -401,13 +401,15 @@ public static class GatewayStatsSqliteAdoption
     private static HashSet<string> ReadColumnNames(SqliteConnection connection, string table)
     {
         using var command = connection.CreateCommand();
-        // The table name comes from the MODEL, never from user input, and PRAGMA does not accept a bound
-        // parameter for it. Quoted so an unusual but legitimate name cannot change the statement's shape.
-        command.CommandText = $"PRAGMA table_info(\"{table.Replace("\"", "\"\"")}\")";
+        // The table-valued pragma_table_info, not the PRAGMA statement: it takes a BOUND parameter (so the
+        // table name is never pasted into the statement) and it is read BY COLUMN NAME rather than by
+        // ordinal, so this does not depend on the layout of SQLite's own catalog either.
+        command.CommandText = "SELECT name FROM pragma_table_info($table)";
+        command.Parameters.AddWithValue("$table", table);
 
         var names = new HashSet<string>(StringComparer.Ordinal);
         using var reader = command.ExecuteReader();
-        while (reader.Read()) names.Add(reader.GetString(1));
+        while (reader.Read()) names.Add(reader.GetString(0));
         return names;
     }
 
