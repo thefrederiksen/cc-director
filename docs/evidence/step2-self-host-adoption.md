@@ -188,6 +188,7 @@ model rather than written out as a list, so it cannot drift from the schema the 
 | Version 5 but a table or column is MISSING | `NotAdoptable`, reason `StoreSchemaIncomplete`, file untouched |
 | Version 5 with an EXTRA column | `Adopted` - see the asymmetry below |
 | Foreign objects present, no history | `NotAdoptable`, reason `NotAStatisticsStore`, file untouched |
+| An Entity Framework migration lock row is present | `NotAdoptable`, reason `StoreLockedByAnotherProcess`, file untouched |
 | Unreadable, locked or corrupt | `NotAdoptable`, reason `StoreUnreadable` |
 
 **Missing columns refuse; extra columns are tolerated, and the asymmetry is deliberate.** A missing column
@@ -291,6 +292,19 @@ person able to see the gap in it:
   **It is not repaired, deliberately.** Which half of an interrupted migration actually landed is a guess,
   and guessing it is how a store loses data quietly. That store needs looking at by hand. Adoption itself can
   never produce the state, because it stamps the history table and the baseline row in one transaction.
+
+- **The two-adopter RACE has no committed test.** The window is closed by construction - the re-check and the
+  stamp both happen inside one SQLite write transaction taken with `BEGIN IMMEDIATE` - but a deterministic
+  test needs two real processes racing, and a test that merely calls the path twice in sequence would pass
+  without exercising the race at all. Recorded as uncovered rather than covered by something that only looks
+  like it.
+
+- **Entity Framework's migration lock is a provider constraint, not something this work fixed.** Its
+  acquisition retries forever with no timeout and no cancellation, and its row is deleted on DISPOSAL, so a
+  process that crashes mid-migration leaves a lock nothing will ever clear. Adoption no longer uses it - it
+  serialises with SQLite's own write lock under a bounded timeout - and refuses on sight if it finds a lock
+  row, so it never walks into the wait. But `Migrate()` itself still takes that lock, and that remains true
+  for any caller.
 
 - **THE WHOLE SOLUTION HAS NEVER BEEN BUILT OR TESTED FOR THIS WORK, and no automated check covers it.**
   `.github/workflows/ci.yml` fires only on a push to `main` and on pull requests whose base is `main`. This

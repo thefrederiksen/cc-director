@@ -345,8 +345,18 @@ public sealed class GatewayStatsSqliteBaselineEquivalenceTests : IDisposable
     ///      5's declaration order. (This third one was not named by either review; it was found by running
     ///      the rebuild and looking.)
     ///
-    /// NONE of the three can be expressed in the Entity Framework model: a key cannot be nullable, a
-    /// constraint name cannot be unset, and column order is emitted by the provider. So this assertion CANNOT
+    /// The first two cannot be expressed in the Entity Framework model at all: a key cannot be nullable and a
+    /// constraint name cannot be unset.
+    ///
+    /// THE THIRD IS A CHOICE, NOT A LIMIT, and saying otherwise was wrong. An earlier version of this comment
+    /// claimed column order was simply emitted by the provider and could not be controlled; a review pointed
+    /// out that <c>HasColumnOrder</c> exists. It is not used here because pinning an explicit order on all
+    /// thirteen columns of sixteen tables buys nothing - nothing binds to these tables by position, which was
+    /// swept in both directions and measured - while adding a second place that must agree with the hand-
+    /// written baseline forever. That is a trade, and it is recorded as a trade so the next reader is not told
+    /// a capability is missing when it is merely declined.
+    ///
+    /// So this assertion CANNOT
     /// be tightened to full equality, and an attempt to do so will fail for reasons that have nothing to do
     /// with a defect.
     ///
