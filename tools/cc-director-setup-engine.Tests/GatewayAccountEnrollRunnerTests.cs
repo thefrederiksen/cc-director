@@ -134,6 +134,51 @@ public class GatewayAccountEnrollRunnerTests
         Assert.Empty(reqs);
     }
 
+    /// <summary>
+    /// The cancel message must state what happened and NAME NO CONTROL (issue #1070).
+    ///
+    /// All three cancel paths used to end <c>Click "Sign in to DevThrottle" to try again</c>. No surface in
+    /// the product has a control with that label - it is the heading of the browser sign-in page, which at
+    /// the moment of a cancellation is exactly what the user just closed. And this engine cannot name a
+    /// button correctly even in principle: the wizard's gateway step offers "Try again" and "Sign in and
+    /// connect", the shared gateway panel offers "Sign in with DevThrottle". So the engine reports the
+    /// fact and each surface adds its own recovery wording next to its own buttons.
+    ///
+    /// Asserted on ALL THREE paths, because they carried three copies of the same sentence and fixing one
+    /// would have left the other two telling the user to click something that does not exist.
+    /// </summary>
+    [Fact]
+    public async Task EverySignInCancelledMessage_StatesTheFact_AndNamesNoButton()
+    {
+        var messages = new List<string?>();
+
+        var (verify, _, _) = BuildRunner(
+            _ => throw new InvalidOperationException("no HTTP expected"),
+            signIn: _ => throw new OperationCanceledException());
+        messages.Add((await verify.VerifyAndSaveAsync(GatewayUrl, DeviceId, MachineName, CancellationToken.None)).ErrorMessage);
+
+        var (discover, _, _) = BuildRunner(
+            _ => throw new InvalidOperationException("no HTTP expected"),
+            signIn: _ => throw new OperationCanceledException());
+        messages.Add((await discover.SignInAndDiscoverGatewaysAsync(CancellationToken.None)).ErrorMessage);
+
+        var (hosted, _, _) = BuildRunner(
+            _ => throw new InvalidOperationException("no HTTP expected"),
+            signIn: _ => throw new OperationCanceledException());
+        messages.Add((await hosted.SignInAndEnrollHostedAsync(DeviceId, MachineName, CancellationToken.None)).ErrorMessage);
+
+        Assert.Equal(3, messages.Count);
+        foreach (var message in messages)
+        {
+            // Positive first, so this cannot pass by a message going blank or a path stopping short of
+            // the cancellation: it still has to SAY the sign-in was cancelled.
+            Assert.Contains("Sign-in was cancelled", message);
+            Assert.DoesNotContain("Sign in to DevThrottle", message);
+            // No surface's button label belongs in an engine message, whichever one it is.
+            Assert.DoesNotContain("Click \"", message);
+        }
+    }
+
     [Fact]
     public async Task VerifyAndSaveAsync_SignInFailed_BlocksAndDoesNotPersist()
     {

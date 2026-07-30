@@ -167,6 +167,59 @@
             <Setter Property="HorizontalAlignment" Value="Center" />
             <Setter Property="Margin" Value="0,0,0,8" />
         </Style>
+
+        <!-- THE GATEWAY CHOICE CARDS ARE RADIO BUTTONS, NOT DECORATED BORDERS (issue #1071).
+             They were Borders carrying PointerPressed plus Focusable="True", KeyDown, GotFocus and an
+             AutomationProperties.Name - and NONE of it reached the accessibility tree. A Border is not a
+             control: it gets no automation peer, so it exposed no name and no pattern, and it never
+             entered the tab order. The full UIA dump was three unfocusable Text blobs in one unnamed
+             Pane, and ten Tab presses cycled Pane -> Back -> Sign in and connect for ever. The keyboard
+             and screen-reader support had been WRITTEN and was not SURFACED, which is why the markup
+             looked correct on inspection.
+             A RadioButton is the honest control for one-of-three: it brings the automation peer, the
+             accessible name, SelectionItem with a real selected state, the tab stop, arrow-key movement
+             inside the group, and Space to choose - none of which can be reproduced by hanging handlers
+             on a Border. The template below is the card; the radio glyph is deliberately not drawn. -->
+        <Style Selector="RadioButton.gatewayCard">
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Template">
+                <ControlTemplate>
+                    <Border Name="CardShell" Background="#FFFFFF" BorderBrush="#E6E8EC"
+                            BorderThickness="1" CornerRadius="10" Padding="16,13">
+                        <ContentPresenter Content="{TemplateBinding Content}"
+                                          HorizontalAlignment="Stretch" />
+                    </Border>
+                </ControlTemplate>
+            </Setter>
+        </Style>
+        <!-- The chosen card. Selection is ALSO exposed natively now (SelectionItem / IsChecked), so it
+             no longer has to be smuggled into the accessible help text the way the Border version did. -->
+        <Style Selector="RadioButton.gatewayCard:checked /template/ Border#CardShell">
+            <Setter Property="BorderBrush" Value="#0066B8" />
+            <Setter Property="BorderThickness" Value="1.5" />
+            <Setter Property="Background" Value="#F2F8FD" />
+        </Style>
+        <!-- A visible focus ring. A keyboard user has to be able to SEE where they are before Space
+             commits the choice; without this the cards would be reachable and still unusable. -->
+        <Style Selector="RadioButton.gatewayCard:focus-visible /template/ Border#CardShell">
+            <Setter Property="BorderBrush" Value="#0066B8" />
+            <Setter Property="BorderThickness" Value="2" />
+        </Style>
+        <Style Selector="RadioButton.gatewayCard:pointerover /template/ Border#CardShell">
+            <Setter Property="BorderBrush" Value="#9CC4E4" />
+        </Style>
+        <!-- The recommended card is the dominant one: more room, a softer corner, a heavier selected
+             border. Prominence is a visual weighting only - every card is the same KIND of control, which
+             is what "Not now stays exactly as prominent" has to mean for a keyboard. -->
+        <Style Selector="RadioButton.gatewayCard.emphasized /template/ Border#CardShell">
+            <Setter Property="CornerRadius" Value="12" />
+            <Setter Property="Padding" Value="22,20" />
+        </Style>
+        <Style Selector="RadioButton.gatewayCard.emphasized:checked /template/ Border#CardShell">
+            <Setter Property="BorderThickness" Value="2" />
+        </Style>
     </Window.Styles>
 
     <Grid Margin="44,32,44,24" RowDefinitions="Auto,*,Auto">
@@ -504,18 +557,38 @@
                                   MaxWidth="640" HorizontalAlignment="Center">
                     <StackPanel MaxWidth="600" Spacing="14"
                                 VerticalAlignment="Top" HorizontalAlignment="Stretch">
-                        <!-- Focusable and key-operable, with an accessible name. These three cards were
-                             bare Borders carrying only PointerPressed: not focusable, exposing no
-                             invoke pattern, and therefore unreachable by keyboard or screen reader -
-                             so choosing a gateway, the one commercial step in the product, could not
-                             be done without a mouse at all. -->
-                        <Border x:Name="GatewayHostedCard" Cursor="Hand" Focusable="True"
-                                AutomationProperties.Name="Hosted gateway, recommended. We run it for you - sign in and this machine is enrolled."
-                                Background="#F2F8FD" BorderBrush="#0066B8" BorderThickness="2"
-                                CornerRadius="12" Padding="22,20"
-                                KeyDown="GatewayCard_KeyDown"
-                                GotFocus="GatewayCard_GotFocus"
-                                PointerPressed="GatewayHostedCard_Pressed">
+                        <!-- A FAILED OR CANCELLED SIGN-IN IS A BANNER ON THIS VIEW, NOT A VIEW THAT
+                             REPLACES IT (issue #1070).
+                             It used to be its own exclusive sub-view, so cancelling a sign-in removed all
+                             three cards - and "Not now", the no-account option this screen gives equal
+                             prominence ON PURPOSE, became unreachable. The only ways out were completing a
+                             sign-in, abandoning the whole wizard from Welcome, or closing the window; Back
+                             went to Welcome and coming forward again returned to the cancelled state with
+                             the cards still gone, because re-entering the step never reset the sub-view.
+                             A failure is a thing that happened to one option. It is not a reason to
+                             withdraw the other two - least of all the one that needs no sign-in at all. -->
+                        <Border x:Name="GatewayFailBanner" IsVisible="False"
+                                Background="#FEF2F2" BorderBrush="#F5C2C2" BorderThickness="1"
+                                CornerRadius="10" Padding="16,13">
+                            <StackPanel Spacing="8">
+                                <TextBlock x:Name="GatewayFailText" FontSize="13.5" Foreground="#B42318"
+                                           TextWrapping="Wrap" />
+                                <!-- Points at what is ON THIS SCREEN, and at no named button - the
+                                     primary button's label changes with the selected card, so naming it
+                                     here would go stale the moment the user picks a different option.
+                                     The engine states what happened and nothing about buttons at all;
+                                     see GatewayAccountEnrollRunner. The old text told the user to click
+                                     "Sign in to DevThrottle", which is the heading of the browser page
+                                     they had just closed and is not a control anywhere in the product. -->
+                                <TextBlock FontSize="12.5" Foreground="#8A5C58" TextWrapping="Wrap"
+                                           Text="Your options below are unchanged - keep the hosted gateway selected to try signing in again, or choose another, including &quot;Not now&quot;, which needs no account." />
+                            </StackPanel>
+                        </Border>
+
+                        <RadioButton x:Name="GatewayHostedCard" GroupName="GatewayChoice"
+                                     Classes="gatewayCard emphasized" IsChecked="True"
+                                     AutomationProperties.Name="Hosted gateway, recommended. We run it for you - sign in and this machine is enrolled."
+                                     IsCheckedChanged="GatewayCard_IsCheckedChanged">
                             <StackPanel Spacing="6">
                                 <StackPanel Orientation="Horizontal" Spacing="10">
                                     <TextBlock Text="Hosted gateway" FontSize="17" FontWeight="Bold"
@@ -533,37 +606,31 @@
                                 <TextBlock FontSize="12.5" Foreground="#8A909A"
                                            Text="Part of Pro" />
                             </StackPanel>
-                        </Border>
+                        </RadioButton>
 
                         <Grid ColumnDefinitions="*,14,*">
-                            <Border Grid.Column="0" x:Name="GatewaySelfHostCard" Cursor="Hand" Focusable="True"
-                                    AutomationProperties.Name="Self-hosted gateway. Run your own gateway and join it. For advanced setups."
-                                    Background="#FFFFFF" BorderBrush="#E6E8EC" BorderThickness="1"
-                                    CornerRadius="10" Padding="16,13"
-                                    KeyDown="GatewayCard_KeyDown"
-                                    GotFocus="GatewayCard_GotFocus"
-                                    PointerPressed="GatewaySelfHostCard_Pressed">
+                            <RadioButton Grid.Column="0" x:Name="GatewaySelfHostCard" GroupName="GatewayChoice"
+                                         Classes="gatewayCard"
+                                         AutomationProperties.Name="Self-hosted gateway. Run your own gateway and join it. For advanced setups."
+                                         IsCheckedChanged="GatewayCard_IsCheckedChanged">
                                 <StackPanel Spacing="3">
                                     <TextBlock Text="Self-hosted gateway" FontSize="13.5" FontWeight="SemiBold"
                                                Foreground="#16181D" />
                                     <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#8A909A"
                                                Text="Run your own gateway and join it. For advanced setups." />
                                 </StackPanel>
-                            </Border>
-                            <Border Grid.Column="2" x:Name="GatewayNotNowCard" Cursor="Hand" Focusable="True"
-                                    AutomationProperties.Name="Not now. Local-only on this machine. Connect any time from Settings."
-                                    Background="#FFFFFF" BorderBrush="#E6E8EC" BorderThickness="1"
-                                    CornerRadius="10" Padding="16,13"
-                                    KeyDown="GatewayCard_KeyDown"
-                                    GotFocus="GatewayCard_GotFocus"
-                                    PointerPressed="GatewayNotNowCard_Pressed">
+                            </RadioButton>
+                            <RadioButton Grid.Column="2" x:Name="GatewayNotNowCard" GroupName="GatewayChoice"
+                                         Classes="gatewayCard"
+                                         AutomationProperties.Name="Not now. Local-only on this machine. Connect any time from Settings."
+                                         IsCheckedChanged="GatewayCard_IsCheckedChanged">
                                 <StackPanel Spacing="3">
                                     <TextBlock Text="Not now" FontSize="13.5" FontWeight="SemiBold"
                                                Foreground="#16181D" />
                                     <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#8A909A"
                                                Text="Local-only on this machine. Connect any time from Settings." />
                                 </StackPanel>
-                            </Border>
+                            </RadioButton>
                         </Grid>
                     </StackPanel>
                     </ScrollViewer>
@@ -598,14 +665,9 @@
                                 Click="GatewayChange_Click" />
                     </StackPanel>
 
-                    <!-- Failure view: plain-English reason, readable on white, with a retry. -->
-                    <StackPanel x:Name="GatewayFailedView" IsVisible="False" Spacing="12"
-                                VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="480">
-                        <TextBlock x:Name="GatewayFailText" FontSize="14" Foreground="#DC2626"
-                                   TextWrapping="Wrap" TextAlignment="Center" />
-                        <Button Classes="dialogButton" Content="Try again" HorizontalAlignment="Center"
-                                Click="GatewayTryAgain_Click" />
-                    </StackPanel>
+                    <!-- There is deliberately NO separate failure view. The reason is rendered as
+                         GatewayFailBanner at the top of the choice view above, so a failure never costs
+                         the user the other two options (issue #1070). -->
 
                     <!-- Advanced view: the existing join-an-existing-gateway flow, for self-hosters. -->
                     <Grid x:Name="GatewayAdvancedView" IsVisible="False" RowDefinitions="Auto,*">
