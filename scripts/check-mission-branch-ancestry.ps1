@@ -26,7 +26,7 @@ foreach ($branch in $MergedBranches) {
     git merge-base --is-ancestor $branchRef $missionRef 2>$null
     if ($LASTEXITCODE -ne 0) {
         $head = (git rev-parse --short $branchRef 2>$null)
-        $failed += "$branch (head $head) is NOT an ancestor of $MissionBranch"
+        $failed += "$branch (head $head) is NOT contained in $MissionBranch"
     }
     else {
         Write-Output "OK   $branch is still contained in $MissionBranch"
@@ -35,12 +35,24 @@ foreach ($branch in $MergedBranches) {
 
 if ($failed.Count -gt 0) {
     Write-Output ""
-    Write-Output "FAIL: work that was merged into $MissionBranch is no longer contained in it."
+    Write-Output "FAIL: a branch you named as merged is NOT contained in $MissionBranch."
     foreach ($f in $failed) { Write-Output "  - $f" }
     Write-Output ""
-    Write-Output "A later merge has reverted an earlier one. Do NOT merge anything else until this is"
-    Write-Output "resolved: find the merge that dropped it, and rebase the offending branch onto the"
-    Write-Output "mission branch head rather than resolving the conflict in favour of the older side."
+    # State the FACT, not a cause. This check knows only that the head is absent; it does NOT know
+    # whether it was merged and later dropped, or was never merged at all, or has had commits added
+    # since the merge. An earlier version of this message asserted "a later merge has reverted an
+    # earlier one" - which reads as a diagnosis, and would have been FALSE for a branch that was
+    # simply never merged. A guard that names a cause its evidence cannot establish sends the reader
+    # somewhere the fault is not, which is the whole reason this mission exists.
+    Write-Output "That means one of these, and this check cannot tell which - go and look:"
+    Write-Output "  - the branch was merged and a later merge dropped it (the case this guards);"
+    Write-Output "  - the branch was never actually merged, and the caller listed it by mistake;"
+    Write-Output "  - the branch has ADVANCED since it was merged, so its new head is legitimately"
+    Write-Output "    absent while the merged commits are all present - check the merged commit, not"
+    Write-Output "    the branch head, if that is the case."
+    Write-Output ""
+    Write-Output "Only pass branches you have actually merged. If work really was dropped, rebase the"
+    Write-Output "offending branch onto the mission head rather than resolving in favour of the older side."
     exit 1
 }
 
