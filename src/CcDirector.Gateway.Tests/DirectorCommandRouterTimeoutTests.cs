@@ -106,7 +106,31 @@ public sealed class DirectorCommandRouterTimeoutTests
 
         // Assert - the degraded message is the SAME sentence minus the machine clause, never vaguer and never
         // a second message style. The machine name is presentation only.
-        Assert.Equal("The Director did not answer within 30 seconds. The command was not carried out.", result!.Error);
+        Assert.Equal(
+            "The Director did not answer within 30 seconds. It is not known whether the command was carried out.",
+            result!.Error);
+    }
+
+    [Fact]
+    public async Task TrySendAsync_Timeout_DoesNotClaimTheCommandWasSkipped()
+    {
+        // Act
+        var named = await DirectorCommandRouter.TrySendAsync(
+            NeverAnswers(), "director-1", "prompt", "sid-1", null, CancellationToken.None,
+            TimeSpan.FromSeconds(30), machineName: "SOREN_NORTH");
+        var anonymous = await DirectorCommandRouter.TrySendAsync(
+            NeverAnswers(), "director-1", "prompt", "sid-1", null, CancellationToken.None, TimeSpan.FromSeconds(30));
+
+        // Assert - a timeout proves only that the GATEWAY stopped waiting. The Director may have received the
+        // command, carried it out, and answered late, so the message must leave the outcome open. It used to end
+        // "The command was not carried out" - stated as fact - which is how a user came to re-tap Send and hand
+        // the agent the same prompt twice. Positive assertion first: an absence-only check would still pass if
+        // the sentence were deleted, which is a worse message than the wrong one.
+        foreach (var error in new[] { named!.Error, anonymous!.Error })
+        {
+            Assert.Contains("It is not known whether the command was carried out.", error!);
+            Assert.DoesNotContain("The command was not carried out", error);
+        }
     }
 
     [Fact]

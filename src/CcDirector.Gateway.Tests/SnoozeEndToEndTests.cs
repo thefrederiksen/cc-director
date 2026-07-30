@@ -536,6 +536,84 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
         Assert.Empty(fake.HoldCalls("h1"));                          // still no hold command from the endpoint
     }
 
+    [Fact]
+    public async Task Holding_a_session_that_has_already_exited_is_refused_and_records_nothing()
+    {
+        // ISSUE #824. Every edge that LIFTS a hold is driven by an ACTIVITY PUSH (SnoozeLandingObserver),
+        // and an exited session never transitions again - so a hold recorded AFTER the exit is permanent.
+        // The exit edge cannot save it either: dropping the hold when the session exits does nothing for a
+        // hold that arrives afterwards. The only place that can refuse it is the entry point.
+        var fake = await StartFakeAsync("x1", onHold: false, activityState: "Exited");
+
+        var resp = await _http.PostAsJsonAsync("sessions/x1/hold", new HoldRequest { OnHold = true, SnoozeMinutes = 12 * 60 });
+
+        // Refused, in plain English, naming the reason - not a silent 200 that parks it anyway.
+        Assert.Equal(HttpStatusCode.Conflict, resp.StatusCode);
+        Assert.Contains("exited", await resp.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+
+        // NOTHING was recorded. This is the assertion that matters: the old code took the not-working branch
+        // and wrote an ARMED entry with a live clock, which no edge in the system could ever clear.
+        Assert.Empty(_gw.SnoozeRegistry.Entries());
+
+        // And the row still reads as what it is. Grey "Exited", never grey "Snoozed". Read from the
+        // exited-inclusive roster: the default one drops exited rows, so it cannot show this either way.
+        var session = await GetSessionIncludingExited("x1");
+        Assert.False(session.OnHold);
+        Assert.Equal("Exited", SessionOrdering.StateLabel(session));
+    }
+
+    [Fact]
+    public async Task Holding_a_crashed_session_is_refused_so_the_crash_stays_visible()
+    {
+        // ISSUE #824, the expensive half. The fold reads OnHold BEFORE the base activity colour
+        // (SessionOrdering.EffectiveColor: `s.OnHold ? "grey"`) and StateLabel returns "Snoozed" first of
+        // all - so a hold on a CRASHED session paints deep-red "Crashed" over with grey "Snoozed" and keeps
+        // it hidden for the whole snooze length. That is the signal the owner most needs to see, masked by
+        // the one gesture a person triaging from a phone reaches for most easily.
+        //
+        // SCOPE, stated so this test is not read as more than it proves: the DEFAULT /sessions roster drops
+        // exited rows, so the masking bites on the exited-inclusive surface, which is what is read here. The
+        // permanent-registry-entry half (the other test) bites everywhere, roster or no roster.
+        var fake = await StartFakeAsync("x2", onHold: false, activityState: "Exited");
+        fake.SetCrashed("x2", true);
+        await fake.RePushAsync();
+
+        // Before: the crash is visible, and that is the state worth protecting.
+        var before = await GetSessionIncludingExited("x2");
+        Assert.Equal("error", SessionOrdering.EffectiveColor(before));
+        Assert.Equal("Crashed", SessionOrdering.StateLabel(before));
+
+        var resp = await _http.PostAsJsonAsync("sessions/x2/hold", new HoldRequest { OnHold = true });
+        Assert.Equal(HttpStatusCode.Conflict, resp.StatusCode);
+
+        // After: unchanged. Asserted POSITIVELY on the crash reading, so this cannot pass by the session
+        // having vanished from the roster or the fold having stopped ruling on it at all.
+        var after = await GetSessionIncludingExited("x2");
+        Assert.Equal("error", SessionOrdering.EffectiveColor(after));
+        Assert.Equal("Crashed", SessionOrdering.StateLabel(after));
+        Assert.Empty(_gw.SnoozeRegistry.Entries());
+    }
+
+    [Fact]
+    public async Task Unsnoozing_an_exited_session_is_still_allowed_because_it_is_the_repair()
+    {
+        // The guard is one-directional ON PURPOSE. Refusing the CLEAR as well would strand any hold that is
+        // already recorded - including every one written before this fix shipped - which is the exact state
+        // issue #824 is about. A hold that outlives its session must always be removable.
+        var fake = await StartFakeAsync("x3", onHold: false);
+
+        // Park it while it is alive (the ordinary path), then let it die underneath the hold.
+        var parked = await _http.PostAsJsonAsync("sessions/x3/hold", new HoldRequest { OnHold = true, SnoozeMinutes = 12 * 60 });
+        Assert.Equal(HttpStatusCode.OK, parked.StatusCode);
+        Assert.Single(_gw.SnoozeRegistry.Entries());
+        fake.SetActivity("x3", "Exited");
+
+        var released = await _http.PostAsJsonAsync("sessions/x3/hold", new HoldRequest { OnHold = false });
+
+        Assert.Equal(HttpStatusCode.OK, released.StatusCode);
+        Assert.Empty(_gw.SnoozeRegistry.Entries());
+    }
+
     /// <summary>Poll the fake's raw hold until it reaches the expected value (the reliable channel is
     /// fire-and-forget, so delivery is asynchronous), then assert - giving a clear failure if it never does.</summary>
     private static async Task WaitForHoldAsync(SnoozeFake fake, string sid, string expected)
@@ -560,6 +638,17 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
     private async Task<SessionDto> GetSession(string sid)
     {
         var sessions = await _http.GetFromJsonAsync<List<SessionDto>>("sessions", JsonOpts) ?? new();
+        return Assert.Single(sessions, s => s.SessionId == sid);
+    }
+
+    /// <summary>
+    /// Read a session from the EXITED-INCLUSIVE roster. The default /sessions read drops rows whose
+    /// ActivityState is "Exited", so an exited session is invisible there and the fold's ruling on it cannot
+    /// be observed at all; `?includeExited=true` is the supported query that keeps it in the set.
+    /// </summary>
+    private async Task<SessionDto> GetSessionIncludingExited(string sid)
+    {
+        var sessions = await _http.GetFromJsonAsync<List<SessionDto>>("sessions?includeExited=true", JsonOpts) ?? new();
         return Assert.Single(sessions, s => s.SessionId == sid);
     }
 
@@ -626,6 +715,11 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
 
         /// <summary>The other fact a Director reports: what it is doing.</summary>
         public void SetActivity(string sid, string activityState) { lock (_gate) _sessions[sid].ActivityState = activityState; }
+
+        /// <summary>It died rather than finished (issue #959). A crash is NOT an ActivityState - a crashed
+        /// session is "Exited" like any other - so it is a separate fact the Director reports, and the fold
+        /// turns it into deep-red "Crashed" instead of grey "Exited".</summary>
+        public void SetCrashed(string sid, bool value) { lock (_gate) _sessions[sid].Crashed = value; }
 
         /// <summary>Push the current state up the stream, as a real Director does on any change.</summary>
         public Task RePushAsync() => PushAsync();
@@ -743,6 +837,10 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
             ActivityState = s.ActivityState,
             Status = s.Status,
             StatusColor = s.StatusColor,
+            // Died-rather-than-finished (issue #959). Dropping it here would silently make the crash arm of
+            // the fold untestable - a crashed session would arrive looking like a clean exit - which is
+            // exactly the kind of gap this field list's own warning below is about.
+            Crashed = s.Crashed,
             // The Director's hold claim still crosses the wire, and the Gateway still ignores it - it is
             // overwritten in the fold from the registry. Kept here only so these tests can prove that.
             HoldState = s.HoldState,
