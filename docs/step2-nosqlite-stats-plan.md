@@ -162,10 +162,21 @@ its own pool size - is what makes the separate pool real rather than nominal. It
 ruling-1 proof possible at all: pointing the statistics connection at a dead endpoint while the Gateway
 serves a roster is a one-variable change.
 
-The rule that goes with it, so it cannot decay into a fallback: **when
-`CC_GATEWAY_DB_CONNECTION` is set (the Gateway is hosted) and `CC_GATEWAY_STATS_DB_CONNECTION` is not,
-the statistics store is UNAVAILABLE with a named reason. It never opens a SQLite file.** That is the
-no-SQLite guard doing its job on a misconfiguration, and the provisioning workflow sets the variable.
+**SUPERSEDED - read this paragraph, not the design above.** The Architect later approved DERIVATION
+instead, and the rest of this section is kept only to explain why a second connection string is needed
+at all. `CC_GATEWAY_STATS_DB_CONNECTION` is an **optional override**, not the required source. When it
+is set it wins outright - that is the test hook for the dead-endpoint proof and the path if statistics
+ever move to another server. When it is UNSET and the Gateway is hosted, the statistics connection is
+**DERIVED** from `CC_GATEWAY_DB_CONNECTION` through `NpgsqlConnectionStringBuilder` with a distinct
+application name of `gateway-stats` and its own pool size. Derive the server and the credentials, never
+the database name.
+
+This is not a fallback: one source of truth, one deterministic rule computing a second value from it,
+no alternative path and nothing degraded or invented. It exists because a hand-set second secret is a
+deploy-day step somebody forgets, and the release whose whole point is the statistics store coming up
+NOT CONFIGURED because of a missed application setting is the outcome the privilege check existed to
+prevent. Whether the connection was DERIVED or came from an explicit OVERRIDE must be **visible on the
+health surface** - silent following is only dangerous while it is silent.
 
 **NOT CONFIGURED and UNREACHABLE are two DIFFERENT named reasons** - on the failure surface, in the
 log, and in the 503 body. Architect ruling, and it is not optional. A deploy that simply forgets to set
