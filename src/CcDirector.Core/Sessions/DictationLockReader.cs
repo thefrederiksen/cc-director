@@ -74,6 +74,60 @@ public static class DictationLockReader
         return false;
     }
 
+    /// <summary>
+    /// Every session id with an inbound dictation, from ONE pass over the uploads root. Reads the
+    /// production root (<see cref="CcStorage.DictationUploads"/>).
+    /// </summary>
+    public static IReadOnlySet<string> LockedSessionIds()
+        => LockedSessionIds(CcStorage.DictationUploads());
+
+    /// <summary>
+    /// The bulk read behind the roster's "receiving a dictation" paint (issue #1111). Asking
+    /// <see cref="IsSessionLocked(Guid)"/> once per session re-enumerated this directory and re-read
+    /// every marker once per session, so a Director holding two dozen sessions did hundreds of file
+    /// reads a second to answer one question whose answer is the SAME for every session in a tick.
+    /// This answers it once: one enumeration, each marker read exactly once, and the caller then asks
+    /// the returned set per session for free.
+    ///
+    /// Deliberately NOT a replacement for <see cref="IsSessionLocked(string, string)"/>. That one stays
+    /// as it is: it is the single-session question, and callers depending on its exact posture keep it
+    /// unchanged. This method matches that posture rather than inventing a new one - it FAILS OPEN the
+    /// same way (an unreadable root or a half-written marker contributes no lock, never a false lock),
+    /// so the two can never disagree about a marker they both managed to read.
+    ///
+    /// Returns an ordinal-ignore-case set because the marker's session id is compared case-insensitively
+    /// by the single-session path, and a caller passing a <c>Guid.ToString()</c> must get the same answer.
+    /// </summary>
+    public static IReadOnlySet<string> LockedSessionIds(string uploadsRoot)
+    {
+        var locked = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        string[] dirs;
+        try
+        {
+            if (!Directory.Exists(uploadsRoot)) return locked;
+            dirs = Directory.GetDirectories(uploadsRoot);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DictationLockReader] enumerate {uploadsRoot} failed: {ex.Message}");
+            return locked;
+        }
+
+        foreach (var dir in dirs)
+        {
+            var marker = ReadMarker(Path.Combine(dir, "record.json"));
+            if (marker is null) continue;
+            if (string.Equals(marker.State, "Pending", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(marker.SessionId))
+            {
+                locked.Add(marker.SessionId);
+            }
+        }
+
+        return locked;
+    }
+
     private static Marker? ReadMarker(string path)
     {
         try
