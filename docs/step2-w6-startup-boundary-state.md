@@ -20,6 +20,37 @@ collapse that removed its own duplicate member.
 
 ---
 
+## STOPPED MID-MISSION 2026-07-30 - READ THIS BEFORE ANYTHING ELSE IN THIS FILE
+
+The mission was stopped to regroup while this seat was mid-slot. This section is the honest state at the
+stop. Everything below it was written earlier and describes a tree that has since moved.
+
+**FINISHED AND RUN:** the containment boundary, the connection selection, the named reasons up to and
+including `InternalError`, the duplicate-object recogniser, the refusal-leaves-the-store-untouched tests,
+and the collapse onto worker 2's `StoreSchemaIncomplete`. Last green run was at `c1953ce6e` on worker 2's
+base `15bda2237` - five of five mid-chain tests, 61 of 62 across eight statistics classes, the single red
+proven to be worker 2's and since fixed upstream.
+
+**BUILT AND NEVER RUN - do not read any green in this document as covering it:**
+
+- The LATE ARRIVAL publish (`PublishLateArrival`), which makes `Factory` and `Availability` mutable under a
+  lock and lets an open that outlived the startup deadline publish itself. This is a NEW CONCURRENCY PATH -
+  a background completion assigning a factory that readers may already be consulting - and **nothing asserts
+  what a reader sees DURING that window**. The Manager had just called that out and it was the next thing to
+  be written when the stop came.
+- `OpenDeadline` lowered from twenty seconds to eight.
+- `DidNotAnswerInTime` and its code.
+- The reason code for worker 2's `StoreIsNewerThanThisBuild`, which arrived with no entry in the map.
+- `StatsStoreDeadlineRelationshipTests`, which reads worker 2's private `WriteLockWaitSeconds` by reflection.
+
+All of the above COMPILES on worker 2's base `a30ae3c66` (0 warnings, 0 errors) and nothing more than that
+is claimed for it.
+
+**NOT STARTED:** moving the pure reason-code guard out of the fleet-locked assembly so it runs on every
+build; and the write-path measurement (ruling three), which the Manager had deferred until after review 11.
+
+**IN FLIGHT AND ABANDONED:** nothing was left half-applied. The working tree was clean at the stop.
+
 ## What is built
 
 ### The failure-domain boundary
