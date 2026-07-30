@@ -2,6 +2,8 @@ using CcDirector.Gateway.Stats;
 using CcDirector.Gateway.Stats.Data;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests.Data;
@@ -109,6 +111,81 @@ public sealed class GatewayStatsSqliteVersionStampTests : IDisposable
             "clean refusal it would otherwise give. " +
             $"(The expected value is {SchemaVersionsCollapsedIntoTheBaseline} plus the migration count, " +
             $"because the baseline migration collapses schema versions 1 to 5 into one migration.)");
+    }
+
+    /// <summary>
+    /// EVERY MIGRATION INDIVIDUALLY, UP AND DOWN - because the end-state sum above cannot see two errors that
+    /// cancel.
+    ///
+    /// A review defeated the sum twice, the same way both times: it added one migration that did not move the
+    /// stamp and another that jumped straight to the correct final value, and the total still landed on
+    /// 4 + count. The mechanism was wrong, not the threshold. A sum over a sequence cannot detect a
+    /// compensating pair, so this stops checking arithmetic on the end state and walks the chain.
+    ///
+    /// Each migration is applied ON ITS OWN, by migrating to it as a target, and must move the stamp by
+    /// EXACTLY ONE. A migration that moves it by nothing fails at its own step; a migration that jumps to the
+    /// final value fails at its own step too, because it overshoots before any later migration can compensate.
+    ///
+    /// Then the chain is walked back DOWN, which the sum never exercised at all. An empty Down() was the
+    /// second hole in the same test, and the failure message has always promised "a matching reset in its
+    /// Down()" - a promise nothing checked.
+    /// </summary>
+    [Fact]
+    public void EveryMigrationMovesTheStampByExactlyOne_UpAndBackDown()
+    {
+        using var context = OpenContext();
+        var migrations = context.Database.GetMigrations().ToList();
+
+        Assert.True(migrations.Count >= 1,
+            "The SQLite statistics chain reports no migrations, so this check has nothing to walk.");
+
+        var migrator = context.GetService<IMigrator>();
+
+        // UP, one at a time.
+        for (var i = 0; i < migrations.Count; i++)
+        {
+            migrator.Migrate(migrations[i]);
+
+            var expected = SchemaVersionsCollapsedIntoTheBaseline + i + 1;
+            var actual = UserVersion(context);
+
+            Assert.True(actual == expected,
+                $"After applying migration '{migrations[i]}' - number {i + 1} of {migrations.Count} in the " +
+                $"chain - PRAGMA user_version should be {expected} but is {actual}. EVERY MIGRATION MUST " +
+                "MOVE THE STAMP BY EXACTLY ONE, in its own Up(). Moving it by nothing leaves an older build " +
+                "unable to tell that a file is newer than itself; moving it by more than one claims schema " +
+                "versions that never existed, and lets a later migration that moves it by nothing hide " +
+                "behind this one in any end-state total.");
+        }
+
+        // DOWN, one at a time, back to nothing.
+        for (var i = migrations.Count - 1; i >= 0; i--)
+        {
+            var target = i == 0 ? Migration.InitialDatabase : migrations[i - 1];
+            migrator.Migrate(target);
+
+            var expected = i == 0 ? 0 : SchemaVersionsCollapsedIntoTheBaseline + i;
+            var actual = UserVersion(context);
+
+            Assert.True(actual == expected,
+                $"After reverting migration '{migrations[i]}' PRAGMA user_version should be {expected} but " +
+                $"is {actual}. EVERY MIGRATION MUST RESET THE STAMP IN ITS Down(), matching what its Up() " +
+                "set. A Down() that leaves the stamp where it was makes the store claim a schema version it " +
+                "no longer has, which is the same lie as never stamping it - and reverting the baseline must " +
+                "return the file to an unstamped 0, because that is what a store which has never held this " +
+                "schema looks like.");
+        }
+    }
+
+    /// <summary>Read the stamp on the connection the migrator is using, so it is the same file and there is
+    /// no pool to clear between steps.</summary>
+    private static int UserVersion(GatewayStatsDbContext context)
+    {
+        var connection = context.Database.GetDbConnection();
+        if (connection.State != System.Data.ConnectionState.Open) context.Database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA user_version";
+        return Convert.ToInt32(command.ExecuteScalar());
     }
 
     /// <summary>

@@ -2,6 +2,7 @@ using CcDirector.Core.Utilities;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace CcDirector.Gateway.Stats.Data;
@@ -354,7 +355,7 @@ public static class GatewayStatsSqliteAdoption
     /// </summary>
     private static StatsStoreAdoptionResult InspectTrackedStore(
         GatewayStatsDbContext context, string path,
-        IReadOnlyDictionary<string, HashSet<string>> expected, IReadOnlyDictionary<string, string> objects)
+        IReadOnlyDictionary<string, ExpectedTable> expected, IReadOnlyDictionary<string, string> objects)
     {
         var connection = (SqliteConnection)context.Database.GetDbConnection();
         var baseline = BaselineMigrationOf(context);
@@ -416,20 +417,54 @@ public static class GatewayStatsSqliteAdoption
     }
 
     /// <summary>
-    /// The shape this store expects - table name to its column names - read off the MODEL rather than written
-    /// out as a list, so the expectation cannot drift from the schema the baseline migration creates.
+    /// The shape this store expects, read off the MODEL rather than written out as a list.
+    ///
+    /// A CAVEAT THAT MUST NOT BE FORGOTTEN, because the comment here used to overclaim: the SQLite baseline
+    /// is hand-written data definition language, so reading the expectation from the model does NOT
+    /// automatically make it agree with what the baseline builds. The two agreed only once the model was
+    /// corrected, and the thing that actually holds them together is
+    /// <c>GatewayStatsSqliteBaselineEquivalenceTests</c>, which compares a baseline-built database against one
+    /// built by running the old code. This is the model's opinion, and it is checked elsewhere.
     /// </summary>
-    private static Dictionary<string, HashSet<string>> ExpectedSchema(GatewayStatsDbContext context)
+    private sealed record ExpectedTable(
+        HashSet<string> Columns,
+        List<string> PrimaryKeyColumns,
+        Dictionary<string, bool> ColumnIsNullable,
+        Dictionary<string, string?> ColumnDefaults,
+        List<string> IndexNames);
+
+    private static Dictionary<string, ExpectedTable> ExpectedSchema(GatewayStatsDbContext context)
     {
-        var schema = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        var schema = new Dictionary<string, ExpectedTable>(StringComparer.Ordinal);
         foreach (var entity in context.Model.GetEntityTypes())
         {
             var table = entity.GetTableName();
             if (string.IsNullOrEmpty(table)) continue;
 
-            var columns = new HashSet<string>(
-                entity.GetProperties().Select(p => p.GetColumnName()), StringComparer.Ordinal);
-            schema[table] = columns;
+            var properties = entity.GetProperties().ToList();
+            var key = entity.FindPrimaryKey();
+
+            schema[table] = new ExpectedTable(
+                Columns: new HashSet<string>(properties.Select(p => p.GetColumnName()), StringComparer.Ordinal),
+                PrimaryKeyColumns: key is null
+                    ? new List<string>()
+                    : key.Properties.Select(p => p.GetColumnName()).ToList(),
+                ColumnIsNullable: properties.ToDictionary(
+                    p => p.GetColumnName(), p => p.IsNullable, StringComparer.Ordinal),
+                // The ANNOTATION, not GetDefaultValue(). GetDefaultValue() hands back the CLR default for a
+                // non-nullable value type - 0 for a long - whether or not a database default was ever
+                // configured, so comparing against it condemns every healthy store for not having a DEFAULT 0
+                // on every integer column. The control case caught that immediately, which is the whole
+                // reason a healthy-store assertion sits beside every tightening.
+                ColumnDefaults: properties.ToDictionary(
+                    p => p.GetColumnName(),
+                    p => p.FindAnnotation(RelationalAnnotationNames.DefaultValue)?.Value?.ToString(),
+                    StringComparer.Ordinal),
+                IndexNames: entity.GetIndexes()
+                    .Select(i => i.GetDatabaseName())
+                    .Where(n => !string.IsNullOrEmpty(n))
+                    .Select(n => n!)
+                    .ToList());
         }
         return schema;
     }
@@ -475,7 +510,7 @@ public static class GatewayStatsSqliteAdoption
     /// </summary>
     private static string? DescribeMismatch(
         SqliteConnection connection,
-        IReadOnlyDictionary<string, HashSet<string>> expected,
+        IReadOnlyDictionary<string, ExpectedTable> expected,
         IReadOnlyDictionary<string, string> objects)
     {
         var missing = expected.Keys.Where(t => !objects.ContainsKey(t))
@@ -507,25 +542,100 @@ public static class GatewayStatsSqliteAdoption
         // about versions rather than columns.
         foreach (var table in expected.Keys.OrderBy(t => t, StringComparer.Ordinal))
         {
-            var actual = ReadColumnNames(connection, table);
-            var missingColumns = expected[table].Except(actual, StringComparer.Ordinal)
-                .OrderBy(c => c, StringComparer.Ordinal).ToList();
+            var want = expected[table];
+            var actual = ReadColumns(connection, table);
 
+            var missingColumns = want.Columns.Except(actual.Keys, StringComparer.Ordinal)
+                .OrderBy(c => c, StringComparer.Ordinal).ToList();
             if (missingColumns.Count > 0)
                 return $"table {table} is missing {missingColumns.Count} column(s) " +
                        $"({string.Join(", ", missingColumns)})";
+
+            // A COLUMN NAME PROVES ALMOST NOTHING ON ITS OWN, which a review demonstrated by recreating
+            // stat_delta with the exact expected names and no primary key, no NOT NULL, no default and no
+            // indexes - and watching it be adopted and stamped. Adoption asserts the file is what the
+            // baseline would have BUILT, so the structure is checked, not just the vocabulary.
+
+            var actualKey = actual.Values.Where(c => c.KeyOrdinal > 0)
+                .OrderBy(c => c.KeyOrdinal).Select(c => c.Name).ToList();
+            if (!actualKey.SequenceEqual(want.PrimaryKeyColumns, StringComparer.Ordinal))
+                return $"table {table} has primary key ({FormatKey(actualKey)}) where the baseline builds " +
+                       $"({FormatKey(want.PrimaryKeyColumns)})";
+
+            // A single INTEGER primary key is a rowid ALIAS, and SQLite reports notnull 0 for it however it
+            // was declared - version 5 writes a bare INTEGER PRIMARY KEY while the model calls it required.
+            // That difference is real and unavoidable, so the nullability of a rowid key is not checked; it
+            // is the one column whose notnull carries no information.
+            var rowidKey = want.PrimaryKeyColumns.Count == 1 &&
+                           actual.TryGetValue(want.PrimaryKeyColumns[0], out var pk) &&
+                           pk.Type.Equals("INTEGER", StringComparison.OrdinalIgnoreCase)
+                ? want.PrimaryKeyColumns[0]
+                : null;
+
+            foreach (var column in want.Columns.OrderBy(c => c, StringComparer.Ordinal))
+            {
+                if (string.Equals(column, rowidKey, StringComparison.Ordinal)) continue;
+
+                var isNullable = !actual[column].NotNull;
+                if (isNullable != want.ColumnIsNullable[column])
+                    return $"table {table} column {column} is " +
+                           (isNullable ? "nullable" : "NOT NULL") + " where the baseline builds it " +
+                           (want.ColumnIsNullable[column] ? "nullable" : "NOT NULL");
+
+                var wantDefault = want.ColumnDefaults[column];
+                if (wantDefault is not null && !DefaultMatches(actual[column].Default, wantDefault))
+                    return $"table {table} column {column} has default " +
+                           $"{actual[column].Default ?? "<none>"} where the baseline builds it '{wantDefault}'";
+            }
+
+            var indexes = ReadIndexNames(connection, table);
+            var missingIndexes = want.IndexNames.Where(i => !indexes.Contains(i))
+                .OrderBy(i => i, StringComparer.Ordinal).ToList();
+            if (missingIndexes.Count > 0)
+                return $"table {table} is missing {missingIndexes.Count} index(es) " +
+                       $"({string.Join(", ", missingIndexes)})";
         }
 
         return null;
     }
 
-    private static HashSet<string> ReadColumnNames(SqliteConnection connection, string table)
+    private static string FormatKey(IReadOnlyList<string> columns) =>
+        columns.Count == 0 ? "no primary key" : string.Join(", ", columns);
+
+    /// <summary>SQLite reports a text default with its quotes ('local'); the model holds the bare value.</summary>
+    private static bool DefaultMatches(string? actual, string expected) =>
+        actual is not null &&
+        (string.Equals(actual, expected, StringComparison.Ordinal) ||
+         string.Equals(actual.Trim('\''), expected, StringComparison.Ordinal));
+
+    private sealed record ColumnFacts(string Name, string Type, bool NotNull, string? Default, int KeyOrdinal);
+
+    private static Dictionary<string, ColumnFacts> ReadColumns(SqliteConnection connection, string table)
     {
         using var command = connection.CreateCommand();
-        // The table-valued pragma_table_info, not the PRAGMA statement: it takes a BOUND parameter (so the
-        // table name is never pasted into the statement) and it is read BY COLUMN NAME rather than by
-        // ordinal, so this does not depend on the layout of SQLite's own catalog either.
-        command.CommandText = "SELECT name FROM pragma_table_info($table)";
+        command.CommandText =
+            "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info($table)";
+        command.Parameters.AddWithValue("$table", table);
+
+        var columns = new Dictionary<string, ColumnFacts>(StringComparer.Ordinal);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var name = reader.GetString(0);
+            columns[name] = new ColumnFacts(
+                name,
+                reader.IsDBNull(1) ? "" : reader.GetString(1),
+                reader.GetInt64(2) != 0,
+                reader.IsDBNull(3) ? null : reader.GetValue(3).ToString(),
+                (int)reader.GetInt64(4));
+        }
+        return columns;
+    }
+
+    private static HashSet<string> ReadIndexNames(SqliteConnection connection, string table)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT name FROM pragma_index_list($table)";
         command.Parameters.AddWithValue("$table", table);
 
         var names = new HashSet<string>(StringComparer.Ordinal);
