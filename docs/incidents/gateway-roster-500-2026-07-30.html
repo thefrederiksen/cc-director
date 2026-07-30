@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Hosted Gateway outage, 2026-07-30: the session roster returned 500 for 32 minutes</title>
+<style>
+        /* Boardroom Theme - Corporate, executive style with serif fonts */
+        
+        :root {
+            /* Colors */
+            --primary: #1A365D;
+            --primary-light: #2A4A7F;
+            --accent: #D69E2E;
+            --text: #2D3748;
+            --heading: #1A365D;
+            --background: #FFFFFF;
+            --code-bg: #EDF2F7;
+            --code-text: #1A365D;
+            --border: #CBD5E0;
+            --link: #2B6CB0;
+            --blockquote-text: #4A5568;
+            --blockquote-border: #D69E2E;
+            --blockquote-bg: #FFFFFF;
+            --table-header-bg: #1A365D;
+            --table-header-text: #FFFFFF;
+            --alt-row-bg: #F7FAFC;
+            --shadow-color: rgba(26, 54, 93, 0.08);
+        
+            /* Fonts */
+            --font-heading: "Palatino Linotype", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            --font-body: "Georgia", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            --font-code: "Courier New", "JetBrains Mono", "Fira Code", Consolas, monospace;
+        
+            /* Style */
+            --heading-letter-spacing: -0.02em;
+            --line-height: 1.7;
+            --radius: 4px;
+            --code-radius: 6px;
+            --shadow-sm: 0 1px 3px rgba(26, 54, 93, 0.08);
+            --shadow-md: 0 4px 12px rgba(26, 54, 93, 0.1);
+        }
+        
+        /* Base styles for all themes */
+        
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+        }
+        
+        html {
+            font-size: 16px;
+            line-height: var(--line-height);
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            text-rendering: optimizeLegibility;
+        }
+        
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: var(--font-body);
+            color: var(--text);
+            background: var(--background);
+        }
+        
+        .markdown-body {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 3rem 2.5rem;
+        }
+        
+        /* Typography */
+        h1, h2, h3, h4, h5, h6 {
+            font-family: var(--font-heading);
+            color: var(--heading);
+            margin-top: 1.8em;
+            margin-bottom: 0.6em;
+            font-weight: 600;
+            line-height: 1.25;
+            letter-spacing: var(--heading-letter-spacing);
+            orphans: 3;
+            widows: 3;
+        }
+        
+        h1 {
+            font-size: 2.25em;
+            margin-top: 0;
+        }
+        
+        h2 { font-size: 1.65em; }
+        h3 { font-size: 1.35em; }
+        h4 { font-size: 1.1em; }
+        h5 { font-size: 0.95em; }
+        h6 { font-size: 0.85em; color: var(--blockquote-text); }
+        
+        p {
+            margin: 1em 0;
+            orphans: 3;
+            widows: 3;
+        }
+        
+        /* Links */
+        a {
+            color: var(--link);
+            text-decoration: none;
+            border-bottom: 1px solid transparent;
+            transition: border-color 0.2s ease;
+        }
+        
+        a:hover {
+            border-bottom-color: var(--link);
+        }
+        
+        /* Lists */
+        ul, ol {
+            margin: 1em 0;
+            padding-left: 2em;
+            line-height: var(--line-height);
+        }
+        
+        li {
+            margin: 0.35em 0;
+        }
+        
+        li > ul,
+        li > ol {
+            margin: 0.2em 0;
+        }
+        
+        /* Inline code */
+        code {
+            font-family: var(--font-code);
+            font-size: 0.875em;
+            padding: 0.15em 0.4em;
+            border-radius: var(--radius);
+            background: var(--code-bg);
+            color: var(--code-text);
+        }
+        
+        /* Code blocks */
+        pre {
+            margin: 1.5em 0;
+            padding: 1.25em 1.5em;
+            overflow-x: auto;
+            border-radius: var(--code-radius);
+            background: var(--code-bg);
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow-sm);
+            position: relative;
+        }
+        
+        pre code {
+            padding: 0;
+            background: transparent;
+            border-radius: 0;
+            font-size: 0.875em;
+            line-height: 1.55;
+        }
+        
+        /* Blockquotes */
+        blockquote {
+            margin: 1.5em 0;
+            padding: 0.75em 1.25em;
+            border-left: 4px solid var(--blockquote-border);
+            background: var(--blockquote-bg);
+            color: var(--blockquote-text);
+            border-radius: 0 var(--radius) var(--radius) 0;
+        }
+        
+        blockquote p {
+            margin: 0.4em 0;
+        }
+        
+        blockquote p:first-child {
+            margin-top: 0;
+        }
+        
+        blockquote p:last-child {
+            margin-bottom: 0;
+        }
+        
+        /* Tables */
+        table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            margin: 1.5em 0;
+            border-radius: var(--radius);
+            overflow: hidden;
+            box-shadow: var(--shadow-sm);
+            border: 1px solid var(--border);
+        }
+        
+        th, td {
+            padding: 0.75em 1em;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        th {
+            font-weight: 600;
+            background: var(--table-header-bg);
+            color: var(--table-header-text);
+        }
+        
+        tr:last-child td {
+            border-bottom: none;
+        }
+        
+        /* Horizontal rule */
+        hr {
+            border: none;
+            height: 2px;
+            max-width: 200px;
+            margin: 2.5em auto;
+            background: var(--border);
+            border-radius: 1px;
+        }
+        
+        /* Images */
+        img {
+            max-width: 100%;
+            height: auto;
+            border-radius: var(--radius);
+            box-shadow: var(--shadow-sm);
+        }
+        
+        /* Task lists */
+        .task-list-item {
+            list-style-type: none;
+        }
+        
+        .task-list-item input[type="checkbox"] {
+            margin-right: 0.5em;
+        }
+        
+        /* Strong and emphasis */
+        strong {
+            font-weight: 700;
+        }
+        
+        /* Definition lists (if supported by parser) */
+        dt {
+            font-weight: 600;
+            margin-top: 1em;
+        }
+        
+        dd {
+            margin-left: 1.5em;
+            margin-bottom: 0.5em;
+        }
+        
+        
+        /* Boardroom: corporate authority with accent borders */
+        h1 {
+            border-bottom: 3px solid var(--accent);
+            padding-bottom: 0.5em;
+        }
+        
+        h2 {
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.3em;
+        }
+        
+        pre {
+            border-left: 4px solid var(--primary);
+            border-radius: 0 var(--code-radius) var(--code-radius) 0;
+        }
+        
+        pre::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 4px;
+            height: 100%;
+            background: var(--accent);
+            border-radius: 0;
+        }
+        
+        blockquote {
+            font-style: italic;
+        }
+        
+        hr {
+            background: var(--accent);
+            max-width: none;
+            height: 2px;
+        }
+        
+        tr:nth-child(even) td {
+            background: var(--alt-row-bg);
+        }
+        
+    </style>
+</head>
+<body>
+<article class="markdown-body">
+<h1>Hosted Gateway outage, 2026-07-30: the session roster returned 500 for 32 minutes</h1>
+<p>Working document. Every issue below carries its evidence status, because some of this is proven
+        first-hand and some is still a hypothesis, and the two must not be mixed when deciding what to fix.</p>
+<ul>
+<li><strong>PROVEN</strong> - observed first-hand against the live system, with the observation named.</li>
+<li><strong>CONFIRMED</strong> - established by a second party against the live system or the code.</li>
+<li><strong>HYPOTHESIS</strong> - consistent with the evidence, not yet demonstrated.</li>
+<li><strong>OPEN</strong> - not investigated; recorded so it is not lost.</li>
+</ul>
+<h2>What happened, in one paragraph</h2>
+<p>A slot swap at 12:55:13 UTC put a new Gateway image into production. Roughly ninety seconds later
+        <code>GET /sessions</code> began returning HTTP 500 and kept doing so for 32 minutes, across the Cockpit, the
+        phone and the command line tools. The cause was not the new build. The Gateway keeps its "Your
+        Throttle" statistics in a <strong>SQLite file on an Azure Files network share</strong>, and <code>GET /sessions</code>
+<strong>writes</strong> to that file on every read. The swap ran two containers against the same share at once,
+        which corrupted the database's indexes, and the resulting <code>SqliteException</code> propagated out of the
+        roster handler unhandled. Rolling back to the previous image restored service at 13:28. The corrupt
+        file is still on disk.</p>
+<p>The visible symptom was a wrong colour: a session that was demonstrably working showed red. That was
+        a downstream effect - the roster read was failing, so the Cockpit kept rendering the last roster it
+        had successfully fetched. No colour logic is at fault.</p>
+<h2>The exception</h2>
+<pre><code>[GatewayHost] unhandled exception: GET /sessions:
+        Microsoft.Data.Sqlite.SqliteException (0x80004005): SQLite Error 11: 'database disk image is malformed'.
+          at GatewayInputStatsAggregator.Execute         (GatewayInputStatsAggregator.cs:1310)
+          at GatewayInputStatsAggregator.CommitLocked    (GatewayInputStatsAggregator.cs:717)
+          at GatewayInputStatsAggregator.ObserveSnapshot (GatewayInputStatsAggregator.cs:335)
+          at GatewayEndpoints.&lt;Map&gt;b__26                 (GatewayEndpoints.cs:1254)
+        </code></pre>
+<p>500 occurrences, first at 12:56:36 UTC, in
+        <code>/home/gateway/cc-director/logs/director/director-2026-07-30-c807c0eff659.log</code>.</p>
+<h2>Timeline (UTC)</h2>
+<table>
+<thead>
+<tr>
+<th>Time</th>
+<th>Event</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>12:53:50</td>
+<td>a container starts (the swap's warm-up)</td>
+</tr>
+<tr>
+<td>12:54:42</td>
+<td>a second container starts - both now mount the same share</td>
+</tr>
+<tr>
+<td>12:55:13</td>
+<td>slot swap completes; the new image is production</td>
+</tr>
+<tr>
+<td>12:56:14</td>
+<td>the first container stops. The two overlapped for 144 seconds</td>
+</tr>
+<tr>
+<td>12:56:36</td>
+<td>first <code>database disk image is malformed</code> - 22 seconds after the overlap ended</td>
+</tr>
+<tr>
+<td>12:57:50</td>
+<td>the owner sees a working session painted red and starts asking</td>
+</tr>
+<tr>
+<td>13:03:55</td>
+<td>the 500 is reproduced from the command line</td>
+</tr>
+<tr>
+<td>13:27:19</td>
+<td>staging started so it can be swapped back</td>
+</tr>
+<tr>
+<td>13:28:26</td>
+<td>reverse swap complete - 67 seconds for the swap itself</td>
+</tr>
+<tr>
+<td>13:29:30</td>
+<td>roster serving again, 16 sessions, colours correct</td>
+</tr>
+<tr>
+<td>13:52</td>
+<td>staging stopped - it was a second live writer on the shared state</td>
+</tr>
+</tbody>
+</table>
+<p>Total outage: about 32 minutes. Detection was a human noticing a wrong colour on screen.</p>
+<h2>Not the cause - do not chase these</h2>
+<ul>
+<li><strong>The new build is not at fault.</strong> The statistics code is byte-identical between the working and
+        the broken image: <code>git diff &lt;good&gt;..&lt;bad&gt; -- src/CcDirector.Gateway/Stats/</code> is empty. The damaged
+        tables and indexes predate both. <strong>CONFIRMED.</strong> A revert of the release fixes nothing and the
+        release can go back out once the issues below are addressed.</li>
+<li><strong>Not a pending database migration.</strong> The live Postgres has <code>20260729173140_SkillPlacementState</code>
+        applied, which is the newest migration in the tree at the deployed commit. <strong>PROVEN</strong> by querying
+        the database directly.</li>
+<li><strong>Not a sticky slot setting.</strong> Every application setting has <code>slotSetting=false</code>, so the swap did
+        not hand production a staging value. <strong>PROVEN.</strong></li>
+<li><strong>Not the main Gateway database.</strong> <code>GatewayDatabase</code> branches correctly: Postgres when
+        <code>CC_GATEWAY_DB_CONNECTION</code> is set, SQLite otherwise, with no fallback between them. Hosted runs on
+        Supabase. This design is right and needs no change. <strong>PROVEN.</strong></li>
+<li><strong>Not <code>uncommittedCount</code>.</strong> During the incident, sessions with uncommitted changes failed and
+        sessions without them served fine, which looked like a clean discriminator. It was a coincidence:
+        busier sessions write more token rows, and the throw fires when a write touches a damaged index
+        page. Recorded because it wasted investigation time and would waste it again.</li>
+</ul>
+<hr/>
+<h1>The issues</h1>
+<h2>Issue 1 - <code>GET /sessions</code> performs an analytics write, and lets it fail the read</h2>
+<p><strong>Status: PROVEN.</strong> The stack trace above names the line.</p>
+<p><code>GatewayEndpoints.cs:1254</code> calls <code>inputStats?.ObserveSnapshot(all, ...)</code> inside the <code>GET /sessions</code>
+        handler. Two more side-effects sit beside it on the same read path: <code>concurrency?.Observe(all, ...)</code>
+        and <code>sessionNumbers.Adopt(...)</code>. None is guarded. A failure in any of them propagates out of the
+        handler as an unhandled exception, so the response is 500 and the caller gets no roster at all.</p>
+<p><strong>Why this is the most important issue.</strong> It is what converted a damaged auxiliary file into a total
+        outage. A corrupt statistics store should degrade the statistics page. Instead it blacked out the
+        primary read path on every surface - Cockpit, phone, and every command line verb that resolves a
+        session by name. It also took <code>/stats/data</code> down with it, so the two failures looked like two
+        separate defects for a while.</p>
+<p>It also broke the tools' ability to say anything true: <code>cc-devthrottle session list</code> reported
+        "Cannot reach the Gateway: internal error", which is the honest message, but any verb that resolves
+        a target against the roster could name no session at all.</p>
+<p><strong>Fix.</strong> Make <code>GET /sessions</code> a pure read. Move the statistics observation to the push ingress -
+        observe only accepted <code>PushSnapshot</code> / <code>PushDelta</code> traffic, in a contained single-consumer worker -
+        and circuit-break statistics alone, answering 503 on that surface while the roster and the tunnels
+        keep serving.</p>
+<h2>Issue 2 - the hosted Gateway runs a SQLite database on a network share, with WAL</h2>
+<p><strong>Status: PROVEN</strong> for the code and the file; <strong>CONFIRMED</strong> for the shared mount.</p>
+<p><code>GatewayStatsDatabase</code> opens <code>Microsoft.Data.Sqlite</code> on a raw <code>SqliteConnection</code> with no Entity
+        Framework and, critically, <strong>no hosted branch</strong>. It creates a file unconditionally on hosted and
+        self-host alike. On the hosted Gateway that file is
+        <code>/home/gateway/cc-director/gateway-stats.db</code> - 2.8 MB, with a 4 MB write-ahead log that grows while
+        the service runs.</p>
+<p>Three specifics make it worse than "SQLite in the wrong place":</p>
+<ol>
+<li>It forces <code>PRAGMA journal_mode=WAL</code> at line 98. SQLite's documented constraint is that WAL relies
+        on shared memory and does not work on a network filesystem. Azure Files is one.</li>
+<li>The file's own header comment states the justification: <em>"the Gateway is a single process and
+        therefore a single writer, so there is no cross-process locking."</em> On App Service that premise is
+        false - slots mean two containers, and a swap runs both at once.</li>
+<li>The multi-tenancy work already reached this file. A comment at line 524 discusses <em>"a hosted
+        Gateway that folds several accounts' pushes into this one store."</em> So the store was known to run
+        hosted and was partitioned by tenant, but was never moved to Postgres.</li>
+</ol>
+<p><strong>Fix.</strong> Move this store to Supabase/Postgres, the way <code>GatewayDatabase</code> already does. There should
+        be no SQLite on the hosted Gateway.</p>
+<h2>Issue 3 - a deploy puts two writers on the same shared persistent state</h2>
+<p><strong>Status: PROVEN.</strong></p>
+<p>Production and staging mount the <strong>same</strong> Azure Files share at <code>/home/gateway/cc-director</code>. I
+        verified this independently rather than taking it on report: after the reverse swap, the share held
+        two logs growing at once - <code>director-2026-07-30-7c0c7ccebf3b.log</code> written by a version 1.8.8
+        container and <code>director-2026-07-30-a24cb70b1cc7.log</code> written by a version 1.8.4 container. Two
+        different builds, one share, simultaneously.</p>
+<p>So every deploy opens a window in which two processes write the same files. This one lasted 144
+        seconds. <strong>Every previous deploy has been rolling the same dice.</strong> This is the first time it lost,
+        which is why nothing looked wrong until now.</p>
+<p>This is also why the obvious resilience idea has to be inverted - see Issue 7.</p>
+<p><strong>Fix.</strong> Some combination of: serialise deploy, rollback and cleanup behind a single concurrency
+        group so they can never overlap; give each slot its own state; or move the state off the share
+        entirely, which Issue 2 does for the database and Issue 4 for the rest.</p>
+<h2>Issue 4 - the rest of the hosted state is file-backed on that same shared share</h2>
+<p><strong>Status: PROVEN</strong> that the files exist and are actively written; <strong>HYPOTHESIS</strong> that they are
+        corruptible the same way.</p>
+<p>Listing the hosted share turns up substantial persistent state that is not in Supabase:</p>
+<pre><code>gateway-concurrency-stats.json   53 KB, written seconds before I looked
+        missions.json
+        repo-history.jsonl  (+ .jsonl.bak)
+        carmode-diagnostics.json
+        diagnostics-results.json
+        netdiag-rollup.json
+        keyvault.json
+        plus directories: tenants/, gateway-turnbriefs/, transcripts/, transcription-history/,
+                          prompt-log/, dictation/, microphone-quality/, wingman-training/
+        </code></pre>
+<p>A JSON file rewritten by two containers at once is corrupted or truncated exactly as readily as a
+        SQLite database. It simply fails later, with a parse error instead of "disk image is malformed".</p>
+<p>So removing SQLite fixes the specific thing that took us down today, but the general defect is
+        broader: <strong>hosted persistent state lives on a shared network share that two processes can write
+        concurrently, and the code was written assuming one process.</strong></p>
+<p><strong>Fix.</strong> Audit this list. Move what is real state into Postgres; for anything that stays on disk,
+        make writes atomic and single-owner.</p>
+<h2>Issue 5 - the corrupt database is still in production, and cannot be repaired safely while serving</h2>
+<p><strong>Status: PROVEN.</strong> <code>pragma integrity_check</code> against the live file, after the rollback:</p>
+<pre><code>row 143 missing from index sqlite_autoindex_token_highwater_1
+        rows 6850-6853 missing from index ix_token_delta_tenant_hour
+        wrong # of entries in index ix_token_delta_tenant_hour
+        row 323 missing from index sqlite_autoindex_wingman_session_1
+        </code></pre>
+<p>The damage is index-only, so <code>REINDEX</code> should repair it with no data loss. Two cautions:</p>
+<ul>
+<li>It is quiet, not fixed. The rolled-back build runs the same statistics code; it is simply not
+        touching the damaged pages right now. The roster and <code>/stats/data</code> have served 200 on every probe
+        since 13:29, but the landmine is live.</li>
+<li><strong>Do not repair it from the Kudu container while the Gateway is serving.</strong> That would be a second
+        process writing a WAL database over SMB - the exact mechanism that caused the damage. The repair
+        needs the Gateway stopped, which means a planned outage, or it needs to be done from inside the
+        Gateway.</li>
+</ul>
+<p><strong>Fix.</strong> Repair during the next deploy window, when the Gateway is down anyway. Or delete and let it
+        rebuild, accepting the loss of historical statistics, if that is cheaper than a careful repair.</p>
+<h2>Issue 6 - there was no rollback runbook, so rollback took four minutes instead of 67 seconds</h2>
+<p><strong>Status: PROVEN</strong> by doing it.</p>
+<p>The mechanism was already there and it worked: the previous container lands in the staging slot, and
+        the reverse swap took <strong>67 seconds</strong>. What cost the other three minutes was that <strong>staging was
+        stopped</strong>, so it had to be started and pass a health check first - and that was discovered by reading
+        documentation while the fleet was down.</p>
+<p><strong>Fix.</strong> One command or button that: preflights the recorded commit of the image it is about to
+        promote, performs the reverse swap, asserts production reports that commit, verifies the roster (see
+        Issue 8), and only then stops the bad image. Keep the existing workflow as the single entry point
+        rather than adding a parallel path.</p>
+<h2>Issue 7 - warm standby is unsafe today, and the instinct to add it must be resisted</h2>
+<p><strong>Status: CONFIRMED.</strong></p>
+<p>The natural reaction to this outage is to keep the previous container running in staging for a few
+        hours so a rollback is instant. <strong>That would make things worse.</strong> Because production and staging share
+        one file system (Issue 3), a warm second container is a <em>permanent</em> second writer - the corruption
+        mechanism running continuously instead of for 144 seconds per deploy.</p>
+<p><strong>Fix.</strong> Sequence it. No warm retention until every shared writer is isolated or moved off Azure
+        Files. After that, retain the prior image for two hours, which is the right idea in the right order.</p>
+<h2>Issue 8 - the post-swap health check would have reported success on an empty fleet</h2>
+<p><strong>Status: PROVEN.</strong> The first <code>GET /sessions</code> after the reverse swap returned <strong>200 with zero rows</strong>,
+        because the Directors' tunnels had not reconnected yet. It filled in about a minute.</p>
+<p>Any verification step that checks for HTTP 200 would have declared the rollback a success while the
+        roster was empty. Absent reads identical to empty - the same failure shape the roster completeness
+        work was built to fix, one layer up.</p>
+<p><strong>Fix.</strong> Verification must poll authenticated <code>/sessions?envelope=true</code> until <strong>three consecutive 200
+        responses each contain at least one session</strong>, and must treat zero rows as "still reconnecting", not
+        as success.</p>
+<h2>Issue 9 - a stale roster renders last-known verdicts as though they were current</h2>
+<p><strong>Status: PROVEN</strong> by the owner's screenshot.</p>
+<p>The Cockpit behaved half-correctly. It did show a banner - "Roster stale - showing last-known
+        sessions" - which is honest and was the first real clue. But it also kept painting a definite red dot
+        and a "Needs you" label on a session that was working, because those were the last verdicts it had.
+        A confident colour on stale data reads as a fact about the world.</p>
+<p>The practical cost is exactly what happened here: the first thirty minutes went into "why is the
+        colour wrong", when the colour was a symptom and the answer was one layer down.</p>
+<p><strong>Fix.</strong> A design decision, not a bug fix: when the roster is stale, the rows should visibly stop
+        asserting. De-emphasise or neutralise the dot and the label rather than re-rendering a verdict whose
+        inputs are known to be old.</p>
+<h2>Issue 10 - whether anything alerted, and how long it would have taken</h2>
+<p><strong>Status: OPEN.</strong> Not investigated.</p>
+<p>Detection was the owner looking at a screen roughly three minutes in. Whether an alert also fired,
+        and if not why, is unverified - I have not read the alerting configuration, and I am not going to
+        assert either way. Worth answering, because 32 minutes of 500s on the primary read path should not
+        depend on somebody happening to look.</p>
+<h2>Issue 11 - operational trap: the Kudu container serves stale file metadata for the share</h2>
+<p><strong>Status: PROVEN</strong>, at the cost of a wrong finding.</p>
+<p><code>ls</code>, <code>stat</code> and even file reads issued through the Kudu API return <strong>cached</strong> views of the Azure
+        Files share. During the incident this showed a log file as 0 bytes when it was actually being written;
+        I concluded the Gateway had stopped logging entirely and reported that as a second defect. It was
+        false. The file turned out to be 2.2 MB and contained the exception all along.</p>
+<p><strong>Fix.</strong> Record it in the runbook: a size or timestamp read through Kudu is not evidence about the
+        current state of the share. Re-read before concluding anything from an absence.</p>
+<hr/>
+<h1>Priority</h1>
+<p>The organising question is: <strong>what must be true before the next Gateway deploy goes out?</strong></p>
+<h2>Before the next deploy - blocking</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Issue</th>
+<th>Why it blocks</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>GET /sessions</code> must not fail on an analytics write</td>
+<td>Cheapest fix with by far the largest blast-radius reduction. Until this lands, any damage to the statistics store is a full outage rather than a degraded page. It also makes the remaining work safe to do incrementally.</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Serialise deploy, rollback and cleanup</td>
+<td>The deploy itself is what creates the two-writer window. Deploying again without this is re-running the experiment that caused the outage.</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Repair <code>gateway-stats.db</code></td>
+<td>Do it in the deploy window while the Gateway is down. It cannot be done safely while serving, and the next deploy is the natural opportunity.</td>
+</tr>
+<tr>
+<td>6</td>
+<td>A rollback command, and staging left in a known state</td>
+<td>If the next deploy fails too, four minutes of reading documentation is not an acceptable recovery path.</td>
+</tr>
+</tbody>
+</table>
+<h2>Immediately after - high</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Issue</th>
+<th>Note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2</td>
+<td>Move the statistics store to Supabase</td>
+<td>The real fix for "no SQLite on the hosted Gateway". Larger than the blocking set, which is why Issue 1 goes first: it makes this non-urgent instead of load-bearing.</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Roster verification must assert non-empty</td>
+<td>Small, and it protects every future rollback from a false green.</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Audit the remaining file-backed hosted state</td>
+<td>Scoping work. Determines whether Issue 7 can ever be enabled.</td>
+</tr>
+</tbody>
+</table>
+<h2>Then - medium</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Issue</th>
+<th>Note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>7</td>
+<td>Warm standby, two-hour retention</td>
+<td>Only once Issue 4 says the shared writers are gone. Explicitly sequenced after, not before.</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Stale rosters should stop asserting verdicts</td>
+<td>This is the defect the owner actually saw. Worth fixing properly rather than as an afterthought.</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Establish whether anything alerted</td>
+<td>Answer the question before deciding whether there is work here.</td>
+</tr>
+<tr>
+<td>11</td>
+<td>Runbook note on stale Kudu metadata</td>
+<td>Documentation only.</td>
+</tr>
+</tbody>
+</table>
+<h2>A note on what not to do</h2>
+<p>Do not revert the release. The build is not at fault, and reverting would spend a deploy - and
+        another two-writer window - achieving nothing.</p>
+</article>
+</body>
+</html>
