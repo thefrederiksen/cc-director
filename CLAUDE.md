@@ -6,6 +6,8 @@ This is **enterprise-level software** requiring robust error handling, comprehen
 
 **UI style guide:** [docs/VisualStyle.md](docs/VisualStyle.md) -- All UI changes must comply with this guide.
 
+**Writing docs about a screen:** [docs/checking-docs-against-screen-dumps.md](docs/checking-docs-against-screen-dumps.md) -- Check the sentence against the committed accessibility dump for that screen, not the XAML. The XAML says what a screen CAN show; the dump says what it DID show. The dumps are committed in `devthrottle_internal` at `docs/qa/runs/<run>/report.html` and anyone can read them without a machine.
+
 ---
 
 ## Critical Rules
