@@ -10,8 +10,13 @@ namespace CcDirector.Gateway.Data;
 ///
 /// One factory, switched by the <c>CC_GATEWAY_EF_PROVIDER</c> environment variable, wires either provider so
 /// the same tooling scaffolds either migration set. There is exactly ONE
-/// <see cref="IDesignTimeDbContextFactory{TContext}"/> in the tree on purpose: two would make the EF tooling
-/// ambiguous ("More than one DbContext factory was found"). Set <c>CC_GATEWAY_EF_PROVIDER=postgres</c> to
+/// <see cref="IDesignTimeDbContextFactory{TContext}"/> for THIS context in any assembly the tooling scans at
+/// once: two for the same context in one scan would make the EF tooling ambiguous ("More than one DbContext
+/// factory was found"). The statistics store has its own context and its own factories
+/// (<see cref="Stats.Data.GatewayStatsDbContextDesignTimeFactory"/> for SQLite here, and a Postgres one in
+/// the CcDirector.Gateway.Migrations.Postgres project) - a different context, and never scanned in the same
+/// pass; the tooling picks between contexts from <c>--context</c>, which every documented command passes. Set
+/// <c>CC_GATEWAY_EF_PROVIDER=postgres</c> to
 /// scaffold the Postgres migration set (into the CcDirector.Gateway.Migrations.Postgres assembly); leave it
 /// unset for the default SQLite set (in this project's Data/Migrations).
 ///

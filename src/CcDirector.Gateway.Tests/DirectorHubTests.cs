@@ -52,14 +52,14 @@ public sealed class DirectorHubTests : IDisposable
     private (DirectorHub hub, FakeHubCallerContext ctx) NewHub(string connectionId)
     {
         var ctx = new FakeHubCallerContext(connectionId);
-        var hub = new DirectorHub(_store, _registry, _inputStats, new GatewayStreamRegistry()) { Context = ctx };
+        var hub = new DirectorHub(_store, _registry, InputStatsHandle.Available(_inputStats), new GatewayStreamRegistry()) { Context = ctx };
         return (hub, ctx);
     }
 
     private (DirectorHub hub, FakeHubCallerContext ctx) NewHub(string connectionId, SnoozeLandingObserver snooze)
     {
         var ctx = new FakeHubCallerContext(connectionId);
-        var hub = new DirectorHub(_store, _registry, _inputStats, new GatewayStreamRegistry(), snoozeLandings: snooze) { Context = ctx };
+        var hub = new DirectorHub(_store, _registry, InputStatsHandle.Available(_inputStats), new GatewayStreamRegistry(), snoozeLandings: snooze) { Context = ctx };
         return (hub, ctx);
     }
 

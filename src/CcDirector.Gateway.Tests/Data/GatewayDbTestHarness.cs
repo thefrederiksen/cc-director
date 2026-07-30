@@ -5,7 +5,7 @@ namespace CcDirector.Gateway.Tests.Data;
 
 /// <summary>
 /// Test harness for the EF data layer: a throwaway on-disk SQLite database under the system temp directory,
-/// opened over a real file (the <see cref="Stats.GatewayStatsDatabase"/> test pattern - real file, and
+/// opened over a real file (the <see cref="global::CcDirector.Gateway.Stats.GatewayStatsDatabase"/> test pattern - real file, and
 /// <c>SqliteConnection.ClearAllPools()</c> on dispose so the file is released). Every opened
 /// <see cref="GatewayDatabase"/> is tracked and disposed, and the whole directory is removed on teardown.
 ///

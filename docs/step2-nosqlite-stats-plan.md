@@ -1,0 +1,240 @@
+# Step 2: remove SQLite from the hosted Gateway - the privilege answer and the build plan
+
+Working document for the Step 2 Manager. Branch `nosqlite-stats`, worktree `D:\ReposFred\dt-nosqlite`.
+The mission brief is `docs/MISSION-hosted-gateway-remediation-2026-07-30.md`; the deploy-mechanics
+rulings are the Architect's verdict 3. This file records what was MEASURED and what is PLANNED. It
+grants nothing.
+
+---
+
+## 1. The privilege answer: YES, the hosted role can create a schema. Measured, not assumed.
+
+Verdict 3 ruling 3 required this answered before any entity was written, and required it answered
+WITHOUT attempting a creation against the hosted database (staging shares production's database, so a
+failed experiment lands on the live database).
+
+**Method.** Read-only interrogation of the live hosted role's grants, from a throwaway
+`postgres:16-alpine` container, using the connection string read out of the hosted app settings
+(`az webapp config appsettings list -g rg-devthrottle-hosted-gateway -n devthrottle-gw`). Every
+statement was a `SELECT` against the catalog. Nothing was created, altered or dropped.
+
+**What the live database says.**
+
+| Question | Answer |
+|---|---|
+| Connected role | `gateway_app` (session and current user both) |
+| Role attributes | not superuser, no CREATEDB, no CREATEROLE, no BYPASSRLS, inherits |
+| Role memberships | none - `gateway_app` belongs to no other role |
+| `has_database_privilege(current_user, current_database(), 'CREATE')` | **true** - this is the create-a-schema privilege |
+| `search_path` | `gateway, "$user", public` |
+| Existing `gateway` schema | owner `postgres`, and `gateway_app` **can** CREATE in it and USE it |
+| `public` schema | `gateway_app` can USE it but **cannot CREATE in it** |
+| A `gateway_stats` or `stats` schema | does not exist yet |
+| `__EFMigrationsHistory` | lives in schema `gateway`, **owned by `gateway_app`** |
+| Newest applied gateway migration | `20260729173140_SkillPlacementState` |
+| Tables in `gateway` schema | 37 |
+
+**The conclusion, and the trap in it.** The role has `CREATE` on the database, so
+`CREATE SCHEMA gateway_stats` is permitted and the context can own its own
+`gateway_stats.__EFMigrationsHistory` there - the existing history table in `gateway` is already owned
+by `gateway_app`, which is direct evidence the role can create and own a migrations history table.
+
+**The trap, recorded here rather than only in a message because someone will otherwise re-derive the
+wrong answer from the schema simply being there.** The `gateway` schema EXISTING is **not** evidence
+that the role can create one. `migrationBuilder.EnsureSchema` emits `CREATE SCHEMA IF NOT EXISTS`,
+which is a silent no-op when a superuser created the schema at provisioning time - so the check would
+have passed identically whether the privilege was present or absent. That is a guard supplying its own
+evidence: it cannot fail, so its passing means nothing. The database privilege is the thing that
+answers the question, and that is what was read.
+
+**A correction to the stated fallback.** Verdict 3 names the fallback as "the same physical database,
+default schema, table names prefixed". That fallback is **not available**: `gateway_app` has no CREATE
+on `public`. Had the schema privilege been missing, the real fallback would have been prefixed tables
+inside the existing `gateway` schema. This is recorded because the written fallback would have failed
+on deploy day, which is precisely the discovery ruling 3 was designed to force early.
+
+**Still to prove, and it is not proven yet.** That a role holding ONLY `CREATE` on the database (no
+superuser, no ownership of an existing schema) can in fact create the schema, create tables in it, and
+run an Entity Framework migration chain there. That is proven against a LOCAL Postgres container with
+an equivalently-restricted role - never against the hosted database. It is the first task of worker 1.
+
+---
+
+## 2. What is being moved
+
+Sixteen tables, all currently in `gateway-stats.db` at SQLite schema version 5
+(`src/CcDirector.Gateway/Stats/GatewayStatsDatabase.cs`), plus one JSON file.
+
+| Cluster | Tables |
+|---|---|
+| Delta (append-only) | `stat_delta`, `token_delta`, `agent_delta`, `agent_driven_delta` |
+| Identity (surrogate id to first-seen display spelling) | `repo_identity`, `agent_identity`, `model_identity`, `checkout_identity` |
+| High-water (read-modify-write - the lost-update risk) | `session_highwater`, `token_highwater`, `agent_driven_highwater` |
+| Membership (all-time distinct sets) | `wingman_session`, `repo_session`, `agent_session`, `agents_seeded` |
+| Scalar | `meta` |
+
+Plus `gateway-concurrency-stats.json` (`GatewaySessionConcurrencyStats`), which the brief's ruling 13
+puts in this step: it is written from the hottest path in the system and carries a per-hour maximum,
+which is a lost-update path of exactly the same shape as the high-water tables.
+
+### A finding to carry, not to silently fix
+
+`repo_session` and `agent_session` are the only two tables with **no tenant column**. Schema version 5
+added the tenant to every other table - as a plain column on the delta and identity tables, and into
+the PRIMARY KEY on the high-water, membership and meta tables - but those two were in neither list.
+
+They are not un-partitioned in effect: `repo_id` and `agent_id` are surrogates minted per tenant (the
+identity tables carry the tenant), so `(repo_id, session_id)` is partitioned INDIRECTLY through the
+surrogate. That is a real invariant and it holds, but it holds by construction elsewhere rather than by
+a column here. Step 2 carries the shape forward unchanged - changing it is a behaviour change outside
+this step - and the contract suite asserts the indirect partitioning explicitly rather than skipping
+those two tables on proof row 4. Named here so it is a recorded decision and not an omission.
+
+### And the finding that came out of looking: THREE accessors return every tenant's rows
+
+The Architect's ruling was that asserting the indirect partitioning is not enough - the property that
+actually protects us is the one `devthrottle_internal#1039` achieved on the missions leak: a foreign
+record is unreachable because **no method would return one**, not because every call site remembered to
+filter. He asked whether such an accessor exists today. It does, and there are three of them.
+
+| Where | Statement | Scope |
+|---|---|---|
+| `GatewayInputStatsAggregator.cs:1101` `SessionCounts` | `SELECT {column}, COUNT(*) FROM {table} GROUP BY {column}` | **no tenant filter** - every tenant |
+| `GatewayInputStatsAggregator.cs:297` `LoadMirror` | `SELECT repo_id, session_id FROM repo_session` | **no tenant filter** - every tenant |
+| `GatewayInputStatsAggregator.cs:298` `LoadMirror` | `SELECT agent_id, session_id FROM agent_session` | **no tenant filter** - every tenant |
+
+`SessionCounts` has two call sites - `RepoTotals` (line 988) and `AgentTotals` (line 1051) - and both
+are correct TODAY: each looks up only ids it obtained from a tenant-filtered source, so no other
+tenant's number is ever served. `LoadMirror` loads both membership sets into
+`HashSet<(long Id, string SessionId)>` - note the tuple has **no tenant**, unlike every other mirror in
+the class, which is keyed by `(TenantId, string)` - and that global set is what `KnownIdentitySession`
+consults to decide whether a membership row needs writing. Correct today for the same reason.
+
+**So no leak is being served, and this is still the 1039 shape one table over.** Safety rests on every
+one of those call sites continuing to remember, and the class's own comment at line 296 states the rule
+that has to be remembered. A fourth call site that looked up an id from anywhere else - or simply
+enumerated the returned dictionary - would leak, and nothing in the code would stop it. There is a
+second, smaller cost too: `SessionCounts` reads the whole table on every Repos and Agents page render,
+across every tenant, on a hosted store that only grows.
+
+Per the ruling, **no filter is being quietly added.** It is reported to the Architect as a finding and
+the decision on scope is his. Step 2 carries the behaviour forward unchanged, and the contract suite
+proves BOTH properties the ruling named: that the indirect partitioning holds, and that these accessors
+return foreign rows - the second asserted as the CURRENT behaviour, so that whenever it is fixed the
+test turns red and names what changed rather than silently passing.
+
+---
+
+## 3. The design, as settled
+
+Not reopened. Recorded so every worker builds the same thing.
+
+1. **A separate `GatewayStatsDbContext`.** Its own schema (`gateway_stats`), its own migration history
+   table (`gateway_stats.__EFMigrationsHistory`), its own connection pool. Never folded into
+   `GatewayDbContext`. Same physical Supabase server.
+2. **One implementation, two providers.** Entity Framework carries the model, the migrations and every
+   read projection, and it serves SQLite AND Postgres from the same code. The raw `SqliteConnection`
+   in `GatewayStatsDatabase` goes away. This is what makes a provider-parametrised contract suite mean
+   anything: it is one implementation run twice, not two implementations compared.
+3. **Explicit `ON CONFLICT DO UPDATE` for every high-water and per-hour-maximum write.** Change-tracked
+   read-modify-write is a lost-update generator under concurrent Postgres that single-writer SQLite
+   never exposed. Both providers support the syntax, so the statements are shared where the dialects
+   agree and provider-specific where they do not.
+4. **The statistics migration and its connection failures are NON-FATAL to Gateway startup.** The
+   Gateway boots, serves the roster and the tunnels, and the statistics surface reports itself
+   unavailable with a named reason. This is a failure-domain boundary, not a fallback: there is no
+   substitute store, no alternative path, and no invented data. The main `GatewayDatabase` keeps its
+   current fatal-on-failure startup behaviour, which is correct and is not touched.
+5. **The two migration chains never share a transaction or a startup gate.** The main one gates the
+   deploy as it does today. The statistics one does not.
+6. **Self-host keeps SQLite for statistics and that is correct.** The mission is no SQLite on the
+   HOSTED Gateway.
+
+### The one design decision this document makes: how the statistics store is selected
+
+A new environment variable, **`CC_GATEWAY_STATS_DB_CONNECTION`**, mirroring
+`CC_GATEWAY_DB_CONNECTION`. Set means Postgres for statistics; unset means the local SQLite file.
+
+Why a second variable rather than reusing the first: Npgsql pools are keyed by the connection string,
+so pointing both contexts at the identical string would put them in ONE pool and quietly delete the
+pool separation that ruling 9 asked for. A distinct string - same server, its own application name and
+its own pool size - is what makes the separate pool real rather than nominal. It also makes the
+ruling-1 proof possible at all: pointing the statistics connection at a dead endpoint while the Gateway
+serves a roster is a one-variable change.
+
+The rule that goes with it, so it cannot decay into a fallback: **when
+`CC_GATEWAY_DB_CONNECTION` is set (the Gateway is hosted) and `CC_GATEWAY_STATS_DB_CONNECTION` is not,
+the statistics store is UNAVAILABLE with a named reason. It never opens a SQLite file.** That is the
+no-SQLite guard doing its job on a misconfiguration, and the provisioning workflow sets the variable.
+
+**NOT CONFIGURED and UNREACHABLE are two DIFFERENT named reasons** - on the failure surface, in the
+log, and in the 503 body. Architect ruling, and it is not optional. A deploy that simply forgets to set
+`CC_GATEWAY_STATS_DB_CONNECTION` would otherwise present identically to a database outage, and the next
+incident would be spent hunting a network fault that is really a missing variable. Absence on hosted
+stays NON-FATAL, but it is LOUD: logged once at startup with the variable named, and visible on the
+health surface. Never quiet. Never a SQLite file.
+
+---
+
+## 4. Worker assignments
+
+Every piece is reviewed by a fresh Codex session before it is committed, told to be adversarial and not
+to trust this Manager's report, and told to write its review to a file and reply with one single line.
+
+**Wave 1 - the two things nothing else can start without.**
+
+| Worker | Task | Proves |
+|---|---|---|
+| W1 | The local Postgres rig. A throwaway `postgres:16` container with a role holding ONLY `CREATE` on the database, and a proof that it can create `gateway_stats`, create tables in it, and run an Entity Framework migration chain with its own history table there. Extends the existing `CC_GATEWAY_TEST_PG_CONNECTION` gate used by `PostgresProviderProofTests`. | Verdict 3 ruling 3, the half that cannot be read off the hosted database |
+| W2 | The model: `GatewayStatsDbContext`, sixteen entities, keys and indexes matching schema version 5 exactly, SQLite migration in `CcDirector.Gateway` and Postgres migration into `gateway_stats`. | Proof row 1, the schema half |
+
+**Wave 2 - three independent ports against W2's entity contract, which is published before W2 finishes.**
+
+| Worker | Task | Proves |
+|---|---|---|
+| W3 | The twelve read projections, ported to provider-neutral Entity Framework queries | Proof rows 1 and 6 |
+| W4 | The write path: the fold batch commit, with explicit `ON CONFLICT DO UPDATE` on all three high-water tables and the four membership sets | Proof rows 2 and 3 |
+| W5 | `gateway-concurrency-stats.json` onto the statistics context, per-hour maximum written as an upsert | Ruling 13, proof row 2 |
+
+**Wave 3.**
+
+| Worker | Task | Proves |
+|---|---|---|
+| W6 | Startup wiring, provider selection, the non-fatal boundary, the unavailable-with-reason state on `/stats/data`, and the provisioning workflow change | Verdict 3 rulings 1 and 2 |
+| W7 | The no-SQLite guard on the hosted path, and the test that makes it trip | Proof row 8 |
+
+**Wave 4.**
+
+| Worker | Task | Proves |
+|---|---|---|
+| W8 | The provider-parametrised contract suite: all sixteen tables read and write, interleaved writers, idempotency on replay, tenant partitioning, boundaries, output parity on `/stats/data` bodies, and the suite watched going red against a deliberately broken implementation | Proof rows 1-7 |
+
+### The Step 1 overlap - DECIDED by the Architect, not reconciled at land
+
+**Step 1 owns the statistics failure surface and lands first. Worker 6 CONSUMES it and does not build a
+second one.** The shape Step 1 is building, which worker 6 codes against today: per-observer FAILURE
+COUNT, DROP COUNT, LAST ERROR and LAST SUCCESSFUL WRITE, surfaced on `/stats/data` and inside the 503
+body.
+
+So worker 6 defines its side as a **small interface its code depends on**, and keeps the endpoint
+wiring out of this branch entirely. If Step 1 lands a different shape the Architect adapts this side at
+merge - a rename, not a rebuild.
+
+### Pace
+
+Waves 1 and 2 are the critical path. The contract suite in wave 4 proves the port and stops - it does
+not become a project of its own. Everything in the mission brief's proof bar stands; nothing beyond it
+is Step 2.
+
+### A note on the mission brief, and on rebasing
+
+This worktree does **not** carry a copy of the mission brief. It was deleted on the Architect's
+instruction: the Step 1 branch has it tracked, and two copies on two branches means a correction
+applied to one silently leaves the other wrong for whoever reads that branch - which had already
+happened once today, to the schema fallback paragraph. The brief lands on `main` with Step 1 and there
+will be exactly one after that. Until then the **Architect's messages are the authority** when they
+differ from any copy anyone is holding.
+
+`origin/main` moved four times on 2026-07-30. **Rebase before every push**, and never hand a reviewer a
+`git diff origin/main` without checking the merge base first - the first Codex review on this mission
+was spent reading 336 lines of a phantom revert of somebody else's shipped work.

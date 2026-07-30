@@ -33,7 +33,10 @@ public sealed class DirectorHub : Hub
 
     private readonly PushedSessionStore _store;
     private readonly DirectorRegistry _registry;
-    private readonly GatewayInputStatsAggregator _inputStats;
+    // The statistics aggregator, or null when statistics are unavailable. The hub is constructed from the
+    // HANDLE rather than the aggregator so a statistics store that could not be opened cannot stop a
+    // Director connecting - see Stats.InputStatsHandle.
+    private readonly GatewayInputStatsAggregator? _inputStats;
     private readonly GatewayStreamRegistry _streamRegistry;
     private readonly Snooze.SnoozeLandingObserver? _snoozeLandings;
     private readonly Fleet.FleetRoleObserver? _fleetRoles;
@@ -45,7 +48,7 @@ public sealed class DirectorHub : Hub
 
     private readonly DirectorConnectionRegistry? _connections;
 
-    public DirectorHub(PushedSessionStore store, DirectorRegistry registry, GatewayInputStatsAggregator inputStats,
+    public DirectorHub(PushedSessionStore store, DirectorRegistry registry, Stats.InputStatsHandle inputStats,
         GatewayStreamRegistry streamRegistry, Snooze.SnoozeLandingObserver? snoozeLandings = null,
         Fleet.FleetRoleObserver? fleetRoles = null, Fleet.FleetDisplayStateObserver? fleetDisplayState = null,
         HostedTenantBoundary? tenantBoundary = null, DirectorConnectionRegistry? connections = null,
@@ -54,7 +57,7 @@ public sealed class DirectorHub : Hub
     {
         _store = store;
         _registry = registry;
-        _inputStats = inputStats;
+        _inputStats = inputStats.Aggregator;
         _streamRegistry = streamRegistry;
         _snoozeLandings = snoozeLandings;
         _fleetRoles = fleetRoles;
@@ -187,7 +190,7 @@ public sealed class DirectorHub : Hub
         var accepted = _store.ApplySnapshot(RequireBoundTenant(), directorId, Context.ConnectionId, sequence, set);
         // DevThrottle Stats: fold each session's input tally into the always-available aggregate, under this
         // connection's bound tenant (MTR-08) so one account's tallies never coalesce with another's.
-        _inputStats.ObserveSnapshot(set, tenant: RequireBoundTenant());
+        _inputStats?.ObserveSnapshot(set, tenant: RequireBoundTenant());
         // A push the store REJECTED (from a superseded connection, or a stale sequence) is NOT authoritative,
         // so it must not drive the snooze observer - whose edges MUTATE the authoritative registry
         // (ClearIfArmed deletes an armed snooze, Land converts a deferral). A rejected stale Working push
@@ -230,7 +233,7 @@ public sealed class DirectorHub : Hub
         var accepted = _store.ApplyDelta(RequireBoundTenant(), directorId, Context.ConnectionId, sequence, session);
         // DevThrottle Stats: fold this session's tally into the always-available aggregate, under this
         // connection's bound tenant (MTR-08).
-        _inputStats.Observe(session, tenant: RequireBoundTenant());
+        _inputStats?.Observe(session, tenant: RequireBoundTenant());
         // A push the store REJECTED (superseded connection, or a stale sequence) is NOT authoritative, so it
         // must not drive the snooze observer, whose edges MUTATE the authoritative registry (ClearIfArmed
         // deletes an armed snooze, Land converts a deferral). See the note in PushSnapshot. The roles/display
@@ -270,7 +273,7 @@ public sealed class DirectorHub : Hub
         var accepted = _store.ApplyRemove(RequireBoundTenant(), directorId, Context.ConnectionId, sequence, sessionId);
         // DevThrottle Stats: its contribution stays in the totals; drop only its high-water entry, scoped to
         // this connection's bound tenant (MTR-08) so it cannot drop another tenant's same-id high-water.
-        _inputStats.Forget(sessionId, RequireBoundTenant());
+        _inputStats?.Forget(sessionId, RequireBoundTenant());
         // A DEPARTURE RE-ROLES THE SURVIVORS, exactly as an arrival does: a controller leaving should stop
         // its workers being Workers. Must run AFTER ApplyRemove so the sweep resolves the fleet that now
         // exists rather than the one that just left.

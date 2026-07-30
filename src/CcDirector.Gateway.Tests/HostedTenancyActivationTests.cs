@@ -212,7 +212,7 @@ public sealed class HostedTenancyActivationTests : IDisposable
         var ctx = new FakeHubCtx(connId, http);
         var registry = new DirectorRegistry(_tempDir);
         var inputStats = new GatewayInputStatsAggregator(Path.Combine(_tempDir, $"stats-{Guid.NewGuid():N}.db"));
-        var hub = new DirectorHub(store, registry, inputStats, new GatewayStreamRegistry(), tenantBoundary: boundary)
+        var hub = new DirectorHub(store, registry, InputStatsHandle.Available(inputStats), new GatewayStreamRegistry(), tenantBoundary: boundary)
         {
             Context = ctx,
         };
