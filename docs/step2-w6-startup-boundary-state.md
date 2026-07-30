@@ -65,19 +65,23 @@ unset means UNAVAILABLE". That was superseded by the Architect's derivation ruli
 marked it superseded in place. NOT CONFIGURED still exists and still matters; it no longer covers
 "hosted and unset".
 
-### The three named reasons
+### The named reasons this branch added
 
-`StatsStoreUnavailableReason` gained `NotConfigured`, `Unreachable` and `IncompleteSchema` beside worker 2's
-four adoption reasons. One enum for the whole statistics availability surface, and a stable machine-readable
-code per reason (`not_configured`, `unreachable`, `incomplete_schema`, ...) written out by hand rather than
-derived from the enum member name, so renaming a member in C# cannot silently change a string an operator
-greps for.
+`StatsStoreUnavailableReason` gained `NotConfigured`, `Unreachable`, `IncompleteSchema` and `InternalError`
+beside worker 2's adoption reasons. One enum for the whole statistics availability surface, and a stable
+machine-readable code per reason (`not_configured`, `unreachable`, `incomplete_schema`, `internal_error`,
+...) written out by hand rather than derived from the enum member name, so renaming a member in C# cannot
+silently change a string an operator greps for. **That hand-written map is now guarded MECHANICALLY** - see
+the reason-code section below, which exists because the map silently fell behind the enum once already.
 
-The rule the three of them encode, written down so a fourth is added on the same grounds rather than on
-taste: **a named reason exists to separate causes that are FIXED IN DIFFERENT PLACES.** NOT CONFIGURED is
-fixed by editing a setting, UNREACHABLE by fixing a database or a network, and INCOMPLETE SCHEMA on the
-store's own disk with both of those already healthy. Collapsing any pair costs an incident spent looking
-where the fault is not.
+The rule they encode, written down so the next one is added on the same grounds rather than on taste:
+**a named reason exists to separate causes that are FIXED IN DIFFERENT PLACES.** NOT CONFIGURED is fixed by
+editing a setting, UNREACHABLE by fixing a database or a network, INCOMPLETE SCHEMA on the store's own disk
+with both of those already healthy, and INTERNAL ERROR is not fixed by the operator at all because it is
+ours. Collapsing any pair costs an incident spent looking where the fault is not.
+
+`IncompleteSchema` is currently a DUPLICATE of worker 2's `MigrationHistoryIncomplete` and is to be dropped
+when worker 2 collapses them - see "what is still not proven".
 
 `IncompleteSchema` is the Manager's ruling of 2026-07-30, and it was made because the first version of this
 branch got it wrong in a way that mattered: a half-built store was contained as UNREACHABLE, whose sentence
