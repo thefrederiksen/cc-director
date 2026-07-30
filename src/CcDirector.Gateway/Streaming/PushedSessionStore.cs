@@ -299,6 +299,57 @@ public sealed class PushedSessionStore
     }
 
     /// <summary>
+    /// How the Gateway's knowledge of one Director stands RIGHT NOW: what it last said, when it said it, and
+    /// whether its tunnel is currently up. Never null-for-stale - staleness is a property reported here, not a
+    /// reason to withhold the answer.
+    /// </summary>
+    /// <param name="Sessions">Deep copies of the last sessions this Director pushed, with idle clocks
+    /// recomputed. Empty only when it has genuinely never pushed any.</param>
+    /// <param name="AsOfUtc">When the Gateway last received a push from it, or null if it never has.</param>
+    /// <param name="Connected">Whether its tunnel is up at this instant. This is the ground truth for whether
+    /// a machine is reachable - NOT a countdown since the last push, which only ever measured chattiness.</param>
+    public readonly record struct DirectorKnowledge(IReadOnlyList<SessionDto> Sessions, DateTime? AsOfUtc, bool Connected);
+
+    /// <summary>
+    /// What the Gateway last knew about a Director, WHATEVER ITS AGE (epic #1159, step A).
+    ///
+    /// THIS IS A SECOND METHOD BESIDE <see cref="TryGetFresh"/>, NOT A RELAXATION OF IT, and that distinction
+    /// is the whole point. TryGetFresh has many callers - session location for command routing, the gate
+    /// checks, the repository reads - and several of them are right to refuse a stale answer, because acting
+    /// on one could route a command at a Director that is no longer there. Loosening it would hand every one
+    /// of those callers a weaker guarantee they never asked for and could not see change. It stays exactly as
+    /// strict as it is.
+    ///
+    /// WHAT THIS EXISTS TO FIX. The roster used to be served through the strict method, so a Director whose
+    /// last push was older than the staleness window had its sessions DROPPED from the roster - not dimmed,
+    /// not dated, gone, colours and all. The window is 20 seconds and the Director re-pushes every 10, so two
+    /// missed ticks blanked a machine; with the tunnel dropping 35 times in a day (issue #1153) the owner's
+    /// roster emptied several times an hour while the Gateway sat holding the very data it had just refused to
+    /// show. Deleting good information to avoid admitting it is a few seconds old is never the right trade for
+    /// a READ - the caller can say "updated 40s ago" perfectly well, and cannot say anything at all about an
+    /// empty list.
+    ///
+    /// So: reads that DISPLAY use this and report the age. Reads that ACT keep using TryGetFresh.
+    /// </summary>
+    public DirectorKnowledge GetLastKnown(TenantId tenant, string directorId)
+    {
+        if (!DirectorsFor(tenant).TryGetValue(directorId, out var entry))
+            return new DirectorKnowledge(Array.Empty<SessionDto>(), null, Connected: false);
+
+        lock (entry.Gate)
+        {
+            var now = _utcNow();
+            var copies = new List<SessionDto>(entry.Sessions.Count);
+            foreach (var s in entry.Sessions.Values)
+                copies.Add(RecomputeClocks(s.Clone(), now));
+            return new DirectorKnowledge(
+                copies,
+                entry.ReceivedAtUtc == DateTime.MinValue ? null : entry.ReceivedAtUtc,
+                entry.ActiveConnectionId is not null);
+        }
+    }
+
+    /// <summary>
     /// Issue #1177 (Phase 4a): find the Director that currently owns <paramref name="sessionId"/> in a FRESH
     /// pushed cache, without any HTTP pull. Scans <paramref name="tenant"/>'s Directors only (each under its
     /// own lock) and returns the first fresh match as (directorId, deep-copied session). Returns null when no
