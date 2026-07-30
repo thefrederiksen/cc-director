@@ -764,6 +764,20 @@ contested path is a committed test rather than a probe, because SQLite's write l
 rather than per process, so a second connection holding a write transaction makes adoption genuinely
 contend in-process with no two-process harness.
 
+## A MERGE-ORDERING HAZARD: one branch's ordinary work ARMS another's latent defect
+
+**Worker 4's second migration MUST NOT land before worker 2's head-model-versus-baseline defect is
+fixed.** That defect is DOCUMENTED AND NOT FIXED (`831a3822e`). It is latent today only because the
+SQLite chain has exactly one migration - and it arms itself the moment a SECOND one lands, which is
+precisely what worker 4's `previous_*` columns and worker 5's concurrency tables each do.
+
+This is the same shape as the half-built-detector gap worker 6 found: **a defect that arrives not
+because anything went wrong, but because somebody did the next expected piece of work.** Nothing in the
+change that triggers it will look related to it.
+
+It is recorded here rather than left to the merge, because the merge is exactly where it would be
+missed: both branches are individually correct and green, and the hazard exists only in their order.
+
 ## The merge-time obligation nobody may forget
 
 **Worker 4's Postgres fixtures and worker 5's SQLite fixtures are both built from the MODEL, not from a
