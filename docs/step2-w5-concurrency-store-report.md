@@ -44,6 +44,22 @@ Three tables, exactly as the entity contract specifies, in `CcDirector.Gateway.S
    or a `citext`.
 4. **Retention is 90 days, pruned on write, and member rows prune with their hour.**
 
+### One thing worker 2 and the contract should know: the member table is CURRENT-HOUR-ONLY
+
+Found by review 3, and it is a behaviour difference rather than a test gap. Observe hour H, then H+1, then
+H again: the file store reports ONE distinct session for H, because it clears its three dedup lists whenever
+the observed hour DIFFERS from its single current-hour key - and "differs" fires when the hour moves
+backwards as much as forwards. A store that keeps every hour's members and unions them reports two. Two is
+the better answer and the wrong one for a port; if we want the union we ask for it as a change on its own
+merits, where the owner can see a number move and be told why.
+
+So `concurrency_hour_member` now holds the CURRENT hour and nothing else: when a tenant's hour changes, in
+either direction, its rows for every other hour are discarded. That is exactly what the three lists in the
+JSON file were. The contract describes the table as pruning with its hour at 90 days; that prune still runs
+and is not redundant - it is what eventually clears the last hour of a tenant that stopped being observed -
+but the table's steady-state size is one hour per tenant, not ninety days of them. Flagged rather than
+assumed, because it is a lifetime the contract does not currently spell out.
+
 The only dialect difference in the store is `GREATEST` (PostgreSQL) versus `MAX` (SQLite). A third provider
 fails loud rather than being guessed at. Table names come from the mapped model, so a rename cannot leave a
 statement pointing at a name that no longer exists.
