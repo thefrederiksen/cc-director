@@ -142,6 +142,32 @@ public class BusyActionTests
     }
 
     [AvaloniaFact]
+    public async Task AControlThatWasAlreadyDisabledIsNotEnabledByRunningWork()
+    {
+        // Restoring to "enabled" unconditionally would quietly override a rule that had deliberately
+        // disabled the control - the helper would then be handing the user a button someone else decided
+        // they should not have.
+        var button = new Button { Content = "Run", IsEnabled = false };
+
+        await BusyAction.RunAsync(button, () => Task.CompletedTask, "Running...");
+
+        Assert.False(button.IsEnabled);
+        Assert.Equal("Run", button.Content);
+    }
+
+    [AvaloniaFact]
+    public async Task ABusyLabelIsClearedEvenWhenTheControlStartedWithNoContent()
+    {
+        // The restore used to be skipped when the original content was null, which would leave the busy
+        // label welded on for the rest of the session.
+        var button = new Button();
+
+        await BusyAction.RunAsync(button, () => Task.CompletedTask, "Working...");
+
+        Assert.Null(button.Content);
+    }
+
+    [AvaloniaFact]
     public async Task TheGuardIsReleasedSoTheButtonWorksAgainNextTime()
     {
         // The guard must be per-RUN, not permanent. A helper that blocked the second legitimate click

@@ -86,9 +86,18 @@ public static class BusyAction
 
         // FEEDBACK BEFORE THE AWAIT. No await has happened yet, so this is on the same dispatcher turn as
         // the click and is painted before the work starts.
-        var originalContent = (button as ContentControl)?.Content;
+        //
+        // Both original values are captured, not assumed. Restoring to "enabled" unconditionally would
+        // ENABLE a control that some other rule had deliberately disabled, and restoring only a non-null
+        // label would leave a busy label stuck on a control that started with no content at all. Neither
+        // arises at today's call sites; both are the kind of thing that arrives later with the site that
+        // trips it, by which point this helper is trusted everywhere and nobody re-reads it.
+        var originalEnabled = button.IsEnabled;
+        var labelled = busyLabel is not null ? button as ContentControl : null;
+        var originalContent = labelled?.Content;
+
         button.IsEnabled = false;
-        if (busyLabel is not null && button is ContentControl labelled) labelled.Content = busyLabel;
+        if (labelled is not null) labelled.Content = busyLabel;
 
         try
         {
@@ -125,8 +134,8 @@ public static class BusyAction
         {
             // Always restore, including on the exception path: a failure that left the control disabled
             // would turn one bad network moment into a button that stays dead until the app restarts.
-            if (originalContent is not null && button is ContentControl restore) restore.Content = originalContent;
-            button.IsEnabled = true;
+            if (labelled is not null) labelled.Content = originalContent;
+            button.IsEnabled = originalEnabled;
             lock (InFlight) InFlight.Remove(button);
         }
     }
