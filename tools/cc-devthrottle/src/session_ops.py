@@ -164,6 +164,16 @@ def list_sessions(json_output: bool) -> None:
         machine = director.field(s, "machineName", "MachineName") or "-"
         repo = director.field(s, "repoPath", "RepoPath")
         status = director.field(s, "activityState", "ActivityState") or "-"
+        # Issue #1019: a session the Director is still holding now appears here even after its process is
+        # gone, which is what makes a dead row nameable and therefore reapable. A crash was never modelled
+        # as its own activity state - it reads "Exited", byte-identical to a session that finished on
+        # purpose - so say it, from the RAW crash fact the Director puts on the wire. We render that fact,
+        # we do not rule on it: deciding what a state MEANS belongs to the Gateway fold, never to a client.
+        # Read the boolean DIRECTLY, not through director.field: field stringifies, and the string
+        # "False" is truthy, so every row would be reported as a crash. Absent is not true either - a
+        # roster row carrying no crash fact is not a crash.
+        if s.get("crashed", s.get("Crashed")) is True:
+            status = f"{status} (crashed)"
         marker = " (you)" if me and sid.lower() == me.lower() else ""
         table.add_row(number_text, director.short_id(sid) + marker, name, machine, _repo_name(repo), status)
 
