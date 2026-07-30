@@ -284,6 +284,36 @@ rather than leaving to be discovered, and this entry is the proof that it can be
 and 6 land and the hosted path stops opening that store, this entry must be REMOVED, or the guard
 carries a permanent hole in the exact place the mission was about.**
 
+## An accepted, measured divergence after a provider-driven table rebuild
+
+A SQLite table rebuild emitted by the provider does three things the Entity Framework model cannot
+express: it rewrites the rowid key to `NOT NULL` with a NAMED constraint, and it **REORDERS EVERY COLUMN
+ALPHABETICALLY**. The third was named by nobody before worker 2 measured it - not either reviewer, not
+me. So a post-rebuild file can NEVER be byte-identical to version 5, and "no unexpected difference" is
+not achievable as written.
+
+**Why it is inert, structurally rather than conveniently:** the version-5 shape claim only has to hold
+for the BASELINE, because the baseline is what adoption STAMPS. A file that has been rebuilt already
+carries a history table, so adoption can never run on it again. **Post-rebuild is post-adoption by
+construction.** The equivalence that protects users is about the adoption DECISION.
+
+**What is asserted instead:** after baseline-plus-a-rebuilding-migration, `tenant` still carries
+`DEFAULT 'local'` - measured on a REAL adopted version 5 file, on exactly the path nothing previously
+exercised - and all sixteen tables still have their expected columns, compared as an ORDER-INSENSITIVE
+NAME SET.
+
+**The condition this acceptance rests on, and it is not yet met:** a sweep proving nothing binds by
+POSITION. Both directions. Reads - positional accessors, `SELECT *` followed by index-based access - and
+**WRITES**, which are worse: an `INSERT ... VALUES (...)` with no column list binds by position, so after
+a reorder it silently writes the right values into the WRONG COLUMNS. That corrupts rather than
+misreports, and nothing throws. A bad read fails loudly on a missing column or a type mismatch; a bad
+write just quietly puts the character count in the turns column. **If any positional bind exists, this
+acceptance is withdrawn.**
+
+The divergence must be recorded IN THE EQUIVALENCE TEST ITSELF, not only here - a future reader who
+finds a loose assertion with no explanation will tighten it, discover it cannot pass, and either weaken
+it further or spend a day rediscovering what was measured today.
+
 ## The check that can disappear without anyone noticing
 
 **Worker 3's fixtures run the real `GatewayStatsDatabase` rather than the model, and they are currently
