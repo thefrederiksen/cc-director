@@ -6,6 +6,8 @@ using CcDirector.Core.Configuration;
 using CcDirector.Core.HostedAi;
 using CcDirector.Core.Utilities;
 
+using CcDirector.Gateway.Speech;
+
 namespace CcDirector.Core.Voice;
 
 /// <summary>
@@ -119,6 +121,38 @@ public sealed class TtsService
         var legacyVoice = !string.IsNullOrWhiteSpace(voiceOverride) ? voiceOverride!.Trim() : _options.TtsVoice;
         var legacyModel = !string.IsNullOrWhiteSpace(modelOverride) ? modelOverride!.Trim() : _options.TtsModel;
         return new TtsTarget(Endpoint, legacyKey, legacyVoice, legacyModel, "DevThrottle account key missing - sign in to DevThrottle");
+    }
+
+    /// <summary>
+    /// SPEAK AN UTTERANCE (issue #1031): the sink entry point, and the only one the desktop uses.
+    ///
+    /// The language and the voice were decided once, by the Gateway, and arrive together in a package this
+    /// method could not have been handed without a language - a bare string does not compile against this
+    /// parameter. Nothing here resolves a language or picks a voice, which is the whole point: the desktop
+    /// used to resolve its voice from a machine-global file and never saw the account, so a French account
+    /// was read aloud in the machine's English voice.
+    ///
+    /// THE UTTERANCE'S VOICE IS PASSED AND ITS LANGUAGE IS NOT USED TO PICK A MODEL. modelOverride is null,
+    /// always, on this path. A language selects the VOICE inside the one engine that already serves English;
+    /// a language selecting an ENGINE is the failure that got this feature reverted
+    /// (devthrottle_internal#547). If a future change ever passes something language-derived as a model here,
+    /// that is the failure returning.
+    /// </summary>
+    public Task<TtsResult> GenerateAsync(SpokenUtterance utterance, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(utterance);
+        // IT READS AND CHECKS THE LANGUAGE BEFORE IT POSTS (re-audit). This overload used to consume only Text and
+        // Voice, so an utterance carrying a null or unknown language was perfectly speakable through it - a
+        // compiled probe pushed code "zz" and a null code through to two real provider posts. Reading it here
+        // means a language that is not one we speak fails at the sink, before anything is billed, instead of being
+        // ignored on the way past.
+        var language = SpokenLanguages.TryResolve(utterance.LanguageCode)
+            ?? throw new InvalidOperationException(
+                $"Refusing to speak: this utterance's language is '{utterance.LanguageCode}', which is not one "
+                + "DevThrottle speaks. It did not come from the settings resolver, and speaking it would read the "
+                + "words with whatever voice was attached.");
+        FileLog.Write($"[TtsService] speaking {utterance.Length} chars in {language.Code} with voice {utterance.Voice}");
+        return GenerateAsync(utterance.Text, voiceOverride: utterance.Voice, modelOverride: null, ct);
     }
 
     /// <summary>

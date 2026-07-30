@@ -78,7 +78,7 @@ internal static class ClientErrorEndpoints
             if (req is null || string.IsNullOrWhiteSpace(req.Message))
                 return Results.Json(new { error = "message is required" }, statusCode: StatusCodes.Status400BadRequest);
 
-            var deviceHash = CarMode.CarModeDeviceHash.Of(AuthenticatedCredential(ctx));
+            var deviceHash = Devices.DeviceHash.Of(AuthenticatedCredential(ctx));
             if (!AdmitWithinRate(deviceHash))
                 return Results.Json(new { recorded = false, reason = "rate limited" },
                     statusCode: StatusCodes.Status429TooManyRequests);
@@ -178,7 +178,7 @@ internal static class ClientErrorEndpoints
     }
 
     /// <summary>The exact credential the auth gate accepted (resolved once by the gate; see
-    ///  CarModeEndpoint.AuthenticatedCredential for why this is never re-read from headers). Absent (auth
+    ///  FleetBrainEndpoint.AuthenticatedCredential for why this is never re-read from headers). Absent (auth
     ///  gate off in local debug) maps to the one shared anonymous bucket.</summary>
     private static string AuthenticatedCredential(HttpContext ctx)
         => ctx.Items.TryGetValue(Util.AuthMiddleware.AuthenticatedCredentialItemKey, out var credential)

@@ -73,9 +73,9 @@ const devProxy = proxyTarget
       "/cron": { target: proxyTarget, changeOrigin: true },
       "/wingman": { target: proxyTarget, changeOrigin: true },
       // The Assistant screen (fleet assistant build): its turn calls POST /assistant/turn, and its
-      // keep-warm ping reuses Car Mode's POST /carmode/warmup.
+      // keep-warm ping POST /brain/warmup.
       "/assistant": { target: proxyTarget, changeOrigin: true },
-      "/carmode": { target: proxyTarget, changeOrigin: true },
+      "/brain": { target: proxyTarget, changeOrigin: true },
       // The client error channel: on-screen and uncaught errors report to the Gateway log.
       "/client-errors": { target: proxyTarget, changeOrigin: true },
       "/lists": { target: proxyTarget, changeOrigin: true },

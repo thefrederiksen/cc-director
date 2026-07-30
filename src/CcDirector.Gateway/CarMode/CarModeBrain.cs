@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Speech;
 
 namespace CcDirector.Gateway.CarMode;
 
@@ -29,26 +30,33 @@ public sealed class CarModeBrain
     private readonly CarModeConversationStore _conversations;
     private readonly CarModePendingStore _pending;
     private readonly CarModeSubjectStore _subjects;
+    private readonly Func<TenantId, SpokenLanguage> _languageFor;
     private readonly Action<string> _log;
-    private readonly string _systemPrompt;
 
     /// <param name="fleetForCaller">Resolves the fleet view for one authenticated caller credential
     ///  (issue #2129, hosted tenant isolation): every fleet tool call must run AS the calling device, so
     ///  the Gateway's own endpoints resolve the caller's tenant exactly as they do for any client. The
     ///  factory is invoked once per turn with the same authenticated credential that keys the conversation;
     ///  tests pass a constant fake fleet.</param>
-    /// <param name="surface">Which surface this brain instance speaks to. Car (the default) keeps the
-    ///  hands-free one-or-two-sentence style; Desk (the cockpit Assistant screen) appends the desk-surface
-    ///  overrides. Everything else - loop, tools, stores, model - is identical.</param>
-    public CarModeBrain(ICarModeChat chat, Func<string, ICarModeFleet> fleetForCaller, CarModeConversationStore conversations, CarModePendingStore pending, CarModeSubjectStore subjects, Action<string>? log = null, CarModeSurface surface = CarModeSurface.Car)
+    /// <param name="languageFor">The language an account is spoken to in, resolved from the tenant on
+    ///  every turn (issue #1008). REQUIRED and with no default on purpose: Car Mode is the generator the
+    ///  language failed to reach last time, and the reason it failed is that the language was something
+    ///  a developer had to remember to pass. Now the compiler asks. Production wires
+    ///  <c>TenantSettingsResolver.SpokenLanguage</c>; a test that does not care passes
+    ///  <c>_ =&gt; SpokenLanguages.English</c>, which says so out loud.</param>
+    public CarModeBrain(ICarModeChat chat, Func<string, ICarModeFleet> fleetForCaller, CarModeConversationStore conversations, CarModePendingStore pending, CarModeSubjectStore subjects, Func<TenantId, SpokenLanguage> languageFor, Action<string>? log = null)
     {
         _chat = chat ?? throw new ArgumentNullException(nameof(chat));
         _fleetForCaller = fleetForCaller ?? throw new ArgumentNullException(nameof(fleetForCaller));
         _conversations = conversations ?? throw new ArgumentNullException(nameof(conversations));
         _pending = pending ?? throw new ArgumentNullException(nameof(pending));
         _subjects = subjects ?? throw new ArgumentNullException(nameof(subjects));
+        _languageFor = languageFor ?? throw new ArgumentNullException(nameof(languageFor));
         _log = log ?? FileLog.Write;
-        _systemPrompt = surface == CarModeSurface.Desk ? SystemPrompt + DeskAddendum : SystemPrompt;
+        // The system prompt is now built PER TURN rather than once in this constructor, because it
+        // carries the account's language and the account is only known when a turn arrives. One brain
+        // instance serves every tenant on this Gateway; a prompt frozen at construction would have
+        // frozen one tenant's language for all of them.
     }
 
     /// <summary>
@@ -70,7 +78,13 @@ public sealed class CarModeBrain
         var timing = timer.ToTiming();
         _log($"[CarModeBrain] turn timing: total={timing.TotalMs:F0}ms, models={timing.ModelCallCount} ({timing.ModelMsTotal:F0}ms), "
             + $"fleetReads={timing.FleetReadCount} ({timing.FleetReadMsTotal:F0}ms), rounds={timing.Rounds}");
-        return response with { Timing = timing };
+        // Every word Car Mode speaks leaves through here, so the sanitize-for-speech pass is applied at
+        // this ONE point rather than at each of the four places a turn can end (issue #1008). Car Mode
+        // is the generator that never had it: the pass used to be a private habit of the wingman
+        // translator, which Car Mode does not go through, so a model that emitted a bullet or a bold
+        // marker had it read out loud here and nowhere else. Doing it on the way out means a fifth way
+        // to end a turn inherits it without anyone remembering.
+        return response with { Spoken = SpeechContract.Finish(response.Spoken), Timing = timing };
     }
 
     /// <summary>Collects the per-stage server timing for one turn: the whole-turn stopwatch, each hosted-model
@@ -125,7 +139,11 @@ public sealed class CarModeBrain
         if (string.IsNullOrWhiteSpace(userText))
             throw new ArgumentException("The command text is required.", nameof(userText));
 
-        _log($"[CarModeBrain] turn: len={userText.Length}");
+        var language = _languageFor(tenant)
+            ?? throw new InvalidOperationException(
+                "[CarModeBrain] The spoken-language provider returned null. Car Mode must resolve a "
+                + "language from its tenant - fix the wiring rather than defaulting to English.");
+        _log($"[CarModeBrain] turn: len={userText.Length}, language={language.Code}");
 
         // The fleet view for THIS caller: every tool call this turn runs as the calling device, so on the
         // hosted Gateway the loopback requests resolve to the caller's own tenant (issue #2129).
@@ -142,14 +160,14 @@ public sealed class CarModeBrain
             _pending.Clear(deviceKey);
             if (CarModeConfirm.IsAffirmative(userText))
             {
-                var (spokenDone, action) = await ExecuteConfirmedAsync(fleet, armed, timer, ct);
+                var (spokenDone, action) = await ExecuteConfirmedAsync(fleet, armed, language, timer, ct);
                 _conversations.Append(deviceKey, userText, spokenDone);
                 _log($"[CarModeBrain] confirmed {armed.Tool} for {armed.TargetName}");
                 return new CarModeTurnResponse { Spoken = spokenDone, Actions = new[] { action } };
             }
             if (CarModeConfirm.IsNegative(userText))
             {
-                var spokenCancel = $"Okay, I left {armed.TargetName} alone.";
+                var spokenCancel = SpokenPhrases.CarModeDeleteCancelled.In(language, armed.TargetName);
                 _conversations.Append(deviceKey, userText, spokenCancel);
                 _log($"[CarModeBrain] cancelled {armed.Tool} for {armed.TargetName}");
                 return new CarModeTurnResponse { Spoken = spokenCancel };
@@ -160,7 +178,7 @@ public sealed class CarModeBrain
         }
 
         var messages = new List<object>();
-        messages.Add(new { role = "system", content = _systemPrompt });
+        messages.Add(new { role = "system", content = BuildSystemPrompt(language) });
         foreach (var m in _conversations.GetHistory(deviceKey))
             messages.Add(new { role = m.Role, content = m.Content });
         messages.Add(new { role = "user", content = userText });
@@ -242,7 +260,7 @@ public sealed class CarModeBrain
                     // identical to what the Help button plays (GET /carmode/help), reliably complete, and it
                     // teaches the command-vs-relay addressing model. The model's job was only to classify the
                     // intent; the content is server-owned. This is terminal, like speak_answer.
-                    finalSpoken = CarModeHelp.Script;
+                    finalSpoken = CarModeHelp.SpokenScript(language);
                     messages.Add(new { role = "tool", tool_call_id = call.Id, content = "{\"status\":\"spoken\"}" });
                     continue;
                 }
@@ -262,7 +280,7 @@ public sealed class CarModeBrain
 
         // The model never settled on an answer within the round cap: a loud, specific failure, not a guess.
         _log("[CarModeBrain] round cap reached without a final answer");
-        var giveUp = "I'm having trouble answering that right now. Please try again.";
+        var giveUp = SpokenPhrases.CarModeGiveUp.In(language);
         _conversations.Append(deviceKey, userText, giveUp);
         return new CarModeTurnResponse { Spoken = giveUp, Actions = actions, PendingConfirmation = armedThisTurn };
     }
@@ -512,13 +530,16 @@ public sealed class CarModeBrain
 
     /// <summary>Execute a destructive action the owner has just confirmed out loud, returning the spoken
     ///  acknowledgement and the action record. A fleet failure throws (a loud, specific, spoken failure).</summary>
-    private async Task<(string Spoken, CarModeActionRecord Action)> ExecuteConfirmedAsync(ICarModeFleet fleet, CarModePendingAction pending, TurnTimer timer, CancellationToken ct)
+    private async Task<(string Spoken, CarModeActionRecord Action)> ExecuteConfirmedAsync(ICarModeFleet fleet, CarModePendingAction pending, SpokenLanguage language, TurnTimer timer, CancellationToken ct)
     {
         switch (pending.Tool)
         {
             case "delete":
                 await timer.TimeFleetAsync(() => fleet.DeleteSessionAsync(pending.SessionId, ct));
-                return ($"Done. I deleted {pending.TargetName}.", new CarModeActionRecord("delete_session", $"Deleted {pending.TargetName}."));
+                // The SPOKEN half is translated; the action RECORD is not. The record is a machine-read
+                // audit line that lands in logs and diagnostics, and the accents ruling keeps those ASCII.
+                return (SpokenPhrases.CarModeDeleteDone.In(language, pending.TargetName),
+                    new CarModeActionRecord("delete_session", $"Deleted {pending.TargetName}."));
             default:
                 throw new InvalidOperationException($"Unknown pending action \"{pending.Tool}\".");
         }
@@ -566,15 +587,44 @@ public sealed class CarModeBrain
         }
     }
 
-    // The system prompt: a competent, concise development manager the owner talks to hands-free. Spoken
-    // output, human names never numbers, real facts from tools, ask when unsure (mission decisions 5 + 3).
+    /// <summary>
+    /// The full system prompt for one turn: the Car Mode manager rules, the desk overrides when this is
+    /// the cockpit Assistant, and the SPOKEN OUTPUT CONTRACT last (issue #1008).
+    ///
+    /// The contract goes LAST so it binds both the car text and the desk overrides - the desk addendum
+    /// deliberately relaxes the length rule, and putting the contract above it would let a relaxation
+    /// read as permission to relax the language too. It also replaces two hand-written copies of the
+    /// no-Markdown rule that used to sit in these two strings, saying slightly different things.
+    ///
+    /// Public and static so the spoken-path registry and its tests can render it for each language
+    /// without standing up a brain.
+    /// </summary>
+    public static string BuildSystemPrompt(SpokenLanguage language)
+    {
+        ArgumentNullException.ThrowIfNull(language);
+        // ONE surface. There were two - the hands-free phone surface and the desk Assistant - chosen by a
+        // parameter, with the desk overlay appended for the second. Car Mode was removed from the product
+        // (#1028), so the Assistant is the only surface on this brain and its overlay is simply part of the
+        // prompt. A parameter with one possible value is a branch nothing can take.
+        return SystemPrompt + DeskAddendum + "\n\n" + SpeechContract.SpokenOutputContract(language);
+    }
+
+    // The system prompt: a competent, concise development manager. Spoken output, human names never numbers,
+    // real facts from tools, ask when unsure (mission decisions 5 + 3).
+    //
+    // IT DESCRIBES THE SURFACE THAT EXISTS (audit finding C6). This used to open with "you are the voice of
+    // DevThrottle Car Mode" and "the owner is driving and talks to you hands-free", and the addendum below then
+    // said the opposite - so once Car Mode was removed from the product (#1028), every Assistant turn was handed
+    // two contradictory descriptions of where it was. The car framing is gone; what is left is true of the
+    // Assistant, and the addendum now only ADDS to it.
     private const string SystemPrompt =
-        "You are the voice of DevThrottle Car Mode. The owner is driving and talks to you hands-free to run "
-        + "his fleet of coding-agent sessions. Behave like a competent, calm development manager on a phone "
-        + "call.\n\n"
+        "You are the voice of the DevThrottle Assistant. The owner talks to you - typing or speaking - to run "
+        + "his fleet of coding-agent sessions, and your answer is shown on screen and may also be read out "
+        + "loud. Behave like a competent, calm development manager.\n\n"
         + "Rules:\n"
-        + "- Answer OUT LOUD in one or two short spoken sentences. No lists, no markdown, no headings, no "
-        + "emoji. It will be read aloud, so write it the way you would say it.\n"
+        + "- Answer OUT LOUD in short spoken sentences. It will be read aloud, so write it "
+        + "the way you would say it. The spoken output contract at the end of these instructions says "
+        + "in what language and in what form; this rule is only about LENGTH.\n"
         + "- Always refer to a session by its human NAME and its repository, never by its number "
         + "(for example: \"Local Files Manager, in the devthrottle repo\"). Only use a number if the owner "
         + "used one.\n"
@@ -602,7 +652,9 @@ public sealed class CarModeBrain
         + "\"what is it doing\", \"snooze it\", \"approve it\", \"remove it\" are all commands to YOU - you act "
         + "on the fleet yourself with the read and act tools.\n"
         + "- The owner is RELAYING words INTO a session ONLY when he starts with a relay verb - TELL, ANSWER, "
-        + "REPLY, MESSAGE, or SAY TO - AND aims it at a session (a name, or \"it\"/\"that one\"). Then call "
+        + "REPLY, MESSAGE, or SAY TO, or THE EQUIVALENT VERB IN WHATEVER LANGUAGE HE IS SPEAKING (the "
+        + "spoken help teaches these verbs in his own language, so that is what he will say) - AND aims it "
+        + "at a session (a name, or \"it\"/\"that one\"). Then call "
         + "message_session and send the words he gave, exactly. Examples: \"tell the devthrottle session to "
         + "run the tests\", \"answer it, yes go ahead\", \"reply to Local Files that it can continue\".\n"
         + "- \"Tell me\", \"read me\", \"give me\", \"show me\" are NOT relays - the target is YOU (\"me\"), so "
@@ -621,7 +673,7 @@ public sealed class CarModeBrain
         + "It focuses the session that has been waiting the longest and makes it the current one; then read it "
         + "to him. After that, \"answer it\" / \"snooze it\" act on that session.\n"
         + "- When you DO put a session in a tool's session argument, use only its short NAME (for example "
-        + "\"Car Mode Demo\") - never the \"in the such-and-such repo\" phrase. The name alone identifies it; "
+        + "\"Local Files Manager\") - never the \"in the such-and-such repo\" phrase. The name alone identifies it; "
         + "adding the repository can point the action at the wrong session in that repository.\n\n"
         + "Taking action (you have full control):\n"
         + "- CRITICAL: doing something means CALLING ITS TOOL. To snooze, you MUST call snooze_session. To "
@@ -656,22 +708,19 @@ public sealed class CarModeBrain
         + "- A normal turn is: call the tools you need to get facts or act, then call speak_answer once with the "
         + "final spoken sentence. Keep it to one or two short spoken sentences.";
 
-    // The desk-surface overlay (the cockpit Assistant screen): the SAME brain, tools, and rules, with only
-    // the speech-style constraints relaxed - the owner is at his computer, the reply is shown as text and
-    // may also be read aloud, so a fleet overview may run a few sentences. Appended AFTER the car prompt so
-    // every behavioural rule above still binds; only the style rules are overridden, explicitly.
+    // How long an answer may run. This was a "desk surface overrides" block whose whole job was to contradict a
+    // car prompt; with the car surface gone (#1028) there is nothing to override, so it now says the one thing it
+    // always meant. Appended AFTER the rules above, so all of them still bind.
     private const string DeskAddendum =
-        "\n\nDESK SURFACE OVERRIDES - this conversation comes from the cockpit Assistant screen, not the car:\n"
-        + "- The owner is at his computer in the cockpit, typing or talking. Your reply is shown on screen as "
-        + "text and may also be read aloud.\n"
-        + "- The one-or-two-sentence limit is relaxed: use up to four or five plain sentences when the "
+        "\n\nHOW LONG AN ANSWER MAY RUN:\n"
+        + "- Use up to four or five plain sentences when the "
         + "question genuinely needs them - a fleet overview, a recommendation with its reasons. Short is "
         + "still better whenever short answers it.\n"
-        + "- Keep it plain spoken text all the same: no markdown, no bullet lists, no headings, no emoji, "
-        + "because the same words may be read aloud.\n"
+        + "- The spoken output contract still binds in full: the extra room is for more SENTENCES, never "
+        + "for a different language and never for formatting marks.\n"
         + "- Include concrete numbers (counts, hours, dollars) when you have them from the tools.\n"
-        + "- Everything else is unchanged: every answer still goes through speak_answer, actions still mean "
-        + "calling the tool, and destructive actions still need the owner's confirmation.";
+        + "- Every answer goes through speak_answer, an action means calling its tool, and a destructive action "
+        + "needs the owner's confirmation.";
 
     // The tool catalog. Standard chat-completions function tools: reads, ordinary acts, and the
     // destructive delete (which the loop holds for a spoken confirmation - the model just requests it).
@@ -810,7 +859,7 @@ public sealed class CarModeBrain
             "type": "function",
             "function": {
               "name": "get_help",
-              "description": "Explain to the owner what Car Mode can do and how to talk to it. Call this - and NOTHING else - when the owner asks for help or how this works: \"help\", \"what can you do\", \"what can you help me with\", \"how does this work\", \"how do I talk to you\". It speaks a fixed guided explanation of the two ways to talk to Car Mode; you do not write the words and you do not read the fleet for it.",
+              "description": "Explain to the owner what the Assistant can do and how to talk to it. Call this - and NOTHING else - when the owner asks for help or how this works: \"help\", \"what can you do\", \"what can you help me with\", \"how does this work\", \"how do I talk to you\". It speaks a fixed guided explanation of the two ways to talk to the Assistant; you do not write the words and you do not read the fleet for it.",
               "parameters": { "type": "object", "properties": {}, "required": [] }
             }
           },

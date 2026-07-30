@@ -282,9 +282,13 @@ public sealed class WingmanVoiceService
         HttpClient? ttsHttpClient = null,
         Func<TenantId, string, string?>? sessionTitleResolver = null)
     {
-        _translator = new WingmanTranslator(brainProvider, instructionsProvider: instructionsProvider);
         _vault = vault ?? throw new ArgumentNullException(nameof(vault));
         _tenantSettings = tenantSettings ?? throw new ArgumentNullException(nameof(tenantSettings));
+        // The account's spoken language comes from the same per-tenant resolver this service already
+        // uses for the voice and the model, read at CALL time so a change on the Language tab applies
+        // to the next narration (issue #1008).
+        _translator = new WingmanTranslator(
+            brainProvider, _tenantSettings.SpokenLanguage, instructionsProvider: instructionsProvider);
         _sessionTitleResolver = sessionTitleResolver;
         // Post-cut: the owning Director is reached through the tunnel-only SessionVerbClient the callers pass
         // into GenerateAsync, so this service holds no Director client.
@@ -908,7 +912,7 @@ public sealed class WingmanVoiceService
             var spoken = t.Spoken;
             if (await WaitingScreenReader.IsMenuAsync(route, sid, ct))
             {
-                spoken += WaitingScreenReader.MenuNarrationSuffix;
+                spoken += Speech.SpokenPhrases.WaitingScreenMenuNarrationSuffix.In(_tenantSettings.SpokenLanguage(tenant));
                 FileLog.Write($"[WingmanVoiceService] narration announces a waiting menu: sid={sid}");
             }
             await StoreSpokenAsync(tenant, sid, spoken, lastReply, ct);
@@ -976,11 +980,14 @@ public sealed class WingmanVoiceService
         // has none, months after we stopped calling OpenAI. The real length control is now the
         // wingman's own instructions (a ~30-second spoken budget) - a summary is short because we
         // asked for a summary, not because we cut an essay in half.
-        var input = NarrationText.LimitForSpeech(text, out var wasCut);
+        // ONE decision, made by the one decider (issue #1031): the language and the voice arrive together in an
+        // utterance this service could not have built without a language. It resolves neither itself.
+        var spoken = NarrationText.LimitForSpeech(_tenantSettings.Utterance(tenant, mode, text), out var wasCut);
         if (wasCut)
             FileLog.Write($"[WingmanVoiceService] narration EXCEEDED {NarrationText.MaxChars} chars " +
                           $"({text.Length}) - spoken text cut and the listener told. The wingman is not summarising.");
-        var voice = _tenantSettings.TtsVoice(tenant, mode);
+        // The ENGINE, on its own, with no knowledge of the language - a language picks a voice inside the one
+        // engine and never the engine itself (devthrottle_internal#547).
         var model = _tenantSettings.TtsModel(tenant, mode);
         var url = tts.BaseUrl.TrimEnd('/') + "/audio/speech";
         // The injected client (tests) or the shared static - never a per-call one. Auth goes on the
@@ -1002,10 +1009,15 @@ public sealed class WingmanVoiceService
         // actually took is in the log next to transcription's transcribeMs. A healthy call is a second
         // or two; the per-attempt deadline caps it at <=108s, so any elapsedMs over ~108s means the
         // deadline bound itself failed (the >3-minute tripwire). Milliseconds, matching transcription.
+        // READ THE LANGUAGE BEFORE SPEAKING (audit finding C1): this sink consumed only the text, the voice and
+        // the length, so a fabricated utterance with no language was still speakable here. Now it fails loud
+        // before a provider call is billed, and the log carries which language was spoken - a code is ASCII and
+        // log-safe where the words are not.
+        var spokenLanguage = spoken.LanguageCode;
         var sw = Stopwatch.StartNew();
         try
         {
-            using var resp = await TtsSynthesis.PostAsync(http, url, key, new { model, voice, input, response_format = "mp3" }, input.Length, preferBackup, ct);
+            using var resp = await TtsSynthesis.PostAsync(http, url, key, new { model, voice = spoken.Voice, input = spoken.Text, response_format = "mp3" }, spoken.Length, preferBackup, ct);
             if (!resp.IsSuccessStatusCode)
             {
                 var body = await resp.Content.ReadAsStringAsync(ct);
@@ -1053,7 +1065,7 @@ public sealed class WingmanVoiceService
             // The request -> done span for this narration, in the log for the speed watch (the proxy also
             // returns X-DevThrottle-Elapsed-Ms, its own view one hop out). elapsedMs over ~108s = the
             // deadline bound broke; over 180000 = the three-minute alarm.
-            FileLog.Write($"[WingmanVoiceService] tts ok sid={sid}: elapsedMs={sw.ElapsedMilliseconds}, chars={input.Length}, served={(servedViaFallback ? "backup" : "primary")}");
+            FileLog.Write($"[WingmanVoiceService] tts ok sid={sid}: elapsedMs={sw.ElapsedMilliseconds}, chars={spoken.Length}, lang={spokenLanguage}, served={(servedViaFallback ? "backup" : "primary")}");
             return new TtsResult(audio, contentType, null, servedViaFallback);
         }
         // A timeout (TtsSynthesis exhausted its attempts) or a transport failure is the same story from

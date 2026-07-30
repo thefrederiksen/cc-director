@@ -11,10 +11,11 @@
 // their resting state, and the microphone-quality panel reports its own load failure when the Gateway
 // cannot be reached, which is a rendered state, not a blank.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { SettingsTabPanel, SettingsTabStrip } from "./SettingsTabs";
-import { setWingmanFastModel, setWingmanModel } from "../api/ai";
+import { setTtsModel, setWingmanFastModel, setWingmanModel, ttsSample } from "../api/ai";
+import { setSpokenLanguage, setSpokenVoice } from "../api/language";
 
 // The account snapshot every AI-ish tab reads. Values are arbitrary but must be present: a tab that
 // renders "Loading..." forever proves nothing about its content.
@@ -37,11 +38,62 @@ vi.mock("../api/ai", () => ({
   setWingmanModel: vi.fn(),
   setWingmanFastModel: vi.fn(),
   setCarModeModel: vi.fn(),
-  setCarModeEndPhrase: vi.fn(),
   setTtsModel: vi.fn(),
   setTtsVoice: vi.fn(),
   testChat: vi.fn(),
   ttsSample: vi.fn(),
+}));
+
+// ---- The Language tab's document (issue #1010) -----------------------------------------------------
+//
+// The Gateway folds this whole thing: the voice list is already filtered per language, the labels are
+// already assembled, the sample is already in the right language, and `voice` is the voice the ACCOUNT
+// will be spoken with. So the fake below is shaped like the real document and the tests assert that the
+// tab RENDERS it rather than re-derives it. The lopsided counts are the real ones - French genuinely has
+// one voice - because a one-entry list is the case most likely to be mishandled.
+const EN_VOICES = [
+  { id: "af_bella", label: "Bella - English, American female" },
+  { id: "bm_george", label: "George - English, British male" },
+];
+const FR_VOICES = [{ id: "ff_siwis", label: "Siwis - French, female" }];
+const ES_VOICES = [
+  { id: "ef_dora", label: "Dora - Spanish, female" },
+  { id: "em_alex", label: "Alex - Spanish, male" },
+];
+const SAMPLES: Record<string, string> = {
+  en: "Hi, I'm your DevThrottle wingman. This is how I'll sound.",
+  fr: "Bonjour, je suis votre wingman DevThrottle.",
+  es: "Hola, soy tu wingman de DevThrottle.",
+};
+
+function languageDocument(language: string, voice: string) {
+  return {
+    language,
+    voice,
+    languages: [
+      { code: "en", label: "English", note: "Default", sample: SAMPLES.en, voices: EN_VOICES },
+      { code: "fr", label: "French", note: "Francais", sample: SAMPLES.fr, voices: FR_VOICES },
+      { code: "es", label: "Spanish", note: "Espanol", sample: SAMPLES.es, voices: ES_VOICES },
+    ],
+  };
+}
+
+// What each language's voice would resolve to, standing in for the Gateway's per-language memory: English
+// has been left on George, and the other two have never been chosen so they fall to their defaults.
+const REMEMBERED: Record<string, string> = { en: "bm_george", fr: "ff_siwis", es: "ef_dora" };
+let languageState = languageDocument("en", REMEMBERED.en);
+
+vi.mock("../api/language", () => ({
+  getSpokenLanguage: vi.fn(async () => languageState),
+  setSpokenLanguage: vi.fn(async (code: string) => {
+    languageState = languageDocument(code, REMEMBERED[code]);
+    return languageState;
+  }),
+  setSpokenVoice: vi.fn(async (code: string, voice: string) => {
+    REMEMBERED[code] = voice;
+    languageState = languageDocument(code, voice);
+    return languageState;
+  }),
 }));
 
 function mount(ui: React.ReactNode) {
@@ -50,6 +102,11 @@ function mount(ui: React.ReactNode) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Each test starts from the same account: English, on the English voice it had chosen.
+  REMEMBERED.en = "bm_george";
+  REMEMBERED.fr = "ff_siwis";
+  REMEMBERED.es = "ef_dora";
+  languageState = languageDocument("en", REMEMBERED.en);
   // No Gateway in a unit test. Every card must therefore render its own explicit state - a heading and
   // either its content or its own error line - and never a blank panel.
   vi.stubGlobal("fetch", vi.fn(async () => {
@@ -63,23 +120,25 @@ afterEach(() => {
 });
 
 describe("the Settings tab strip", () => {
-  it("offers the three shared tabs on the phone", () => {
+  it("offers the four shared tabs on the phone", () => {
     mount(<SettingsTabStrip active="notifications" onSelect={() => {}} surface="mobile" />);
     expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual([
       "Notifications",
+      "Language",
       "Transcription",
-      "Car Mode",
+      "Assistant",
     ]);
   });
 
   // The Cockpit-only tab, rendered (issue #550). The tab set decides this, not the shell, so the strip is
-  // where it can be seen: the same three in the same order, and one more that the phone above does not get.
-  it("offers those same three plus Injected text on the Cockpit", () => {
+  // where it can be seen: the same four in the same order, and one more that the phone above does not get.
+  it("offers those same four plus Injected text on the Cockpit", () => {
     mount(<SettingsTabStrip active="notifications" onSelect={() => {}} surface="cockpit" />);
     expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual([
       "Notifications",
+      "Language",
       "Transcription",
-      "Car Mode",
+      "Assistant",
       "Injected text",
     ]);
   });
@@ -159,17 +218,21 @@ describe("the AI tab, hidden but kept", () => {
 });
 
 describe("what moved off the AI tab", () => {
-  // The phone used to carry the Car Mode model on its AI screen while the desktop carried it on a Car
-  // Mode tab. It is on the Car Mode tab now, on both, and it must not be in two places at once.
-  it("puts the Car Mode model on the Car Mode tab and nowhere else", async () => {
+  // The phone used to carry the fleet-brain model on its AI screen while the desktop carried it on the Car
+  // Mode tab. Car Mode was removed from the product (#1028) and that model went with the surface that still
+  // uses it - the Assistant - so it is on the Assistant tab now, on both surfaces, and in one place only.
+  //
+  // The end phrase and its live tester are NOT here, and that is the deletion being asserted: both were
+  // about hands-free turn-taking, nothing else spoke them, and they went with Car Mode.
+  it("puts the fleet-brain model on the Assistant tab and nowhere else", async () => {
     const { unmount } = mount(<SettingsTabPanel tab="ai" />);
     expect(await screen.findByLabelText("Thinking model")).toBeTruthy();
     expect(screen.queryByLabelText("Model")).toBeNull();
     unmount();
 
-    mount(<SettingsTabPanel tab="carmode" />);
+    mount(<SettingsTabPanel tab="assistant" />);
     expect(await screen.findByLabelText("Model")).toBeTruthy();
-    expect(screen.getByLabelText("End phrase (say this to finish your turn)")).toBeTruthy();
+    expect(screen.queryByLabelText("End phrase (say this to finish your turn)")).toBeNull();
   });
 
   it("keeps the account link off surfaces that have no account page", async () => {
@@ -181,5 +244,137 @@ describe("what moved off the AI tab", () => {
     mount(<SettingsTabPanel tab="ai" accountHref="/account" />);
     await screen.findByLabelText("Thinking model");
     expect(screen.getByRole("link", { name: "Manage account" })).toBeTruthy();
+  });
+});
+
+// ---- The Language tab (issue #1010) ----------------------------------------------------------------
+//
+// These are the checks that the tab RENDERS THE GATEWAY'S DOCUMENT and derives nothing of its own. That
+// distinction is the whole reason this screen ships last: the reverted multilingual build decided a
+// language's consequences in the browser, from a model catalog the hosted Gateway refuses to serve, so on
+// hosted the client held an empty list and the guard that should have caught it never fired
+// (devthrottle_internal#547). A tab that re-derives is a tab that can be right in a test and empty in
+// production.
+describe("the Language tab", () => {
+  it("offers all three languages, each with the word the Gateway put under it", async () => {
+    mount(<SettingsTabPanel tab="language" />);
+
+    const english = (await screen.findByRole("radio", { name: /English/ })) as HTMLInputElement;
+    expect(english.checked).toBe(true);
+    expect(screen.getByRole("radio", { name: /French/ })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /Spanish/ })).toBeTruthy();
+    // "Default" under English, and each other language's own name for itself - folded on the Gateway, so
+    // the test asserts they are SHOWN, not that the client worked out which one to show.
+    expect(screen.getByText("Default")).toBeTruthy();
+    expect(screen.getByText("Francais")).toBeTruthy();
+    expect(screen.getByText("Espanol")).toBeTruthy();
+  });
+
+  it("shows the account's own voice selected, from the list for its language", async () => {
+    mount(<SettingsTabPanel tab="language" />);
+
+    const voice = (await screen.findByLabelText("Voice")) as HTMLSelectElement;
+    expect(voice.value).toBe("bm_george");
+    expect(Array.from(voice.options).map((o) => o.textContent)).toEqual([
+      "Bella - English, American female",
+      "George - English, British male",
+    ]);
+  });
+
+  // THE ACCEPTANCE ROW: the voice list is filtered to the selected language. Checked on FRENCH, the
+  // language with exactly one voice - the case where a control could most plausibly be hidden, emptied, or
+  // filled with English voices without anybody noticing in English.
+  it("filters the voice list to the chosen language, and keeps the control visible for French", async () => {
+    mount(<SettingsTabPanel tab="language" />);
+    const french = await screen.findByRole("radio", { name: /French/ });
+
+    fireEvent.click(french);
+
+    await waitFor(() => expect(setSpokenLanguage).toHaveBeenCalledWith("fr"));
+    const voice = (await screen.findByLabelText("Voice")) as HTMLSelectElement;
+    // Still there, and holding exactly one item. One item is a list, not an empty control.
+    expect(Array.from(voice.options).map((o) => o.value)).toEqual(["ff_siwis"]);
+    expect(voice.value).toBe("ff_siwis");
+  });
+
+  // PER-LANGUAGE VOICE MEMORY, the acceptance row spelled out: English -> French -> English gets the
+  // original English voice back. Nothing is overwritten, so there is no restore step to go wrong - which
+  // is the part of the reverted design this replaces.
+  it("gives the English voice back after a trip through French", async () => {
+    mount(<SettingsTabPanel tab="language" />);
+
+    fireEvent.click(await screen.findByRole("radio", { name: /French/ }));
+    await waitFor(() => expect(setSpokenLanguage).toHaveBeenCalledWith("fr"));
+    await waitFor(() => expect((screen.getByLabelText("Voice") as HTMLSelectElement).value).toBe("ff_siwis"));
+
+    fireEvent.click(screen.getByRole("radio", { name: /English/ }));
+    await waitFor(() => expect(setSpokenLanguage).toHaveBeenCalledWith("en"));
+    await waitFor(() =>
+      expect((screen.getByLabelText("Voice") as HTMLSelectElement).value).toBe("bm_george"),
+    );
+  });
+
+  // A voice is always recorded WITH the language it was chosen for, never against "whatever is selected
+  // now". Two requests in flight during a language switch would otherwise file a voice under the wrong
+  // language, and the per-language memory is the one mechanism this screen rests on.
+  it("records a voice choice against the language it was made for", async () => {
+    mount(<SettingsTabPanel tab="language" />);
+    const voice = (await screen.findByLabelText("Voice")) as HTMLSelectElement;
+
+    fireEvent.change(voice, { target: { value: "af_bella" } });
+
+    await waitFor(() => expect(setSpokenVoice).toHaveBeenCalledWith("en", "af_bella"));
+  });
+
+  // Merely opening the tab must write nothing. The setting changes what every session sounds like, and a
+  // screen that saves on render would repoint an account's language by being looked at.
+  it("writes nothing merely by being rendered", async () => {
+    mount(<SettingsTabPanel tab="language" />);
+    await screen.findByLabelText("Voice");
+
+    expect(setSpokenLanguage).not.toHaveBeenCalled();
+    expect(setSpokenVoice).not.toHaveBeenCalled();
+  });
+
+  // THE SAMPLE AUDITIONS THE REAL THING. Two properties in one assertion, and both are failures that
+  // shipped last time: the text is the SELECTED LANGUAGE'S sentence (auditioning a French voice on English
+  // words tests nothing), and the model is EMPTY so the Gateway uses the account's own engine. A language
+  // must never pick an engine - that is what got the last build reverted - and the client is one of the
+  // places that could still try.
+  it("plays the selected language's sentence, on the account's own engine", async () => {
+    Object.defineProperty(URL, "createObjectURL", { value: () => "blob:sample", writable: true });
+    Object.defineProperty(window.HTMLMediaElement.prototype, "play", {
+      value: async () => {},
+      writable: true,
+    });
+    vi.mocked(ttsSample).mockResolvedValue(new Blob(["audio"]));
+
+    mount(<SettingsTabPanel tab="language" />);
+    fireEvent.click(await screen.findByRole("radio", { name: /Spanish/ }));
+    await waitFor(() => expect(setSpokenLanguage).toHaveBeenCalledWith("es"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Play sample" }));
+
+    await waitFor(() => expect(ttsSample).toHaveBeenCalledWith(SAMPLES.es, "", "ef_dora"));
+    expect(setTtsModel).not.toHaveBeenCalled();
+  });
+
+  // The line that exists to stop people hunting for a setting that should not exist. Dictation sends no
+  // language field and the provider detects it; French and Spanish dictation already worked and always did.
+  it("says that dictation needs nothing set", async () => {
+    mount(<SettingsTabPanel tab="language" />);
+    await screen.findByLabelText("Voice");
+
+    expect(screen.getByText(/Typing and dictation are unaffected/)).toBeTruthy();
+  });
+
+  // No speech MODEL on this screen, in any language. The model control belongs to the AI tab; a language
+  // choosing an engine is the reverted failure, and a control here would be the first step back to it.
+  it("offers no speech model control", async () => {
+    mount(<SettingsTabPanel tab="language" />);
+    await screen.findByLabelText("Voice");
+
+    expect(screen.queryByLabelText("Speech model")).toBeNull();
+    expect(screen.queryByLabelText("Thinking model")).toBeNull();
   });
 });

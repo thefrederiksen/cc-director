@@ -1878,12 +1878,29 @@ internal static class GatewayEndpoints
                 var guardRoute = new SessionVerbClient(director, sendCommand);
                 if (await Wingman.WaitingScreenReader.IsMenuAsync(guardRoute, sid, CancellationToken.None))
                 {
+                    // The refusal is SPOKEN - a voice reply asked for this guard - so it is said in the
+                    // account's language (issue #1009). The tenant is resolved and the resolver required
+                    // rather than defaulted: a caller that reaches this branch without either would speak
+                    // English at somebody who chose French, which is the failure this mission exists to
+                    // remove. The on-screen Error line stays English like every other label.
+                    var guardTenant = ResolveReadTenant(httpCtx, tenantBoundary);
+                    if (guardTenant is null)
+                        return Results.Json(new { error = "a tenant could not be resolved for this request" },
+                            statusCode: StatusCodes.Status403Forbidden);
+                    if (tenantSettings is null)
+                        throw new InvalidOperationException(
+                            "The menu guard speaks a refusal, so GatewayEndpoints.Map must be given a "
+                            + "TenantSettingsResolver to read the account's spoken language from.");
                     FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid} REFUSED - a menu owns the live screen (menu guard); nothing typed, no Enter pressed");
                     return Results.Json(new PromptResponse
                     {
                         Accepted = false,
                         BlockedByMenu = true,
-                        BlockedSpoken = Wingman.WaitingScreenReader.MenuSpoken,
+                        BlockedSpoken = Speech.SpokenPhrases.WaitingScreenMenu.In(tenantSettings.SpokenLanguage(guardTenant.Value)),
+                        // The language those words are in (issue #1031). The client speaks this one through the
+                        // BROWSER's own synthesis and cannot build an utterance without a language; without this
+                        // field a correct French refusal is read out in the device's default English voice.
+                        BlockedSpokenLanguage = tenantSettings.SpokenLanguage(guardTenant.Value).Code,
                         Error = Wingman.WaitingScreenReader.MenuMessage,
                         ActivityState = session.ActivityState,
                     });

@@ -14,6 +14,7 @@ using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.HostedAi;
 using CcDirector.Gateway.Settings;
+using CcDirector.Gateway.Speech;
 using CcDirector.Gateway.Tenancy;
 using CcDirector.Gateway.Voice;
 using CcDirector.Gateway.Wingman;
@@ -143,7 +144,12 @@ internal static class GatewayWingmanVoiceEndpoint
         // status mapping below could only be proven by calling the real provider over the internet.
         var ttsHttp = ttsHttpClient ?? SharedTtsHttp;
 
-        var translator = new WingmanTranslator(brainProvider, instructionsProvider: instructionsProvider);
+        // The account's spoken language comes from the per-tenant resolver this endpoint family already
+        // holds, read at CALL time so a change on the Language tab applies to the next spoken answer
+        // (issue #1008). Every generator on this translator - narration, direct reply, product help -
+        // picks it up from the tenant it already had to have.
+        var translator = new WingmanTranslator(
+            brainProvider, tenantSettings.SpokenLanguage, instructionsProvider: instructionsProvider);
 
         // Post-cut: resolve the owning Director once (from the push store) and reach its session verbs
         // (turns / buffer / prompt) through the tunnel-only SessionVerbClient, so the wingman voice surface
@@ -404,16 +410,46 @@ internal static class GatewayWingmanVoiceEndpoint
             // product limit here - only the runaway guard, which announces itself when it fires
             // (issue #1612). This used to cut at 4000 characters, silently and mid-word, to satisfy
             // OpenAI's limit long after we stopped calling OpenAI.
-            var input = Wingman.NarrationText.LimitForSpeech(req.Text, out var wasCut);
+            // ONE decision, made by the one decider (issue #1031). The language and the voice arrive together
+            // in an utterance this route cannot have built without a language; a caller-supplied voice is an
+            // AUDITION (the Language tab offering a voice before it is chosen) and rides through the same
+            // factory. Nothing here reads a language setting or picks a voice - that is the whole point.
+            //
+            // AND THE CALLER'S VOICE IS NO LONGER TAKEN ON TRUST (Gateway audit, finding C2). This route forwards
+            // req.Voice into that factory, which is how a French account could be handed af_bella by a stale or
+            // hand-written caller and be obeyed - French words in an American voice, audio playing, nothing
+            // failing. The factory now refuses a voice belonging to another language, and a refusal is the
+            // CALLER'S mistake, so it comes back as a 400 saying which language the voice belongs to rather than
+            // as a 500.
+            SpokenUtterance requested;
+            try
+            {
+                requested = tenantSettings.Utterance(reqTenant.Value, mode, req.Text, req.Voice);
+            }
+            catch (ArgumentException ex)
+            {
+                FileLog.Write($"[GatewayWingmanVoice] tts REFUSED: {ex.Message}");
+                return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status400BadRequest);
+            }
+            var spoken = Wingman.NarrationText.LimitForSpeech(requested, out var wasCut);
             if (wasCut)
                 FileLog.Write($"[GatewayWingmanVoice] tts text EXCEEDED {Wingman.NarrationText.MaxChars} chars " +
                               $"({req.Text.Length}) - spoken text cut and the listener told");
-            var voice = string.IsNullOrWhiteSpace(req.Voice) ? tenantSettings.TtsVoice(reqTenant.Value, mode) : req.Voice.Trim();
+            // The ENGINE, resolved on its own from the tenant and the transcription mode. It never sees the
+            // language: a language selects a voice inside the one engine, never the engine
+            // (devthrottle_internal#547). A caller may name a model explicitly - that is a model choice made
+            // by a person, not derived from a language.
             var model = string.IsNullOrWhiteSpace(req.Model) ? tenantSettings.TtsModel(reqTenant.Value, mode) : req.Model.Trim();
             var url = tts.BaseUrl.TrimEnd('/') + "/audio/speech";
             // Time the read-aloud call (request -> done) so its speed is in the log, matching the
             // narration path (WingmanVoiceService) and transcription's transcribeMs.
             var sw = System.Diagnostics.Stopwatch.StartNew();
+            // READ THE LANGUAGE BEFORE SPEAKING (audit finding C1). This sink consumed only the text, the voice
+            // and the length, so an utterance whose language had been forced to null by a route that bypassed the
+            // factory still reached synthesis as ordinary audio - the invariant was claimed and never checked
+            // where it mattered. Reading it here makes a missing language a loud failure at the sink, before a
+            // provider call is billed, and gives the log an ASCII fact about which language was spoken.
+            var spokenLanguage = spoken.LanguageCode;
             try
             {
                 // Per-attempt deadline derived from the text length + one retry (TtsSynthesis), so a
@@ -423,7 +459,7 @@ internal static class GatewayWingmanVoiceEndpoint
                 // preferBackup is false here: the silent-primary backup routing (issue devthrottle_internal#405) is driven by
                 // the per-session narration path (WingmanVoiceService), which owns the sticky state this
                 // interactive read-aloud endpoint does not carry. It still gets the proxy's own failover.
-                using var resp = await TtsSynthesis.PostAsync(ttsHttp, url, key, new { model, voice, input, response_format = "mp3" }, input.Length, preferBackup: false, ct);
+                using var resp = await TtsSynthesis.PostAsync(ttsHttp, url, key, new { model, voice = spoken.Voice, input = spoken.Text, response_format = "mp3" }, spoken.Length, preferBackup: false, ct);
                 if (!resp.IsSuccessStatusCode)
                 {
                     var status = (int)resp.StatusCode;
@@ -476,7 +512,7 @@ internal static class GatewayWingmanVoiceEndpoint
                 // may return audio/wav for some models - the browser must be told which so it can play it.
                 var contentType = resp.Content.Headers.ContentType?.MediaType ?? "audio/mpeg";
                 sw.Stop();
-                FileLog.Write($"[GatewayWingmanVoice] tts ok: elapsedMs={sw.ElapsedMilliseconds}, provider={mode.ToConfigString()}, chars={input.Length}, bytes={bytes.Length}, model={model}, voice={voice}, type={contentType}");
+                FileLog.Write($"[GatewayWingmanVoice] tts ok: elapsedMs={sw.ElapsedMilliseconds}, provider={mode.ToConfigString()}, chars={spoken.Length}, lang={spokenLanguage}, bytes={bytes.Length}, model={model}, voice={spoken.Voice}, type={contentType}");
                 return Results.Bytes(bytes, contentType);
             }
             // TtsSynthesis exhausted its attempts: the worker never answered inside the per-attempt cap.
@@ -521,7 +557,7 @@ internal static class GatewayWingmanVoiceEndpoint
             // Every menu, and every uncertain / unreadable / alternate-screen / hidden-cursor screen, types
             // NOTHING and presses NOTHING. (Fully hands-free voice-ANSWERING - the wingman pressing menu keys -
             // is its own later issue with per-agent picker profiles and a screen-version lock; it is not here.)
-            var (kind, blockedSpoken) = await ClassifyLiveScreenAtAsync(route, sid, ct);
+            var (kind, blockedSpoken) = await ClassifyLiveScreenAtAsync(route, sid, tenantSettings.SpokenLanguage(reqTenant.Value), ct);
             if (kind != WaitingScreenKind.PlainText)
             {
                 FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: FAIL CLOSED - not typing (screen is {kind})");
@@ -532,7 +568,7 @@ internal static class GatewayWingmanVoiceEndpoint
             // immediately before the send and re-confirm it is STILL a confident plain-text composer. If it
             // changed in the meantime (now a menu / alternate screen / cursor hidden / gone), fail closed - the
             // spoken words must never land on anything but the composer they were classified against.
-            var (kindNow, blockedNow) = await ClassifyLiveScreenAtAsync(route, sid, ct);
+            var (kindNow, blockedNow) = await ClassifyLiveScreenAtAsync(route, sid, tenantSettings.SpokenLanguage(reqTenant.Value), ct);
             if (kindNow != WaitingScreenKind.PlainText)
             {
                 FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: screen changed before send (now {kindNow}) - fail closed, not typing");
@@ -781,7 +817,7 @@ internal static class GatewayWingmanVoiceEndpoint
             var route = await ResolveRouteAsync(reqTenant.Value, sid);
             if (route is null)
                 return Results.Json(new { error = "session not found on any director" }, statusCode: StatusCodes.Status404NotFound);
-            var menu = await DetectMenuAtAsync(reqTenant.Value, route, translator, sid, ct);
+            var menu = await DetectMenuAtAsync(reqTenant.Value, route, translator, sid, tenantSettings.SpokenLanguage(reqTenant.Value), ct);
             return Results.Json(MenuJson(menu));
         });
 
@@ -809,7 +845,12 @@ internal static class GatewayWingmanVoiceEndpoint
                 // Phase 1 blocks ONLY on a confidently-recognized menu, so an unreadable screen still reports
                 // canType - it keeps behaving exactly as it did before this guard existed.
                 canType = kind != WaitingScreenKind.Menu,
-                spoken = kind == WaitingScreenKind.Menu ? WaitingScreenReader.MenuSpoken : "",
+                spoken = kind == WaitingScreenKind.Menu
+                    ? SpokenPhrases.WaitingScreenMenu.In(tenantSettings.SpokenLanguage(reqTenant.Value))
+                    : "",
+                // The language those words are in (issue #1031), sent as a fact beside them: the client speaks
+                // this notice with the BROWSER's own voice and cannot build an utterance without a language.
+                spokenLanguage = tenantSettings.SpokenLanguage(reqTenant.Value).Code,
                 message = kind == WaitingScreenKind.Menu ? WaitingScreenReader.MenuMessage : "",
             });
         });
@@ -944,7 +985,7 @@ internal static class GatewayWingmanVoiceEndpoint
     /// and never presses - so no menu extraction (brain) happens on the send path.
     /// </summary>
     private static async Task<(WaitingScreenKind Kind, string BlockedSpoken)> ClassifyLiveScreenAtAsync(
-        SessionVerbClient route, string sid, CancellationToken ct)
+        SessionVerbClient route, string sid, SpokenLanguage language, CancellationToken ct)
     {
         // The read-and-classify step itself lives in ONE place (issue #2193) so this endpoint, the prompt
         // front door's menu guard, and the narration generator can never drift on what counts as a menu.
@@ -952,7 +993,9 @@ internal static class GatewayWingmanVoiceEndpoint
         // has a second thing to say; the guard refuses only on a menu and has one.
         var kind = await WaitingScreenReader.ClassifyAsync(route, sid, ct);
         // A menu says "look at the terminal"; everything else uncertain says the generic unreadable line.
-        var spoken = kind == WaitingScreenKind.Menu ? BlockedMenuSpoken : BlockedUnreadableSpoken;
+        var spoken = kind == WaitingScreenKind.Menu
+            ? SpokenPhrases.VoiceTurnBlockedMenu.In(language)
+            : SpokenPhrases.VoiceTurnBlockedUnreadable.In(language);
         return (kind, spoken);
     }
 
@@ -984,11 +1027,6 @@ internal static class GatewayWingmanVoiceEndpoint
     private static WaitingScreen Blocked(string reason, string spoken) =>
         new() { Kind = WaitingKind.Blocked, BlockedReason = reason, BlockedSpoken = spoken };
 
-    private const string BlockedMenuSpoken =
-        "There's a menu on this session's screen that I couldn't read clearly, so I won't answer it blindly. Open the session to pick an option.";
-    private const string BlockedUnreadableSpoken =
-        "I can't read this session's screen right now, so I won't type your answer in blindly. Open the session to see what it's asking.";
-
     /// <summary>
     /// Classify what a session is waiting on by reading the LIVE screen grid ONLY (issue #1777). The live grid
     /// is the sole source of the verdict - the scrollback never gets a vote, so an already-answered menu buried
@@ -1003,7 +1041,7 @@ internal static class GatewayWingmanVoiceEndpoint
     /// is not fed here at all.
     /// </summary>
     private static async Task<WaitingScreen> DetectWaitingScreenAtAsync(
-        TenantId tenant, SessionVerbClient route, WingmanTranslator translator, string sid, CancellationToken ct)
+        TenantId tenant, SessionVerbClient route, WingmanTranslator translator, string sid, SpokenLanguage language, CancellationToken ct)
     {
         // The LIVE screen grid is the ONLY read that decides the verdict (rows + cursor + alternate-screen
         // flag come from one atomic Director snapshot).
@@ -1012,12 +1050,12 @@ internal static class GatewayWingmanVoiceEndpoint
         catch (Exception ex)
         {
             FileLog.Write($"[GatewayWingmanVoice] waiting-screen sid={sid}: screen-grid read threw ({ex.Message}) - fail closed");
-            return Blocked("screen-grid read failed", BlockedUnreadableSpoken);
+            return Blocked("screen-grid read failed", SpokenPhrases.VoiceTurnBlockedUnreadable.In(language));
         }
         if (grid is null)
         {
             FileLog.Write($"[GatewayWingmanVoice] waiting-screen sid={sid}: no screen-grid answer - fail closed");
-            return Blocked("no screen-grid answer", BlockedUnreadableSpoken);
+            return Blocked("no screen-grid answer", SpokenPhrases.VoiceTurnBlockedUnreadable.In(language));
         }
 
         // TWO anchors, fail-closed default (issue #1777, round-4): a MENU is owned by its drawn selection
@@ -1029,7 +1067,7 @@ internal static class GatewayWingmanVoiceEndpoint
         if (kind == WaitingScreenKind.Blocked)
         {
             FileLog.Write($"[GatewayWingmanVoice] waiting-screen sid={sid}: BLOCKED (rows={grid.Rows?.Count ?? 0}, alt={grid.IsAlternateScreen}, hasGrid={grid.HasGrid}) - fail closed");
-            return Blocked("unrecognized / unreadable screen", BlockedUnreadableSpoken);
+            return Blocked("unrecognized / unreadable screen", SpokenPhrases.VoiceTurnBlockedUnreadable.In(language));
         }
 
         if (kind == WaitingScreenKind.PlainText)
@@ -1047,7 +1085,7 @@ internal static class GatewayWingmanVoiceEndpoint
         {
             // Looks like a menu but the brain could not read it (unreachable / no key / error). Fail closed.
             FileLog.Write($"[GatewayWingmanVoice] waiting-screen sid={sid}: menu on screen, detection FAILED ({ex.Message}) - fail closed");
-            return Blocked("menu on screen, detection failed", BlockedMenuSpoken);
+            return Blocked("menu on screen, detection failed", SpokenPhrases.VoiceTurnBlockedMenu.In(language));
         }
 
         // A menu is usable only when it has ANSWERABLE options (issue #1777, finding 4): options exist, every
@@ -1062,7 +1100,7 @@ internal static class GatewayWingmanVoiceEndpoint
         // Looks like a menu but no answerable options could be extracted. UNCERTAIN - the dangerous case the
         // old code fell through on. Fail closed and point the person at the terminal.
         FileLog.Write($"[GatewayWingmanVoice] waiting-screen sid={sid}: looks like a menu but no answerable options - fail closed");
-        return Blocked("menu on screen, options not answerable", BlockedMenuSpoken);
+        return Blocked("menu on screen, options not answerable", SpokenPhrases.VoiceTurnBlockedMenu.In(language));
     }
 
     /// <summary>Fetch the session's live screen and, only when it is a drawn menu, ask the warm brain to
@@ -1071,9 +1109,9 @@ internal static class GatewayWingmanVoiceEndpoint
     /// send path (voice-turn) uses the pure <see cref="ClassifyLiveScreenAtAsync"/> instead and only ever
     /// types on a plain-text composer.</summary>
     private static async Task<WingmanMenu> DetectMenuAtAsync(
-        TenantId tenant, SessionVerbClient route, WingmanTranslator translator, string sid, CancellationToken ct)
+        TenantId tenant, SessionVerbClient route, WingmanTranslator translator, string sid, SpokenLanguage language, CancellationToken ct)
     {
-        var screen = await DetectWaitingScreenAtAsync(tenant, route, translator, sid, ct);
+        var screen = await DetectWaitingScreenAtAsync(tenant, route, translator, sid, language, ct);
         return screen.Kind == WaitingKind.Menu ? screen.Menu : new WingmanMenu { IsMenu = false };
     }
 

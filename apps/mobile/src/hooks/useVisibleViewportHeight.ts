@@ -16,7 +16,7 @@ import { useEffect } from "react";
 // #1408 is the only one that actually held on the real device, because it stopped trusting `dvh`.
 // This hook is that fix, promoted out of Car Mode so EVERY screen shares one copy. Mounted once in
 // the app shell (main.tsx GatedLayout), it publishes the true visible height as `--app-vh`, and the
-// stylesheet sizes .terminal-screen and .car-screen from it. Do not re-implement it per page: the
+// stylesheet sizes .terminal-screen from it. Do not re-implement it per page: the
 // reason this bug keeps coming back is that each screen has been solving it privately.
 //
 // window.visualViewport.height is the ACTUALLY visible height - it excludes the browser toolbars and

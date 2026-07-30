@@ -31,9 +31,16 @@ public sealed class DesktopTtsPlayer : IDisposable
     // local vault when standalone. Passed to TtsService so desktop speech honors the hosted voice setup.
     private readonly HostedAiKeyResolver _keyResolver = new();
 
-    public DesktopTtsPlayer(AgentOptions options)
+    // Where an utterance comes from on the desktop (issue #1031): it ASKS the Gateway, which owns the one
+    // language-and-voice decision, and packages the answer into the same type the Gateway's own sinks take.
+    // This class decides nothing about how it sounds - it used to, from a machine-global file that no account
+    // setting could reach, which is why a French account was read aloud in an English voice.
+    private readonly AccountUtterance _utterances;
+
+    public DesktopTtsPlayer(AgentOptions options, AccountUtterance? utterances = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
+        _utterances = utterances ?? new AccountUtterance();
     }
 
     /// <summary>True when a text-to-speech credential is configured for the selected provider.</summary>
@@ -58,7 +65,36 @@ public sealed class DesktopTtsPlayer : IDisposable
         if (string.IsNullOrWhiteSpace(text)) return false;
 
         var svc = new TtsService(_options, _keyResolver);
-        var result = await svc.GenerateAsync(text, voiceOverride: null, modelOverride: null, ct);
+        // The account's decision, or null when this Director is standalone - no Gateway means no account, so
+        // the machine's own configured voice is the only truth there and the legacy path is the right answer
+        // rather than a degraded one.
+        var lookup = await _utterances.ForAsync(text, ct);
+
+        // AN ATTACHED DIRECTOR THAT CANNOT LEARN ITS ACCOUNT'S LANGUAGE REFUSES TO SPEAK (client audit,
+        // finding 1). It does NOT fall back to the machine's voice, and the distinction is the whole fix: a
+        // Director with no Gateway has no account and the machine voice is correct, but a Director that HAS an
+        // account and could not ask does not know what language to speak - and guessing English is the bug this
+        // mission exists to remove.
+        //
+        // It used to be one null covering both, and the reasoning that made it look safe - "speech needs the
+        // account key from the same Gateway, so they fail together" - was wrong: the key is fetched by another
+        // route and cached in memory. So the real sequence was a French account speaking once while healthy and
+        // then having its next sentence read out in English because one lookup timed out. Silently. Returning
+        // false here is not a swallowed failure: the caller shows it (the playback dialog surfaces it rather than
+        // closing as if it had spoken) and the reason is in the log.
+        if (lookup.HasAccount && lookup.Utterance is null)
+        {
+            FileLog.Write($"[DesktopTtsPlayer] NOT SPEAKING: this Director is attached to a Gateway but could not "
+                          + $"resolve the account's spoken language - {lookup.Reason}. Speaking with the machine's "
+                          + $"own voice could read another language's words aloud in the wrong one, so it does not "
+                          + $"speak. chars={text.Length}");
+            return false;
+        }
+
+        var result = lookup.Utterance is not null
+            ? await svc.GenerateAsync(lookup.Utterance, ct)
+            // No Gateway, so no account: the machine's own configured voice is the whole truth here.
+            : await svc.GenerateAsync(text, voiceOverride: null, modelOverride: null, ct);
         if (!result.Success || result.AudioBytes is null)
         {
             FileLog.Write($"[DesktopTtsPlayer] TTS not played: status={result.Status} error={result.ErrorMessage}");

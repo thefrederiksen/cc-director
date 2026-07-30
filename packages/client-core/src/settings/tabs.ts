@@ -3,15 +3,15 @@
 // It lives in client-core rather than in either app because the two surfaces must offer the SAME
 // settings. They did not: the Cockpit had Notifications / AI / Car Mode with the microphone and
 // transcription checks on a different page entirely, while the phone had a single untabbed "AI
-// settings" scroll with no notification settings and no Car Mode end phrase at all. Two lists in two
-// files drift apart by default; one list in one file cannot.
+// settings" scroll with no notification settings and none of the Car Mode settings at all. Two lists in
+// two files drift apart by default; one list in one file cannot.
 //
 // Pure logic, no DOM, so the routing rules stay unit-testable (the repo's test convention).
 
 /** Which shell is asking. Every caller states it - see visibleTabs. */
 export type Surface = "cockpit" | "mobile";
 
-export type TabId = "notifications" | "ai" | "transcription" | "carmode" | "injectedtext";
+export type TabId = "notifications" | "ai" | "language" | "transcription" | "assistant" | "injectedtext";
 
 interface TabDef {
   id: TabId;
@@ -49,13 +49,22 @@ interface TabDef {
   hidden?: true;
 }
 
-// The full ordered set. The order is the order you meet them: how the fleet reaches you, what it thinks
-// with, how it hears you, the hands-free mode built on all three, and last the text it hands your agents.
+// The full ordered set. The order is the order you meet them: how the fleet reaches you, what language it
+// speaks to you in, how it hears you, the assistant built on all three, and last the text it hands your
+// agents.
+//
+// Language takes the place AI held in the strip (issue #1010). The AI row is still here and still hidden -
+// see the `hidden` note below; the two are separate decisions that happen to concern the same slot.
+//
+// Assistant is the tab that used to be Car Mode. Car Mode was removed from the product (#1028), and the one
+// setting it held that was never Car Mode's alone - the model the fleet brain thinks with - belongs to the
+// Assistant, the surface that still drives that brain.
 const ALL_TABS: TabDef[] = [
   { id: "notifications", label: "Notifications", surface: "all" },
   { id: "ai", label: "AI", surface: "all", hidden: true },
+  { id: "language", label: "Language", surface: "all" },
   { id: "transcription", label: "Transcription", surface: "all" },
-  { id: "carmode", label: "Car Mode", surface: "all" },
+  { id: "assistant", label: "Assistant", surface: "all" },
   { id: "injectedtext", label: "Injected text", surface: "cockpit" },
 ];
 

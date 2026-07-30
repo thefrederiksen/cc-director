@@ -46,8 +46,14 @@ public sealed class MobileViewportContractTests
     private const string ShellPath = "apps/mobile/src/main.tsx";
     private const string HookPath = "apps/mobile/src/hooks/useVisibleViewportHeight.ts";
 
-    /// <summary>The full-screen shells. Every screen that fills the window must use one of these.</summary>
-    private static readonly string[] FullScreenShells = [".terminal-screen", ".car-screen"];
+    /// <summary>
+    /// The full-screen shells. Every screen that fills the window must use one of these.
+    ///
+    /// There were two. Car Mode's shell went when Car Mode was removed from the product (#1028), so the list is
+    /// one entry - and it stays a LIST because the mechanism it pins is about "every full-screen shell", not
+    /// about the terminal. The next pinned shell is added here and inherits both checks below.
+    /// </summary>
+    private static readonly string[] FullScreenShells = [".terminal-screen"];
 
     private const string Why =
         "\n\nWHY: on the owner's Android PWA, CSS 100dvh does not track the visible height - the box stays "

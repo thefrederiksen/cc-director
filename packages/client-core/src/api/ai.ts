@@ -10,11 +10,13 @@ export interface AiProviderSnapshot {
   provider: AiProviderId;
   wingmanModel: string;
   wingmanFastModel: string;
-  /** The model Car Mode's fleet brain runs on - its OWN setting, separate from the Wingman (Car Mode
-   *  runs a fast tier + tool_choice=required). The user's saved choice, or the Qwen2.5-72B default. */
+  /** The model the FLEET BRAIN runs on - its OWN setting, separate from the wingman's (the brain runs a fast
+   *  tier + tool_choice=required). Set on the Assistant settings tab. The user's saved choice, or the
+   *  Qwen2.5-72B default. The wire name is unchanged: it is the same stored setting it always was. */
   carModeModel: string;
-  /** Car Mode's hands-free sign-off phrase (default "over and out"). A Gateway setting so the Cockpit can
-   *  set it and the phone, where Car Mode runs, picks it up. */
+  /** The sign-off phrase the removed Car Mode surface used (default "over and out"). Still on the Gateway's
+   *  snapshot because the setting is still there and the brain's spoken help still quotes it; nothing in the
+   *  client sets it any more - the control went with Car Mode (#1028). */
   carModeEndPhrase: string;
   transcriptionModel: string;
   ttsModel: string;
@@ -109,13 +111,6 @@ export function setWingmanFastModel(model: string): Promise<{ model: string }> {
 // override, then this saved setting, then the Qwen2.5-72B default.
 export function setCarModeModel(model: string): Promise<{ model: string }> {
   return putJson<{ model: string }>("/gateway/ai/car-mode-model", { model });
-}
-
-// PUT /gateway/ai/car-mode-end-phrase { phrase } - persist Car Mode's hands-free sign-off phrase. A blank
-// phrase resets to the "over and out" default (an empty phrase would end every turn). Returns the effective
-// phrase the Gateway stored.
-export function setCarModeEndPhrase(phrase: string): Promise<{ phrase: string }> {
-  return putJson<{ phrase: string }>("/gateway/ai/car-mode-end-phrase", { phrase });
 }
 
 export function setTtsModel(model: string): Promise<{ model: string }> {

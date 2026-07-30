@@ -17,8 +17,8 @@
 // played through the shared playClip discipline (one src assignment per element, never a clobber).
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
-import { playClip } from "../carmode/audioPlayback";
-import { postCarModeWarmup, speakCarModeText } from "../carmode/carModeApi";
+import { playClip } from "../fleetbrain/audioPlayback";
+import { postBrainWarmup, speakText } from "../fleetbrain/brainApi";
 import { gatewayErrorMessage } from "../api/client";
 import { reportClientError } from "../errors/reportClientError";
 import { assistantTurn } from "./assistantApi";
@@ -69,7 +69,7 @@ export function useAssistant(audioRef: RefObject<HTMLAudioElement | null>): UseA
   // Leaving the screen silences any read-aloud in flight; the microphone belongs to the dictation
   // dialog, which disposes its own recorder on unmount.
   useEffect(() => {
-    void postCarModeWarmup();
+    void postBrainWarmup();
     return () => {
       stopPlaybackRef.current();
     };
@@ -88,7 +88,7 @@ export function useAssistant(audioRef: RefObject<HTMLAudioElement | null>): UseA
     const audio = audioRef.current;
     if (audio === null) return;
     setPhase("speaking");
-    const clip = await speakCarModeText(text);
+    const clip = await speakText(text);
     const url = URL.createObjectURL(clip);
     try {
       await playClip(audio, url, (stop) => {

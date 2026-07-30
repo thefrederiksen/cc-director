@@ -30,6 +30,10 @@ namespace CcDirector.Gateway.Api;
 ///                                       catalogAvailable }
 ///   PUT  /gateway/ai-provider     body { "provider": "devthrottle" } (resets this tenant's model defaults)
 ///   GET+PUT /gateway/tts-voice
+///   GET  /gateway/spoken-language -> { language, voice, languages[{ code, label, note, sample,
+///                                       voices[{ id, label }] }] }   (the Language tab; issue #1010)
+///   PUT  /gateway/spoken-language        body { "language": "en|fr|es" }
+///   PUT  /gateway/spoken-language/voice  body { "language": "en|fr|es", "voice": "<id>" }
 ///   GET+PUT /gateway/injected-text              (per-account agent-launch text; issue #2057)
 ///
 ///   DENIED ON HOSTED (process-global, no tenant dimension):
@@ -462,6 +466,93 @@ internal static class SettingsEndpoints
             }
         });
 
+        // THE LANGUAGE THIS ACCOUNT IS SPOKEN TO IN, and the voice it is spoken to with (issue #1010) - the
+        // Language tab's whole surface. Per ACCOUNT: which language a person wants to be spoken to in is
+        // that person's own choice, and on a shared hosted Gateway it must not leak to anyone else.
+        //
+        // ONE GET SERVES THE WHOLE SCREEN, and every WRITE answers with the same document. The client
+        // therefore never derives anything: not the voice list for a language, not a voice's label, not the
+        // effective voice after a language change, not the sample sentence. That is the standing rule
+        // (CLAUDE.md rule 7) and here it is also the specific fix for the second defect in
+        // devthrottle_internal#547 - the reverted build decided the language's consequences in the BROWSER
+        // from the model catalog, which the hosted Gateway refuses, so the client held an empty list and the
+        // guard that should have fired never did.
+        //
+        // NOTHING ON THIS SURFACE NAMES A SPEECH MODEL. The engine is not part of this decision: French and
+        // Spanish are voices inside the one engine that already serves English.
+        app.MapGet("/gateway/spoken-language", (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, host.TenantBoundary);
+            if (t is null) return TenantRequired();
+            return Results.Json(SpokenLanguageSnapshot(host, t.Value));
+        });
+
+        app.MapPut("/gateway/spoken-language", async (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, host.TenantBoundary);
+            if (t is null) return TenantRequired();
+            try
+            {
+                var body = await JsonSerializer.DeserializeAsync<SpokenLanguageBody>(
+                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
+                if (body is null || string.IsNullOrWhiteSpace(body.Language))
+                    return Results.BadRequest(new { error = "body { \"language\": \"en|fr|es\" } is required" });
+
+                // An unsupported code is REFUSED rather than stored (the resolver's rule): a person is making
+                // a choice, and a language we cannot speak has to fail where they can see it.
+                host.TenantSettingsResolver.SetSpokenLanguage(t.Value, body.Language, DateTime.UtcNow);
+                var code = Speech.SpokenLanguages.Require(body.Language).Code;
+                FileLog.Write($"[SettingsEndpoints] spoken_language set to {code} for tenant={t.Value.ToLogString()}");
+                return Results.Json(SpokenLanguageSnapshot(host, t.Value));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
+            catch (JsonException ex)
+            {
+                FileLog.Write($"[SettingsEndpoints] PUT /gateway/spoken-language bad JSON: {ex.Message}");
+                return Results.BadRequest(new { error = "invalid JSON" });
+            }
+        });
+
+        // The voice for ONE language, remembered per language. The language is named in the body rather than
+        // taken to be "the one currently selected": two requests in flight during a language switch would
+        // otherwise write a voice against whichever language happened to have landed, and the whole point of
+        // the per-language memory is that a choice is never overwritten by a change to another language.
+        app.MapPut("/gateway/spoken-language/voice", async (HttpContext ctx) =>
+        {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, host.TenantBoundary);
+            if (t is null) return TenantRequired();
+            try
+            {
+                var body = await JsonSerializer.DeserializeAsync<SpokenVoiceBody>(
+                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
+                if (body is null || string.IsNullOrWhiteSpace(body.Language) || string.IsNullOrWhiteSpace(body.Voice))
+                    return Results.BadRequest(new
+                    {
+                        error = "body { \"language\": \"en|fr|es\", \"voice\": \"<id>\" } is required",
+                    });
+                if (!Speech.SpokenLanguages.IsSupported(body.Language))
+                    return Results.BadRequest(new { error = $"'{body.Language}' is not a language DevThrottle speaks." });
+
+                var language = Speech.SpokenLanguages.Require(body.Language);
+                host.TenantSettingsResolver.SetSpokenVoice(t.Value, language, body.Voice, DateTime.UtcNow);
+                FileLog.Write($"[SettingsEndpoints] spoken voice for {language.Code} set to {body.Voice.Trim()} "
+                              + $"for tenant={t.Value.ToLogString()}");
+                return Results.Json(SpokenLanguageSnapshot(host, t.Value));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
+            catch (JsonException ex)
+            {
+                FileLog.Write($"[SettingsEndpoints] PUT /gateway/spoken-language/voice bad JSON: {ex.Message}");
+                return Results.BadRequest(new { error = "invalid JSON" });
+            }
+        });
+
         // The injected text: what DevThrottle puts in front of an agent at the start of a session, and the
         // user's choice to run their own words instead of ours. PER-ACCOUNT on hosted (issue #2057): each
         // tenant has its own injected text, stored in the per-tenant settings store and served here for the
@@ -632,8 +723,71 @@ internal static class SettingsEndpoints
         };
     }
 
+    /// <summary>
+    /// THE WHOLE LANGUAGE TAB, FOLDED ON THE GATEWAY (issue #1010). Every string the screen shows and every
+    /// list it offers is finished here; the client renders it and decides nothing.
+    ///
+    /// What that buys, concretely. The voice list is already filtered to each language, so a client cannot
+    /// offer a voice that cannot speak the words. Each voice's label is already assembled, so the Cockpit
+    /// and the phone cannot describe the same voice differently. The sample sentence is already in the
+    /// right language, so nobody auditions a French voice on English words. The word under English is
+    /// already "Default". And <c>voice</c> is the voice the ACCOUNT will actually be spoken with - read
+    /// through the same resolver every synthesis path reads - not the voice this page believes it picked,
+    /// which is the third defect in devthrottle_internal#547.
+    ///
+    /// There is no model on this document, by construction and not by omission.
+    /// </summary>
+    private static object SpokenLanguageSnapshot(GatewayHost host, TenantId tenant)
+    {
+        var resolver = host.TenantSettingsResolver;
+        var chosen = resolver.SpokenLanguage(tenant);
+        // The effective voice, from the one read the wingman itself uses. The transcription mode is needed
+        // only because an English account may still be resolving through its pre-existing tts_voice override.
+        var voice = resolver.TtsVoice(tenant, Core.Configuration.TranscriptionModeConfig.Get());
+
+        return new
+        {
+            language = chosen.Code,
+            voice,
+            languages = Speech.SpokenLanguages.All.Select(l => new
+            {
+                code = l.Code,
+                label = l.EnglishName,
+                // The second line under each choice. English is the default, and saying so is more use than
+                // repeating "English" in English; the others say their own name for themselves.
+                note = l == Speech.SpokenLanguages.Default ? "Default" : l.NativeName,
+                // The sentence Play sample speaks, in THIS language, and shown on screen beside the button.
+                sample = Speech.SpokenPhrases.SettingsVoiceSample.In(l),
+                voices = VoiceOptions(l, l == chosen ? voice : null),
+            }).ToList(),
+        };
+    }
+
+    /// <summary>
+    /// One language's voices as the dropdown's options, label already folded.
+    ///
+    /// <paramref name="effectiveVoice"/> is passed for the SELECTED language only, and is added as an option
+    /// when it is not one of ours. A self-hosted operator may have set any voice id their engine accepts, and
+    /// an existing account may carry one from before this screen existed; a select whose value matches no
+    /// option renders as blank, which reads as the account having no voice at all.
+    /// </summary>
+    private static List<object> VoiceOptions(Speech.SpokenLanguage language, string? effectiveVoice)
+    {
+        var options = Speech.SpokenVoices.For(language)
+            .Select(v => new { id = v.Id, label = Speech.SpokenVoices.Label(language, v) })
+            .ToList();
+        if (!string.IsNullOrWhiteSpace(effectiveVoice)
+            && !options.Any(o => string.Equals(o.id, effectiveVoice, StringComparison.Ordinal)))
+        {
+            options.Insert(0, new { id = effectiveVoice, label = effectiveVoice });
+        }
+        return options.Cast<object>().ToList();
+    }
+
     private sealed record AiProviderBody(string? Provider);
     private sealed record TtsVoiceBody(string? Voice);
+    private sealed record SpokenLanguageBody(string? Language);
+    private sealed record SpokenVoiceBody(string? Language, string? Voice);
     private sealed record TranscriptionModeBody(string? Mode);
     private sealed record SnoozeDefaultBody(int? Minutes);
     private sealed record SnoozePresetsBody(int[]? Presets, int? DefaultMinutes);

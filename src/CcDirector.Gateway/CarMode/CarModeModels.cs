@@ -1,6 +1,41 @@
 namespace CcDirector.Gateway.CarMode;
 
 /// <summary>
+/// The per-stage timing the brain measures while it answers one turn. These are the SERVER stamps: the whole
+/// turn wall-clock, every hosted-model round trip, and the fleet/roster reads the tools made. They are
+/// returned inline in the turn response, so a surface can see where a slow turn went without any text
+/// leaving the server. Milliseconds throughout.
+///
+/// It lived beside the Car Mode timing-diagnostics store, which was written only by the Car Mode screen and
+/// was deleted with it (#1028). The timing itself is part of the TURN CONTRACT every surface receives, so it
+/// moved here, next to the turn models it is returned with.
+/// </summary>
+public sealed record CarModeTurnTiming
+{
+    /// <summary>The whole brain turn, server side: the first line of RunTurnAsync to the final answer.</summary>
+    public double TotalMs { get; init; }
+
+    /// <summary>How many hosted-model round trips this turn took (one per tool-calling round).</summary>
+    public int ModelCallCount { get; init; }
+
+    /// <summary>The sum of every model round trip's duration.</summary>
+    public double ModelMsTotal { get; init; }
+
+    /// <summary>Each model round trip's duration, in call order, so a slow single call is visible.</summary>
+    public IReadOnlyList<double> ModelMs { get; init; } = Array.Empty<double>();
+
+    /// <summary>How many times the tools read the fleet roster (or the directors/repos) this turn. Zero for
+    ///  a general question that never touched the fleet - the whole point of the fleet-read suppression.</summary>
+    public int FleetReadCount { get; init; }
+
+    /// <summary>The sum of every fleet/roster read's duration this turn.</summary>
+    public double FleetReadMsTotal { get; init; }
+
+    /// <summary>How many tool-calling rounds the loop ran before it settled on a final spoken answer.</summary>
+    public int Rounds { get; init; }
+}
+
+/// <summary>
 /// The compact, speakable view of one fleet session the Car Mode brain reasons over (Car Mode mission,
 /// New build A read tools). Deliberately small: the human NAME and repository the assistant must speak,
 /// the state and "needs you" facts, the short one-line summary of what it is doing, and the id the act
@@ -33,18 +68,6 @@ public sealed record CarModeSessionInfo
     /// <summary>Whole minutes since the session last produced output (SessionDto.IdleSeconds); 0 when it is
     ///  active right now. Carried so the brain can tell an active session from an abandoned one.</summary>
     public int IdleMinutes { get; init; }
-}
-
-/// <summary>
-/// Which surface a brain instance speaks to (Assistant on the cockpit build). The SAME loop, tools, stores,
-/// and model serve both; only the system prompt's speech-style rules differ. Car is the hands-free phone
-/// surface (one or two short spoken sentences); Desk is the cockpit Assistant screen (the owner is at his
-/// computer, typing or talking, and the reply is shown as text and may also be read aloud).
-/// </summary>
-public enum CarModeSurface
-{
-    Car,
-    Desk,
 }
 
 /// <summary>The account credit balance for the get_credits read tool, from GET /account/credits. SignedIn

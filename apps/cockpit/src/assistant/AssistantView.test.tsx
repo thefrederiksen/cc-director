@@ -18,17 +18,17 @@ import { render, screen, fireEvent, waitFor, within, cleanup } from "@testing-li
 // Revert-proof: put the mic button back on an inline recorder (the old startTalk path) and test 2
 // finds no "Dictate" dialog; drop the large empty-state chooser and test 1 finds no large tablist.
 
-const { assistantTurn, postCarModeWarmup, transcribeUtterance } = vi.hoisted(() => ({
+const { assistantTurn, postBrainWarmup, transcribeUtterance } = vi.hoisted(() => ({
   assistantTurn: vi.fn(async () => ({ spoken: "Four sessions are open.", actions: [], pendingConfirmation: false })),
-  postCarModeWarmup: vi.fn(async () => {}),
+  postBrainWarmup: vi.fn(async () => {}),
   transcribeUtterance: vi.fn(async () => "how many sessions are open"),
 }));
 
 // The brain (POST /assistant/turn) and the keep-warm ping.
 vi.mock("@devthrottle/client-core/assistant/assistantApi", () => ({ assistantTurn }));
-vi.mock("@devthrottle/client-core/carmode/carModeApi", () => ({
-  postCarModeWarmup,
-  speakCarModeText: vi.fn(async () => new Blob(["audio"])),
+vi.mock("@devthrottle/client-core/fleetbrain/brainApi", () => ({
+  postBrainWarmup,
+  speakText: vi.fn(async () => new Blob(["audio"])),
 }));
 
 // The Gateway client boundary. transcribeUtterance is the dictation dialog's tenant-aware

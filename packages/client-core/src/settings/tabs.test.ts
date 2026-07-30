@@ -2,21 +2,35 @@ import { describe, expect, it } from "vitest";
 import { visibleTabs, tabFromParam } from "./tabs";
 
 describe("visibleTabs", () => {
-  it("shows the three shared tabs on the phone, notifications first", () => {
+  it("shows the four shared tabs on the phone, notifications first", () => {
     expect(visibleTabs("mobile").map((t) => t.id)).toEqual([
       "notifications",
+      "language",
       "transcription",
-      "carmode",
+      "assistant",
     ]);
   });
 
-  it("shows the same three on the Cockpit, in the same order, plus its own Injected text", () => {
+  it("shows the same four on the Cockpit, in the same order, plus its own Injected text", () => {
     expect(visibleTabs("cockpit").map((t) => t.id)).toEqual([
       "notifications",
+      "language",
       "transcription",
-      "carmode",
+      "assistant",
       "injectedtext",
     ]);
+  });
+
+  // Issue #1010: Language takes the slot AI held. Asserted on BOTH surfaces and as a relation to the AI
+  // row, because "the Language tab shipped" and "it shipped on the phone too" are different claims - and
+  // the phone is where the last attempt's failures were noticed.
+  it("offers Language where AI used to be, on both surfaces", () => {
+    for (const surface of ["cockpit", "mobile"] as const) {
+      const ids = visibleTabs(surface).map((t) => t.id);
+      expect(ids).toContain("language");
+      expect(ids).not.toContain("ai");
+      expect(ids.indexOf("language")).toBe(1);
+    }
   });
 
   // Hidden on BOTH surfaces, not on one - a tab dropped from the desktop strip and left on the phone
@@ -44,6 +58,16 @@ describe("visibleTabs", () => {
 
   it("keeps Injected text off the phone - it is Cockpit only (issue #550)", () => {
     expect(visibleTabs("mobile").map((t) => t.id)).not.toContain("injectedtext");
+  });
+
+  // Car Mode was removed from the product (#1028). The tab it used to own is now the Assistant tab - the
+  // one setting it held that was never Car Mode's alone - so "carmode" is a retired id like the others: an
+  // old link lands on the default rather than on a tab that no longer exists.
+  it("no longer offers a Car Mode tab on either surface", () => {
+    for (const surface of ["cockpit", "mobile"] as const) {
+      expect(visibleTabs(surface).map((t) => t.id as string)).not.toContain("carmode");
+      expect(tabFromParam("carmode", surface)).toBe("notifications");
+    }
   });
 
   it("never includes a machine or Privacy tab", () => {
