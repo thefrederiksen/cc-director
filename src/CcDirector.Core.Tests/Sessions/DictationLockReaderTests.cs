@@ -204,14 +204,28 @@ public sealed class DictationLockReaderTests : IDisposable
         // PENDING - a retried dictation does exactly that. A memo that settled every non-Pending marker
         // would pin that session unlocked for the life of the process, and the phone's retry would be
         // accepted into a session the Director believed was free.
+        //
+        // THE LAST-WRITE STAMP IS DELIBERATELY HELD STILL HERE. There are two independent guards - the
+        // narrow terminal-state rule and the stamp - and a transition normally trips the stamp, which masks
+        // the state rule completely. Written the obvious way, this test passes even with the state rule
+        // removed, so it would have proved nothing about the thing it is named after. Pinning the stamp
+        // isolates the state rule as the only thing that can save the read.
+        //
+        // It is not a contrived worry either: file-time resolution is coarse, so a fast retry can genuinely
+        // land two writes inside one tick.
         ResetMemo();
         var sid = Guid.NewGuid().ToString();
         var uploadId = Guid.NewGuid().ToString("N");
 
         WriteMarker(uploadId, "Failed", sid);
+        var marker = Path.Combine(_root, uploadId, "record.json");
+        var stamp = File.GetLastWriteTimeUtc(marker);
+
         Assert.DoesNotContain(sid, DictationLockReader.LockedSessionIds(_root));
 
         WriteMarker(uploadId, "Pending", sid);
+        File.SetLastWriteTimeUtc(marker, stamp);
+
         Assert.Contains(sid, DictationLockReader.LockedSessionIds(_root));
     }
 
