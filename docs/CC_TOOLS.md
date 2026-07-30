@@ -39,7 +39,7 @@ Node.js and .NET tools include both `.cmd` (Windows) and extensionless (Git Bash
 | Tool | Description | Requirements |
 |------|-------------|--------------|
 | cc-browser | Browser automation with persistent connections and navigation skills | Chrome Extension |
-| cc-playwright | Trusted-event browser CLI for React form fills, signin/OTP, dropdowns | Python, Playwright, Chrome or Edge |
+| cc-playwright | Scripted/CI browser CLI: repeatable tests, high-volume same-origin loops | Python, Playwright, Chrome or Edge; not shipped (dev-only, build from repo) |
 | cc-reddit | Reddit automation with human-like delays | Playwright, cc-browser |
 | cc-crawl4ai | AI-ready web crawler to clean markdown | Playwright browsers |
 | cc-websiteaudit | Website SEO/security/AI readiness audit | Node.js, Chrome (not yet built) |
@@ -359,7 +359,14 @@ cc-browser wait --selector ".done"
 
 ### cc-playwright
 
-Playwright-backed browser CLI. Trusted-event sibling to cc-browser for sites that reject untrusted CDP events (Luma, Stripe, react-hook-form). Launches its own Chromium browser (Chrome or Edge) instance with `--remote-debugging-port` and connects via Playwright's `connect_over_cdp`, which produces `isTrusted=true` events that React forms accept.
+Playwright-backed browser CLI for SCRIPTED work: repeatable tests, and high-volume same-origin loops where selectors are measurably cheaper than screenshot-and-click. Launches its own Chromium browser (Chrome or Edge) with `--remote-debugging-port` and connects via Playwright's `connect_over_cdp`.
+
+**Not shipped:** not part of the installed product (not in the "ship" allowlist in
+tools/registry.json). It stays in the repo and is buildable for dev with
+`scripts/build-all-tools.ps1 -Tool cc-playwright`. It was cut from the toolbelt in issue #1002:
+it is not the tool we reach for interactively, it is the only tool that would pull a browser
+engine onto a stranger's machine, and a developer who already runs Playwright has their own
+version and their own browsers.
 
 ```bash
 # Lifecycle (per connection)
@@ -399,11 +406,6 @@ cc-playwright wait --networkidle
 cc-playwright --connection linkedin start
 cc-playwright --connection linkedin navigate --url https://www.linkedin.com/feed/
 ```
-
-**When to use which:**
-- Use **cc-browser** when you need persistent connections, your existing browser session/cookies, or named workspaces.
-- Use **cc-playwright** when filling React-controlled forms, signin/OTP flows, payment pages up to card entry, dropdowns, file uploads, or any flow where cc-browser's clicks/fills silently fail because of `isTrusted` checks.
-- Both can run concurrently. Named cc-playwright connections share cookies with the matching cc-browser connection under `%LOCALAPPDATA%\cc-director\connections\<name>`; the implicit `default` connection uses its own profile at `%LOCALAPPDATA%\cc-playwright\profile`.
 
 ---
 

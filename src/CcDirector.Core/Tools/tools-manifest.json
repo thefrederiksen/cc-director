@@ -51,13 +51,6 @@
       "note": "Auth-gated (device code). No zero-auth read-only command. Presence + version only."
     },
     {
-      "name": "cc-playwright",
-      "category": "Web",
-      "description": "Drive a real web browser - click, type, and fill in pages - with separate signed-in profiles that stay out of each other's way.",
-      "smoke": { "args": ["list"], "expectContains": null },
-      "note": null
-    },
-    {
       "name": "cc-devthrottle",
       "category": "Fleet",
       "description": "Run DevThrottle itself from the command line: your sessions, messages between them, schedules, and settings.",
