@@ -526,6 +526,18 @@ public sealed class GatewayHost : IAsyncDisposable
     private System.Threading.Timer? _displayStateSweepTimer;
     private static readonly TimeSpan DisplayStateSweepInterval = TimeSpan.FromSeconds(5);
 
+    // Fleet concurrency is SAMPLED on a timer, not observed on every push. Two reasons, both learned the
+    // hard way on 2026-07-30. The store holds its lock across a synchronous write to the shared file, so
+    // observing it per push had every hub thread queueing behind one lock across a network write - share
+    // latency would convoy the whole ingress rather than stalling one push. And a high-water measure does
+    // not need recomputing on every delta; it needs observing regularly, which is what a sample is.
+    private System.Threading.Timer? _concurrencySampleTimer;
+    private static readonly TimeSpan ConcurrencySampleInterval = TimeSpan.FromSeconds(20);
+
+    // The single-consumer queue every statistics write goes through, so no write happens on a hub thread
+    // or a request thread. Registered in the container as well, because SignalR builds DirectorHub itself.
+    private readonly Stats.StatisticsObservationQueue _statsQueue = new();
+
     // Voice-turn upload staging retention. The staging directory for a voice turn is deleted on the SUCCESS
     // path only, so every upload that ends any other way - a size refusal, a dropped connection, an assembly
     // that never completed, a caller that simply walked away - stays on disk with its recorded audio until
@@ -2094,11 +2106,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // ingress when that read was made pure (see the note in GatewayEndpoints), and the hub can only be
         // given it through the container.
         builder.Services.AddSingleton(SessionNumbers);
-        // THE freshness window, registered so the container-built DirectorHub counts concurrency over the
-        // SAME fleet the roster read serves. Without this registration the hub silently used the 20-second
-        // default while the roster used this configured value, and the two disagreed on every Gateway whose
-        // configuration was not the default.
-        builder.Services.AddSingleton(new Streaming.StreamStaleWindow(_streamStaleAfter));
+        // The statistics write queue, so the container-built DirectorHub offers its observations instead of
+        // writing them on the hub thread. Without this registration the hub would receive null and silently
+        // record nothing - which is why the queue is also the thing the health counters report on.
+        builder.Services.AddSingleton(_statsQueue);
         builder.Services.AddSingleton(Registry);
         // launcher-persistent-join: the LauncherHub (constructed per-invocation by SignalR) and
         // SendLauncherCommandAsync share this one connection registry.
@@ -3057,6 +3068,37 @@ public sealed class GatewayHost : IAsyncDisposable
             _ => { try { _tenantPass.ForEachTenant(() => FleetDisplayState.Sweep()); } catch (Exception ex) { FileLog.Write($"[GatewayHost] display-state sweep error: {ex.Message}"); } },
             null, DisplayStateSweepInterval, DisplayStateSweepInterval);
         FileLog.Write($"[GatewayHost] display-state sweep started: every {DisplayStateSweepInterval.TotalSeconds:0}s");
+
+        // Fleet concurrency, sampled per tenant and OFFERED to the statistics queue - never written on this
+        // timer thread, for the same reason it is not written on a hub thread: the store holds its lock
+        // across a write to the shared file, and a stalled share must cost a sample rather than block
+        // anything. The sample reads the same tenant-wide fresh set the roster serves, so the recorded peak
+        // matches what a person could actually see; reading one Director's slice would silently under-count
+        // every account running more than one machine.
+        _concurrencySampleTimer = new System.Threading.Timer(
+            _ =>
+            {
+                try
+                {
+                    _tenantPass.ForEachTenant(() =>
+                    {
+                        var tenant = _tenantPass.Current ?? TenantId.Local;
+                        var fleet = PushedSessions.SnapshotFresh(tenant, _streamStaleAfter)
+                            .Select(x => x.Session).ToList();
+                        if (fleet.Count == 0) return;
+                        var at = DateTime.UtcNow;
+                        _statsQueue.OfferConcurrency(tenant,
+                            _ => { SessionConcurrency.Observe(fleet, at, tenant); return Task.CompletedTask; });
+                    });
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[GatewayHost] concurrency sample error: {ex.Message}");
+                }
+            },
+            null, ConcurrencySampleInterval, ConcurrencySampleInterval);
+        FileLog.Write($"[GatewayHost] concurrency sampling started: every {ConcurrencySampleInterval.TotalSeconds:0}s "
+                      + "(sampled and queued - never written on this thread)");
 
         // Un-deny safety gate (issue #1884). Now that the /dictation and /wingman/utterance upload families
         // are served on hosted (tenant-partitioned), any pre-partition upload directory sitting directly under

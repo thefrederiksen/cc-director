@@ -1,4 +1,4 @@
-using CcDirector.Core.Tenancy;
+﻿using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
@@ -45,24 +45,17 @@ public sealed class DirectorHub : Hub
 
     private readonly DirectorConnectionRegistry? _connections;
 
-    // THE STATISTICS OBSERVERS. These moved here from the GET /sessions handler after the 2026-07-30
-    // outage: a corrupted statistics database threw out of the roster read and answered 500 to every
-    // client for 32 minutes. The ingress is where a session fact ARRIVES, so it is both the honest place
-    // to count it and a place where a failure costs a count rather than the fleet's ability to see itself.
-    // Both are optional (null for older callers and tests) and neither may ever throw out of a push - see
-    // ObserveStatistics.
-    private readonly Stats.GatewaySessionConcurrencyStats? _concurrency;
+    // The statistics WRITE queue. The ingress never writes to a statistics store; it offers the work here
+    // and returns. This moved out of the GET /sessions handler after the 2026-07-30 outage, where a
+    // corrupted statistics database threw out of the roster read and answered 500 to every client for 32
+    // minutes - and it is a QUEUE rather than a try/catch because containing a throw does nothing about a
+    // stall, and these stores sit on a network share where a write can hang instead of failing.
+    private readonly Stats.StatisticsObservationQueue? _statsQueue;
+    // The session-number allocator. NOT a statistics collaborator and deliberately not treated as one: it is
+    // dictionaries under per-partition locks with no database context and no file, so it cannot hang on the
+    // share or raise a storage error, and a DROPPED adoption would let the allocator re-issue a number that
+    // is still live (issue #1292 returning as duplicate session numbers). It stays inline and loud.
     private readonly Discovery.FleetSessionNumberAllocator? _sessionNumbers;
-    // The freshness window used when reading the tenant-wide set for concurrency. It MUST be the same window
-    // the roster read uses, or the two disagree about which Directors are in the fleet and the recorded peak
-    // stops matching what anyone can see.
-    //
-    // It arrives as an injected StreamStaleWindow rather than a bare TimeSpan because a TimeSpan cannot be
-    // resolved from the container - a plain optional parameter silently fell back to the 20-second default
-    // while the roster used the configured value, so any non-default configuration counted a different fleet.
-    // That is the failure this type exists to make impossible: there is now one registered window and both
-    // readers take it.
-    private readonly TimeSpan _streamStaleAfter;
 
     public DirectorHub(PushedSessionStore store, DirectorRegistry registry, GatewayInputStatsAggregator inputStats,
         GatewayStreamRegistry streamRegistry, Snooze.SnoozeLandingObserver? snoozeLandings = null,
@@ -70,9 +63,8 @@ public sealed class DirectorHub : Hub
         HostedTenantBoundary? tenantBoundary = null, DirectorConnectionRegistry? connections = null,
         PushedRepositoryStore? repositoryStore = null, RepoHistoryStore? repoHistory = null,
         History.SessionHistoryRecorder? sessionHistory = null,
-        Stats.GatewaySessionConcurrencyStats? concurrency = null,
         Discovery.FleetSessionNumberAllocator? sessionNumbers = null,
-        StreamStaleWindow? streamStaleWindow = null)
+        Stats.StatisticsObservationQueue? statsQueue = null)
     {
         _store = store;
         _registry = registry;
@@ -86,81 +78,29 @@ public sealed class DirectorHub : Hub
         _repositoryStore = repositoryStore;
         _repoHistory = repoHistory;
         _sessionHistory = sessionHistory;
-        _concurrency = concurrency;
         _sessionNumbers = sessionNumbers;
-        _streamStaleAfter = streamStaleWindow?.Value
-            ?? TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
-    }
-
-    /// <summary>
-    /// Run one statistics observation so that a failure inside it costs a COUNT and nothing else.
-    ///
-    /// This is the containment the 2026-07-30 outage was missing. Statistics are optional: nobody is
-    /// blocked because an hour's peak concurrency went unrecorded, but everybody is blocked when the
-    /// fleet cannot be listed. So every statistics write is wrapped, and a throw is logged and swallowed
-    /// HERE rather than escaping into the push handler - where, exactly as in the roster read, it would
-    /// take down something that matters. SignalR surfaces an exception out of a hub method as a
-    /// HubException and the Director's whole push fails with it, which would cost the roster, the snooze
-    /// landings, the roles and the display push - all for a statistic.
-    ///
-    /// This is NOT fallback programming and it is not hiding a fault. There is no alternative path and no
-    /// degraded substitute: the count is simply lost, the reason is written to the log with the observer
-    /// named, and the corruption is diagnosable from that line. What it refuses to do is let an optional
-    /// write decide whether a mandatory one happens.
-    /// </summary>
-    private static void ObserveStatistics(string observer, string directorId, Action observe)
-    {
-        try
-        {
-            observe();
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[DirectorHub] {observer} FAILED for director={directorId}: {ex.GetType().Name}: "
-                          + $"{ex.Message} - the statistic is lost; the push itself is unaffected.");
-        }
-    }
-
-    /// <summary>
-    /// Record fleet concurrency for this connection's tenant.
-    ///
-    /// Deliberately reads the store's TENANT-WIDE fresh set rather than the sessions in the push that
-    /// triggered it. Concurrency is a fleet measure - "how many were live at once, across every machine" -
-    /// and one Director's snapshot (let alone one delta) cannot answer that. Feeding it the push's own set
-    /// would silently under-count every account that runs more than one Director, which is the shape of
-    /// bug that looks correct in a single-Director test and is wrong in production.
-    ///
-    /// This is the same set the roster read used to fold, so the recorded peaks are unchanged; only the
-    /// trigger moved from "a client polled" to "a Director pushed".
-    /// </summary>
-    private void ObserveConcurrency(string observer, string directorId)
-    {
-        if (_concurrency is null) return;
-        ObserveStatistics(observer, directorId, () =>
-        {
-            var tenant = RequireBoundTenant();
-            var fleet = _store.SnapshotFresh(tenant, _streamStaleAfter).Select(x => x.Session).ToList();
-            _concurrency.Observe(fleet, DateTime.UtcNow, tenant);
-        });
+        _statsQueue = statsQueue;
     }
 
     /// <summary>
     /// Claim every session number in <paramref name="sessions"/> into this tenant's in-use set (issue #1292),
     /// so the allocator never re-issues a number a Director assigned offline or one still live across a
-    /// Gateway restart. Adopt only ever MARKS a number in use and never frees one, so running it per push is
-    /// safe in exactly the way running it per roster read was. Contained like every other statistic here:
-    /// losing a claim is recoverable (the next push re-adopts it), failing the push is not.
+    /// Gateway restart.
+    ///
+    /// DELIBERATELY NOT WRAPPED, and deliberately not treated as a statistic. The allocator is dictionaries
+    /// under per-partition locks - no database context, no file, nothing that can hang on the share or raise
+    /// a storage error - so the containment the statistics writes need does not apply here, and applying it
+    /// anyway would be worse than useless: swallowing a failure would let a number that is still live be
+    /// handed out again, which is issue #1292 returning as duplicate session numbers that nobody would trace
+    /// back to this change. A throw here is a real defect in pure in-memory code and should be loud.
     /// </summary>
     private void AdoptNumbers(string directorId, IReadOnlyList<SessionDto> sessions)
     {
         if (_sessionNumbers is null) return;
-        ObserveStatistics("session-number adopt", directorId, () =>
-        {
-            var tenant = RequireBoundTenant();
-            foreach (var s in sessions)
-                if (s?.Number is int num && !string.IsNullOrEmpty(s.SessionId))
-                    _sessionNumbers.Adopt(tenant, s.SessionId, directorId, num);
-        });
+        var tenant = RequireBoundTenant();
+        foreach (var s in sessions)
+            if (s?.Number is int num && !string.IsNullOrEmpty(s.SessionId))
+                _sessionNumbers.Adopt(tenant, s.SessionId, directorId, num);
     }
 
     private readonly PushedRepositoryStore? _repositoryStore;
@@ -284,14 +224,24 @@ public sealed class DirectorHub : Hub
         var accepted = _store.ApplySnapshot(RequireBoundTenant(), directorId, Context.ConnectionId, sequence, set);
         // DevThrottle Stats: fold each session's input tally into the always-available aggregate, under this
         // connection's bound tenant (MTR-08) so one account's tallies never coalesce with another's.
-        // Contained since the 2026-07-30 outage: a corrupt statistics store must cost a count, not the push.
-        ObserveStatistics("input stats snapshot", directorId,
-            () => _inputStats.ObserveSnapshot(set, tenant: RequireBoundTenant()));
+        // OFFERED, NOT CALLED. The ingress does not write to a store: it hands the work to the bounded
+        // queue and returns. A try/catch here would contain a throw but not a STALL, and these stores live
+        // on a network share where a write can hang - which would hold this hub thread and, through the
+        // concurrency store's lock, every other one. See StatisticsObservationQueue.
+        var snapshotTenant = RequireBoundTenant();
+        _statsQueue?.Offer(Stats.StatisticsObservationQueue.InputStatsObserver,
+            _ => { _inputStats.ObserveSnapshot(set, tenant: snapshotTenant); return Task.CompletedTask; });
         // Fleet concurrency and the hourly activity log - max concurrent live and actively-working sessions,
         // plus the distinct sessions/machines/repositories active each hour. MOVED here from the GET /sessions
         // handler: the tracker keeps only the higher value per hour, so observing every push is idempotent in
         // exactly the way observing every read was, and it no longer depends on a client polling the roster.
-        ObserveConcurrency("concurrency snapshot", directorId);
+        // CONCURRENCY IS NOT OBSERVED HERE, AND MUST NOT BE ADDED BACK. It is TIMER-SAMPLED in GatewayHost
+        // instead. Observing it per push meant every hub thread contending on the concurrency store's single
+        // lock, which that store holds across a synchronous write to the shared file - so share latency would
+        // not stall one push, it would convoy the entire ingress and take the roster stale fleet-wide.
+        // Sampling is also the honest shape for a high-water measure: nobody needs the peak recomputed on
+        // every delta, they need it observed regularly.
+        //
         // Issue #1292: adopt every observed number into the allocator's in-use set, so the Gateway never
         // re-issues a number a Director assigned offline or one still live after a Gateway restart.
         //
@@ -343,10 +293,12 @@ public sealed class DirectorHub : Hub
         using var tenantScope = EnterBoundTenantScope();
         var accepted = _store.ApplyDelta(RequireBoundTenant(), directorId, Context.ConnectionId, sequence, session);
         // DevThrottle Stats: fold this session's tally into the always-available aggregate, under this
-        // connection's bound tenant (MTR-08). Contained - see ObserveStatistics.
-        ObserveStatistics("input stats delta", directorId,
-            () => _inputStats.Observe(session, tenant: RequireBoundTenant()));
-        ObserveConcurrency("concurrency delta", directorId);
+        // connection's bound tenant (MTR-08). Offered to the queue, never written here - see PushSnapshot.
+        var deltaTenant = RequireBoundTenant();
+        _statsQueue?.Offer(Stats.StatisticsObservationQueue.InputStatsObserver,
+            _ => { _inputStats.Observe(session, tenant: deltaTenant); return Task.CompletedTask; });
+        // Concurrency is timer-sampled, not observed here - and this is the HOTTEST path in the Gateway, so
+        // it is the one that must never materialise the whole tenant fleet or touch the shared file.
         // Issue #1292: claim this session's number the moment it arrives - gated on acceptance so a stale or
         // superseded push cannot reserve a phantom number (see the snapshot path).
         if (accepted)
@@ -393,12 +345,11 @@ public sealed class DirectorHub : Hub
         // Contained like every other statistics call here: this one was missed in the first pass, and an
         // unwrapped throw would have failed the whole removal - skipping the role, display and history
         // observers below - for a high-water row. That is the same shape as the outage, one method over.
-        ObserveStatistics("input stats forget", directorId,
-            () => _inputStats.Forget(sessionId, RequireBoundTenant()));
-        // Fleet concurrency: a DEPARTURE changes how many sessions are live, so the count must be re-observed
-        // here as well as on arrival. Without this the exposed "current" figure stays at its last pushed value
-        // until some other Director happens to push, which reads as sessions that are still running.
-        ObserveConcurrency("concurrency removal", directorId);
+        var removeTenant = RequireBoundTenant();
+        _statsQueue?.Offer(Stats.StatisticsObservationQueue.InputStatsObserver,
+            _ => { _inputStats.Forget(sessionId, removeTenant); return Task.CompletedTask; });
+        // A departure changes how many sessions are live, but concurrency is timer-sampled, so the next
+        // sample picks it up rather than this path writing to the shared file.
         // A DEPARTURE RE-ROLES THE SURVIVORS, exactly as an arrival does: a controller leaving should stop
         // its workers being Workers. Must run AFTER ApplyRemove so the sweep resolves the fleet that now
         // exists rather than the one that just left.

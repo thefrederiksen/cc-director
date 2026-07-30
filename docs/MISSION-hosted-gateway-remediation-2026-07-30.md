@@ -100,7 +100,7 @@ begins where the dependency requires it.
 
 | Step | What | Gate |
 |---|---|---|
-| **0** | **Serialise deploy, rollback and cleanup behind one concurrency group.** Issue 3. A few lines of workflow configuration. Nothing else ships until this is on `main`. | Release gate |
+| **0** | **Put rollback and provision into the deploy's concurrency group.** Issue 3. See the note below - the deploy already has a group, rollback has none. A few lines of workflow configuration. Nothing else ships until this is on `main`. | Release gate |
 | **1** | **Contain the blast radius.** `GET /sessions` becomes a genuinely pure read - including moving `PruneNotLive` off it. Statistics observed at the ingress behind the bounded queue. Statistics failures degrade the statistics surface only, with per-observer failure, drop, last-error and last-successful-write counters surfaced. | Release gate |
 | **2** | **Remove SQLite from the hosted Gateway.** The statistics store moves behind `GatewayStatsDbContext`. Ends with a guard that fails loud if anything on the hosted path opens a SQLite connection - and the guard is proven by making it trip. Includes `gateway-concurrency-stats.json`. | Release gate |
 | **R** | **RELEASE.** Cut and deploy the corrected hosted Gateway. This is the point of the mission. | - |
@@ -115,6 +115,65 @@ trades thoroughness for speed - recorded here so it is a decision and not a drif
 
 **The data rescue is Step 5, deliberately.** Once Step 2 lands, the hosted Gateway never opens the
 file, so the rescue becomes an offline job with no live service near it and no outage window.
+
+### What Step 0 does and does NOT buy - read this before trusting it
+
+Verified against `origin/main`, not assumed. `deploy-hosted-gateway.yml` line 48 **already declares**
+`concurrency: group: deploy-hosted-gateway, cancel-in-progress: false`. So deploy-against-deploy is
+already serialised. `rollback-hosted-gateway.yml` declares **no concurrency group at all**, and
+neither does `provision-hosted-gateway-slots.yml`. That is the real gap and the whole of Step 0: a
+rollback can run while a deploy is mid-flight, which is two workflows driving the same slots and the
+same share at once. Put them in the same group.
+
+**Step 0 does NOT make a deploy safe, and nobody may read it that way.** The deploy workflow's own
+comment says it: staging "shares the production configuration (same Supabase database, same storage)"
+and "steady state is one instance writing the shared mount". The warmed-slot-swap design *inherently*
+runs two containers against one share while the new image boots and warms. No concurrency group can
+remove that - it is the deploy working as designed.
+
+So the honest ladder, and the release plan below depends on it:
+
+- **Step 0** stops a rollback and a deploy racing each other. Real, cheap, necessary.
+- **Step 1** makes the inherent swap overlap SURVIVABLE - a corrupted statistics file degrades the
+  statistics page instead of blacking out the roster.
+- **Step 2** CLOSES the window for the statistics database by taking it off the share entirely.
+- **Step 3** closes it for the remaining JSON state.
+
+### The release plan: two releases, not one
+
+**Release 1, after Steps 0 and 1** (days). It carries the roster containment and, importantly,
+`d0c862aaf` - the cross-tenant missions fix, which was deployed at 12:47 as `sha256:25749b32`, proven
+closed against that digest with a hostile two-tenant matrix, and then **un-deployed by the 13:28
+rollback**. Production is serving the leaking image right now because our own rollback reverted it.
+Framing, so nobody escalates this wrongly: DevThrottle has no users, so this is a **gate item that has
+regressed on production, not a breach**. It is not an emergency and it does not justify spending a
+deploy window on its own - but it is the single strongest reason Release 1 should not drift.
+
+We are deliberately NOT doing the available warm-swap restore of `sha256:25749b32`, which still sits
+stopped in the staging slot and could be swapped back with no rebuild. Starting staging to swap is
+itself a second live writer on the share, and it would buy back the tenancy fix while leaving the
+roster fragility fully in place. Release 1 carries it within days instead.
+
+**Release 2, after Step 2.** SQLite gone from the hosted Gateway. This is the release the owner
+actually asked for, and the smaller items (Steps 3, 4, 5) continue after it.
+
+**Release 1 carries two obligations that are not code**, both from `devthrottle_internal#1039`, which
+is `release-must-have` and stays OPEN until they are met:
+
+1. **Re-run the hostile two-tenant matrix against Release 1's digest.** The existing proof belongs to
+   `sha256:25749b32` and a digest is immutable, so a rebuilt `main` is a different image and inherits
+   nothing. Closing condition, in the issue's own words: `F8-missions` at zero failures with the
+   supplementary `/missions` row still PASS - and that row must turn **FAIL to PASS, not FAIL to
+   VANISH**. A row that disappears is not a row that passed. The release seat puts an agent on this
+   once a digest exists.
+2. **Sweep the ownerless mission records after the good image is live.** The pre-fix image now
+   serving production writes ownerless rows again; five were removed at 13:15Z and more have
+   accumulated since. They do not affect the proof either way - the fix quarantines ownerless records
+   so they are served to nobody - so this is a cleanup cost, not a proof cost. Do it after the
+   release, not before.
+
+Nine commits sit on `main` unreleased as of 2026-07-30 (measured `git log v1.9.0..origin/main` by the
+release seat). Any release from this mission carries all of them. That is deliberate, not incidental.
 
 ---
 
