@@ -257,6 +257,34 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
     /// The row count is what makes the second claim able to fail. A refusal path that dropped and recreated a
     /// table would keep every table NAME and lose every row, and a names-only check would call that untouched.
     /// </summary>
+    /// <summary>
+    /// A fingerprint of the whole store on disk - the database file and any write-ahead log or shared-memory
+    /// file beside it.
+    ///
+    /// THE STRONGEST FORM OF "UNMODIFIED", and the one the refusal tests actually need. Counting tables and
+    /// rows proves a lot, but it still only proves what somebody thought to count: a refusal that rewrote a
+    /// value, moved the version stamp, or dropped an index nobody enumerated would pass every count and still
+    /// have changed the operator's file. A hash cannot be fooled by an omission in the checklist, because it
+    /// has no checklist.
+    ///
+    /// The sidecar files are included because a change parked in the write-ahead log is still a change to the
+    /// store, and hashing only the main file would miss it.
+    /// </summary>
+    private string FingerprintStore()
+    {
+        SqliteConnection.ClearAllPools();
+
+        using var sha = System.Security.Cryptography.SHA256.Create();
+        var parts = new List<string>();
+        foreach (var file in new[] { _path, _path + "-wal", _path + "-shm" })
+        {
+            if (!File.Exists(file)) { parts.Add($"{Path.GetFileName(file)}=<absent>"); continue; }
+            using var stream = File.OpenRead(file);
+            parts.Add($"{Path.GetFileName(file)}={Convert.ToHexString(sha.ComputeHash(stream))}");
+        }
+        return string.Join(" ", parts);
+    }
+
     private void AssertStoreSurvivedUntouched(int expectedStatDeltaRows)
     {
         using var check = new SqliteConnection(
@@ -415,13 +443,209 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
 
         SqliteConnection.ClearAllPools();
 
-        using var check = OpenContext();
-        var result = GatewayStatsSqliteAdoption.Adopt(check);
+        var before = FingerprintStore();
 
-        Assert.Equal(StatsStoreAdoptionOutcome.NotAdoptable, result.Outcome);
-        Assert.Equal(StatsStoreUnavailableReason.StoreSchemaIncomplete, result.Reason);
+        using (var check = OpenContext())
+        {
+            var result = GatewayStatsSqliteAdoption.Adopt(check);
+
+            Assert.Equal(StatsStoreAdoptionOutcome.NotAdoptable, result.Outcome);
+            Assert.Equal(StatsStoreUnavailableReason.StoreSchemaIncomplete, result.Reason);
+            Assert.False(result.IsUsable);
+            Assert.Contains("interrupted", result.Detail, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // The empty history and the tables are exactly as they were - refused AND unmodified.
+        Assert.Equal(before, FingerprintStore());
+    }
+
+    // ---- the refusal states, each proved to leave the file BYTE-IDENTICAL ------------------------------
+    //
+    // Mutation was the harmful half of the original defect - a foreign database had sixteen tables and a
+    // baseline row written into it - so "refused" without "unmodified" is only half the guarantee. Each of
+    // these fingerprints the whole store before the call and again after, so nothing can change without the
+    // test seeing it, including things nobody thought to count.
+
+    [Fact]
+    public void Adopt_TrackedStoreWithATableDropped_IsRefusedAndLeavesTheFileByteIdentical()
+    {
+        BuildRealVersion5Store();
+
+        using (var context = OpenContext())
+        {
+            Assert.Equal(StatsStoreAdoptionOutcome.Adopted, GatewayStatsSqliteAdoption.Adopt(context).Outcome);
+            context.Database.Migrate();
+        }
+        SqliteConnection.ClearAllPools();
+
+        // The store records the baseline, so a history-only check would call it healthy - and it would then
+        // report nothing pending and die on the first query.
+        using (var connection = new SqliteConnection(
+                   new SqliteConnectionStringBuilder { DataSource = _path }.ToString()))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "DROP TABLE stat_delta";
+            command.ExecuteNonQuery();
+        }
+
+        var before = FingerprintStore();
+
+        using (var context = OpenContext())
+        {
+            var result = GatewayStatsSqliteAdoption.Adopt(context);
+            Assert.False(result.IsUsable);
+            Assert.Equal(StatsStoreUnavailableReason.StoreSchemaIncomplete, result.Reason);
+            Assert.Contains("stat_delta", result.Detail, StringComparison.Ordinal);
+        }
+
+        Assert.Equal(before, FingerprintStore());
+    }
+
+    [Fact]
+    public void Adopt_StoreWhoseTableHasTheRightNamesAndNothingElse_IsRefusedAndLeavesTheFileByteIdentical()
+    {
+        BuildRealVersion5Store();
+
+        // The exact column names, and no primary key, no NOT NULL, no default and no indexes. A names-only
+        // check adopted this and stamped it.
+        using (var connection = new SqliteConnection(
+                   new SqliteConnectionStringBuilder { DataSource = _path }.ToString()))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                "DROP TABLE stat_delta; " +
+                "CREATE TABLE stat_delta (id, hour_utc, session_id, modality, surface, is_voice, repo_id, " +
+                "wingman, turns, chars, model_id, checkout_id, tenant); PRAGMA user_version=5";
+            command.ExecuteNonQuery();
+        }
+
+        var before = FingerprintStore();
+
+        using (var context = OpenContext())
+        {
+            var result = GatewayStatsSqliteAdoption.Adopt(context);
+            Assert.False(result.IsUsable);
+            Assert.Equal(StatsStoreUnavailableReason.StoreSchemaIncomplete, result.Reason);
+            Assert.Contains("primary key", result.Detail, StringComparison.OrdinalIgnoreCase);
+        }
+
+        Assert.Equal(before, FingerprintStore());
+    }
+
+    [Fact]
+    public void Adopt_ViewWearingATableName_IsRefusedAndLeavesTheFileByteIdentical()
+    {
+        // A database whose only stat_delta is a VIEW holds no tables at all, so a tables-only emptiness check
+        // called it fresh and the chain then wrote sixteen tables into it.
+        using (var connection = new SqliteConnection(
+                   new SqliteConnectionStringBuilder { DataSource = _path }.ToString()))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                "CREATE TABLE somebody_elses_data (id INTEGER PRIMARY KEY, value TEXT); " +
+                "INSERT INTO somebody_elses_data VALUES (1, 'precious'); " +
+                "CREATE VIEW stat_delta AS SELECT id, value FROM somebody_elses_data";
+            command.ExecuteNonQuery();
+        }
+
+        var before = FingerprintStore();
+
+        using (var context = OpenContext())
+        {
+            var result = GatewayStatsSqliteAdoption.Adopt(context);
+            Assert.False(result.IsUsable);
+            Assert.Equal(StatsStoreUnavailableReason.NotAStatisticsStore, result.Reason);
+        }
+
+        Assert.Equal(before, FingerprintStore());
+    }
+
+    [Fact]
+    public void Adopt_ForeignDatabaseWithItsOwnMigrationHistory_IsRefusedAndLeavesTheFileByteIdentical()
+    {
+        // The ORIGINAL defect's exact shape: somebody else's database, tracked by their OWN Entity Framework
+        // history. This was certified FreshStore and then had sixteen statistics tables and a baseline row
+        // written into it.
+        using (var connection = new SqliteConnection(
+                   new SqliteConnectionStringBuilder { DataSource = _path }.ToString()))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                "CREATE TABLE somebody_elses_table (id INTEGER PRIMARY KEY, value TEXT); " +
+                "INSERT INTO somebody_elses_table VALUES (1, 'precious'); " +
+                "CREATE TABLE \"__EFMigrationsHistory\" (\"MigrationId\" TEXT NOT NULL CONSTRAINT " +
+                "\"PK___EFMigrationsHistory\" PRIMARY KEY, \"ProductVersion\" TEXT NOT NULL); " +
+                "INSERT INTO \"__EFMigrationsHistory\" VALUES ('20260101000000_SomebodyElsesBaseline','9.0.2'); " +
+                "PRAGMA user_version=3";
+            command.ExecuteNonQuery();
+        }
+
+        var before = FingerprintStore();
+
+        using (var context = OpenContext())
+        {
+            var result = GatewayStatsSqliteAdoption.Adopt(context);
+            Assert.False(result.IsUsable);
+            Assert.Equal(StatsStoreUnavailableReason.NotAStatisticsStore, result.Reason);
+        }
+
+        // Their table, their row, their history and their version stamp all exactly as they were.
+        Assert.Equal(before, FingerprintStore());
+
+        using var check = new SqliteConnection(
+            new SqliteConnectionStringBuilder { DataSource = _path }.ToString());
+        check.Open();
+        Assert.Equal(1, ScalarInt(check, "SELECT COUNT(*) FROM somebody_elses_table WHERE value='precious'"));
+        Assert.Equal(0, ScalarInt(check, "SELECT COUNT(*) FROM sqlite_master WHERE name='stat_delta'"));
+        Assert.Equal(3, ScalarInt(check, "PRAGMA user_version"));
+    }
+
+    /// <summary>
+    /// A store carrying a migration lock row left behind by a process that died mid-migration. Entity
+    /// Framework acquires that lock by retrying FOREVER - no timeout, no cancellation - and removes the row
+    /// on disposal, so a crash never clears it. This must refuse immediately rather than walk into it.
+    ///
+    /// The timing assertion is deliberately generous: it is here to catch an unbounded WAIT, not to measure
+    /// performance, and the failure it guards against does not finish at all.
+    /// </summary>
+    [Fact]
+    public void Adopt_StoreCarryingAnAbandonedMigrationLock_RefusesImmediatelyRatherThanWaitingForever()
+    {
+        BuildRealVersion5Store();
+
+        using (var connection = new SqliteConnection(
+                   new SqliteConnectionStringBuilder { DataSource = _path }.ToString()))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                "CREATE TABLE \"__EFMigrationsLock\" (\"Id\" INTEGER NOT NULL CONSTRAINT " +
+                "\"PK___EFMigrationsLock\" PRIMARY KEY, \"Timestamp\" TEXT NOT NULL); " +
+                "INSERT INTO \"__EFMigrationsLock\" VALUES (1, '2026-07-30T12:00:00Z')";
+            command.ExecuteNonQuery();
+        }
+
+        var before = FingerprintStore();
+
+        using var context = OpenContext();
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var result = GatewayStatsSqliteAdoption.Adopt(context);
+        stopwatch.Stop();
+
         Assert.False(result.IsUsable);
-        Assert.Contains("interrupted", result.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(StatsStoreUnavailableReason.StoreLockedByAnotherProcess, result.Reason);
+        Assert.Contains("2026-07-30T12:00:00Z", result.Detail, StringComparison.Ordinal);
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(5),
+            $"Adoption took {stopwatch.Elapsed.TotalSeconds:0.0} seconds against a store carrying an " +
+            "abandoned migration lock. It must refuse on sight: Entity Framework's own acquisition retries " +
+            "forever, and the containment boundary would otherwise burn its whole twenty-second deadline on " +
+            "every start and leak an abandoned thread each time.");
+
+        Assert.Equal(before, FingerprintStore());
     }
 
     // ---- THE INVERSE DIRECTION: a healthy store must never be condemned --------------------------------
