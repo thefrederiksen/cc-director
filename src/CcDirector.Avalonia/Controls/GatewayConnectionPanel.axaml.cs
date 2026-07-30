@@ -512,8 +512,30 @@ public partial class GatewayConnectionPanel : UserControl
 
     // ---- Step 1a: scan --------------------------------------------------------------------------
 
+    /// <summary>
+    /// True while a scan is running (issue #1107, item 4).
+    ///
+    /// The feedback on this one was already right - "SCANNING..." appears before the await - but there was
+    /// no guard, so every Rescan click started another concurrent ScanAsync and every one of them called
+    /// RenderFound on the way out. The list you ended up looking at was whichever scan happened to finish
+    /// LAST, not the one you most recently asked for. That is on the gateway connect screen, which is
+    /// exactly where a new user is when they are anxious and clicking.
+    ///
+    /// The guard lives here rather than on the Rescan button because StartScan has a second caller
+    /// (OnAttached kicks a rediscovery scan): guarding only the click would still let an automatic scan and
+    /// a clicked one race, which is the same defect with a less obvious trigger.
+    /// </summary>
+    private bool _scanInFlight;
+
     private async void StartScan()
     {
+        if (_scanInFlight)
+        {
+            FileLog.Write("[GatewayConnectionPanel] StartScan: ignored, a scan is already running");
+            return;
+        }
+        _scanInFlight = true;
+
         _connecting = false;
         StopPolling();
         CountPillText.Text = "SCANNING...";
@@ -529,6 +551,10 @@ public partial class GatewayConnectionPanel : UserControl
         {
             FileLog.Write($"[GatewayConnectionPanel] scan failed: {ex.Message}");
             RenderFound(Array.Empty<FoundGateway>());
+        }
+        finally
+        {
+            _scanInFlight = false;
         }
     }
 

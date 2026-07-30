@@ -268,25 +268,67 @@ public partial class RepositoryDetailView : UserControl
         }
     }
 
+    /// <summary>
+    /// Delete every branch the safety check clears (issue #1107, item 2).
+    ///
+    /// This is DESTRUCTIVE and it was the least guarded button in the application: no busy state, no
+    /// progress, no re-entrancy guard, and every per-branch refusal went to FileLog only. On a repository
+    /// with many branches it ran for a long time behind a completely inert interface, and a second click
+    /// started a second concurrent delete loop over the same list. A destructive operation is the last place
+    /// to leave a button live.
+    ///
+    /// It now reports progress branch by branch, so a long run looks like work rather than a hang, and ends
+    /// on a count of what it actually did - including refusals, which the user could not previously see at all.
+    /// </summary>
     private async void DeleteSafeBranchesButton_Click(object? sender, RoutedEventArgs e)
     {
-        try
-        {
-            var repo = _repoPath;
-            if (repo is null) return;
-            var branches = await Task.Run(() => _branches.ListAsync(repo));
-            foreach (var b in branches.Where(x => x.SafeToDelete))
+        if (sender is not Control button) return;
+        await BusyAction.RunAsync(button, DeleteSafeBranchesAsync, "Deleting...",
+            onFailure: message =>
             {
-                var (deleted, message) = await _branches.DeleteIfSafeAsync(repo, b.Name);
-                FileLog.Write($"[RepositoryDetailView] batch delete {b.Name}: {(deleted ? "ok" : "refused")} - {message}");
-            }
-            _loadedTabs.Remove("Branches");
-            ShowTab("Branches");
-        }
-        catch (Exception ex)
+                BranchesStatus.Text = $"Could not delete branches: {message}";
+                BranchesStatus.IsVisible = true;
+            });
+    }
+
+    private async Task DeleteSafeBranchesAsync()
+    {
+        var repo = _repoPath;
+        if (repo is null) return;
+
+        BranchesStatus.Text = "Listing branches...";
+        BranchesStatus.IsVisible = true;
+
+        var branches = await Task.Run(() => _branches.ListAsync(repo));
+        var safe = branches.Where(x => x.SafeToDelete).ToList();
+
+        if (safe.Count == 0)
         {
-            FileLog.Write($"[RepositoryDetailView] DeleteSafeBranchesButton_Click FAILED: {ex.Message}");
+            BranchesStatus.Text = "No branches are safe to delete.";
+            return;
         }
+
+        var deletedCount = 0;
+        var refusedCount = 0;
+        for (var i = 0; i < safe.Count; i++)
+        {
+            var b = safe[i];
+            BranchesStatus.Text = $"Deleting {i + 1} of {safe.Count}: {b.Name}";
+
+            var (deleted, message) = await _branches.DeleteIfSafeAsync(repo, b.Name);
+            if (deleted) deletedCount++; else refusedCount++;
+            FileLog.Write($"[RepositoryDetailView] batch delete {b.Name}: {(deleted ? "ok" : "refused")} - {message}");
+        }
+
+        _loadedTabs.Remove("Branches");
+        ShowTab("Branches");
+
+        // A refusal is a real outcome and it used to be invisible - the branch simply stayed in the list with
+        // no explanation offered.
+        BranchesStatus.Text = refusedCount == 0
+            ? $"Deleted {deletedCount} branch(es)."
+            : $"Deleted {deletedCount} branch(es); {refusedCount} refused - see the log for why.";
+        BranchesStatus.IsVisible = true;
     }
 
     // ----- pull requests -----

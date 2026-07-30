@@ -2747,13 +2747,43 @@ public partial class MainWindow : Window
     // tailnet URL (Tailscale down) we say so and open nothing, never a loopback URL that only
     // works on this machine. Both failure paths surface as a modal dialog naming the URL we
     // actually probed: a toolbar button that silently does nothing is just confusing.
+    /// <summary>
+    /// Open the Cockpit (issue #1105). Clicking this while the gateway was unreachable used to produce FIVE
+    /// stacked "Cannot Open Cockpit" windows, because the button ran an eight-second probe with no state
+    /// change and no guard: for eight seconds nothing happened, so the user clicked again, and every click
+    /// started its own probe ending in its own modal.
+    ///
+    /// THE DECISION THIS BEHAVIOUR RESTS ON, since the issue asked for it in writing. The issue offered
+    /// "open the browser anyway, we know the Cockpit URL" as the fastest option. WE DO NOT KNOW IT. The
+    /// Gateway owns the Cockpit URL and hands it back from GET /cockpit; the Director only knows the gateway
+    /// BASE address, and composing a Cockpit URL from it is precisely the dumb-client violation that made
+    /// the old Learn button point at a route that did not exist. So the probe cannot be skipped - the probe
+    /// IS how we learn where to send the user.
+    ///
+    /// What was actually wrong was never the probe; it was the eight seconds of silence around it. So: the
+    /// button says what it is doing before the network call starts, a second click cannot start a second
+    /// probe, the timeout is four seconds rather than eight (comfortably longer than a real tailnet round
+    /// trip, short enough not to read as broken), and the failure offers Retry instead of a bare OK, with
+    /// the address it tried and where to change it.
+    /// </summary>
     private async void BtnCockpit_Click(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Control button) return;
+        await BusyAction.RunAsync(button, () => OpenCockpitWithFeedbackAsync(), "Opening...", owner: this,
+            failureTitle: "Cannot Open Cockpit");
+    }
+
+    /// <summary>
+    /// One attempt at opening the Cockpit, plus the dialog for each way it can fail. Separate from the
+    /// handler so a Retry re-runs exactly the same attempt rather than a second, subtly different copy.
+    /// </summary>
+    private async Task OpenCockpitWithFeedbackAsync()
     {
         var baseUrl = CockpitUrlResolver.ResolveCockpitBase(GatewayConfig.Load());
         FileLog.Write($"[MainWindow] BtnCockpit_Click: asking gateway for Cockpit URL, baseUrl={baseUrl}");
         try
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(4) };
             // The entire fetch -> select -> OPEN decision lives in OpenCockpitAsync, off this async-void
             // handler: it fetches the DTO, and when the Gateway hands back a URL it opens THAT url verbatim
             // through the injected OpenUrlInBrowser. This handler keeps NO cockpit-URL logic and makes NO
@@ -2779,10 +2809,23 @@ public partial class MainWindow : Window
             // The "is the Gateway tray app running on THIS machine?" hint only makes sense for
             // the loopback default. For a configured remote gateway the failure is about
             // reachability (the remote gateway is down, or the tailnet is unreachable).
-            await new MessageDialog(
+            //
+            // Retry rather than a bare OK: the user wanted the Cockpit, and a gateway that was briefly
+            // unreachable is the common case. The retry runs through this same method, so it is guarded by
+            // the same busy button and cannot stack dialogs either.
+            var retry = await new ConfirmDialog(
                 "Cannot Open Cockpit",
-                BuildGatewayUnreachableMessage(baseUrl, ex.Message))
+                BuildGatewayUnreachableMessage(baseUrl, ex.Message)
+                    + "\n\nYou can change the gateway address in Settings, under Gateway.",
+                confirmLabel: "Retry",
+                cancelLabel: "Close")
                 .ShowDialog<bool?>(this);
+
+            if (retry == true)
+            {
+                FileLog.Write("[MainWindow] BtnCockpit_Click: user chose Retry");
+                await OpenCockpitWithFeedbackAsync();
+            }
         }
     }
 
@@ -4753,8 +4796,39 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// 1 while a prompt send is in flight (issue #1107). The send was SAFE BY ACCIDENT: it clears
+    /// PromptInput.Text before its first await, so a second click hit the empty-text early return above.
+    /// That works, but nothing said it was load-bearing, and an edit that moved the clear below an await -
+    /// a perfectly reasonable-looking change - would have silently reintroduced double-send.
+    /// The guard is explicit now so the property does not depend on the order of two unrelated lines.
+    /// </summary>
+    private int _sendPromptInFlight;
+
     private async void SendPrompt()
     {
+        if (_activeSession == null || string.IsNullOrWhiteSpace(PromptInput.Text)) return;
+
+        if (Interlocked.CompareExchange(ref _sendPromptInFlight, 1, 0) != 0)
+        {
+            FileLog.Write("[MainWindow] SendPrompt ignored: a send is already in flight");
+            return;
+        }
+
+        try
+        {
+            await SendPromptCoreAsync();
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _sendPromptInFlight, 0);
+        }
+    }
+
+    private async Task SendPromptCoreAsync()
+    {
+        // Re-checked rather than assumed from the caller: this method must stand on its own, which is the
+        // whole point of not relying on a distant line to hold a property true.
         if (_activeSession == null || string.IsNullOrWhiteSpace(PromptInput.Text)) return;
         // Locked out while the session transcribes a dictated utterance in the background, so a
         // typed Send cannot race the incoming dictated prompt (guards the button AND Ctrl+Enter).
@@ -5628,6 +5702,16 @@ public partial class MainWindow : Window
             return;
 
         FileLog.Write($"[MainWindow] ScreenshotCreateIssue_Click: {filePath}");
+
+        // Issue #1107, item 6. The OwnedWindows check below guards owned WINDOWS; it does not guard the
+        // async gap around the Task.Run further down, so two clicks opened two browser tabs. Minor in
+        // consequence, identical in shape to the Cockpit bug.
+        await BusyAction.RunAsync(btn, () => CreateIssueFromScreenshotAsync(filePath), "Opening...",
+            owner: this, failureTitle: "Cannot Create GitHub Issue");
+    }
+
+    private async Task CreateIssueFromScreenshotAsync(string filePath)
+    {
         try
         {
             // Modal dialogs already block this button; this guards the one
