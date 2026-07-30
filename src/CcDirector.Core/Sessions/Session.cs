@@ -2259,6 +2259,29 @@ public sealed class Session : IDisposable
     public static Func<Guid, bool>? DictationLockCheck { get; set; }
 
     /// <summary>
+    /// Host-injected BULK form of <see cref="DictationLockCheck"/>: every session id currently holding an
+    /// inbound dictation, read in one pass (issue #1111). Wired by the Director host alongside the
+    /// single-session hook; left null (nothing locked) elsewhere and in unit tests, exactly like its
+    /// sibling. Exists because the roster asks this question of EVERY session on a one-second timer, and
+    /// the single-session hook re-reads the whole marker store per session - work that grows with the
+    /// session count to answer a question with one store-wide answer per tick.
+    /// Tests that set it must reset it to null in teardown.
+    /// </summary>
+    public static Func<IReadOnlySet<string>>? DictationLockedIdsCheck { get; set; }
+
+    /// <summary>
+    /// The set of session ids with an inbound dictation, for a caller about to ask on behalf of many
+    /// sessions at once. Empty when no host wired <see cref="DictationLockedIdsCheck"/> - the same
+    /// "nothing is locked" answer <see cref="IsDictationLocked"/> gives in that case, so the bulk and
+    /// single-session paths agree on an unwired host instead of disagreeing.
+    /// </summary>
+    public static IReadOnlySet<string> DictationLockedIds()
+        => DictationLockedIdsCheck?.Invoke() ?? EmptyLockedIds;
+
+    private static readonly IReadOnlySet<string> EmptyLockedIds =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
     /// True when a dictation is inbound to THIS session, so a human send into it is refused (issue
     /// #1181, Task 3b). A pure projection of the durable PENDING delivery marker via the host-injected
     /// <see cref="DictationLockCheck"/>; false when no host wired the check. This is the single
@@ -2287,8 +2310,21 @@ public sealed class Session : IDisposable
     /// so the disk read happens once per tick, not once per render.
     /// </summary>
     public void RefreshReceivingDictation()
+        => ApplyReceivingDictation(IsDictationLocked);
+
+    /// <summary>
+    /// The same refresh for a caller updating MANY sessions in one tick: it has already read the whole
+    /// marker store once (<see cref="DictationLockedIds"/>), so this asks that set instead of going back
+    /// to disk for this one session (issue #1111). Same result as <see cref="RefreshReceivingDictation()"/>
+    /// - both compare against the PENDING markers - but the disk read happens once per TICK rather than
+    /// once per tick per SESSION, so the cost of the roster's one-second refresh stops scaling with how
+    /// many sessions are open.
+    /// </summary>
+    public void RefreshReceivingDictation(IReadOnlySet<string> lockedSessionIds)
+        => ApplyReceivingDictation(lockedSessionIds.Contains(Id.ToString()));
+
+    private void ApplyReceivingDictation(bool now)
     {
-        var now = IsDictationLocked;
         if (now == _isReceivingDictation) return;
         _isReceivingDictation = now;
         FileLog.Write($"[Session] IsReceivingDictation -> {now}: session={Id}");

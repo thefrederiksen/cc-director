@@ -335,17 +335,24 @@ public partial class MainWindow : Window
         _sessionGitTimer.Start();
 
         // Issue #1181, Task 3b: refresh each session's "receiving a dictation" flag once a second so the
-        // rail can paint it orange while a phone dictation is inbound. One cheap disk read per session per
-        // tick (the durable marker), NOT per render; the Session raises a change event only when it flips,
-        // so the rail repaints just on the edges. (Task 4 will additionally compute this at the Gateway so
-        // the phone and cockpit show the same state.)
+        // rail can paint it orange while a phone dictation is inbound. The Session raises a change event
+        // only when it flips, so the rail repaints just on the edges. (Task 4 will additionally compute
+        // this at the Gateway so the phone and cockpit show the same state.)
+        //
+        // Issue #1111: read the marker store ONCE per tick, not once per tick PER SESSION. Asking each
+        // session separately re-enumerated the store and re-read every marker for each one, so the work
+        // was sessions x markers - hundreds of file reads a second on the UI thread at two dozen sessions,
+        // every one of them re-deriving the same store-wide answer. The set is read once here and each
+        // session is then asked against it for free, so this tick costs the same whether one session is
+        // open or fifty.
         _dictationLockTimer = new global::Avalonia.Threading.DispatcherTimer
         {
             Interval = TimeSpan.FromSeconds(1),
         };
         _dictationLockTimer.Tick += (_, _) =>
         {
-            foreach (var vm in _sessions) vm.Session.RefreshReceivingDictation();
+            var lockedSessionIds = Session.DictationLockedIds();
+            foreach (var vm in _sessions) vm.Session.RefreshReceivingDictation(lockedSessionIds);
         };
         _dictationLockTimer.Start();
 

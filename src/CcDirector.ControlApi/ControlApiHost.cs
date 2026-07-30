@@ -582,6 +582,11 @@ public sealed class ControlApiHost : IAsyncDisposable
         // and control-API send paths. Idempotent to set on each start.
         Core.Sessions.Session.DictationLockCheck = id => Core.Sessions.DictationLockReader.IsSessionLocked(id);
 
+        // Issue #1111: the same projection, read in ONE pass, for the roster's per-tick refresh of every
+        // session. Wired from the same reader as the line above so the two can never disagree about a
+        // marker; the single-session hook stays for the single-session question.
+        Core.Sessions.Session.DictationLockedIdsCheck = () => Core.Sessions.DictationLockReader.LockedSessionIds();
+
         // Issue #1357: the signed-in DevThrottle user for a session's preamble. The account credential
         // lives on the Gateway (issue #651), so this reads GET /account/status (email + provider +
         // nickname) through a short-lived cache. GatewayConfig.Load is re-read each resolve so a settings
