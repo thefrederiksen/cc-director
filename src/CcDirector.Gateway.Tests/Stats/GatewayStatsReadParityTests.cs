@@ -161,10 +161,18 @@ public sealed class GatewayStatsReadParityTests : IDisposable
         Assert.Contains(agg.ModelTotals(TenantA), m => m.Model is null);
         Assert.Contains(agg.TokenSpendByModel(TenantA), m => m.Model is null);
 
-        // A genuine tie in the repository ranking, so the ORDINAL name tie-break actually decides an order.
-        var ranked = agg.RepoTotals(TenantId.Local);
-        Assert.Contains(ranked.Zip(ranked.Skip(1)), pair =>
-            pair.First.Turns == pair.Second.Turns && pair.First.Characters == pair.Second.Characters);
+        // Each of the four ordinal tie-breaks is reached by a real tie, on a pair of strings that can tell an
+        // ordinal compare from a culture-aware one, and the rendered order is the ORDINAL one. See
+        // AssertTheOrdinalTieBreakIsProven: it is the assertion that refuses a fixture which would stay green
+        // with the comparer swapped, which is exactly what the previous fixture did.
+        AssertTheOrdinalTieBreakIsProven("RepoTotals", agg.RepoTotals(TenantId.Local)
+            .Select(r => (Rank: $"{r.Turns}/{r.Characters}", Name: r.RepoName)).ToList());
+        AssertTheOrdinalTieBreakIsProven("AgentTotals", agg.AgentTotals(TenantId.Local)
+            .Select(a => (Rank: $"{a.Turns}/{a.Characters}", Name: a.AgentName)).ToList());
+        AssertTheOrdinalTieBreakIsProven("ModelTotals", agg.ModelTotals(TenantId.Local)
+            .Select(m => (Rank: $"{m.Turns}/{m.Characters}", Name: m.Model ?? "")).ToList());
+        AssertTheOrdinalTieBreakIsProven("TokenSpendByModel", agg.TokenSpendByModel(TenantId.Local)
+            .Select(m => (Rank: $"{m.TotalTokens}", Name: m.Model ?? "")).ToList());
 
         // More than one hour bucket, so the hourly ordering is a real ordering.
         Assert.True(agg.HourlyTurns(TenantA).Count > 1);
@@ -176,6 +184,60 @@ public sealed class GatewayStatsReadParityTests : IDisposable
         // The wingman lane counts a TYPED turn folded while voice mode was on.
         Assert.True(agg.WingmanUsage(TenantB).Turns > 0);
         Assert.True(agg.WingmanUsage(TenantB).Sessions > 0);
+    }
+
+    /// <summary>
+    /// A ranked projection's ORDINAL tie-break is only PROVEN by a tie whose two strings order DIFFERENTLY
+    /// under ordinal and culture-aware comparison - and this refuses the fixture when no tie does.
+    ///
+    /// The rule one level up is the one this file already applies to tenant coalescing: a fixture that cannot
+    /// distinguish the defect from its absence is refused, not run. Here the defect is the load-bearing
+    /// comparer silently becoming culture-aware. A tie between "aaa" and "zzz" reaches the tie-break and looks
+    /// like coverage, but those two order the same way under either comparer, so every assertion downstream
+    /// passes with the comparer swapped - which is not a hypothetical: a reviewer replaced the repository
+    /// tie-break with CurrentCulture and all three tests in this file stayed green. Asserting that a tie
+    /// EXISTS is the weaker claim; what is needed is that the tied pair COULD show the change.
+    ///
+    /// The reliable pair is an upper-case against a lower-case initial. Ordinal compares code units, so every
+    /// upper-case Latin letter precedes every lower-case one; culture-aware comparison sorts alphabetically
+    /// and ignores case until it needs a final tie-break. Both CurrentCulture and InvariantCulture must
+    /// disagree with ordinal, so the guard holds whatever culture the machine running it happens to have and
+    /// catches a swap to either.
+    /// </summary>
+    private static void AssertTheOrdinalTieBreakIsProven(
+        string projection, IReadOnlyList<(string Rank, string Name)> ranked)
+    {
+        var tied = ranked.Zip(ranked.Skip(1))
+            .Where(p => p.First.Rank == p.Second.Rank)
+            .ToList();
+        Assert.True(tied.Count > 0,
+            $"{projection}: FIXTURE REFUSED. Nothing in it ties on the numeric rank key, so no row ever " +
+            "reaches the ordinal tie-break and this projection's comparison says nothing about it.");
+
+        var discriminating = tied
+            .Where(p => OrdersDifferentlyUnderOrdinalAndCulture(p.First.Name, p.Second.Name))
+            .ToList();
+        Assert.True(discriminating.Count > 0,
+            $"{projection}: FIXTURE REFUSED. It ties " +
+            string.Join(", ", tied.Select(p => $"'{p.First.Name}' against '{p.Second.Name}'")) +
+            " - and every one of those pairs orders the SAME way under ordinal and culture-aware " +
+            "comparison. So the tie-break could be changed to a culture-aware compare and this suite would " +
+            "stay green, which makes the tie decorative rather than evidence. Tie a pair that orders " +
+            "differently under the two: an upper-case initial against a lower-case one is the reliable case.");
+
+        foreach (var (first, second) in discriminating)
+            Assert.True(string.CompareOrdinal(first.Name, second.Name) < 0,
+                $"{projection}: '{first.Name}' is ranked above '{second.Name}' on an equal rank key, but " +
+                $"ordinal comparison puts '{second.Name}' first. The final tie-break is not ordinal - this " +
+                "is what a culture-aware compare in its place looks like from the outside.");
+    }
+
+    private static bool OrdersDifferentlyUnderOrdinalAndCulture(string a, string b)
+    {
+        var ordinal = Math.Sign(string.CompareOrdinal(a, b));
+        if (ordinal == 0) return false;
+        return Math.Sign(string.Compare(a, b, StringComparison.CurrentCulture)) != ordinal
+            && Math.Sign(string.Compare(a, b, StringComparison.InvariantCulture)) != ordinal;
     }
 
     // ---- The fixture ---------------------------------------------------------------------------------
@@ -214,11 +276,27 @@ public sealed class GatewayStatsReadParityTests : IDisposable
             voiceMode: true, ("voice", "phone", 3, 33), tokens: (1, 1, 1, 1)), Now, TenantB);
         agg.Observe(AgentDriven("s1", "ClaudeCode", 2, 22), Now, TenantB);
 
-        // The local tenant - the self-host shape, and where the deliberate ranking TIE lives: two repositories
-        // with identical turns AND identical characters, so only the ordinal leaf-name compare can order them.
-        agg.Observe(Full("s1", "zzz/aaa", "D:\\Repos\\aaa", "ClaudeCode", "claude-opus-5",
+        // The local tenant - the self-host shape, and where the deliberate ranking TIE lives: two rows with
+        // identical turns AND identical characters, so only the final ordinal string compare can order them.
+        //
+        // THE TIED STRINGS START WITH AN UPPER-CASE AND A LOWER-CASE LETTER, AND THAT IS THE ENTIRE POINT OF
+        // THEM. Ordinal comparison works on code units, so every upper-case Latin letter sorts before every
+        // lower-case one and "Zebra" precedes "apple". Culture-aware comparison sorts alphabetically first and
+        // puts "apple" before "Zebra". The pair therefore ORDERS DIFFERENTLY under the two comparers, so
+        // swapping the production tie-break to a culture-aware compare flips the rendered order and the parity
+        // comparison fails.
+        //
+        // The fixture this replaces tied "aaa" against "zzz". That tie was real, but those two order the same
+        // way under both comparers, so the tie-break could be - and was - changed to CurrentCulture with all
+        // three tests still green. A tie that cannot distinguish the two comparers proves nothing about the
+        // one that is load-bearing, and TheFixtureExercisesTheShapesParityIsSupposedToCatch now REFUSES such a
+        // pair rather than trusting the next author to notice. The same pair carries the agent, model and
+        // token-spend rankings, whose tie-breaks are three further comparers on three further fields and were
+        // just as unproven; the agent names are deliberately outside AgentDisplayName's map so they reach the
+        // ranking verbatim rather than as a mapped display spelling.
+        agg.Observe(Full("s1", "Zulu/Zebra", "D:\\Repos\\Zebra", "Zeta", "Zeta-model",
             voiceMode: false, ("typed", "desktop", 6, 600), tokens: (5, 5, 5, 5)), Now, TenantId.Local);
-        agg.Observe(Full("s2", "aaa/zzz", "D:\\Repos\\zzz", "Codex", model: null,
+        agg.Observe(Full("s2", "alpha/apple", "D:\\Repos\\apple", "alpaca", "alpaca-model",
             voiceMode: false, ("typed", "desktop", 6, 600), tokens: (5, 5, 5, 5)), Now, TenantId.Local);
     }
 
