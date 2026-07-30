@@ -122,17 +122,34 @@ public sealed class SpokenPhraseTests
             + string.Join(", ", untranslated));
     }
 
-    /// <summary>An unknown language THROWS and names only the key. It does not fall back to English -
-    ///  a silent fallback is how a half-covered language ships looking complete - and the message must
-    ///  not carry the words, or an accented sentence reaches a log through an exception.</summary>
+    /// <summary>
+    /// AN UNKNOWN LANGUAGE CANNOT REACH A PHRASE AT ALL, because it cannot be constructed.
+    ///
+    /// This test used to build <c>new SpokenLanguage("xx", "Klingon", "Klingon")</c> and check that asking a
+    /// phrase for it threw naming the phrase KEY and never the words. That was the right guarantee for a type
+    /// which accepted any code. The type now refuses a code that is not one we speak (audit 4 / the re-audit's
+    /// root cause: nonblank was never the same as known), so the line that made the unknown language throws
+    /// FIRST - which left the old assertion unreachable and the suite red.
+    ///
+    /// The property is stronger now and this asserts the stronger one: the missing-translation path cannot be
+    /// entered through a real language object. What keeps it that way is the completeness test above - every
+    /// phrase has every known language - so the pair is "no unknown language exists" and "no known language is
+    /// missing a translation".
+    ///
+    /// The refusal names the CODE, which is safe: a code is ASCII. It must never carry spoken words, and it
+    /// cannot, because it never sees a phrase.
+    /// </summary>
     [Fact]
-    public void An_unknown_language_throws_naming_the_key_and_never_the_words()
+    public void An_unknown_language_cannot_be_constructed_so_it_can_never_reach_a_phrase()
     {
-        var unknown = new SpokenLanguage("xx", "Klingon", "Klingon");
-        var error = Assert.Throws<InvalidOperationException>(() => SpokenPhrases.CarModeGiveUp.In(unknown));
+        var error = Assert.Throws<ArgumentException>(() => new SpokenLanguage("xx", "Klingon", "Klingon"));
 
-        Assert.Contains(SpokenPhrases.CarModeGiveUp.Key, error.Message);
+        Assert.Contains("xx", error.Message);
         Assert.DoesNotContain(SpokenPhrases.CarModeGiveUp.In(SpokenLanguages.English), error.Message);
+
+        // And every language that CAN exist has this phrase, so the throw inside In() has no way to fire.
+        foreach (var language in SpokenLanguages.All)
+            Assert.False(string.IsNullOrWhiteSpace(SpokenPhrases.CarModeGiveUp.In(language)));
     }
 
     // ----------------------------------------------------------------------------------------------

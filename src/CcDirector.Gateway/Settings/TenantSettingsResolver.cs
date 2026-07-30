@@ -290,11 +290,14 @@ public sealed class TenantSettingsResolver
     public Speech.SpokenLanguage SpokenLanguage(TenantId tenant)
     {
         var stored = _store.Get(tenant, TenantSettingKeys.SpokenLanguage);
-        // No choice made is not an unknown code: it is the documented default, and it is what every account had
-        // before this setting existed.
-        return string.IsNullOrWhiteSpace(stored)
-            ? Speech.SpokenLanguages.Default
-            : Speech.SpokenLanguages.Require(stored);
+        // ABSENT AND BLANK ARE DIFFERENT (audit 4, finding F1). No choice made is NO ROW, and the store returns
+        // null for that - it is the documented default and what every account had before this setting existed.
+        // A row that is PRESENT and blank is something else: the write path stores a canonical code and the store
+        // rejects null, so three spaces in that row can only be malformed or rolled-back data. This used to test
+        // IsNullOrWhiteSpace and laundered it into English, which is the same silent default the mission just
+        // removed everywhere else - a probe pushed real English speech through it.
+        if (stored is null) return Speech.SpokenLanguages.Default;
+        return Speech.SpokenLanguages.Require(stored);
     }
 
     // ---- writes: validate like the global setters, then persist a per-tenant override -------------------

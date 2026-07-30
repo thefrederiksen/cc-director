@@ -697,16 +697,34 @@ export function useVoiceMode(
       // closed - so there is no later moment at which a refusal could still reach the person. Asking the
       // Gateway now costs one cheap read (no model call) and is the only place this path can be honest.
       void (async () => {
+        // TWO CONCERNS, TWO TRY BLOCKS, and separating them is a SAFETY fix (audit 4, finding F2).
+        //
+        // They used to share one broad try: the screen read and the spoken refusal. So when the sink refused an
+        // utterance - which it now does, correctly, for a language this build does not know - the surrounding
+        // catch read that as a FAILED SCREEN READ. It then cleared the menu notice and delivered the recording
+        // anyway. The auditor drove the real hook and measured it: nothing spoken, one send, no notice.
+        //
+        // That is not a missing announcement, it is the guard inverted. This path carries a trailing Enter, so a
+        // delivery into a chooser can activate whatever option was highlighted - a selection the person never
+        // made and is never told about. A refusal to SPEAK must never become permission to SEND.
+        let screen: Awaited<ReturnType<typeof getWaitingScreen>> | null = null;
         try {
-          const screen = await getWaitingScreen(sid);
-          if (screen.kind === "menu") {
-            setMenuBlocked(screen.message);
-            speakBlocked(screen.spoken, screen.spokenLanguage);
-            return;
-          }
+          screen = await getWaitingScreen(sid);
         } catch {
           // The screen could not be read. Phase 1 refuses ONLY on a recognized menu, so an unreadable
           // answer must not silently swallow the reply - deliver it exactly as before the guard existed.
+        }
+        if (screen?.kind === "menu") {
+          setMenuBlocked(screen.message);
+          // Speaking rides ON TOP of that notice and cannot reverse it. A sink refusal is surfaced as an error
+          // and the recording still goes nowhere: the on-screen notice is the guard's real output, and it is
+          // already set above.
+          try {
+            speakBlocked(screen.spoken, screen.spokenLanguage);
+          } catch (err) {
+            setError(err instanceof Error ? err.message : "The refusal could not be spoken");
+          }
+          return;
         }
         setMenuBlocked(null);
         void backgroundTranscribeAndSend(sid, captured, {

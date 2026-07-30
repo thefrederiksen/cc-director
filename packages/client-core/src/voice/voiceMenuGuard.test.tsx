@@ -162,3 +162,57 @@ describe("the wingman menu guard on a voice reply", () => {
     expect(view().menuBlocked).toBeNull();
   });
 });
+
+// ---- A REFUSAL TO SPEAK IS NOT PERMISSION TO SEND (audit 4, finding F2) ----------------------------------
+//
+// The screen read and the spoken refusal used to share one broad try block, so when the sink refused an
+// utterance - which it does, correctly, for a language this build does not know - the catch read that as a
+// FAILED SCREEN READ, cleared the menu notice, and delivered the recording anyway. Measured on the real hook:
+// nothing spoken, one send, no notice.
+//
+// That is the guard inverted, not a missing announcement. This path carries a trailing Enter, so a delivery into
+// a chooser can activate whatever option was highlighted - a selection nobody made and nobody is told about. So
+// the property under test is about the RECORDING, not about the speech.
+describe("a menu that names a language we cannot speak", () => {
+  it("keeps the menu blocked and sends NOTHING when the refusal cannot be spoken", async () => {
+    vi.stubGlobal("speechSynthesis", { cancel: vi.fn(), speak: vi.fn(), getVoices: () => [] });
+    vi.stubGlobal("SpeechSynthesisUtterance", class { lang = ""; voice: unknown = null; constructor(public text: string) {} });
+    // A healthy 200 from the Gateway - a real menu - naming a language this build does not know.
+    waitingScreenMock.mockResolvedValue({
+      kind: "menu",
+      canType: false,
+      spoken: "Cette session attend une reponse dans un menu.",
+      spokenLanguage: "not-a-language",
+      message: "Open it and pick an option.",
+    });
+
+    const { view } = mount();
+    await act(async () => { view().onRespondSendAudio(captured); });
+
+    // THE INVARIANT, and it is a safety one: the recording never entered the delivery pipeline.
+    expect(deliverMock).not.toHaveBeenCalled();
+    // And the notice stays up - the guard's real output is the on-screen refusal, which must survive a speech
+    // failure rather than be undone by it.
+    expect(view().menuBlocked).toBe("Open it and pick an option.");
+  });
+
+  // The same refusal on the typed path already behaved correctly, and it stays that way: reported as not sent.
+  it("still reports a typed reply as not sent when the refusal cannot be spoken", async () => {
+    vi.stubGlobal("speechSynthesis", { cancel: vi.fn(), speak: vi.fn(), getVoices: () => [] });
+    vi.stubGlobal("SpeechSynthesisUtterance", class { lang = ""; voice: unknown = null; constructor(public text: string) {} });
+    voicePromptMock.mockResolvedValue({
+      sent: false,
+      blockedByMenu: true,
+      spoken: "Cette session attend une reponse dans un menu.",
+      spokenLanguage: "not-a-language",
+      message: "Open it and pick an option.",
+    });
+
+    const { view } = mount();
+    let sent: boolean | undefined;
+    await act(async () => { sent = await view().onRespondSend("oui vas-y"); });
+
+    expect(sent).toBe(false);
+    expect(view().menuBlocked).toBe("Open it and pick an option.");
+  });
+});

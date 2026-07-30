@@ -236,6 +236,88 @@ public sealed class SpokenUtteranceTests
     }
 
     /// <summary>
+    /// TIGHTENING THE LANGUAGE DID NOT TIGHTEN THE OPERATOR'S OWN VOICE.
+    ///
+    /// Two rules that pull in opposite directions, and both were decided deliberately:
+    ///   - a voice belonging to ANOTHER KNOWN language is refused, because we can be certain it is wrong;
+    ///   - a voice belonging to NO known language is ALLOWED, because a self-hosted operator may have configured
+    ///     their own voice against their own engine, and refusing it would take speech away from an account that
+    ///     works today.
+    ///
+    /// The second is the one at risk from a change that makes the first stricter, and it has no other test: the
+    /// language rules got tighter twice in one night, and "we deliberately allowed this" is worth exactly nothing
+    /// unless something fails when it stops being true.
+    /// </summary>
+    [Fact]
+    public void A_custom_voice_belonging_to_no_known_language_is_still_allowed()
+    {
+        using var h = new GatewayDbTestHarness();
+        var r = NewResolver(h);
+        r.SetSpokenLanguage(Tenant, "en", Now);
+        r.SetTtsVoice(Tenant, "an-operators-own-voice", Now);
+
+        // Through the resolver, which is how a self-hosted operator's voice actually reaches synthesis.
+        var utterance = r.Utterance(Tenant, Mode, "words to say");
+        Assert.Equal("an-operators-own-voice", utterance.Voice);
+        Assert.Equal(SpokenLanguages.English, utterance.Language);
+
+        // And directly at the factory, for every language - an unknown-owner voice is not "wrong", it is unknown.
+        foreach (var language in SpokenLanguages.All)
+            Assert.Equal("an-operators-own-voice",
+                SpokenUtterance.For(language, "an-operators-own-voice", "words").Voice);
+    }
+
+    /// <summary>
+    /// A voice from ANOTHER KNOWN language is still refused, in both directions, so the allowance above cannot be
+    /// read as "any string goes". This is the pair that makes each half meaningful.
+    /// </summary>
+    [Fact]
+    public void A_voice_from_another_known_language_is_still_refused()
+    {
+        Assert.Throws<ArgumentException>(
+            () => SpokenUtterance.For(SpokenLanguages.French, "af_bella", "des mots"));
+        Assert.Throws<ArgumentException>(
+            () => SpokenUtterance.For(SpokenLanguages.English, "ff_siwis", "some words"));
+    }
+
+    /// <summary>
+    /// CASING AND WHITESPACE DO NOT SMUGGLE A LANGUAGE PAST THE RULE, in either direction: a known code with odd
+    /// spacing or capitals is still known, and an unknown one is still unknown however it is dressed. Worth its
+    /// own test because "KNOWN" is now enforced by string comparison in several places, and a comparison is where
+    /// a rule quietly stops applying.
+    /// </summary>
+    [Theory]
+    [InlineData("EN")]
+    [InlineData(" fr ")]
+    [InlineData("Es")]
+    public void A_known_code_survives_casing_and_whitespace(string code)
+        => Assert.NotNull(SpokenLanguages.TryResolve(code));
+
+    [Theory]
+    [InlineData(" DE ")]
+    [InlineData("ZZ")]
+    [InlineData("en_GB")]
+    public void An_unknown_code_is_still_unknown_however_it_is_dressed(string code)
+        => Assert.Null(SpokenLanguages.TryResolve(code));
+
+    /// <summary>
+    /// The static initializers survive being reached from EITHER side.
+    ///
+    /// The known-code set lives on <see cref="SpokenLanguage"/> and is read while
+    /// <see cref="SpokenLanguages"/> is constructing its instances, so the two types initialize each other's
+    /// statics in an order this test forces rather than assumes: touch the language type first here, and the
+    /// collection first everywhere else. A broken order is a run-time null on first use, which is exactly the
+    /// class of failure a test suite usually misses because something else always touched it first.
+    /// </summary>
+    [Fact]
+    public void The_language_type_can_be_reached_before_the_language_list()
+    {
+        var direct = new SpokenLanguage("fr", "French", "Francais");
+        Assert.Equal("fr", direct.Code);
+        Assert.Equal(SpokenLanguages.French, direct);
+    }
+
+    /// <summary>
     /// THE ONE-PLACE CLAIM, DEMONSTRATED RATHER THAN ASSERTED (issue #1031's acceptance row).
     ///
     /// Adding a fourth language means one edit: a row in <see cref="SpokenLanguages.All"/> with its voices. This

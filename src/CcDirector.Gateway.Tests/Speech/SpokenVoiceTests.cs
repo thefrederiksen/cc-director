@@ -249,6 +249,31 @@ public sealed class SpokenVoiceTests
         Assert.Equal("em_alex", r.TtsVoice(TenantA, Mode));
     }
 
+    /// <summary>
+    /// ABSENT AND BLANK ARE DIFFERENT ROWS (audit 4, finding F1).
+    ///
+    /// No choice made is NO ROW, and that legitimately reads as English - it is what every account had before the
+    /// setting existed. A row that is PRESENT and blank is something else entirely: the write path stores a
+    /// canonical code and the store rejects null, so three spaces in that row can only be malformed or
+    /// rolled-back data. The read used to test IsNullOrWhiteSpace and laundered it into English, which is the
+    /// same silent default the mission removed everywhere else - a probe pushed real English speech through it.
+    /// </summary>
+    [Fact]
+    public void No_stored_language_row_reads_as_English_but_a_blank_one_is_refused()
+    {
+        using var h = new GatewayDbTestHarness();
+        var store = new TenantSettingsStore(h.Open());
+        var r = new TenantSettingsResolver(store);
+
+        // Absent: the documented default, and the only absence that is legitimate.
+        Assert.Equal(SpokenLanguages.English, r.SpokenLanguage(TenantA));
+
+        // Present and blank: malformed, and it fails loudly rather than being spoken as English.
+        store.Set(TenantA, TenantSettingKeys.SpokenLanguage, "   ", Now);
+        var ex = Assert.Throws<ArgumentException>(() => r.SpokenLanguage(TenantA));
+        Assert.Contains("not a language DevThrottle speaks", ex.Message);
+    }
+
     /// <summary>A voice that does not speak the language is REFUSED on the write, where the person can see
     ///  it, and the message names the language it does belong to. A read degrades; a write does not - the
     ///  same split the language setting itself uses, for the same reason.</summary>
