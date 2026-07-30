@@ -381,18 +381,29 @@ public static class GatewayStatsSqliteAdoption
             return $"{notTables.Count} of its names are not tables " +
                    $"({string.Join(", ", notTables.Select(t => $"{t} is a {objects[t]}"))})";
 
+        // MISSING columns refuse. EXTRA columns are TOLERATED. The two failures are not symmetric and it
+        // would be a mistake to treat them as one check:
+        //
+        //  - A MISSING column breaks queries loudly and immediately, so refusing is the only safe answer.
+        //  - An EXTRA column is harmless to every query this store runs, because all sixteen tables are read
+        //    by an explicit column list - swept in both directions and true as a MEASURED fact, not an
+        //    assumption. So refusing on it buys nothing concrete, and costs the worse failure mode: it
+        //    CONDEMNS A HEALTHY STORE. In this design that is silent and permanent - the Gateway serves fine,
+        //    statistics are off, the named reason is a lie, and nothing pages anyone.
+        //
+        // There is also a specific reason strictness here would be redundant. The realistic way a store gains
+        // a column is a NEWER build adding one and the user then rolling back - and that store's version
+        // stamp is HIGHER, so the version check above refuses it first, more precisely, and with a message
+        // about versions rather than columns.
         foreach (var table in expected.Keys.OrderBy(t => t, StringComparer.Ordinal))
         {
             var actual = ReadColumnNames(connection, table);
             var missingColumns = expected[table].Except(actual, StringComparer.Ordinal)
                 .OrderBy(c => c, StringComparer.Ordinal).ToList();
-            var extraColumns = actual.Except(expected[table], StringComparer.Ordinal)
-                .OrderBy(c => c, StringComparer.Ordinal).ToList();
 
-            if (missingColumns.Count > 0 || extraColumns.Count > 0)
-                return $"table {table} does not have the expected columns" +
-                       (missingColumns.Count > 0 ? $" (missing: {string.Join(", ", missingColumns)})" : "") +
-                       (extraColumns.Count > 0 ? $" (unexpected: {string.Join(", ", extraColumns)})" : "");
+            if (missingColumns.Count > 0)
+                return $"table {table} is missing {missingColumns.Count} column(s) " +
+                       $"({string.Join(", ", missingColumns)})";
         }
 
         return null;

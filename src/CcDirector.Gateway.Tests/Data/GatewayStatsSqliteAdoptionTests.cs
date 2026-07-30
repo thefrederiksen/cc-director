@@ -544,6 +544,78 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
         Assert.Single(reopened.StatDeltas.ToList());
     }
 
+    /// <summary>
+    /// REFUSE ON MISSING, TOLERATE EXTRA - the asymmetry, pinned on the tolerant side.
+    ///
+    /// A missing column breaks queries loudly and immediately, so refusing is the only safe answer, and
+    /// <see cref="Adopt_AVersion5StoreMissingAColumn_IsRefused"/> holds that line. An extra column is
+    /// harmless to every query this store runs, because all sixteen tables are read by an explicit column
+    /// list - measured, not assumed - so refusing on it buys nothing and costs the worse failure: condemning
+    /// a healthy store, which here is silent and permanent.
+    ///
+    /// Strictness would also be redundant. The realistic way a store gains a column is a newer build adding
+    /// one and the user rolling back, and that store's version stamp is HIGHER - so the version check refuses
+    /// it first, more precisely, and with a message about versions rather than columns.
+    /// </summary>
+    [Fact]
+    public void Adopt_AVersion5StoreWithAnExtraColumn_IsStillAdopted()
+    {
+        BuildRealVersion5Store();
+        SeedDistinguishableStatDeltaRows();
+
+        using (var connection = new SqliteConnection(
+                   new SqliteConnectionStringBuilder { DataSource = _path }.ToString()))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            // Added WITHOUT moving the version stamp, so this exercises the column check rather than the
+            // version check - the state the version stamp would otherwise have caught first.
+            command.CommandText = "ALTER TABLE stat_delta ADD COLUMN something_extra TEXT";
+            command.ExecuteNonQuery();
+        }
+
+        SqliteConnection.ClearAllPools();
+
+        using var context = OpenContext();
+        var result = GatewayStatsSqliteAdoption.Adopt(context);
+
+        Assert.True(result.IsUsable,
+            $"A version 5 store with a harmless extra column was refused as {result.Reason}: {result.Detail}");
+        Assert.Equal(StatsStoreAdoptionOutcome.Adopted, result.Outcome);
+
+        // And it genuinely works - the extra column does not disturb reads, because every read names its
+        // columns. That is the measured fact the tolerance rests on, asserted rather than trusted.
+        context.Database.Migrate();
+        Assert.Equal(2, context.StatDeltas.Count());
+    }
+
+    /// <summary>The other side of the same ruling: a MISSING column must still refuse, because that is the
+    /// one that breaks queries. Without this, tolerating extras could quietly become tolerating anything.
+    /// </summary>
+    [Fact]
+    public void Adopt_AVersion5StoreMissingAColumn_IsRefused()
+    {
+        BuildRealVersion5Store();
+
+        using (var connection = new SqliteConnection(
+                   new SqliteConnectionStringBuilder { DataSource = _path }.ToString()))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE stat_delta DROP COLUMN chars";
+            command.ExecuteNonQuery();
+        }
+
+        SqliteConnection.ClearAllPools();
+
+        using var context = OpenContext();
+        var result = GatewayStatsSqliteAdoption.Adopt(context);
+
+        Assert.False(result.IsUsable);
+        Assert.Equal(StatsStoreUnavailableReason.StoreSchemaIncomplete, result.Reason);
+        Assert.Contains("chars", result.Detail, StringComparison.Ordinal);
+    }
+
     // ---- the ordinary new-machine paths ----------------------------------------------------------------
 
     [Fact]

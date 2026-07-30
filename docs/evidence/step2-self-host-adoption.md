@@ -182,9 +182,22 @@ model rather than written out as a list, so it cannot drift from the schema the 
 | History present without the baseline, our tables present | `NotAdoptable`, reason `MigrationHistoryIncomplete`, file untouched |
 | Version 5, all sixteen tables, right columns, no history | `Adopted` |
 | Any other `user_version` | `NotAdoptable`, reason `IncompatibleSchemaVersion`, file untouched |
-| Version 5 but a table or column is not the right shape | `NotAdoptable`, reason `StoreSchemaIncomplete`, file untouched |
+| Version 5 but a table or column is MISSING | `NotAdoptable`, reason `StoreSchemaIncomplete`, file untouched |
+| Version 5 with an EXTRA column | `Adopted` - see the asymmetry below |
 | Foreign objects present, no history | `NotAdoptable`, reason `NotAStatisticsStore`, file untouched |
 | Unreadable, locked or corrupt | `NotAdoptable`, reason `StoreUnreadable` |
+
+**Missing columns refuse; extra columns are tolerated, and the asymmetry is deliberate.** A missing column
+breaks queries loudly and immediately, so refusing is the only safe answer. An extra column is harmless to
+every query this store runs, because all sixteen tables are read by an explicit column list - swept in both
+directions and true as a measured fact. So refusing on it buys nothing concrete and costs the worse failure:
+condemning a healthy store. In this design that failure is **silent and permanent** - the Gateway serves
+fine, statistics are off, the named reason is a lie, and nothing pages anyone, so it would sit unnoticed for
+months. A false accept, by contrast, eventually breaks loudly on the chain.
+
+Strictness there would also be redundant: the realistic way a store gains a column is a newer build adding
+one and the user then rolling back, and that store's version stamp is HIGHER - so the version check refuses
+it first, more precisely, and with a message about versions rather than columns.
 
 **The presence of a history table is NOT what decides this**, and an earlier version of this table said it
 was. That is the defect a review caught: "the store has a history table" and "the store is at the baseline"
