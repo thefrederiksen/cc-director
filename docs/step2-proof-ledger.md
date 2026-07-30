@@ -35,7 +35,17 @@ off and a named reason that is a LIE, and nobody looking: it never pages anyone 
 would go unnoticed for months. A false ACCEPT at least eventually breaks loudly on the chain. The
 side-effect direction is the one that damages data; this one is the one nobody would ever find.
 
-**A FIXTURE THAT CANNOT DISTINGUISH THE BUG FROM ITS ABSENCE IS REFUSED, NOT RUN.** Worker 3's
+**A FIXTURE THAT CANNOT DISTINGUISH THE BUG FROM ITS ABSENCE IS REFUSED, NOT RUN** - and its twin,
+which fails independently: **CAN THE ASSERTION NOTICE?** We ask whether the FIXTURE could exhibit the
+failure. The other half is whether the ASSERTION could see it if it did.
+
+Those two fail separately and can fail together. One test here had a fixture that could not exhibit the
+defect (a foreign database with no foreign history row) AND an assertion that could not have noticed it
+(counting our tables rather than checking theirs survived) - and it passed for both reasons at once,
+while being NAMED for the thing it was not doing.
+
+**The name was doing the reassuring.** Anyone reading the suite saw a foreign-database-with-history case
+listed and stopped worrying. That is worse than no test, because **no test at least looks like a gap**. Worker 3's
 fixture-shape guard caught its own author's fixture: two tenants both totalling the same turns on a
 repository whose display spelling they share is exactly the fixture in which two tenants coalescing into
 one surrogate identity is invisible, because the numbers are identical whether the defect is present or
