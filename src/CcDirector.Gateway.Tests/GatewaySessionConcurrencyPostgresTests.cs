@@ -194,4 +194,11 @@ public sealed class GatewaySessionConcurrencyPostgresTests : IDisposable
         var factory = FreshStore();
         ConcurrencyStoreScenarios.AssertOutputParityOnTheRetentionBoundary(() => factory, _jsonPath, TenantId.Local);
     }
+
+    [RequiresPostgresStatsFact]
+    public void TheParityComparison_NoticesWhenTheTwoStoresDiverge()
+    {
+        var factory = FreshStore();
+        ConcurrencyStoreScenarios.AssertTheParityComparisonDetectsADifference(() => factory, _jsonPath, TenantId.Local);
+    }
 }

@@ -50,4 +50,12 @@ public sealed class GatewaySessionConcurrencyParityTests : IDisposable
         ConcurrencyStoreScenarios.AssertOutputParityOnTheRetentionBoundary(
             () => _db.NewFactory(), _jsonPath, TenantId.Local);
     }
+
+    [Fact]
+    public void TheParityComparison_NoticesWhenTheTwoStoresDiverge()
+    {
+        // Without this, every green above is consistent with a comparison that can never fail.
+        ConcurrencyStoreScenarios.AssertTheParityComparisonDetectsADifference(
+            () => _db.NewFactory(), _jsonPath, TenantId.Local);
+    }
 }

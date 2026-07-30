@@ -291,6 +291,31 @@ internal static class ConcurrencyStoreScenarios
     }
 
     /// <summary>
+    /// VALIDATE THE DETECTOR. The parity check passes; this is what says the passing means something.
+    ///
+    /// A comparison of two rendered snapshots would also pass if the renderer returned a constant, if both
+    /// stores were fed nothing, or if some later change quietly stopped the fixture reaching either store.
+    /// So here the two stores are deliberately driven APART by a single extra observation given to only one
+    /// of them, and the comparison must NOTICE. A detector that has never been shown to fire is not evidence
+    /// that the thing it watches for is absent.
+    /// </summary>
+    public static void AssertTheParityComparisonDetectsADifference(
+        Func<IDbContextFactory<GatewayStatsDbContext>> newContainerFactory, string jsonPath, TenantId tenant)
+    {
+        var json = new GatewaySessionConcurrencyStats(jsonPath);
+        var db = new GatewaySessionConcurrencyStore(newContainerFactory());
+
+        json.Observe(Roster(5, 2), T0, tenant);
+        db.Observe(Roster(5, 2), T0, tenant);
+        Assert.Equal(Render(json.Snapshot(T0, tenant)), Render(db.Snapshot(T0, tenant)));
+
+        // One observation more, to one store only - a single session appearing on one side and not the
+        // other, which is the smallest divergence this port could produce.
+        db.Observe(Roster(6, 2), T0.AddMinutes(5), tenant);
+        Assert.NotEqual(Render(json.Snapshot(T0.AddMinutes(6), tenant)), Render(db.Snapshot(T0.AddMinutes(6), tenant)));
+    }
+
+    /// <summary>
     /// The retention edge, which deserves its own case: the file store dropped an hour bucket when the START
     /// of its hour was before the cutoff INSTANT, and the database store prunes with a text range on the hour
     /// key. Being off by one keeps or drops exactly one hour, which is a visible row on the chart and would
