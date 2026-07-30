@@ -13,99 +13,92 @@ namespace CcDirector.Core.Tests.Drivers;
 // =====================================================================================
 public sealed class ContextUsageTests
 {
-    // ---- ClaudeContextWindow: model id -> window size ----
-
-    [Theory]
-    [InlineData("claude-opus-4-8[1m]")]
-    [InlineData("opus[1m]")]
-    [InlineData("OPUS[1M]")] // suffix match is case-insensitive
-    public void WindowTokensForModel_OneMillionSuffix_ReturnsOneMillion(string modelId)
-    {
-        Assert.Equal(1_000_000, ClaudeContextWindow.WindowTokensForModel(modelId));
-    }
-
-    [Theory]
-    [InlineData("claude-opus-4-8")]
-    [InlineData("opus")]
-    [InlineData("claude-sonnet-4-5-20250929")]
-    [InlineData("sonnet")]
-    [InlineData("claude-haiku-4-5")]
-    [InlineData("fable")]
-    public void WindowTokensForModel_StandardClaudeModels_ReturnTwoHundredThousand(string modelId)
-    {
-        Assert.Equal(200_000, ClaudeContextWindow.WindowTokensForModel(modelId));
-    }
-
-    [Theory]
-    [InlineData("gpt-4o")]
-    [InlineData("gemini-2.5-pro")]
-    [InlineData("some-unknown-model")]
-    [InlineData("")]
-    [InlineData("   ")]
-    [InlineData(null)]
-    public void WindowTokensForModel_UnmappedOrEmpty_ReturnsNull(string? modelId)
-    {
-        Assert.Null(ClaudeContextWindow.WindowTokensForModel(modelId));
-    }
-
-    // ---- ClaudeDriver.ReadContextUsage: mapping + fallback ----
+    // ---- ClaudeDriver.ReadContextUsage: the window comes from the agent, or not at all ----
+    //
+    // ISSUE #1100. This section used to assert that the model-id table returned 200,000 for "opus" and
+    // 1,000,000 for "opus[1m]". Those tests were green throughout the entire life of the bug they were
+    // supposed to protect against - which is the point the issue makes about them: a unit test asserting
+    // that a lookup table returns its own contents cannot notice that the contents became wrong.
+    //
+    // What is pinned now is the RULE, not a table: a driver may only report a context window its agent told
+    // it, and may never derive one. Claude has no route yet, so it reports the used tokens and no
+    // denominator. These tests redden if a derivation is reintroduced by any route - family name, launch
+    // argument, or self-correction against the observed size.
 
     private static ClaudeDriver DriverReturning(SessionUsageDto? usage)
         => new(new StubTranscriptReader(usage));
 
-    [Fact]
-    public void ReadContextUsage_KnownModel_ComputesPercentAndWindow()
+    [Theory]
+    [InlineData("claude-opus-5")]              // THE bug: the fleet's daily driver, a 1M window read as 200k
+    [InlineData("claude-opus-4-8")]
+    [InlineData("claude-sonnet-4-5-20250929")]
+    [InlineData("claude-haiku-4-5")]
+    [InlineData("fable")]
+    [InlineData("gpt-4o")]
+    [InlineData(null)]
+    public void ReadContextUsage_NeverDerivesAWindowFromTheModelName(string? model)
     {
         var usage = new SessionUsageDto
         {
-            ContextTokens = 42_000,
-            ContextModel = "claude-sonnet-4-5-20250929",
+            ContextTokens = 184_000,
+            ContextModel = model,
             AssistantMessageCount = 3,
             LastMessageUtc = new DateTime(2026, 6, 27, 8, 0, 0, DateTimeKind.Utc),
         };
 
-        var ctx = DriverReturning(usage).ReadContextUsage("sid", "C:\\repo", null);
+        var ctx = DriverReturning(usage).ReadContextUsage("sid", "C:\repo", null);
 
         Assert.NotNull(ctx);
-        Assert.Equal(42_000, ctx.UsedTokens);
-        Assert.Equal(200_000, ctx.WindowTokens);
-        Assert.Equal(21.0, ctx.PercentUsed);
+        // The used count is a real measurement and stays.
+        Assert.Equal(184_000, ctx.UsedTokens);
         Assert.Equal(usage.LastMessageUtc, ctx.AsOfUtc);
+        // The denominator was never measured, so it is not reported.
+        Assert.Null(ctx.WindowTokens);
+        Assert.Null(ctx.PercentUsed);
+        Assert.Equal(nameof(ContextWindowSource.Unknown), ctx.WindowSource);
     }
 
-    [Fact]
-    public void ReadContextUsage_OneMillionModel_UsesMillionDenominator()
+    [Theory]
+    [InlineData("--model opus[1m]")]
+    [InlineData("--model=claude-opus-4-8[1m]")]
+    [InlineData("--model sonnet")]
+    [InlineData("--dangerously-skip-permissions")]
+    public void ReadContextUsage_NeverDerivesAWindowFromTheLaunchArguments(string launchArgs)
     {
+        // The launch line is OUR instruction, not the agent's answer, and it goes stale the moment someone
+        // switches model inside Claude Code with /model - which is exactly how the reported session was
+        // running. A [1m] we passed at launch is still a guess about the window in force right now.
         var usage = new SessionUsageDto
         {
-            ContextTokens = 250_000,
-            ContextModel = "claude-opus-4-8[1m]",
-            AssistantMessageCount = 1,
-        };
-
-        var ctx = DriverReturning(usage).ReadContextUsage("sid", "C:\\repo", null);
-
-        Assert.NotNull(ctx);
-        Assert.Equal(1_000_000, ctx.WindowTokens);
-        Assert.Equal(25.0, ctx.PercentUsed);
-    }
-
-    [Fact]
-    public void ReadContextUsage_UnmappedModel_RawNumberFallback_NoWindowNoPercent()
-    {
-        var usage = new SessionUsageDto
-        {
-            ContextTokens = 12_345,
-            ContextModel = "gpt-4o",
+            ContextTokens = 120_000,
+            ContextModel = "claude-opus-5",
             AssistantMessageCount = 2,
         };
 
-        var ctx = DriverReturning(usage).ReadContextUsage("sid", "C:\\repo", null);
+        var ctx = DriverReturning(usage).ReadContextUsage("sid", "C:\repo", launchArgs);
 
         Assert.NotNull(ctx);
-        Assert.Equal(12_345, ctx.UsedTokens);
         Assert.Null(ctx.WindowTokens);
         Assert.Null(ctx.PercentUsed);
+    }
+
+    [Fact]
+    public void ReadContextUsage_DoesNotSelfCorrectItsWayToAWindow()
+    {
+        // The old code promoted the denominator to 1,000,000 once the observed context exceeded 200,000, on
+        // the reasoning that it could not physically fit otherwise. That was sound and it was still a
+        // derivation - and it could not fire at 184,000, which is precisely where the gauge was screaming.
+        var usage = new SessionUsageDto
+        {
+            ContextTokens = 250_000,
+            ContextModel = "claude-opus-4-8",
+            AssistantMessageCount = 1,
+        };
+
+        var ctx = DriverReturning(usage).ReadContextUsage("sid", "C:\repo", null);
+
+        Assert.NotNull(ctx);
+        Assert.Null(ctx.WindowTokens);
     }
 
     [Fact]
@@ -113,109 +106,13 @@ public sealed class ContextUsageTests
     {
         // Transcript exists but carries no usage-bearing assistant line.
         var usage = new SessionUsageDto { AssistantMessageCount = 0 };
-        Assert.Null(DriverReturning(usage).ReadContextUsage("sid", "C:\\repo", null));
+        Assert.Null(DriverReturning(usage).ReadContextUsage("sid", "C:\repo", null));
     }
 
     [Fact]
     public void ReadContextUsage_NoTranscript_ReturnsNull()
     {
-        Assert.Null(DriverReturning(null).ReadContextUsage("sid", "C:\\repo", null));
-    }
-
-    // ---- Issue #803: the launch model id is the authoritative window signal ----
-
-    [Fact]
-    public void ReadContextUsage_LaunchModelOneMillion_TranscriptStripped_SizesAgainstMillion()
-    {
-        // The real-world #803 case: the session was launched as opus[1m] but Claude's transcript
-        // records the model WITHOUT the [1m] suffix, so the transcript model alone would size it to
-        // 200k and read 61%. The launch args carry the authoritative [1m] window.
-        var usage = new SessionUsageDto
-        {
-            ContextTokens = 121_924,
-            ContextModel = "claude-opus-4-8", // stripped, as the real transcript records it
-            AssistantMessageCount = 5,
-        };
-
-        var ctx = DriverReturning(usage)
-            .ReadContextUsage("sid", "C:\\repo", "--dangerously-skip-permissions --model opus[1m]");
-
-        Assert.NotNull(ctx);
-        Assert.Equal(121_924, ctx.UsedTokens);
-        Assert.Equal(1_000_000, ctx.WindowTokens);
-        Assert.InRange(ctx.PercentUsed!.Value, 11.0, 13.0); // ~12.2%, NOT ~61%
-    }
-
-    [Theory]
-    [InlineData("--model claude-opus-4-8[1m]")] // equals-less, full transcript-style id
-    [InlineData("--model=opus[1m]")]            // equals form
-    public void ReadContextUsage_LaunchModelParsing_BothFlagForms_FindMillion(string launchArgs)
-    {
-        var usage = new SessionUsageDto
-        {
-            ContextTokens = 100_000,
-            ContextModel = "claude-opus-4-8",
-            AssistantMessageCount = 2,
-        };
-
-        var ctx = DriverReturning(usage).ReadContextUsage("sid", "C:\\repo", launchArgs);
-
-        Assert.NotNull(ctx);
-        Assert.Equal(1_000_000, ctx.WindowTokens);
-        Assert.Equal(10.0, ctx.PercentUsed);
-    }
-
-    [Fact]
-    public void ReadContextUsage_StandardLaunchModel_StaysTwoHundredThousand()
-    {
-        var usage = new SessionUsageDto
-        {
-            ContextTokens = 30_000,
-            ContextModel = "claude-sonnet-4-5-20250929",
-            AssistantMessageCount = 1,
-        };
-
-        var ctx = DriverReturning(usage).ReadContextUsage("sid", "C:\\repo", "--model sonnet");
-
-        Assert.NotNull(ctx);
-        Assert.Equal(200_000, ctx.WindowTokens);
-        Assert.Equal(15.0, ctx.PercentUsed);
-    }
-
-    [Fact]
-    public void ReadContextUsage_NoLaunchModel_FallsBackToTranscriptSelfCorrection()
-    {
-        // No --model in the launch args (provider default): fall back to the transcript model with
-        // observed-size self-correction. 250k observed cannot fit a 200k window, so it promotes to 1M.
-        var usage = new SessionUsageDto
-        {
-            ContextTokens = 250_000,
-            ContextModel = "claude-opus-4-8", // stripped; no [1m] signal except the observed size
-            AssistantMessageCount = 4,
-        };
-
-        var ctx = DriverReturning(usage).ReadContextUsage("sid", "C:\\repo", "--dangerously-skip-permissions");
-
-        Assert.NotNull(ctx);
-        Assert.Equal(1_000_000, ctx.WindowTokens);
-        Assert.Equal(25.0, ctx.PercentUsed);
-    }
-
-    // ---- ClaudeContextWindow self-correcting (two-arg) fallback overload ----
-
-    [Theory]
-    [InlineData("claude-opus-4-8", 250_000, 1_000_000)] // over 200k -> promoted to 1M
-    [InlineData("claude-opus-4-8", 50_000, 200_000)]    // under 200k -> stays 200k (honest under-report)
-    [InlineData("sonnet", 50_000, 200_000)]             // standard family, low usage
-    public void WindowTokensForModel_Observed_SelfCorrectsUpwardOnly(string modelId, long observed, long expected)
-    {
-        Assert.Equal(expected, ClaudeContextWindow.WindowTokensForModel(modelId, observed));
-    }
-
-    [Fact]
-    public void WindowTokensForModel_Observed_UnmappedStaysNull()
-    {
-        Assert.Null(ClaudeContextWindow.WindowTokensForModel("gpt-4o", 999_999));
+        Assert.Null(DriverReturning(null).ReadContextUsage("sid", "C:\repo", null));
     }
 
     // ---- Issue #803 production path: the model comes from the configured DEFAULT, not per-session ----
@@ -237,8 +134,22 @@ public sealed class ContextUsageTests
         Assert.Contains("--model opus[1m]", spec.Arguments);
     }
 
+    /// <summary>
+    /// Issue #803's reading is SUPERSEDED by issue #1100, and this test records that rather than being
+    /// deleted quietly.
+    ///
+    /// #803 was a real bug - a default-launched opus[1m] session was sized against 200,000 - and its fix
+    /// was to read the EFFECTIVE launch line rather than the per-session arguments. That fix made the
+    /// number right for sessions whose model came from the launch line, and it could do nothing at all for
+    /// the reported #1100 session, whose model was chosen inside Claude Code with /model and therefore
+    /// appears in no launch line anywhere.
+    ///
+    /// Under the rule that a driver may never derive a window, the launch line is not an answer from the
+    /// agent, so no window is reported here either. The gauge shows 121,924 tokens and no percentage. That
+    /// is a smaller claim than #803 made and a true one.
+    /// </summary>
     [Fact]
-    public void ReadContextUsage_EffectiveArgsFromDefault_SizesOpusOneMillion()
+    public void ReadContextUsage_EffectiveArgsFromDefault_StillReportsNoWindow()
     {
         // Simulate the stored Session.EffectiveLaunchArgs for a default-launched opus[1m] session.
         var agent = new ClaudeAgent(new AgentOptions { DefaultClaudeArgs = "--dangerously-skip-permissions --model opus[1m]" });
@@ -254,8 +165,9 @@ public sealed class ContextUsageTests
         var ctx = DriverReturning(usage).ReadContextUsage("sid", "C:\\repo", effectiveArgs);
 
         Assert.NotNull(ctx);
-        Assert.Equal(1_000_000, ctx.WindowTokens);
-        Assert.InRange(ctx.PercentUsed!.Value, 11.0, 13.0); // ~12.2%, the bug's correct reading
+        Assert.Equal(121_924, ctx.UsedTokens);
+        Assert.Null(ctx.WindowTokens);
+        Assert.Null(ctx.PercentUsed);
     }
 
     // ---- Capability declaration: Claude, Codex, and pi report context usage; others do not ----
