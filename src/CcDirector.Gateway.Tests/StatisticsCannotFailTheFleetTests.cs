@@ -50,28 +50,27 @@ public sealed class StatisticsCannotFailTheFleetTests
     public void AStalledStatisticsWrite_DoesNotHoldTheCaller()
     {
         using var queue = new SyncQueue(operationBound: TimeSpan.FromMilliseconds(200));
-        var writeStarted = new ManualResetEventSlim(false);
         var releaseWrite = new ManualResetEventSlim(false);
 
-        // The first write STALLS, exactly as a write to an unresponsive network share does: it neither
-        // returns nor throws. This is the case a try/catch cannot see.
+        // MEASURE THE OFFER OF THE STALLING WRITE ITSELF. That is the whole property: the caller hands over
+        // work that will take thirty seconds against an unresponsive share, and must not wait for it.
+        //
+        // An earlier version of this test stalled one write and then timed a batch of FAST ones. It passed
+        // against the pre-fix behaviour - because when the caller does the write itself, the stall lands in
+        // the first offer, which that version never timed. It measured the wrong thing and would have shipped
+        // as proof of a property it never checked. The fault injection caught it; that is what red-first is
+        // for.
+        var clock = Stopwatch.StartNew();
         queue.Offer(StatisticsObservationQueue.InputStatsObserver, _ =>
         {
-            writeStarted.Set();
             releaseWrite.Wait(StoreStallsFor);
             return Task.CompletedTask;
         });
-        Assert.True(writeStarted.Wait(TimeSpan.FromSeconds(5)), "the queue never started the stalled write");
-
-        // Now the ingress offers more work while that write is still hanging. It must not wait for it.
-        var clock = Stopwatch.StartNew();
-        for (var i = 0; i < 50; i++)
-            queue.Offer(StatisticsObservationQueue.InputStatsObserver, _ => Task.CompletedTask);
         clock.Stop();
 
         Assert.True(clock.Elapsed < PushMustReturnWithin,
-            $"offering statistics work took {clock.Elapsed.TotalSeconds:0.0}s while a write was stalled - "
-            + "the caller is waiting on the store, which is the convoy this queue exists to prevent");
+            $"offering a statistics write took {clock.Elapsed.TotalSeconds:0.0}s - the caller is doing the "
+            + "write itself and waiting on the store, which is the convoy this queue exists to prevent");
 
         releaseWrite.Set();
     }
