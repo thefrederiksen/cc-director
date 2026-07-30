@@ -744,6 +744,26 @@ The suite stays green, because a model-built fixture and the model agree by cons
 like a tidy-up. Worker 3 raised this on its way out, unasked, and asked that it be kept in front of the
 Architect at merge.
 
+## A MIRRORED CONSTANT IS A SECOND PLACE TO FORGET
+
+Worker 2 needed to assert that its inner write-lock bound is strictly less than worker 6's startup
+containment deadline. It cannot reference worker 6's constant - that type lives on the other branch and
+would not compile - so it declared `CallerContainmentDeadline` as a MIRROR and **flagged that itself as
+a real weakness rather than shipping it quietly**: the guard is only as good as that number staying
+right, and a mirrored constant is a second place to forget.
+
+**MERGE-TIME OBLIGATION: replace the mirror with a DIRECT reference when the two branches meet.** Until
+then the relationship is asserted against a copy, so the assertion can be true while the real
+relationship is false - which is the same shape as everything else on this list.
+
+The rest of what it did there is the pattern working: the relationship is now declared in PRODUCTION as
+two public values and asserted twice - once as CONFIGURED, so raising the inner bound past the outer
+breaks the build without anyone running a contested path, and once MEASURED against the deadline itself
+rather than a literal, so tightening the deadline breaks the test rather than the field. And the
+contested path is a committed test rather than a probe, because SQLite's write lock is per CONNECTION
+rather than per process, so a second connection holding a write transaction makes adoption genuinely
+contend in-process with no two-process harness.
+
 ## The merge-time obligation nobody may forget
 
 **Worker 4's Postgres fixtures and worker 5's SQLite fixtures are both built from the MODEL, not from a
