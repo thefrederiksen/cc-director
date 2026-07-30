@@ -121,6 +121,29 @@ public static class TenantSettingKeys
     /// </summary>
     public const string SpokenVoiceByLanguage = "spoken_voice_by_language";
 
+    // ---- the session supervisor (issue #915) ------------------------------------------------------------
+    // Like VoiceModeAll these have no operator global default to fall back to: they are one account's choice
+    // about its own unattended runs. Every default is documented on SupervisorSettings, and a stored value
+    // that is missing, unparsable, or outside the validated bounds degrades to that default - never to "no
+    // limit", which would be the infinite blind loop the issue forbids.
+
+    /// <summary>Whether the session supervisor may auto-recover this tenant's sessions. Default ON.</summary>
+    public const string SessionSupervisorEnabled = "session_supervisor_enabled";
+
+    /// <summary>The first (short) wait before the first "continue", in seconds. Default 45.</summary>
+    public const string SessionSupervisorFirstRetrySeconds = "session_supervisor_first_retry_seconds";
+
+    /// <summary>The long retry cadence, in minutes. Default 15.</summary>
+    public const string SessionSupervisorRetryCadenceMinutes = "session_supervisor_retry_cadence_minutes";
+
+    /// <summary>How many long-cadence retries before escalating instead of retrying forever. Default 8.</summary>
+    public const string SessionSupervisorMaxLongRetries = "session_supervisor_max_long_retries";
+
+    /// <summary>Whether the supervisor's model fallback may classify an unrecognized terminating error.
+    /// Separately switchable because it is the only tier that sends terminal text off the machine. Default
+    /// ON.</summary>
+    public const string SessionSupervisorModelFallbackEnabled = "session_supervisor_model_fallback_enabled";
+
     /// <summary>Every key this resolver serves, for validation and enumeration.</summary>
     public static readonly IReadOnlySet<string> All = new HashSet<string>(StringComparer.Ordinal)
     {
@@ -128,5 +151,7 @@ public static class TenantSettingKeys
         CarModeModel, CarModeEndPhrase, SnoozePresets, SnoozeDefaultMinutes, TimeZone, InjectedText,
         VoiceModeAll, DictationSuggestionsInDailyEmail, DictationEmailCadence, DailyReportCadence,
         SpokenLanguage, SpokenVoiceByLanguage,
+        SessionSupervisorEnabled, SessionSupervisorFirstRetrySeconds, SessionSupervisorRetryCadenceMinutes,
+        SessionSupervisorMaxLongRetries, SessionSupervisorModelFallbackEnabled,
     };
 }

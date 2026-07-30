@@ -584,6 +584,11 @@ public sealed class GatewayHost : IAsyncDisposable
     // the Working transition. The wingman narration (text and voice) now runs on the stateless
     // HostedInferenceBrain (a hosted model call), not the spawned BrainSupervisor.
     private TurnEndWatcher? _turnEndWatcher;
+    // The session supervisor (issue #915): the event-driven engine that auto-recovers a session which went
+    // idle on a TRANSIENT TRANSPORT fault - the July 21 overnight ENOTFOUND that cost two and a half hours.
+    // It rides the SAME Working -> idle boundary the watcher already observes, which is what makes it
+    // non-interruptive by construction: a Working session is never evaluated and never touched.
+    private Supervision.SessionSupervisor? _sessionSupervisor;
     private Wingman.WingmanVoiceService? _voiceService;
     // Voice mode is a standing intent, not a one-time action: a tenant that is in voice mode wants EVERY one
     // of its sessions narrating, including the ones that do not exist yet. This timer is how that intent
@@ -602,6 +607,10 @@ public sealed class GatewayHost : IAsyncDisposable
     /// transition (Working -&gt; Waiting) into the REAL onTurnEnd / onSessionWorking callbacks rather than a
     /// re-implementation. Null until StartAsync builds it.</summary>
     internal TurnEndWatcher? TurnEndWatcherForTest => _turnEndWatcher;
+
+    /// <summary>Test-only: the session supervisor (issue #915), so a test can drive a real Working -&gt; idle
+    /// transition into the REAL engine. Null until StartAsync builds it.</summary>
+    internal Supervision.SessionSupervisor? SessionSupervisorForTest => _sessionSupervisor;
     // Editable/versioned wingman instructions (issue #537); the voice translator reads the active set.
     // Constructed in the constructor body once the EF database is built (it persists to the data layer).
     private readonly Wingman.WingmanInstructionsStore _instructionsStore;
@@ -1735,6 +1744,48 @@ public sealed class GatewayHost : IAsyncDisposable
     }
 
     /// <summary>
+    /// Wire the session supervisor (issue #915) to the live Gateway. Every leg reuses machinery that already
+    /// exists: the tunnel caller for the screen read, the menu check and the send; the pushed roster snapshot
+    /// for the activity-state read, so liveness is NEVER established by dialing a session; the durable
+    /// activity ledger for the recovery log; and the owner-notify channel the network-diagnostics alerts use
+    /// for the escalation email.
+    /// </summary>
+    private Supervision.GatewaySupervisorEnvironment BuildSupervisorEnvironment()
+    {
+        var notify = new Core.Account.AccountNotifyClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) });
+        return new Supervision.GatewaySupervisorEnvironment(
+            settings: _tenantSettingsResolver,
+            // Resolve the owning Director within its OWN tenant (the registry is keyed by (tenant, director
+            // id)); a Director that is not connected to the tunnel resolves to null, which every read treats
+            // as "cannot tell" rather than as a fault.
+            route: (tenant, directorId) =>
+            {
+                var director = Registry.Get(tenant, directorId);
+                if (director is null) return null;
+                Api.DirectorCommandRouter.SendDirectorCommandAsync sendCommand = SendCommandAsync;
+                return new Api.SessionVerbClient(director, sendCommand);
+            },
+            activityState: (tenant, sessionId) =>
+                PushedSessions.TryLocate(tenant, sessionId, _streamStaleAfter)?.Session.ActivityState,
+            brainProvider: WingmanBrainAsync,
+            ledger: _activityEvents,
+            enterTenantScope: tenant => _tenantBoundary.EnterScope(tenant),
+            sendOwnerEmail: async (subject, body, ct) =>
+            {
+                var token = Account?.GetAccessTokenForForwarding();
+                if (string.IsNullOrEmpty(token))
+                {
+                    // Nobody is signed in, so there is no owner address to reach. Say so plainly rather than
+                    // reporting a send that never happened - the escalation still stands in the recovery log.
+                    FileLog.Write("[GatewayHost] supervisor escalation email SKIPPED: no signed-in account");
+                    return false;
+                }
+                var result = await notify.SendOwnerAsync(token, subject, body, null, null, ct).ConfigureAwait(false);
+                return result.Sent;
+            });
+    }
+
+    /// <summary>
     /// The port Kestrel actually bound, read from the running server's own addresses (issue #2161). Only
     /// called when the caller asked for an operating-system-assigned port. Throws rather than returning a
     /// placeholder: every consumer of <see cref="Port"/> builds a URL from it, so a silent 0 here would
@@ -1813,6 +1864,13 @@ public sealed class GatewayHost : IAsyncDisposable
         // listener with the phone in a pocket knows WHICH session is talking before anything else
         // (WingmanTranslator.FidelityPrompt v5.2). Push-store read - no dial. See ResolveSessionTitle.
         _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _tenantSettingsResolver, instructionsProvider: () => _instructionsStore.ActiveContent, sessionTitleResolver: ResolveSessionTitle);
+
+        // The session supervisor (issue #915). It hangs off the SAME turn-end boundary as the voice refresh
+        // below, deliberately: that event is the only thing that can wake it, so a Working session is out of
+        // its reach by construction rather than by a rule somebody has to remember.
+        _sessionSupervisor ??= new Supervision.SessionSupervisor(BuildSupervisorEnvironment());
+        FileLog.Write("[GatewayHost] StartAsync: session supervisor armed (auto-recovery on a transient transport fault)");
+
         _turnEndWatcher = new TurnEndWatcher(
             onTurnEnd: signal =>
             {
@@ -1839,6 +1897,19 @@ public sealed class GatewayHost : IAsyncDisposable
                 catch (Exception ex)
                 {
                     FileLog.Write($"[GatewayHost] turn-end spend emit FAILED: sid={signal.SessionId}: {ex.Message}");
+                }
+
+                // Session supervision (issue #915): evaluate this idle transition for a terminating transport
+                // fault and, if there is one, recover it. Runs for EVERY session, not just voice ones, and is
+                // isolated so a supervision fault never breaks the voice refresh below. It returns
+                // immediately - the waiting and the re-send happen on its own background task.
+                try
+                {
+                    _sessionSupervisor?.OnTurnEnd(signal);
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[GatewayHost] turn-end supervision FAILED: sid={signal.SessionId}: {ex.Message}");
                 }
 
                 // Voice sessions (issue #531): the turn just finished on its own, so re-make the
@@ -1875,6 +1946,11 @@ public sealed class GatewayHost : IAsyncDisposable
                 _ = directorId;
                 if (tenant.IsValid)
                     _voiceService?.OnSessionWorking(tenant, sid);
+                // Issue #915: the session is working again, so any recovery wait in flight for it is over -
+                // whether our "continue" landed or it came back on its own. This is the cancel that makes the
+                // engine incapable of sending into a session that is working.
+                if (tenant.IsValid)
+                    _sessionSupervisor?.OnSessionWorking(tenant, sid);
             },
             // Gateway Cleanup mission, Phase 2: under stream mode the catch-up / reconcile reads the push
             // store instead of HTTP-pulling each Director's session list (no dial).
@@ -3489,6 +3565,9 @@ public sealed class GatewayHost : IAsyncDisposable
         try { _voiceSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] voice sweep dispose error: {ex.Message}"); }
         _voiceSweepTimer = null;
         try { _turnEndWatcher?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] watcher dispose error: {ex.Message}"); }
+        // Issue #915: cancel any recovery wait in flight, so a Gateway shutdown does not leave a background
+        // ladder holding a token and re-sending into a fleet this process no longer owns.
+        try { _sessionSupervisor?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] session supervisor dispose error: {ex.Message}"); }
         try { _voiceModeAllSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] voice-mode sweep timer dispose error: {ex.Message}"); }
         _turnEndWatcher = null;
         try { Brain.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] brain dispose error: {ex.Message}"); }
