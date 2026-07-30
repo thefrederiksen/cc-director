@@ -36,9 +36,9 @@ public sealed class PostgresProviderProofTests
         }
     }
 
-    private static string Connection =>
-        Environment.GetEnvironmentVariable(ConnectionEnvVar)
-        ?? throw new InvalidOperationException($"{ConnectionEnvVar} is not set.");
+    // Per RUN, not per operator: PostgresProofDatabase appends a unique suffix to the supplied
+    // database name so two concurrent runs cannot EnsureDeleted() each other's schema (issue #1156).
+    private static string Connection => PostgresProofDatabase.Connection;
 
     /// <summary>Build a GatewayDbContext on Npgsql pointing at the proof container, with the Postgres migration
     /// assembly and the gateway-schema history table - the same wiring the runtime Gateway uses.</summary>
@@ -330,14 +330,7 @@ public sealed class PostgresProviderProofTests
     /// "contest", which would defeat the guard. Anything without the prefix throws instead of dropping, so
     /// pointing the env var at a real database can never nuke it.
     /// </summary>
-    private static void GuardThrowawayDatabase()
-    {
-        var database = new NpgsqlConnectionStringBuilder(Connection).Database ?? "";
-        if (!database.StartsWith("ccpg", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException(
-                $"Refusing to EnsureDeleted() the database '{database}': its name must begin with the throwaway " +
-                "prefix 'ccpg'. Point CC_GATEWAY_TEST_PG_CONNECTION at a disposable database (e.g. 'ccpgproof').");
-    }
+    private static void GuardThrowawayDatabase() => PostgresProofDatabase.GuardThrowawayDatabase();
 
     private static int ScalarInt(GatewayDbContext ctx, string sql)
     {

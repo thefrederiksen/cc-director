@@ -624,10 +624,10 @@ public sealed class WingmanTranslatorTests
         // to write docs/proof/issue-531/wingman-text-qa.html unconditionally, rewriting a
         // git-tracked file on every Gateway run and leaving every worktree dirty. The
         // assertions above are the test; the report is an artefact the proof run collects.
-        var outDir = Environment.GetEnvironmentVariable("CC531_PROOF_DIR");
+        // CC531_PROOF_DIR names the PARENT; this run writes into its own subdirectory so concurrent runs
+        // cannot overwrite each other's report (issue #1156).
+        var outDir = ProofOutputDirectory.ResolveOrNull("CC531_PROOF_DIR");
         if (string.IsNullOrWhiteSpace(outDir)) return;
-
-        Directory.CreateDirectory(outDir);
         var outPath = Path.Combine(outDir, "wingman-text-qa.html");
         File.WriteAllText(outPath, WingmanQaReport.Render(rows, live: false), Encoding.UTF8);
 
