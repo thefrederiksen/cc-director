@@ -29,8 +29,10 @@ def posted(monkeypatch):
         monkeypatch.setenv("CC_SESSION_ID", SESSION_ID)
         # An explicit target is resolved against the fleet roster; serve one rather than reaching for a
         # live Director.
-        monkeypatch.setattr(session_ops, "_get_sessions",
-                            lambda: [{"sessionId": SESSION_ID, "name": "stuck", "machineName": "M", "number": 114}])
+        # Patch the ONE fetch every resolve goes through. It reports the roster as complete, so these
+        # tests assert the compact verb and never trip over the incomplete-roster caveat (issue #1051).
+        monkeypatch.setattr(session_ops, "_get_fleet",
+                            lambda: ([{"sessionId": SESSION_ID, "name": "stuck", "machineName": "M", "number": 114}], True, None))
 
         def post_json(path, body, timeout=30):
             calls.append({"path": path, "body": body, "timeout": timeout})

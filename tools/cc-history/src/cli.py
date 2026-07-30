@@ -61,17 +61,20 @@ def _run(
 ) -> None:
     """Show the last N conversation messages of TARGET (works for Claude, Codex, and Pi sessions)."""
     try:
-        sessions = director.get_json("fleet/sessions") or []
+        sessions, complete, roster_reason = director.get_fleet()
     except director.DirectorError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)
 
     matches = director.resolve_target(sessions, target)
     if not matches:
-        console.print(
-            f"[red]No session matches '{target}'.[/red] "
-            "Run cc-devthrottle session list to see the fleet."
-        )
+        console.print(director.no_match_message(target))
+        # Issue #1051: an unreachable Director's sessions are dropped from the roster under a 200, so
+        # "no session matches" can mean "the list we searched never had it". Do not imply otherwise -
+        # "it does not exist" and "I could not see that machine" call for opposite next steps.
+        caveat = director.roster_caveat(complete, roster_reason)
+        if caveat:
+            console.print(f"[yellow]The fleet list searched may be incomplete.[/yellow] {caveat}")
         raise typer.Exit(1)
     if len(matches) > 1:
         console.print(f"[yellow]'{target}' is ambiguous - {len(matches)} matches.[/yellow] Use a longer id prefix.")

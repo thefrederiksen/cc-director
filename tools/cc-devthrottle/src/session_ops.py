@@ -85,26 +85,41 @@ def _repo_name(repo: str) -> str:
     return repo.replace("\\", "/").rstrip("/").split("/")[-1] if repo else "-"
 
 
-def _get_sessions() -> List[Dict[str, Any]]:
+def _get_fleet() -> Tuple[List[Dict[str, Any]], Optional[bool], Optional[str]]:
+    """The fleet roster and its completeness verdict, with this tool's error posture (issue #1051).
+
+    The fetch itself is shared (director.get_fleet) so the three tools that resolve a target against
+    this roster cannot drift; only the "print and exit" behaviour is local.
+    """
     try:
-        sessions = director.get_json("fleet/sessions") or []
+        return director.get_fleet()
     except director.DirectorError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)
-    return sessions
+
+
+def _roster_caveat(complete: Optional[bool], reason: Optional[str]) -> str:
+    return director.roster_caveat(complete, reason)
 
 
 def _resolve_target(target: str, *, command_name: str) -> Dict[str, Any]:
-    sessions = _get_sessions()
+    sessions, complete, reason = _get_fleet()
     # Issue #821: the shared resolver now understands the three-digit session number (#820) as a
     # first-class target, preferring it over id-prefix / name matching, so message send / ask and
     # session rename all address a session by its number through this one call.
     matches = director.resolve_target(sessions, target)
     if not matches:
+        # Issue #1051: this is where a dropped Director does its real damage. "No session matches"
+        # reads as "that session does not exist", and for a session on a machine the Gateway could
+        # not reach that is simply false - the roster we searched never contained it. Say which we
+        # mean, because the two call for opposite next steps: give up, or go and look at machine B.
         console.print(
             f"[red]No session matches '{target}'.[/red] "
             "Run cc-devthrottle session list to see the fleet."
         )
+        caveat = _roster_caveat(complete, reason)
+        if caveat:
+            console.print(f"[yellow]The fleet list searched may be incomplete.[/yellow] {caveat}")
         raise typer.Exit(1)
     if len(matches) > 1:
         console.print(f"[yellow]'{target}' is ambiguous - {len(matches)} matches:[/yellow]")
@@ -135,16 +150,29 @@ def resolve_target_or_current(target: Optional[str]) -> str:
 
 def list_sessions(json_output: bool) -> None:
     """List every session running across the fleet."""
-    sessions = _get_sessions()
+    sessions, complete, reason = _get_fleet()
+    caveat = _roster_caveat(complete, reason)
 
     if json_output:
         # Plain print, not console.print: Rich wraps to 80 columns when stdout is not a TTY and
         # injects newlines into long values, producing invalid JSON for agents/pipes.
         print(json.dumps(sessions, indent=2))
+        # Issue #1051: the caveat goes to STDERR, never stdout. The shape of this output is depended
+        # on by agents and pipes, so it stays a bare array - but a caller acting on a partial roster
+        # still has to be told, and stderr reaches a human without corrupting the parse.
+        if caveat:
+            print(f"WARNING: the fleet list may be incomplete. {caveat}", file=sys.stderr)
         return
 
     if not sessions:
-        console.print("No sessions are running in the fleet.")
+        # Issue #1051, the worst sentence in the tool. "No sessions are running in the fleet" is a
+        # claim about the WHOLE FLEET, and an empty roster with an unreachable Director does not
+        # support it - the sessions may be running perfectly well on the machine we could not read.
+        # Absent is not empty, and only one of the two is worth saying out loud.
+        if caveat:
+            console.print(f"[yellow]No sessions were returned, but this is not the whole fleet.[/yellow] {caveat}")
+        else:
+            console.print("No sessions are running in the fleet.")
         return
 
     table = Table(show_header=True, header_style="bold", box=box.ASCII)
@@ -178,6 +206,10 @@ def list_sessions(json_output: bool) -> None:
         table.add_row(number_text, director.short_id(sid) + marker, name, machine, _repo_name(repo), status)
 
     console.print(table)
+    # Issue #1051: printed AFTER the table, so the rows the reader can trust come first and the
+    # qualification lands on what they have just read rather than being scrolled past above it.
+    if caveat:
+        console.print(f"[yellow]This is not the whole fleet.[/yellow] {caveat}")
 
 
 def whoami() -> None:
@@ -191,7 +223,10 @@ def whoami() -> None:
         raise typer.Exit(1)
 
     short = director.short_id(sid)
-    sessions = _get_sessions()
+    # Completeness is deliberately ignored here: whoami looks up THIS session, which lives on the
+    # Director being asked, and a Director always reports its own sessions (issue #1019). An
+    # unreachable Director elsewhere cannot hide the caller from itself.
+    sessions, _, _ = _get_fleet()
     me = next(
         (s for s in sessions if director.field(s, "sessionId", "SessionId").lower() == sid.lower()),
         None,
@@ -671,7 +706,11 @@ def _spawn_selftest(repo: str, command_args: str, name: str) -> str:
 
 
 def _fleet_ids() -> List[str]:
-    sessions = director.get_json("fleet/sessions") or []
+    # Goes through the one shared fetch so the selftest reads the same roster every verb does. The
+    # sessions it checks for are the ones it just spawned on THIS Director, which always reports its
+    # own (issue #1019), so completeness cannot hide them - but reading a different route than the
+    # rest of the tool is how a selftest ends up passing on a roster nobody else sees.
+    sessions, _, _ = director.get_fleet()
     return [director.field(s, "sessionId", "SessionId") for s in sessions]
 
 

@@ -40,23 +40,33 @@ def _run(
 ) -> None:
     """Show what fleet sessions are doing: activity state, agent, repo, and last status reason."""
     try:
-        sessions = director.get_json("fleet/sessions") or []
+        # Named roster_reason, not reason: the per-session loop below binds `reason` to a status reason.
+        sessions, complete, roster_reason = director.get_fleet()
     except director.DirectorError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)
+    # Issue #1051: an unreachable Director's sessions are dropped from the roster under a 200, so a
+    # short list looks exactly like a whole one. Everything below reports on what came back; this is
+    # what says whether that was the whole fleet.
+    caveat = director.roster_caveat(complete, roster_reason)
 
     if target.strip().lower() != "all":
         sessions = director.resolve_target(sessions, target)
         if not sessions:
-            console.print(
-                f"[red]No session matches '{target}'.[/red] "
-                "Run cc-devthrottle session list to see the fleet."
-            )
+            console.print(director.no_match_message(target))
+            # Not found, or not reached? The two call for opposite next steps, so never imply the first.
+            if caveat:
+                console.print(f"[yellow]The fleet list searched may be incomplete.[/yellow] {caveat}")
             raise typer.Exit(1)
 
     me = director.session_id()
     if not sessions:
-        console.print("(no sessions running)")
+        # "(no sessions running)" is a claim about the whole fleet that an incomplete roster cannot
+        # support - the sessions may be running fine on the machine we could not read (issue #1051).
+        if caveat:
+            console.print(f"[yellow](nothing came back, but this is not the whole fleet)[/yellow] {caveat}")
+        else:
+            console.print("(no sessions running)")
         return
 
     for s in sessions:
@@ -70,6 +80,9 @@ def _run(
         you = " [dim](you)[/dim]" if me and sid == me else ""
         console.print(f"[bold]{director.short_id(sid)}[/bold]{you}  {name}  [[cyan]{agent}[/cyan]]  [yellow]{state}[/yellow] - {reason}")
         console.print(f"    [dim]{machine}  {repo}[/dim]")
+
+    if caveat:
+        console.print(f"[yellow]This is not the whole fleet.[/yellow] {caveat}")
 
 
 def app() -> None:

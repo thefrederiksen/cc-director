@@ -265,6 +265,73 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         return (env.Sessions, env.Directors);
     }
 
+    /// <summary>
+    /// The roster plus reachability WHEN THE GATEWAY SUPPLIES IT, for a READING caller (issue #1051).
+    ///
+    /// Deliberately a separate method from <see cref="ListFleetSessionsWithReachabilityAsync"/> rather than a
+    /// flag on it, because the two differ in ERROR POSTURE and that posture is the whole value of the other
+    /// one. The worktree reaper DELETES directories, so for it "I cannot confirm the roster is complete" must
+    /// be fatal - it fails closed and throws. A read-only listing has the opposite duty: turning a
+    /// degraded-but-usable answer into a total failure would take `session list`, every target resolve,
+    /// cc-status and cc-history down against a version-skewed Gateway, which is a far worse outcome than
+    /// showing the roster and saying completeness is unknown. Reusing the strict method here would have done
+    /// exactly that; weakening the strict method would have quietly disarmed the reaper's guard.
+    ///
+    /// So: reachability is NULL when the Gateway did not supply it - an older Gateway that ignores the
+    /// envelope query and answers with the bare array, or one that omits the field. Null means UNKNOWN and
+    /// callers must not read it as "complete"; that is the same absent-is-not-empty distinction this issue
+    /// exists to fix. A transport failure or a non-2xx is still a real failure and still throws.
+    /// </summary>
+    public async Task<(List<SessionDto> Sessions, List<DirectorReachabilityDto>? Reachability)>
+        ReadFleetSessionsWithOptionalReachabilityAsync(CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled)
+            throw new InvalidOperationException("Gateway is not configured; cannot list the fleet.");
+
+        FileLog.Write("[GatewayClient] ReadFleetSessionsWithOptionalReachabilityAsync: GET /sessions?envelope=true");
+        using var resp = await _http.GetAsync("sessions?envelope=true", ct);
+        if (!resp.IsSuccessStatusCode)
+            throw await RelayFailureAsync(resp, "GET /sessions?envelope=true", ct);
+
+        var body = await resp.Content.ReadAsStringAsync(ct);
+        var parsed = ParseFleetBodyForDisplay(body);
+        FileLog.Write($"[GatewayClient] ReadFleetSessionsWithOptionalReachabilityAsync: {parsed.Sessions.Count} session(s), {(parsed.Reachability is null ? "NO" : parsed.Reachability.Count.ToString())} reachability record(s)");
+        return parsed;
+    }
+
+    /// <summary>
+    /// Split the /sessions body into rows plus OPTIONAL reachability, tolerating BOTH shapes the route can
+    /// answer with (issue #1051). Pure and separated from the request so the shape discrimination is
+    /// testable without a live Gateway - it is the part with a real failure mode, because an older Gateway
+    /// ignores the unknown envelope query parameter and answers with the plain array it always did.
+    ///
+    /// Reachability is null for "not supplied", which the caller must treat as UNKNOWN and never as complete.
+    /// A missing session list throws: that is a malformed answer, not a degraded one.
+    /// </summary>
+    internal static (List<SessionDto> Sessions, List<DirectorReachabilityDto>? Reachability)
+        ParseFleetBodyForDisplay(string? body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            throw new InvalidOperationException("Gateway GET /sessions?envelope=true returned an empty body.");
+
+        using var doc = JsonDocument.Parse(body);
+
+        if (doc.RootElement.ValueKind == JsonValueKind.Array)
+        {
+            var plain = JsonSerializer.Deserialize<List<SessionDto>>(body, JsonWebOptions) ?? new List<SessionDto>();
+            return (plain, null);
+        }
+
+        var env = JsonSerializer.Deserialize<SessionsEnvelope>(body, JsonWebOptions);
+        if (env?.Sessions is null)
+            throw new InvalidOperationException("Gateway GET /sessions?envelope=true omitted the session list.");
+
+        return (env.Sessions, env.Directors);
+    }
+
+    /// <summary>Web defaults (camelCase), matching what ReadFromJsonAsync uses elsewhere in this client.</summary>
+    private static readonly JsonSerializerOptions JsonWebOptions = new(JsonSerializerDefaults.Web);
+
     /// <summary>The /sessions?envelope=true response shape: the roster plus per-Director reachability.</summary>
     private sealed class SessionsEnvelope
     {
