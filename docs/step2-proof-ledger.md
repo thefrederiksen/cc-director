@@ -302,13 +302,19 @@ construction.** The equivalence that protects users is about the adoption DECISI
 exercised - and all sixteen tables still have their expected columns, compared as an ORDER-INSENSITIVE
 NAME SET.
 
-**The condition this acceptance rests on, and it is not yet met:** a sweep proving nothing binds by
+**The condition this acceptance rested on is now MET, measured rather than reasoned:** a sweep proving nothing binds by
 POSITION. Both directions. Reads - positional accessors, `SELECT *` followed by index-based access - and
 **WRITES**, which are worse: an `INSERT ... VALUES (...)` with no column list binds by position, so after
 a reorder it silently writes the right values into the WRONG COLUMNS. That corrupts rather than
 misreports, and nothing throws. A bad read fails loudly on a missing column or a type mismatch; a bad
-write just quietly puts the character count in the turns column. **If any positional bind exists, this
-acceptance is withdrawn.**
+write just quietly puts the character count in the turns column. **The sweep came back CLEAN, both directions.** Every insert in the Gateway names its columns (checked
+repo-wide, zero hits for the positional form); no tuple-form update; no `SELECT *` against these sixteen
+tables, with the actual `SELECT *` hits NAMED elsewhere in the repository so the negative is checkable
+rather than asserted; every read in the frozen pre-port aggregator uses an explicit column list, so its
+ordinal accessors are select-list positions and not declaration order; and both `pragma_table_info`
+readers in the old tests are order-insensitive. Unasked, the author also tightened its own adoption
+column read to a table-valued pragma with a BOUND parameter read BY NAME, so that read depends on
+neither the statement text nor SQLite's catalog layout - the defect cannot return through its own code.
 
 The divergence must be recorded IN THE EQUIVALENCE TEST ITSELF, not only here - a future reader who
 finds a loose assertion with no explanation will tighten it, discover it cannot pass, and either weaken
