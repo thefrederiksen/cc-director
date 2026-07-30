@@ -357,6 +357,32 @@ three SQLite classes, **all green together on the rebased tree**.
 
 A green belongs to the tree it was run against. Nobody asked it to check.
 
+## A REVIEWER'S AD-HOC PROBE IS NOT A TEST
+
+Review 5 proved by running that adoption left five refused stores unmodified. Nothing in the SUITE
+protected that property - the proof existed only in the reviewer's transcript, and the reviewer has
+since been reaped. **A proof that lives in somebody's memory is a proof that ends when they do.**
+
+Every refusal now fingerprints the WHOLE store before and after - the database file plus any
+write-ahead log and shared-memory file beside it - and compares.
+
+**A hash rather than a count, deliberately.** Counting tables and rows only ever proves what somebody
+thought to count: a refusal that rewrote a value, moved the version stamp or dropped an index nobody
+enumerated would pass every count and still have changed the operator's file. **A hash has no checklist
+to be incomplete.**
+
+Five states had no committed test at all and now do: a tracked store with a table dropped, the
+names-only table, a VIEW wearing a table name, a foreign database carrying its OWN migration history,
+and a store with an abandoned migration lock. The foreign-database fixture now actually HAS the foreign
+history row it was always described as having - without it, as the reviewer pointed out, it was not
+reproducing the original defect - and it asserts the foreign table, its row and its version stamp all
+SURVIVE, rather than only that ours are absent.
+
+**Still uncovered and stated rather than papered over:** the two-adopter RACE itself. The re-check now
+happens under the database's own write lock so the window is closed by construction, but a deterministic
+test needs real concurrency, and an assertion that passes without exercising the race is worse than an
+admitted gap.
+
 ## Our own remedy keeps carrying our own defect
 
 **A fix for the check-then-create race introduced a startup hang inside the containment built to prevent
