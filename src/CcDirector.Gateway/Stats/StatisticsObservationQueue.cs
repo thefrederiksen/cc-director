@@ -190,7 +190,26 @@ public sealed class StatisticsObservationQueue : IAsyncDisposable
             while (await _channel.Reader.WaitToReadAsync().ConfigureAwait(false))
             {
                 while (_channel.Reader.TryRead(out var item))
+                {
+                    // ONCE SHUTDOWN HAS BEGUN, STOP WRITING. Do not drain the backlog.
+                    //
+                    // This is the whole point of rule 4 and it was NOT implemented - the loop simply kept
+                    // running until the channel was empty, so shutdown wrote every queued observation to the
+                    // shared file on the way out. A slot swap starts the successor container while this one
+                    // is tearing down, so draining here is precisely the two-writer window that corrupted
+                    // the database on 2026-07-30, rebuilt inside the code meant to prevent it. The class
+                    // comment claimed this behaviour and the test computed the evidence and threw it away,
+                    // so nothing contradicted the claim until the assertion was added.
+                    //
+                    // What is abandoned is COUNTED, not silently forgotten: losing statistics at shutdown is
+                    // acceptable, losing them without saying so is not.
+                    if (_stopping.IsCancellationRequested)
+                    {
+                        HealthFor(item.Observer).RecordDrop();
+                        continue;
+                    }
                     await RunOneAsync(item).ConfigureAwait(false);
+                }
             }
         }
         catch (Exception ex)
