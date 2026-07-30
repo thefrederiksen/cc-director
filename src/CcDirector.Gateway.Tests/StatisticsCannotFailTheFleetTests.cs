@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using CcDirector.Core.Tenancy;
@@ -208,41 +209,38 @@ public sealed class StatisticsCannotFailTheFleetTests
         release.Set();
     }
 
+    /// <summary>
+    /// COALESCING IS GONE, SO ITS TEST IS GONE WITH IT - and the replacement asserts the property that
+    /// actually matters now: every sample offered gets written, none is silently collapsed away.
+    ///
+    /// The deleted test is worth remembering rather than quietly dropping. It used one tenant and samples
+    /// ascending one to twenty, which could not fail: a single global slot passes a one-tenant test, and
+    /// "keep the latest" and "keep the largest" are indistinguishable when every sample is bigger than the
+    /// last. It was written to protect coalescing and it blessed the exact defect coalescing had.
+    /// </summary>
     [Fact]
-    public void ConcurrencySamples_CoalescePerTenant_SoASupersededSampleIsNeverWritten()
+    public void EverySampleIsWritten_BecauseNothingIsCoalescedAwayAnyMore()
     {
         using var queue = new SyncQueue(operationBound: TimeSpan.FromSeconds(5));
-        var block = new ManualResetEventSlim(false);
-        // Occupy the consumer so the samples below queue up behind it.
-        queue.Offer(StatisticsObservationQueue.InputStatsObserver, _ => { block.Wait(TimeSpan.FromSeconds(10)); return Task.CompletedTask; });
-
-        // TWO TENANTS, AND VALUES THAT GO DOWN AS WELL AS UP. The first version of this test used one tenant
-        // and samples 1..20 ascending, which could not fail: a single global slot passes a one-tenant test,
-        // and "keep the latest" and "keep the largest" are indistinguishable when every sample is larger
-        // than the last. It blessed the exact defect it was named for.
         var other = new TenantId("other-tenant");
         var written = new List<(string Tenant, int Sample)>();
         void Offer(TenantId t, int sample) =>
-            queue.OfferConcurrency(t, sample, _ => { lock (written) written.Add((t.Value, sample)); return Task.CompletedTask; });
+            queue.OfferConcurrency(t, _ => { lock (written) written.Add((t.Value, sample)); return Task.CompletedTask; });
 
-        // The PEAK arrives first and is then followed by smaller readings, which is the ordinary shape of a
-        // fleet quietening down. Keeping the latest would silently delete the peak that really happened.
+        // A peak followed by smaller readings - a fleet quietening down - plus a second tenant. Under the
+        // old coalescing every one of these but two would have vanished.
         Offer(Tenant, 12);
         Offer(Tenant, 8);
-        Offer(Tenant, 3);
+        Offer(Tenant, 0);
         Offer(other, 5);
         Offer(other, 9);
-        block.Set();
 
-        var drained = WaitFor(() => { lock (written) return written.Count >= 2; }, TimeSpan.FromSeconds(5));
-        Assert.True(drained, "the coalesced concurrency samples were never written");
+        var all = WaitFor(() => { lock (written) return written.Count == 5; }, TimeSpan.FromSeconds(5));
+        Assert.True(all, "samples were lost - nothing may be collapsed away now that coalescing is gone");
         lock (written)
         {
-            // One write per tenant, each carrying that tenant's MAXIMUM - not its most recent.
-            var mine = written.Where(w => w.Tenant == Tenant.Value).Select(w => w.Sample).ToList();
-            var theirs = written.Where(w => w.Tenant == other.Value).Select(w => w.Sample).ToList();
-            Assert.Equal(new[] { 12 }, mine);
-            Assert.Equal(new[] { 9 }, theirs);
+            Assert.Equal(new[] { 12, 8, 0 }, written.Where(w => w.Tenant == Tenant.Value).Select(w => w.Sample));
+            Assert.Equal(new[] { 5, 9 }, written.Where(w => w.Tenant == other.Value).Select(w => w.Sample));
         }
     }
 
@@ -301,7 +299,7 @@ public sealed class StatisticsCannotFailTheFleetTests
             _inner = new StatisticsObservationQueue(operationBound, capacity);
         public static implicit operator StatisticsObservationQueue(SyncQueue q) => q._inner;
         public void Offer(string observer, Func<CancellationToken, Task> work) => _inner.Offer(observer, work);
-        public void OfferConcurrency(TenantId tenant, int liveSessions, Func<CancellationToken, Task> work) => _inner.OfferConcurrency(tenant, liveSessions, work);
+        public void OfferConcurrency(TenantId tenant, Func<CancellationToken, Task> work) => _inner.OfferConcurrency(tenant, work);
         public IReadOnlyList<StatisticsObservationQueue.ObserverHealthReport> Health() => _inner.Health();
         public bool IsDegraded() => _inner.IsDegraded();
         public void Dispose() => _inner.DisposeAsync().AsTask().GetAwaiter().GetResult();

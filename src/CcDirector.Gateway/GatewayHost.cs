@@ -2113,6 +2113,8 @@ public sealed class GatewayHost : IAsyncDisposable
         // The snooze registry, so the hub can prune entries whose session is no longer live at the moment
         // the Director answers - the job that used to be a database write on the GET /sessions read path.
         builder.Services.AddSingleton(_snoozeRegistry);
+        // The freshness window, so the hub's queued prune re-reads the same fleet the roster serves.
+        builder.Services.AddSingleton(new Streaming.StreamStaleWindow(_streamStaleAfter));
         builder.Services.AddSingleton(Registry);
         // launcher-persistent-join: the LauncherHub (constructed per-invocation by SignalR) and
         // SendLauncherCommandAsync share this one connection registry.
@@ -3091,11 +3093,13 @@ public sealed class GatewayHost : IAsyncDisposable
                         var tenant = _tenantPass.Current ?? TenantId.Local;
                         var fleet = PushedSessions.SnapshotFresh(tenant, _streamStaleAfter)
                             .Select(x => x.Session).ToList();
-                        if (fleet.Count == 0) return;
                         var at = DateTime.UtcNow;
-                        // The live count rides along so the queue coalesces by MAXIMUM rather than by arrival
-                        // order: a later, smaller sample must never displace a peak that really happened.
-                        _statsQueue.OfferConcurrency(tenant, fleet.Count,
+                        // AN EMPTY FLEET IS A SAMPLE, NOT A REASON TO SKIP. This used to return early when
+                        // the roster was empty, which meant the transition from one session to none was
+                        // never observed - so the last non-zero reading stood as "current" indefinitely and
+                        // Your Throttle reported sessions running long after the last one stopped. Zero is
+                        // the answer most worth recording, because it is the one nothing else will correct.
+                        _statsQueue.OfferConcurrency(tenant,
                             _ => { SessionConcurrency.Observe(fleet, at, tenant); return Task.CompletedTask; });
                     });
                 }
@@ -3667,18 +3671,28 @@ public sealed class GatewayHost : IAsyncDisposable
         try { _displayStateSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] display-state sweep timer dispose error: {ex.Message}"); }
         _displayStateSweepTimer = null;
 
-        // THE STATISTICS WRITER STOPS BEFORE THIS PROCESS LETS GO OF THE SHARED STATE, AND IN THIS ORDER.
+        // THE STATISTICS WRITER IS ASKED TO STOP HERE. THIS NARROWS THE TWO-WRITER WINDOW; IT DOES NOT
+        // CLOSE IT, AND NOTHING IN THIS PROCESS CAN.
         //
-        // The sampling timer first: it is a PRODUCER, and disposing the queue while a timer can still offer
-        // work would leave observations arriving at a closed queue. Then the queue itself, which stops
-        // accepting work and gives whatever is in flight a bounded chance to finish rather than draining the
-        // backlog into the share.
+        // Be exact, because an earlier version of this comment claimed an ownership boundary that does not
+        // exist, and a false complete claim is worse than an honest narrow one - it stops the next reader
+        // looking. What actually happens: the sampling timer is disposed FIRST (it is a producer, and
+        // disposing the queue while a timer can still offer work would leave observations arriving at a
+        // closed queue), then the queue stops accepting work and abandons its backlog rather than draining
+        // it into the share.
         //
-        // This block existed in the queue and was never called. A shutdown containment that production never
-        // invokes is a comment: the whole point is that THIS container stops writing to the shared mount
-        // before its successor starts, and a slot swap starts the successor while this one is still tearing
-        // down. Writing the logic and not wiring it would have left the two-writer window exactly as it was
-        // on 2026-07-30, while the code claimed otherwise.
+        // WHAT REMAINS OPEN, stated rather than left to be discovered:
+        //
+        //   - An in-flight write cannot be cancelled. It is a synchronous file write and File.WriteAllText
+        //     does not honour a token, so if one is running when shutdown begins it keeps running. The
+        //     queue's bounded wait returns after five seconds whether or not that write has finished.
+        //   - The successor container is ALREADY STARTED before this one is asked to stop. A warmed slot
+        //     swap boots and warms the new image while the old one still serves, so no amount of care at
+        //     this end can establish exclusive ownership - the overlap is the deploy working as designed.
+        //
+        // So this reduces how much gets written during the overlap; it does not make the overlap safe. The
+        // window closes when the statistics store leaves the shared file system entirely, which is Step 2.
+        // Until then, process exit is the real boundary, and it is not a guarantee this code provides.
         try { _concurrencySampleTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] concurrency sample timer dispose error: {ex.Message}"); }
         _concurrencySampleTimer = null;
         // AWAITED, NOT BLOCKED ON. StopAsync is async, and GetAwaiter().GetResult() here was

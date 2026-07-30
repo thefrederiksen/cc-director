@@ -35,8 +35,10 @@ namespace CcDirector.Gateway.Stats;
 /// 1. NO BACKPRESSURE REACHES THE PRODUCER. Bounded channel, TryWrite only, never Wait, never await a
 ///    full queue. If enqueuing could ever block, the convoy has simply been rebuilt inside its own fix.
 ///    A full queue DROPS and COUNTS.
-/// 2. CONCURRENCY IS COALESCED PER TENANT, latest sample wins. It is a high-water measure, so ten pending
-///    identical samples cost memory and buy nothing a maximum can detect.
+/// 2. NOTHING IS COALESCED. A per-tenant pending slot used to collapse concurrency samples and produced
+///    two defects in a row - see OfferConcurrency for both. The timer already bounds the sample rate and
+///    the bounded channel already handles a slow consumer by dropping and counting, so collapsing bought
+///    nothing that was not already paid for by a mechanism with tests behind it.
 /// 3. THE CONSUMER BOUNDS EACH OPERATION, and the bound is a HEALTH CHECK, not a capacity knob.
 ///
 ///    BE PRECISE ABOUT WHICH HALF THE BOUND PROTECTS, because reading it as more than it is would be
@@ -55,9 +57,17 @@ namespace CcDirector.Gateway.Stats;
 ///    is dropped-and-counted, and NO statistic is written again until the process restarts. That is the
 ///    deliberate trade - statistics stop, the fleet does not - and "stuck since" plus a climbing drop
 ///    count is what says so out loud. Step 2 removes these file writes entirely, which retires it.
-/// 4. SHUTDOWN DOES NOT DRAIN INTO THE SHARE. A consumer still writing while a slot swap has started the
-///    next container IS the two-writer window, rebuilt by the cleanup path. Flush with a bounded deadline;
-///    whatever is past it is counted as lost and let go.
+/// 4. SHUTDOWN STOPS ACCEPTING WORK AND ABANDONS ITS BACKLOG. It does NOT drain into the share, because a
+///    consumer still writing while a slot swap has started the next container is the two-writer window
+///    rebuilt by the cleanup path. What is past the bounded deadline is counted as lost and let go.
+///
+///    THIS NARROWS THE WINDOW AND DOES NOT CLOSE IT, and saying otherwise was one of several false
+///    completeness claims on this change. An in-flight write cannot be cancelled - it is synchronous and
+///    File.WriteAllText ignores a token - so it may still be running when this returns. The successor
+///    container is also already booted before this one is asked to stop, which is the warmed swap working
+///    as designed, so exclusive ownership is not something this end can grant itself. The window closes
+///    when the store leaves the shared file system, which is Step 2; until then process exit is the real
+///    boundary and this code does not provide it.
 /// 5. EVERY FAILURE IS COUNTED AND NAMED. Silence is what this whole incident was made of.
 ///
 /// WHAT DOES NOT BELONG HERE: anything that does not touch a store. Session-number adoption, for one, is
@@ -83,14 +93,7 @@ public sealed class StatisticsObservationQueue : IAsyncDisposable
     private readonly TimeSpan _operationBound;
     private readonly ConcurrentDictionary<string, ObserverHealth> _health = new(StringComparer.Ordinal);
 
-    // Coalescing slots for concurrency: at most one pending observation per tenant. The Func is the work
-    // to run; replacing it means the latest sample wins, which is exactly the semantics of a high-water mark.
-    private readonly ConcurrentDictionary<TenantId, PendingSample> _pendingConcurrency = new();
 
-    /// <summary>One tenant's pending concurrency observation. <paramref name="LiveSessions"/> is what makes
-    /// coalescing by MAXIMUM possible - without a magnitude the queue can only keep the latest, which
-    /// silently discards real peaks.</summary>
-    private sealed record PendingSample(int LiveSessions, Func<CancellationToken, Task> Work);
 
     /// <param name="operationBound">How long one statistics write may take before it is reported as stuck.
     /// A health threshold, not a cancellation - see rule 3.</param>
@@ -132,46 +135,24 @@ public sealed class StatisticsObservationQueue : IAsyncDisposable
     }
 
     /// <summary>
-    /// Offer a concurrency sample for one tenant, replacing any sample for that tenant that has not yet
-    /// been written. Rule 2: latest wins, because a maximum cannot tell the difference and the queue
-    /// should not fill with samples that are already superseded.
+    /// COALESCING IS GONE, AND ITS ABSENCE IS THE FIX RATHER THAN A SIMPLIFICATION.
+    ///
+    /// There used to be a per-tenant pending slot here that collapsed concurrency samples. It produced two
+    /// separate defects: first "latest wins", which deleted real peaks, and then - after that was repaired -
+    /// "largest live count wins", which was still wrong because the concurrency store records five distinct
+    /// facts (live, working, current, per-hour buckets, and distinct session/machine/repository sets) and a
+    /// single scalar cannot choose between samples on behalf of all of them. A roster of twelve idle
+    /// sessions is not interchangeable with a roster of eight working ones, and "current" wants the LATEST
+    /// sample while a peak wants the LARGEST. One slot cannot serve both.
+    ///
+    /// It also bought almost nothing once concurrency moved to a TIMER. Coalescing existed to stop a
+    /// per-push flood; the timer already bounds the rate, and the bounded channel with drop-and-count
+    /// already handles a consumer that falls behind - a mechanism that is tested, unlike the slot.
+    ///
+    /// So every sample is simply offered. Two defects deleted rather than a third attempt at the same idea.
     /// </summary>
-    public void OfferConcurrency(TenantId tenant, int liveSessions, Func<CancellationToken, Task> work)
-    {
-        if (work is null) return;
-        var health = HealthFor(ConcurrencyObserver);
-        if (_stopping.IsCancellationRequested)
-        {
-            health.RecordDrop();
-            return;
-        }
-
-        // KEEP THE LARGER SAMPLE, atomically. AddOrUpdate is what makes this safe against two producers:
-        // an earlier read-then-write pair could lose a peak to a racing writer, which is the same defect as
-        // "latest wins" arriving by a different route.
-        _pendingConcurrency.AddOrUpdate(
-            tenant,
-            _ => new PendingSample(liveSessions, work),
-            (_, existing) => existing.LiveSessions >= liveSessions ? existing : new PendingSample(liveSessions, work));
-
-        // SCHEDULE A MARKER UNCONDITIONALLY, and let a redundant one be harmless.
-        //
-        // The first version checked whether a marker already existed and skipped writing one if so. That
-        // check and the assignment above were separate operations, so a consumer that removed the pending
-        // sample in between left a producer believing a marker was still coming when none was - and that
-        // tenant's samples were then orphaned FOREVER, with no drop and no failure recorded. Silence again.
-        //
-        // An extra marker costs one slot and finds nothing to do (see RunOneAsync, which returns when the
-        // slot is already empty). That is a far better trade than a lost-update window, and it needs no
-        // state machine to reason about.
-        if (!_channel.Writer.TryWrite(new WorkItem(ConcurrencyObserver, null, tenant)))
-        {
-            // Deliberately DO NOT remove the pending sample here - it may belong to another producer, and
-            // the timer offers again shortly, so the next marker collects it. Dropping the marker delays a
-            // sample; removing someone else's pending work would lose it.
-            health.RecordDrop();
-        }
-    }
+    public void OfferConcurrency(TenantId tenant, Func<CancellationToken, Task> work) =>
+        Offer(ConcurrencyObserver, work);
 
     /// <summary>The health of every observer that has been used, for /stats/data and the 503 body.</summary>
     public IReadOnlyList<ObserverHealthReport> Health() =>
@@ -232,14 +213,6 @@ public sealed class StatisticsObservationQueue : IAsyncDisposable
     {
         var health = HealthFor(item.Observer);
         var work = item.Work;
-        if (work is null && item.Tenant is TenantId t)
-        {
-            // A coalescing marker: take this tenant's pending sample - the LARGEST offered since the last
-            // drain, not the most recent. A redundant marker finds nothing and returns; see OfferConcurrency
-            // for why markers are written unconditionally rather than guarded by a check that could race.
-            if (!_pendingConcurrency.TryRemove(t, out var pending)) return;
-            work = pending.Work;
-        }
         if (work is null) return;
 
         var started = DateTime.UtcNow;
@@ -293,7 +266,7 @@ public sealed class StatisticsObservationQueue : IAsyncDisposable
         _stopping.Dispose();
     }
 
-    private sealed record WorkItem(string Observer, Func<CancellationToken, Task>? Work, TenantId? Tenant = null);
+    private sealed record WorkItem(string Observer, Func<CancellationToken, Task>? Work);
 
     /// <summary>What a reader is told about one observer. Four facts, because a bare failure count cannot
     /// distinguish "broken an hour ago and recovered" from "has not written anything since".</summary>
@@ -313,13 +286,21 @@ public sealed class StatisticsObservationQueue : IAsyncDisposable
         private DateTime? _lastSuccess;
         private DateTime? _stuckSince;
 
-        public void RecordDrop() => Interlocked.Increment(ref _drops);
+        // The PRESENT-TENSE verdict, cleared by the next success. The counters are lifetime totals and stay.
+        private volatile bool _failingNow;
+
+        public void RecordDrop()
+        {
+            Interlocked.Increment(ref _drops);
+            _failingNow = true;
+        }
 
         public void RecordFailure(Exception ex)
         {
             Interlocked.Increment(ref _failures);
             _lastError = $"{ex.GetType().Name}: {ex.Message}";
             _stuckSince = null;
+            _failingNow = true;
         }
 
         public void RecordStuck(DateTime startedUtc) => _stuckSince = startedUtc;
@@ -328,10 +309,26 @@ public sealed class StatisticsObservationQueue : IAsyncDisposable
         {
             _lastSuccess = DateTime.UtcNow;
             _stuckSince = null;
+            // A write got through, so whatever was wrong is not wrong NOW. The lifetime counters stay - "this
+            // has failed nine times today" is worth keeping - but the CURRENT verdict has to be able to
+            // return to healthy, which is what this flag is for.
+            _failingNow = false;
         }
 
-        public bool IsDegraded() =>
-            Interlocked.Read(ref _failures) > 0 || Interlocked.Read(ref _drops) > 0 || _stuckSince is not null;
+        /// <summary>
+        /// Is this observer failing RIGHT NOW - as distinct from having ever failed?
+        ///
+        /// This used to read "any failure or drop, ever". One transient blip or a single queue-full moment
+        /// then marked the writer degraded for the entire life of the process, through thousands of
+        /// subsequent successful writes. A health flag that can only ever latch true is not health: after the
+        /// first bad minute it says the same thing forever, so nobody can use it to tell a live problem from
+        /// an old one, and it becomes something people learn to ignore - which is worse than not having it,
+        /// because the day it means something it will look identical to every other day.
+        ///
+        /// The lifetime counts are still reported, because "failed nine times today, last succeeded two
+        /// hours ago" is exactly the shape a reader needs. This flag answers only the present tense.
+        /// </summary>
+        public bool IsDegraded() => _failingNow || _stuckSince is not null;
 
         public ObserverHealthReport Snapshot(string observer) => new(
             observer,

@@ -60,6 +60,10 @@ public sealed class DirectorHub : Hub
     // rather than on the roster read - where it was an Entity Framework RemoveRange plus SaveChanges, on
     // hosted a Postgres write, sitting on the fleet's primary read path.
     private readonly Snooze.SnoozeRegistry? _snoozeRegistry;
+    // The SAME freshness window the roster serves from, so the queued prune re-reads the fleet the roster
+    // agrees exists. Injected as a type because an optional TimeSpan silently takes its default - which
+    // already happened once on this branch, leaving the hub counting a different fleet from the roster.
+    private readonly TimeSpan _streamStaleAfter;
 
     public DirectorHub(PushedSessionStore store, DirectorRegistry registry, GatewayInputStatsAggregator inputStats,
         GatewayStreamRegistry streamRegistry, Snooze.SnoozeLandingObserver? snoozeLandings = null,
@@ -69,7 +73,8 @@ public sealed class DirectorHub : Hub
         History.SessionHistoryRecorder? sessionHistory = null,
         Discovery.FleetSessionNumberAllocator? sessionNumbers = null,
         Stats.StatisticsObservationQueue? statsQueue = null,
-        Snooze.SnoozeRegistry? snoozeRegistry = null)
+        Snooze.SnoozeRegistry? snoozeRegistry = null,
+        StreamStaleWindow? streamStaleWindow = null)
     {
         _store = store;
         _registry = registry;
@@ -86,6 +91,8 @@ public sealed class DirectorHub : Hub
         _sessionNumbers = sessionNumbers;
         _statsQueue = statsQueue;
         _snoozeRegistry = snoozeRegistry;
+        _streamStaleAfter = streamStaleWindow?.Value
+            ?? TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
     }
 
     /// <summary>
@@ -293,18 +300,41 @@ public sealed class DirectorHub : Hub
         // required - it just used to be noticed during a read instead of when the Director actually answered.
         //
         // OFFERED, not called: it opens a database context and does RemoveRange plus SaveChanges, so on
-        // hosted it is a Postgres write, and a write must never decide whether a push succeeds. Dropping one
-        // is safe by construction - the next snapshot from this Director prunes the same entries again, so a
-        // missed prune costs a delay, never a wrong answer.
+        // hosted it is a Postgres write, and a write must never decide whether a push succeeds.
+        //
+        // THE LIVE SET IS READ WHEN THE PRUNE RUNS, NOT WHEN IT IS QUEUED, AND THAT IS THE WHOLE POINT.
+        //
+        // The first version captured the live set from this snapshot and carried it into the queued
+        // delegate. That is a DELETE holding an input that goes stale while it waits, and the queue is
+        // explicitly allowed to sit behind a stalled write. The ordering that breaks it is ordinary:
+        // snapshot A is accepted without session S and its prune queues behind a stalled write; S is then
+        // created and its owner snoozes it; the write recovers and prune A runs with its old set, which does
+        // not contain S, and DELETES A SNOOZE THE OWNER JUST SET. Ordering does not save it - a newer prune
+        // queued behind A cannot restore what A removed, and dropping the newer one widens the window.
+        //
+        // Re-reading at execution time removes the staleness instead of racing it: the prune always acts on
+        // the set the store holds NOW, so a session created after the snapshot is live when the prune looks.
+        //
+        // The old comment claimed a dropped prune "costs a delay, never a wrong answer". With a captured set
+        // that was false, and it is recorded here because it read as a reason not to look.
         if (accepted && _snoozeRegistry is not null)
         {
-            var liveIds = new HashSet<string>(
-                set.Where(x => !string.IsNullOrEmpty(x.SessionId)
-                            && !string.Equals(x.ActivityState, "Exited", StringComparison.OrdinalIgnoreCase))
-                   .Select(x => x.SessionId),
-                StringComparer.Ordinal);
-            OfferScoped(Stats.StatisticsObservationQueue.SnoozePruneObserver, RequireBoundTenant(),
-                () => _snoozeRegistry.PruneNotLive(directorId, liveIds));
+            var pruneTenant = RequireBoundTenant();
+            var stale = _streamStaleAfter;
+            OfferScoped(Stats.StatisticsObservationQueue.SnoozePruneObserver, pruneTenant, () =>
+            {
+                // The store's CURRENT accepted set for this Director. If it has gone stale or the Director
+                // dropped, there is no authoritative answer to prune against - so prune nothing rather than
+                // guess, exactly as the read path only ever pruned for a Director that had answered.
+                var live = _store.TryGetFresh(pruneTenant, directorId, stale);
+                if (live is null) return;
+                var liveIds = new HashSet<string>(
+                    live.Where(x => !string.IsNullOrEmpty(x.SessionId)
+                                 && !string.Equals(x.ActivityState, "Exited", StringComparison.OrdinalIgnoreCase))
+                        .Select(x => x.SessionId),
+                    StringComparer.Ordinal);
+                _snoozeRegistry.PruneNotLive(directorId, liveIds);
+            });
         }
         // A push the store REJECTED (from a superseded connection, or a stale sequence) is NOT authoritative,
         // so it must not drive the snooze observer - whose edges MUTATE the authoritative registry
