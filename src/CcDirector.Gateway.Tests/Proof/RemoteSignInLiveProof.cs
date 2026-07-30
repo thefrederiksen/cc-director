@@ -168,11 +168,11 @@ public sealed class RemoteSignInLiveProof
         foreach (var l in relevant)
             transcript.AppendLine(l);
 
-        // Write the artifacts. CC1080_PROOF_DIR points them at the committed proof directory; otherwise temp.
-        var outDir = Environment.GetEnvironmentVariable("CC1080_PROOF_DIR");
+        // Write the artifacts. CC1080_PROOF_DIR names the PARENT; this run gets its own subdirectory beneath
+        // it, so two concurrent runs cannot overwrite each other's evidence (issue #1156).
+        var outDir = ProofOutputDirectory.ResolveOrNull("CC1080_PROOF_DIR");
         if (!string.IsNullOrWhiteSpace(outDir))
         {
-            Directory.CreateDirectory(outDir);
             File.WriteAllText(Path.Combine(outDir, "gateway-http-transcript.txt"), transcript.ToString());
             File.WriteAllText(Path.Combine(outDir, "signed-in-landing.html"), signedInLandingHtml);
         }

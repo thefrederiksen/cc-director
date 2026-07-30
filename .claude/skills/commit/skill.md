@@ -131,12 +131,41 @@ STEP 7: Open the pull request, merge on green, and park back on main
 The job is not done until the work is MERGED to origin/main. Once the user approved the
 commit (Step 4), drive it home:
 
-1. Open the pull request: gh pr create --fill (or with a title/body matching recent PRs).
-2. Wait for checks to go green: gh pr checks <number> --watch.
-   - If checks fail, fix the failure and push a NEW commit (never amend, never --no-verify),
-     then re-watch. Report the failure to the user if it is not quick and mechanical.
-3. Merge with squash once green: gh pr merge <number> --squash --delete-branch.
+1. RUN THE TESTS LOCALLY FIRST. This is the gate - not GitHub (issue #1156):
+
+       .\scripts\test-local.ps1
+
+   It builds once and runs every test project, starting them together so the six that do not
+   serialize finish while the Gateway suite queues for its machine-wide lock. Use -Fast to skip
+   the Gateway suite when the change provably does not touch it, and say so in the pull request.
+   Do NOT hand-roll a dotnet test invocation - the script is the one place the whole fleet gets
+   faster when the suite improves.
+
+   If it is not green, fix it before opening a pull request. A red local run is a red change.
+
+2. Open the pull request: gh pr create --fill (or with a title/body matching recent PRs).
+
+3. DO NOT WAIT FOR THE .NET CI JOB. "Build & Test (.NET)" takes roughly FIFTY MINUTES and is the
+   same suite you just ran locally on a far stronger machine. Waiting on it is the single largest
+   source of dead time in this repository, and it is why local is now the gate.
+
+   The other three checks - "Build & Test (web)", "Tool contracts (Python)", "Inventory drift" -
+   each finish in about a minute and cover things the local .NET run does NOT. Wait for those:
+
+       gh pr checks <number>
+
+   If any of those three fail, fix and push a NEW commit (never amend, never --no-verify).
+
+4. Merge with squash once the local run is green and the three fast checks pass:
+   gh pr merge <number> --squash --delete-branch.
    (delete_branch_on_merge is ON, but --delete-branch is explicit and harmless.)
+
+   The .NET job keeps running after the merge as a backstop. If it goes red on main, fix it
+   forward immediately - that is the trade for not waiting on it.
+
+   WAIT FOR THE .NET JOB ANYWAY when the change is genuinely risky: a release commit, a change to
+   the build or CI itself, anything cross-platform, or anything you could not test locally. Those
+   are the cases the fifty minutes is actually worth paying for.
 4. Park the checkout back on main:
    git checkout main && git pull
    If you worked in a worktree, remove it: git worktree remove ../<repo>-wt-<short-desc>.

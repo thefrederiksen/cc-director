@@ -29,6 +29,10 @@ public sealed class DirectorShutdownGateTests : IAsyncLifetime
     private GatewayHost _gateway = null!;
     private HttpClient _http = null!;
     private readonly List<Gate> _fakes = new();
+    // One per RegisterUnreachable call, held to the end of the class: an endpoint registered as
+    // unreachable must STAY unreachable for the whole test, so the port is reserved rather than probed and
+    // released (issue #1156).
+    private readonly List<DeadPortReservation> _deadEndpoints = new();
 
     private readonly string _instancesDir =
         Path.Combine(Path.GetTempPath(), "cc-instances-" + Guid.NewGuid().ToString("N"));
@@ -48,6 +52,7 @@ public sealed class DirectorShutdownGateTests : IAsyncLifetime
     {
         _http.Dispose();
         foreach (var f in _fakes) await f.DisposeAsync();
+        foreach (var reservation in _deadEndpoints) reservation.Dispose();
         await _gateway.StopAsync();
         try { if (Directory.Exists(_instancesDir)) Directory.Delete(_instancesDir, true); }
         catch { }
@@ -199,7 +204,7 @@ public sealed class DirectorShutdownGateTests : IAsyncLifetime
         _gateway.Registry.Upsert(new DirectorRegistrationRequest
         {
             DirectorId = id,
-            TailnetEndpoint = $"http://127.0.0.1:{DeadPort()}/",
+            TailnetEndpoint = ReserveDeadEndpoint(),
             Pid = pid,
             MachineName = "GATE_TEST",
             User = "tester",
@@ -236,13 +241,12 @@ public sealed class DirectorShutdownGateTests : IAsyncLifetime
         return gate;
     }
 
-    private static int DeadPort()
+    // A loopback URL nothing will ever answer on, reserved for the lifetime of this test class.
+    private string ReserveDeadEndpoint()
     {
-        using var l = new TcpListener(IPAddress.Loopback, 0);
-        l.Start();
-        var port = ((IPEndPoint)l.LocalEndpoint).Port;
-        l.Stop();
-        return port;
+        var reservation = DeadPortReservation.Reserve();
+        _deadEndpoints.Add(reservation);
+        return reservation.LoopbackUrl;
     }
 
     // Records whether the graceful "shutdown" verb was delivered over the tunnel.

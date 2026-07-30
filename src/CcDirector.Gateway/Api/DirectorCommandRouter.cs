@@ -140,7 +140,15 @@ internal static class DirectorCommandRouter
     /// user re-tapped and the agent got the same prompt twice. The two messages hedge the same way because they
     /// leave the caller in the same position: the outcome is genuinely unknown.
     /// </summary>
-    private static string DescribeTimeout(string? machineName, TimeSpan wait) =>
+    /// <remarks>
+    /// INTERNAL so its wording can be asserted directly (issue #1156). It is a pure function of the machine
+    /// name and the wait, but the only way to read its output used to be to run a real timeout - so three
+    /// tests that cared solely about the SENTENCE each slept through a thirty-second production timeout,
+    /// costing two minutes of every suite run to check a string. The wording is now tested here, in
+    /// microseconds; a separate test still runs a real (short) timeout and asserts the router returns exactly
+    /// this function's output, so the join between them stays proven rather than assumed.
+    /// </remarks>
+    internal static string DescribeTimeout(string? machineName, TimeSpan wait) =>
         string.IsNullOrWhiteSpace(machineName)
             ? $"The Director did not answer within {wait.TotalSeconds:0} seconds. It is not known whether the command was carried out."
             : $"The Director on {machineName} did not answer within {wait.TotalSeconds:0} seconds. It is not known whether the command was carried out.";

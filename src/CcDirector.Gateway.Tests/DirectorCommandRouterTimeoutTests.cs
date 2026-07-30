@@ -81,56 +81,71 @@ public sealed class DirectorCommandRouterTimeoutTests
         Assert.InRange(stopwatch.Elapsed.TotalMilliseconds, 100, 10_000);
     }
 
-    [Fact]
-    public async Task TrySendAsync_Timeout_MessageNamesTheMachineAndTheWait_InPlainEnglish()
-    {
-        // Act
-        var result = await DirectorCommandRouter.TrySendAsync(
-            NeverAnswers(), "director-1", "prompt", "sid-1", null, CancellationToken.None,
-            TimeSpan.FromSeconds(30), machineName: "SOREN_NORTH");
+    // ---- the WORDING, tested against the pure function that produces it ----
+    //
+    // These three used to run a real thirty-second timeout each (one of them twice) purely to read the
+    // sentence out of the result - two minutes of every suite run, spent waiting on a clock to check a
+    // string (issue #1156). The message is a pure function of the machine name and the wait, so it is
+    // asserted directly. The JOIN is not lost: the seam test below runs a real timeout and asserts the
+    // router returns exactly this function's output, so wording and wiring are each proven, and neither
+    // can drift without a test going red.
 
-        // Assert - this message is read by a person on a phone in a moving car. It must name the machine, say
-        // what did not happen, and give the wait in whole seconds - no status code, no stack trace, no jargon.
-        Assert.NotNull(result!.Error);
-        Assert.Contains("SOREN_NORTH", result.Error!);
-        Assert.Contains("did not answer within 30 seconds", result.Error);
-        Assert.DoesNotContain("30.0", result.Error);
+    [Fact]
+    public void TimeoutMessage_NamesTheMachineAndTheWait_InPlainEnglish()
+    {
+        var message = DirectorCommandRouter.DescribeTimeout("SOREN_NORTH", TimeSpan.FromSeconds(30));
+
+        // This message is read by a person on a phone in a moving car. It must name the machine, say what did
+        // not happen, and give the wait in whole seconds - no status code, no stack trace, no jargon.
+        Assert.Contains("SOREN_NORTH", message);
+        Assert.Contains("did not answer within 30 seconds", message);
+        Assert.DoesNotContain("30.0", message);
     }
 
     [Fact]
-    public async Task TrySendAsync_Timeout_WithoutAMachineName_KeepsTheSameMessageShape()
+    public void TimeoutMessage_WithoutAMachineName_KeepsTheSameMessageShape()
     {
-        // Arrange + Act - the call sites that hold only a Director id cannot name the machine.
-        var result = await DirectorCommandRouter.TrySendAsync(
-            NeverAnswers(), "director-1", "prompt", "sid-1", null, CancellationToken.None, TimeSpan.FromSeconds(30));
-
-        // Assert - the degraded message is the SAME sentence minus the machine clause, never vaguer and never
-        // a second message style. The machine name is presentation only.
+        // The call sites that hold only a Director id cannot name the machine. The degraded message is the
+        // SAME sentence minus the machine clause, never vaguer and never a second message style.
         Assert.Equal(
             "The Director did not answer within 30 seconds. It is not known whether the command was carried out.",
-            result!.Error);
+            DirectorCommandRouter.DescribeTimeout(null, TimeSpan.FromSeconds(30)));
     }
 
     [Fact]
-    public async Task TrySendAsync_Timeout_DoesNotClaimTheCommandWasSkipped()
+    public void TimeoutMessage_DoesNotClaimTheCommandWasSkipped()
     {
-        // Act
-        var named = await DirectorCommandRouter.TrySendAsync(
-            NeverAnswers(), "director-1", "prompt", "sid-1", null, CancellationToken.None,
-            TimeSpan.FromSeconds(30), machineName: "SOREN_NORTH");
-        var anonymous = await DirectorCommandRouter.TrySendAsync(
-            NeverAnswers(), "director-1", "prompt", "sid-1", null, CancellationToken.None, TimeSpan.FromSeconds(30));
-
-        // Assert - a timeout proves only that the GATEWAY stopped waiting. The Director may have received the
-        // command, carried it out, and answered late, so the message must leave the outcome open. It used to end
-        // "The command was not carried out" - stated as fact - which is how a user came to re-tap Send and hand
-        // the agent the same prompt twice. Positive assertion first: an absence-only check would still pass if
-        // the sentence were deleted, which is a worse message than the wrong one.
-        foreach (var error in new[] { named!.Error, anonymous!.Error })
+        // A timeout proves only that the GATEWAY stopped waiting. The Director may have received the command,
+        // carried it out, and answered late, so the message must leave the outcome open. It used to end "The
+        // command was not carried out" - stated as fact - which is how a user came to re-tap Send and hand the
+        // agent the same prompt twice. Positive assertion first: an absence-only check would still pass if the
+        // sentence were deleted, which is a worse message than the wrong one.
+        foreach (var message in new[]
+                 {
+                     DirectorCommandRouter.DescribeTimeout("SOREN_NORTH", TimeSpan.FromSeconds(30)),
+                     DirectorCommandRouter.DescribeTimeout(null, TimeSpan.FromSeconds(30)),
+                 })
         {
-            Assert.Contains("It is not known whether the command was carried out.", error!);
-            Assert.DoesNotContain("The command was not carried out", error);
+            Assert.Contains("It is not known whether the command was carried out.", message);
+            Assert.DoesNotContain("The command was not carried out", message);
         }
+    }
+
+    [Fact]
+    public async Task TrySendAsync_Timeout_ReturnsExactlyTheDescribedMessage()
+    {
+        // THE SEAM. The three tests above assert the wording without waiting; this one proves the router
+        // actually uses that wording on a real timeout. Without it, DescribeTimeout could be perfect and the
+        // router could return something else entirely, and every test would still pass. A SHORT timeout is
+        // enough - what is under test is which string comes back, not how long the wait is.
+        var wait = TimeSpan.FromMilliseconds(200);
+
+        var result = await DirectorCommandRouter.TrySendAsync(
+            NeverAnswers(), "director-1", "prompt", "sid-1", null, CancellationToken.None,
+            wait, machineName: "SOREN_NORTH");
+
+        Assert.Equal(DirectorCommandStatus.Timeout, result!.Status);
+        Assert.Equal(DirectorCommandRouter.DescribeTimeout("SOREN_NORTH", wait), result.Error);
     }
 
     [Fact]
