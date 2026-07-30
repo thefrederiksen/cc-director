@@ -273,17 +273,29 @@ public sealed class TenantSettingsResolver
 
     /// <summary>
     /// The language this tenant is SPOKEN TO in (issue #1008) - the single source every spoken path
-    /// reads, so a language reaches all of them or none of them. Defaults to English when the tenant
-    /// has expressed no choice, and ALSO when the stored code is one this Gateway does not recognize;
-    /// <see cref="Speech.SpokenLanguages.Resolve"/> owns that decision and explains why degrading is
-    /// the right direction for a READ.
+    /// reads, so a language reaches all of them or none of them. Defaults to English when the tenant has
+    /// expressed no choice, which is what every account got before the setting existed.
+    ///
+    /// AN UNRECOGNIZED STORED CODE THROWS. It used to read as English, and that quiet default was the most
+    /// dangerous line in the mission (re-audit): it turned every unknown code into a confident English answer
+    /// no caller could distinguish from a real one. It is also unreachable in normal operation - the WRITE path
+    /// refuses a code we cannot speak - so reaching it means data corruption or a rollback past a language we
+    /// used to offer. Both are real failures, and a real failure that says so beats an account being spoken to
+    /// in a language it did not choose.
     ///
     /// This is deliberately the ONLY read of the spoken language in the product. Every spoken path is
     /// handed a resolver call keyed on the tenant it already had to have, so there is no second place
     /// a language could be decided and no parameter anyone has to remember to thread.
     /// </summary>
     public Speech.SpokenLanguage SpokenLanguage(TenantId tenant)
-        => Speech.SpokenLanguages.Resolve(_store.Get(tenant, TenantSettingKeys.SpokenLanguage));
+    {
+        var stored = _store.Get(tenant, TenantSettingKeys.SpokenLanguage);
+        // No choice made is not an unknown code: it is the documented default, and it is what every account had
+        // before this setting existed.
+        return string.IsNullOrWhiteSpace(stored)
+            ? Speech.SpokenLanguages.Default
+            : Speech.SpokenLanguages.Require(stored);
+    }
 
     // ---- writes: validate like the global setters, then persist a per-tenant override -------------------
 
@@ -403,7 +415,7 @@ public sealed class TenantSettingsResolver
                 $"'{code}' is not a language DevThrottle speaks. Supported: "
                 + string.Join(", ", Speech.SpokenLanguages.All.Select(l => l.Code)) + ".", nameof(code));
         _store.Set(tenant, TenantSettingKeys.SpokenLanguage,
-            Speech.SpokenLanguages.Resolve(code).Code, nowUtc);
+            Speech.SpokenLanguages.Require(code).Code, nowUtc);
     }
 
     /// <summary>

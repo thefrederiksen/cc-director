@@ -1,4 +1,4 @@
-import { type SpokenUtterance } from "./spokenUtterance";
+import { isKnownLanguage, KNOWN_LANGUAGES, type SpokenUtterance } from "./spokenUtterance";
 
 // THE ONE PLACE THE BROWSER SPEAKS FOR ITSELF (issue #1031).
 //
@@ -81,11 +81,12 @@ export function speakLocally(utterance: SpokenUtterance): boolean {
   // platform's problem and the notice is already on screen, but an utterance with no language is OUR bug, and it
   // means the words are about to be pronounced with whatever voice the device defaults to. That reaches the error
   // channel, where a bug belongs.
-  if (utterance.language.trim().length === 0) {
+  if (!isKnownLanguage(utterance.language)) {
     throw new Error(
-      "Refusing to speak an utterance with no language (issue #1031). It did not come from utteranceFor, and "
-        + "speaking it would pronounce the words with the device's default voice - which is how correctly "
-        + "translated French came to be read aloud in English.",
+      `Refusing to speak an utterance whose language is "${utterance.language}" - not one of `
+        + `${[...KNOWN_LANGUAGES].join(", ")}. It did not come from utteranceFor. NONBLANK IS NOT VALID: an `
+        + "unrecognized code passes a length check, matches no device voice, and is then spoken in the device's "
+        + "default - which is how correctly translated French came to be read aloud in English.",
     );
   }
   const engine = platformEngine();

@@ -34,24 +34,46 @@ public static class SpokenLanguages
     public static SpokenLanguage Default => English;
 
     /// <summary>
-    /// The language for a stored code. An unknown, blank, or missing code reads as
-    /// <see cref="Default"/>, and that direction is deliberate: the two ways to be wrong are not
-    /// symmetric. Speaking English to someone who chose French is visible to them and one setting away
-    /// from being fixed; throwing on an unrecognized code would take the voice away entirely and leave
-    /// them with silence and no way back. It also makes a Gateway rollback safe - a code written by a
-    /// newer Gateway that this one does not know yet degrades to speech, not to a broken turn.
+    /// The language for a code, or NULL when it names no language this product speaks.
+    ///
+    /// THIS USED TO ANSWER ENGLISH FOR ANYTHING IT DID NOT RECOGNIZE, and that single line was the most dangerous
+    /// in the mission (re-audit). The reasoning was that degrading to speech beats silence - a code written by a
+    /// newer Gateway should not take somebody's voice away. What it actually did was launder every unknown code
+    /// into a confident English answer: a Gateway replying <c>{"language":"de"}</c> handed the desktop a
+    /// perfectly valid ENGLISH utterance, and it spoke. The caller could not tell that from a real answer,
+    /// because there was nothing to tell it with.
+    ///
+    /// So an unknown code is now an ABSENCE, and every caller has to say what it does about it. They refuse.
+    /// Refusing is not the silence the old comment feared: the product says why, in a log and on a screen, which
+    /// is recoverable. Speaking the wrong language is not, because nobody finds out.
     /// </summary>
-    public static SpokenLanguage Resolve(string? code)
+    public static SpokenLanguage? TryResolve(string? code)
     {
-        if (string.IsNullOrWhiteSpace(code)) return Default;
+        if (string.IsNullOrWhiteSpace(code)) return null;
         var trimmed = code.Trim();
         foreach (var language in All)
         {
             if (string.Equals(language.Code, trimmed, StringComparison.OrdinalIgnoreCase))
                 return language;
         }
-        return Default;
+        return null;
     }
+
+    /// <summary>
+    /// The language for a code, or a THROW naming the code when it is not one we speak.
+    ///
+    /// For the callers that already know the code came from a validated write - the settings store, whose write
+    /// path refuses an unknown code - so an unknown one here means data corruption or a rollback past a language
+    /// we used to offer. That is a real failure and it fails loudly, with the code in the message. It does not
+    /// pretend the account speaks English.
+    /// </summary>
+    /// <exception cref="ArgumentException">The code names no language this product speaks.</exception>
+    public static SpokenLanguage Require(string? code)
+        => TryResolve(code) ?? throw new ArgumentException(
+            $"'{code}' is not a language DevThrottle speaks. Known: "
+            + string.Join(", ", All.Select(l => l.Code)) + ". This is not defaulted to English on purpose: an "
+            + "account silently spoken to in the wrong language is the failure this mission exists to remove.",
+            nameof(code));
 
     /// <summary>Whether <paramref name="code"/> names a language this product speaks. Used by the
     ///  settings WRITE path, which must REFUSE an unknown code rather than quietly storing one - a

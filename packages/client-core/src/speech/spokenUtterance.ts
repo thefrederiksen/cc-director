@@ -36,6 +36,21 @@ export interface SpokenUtterance {
 }
 
 /**
+ * The languages this product speaks, as the browser knows them.
+ *
+ * A SECOND COPY OF A LIST, and that is a real cost stated plainly: TypeScript cannot share the C# set, so this
+ * has to be kept in step by hand. It is worth it because the alternative was worse - the check here was "is the
+ * string nonblank", which let "not-a-language" through to be pronounced by the device's default voice. A guard
+ * test asserts this list matches the Gateway's, so drift fails the build rather than shipping.
+ */
+export const KNOWN_LANGUAGES: ReadonlySet<string> = new Set(["en", "fr", "es"]);
+
+/** Whether this code names a language the product speaks. Case-insensitive; the caller trims. */
+export function isKnownLanguage(code: string): boolean {
+  return KNOWN_LANGUAGES.has((code ?? "").trim().toLowerCase());
+}
+
+/**
  * Build an utterance. The only way one is meant to exist.
  *
  * Both arguments are required and neither is optional, which is the mechanism: a caller who does not know the
@@ -47,12 +62,12 @@ export interface SpokenUtterance {
  * same notice on screen, so a throw is visible in the error channel instead of silently mispronouncing.
  */
 export function utteranceFor(language: string, text: string): SpokenUtterance {
-  const spokenLanguage = (language ?? "").trim();
-  if (spokenLanguage.length === 0) {
+  const spokenLanguage = (language ?? "").trim().toLowerCase();
+  if (!isKnownLanguage(spokenLanguage)) {
     throw new Error(
-      "A spoken utterance needs a language. The Gateway sends one beside the words; an empty language here "
-        + "means it was dropped between the response and this call, and speaking anyway would pronounce the "
-        + "text with the device's default voice.",
+      `"${language}" is not a language DevThrottle speaks (known: ${[...KNOWN_LANGUAGES].join(", ")}). `
+        + "NONBLANK IS NOT VALID: an unrecognized code passes a length check, then finds no device voice, and "
+        + "gets spoken in the device's default - which is the silent failure this type exists to prevent.",
     );
   }
   if (typeof text !== "string" || text.trim().length === 0) {

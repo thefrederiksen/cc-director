@@ -184,7 +184,7 @@ public sealed class SpokenVoiceTests
     {
         using var h = new GatewayDbTestHarness();
         var r = NewResolver(h);
-        var language = SpokenLanguages.Resolve(code);
+        var language = SpokenLanguages.Require(code);
 
         r.SetSpokenLanguage(TenantA, code, Now);
 

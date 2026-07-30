@@ -192,7 +192,16 @@ public partial class FifoWindow : Window
 
             // Speak the briefing aloud: the FIFO is wingman-led, you should hear what's
             // happening, not have to read it. A failed/cancelled voice never breaks the turn.
-            try { await _tts.SpeakAsync(briefing, ct, onUnavailable: VoiceUnavailable); }
+            // A REFUSAL THE PERSON CAN SEE (re-audit). SpeakAsync returns false when it declined to speak -
+            // including the case that matters here, an attached Director that could not learn the account's
+            // language and will not guess English. That answer was being dropped on the floor, so the refusal
+            // reached the log and nothing else: silence with no explanation, which is the same failure we are
+            // trying to kill. Now it is on screen.
+            try
+            {
+                if (!await _tts.SpeakAsync(briefing, ct, onUnavailable: VoiceUnavailable) && !ct.IsCancellationRequested)
+                    SetStatus("Briefing not read aloud - see the log", Yellow);
+            }
             catch (OperationCanceledException) { }
             catch (Exception ex) { FileLog.Write($"[FifoWindow] briefing tts FAILED: {ex.Message}"); }
         }
@@ -467,13 +476,20 @@ public partial class FifoWindow : Window
         SetStatus("Asking the wingman...", Blue);
         var answer = await RunWingmanAsync(_current, transcript);
         SetText(ReplyText, answer);
+        var spoke = false;
         try
         {
             SetStatus("Speaking...", Blue);
-            await _tts.SpeakAsync(answer, onUnavailable: VoiceUnavailable);
+            // Same refusal, same reason it has to be visible (re-audit): this path then restored the green
+            // resting status regardless, so a declined answer looked exactly like a spoken one. The reply is
+            // already on screen - what was missing is being told it was not read out.
+            spoke = await _tts.SpeakAsync(answer, onUnavailable: VoiceUnavailable);
         }
         catch (Exception ex) { FileLog.Write($"[FifoWindow] tts FAILED: {ex.Message}"); }
-        SetStatus("Ask Agent, Ask Wingman, Skip, Hold, or Next", Green);
+        SetStatus(spoke
+            ? "Ask Agent, Ask Wingman, Skip, Hold, or Next"
+            : "Answer not read aloud - see the log. Ask Agent, Ask Wingman, Skip, Hold, or Next",
+            spoke ? Green : Yellow);
     }
 
     private async Task<string> RunWingmanAsync(Session session, string question)

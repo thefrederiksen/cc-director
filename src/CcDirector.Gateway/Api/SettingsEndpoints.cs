@@ -501,7 +501,7 @@ internal static class SettingsEndpoints
                 // An unsupported code is REFUSED rather than stored (the resolver's rule): a person is making
                 // a choice, and a language we cannot speak has to fail where they can see it.
                 host.TenantSettingsResolver.SetSpokenLanguage(t.Value, body.Language, DateTime.UtcNow);
-                var code = Speech.SpokenLanguages.Resolve(body.Language).Code;
+                var code = Speech.SpokenLanguages.Require(body.Language).Code;
                 FileLog.Write($"[SettingsEndpoints] spoken_language set to {code} for tenant={t.Value.ToLogString()}");
                 return Results.Json(SpokenLanguageSnapshot(host, t.Value));
             }
@@ -536,7 +536,7 @@ internal static class SettingsEndpoints
                 if (!Speech.SpokenLanguages.IsSupported(body.Language))
                     return Results.BadRequest(new { error = $"'{body.Language}' is not a language DevThrottle speaks." });
 
-                var language = Speech.SpokenLanguages.Resolve(body.Language);
+                var language = Speech.SpokenLanguages.Require(body.Language);
                 host.TenantSettingsResolver.SetSpokenVoice(t.Value, language, body.Voice, DateTime.UtcNow);
                 FileLog.Write($"[SettingsEndpoints] spoken voice for {language.Code} set to {body.Voice.Trim()} "
                               + $"for tenant={t.Value.ToLogString()}");

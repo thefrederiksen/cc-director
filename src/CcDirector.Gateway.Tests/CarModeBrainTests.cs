@@ -1162,15 +1162,17 @@ public sealed class CarModeBrainTests
     // ---- The one surface: the Assistant ----
 
     /// <summary>
-    /// The desk overrides are in the prompt, always.
+    /// The prompt describes the ASSISTANT, and it does not contradict itself.
     ///
-    /// This was a PAIR of tests - one asserting the overrides were appended for the desk surface, one asserting
-    /// the car surface did not carry them - because the prompt branched on a surface parameter. Car Mode was
-    /// removed from the product (#1028), the branch went with it, and what is left to check is that the
-    /// surviving surface still gets its overrides.
+    /// This was a PAIR of tests over a surface parameter - one for the desk overrides, one asserting the car
+    /// surface did not carry them. Car Mode was removed from the product (#1028) and the branch went with it, but
+    /// the prompt kept opening with "you are the voice of DevThrottle Car Mode" and "the owner is driving", which
+    /// the overrides block then denied: every Assistant turn was handed two descriptions of where it was
+    /// (Gateway audit, finding C6). So what is checked now is the whole prompt telling one story - the length
+    /// allowance is still there, and the car framing is gone.
     /// </summary>
     [Fact]
-    public async Task TheAssistantsSystemPrompt_CarriesTheDeskOverrides()
+    public async Task TheAssistantsSystemPrompt_DescribesTheAssistantAndDoesNotContradictItself()
     {
         var fleet = new FakeFleet();
         var chat = new ScriptedChat(Speak("Hello."));
@@ -1178,7 +1180,14 @@ public sealed class CarModeBrainTests
 
         await brain.RunTurnAsync(TenantId.Local, "device-a", "hello", CancellationToken.None);
 
-        Assert.Contains("DESK SURFACE OVERRIDES", chat.SeenMessages[0]);
+        var prompt = chat.SeenMessages[0];
+        // The length allowance survives - it is the one thing that block always really said.
+        Assert.Contains("HOW LONG AN ANSWER MAY RUN", prompt);
+        Assert.Contains("DevThrottle Assistant", prompt);
+        // And the contradiction is gone: no car, and nobody driving.
+        Assert.DoesNotContain("Car Mode", prompt);
+        Assert.DoesNotContain("driving", prompt);
+        Assert.DoesNotContain("hands-free", prompt);
     }
 
     [Fact]

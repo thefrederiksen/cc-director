@@ -141,6 +141,17 @@ public sealed class TtsService
     public Task<TtsResult> GenerateAsync(SpokenUtterance utterance, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(utterance);
+        // IT READS AND CHECKS THE LANGUAGE BEFORE IT POSTS (re-audit). This overload used to consume only Text and
+        // Voice, so an utterance carrying a null or unknown language was perfectly speakable through it - a
+        // compiled probe pushed code "zz" and a null code through to two real provider posts. Reading it here
+        // means a language that is not one we speak fails at the sink, before anything is billed, instead of being
+        // ignored on the way past.
+        var language = SpokenLanguages.TryResolve(utterance.LanguageCode)
+            ?? throw new InvalidOperationException(
+                $"Refusing to speak: this utterance's language is '{utterance.LanguageCode}', which is not one "
+                + "DevThrottle speaks. It did not come from the settings resolver, and speaking it would read the "
+                + "words with whatever voice was attached.");
+        FileLog.Write($"[TtsService] speaking {utterance.Length} chars in {language.Code} with voice {utterance.Voice}");
         return GenerateAsync(utterance.Text, voiceOverride: utterance.Voice, modelOverride: null, ct);
     }
 

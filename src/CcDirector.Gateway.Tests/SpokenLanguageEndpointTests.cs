@@ -112,7 +112,7 @@ public sealed class SpokenLanguageEndpointTests : IAsyncLifetime
         // And no language is served another language's voices - the filtering is the property, not the count.
         foreach (var entry in languages)
         {
-            var language = SpokenLanguages.Resolve((string?)entry!["code"]);
+            var language = SpokenLanguages.Require((string?)entry!["code"]);
             foreach (var voice in entry["voices"]!.AsArray())
                 Assert.True(SpokenVoices.Speaks(language, (string?)voice!["id"]),
                     $"The {language.EnglishName} list offers '{(string?)voice!["id"]}', which does not speak it.");

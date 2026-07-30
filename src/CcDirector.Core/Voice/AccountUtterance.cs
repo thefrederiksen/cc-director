@@ -105,10 +105,18 @@ public class AccountUtterance
                 return AccountVoiceLookup.Unavailable("the Gateway did not say which language or voice to use");
             }
 
-            // Resolve, not parse-or-throw: a code from a NEWER Gateway that this build does not know reads as
-            // English rather than taking the voice away entirely - the same direction SpokenLanguages.Resolve
-            // documents for every read, and the reason a rollback stays safe.
-            return AccountVoiceLookup.Resolved(SpokenUtterance.For(SpokenLanguages.Resolve(code), voice, text));
+            // A CODE THIS BUILD DOES NOT KNOW IS A REFUSAL, NOT ENGLISH (re-audit). This used to resolve unknown
+            // codes to English, so a Gateway answering {"language":"de"} - a newer Gateway offering a language
+            // this desktop has never heard of - handed back a perfectly valid ENGLISH utterance and the desktop
+            // spoke it. That is precisely the condition this whole lookup exists to refuse, arriving through a
+            // 200 response instead of a timeout. The account has a language; we do not know it; we do not guess.
+            var language = SpokenLanguages.TryResolve(code);
+            if (language is null)
+            {
+                FileLog.Write($"[AccountUtterance] the Gateway named language '{code}', which this build does not speak");
+                return AccountVoiceLookup.Unavailable($"the Gateway named a language this build does not speak ({code})");
+            }
+            return AccountVoiceLookup.Resolved(SpokenUtterance.For(language, voice, text));
         }
         catch (Exception ex)
         {

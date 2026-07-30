@@ -40,9 +40,11 @@ describe("utteranceFor", () => {
   // THROWS rather than defaulting to English. A quiet English default is the reported bug itself - the setting
   // appears to do nothing - and every caller is on a path that has already shown the same notice on screen, so a
   // throw is visible instead of silently mispronouncing.
-  it("refuses to exist without a language", () => {
-    expect(() => utteranceFor("", "some words")).toThrow(/needs a language/);
-    expect(() => utteranceFor("   ", "some words")).toThrow(/needs a language/);
+  // A BLANK language and an UNKNOWN one fail the same way, because they are the same mistake: neither names a
+  // language the product speaks. Non-empty was never the question.
+  it("refuses to exist without a language we speak", () => {
+    expect(() => utteranceFor("", "some words")).toThrow(/not a language DevThrottle speaks/);
+    expect(() => utteranceFor("   ", "some words")).toThrow(/not a language DevThrottle speaks/);
   });
 
   it("refuses to exist without words", () => {
@@ -147,19 +149,45 @@ describe("speakLocally refusing an utterance that skipped the factory", () => {
     const { spoken } = fakeEngine([{ lang: "en-US", name: "Samantha" }]);
     const forged = { text: "Cette session attend une réponse.", language: "", decided: true } as const;
 
-    expect(() => speakLocally(forged)).toThrow(/no language/);
+    expect(() => speakLocally(forged)).toThrow(/Refusing to speak/);
     expect(spoken).toHaveLength(0);
   });
 
   it("throws on a whitespace language too", () => {
     fakeEngine();
-    expect(() => speakLocally({ text: "words", language: "   ", decided: true } as const)).toThrow(/no language/);
+    expect(() => speakLocally({ text: "words", language: "   ", decided: true } as const)).toThrow(/Refusing to speak/);
   });
 
   // The refusal must not depend on there being an engine: the bug is ours either way, and a browser with no
   // speech synthesis must not silently absorb it.
   it("throws even when the platform has no speech engine at all", () => {
     vi.stubGlobal("speechSynthesis", undefined);
-    expect(() => speakLocally({ text: "words", language: "", decided: true } as const)).toThrow(/no language/);
+    expect(() => speakLocally({ text: "words", language: "", decided: true } as const)).toThrow(/Refusing to speak/);
+  });
+});
+
+// ---- NONBLANK IS NOT VALID, in the browser too (re-audit) ------------------------------------------------
+//
+// "not-a-language" passed the old length check, matched no device voice, and was then spoken in the device's
+// default - the exact silent shape this sink exists to prevent. The rule is now KNOWN, not nonblank, in both the
+// factory and the sink, because the type can be sidestepped.
+describe("an unknown language is not a language", () => {
+  it("refuses to build an utterance for a code we do not speak", () => {
+    for (const code of ["de", "zz", "not-a-language", "en-GB"]) {
+      expect(() => utteranceFor(code, "some words")).toThrow(/not a language DevThrottle speaks/);
+    }
+  });
+
+  it("refuses to speak one that skipped the factory", () => {
+    const { spoken } = fakeEngine([{ lang: "en-US", name: "Samantha" }]);
+    expect(() => speakLocally({ text: "words", language: "not-a-language", decided: true } as const))
+      .toThrow(/Refusing to speak/);
+    expect(spoken).toHaveLength(0);
+  });
+
+  it("still accepts every language the product does speak", () => {
+    for (const code of ["en", "fr", "es", "EN", " fr "]) {
+      expect(utteranceFor(code, "words").language).toBe(code.trim().toLowerCase());
+    }
   });
 });

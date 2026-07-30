@@ -24,29 +24,45 @@ namespace CcDirector.Gateway.Speech;
 ///  thing and carries its own accents.</param>
 public sealed record SpokenLanguage(string Code, string EnglishName, string NativeName)
 {
-    // A LANGUAGE VALIDATES ITSELF (audit finding C1).
+    // A LANGUAGE IS VALID ONLY IF IT IS ONE WE KNOW (re-audit, the one root cause).
     //
-    // This was a positional record with no body, so `new SpokenLanguage("", "", "")` was ordinary, compiling
-    // code - and it satisfied every downstream null check, including the utterance factory's. The factory could
-    // therefore be handed a "language" naming no language at all, which made the mission's central claim false
-    // in the most boring way available: not by reflection, but by somebody writing a plausible line.
+    // The first version of this check tested that each part was NON-EMPTY, and non-empty is not valid. The gap
+    // between those two words is the whole mission: `new SpokenLanguage("zz", "Unknown", "Unknown")` passed, and
+    // every downstream check that asked "is there a language?" said yes. So the code is checked against the
+    // codes this product actually speaks.
     //
-    // So the invariant lives with the type. Each part is checked in its own initializer, which runs at every
-    // construction - including a `with` clone that changes one - so no caller anywhere has to remember.
+    // THE CODE LIST LIVES HERE, not in SpokenLanguages, and that is deliberate rather than awkward: if the
+    // instances validated themselves against the collection that CONSTRUCTS them, the static initializer would
+    // recurse. So the codes are the authority, the instances are built from them, and a test asserts the two
+    // cannot drift apart - a language in one and not the other fails the build.
 
-    /// <summary>The short language code stored per account and carried on the wire.</summary>
-    public string Code { get; init; } = Require(Code, nameof(Code));
+    /// <summary>The codes this product speaks. The authority: nothing else may name a language.</summary>
+    internal static readonly IReadOnlySet<string> KnownCodes =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "en", "fr", "es" };
+
+    /// <summary>The short language code stored per account and carried on the wire. Lower case, and the only
+    ///  form persisted.</summary>
+    public string Code { get; init; } = RequireKnownCode(Code);
 
     /// <summary>The language's name in English, as the spoken output contract states it.</summary>
-    public string EnglishName { get; init; } = Require(EnglishName, nameof(EnglishName));
+    public string EnglishName { get; init; } = RequireText(EnglishName, nameof(EnglishName));
 
     /// <summary>The language's name in its own language, for the settings screen.</summary>
-    public string NativeName { get; init; } = Require(NativeName, nameof(NativeName));
+    public string NativeName { get; init; } = RequireText(NativeName, nameof(NativeName));
 
-    private static string Require(string value, string part)
+    private static string RequireKnownCode(string code)
+    {
+        var trimmed = (code ?? "").Trim();
+        if (!KnownCodes.Contains(trimmed))
+            throw new ArgumentException(
+                $"'{code}' is not a language DevThrottle speaks. Known: {string.Join(", ", KnownCodes)}. A blank "
+                + "or unrecognized code would satisfy every 'is there a language?' check downstream while naming "
+                + "no language at all, which is how words get spoken in the wrong one.", nameof(code));
+        return trimmed.ToLowerInvariant();
+    }
+
+    private static string RequireText(string value, string part)
         => string.IsNullOrWhiteSpace(value)
-            ? throw new ArgumentException(
-                $"A spoken language needs a {part}. A blank one names no language, and it would satisfy every "
-                + "null check downstream - including the utterance factory's - while meaning nothing.", part)
+            ? throw new ArgumentException($"A spoken language needs a {part}.", part)
             : value.Trim();
 }

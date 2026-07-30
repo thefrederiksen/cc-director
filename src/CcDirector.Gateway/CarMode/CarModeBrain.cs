@@ -673,7 +673,7 @@ public sealed class CarModeBrain
         + "It focuses the session that has been waiting the longest and makes it the current one; then read it "
         + "to him. After that, \"answer it\" / \"snooze it\" act on that session.\n"
         + "- When you DO put a session in a tool's session argument, use only its short NAME (for example "
-        + "\"Car Mode Demo\") - never the \"in the such-and-such repo\" phrase. The name alone identifies it; "
+        + "\"Local Files Manager\") - never the \"in the such-and-such repo\" phrase. The name alone identifies it; "
         + "adding the repository can point the action at the wrong session in that repository.\n\n"
         + "Taking action (you have full control):\n"
         + "- CRITICAL: doing something means CALLING ITS TOOL. To snooze, you MUST call snooze_session. To "
@@ -859,7 +859,7 @@ public sealed class CarModeBrain
             "type": "function",
             "function": {
               "name": "get_help",
-              "description": "Explain to the owner what Car Mode can do and how to talk to it. Call this - and NOTHING else - when the owner asks for help or how this works: \"help\", \"what can you do\", \"what can you help me with\", \"how does this work\", \"how do I talk to you\". It speaks a fixed guided explanation of the two ways to talk to Car Mode; you do not write the words and you do not read the fleet for it.",
+              "description": "Explain to the owner what the Assistant can do and how to talk to it. Call this - and NOTHING else - when the owner asks for help or how this works: \"help\", \"what can you do\", \"what can you help me with\", \"how does this work\", \"how do I talk to you\". It speaks a fixed guided explanation of the two ways to talk to the Assistant; you do not write the words and you do not read the fleet for it.",
               "parameters": { "type": "object", "properties": {}, "required": [] }
             }
           },

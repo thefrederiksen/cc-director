@@ -97,17 +97,28 @@ public sealed class AccountUtteranceTests
     }
 
     /// <summary>
-    /// An unknown language code reads as English rather than taking the voice away. A code from a NEWER Gateway
-    /// that this build does not know must degrade to speech, not to silence - the direction
-    /// <see cref="SpokenLanguages.Resolve"/> documents, and what makes a rollback safe.
+    /// AN UNKNOWN LANGUAGE CODE IS A REFUSAL, NOT ENGLISH.
+    ///
+    /// This test used to assert the opposite - that "de" resolved to English - and it was ENSHRINING THE BUG.
+    /// A Gateway answering 200 with a language this build has never heard of produced a perfectly valid ENGLISH
+    /// utterance, and the desktop spoke it: the exact condition the whole lookup exists to refuse, arriving
+    /// through a healthy response instead of a timeout. The old reasoning was that degrading to speech beats
+    /// silence; what it actually did was launder an unknown code into a confident answer nobody could question.
+    ///
+    /// The failure is not silence. It is a refusal with a reason, logged and shown - which is recoverable, where
+    /// being spoken to in the wrong language is not, because nobody finds out.
     /// </summary>
     [Fact]
-    public async Task An_unknown_language_code_degrades_to_English_rather_than_silence()
+    public async Task An_unknown_language_code_is_refused_rather_than_read_as_English()
     {
         var handler = new CapturingHandler(HttpStatusCode.OK, """{"language":"de","voice":"af_bella"}""");
         var utterances = new AccountUtterance(() => new GatewayConfig { Url = GatewayUrl }, new HttpClient(handler));
 
-        Assert.Equal(SpokenLanguages.English, (await utterances.ForAsync("words")).Utterance!.Language);
+        var lookup = await utterances.ForAsync("words");
+
+        Assert.Null(lookup.Utterance);
+        Assert.True(lookup.HasAccount, "the account exists - what is unknown is which language it speaks");
+        Assert.Contains("de", lookup.Reason);
     }
 
     /// <summary>

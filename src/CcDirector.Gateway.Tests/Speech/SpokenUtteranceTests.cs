@@ -122,6 +122,51 @@ public sealed class SpokenUtteranceTests
     public void An_utterance_offers_its_length_so_a_log_never_needs_its_words()
         => Assert.Equal(8, SpokenUtterance.For(SpokenLanguages.French, "ff_siwis", "Bonjour.").Length);
 
+    /// <summary>
+    /// NONBLANK IS NOT VALID (re-audit, the one root cause).
+    ///
+    /// The first version of this checked that a language was non-empty, and every downstream check asked the same
+    /// weak question. So `new SpokenLanguage("zz", "Unknown", "Unknown")` was ordinary compiling code that
+    /// satisfied the factory, and an utterance built on it was speakable. The gap between "nonblank" and "known"
+    /// is this entire mission.
+    /// </summary>
+    [Theory]
+    [InlineData("zz")]
+    [InlineData("de")]
+    [InlineData("en-GB")]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void A_language_that_is_not_one_we_speak_cannot_be_constructed(string code)
+        => Assert.Throws<ArgumentException>(() => new SpokenLanguage(code, "Unknown", "Unknown"));
+
+    /// <summary>The known codes and the offered languages are ONE list in two shapes, and they cannot drift: the
+    ///  codes validate the instances, so a code with no language - or a language with no code - fails here.</summary>
+    [Fact]
+    public void The_known_codes_and_the_offered_languages_are_the_same_set()
+    {
+        var offered = SpokenLanguages.All.Select(l => l.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var language in SpokenLanguages.All)
+            Assert.NotNull(SpokenLanguages.TryResolve(language.Code));
+        Assert.Equal(offered.Count, SpokenLanguages.All.Count);
+    }
+
+    /// <summary>
+    /// AN UNKNOWN CODE NEVER SILENTLY BECOMES ENGLISH. That line was the most dangerous in the mission: it turned
+    /// every unrecognized code into a confident English answer that no caller could distinguish from a real one.
+    /// TryResolve says "I do not know", and Require says so loudly.
+    /// </summary>
+    [Theory]
+    [InlineData("de")]
+    [InlineData("zz")]
+    [InlineData("")]
+    [InlineData(null)]
+    public void An_unknown_code_resolves_to_nothing_rather_than_English(string? code)
+    {
+        Assert.Null(SpokenLanguages.TryResolve(code));
+        var ex = Assert.Throws<ArgumentException>(() => SpokenLanguages.Require(code));
+        Assert.Contains("not a language DevThrottle speaks", ex.Message);
+    }
+
     // ----------------------------------------------------------------------------------------------
     // The one decider.
     // ----------------------------------------------------------------------------------------------
@@ -143,7 +188,7 @@ public sealed class SpokenUtteranceTests
 
         var utterance = r.Utterance(Tenant, Mode, "des mots");
 
-        Assert.Equal(SpokenLanguages.Resolve(code), utterance.Language);
+        Assert.Equal(SpokenLanguages.Require(code), utterance.Language);
         Assert.True(SpokenVoices.Speaks(utterance.Language, utterance.Voice),
             $"An account set to {code} got voice '{utterance.Voice}', which does not speak it.");
     }
