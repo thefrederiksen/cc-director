@@ -367,6 +367,20 @@ three SQLite classes, **all green together on the rebased tree**.
 
 A green belongs to the tree it was run against. Nobody asked it to check.
 
+## THE LOCK FILE IS NOT THE LOCK
+
+The fleet test lock is an OPEN FILE HANDLE. The file beside it carries the holder's process id, worktree
+and acquisition time - and it PERSISTS AFTER THE HOLDER EXITS, because the operating system releases the
+handle without rewriting the file.
+
+So reading that file tells you WHO LAST HELD the lock, not whether it is held NOW. I read it as live
+state for most of an afternoon, scheduled work around it, chased a worker over it, and twice reported a
+holder that had already exited.
+
+**The only reliable read is to attempt the acquisition.** An artefact that describes a state is not the
+state, and this one is convincing precisely because every field in it is true - it is a TRUE RECORD of a
+moment that has passed.
+
 ## A REVIEWER'S AD-HOC PROBE IS NOT A TEST
 
 Review 5 proved by running that adoption left five refused stores unmodified. Nothing in the SUITE
