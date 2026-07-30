@@ -1244,15 +1244,29 @@ internal static class GatewayEndpoints
             // (`fleet`), not the response set (`all`). See defect 13 in StampFleetRolesAndFold.
             StampFleetRolesAndFold(fleet, all, needsYouStampFor, snoozeRegistry, reqTenant.Value);
 
-            // NO STORE WRITE REMAINS ON THIS HANDLER. DO NOT ADD ONE.
+            // NO STORE WRITE REMAINS ON THIS HANDLER, BUT IT IS NOT YET FREE OF THE DATABASE. READ ON.
             //
-            // Stated carefully, because an earlier draft of this comment claimed the read was pure while a
-            // database write still sat above it - a false record is worse than no comment, since it tells
-            // the next reader to stop looking. What is left on this path now writes only to MEMORY:
-            // FleetRosterCache.RecordReachable / RecordUnreachable, the SessionOwnerCache retain and
-            // remember (a ConcurrentDictionary with no store behind it), and the needs-you clock stamp.
-            // None of them can fail this read the way a database or a file can. The snooze prune, which was
-            // the last durable write here, now runs at the ingress - see DirectorHub.PushSnapshot.
+            // WRITES: gone. The statistics writes moved to the ingress (below), and the snooze prune - the
+            // last durable write on this path - moved with them, to DirectorHub.PushSnapshot. What still
+            // writes here touches only MEMORY: FleetRosterCache.RecordReachable / RecordUnreachable, the
+            // SessionOwnerCache retain and remember (a ConcurrentDictionary with no store behind it), and
+            // the needs-you clock stamp. None of those can fail this read.
+            //
+            // READS: THE SNOOZE REGISTRY IS STILL A DATABASE DEPENDENCY ON THIS PATH, AND THIS HANDLER CAN
+            // STILL ANSWER 500 BECAUSE OF IT. StampFleetRolesAndFold calls SnoozeRegistry.HoldStateFor,
+            // IsExpired and SnoozeUntilFor, and every one of those OPENS A DATABASE CONTEXT - per session,
+            // on the fleet's most-read endpoint. Pool exhaustion, a connection timeout, or a deploy blip in
+            // that store reproduces the 2026-07-30 shape: an optional dependency failing a mandatory read.
+            // Tracked as issue #2323, with the fix designed (serve those reads from an in-memory projection
+            // and write the database only on the write path) and deliberately deferred - today's outage came
+            // from the statistics store, this change removes that one, and the snooze exposure is
+            // pre-existing and has never caused an outage.
+            //
+            // SAY WHY THIS PARAGRAPH IS HERE. Twice on this branch a comment claimed this read was clean
+            // when it was not, and each time it read as an instruction to stop looking. The registry was
+            // documented as "pure (no mutation), so it is safe to call on the hot read path" and two
+            // separate reviewers took "pure" to mean no input or output. It means no MUTATION. CANNOT
+            // CORRUPT IS NOT CANNOT FAIL. There is a test for this - it is skipped, against issue #2323.
             //
             // Three write side-effects used to run here, on every roster read, and one of them took the
             // whole product down on 2026-07-30: a corrupted statistics database made
