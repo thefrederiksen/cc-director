@@ -262,6 +262,18 @@ rather than leaving to be discovered, and this entry is the proof that it can be
 and 6 land and the hosted path stops opening that store, this entry must be REMOVED, or the guard
 carries a permanent hole in the exact place the mission was about.**
 
+## The check that can disappear without anyone noticing
+
+**Worker 3's fixtures run the real `GatewayStatsDatabase` rather than the model, and they are currently
+the ONLY place the entity mapping meets the real on-disk shape.** A wrong `ToTable` or `HasColumnName`
+throws there at query time instead of passing quietly. Worker 2's baseline is now literal version 5 DDL
+rather than model-generated, so the model no longer generates the schema and the two can drift.
+
+**If a later change makes those fixtures model-built, that check vanishes SILENTLY.** Nothing goes red.
+The suite stays green, because a model-built fixture and the model agree by construction. It would look
+like a tidy-up. Worker 3 raised this on its way out, unasked, and asked that it be kept in front of the
+Architect at merge.
+
 ## The merge-time obligation nobody may forget
 
 **Worker 4's Postgres fixtures and worker 5's SQLite fixtures are both built from the MODEL, not from a
