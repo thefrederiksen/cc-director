@@ -499,7 +499,11 @@ public partial class MainWindow : Window
         _installStep?.SetLauncherStarting();
         try
         {
-            var result = await new LauncherTrayInstaller(InstallLayout.Default()).InstallAsync();
+            // The status line carries the wait's own commentary. A cold first start of the launcher can
+            // run well past a minute while it unpacks itself, and a screen that says nothing for that
+            // long reads as frozen - which is how a slow start came to look like a failed one (#1152).
+            var progress = new Progress<string>(note => _installStep?.SetStatus(note));
+            var result = await new LauncherTrayInstaller(InstallLayout.Default()).InstallAsync(progress: progress);
             foreach (var s in result.Steps) SetupLog.Write($"[MainWindow]   launcher: {s}");
             SetupLog.Write($"[MainWindow] launcher start success={result.Success}: {result.Message}");
             if (result.Success)

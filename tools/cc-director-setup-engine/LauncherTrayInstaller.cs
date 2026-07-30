@@ -31,6 +31,21 @@ public sealed class LauncherTrayInstaller
     /// <summary>The arguments the installed tray app runs with: managed mode runs the self-update check.</summary>
     public const string InstalledArguments = "--managed";
 
+    /// <summary>
+    /// The backstop for a launcher that is running but never answers. It is deliberately far beyond any
+    /// plausible first start: the wait ends when the port answers or when the started process is gone,
+    /// so a generous ceiling costs nothing in the broken case and stops a slow machine being called
+    /// broken in the healthy one. Twenty seconds was the number that failed a clean install (#1152) and
+    /// the process it declared dead was answering 200 the whole time.
+    /// </summary>
+    public static readonly TimeSpan FirstStartHealthCeiling = TimeSpan.FromMinutes(5);
+
+    /// <summary>How long a first start may take before the user is told it is a slow start, not a hang.</summary>
+    private static readonly TimeSpan SayItIsSlowAfter = TimeSpan.FromSeconds(8);
+
+    /// <summary>How often that reassurance is repeated while the wait continues.</summary>
+    private static readonly TimeSpan RepeatTheReassuranceEvery = TimeSpan.FromSeconds(5);
+
     private readonly InstallLayout _layout;
     private readonly HttpClient _http;
 
@@ -45,8 +60,13 @@ public sealed class LauncherTrayInstaller
     /// autostart-registered. The Launcher exe must already be placed (by the UpdateRunner) at
     /// <see cref="InstallLayout.PathFor"/> for the Launcher component.
     /// </summary>
+    /// <param name="progress">
+    /// Optional running commentary for the caller's screen while the launcher is still starting. A cold
+    /// first start of a 134 MB single-file binary can take a while, and a screen that says nothing for
+    /// that long reads as frozen.
+    /// </param>
     [SupportedOSPlatform("windows")]
-    public async Task<LauncherInstallResult> InstallAsync(CancellationToken ct = default)
+    public async Task<LauncherInstallResult> InstallAsync(CancellationToken ct = default, IProgress<string>? progress = null)
     {
         var steps = new List<string>();
         EngineLog.Write("[LauncherTrayInstaller] InstallAsync begin");
@@ -63,38 +83,69 @@ public sealed class LauncherTrayInstaller
         // 2. Start the tray app. It registers its own HKCU Run-key autostart (pointing at itself with
         // the same arguments) on startup, so install-time registration and app self-registration can
         // never disagree.
-        int startedPid;
+        Process started;
         try
         {
             var psi = BuildTrayLaunchInfo(launcherExe, _layout.LauncherDir);
-            using var p = Process.Start(psi)
+            started = Process.Start(psi)
                 ?? throw new InvalidOperationException("Process.Start returned null");
-            startedPid = p.Id;
-            steps.Add($"started Launcher tray app pid={p.Id} ({InstalledArguments})");
+            steps.Add($"started Launcher tray app pid={started.Id} ({InstalledArguments})");
         }
         catch (Exception ex)
         {
             return Fail(steps, $"Failed to start the Launcher tray app: {ex.Message}");
         }
 
-        // 3. Wait for health - identity-verified: the answer must come from THE PROCESS WE JUST
-        // STARTED, not from whatever holds the port. Version alone could not do this: build metadata
-        // is stripped when versions are compared, so an orphan reporting "1.8.4+abc" and a freshly
-        // placed "1.8.4" matched, and a same-version reinstall certified against the orphan.
+        // 3. Wait for readiness. Two things are being checked at once, and both matter.
+        //
+        // IDENTITY: the answer must come from THE PROCESS WE JUST STARTED, not from whatever holds the
+        // port. Version alone could not do this - build metadata is stripped when versions are compared,
+        // so an orphan reporting "1.8.4+abc" and a freshly placed "1.8.4" matched, and a same-version
+        // reinstall certified against the orphan.
+        //
+        // READINESS: the wait ends on the CONDITION, not on a clock. A fixed twenty seconds, tuned on a
+        // warm developer machine, declared this install failed on a clean Windows 11 machine while the
+        // launcher was still unpacking - and the port it said had never answered was answering 200 with
+        // ok:true from the very process this installer started (issue #1152). So the wait now ends when
+        // the launcher answers, or when the process we started is gone; the ceiling is only a backstop
+        // for a launcher that is alive and wedged.
         var expectedVersion = new InstalledStateReader(_layout).Read(ComponentRegistry.Launcher).Version;
-        var health = await LauncherHealthProbe.WaitForHealthyAsync(
-            _http, $"http://127.0.0.1:{LauncherDefaultPort}/healthz", expectedVersion, TimeSpan.FromSeconds(20), ct,
-            expectedPid: startedPid);
-        var up = LauncherHealthProbe.Certifies(health, expectedVersion, startedPid);
-        steps.Add(health is null
-            ? $"launcher healthz on {LauncherDefaultPort}: no response"
-            : up
-                ? $"launcher healthz on {LauncherDefaultPort}: OK (version {health.Version ?? "unversioned"}, process id {health.Pid})"
-                : $"launcher healthz on {LauncherDefaultPort}: answered by process id {health.Pid} (version {health.Version ?? "unknown"}), not the process {startedPid} this install started");
+        var startedPid = started.Id;
+        LauncherWaitResult wait;
+        try
+        {
+            var lastNote = TimeSpan.Zero;
+            wait = await LauncherHealthProbe.WaitForReadyAsync(
+                _http,
+                $"http://127.0.0.1:{LauncherDefaultPort}/healthz",
+                expectedVersion,
+                startedPid,
+                () => StarterIsRunning(started),
+                FirstStartHealthCeiling,
+                ct,
+                onStillWaiting: elapsed =>
+                {
+                    if (elapsed < SayItIsSlowAfter || elapsed - lastNote < RepeatTheReassuranceEvery) return;
+                    lastNote = elapsed;
+                    progress?.Report(
+                        "Starting the Launcher tray app. Its first start unpacks a large file and is slow "
+                        + $"only once - still waiting after {(int)elapsed.TotalSeconds} seconds...");
+                });
+        }
+        finally
+        {
+            started.Dispose();
+        }
+
+        var health = wait.Health;
+        var up = wait.Stop == LauncherWaitStop.Healthy;
+        steps.Add(up
+            ? $"launcher healthz on {LauncherDefaultPort}: OK (version {health!.Version ?? "unversioned"}, process id {health.Pid})"
+            : health is null
+                ? $"launcher healthz on {LauncherDefaultPort}: no response ({DescribeStop(wait.Stop)})"
+                : $"launcher healthz on {LauncherDefaultPort}: answered by process id {health.Pid} (version {health.Version ?? "unknown"}), ok={health.Ok} ({DescribeStop(wait.Stop)})");
         if (!up)
-            return Fail(steps, health is null
-                ? $"Launcher tray app started but did not answer on {LauncherDefaultPort}. Check {_layout.LogsDir}."
-                : $"A launcher is answering on port {LauncherDefaultPort}, but it is process {health.Pid} reporting version {health.Version ?? "unknown"} - not the process {startedPid} this install started. Refusing to certify: another launcher instance holds the port. Check {_layout.LogsDir}.");
+            return Fail(steps, DescribeFailure(wait, startedPid, expectedVersion));
 
         // 4. Verify the autostart Run key (written by the app on startup).
         var registered = LauncherAutostart.IsRegistered();
@@ -104,6 +155,61 @@ public sealed class LauncherTrayInstaller
 
         EngineLog.Write("[LauncherTrayInstaller] InstallAsync success");
         return new LauncherInstallResult(true, $"Launcher tray app installed and running on {LauncherDefaultPort}.", steps);
+    }
+
+    /// <summary>
+    /// Is the launcher we started still alive? This is the fact that separates "not ready yet" from
+    /// "never going to be ready".
+    ///
+    /// When the state cannot be read at all, the answer is "still running". That keeps the wait going
+    /// to its ceiling instead of ending it early, which is the safe direction: reporting a healthy
+    /// launcher as failed is the defect this whole wait exists to stop, and the ceiling still bounds it.
+    /// </summary>
+    private static bool StarterIsRunning(Process started)
+    {
+        try { return !started.HasExited; }
+        catch (Exception ex)
+        {
+            EngineLog.Write($"[LauncherTrayInstaller] could not read the started launcher's process state: {ex.Message}");
+            return true;
+        }
+    }
+
+    /// <summary>The reason the wait ended, for the log line that records it.</summary>
+    private static string DescribeStop(LauncherWaitStop stop) => stop switch
+    {
+        LauncherWaitStop.Healthy => "certified",
+        LauncherWaitStop.StarterExited => "the process this install started has exited",
+        LauncherWaitStop.CeilingReached => "still running but silent when the wait ceiling elapsed",
+        LauncherWaitStop.Cancelled => "the install was cancelled",
+        _ => stop.ToString(),
+    };
+
+    /// <summary>
+    /// What to tell the user. Each end of the wait is a different fact and deserves a different
+    /// sentence: a launcher that died is not a launcher that is slow, and neither is a stranger holding
+    /// the port. Every one of them names the log directory, because that is the only actionable part.
+    /// </summary>
+    private string DescribeFailure(LauncherWaitResult wait, int startedPid, string? expectedVersion)
+    {
+        var health = wait.Health;
+        var logs = _layout.LogsDir;
+
+        if (wait.Stop == LauncherWaitStop.Cancelled)
+            return $"Waiting for the Launcher tray app on port {LauncherDefaultPort} was cancelled. Check {logs}.";
+
+        if (health is null)
+            return wait.Stop == LauncherWaitStop.StarterExited
+                ? $"The Launcher tray app started as process {startedPid} but exited before it answered on port {LauncherDefaultPort}. Check {logs}."
+                : $"The Launcher tray app is still running as process {startedPid} but did not answer on port {LauncherDefaultPort} within {(int)FirstStartHealthCeiling.TotalMinutes} minutes. Check {logs}.";
+
+        if (health.Pid == startedPid)
+            return $"The Launcher tray app (process {startedPid}) answered on port {LauncherDefaultPort} but did not report itself healthy"
+                   + (LauncherHealthProbe.VersionMatches(expectedVersion, health.Version)
+                       ? $" (ok={health.Ok}). Check {logs}."
+                       : $": it reports version {health.Version ?? "unknown"}, not the freshly installed {expectedVersion}. Check {logs}.");
+
+        return $"A launcher is answering on port {LauncherDefaultPort}, but it is process {health.Pid} reporting version {health.Version ?? "unknown"} - not the process {startedPid} this install started. Refusing to certify: another launcher instance holds the port. Check {logs}.";
     }
 
     /// <summary>
@@ -154,25 +260,6 @@ public sealed class LauncherTrayInstaller
             finally { p.Dispose(); }
         }
         if (stopped > 0) steps.Add($"stopped {stopped} running installed Launcher process(es)");
-    }
-
-    private async Task<bool> WaitForHttpAsync(string url, TimeSpan timeout, CancellationToken ct)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
-        {
-            try
-            {
-                using var resp = await _http.GetAsync(url, ct);
-                if (resp.IsSuccessStatusCode) return true;
-            }
-            catch
-            {
-                // not up yet
-            }
-            try { await Task.Delay(1000, ct); } catch (OperationCanceledException) { return false; }
-        }
-        return false;
     }
 
     private static LauncherInstallResult Fail(List<string> steps, string message)
