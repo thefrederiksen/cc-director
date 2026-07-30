@@ -323,7 +323,7 @@ public sealed class StreamOwnershipTests : IDisposable
         }
         var directors = new DirectorRegistry(_tempDir);
         var inputStats = new GatewayInputStatsAggregator(Path.Combine(_tempDir, $"stats-{Guid.NewGuid():N}.db"));
-        return new DirectorHub(store, directors, inputStats, streams, tenantBoundary: boundary)
+        return new DirectorHub(store, directors, InputStatsHandle.Available(inputStats), streams, tenantBoundary: boundary)
         {
             Context = new FakeHubCtx(connId, http),
         };

@@ -109,12 +109,22 @@ public sealed class GatewayHost : IAsyncDisposable
     public Streaming.GatewayStreamRegistry StreamRegistry { get; }
 
     /// <summary>
-    /// DevThrottle Stats: the always-available aggregate of every session's input tally (turns + character
-    /// volume by modality and surface). Fed by the director-stream hub from the pushed
+    /// DevThrottle Stats: the aggregate of every session's input tally (turns + character volume by
+    /// modality and surface). Fed by the director-stream hub from the pushed
     /// <see cref="Contracts.SessionDto.InputStats"/> and read by the private Gateway dashboard at
     /// <c>/stats</c> with no cloud round-trip.
+    ///
+    /// NULL when statistics are unavailable, which the Gateway serves through - see
+    /// <see cref="Stats.InputStatsHandle"/> for the incident that makes that non-negotiable. Read the
+    /// handle (<see cref="InputStatsHandle"/>) rather than this property when the caller needs the reason.
     /// </summary>
-    public Stats.GatewayInputStatsAggregator InputStats { get; }
+    public Stats.GatewayInputStatsAggregator? InputStats => InputStatsHandle.Aggregator;
+
+    /// <summary>
+    /// DevThrottle Stats: the aggregator, or the named reason there is not one. Always present, so a
+    /// statistics failure can never stop the roster or the tunnels being served.
+    /// </summary>
+    public Stats.InputStatsHandle InputStatsHandle { get; }
 
     /// <summary>
     /// Defect 20: the observer that starts a deferred snooze's clock when the Director pushes up the hold
@@ -801,6 +811,53 @@ public sealed class GatewayHost : IAsyncDisposable
     /// Shared instances that write to the real user's directories). Production omits it and the host builds
     /// the service over its own key vault, exactly as before.
     /// </param>
+    /// <summary>
+    /// Open the input-statistics aggregator, or report the named reason there is not one.
+    ///
+    /// TWO things are contained here, and they are different states with different causes.
+    ///
+    /// 1. A HOSTED Gateway never opens a statistics FILE, under any circumstance. That is the same law
+    ///    <see cref="Stats.Data.StatsConnectionSelection"/> states for the store proper, and it is stated
+    ///    here too because this aggregator is constructed on its own line and would otherwise walk straight
+    ///    past it. A hosted container writing gateway-stats.db writes it to an ephemeral disk, or onto a
+    ///    share a second container can corrupt - which is the incident this whole mission exists to end.
+    ///    So on hosted the answer is "no aggregator", decided BEFORE anything is opened, not caught after.
+    ///
+    /// 2. On self-host the file is opened, and if it cannot be opened the Gateway carries on WITHOUT
+    ///    statistics rather than refusing to start. This is not a fallback that hides a problem: nothing is
+    ///    substituted, no numbers are invented, the failure is logged with the exception's own text, and the
+    ///    statistics surface reports itself unavailable. It is a failure-domain boundary. The roster and the
+    ///    tunnels do not need statistics, and a deploy that came down with "SQLite Error 14: unable to open
+    ///    database file" proved what happens when they are allowed to share a fate.
+    /// </summary>
+    private static Stats.InputStatsHandle OpenInputStats(string? inputStatsPath)
+    {
+        if (GatewayHostedMode.IsHosted || GatewayHostedMode.IsHostedImage)
+        {
+            const string reason =
+                "This is a hosted Gateway, which never opens a local statistics file. The hosted statistics " +
+                "store is PostgreSQL and is reported separately by the statistics store's own health surface.";
+            FileLog.Write($"[GatewayHost] input statistics are UNAVAILABLE (HostedNeverOpensAFile): {reason}");
+            return Stats.InputStatsHandle.Unavailable(reason);
+        }
+
+        try
+        {
+            var aggregator = new Stats.GatewayInputStatsAggregator(inputStatsPath);
+            FileLog.Write("[GatewayHost] input statistics opened on the local statistics file");
+            return Stats.InputStatsHandle.Available(aggregator);
+        }
+        catch (Exception ex)
+        {
+            var reason =
+                $"The local statistics file could not be opened ({ex.GetType().Name}: {ex.Message}). " +
+                "Statistics are unavailable; the roster, the tunnels and every other Gateway surface are " +
+                "unaffected.";
+            FileLog.Write($"[GatewayHost] input statistics are UNAVAILABLE (StoreCouldNotBeOpened): {reason}");
+            return Stats.InputStatsHandle.Unavailable(reason);
+        }
+    }
+
     public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? promptLogPath = null, string? snoozePath = null, string? pushSubscriptionsPath = null, string? wingmanInstructionsPath = null, string? missionsPath = null, string? missionNotesPath = null, Transcription.GatewayTranscriptionService? dictationTranscription = null, Core.Agents.AgentKind? brainTool = null)
     {
         var retiredFilesRemoved = Core.Configuration.LegacyPrivacyDataCleanup.Run();
@@ -844,7 +901,7 @@ public sealed class GatewayHost : IAsyncDisposable
             missionsPath ?? Path.Combine(CcStorage.Root(), "missions.json"),
             adoptUnattributedAs: GatewayHostedMode.IsHosted ? null : Core.Tenancy.TenantId.Local);
         StreamRegistry = new Streaming.GatewayStreamRegistry();
-        InputStats = new Stats.GatewayInputStatsAggregator(inputStatsPath);
+        InputStatsHandle = OpenInputStats(inputStatsPath);
         _promptLog = new Prompts.GatewayPromptLog(promptLogPath);
         // The statistics store's failure-domain boundary. Constructed HERE, on its own, deliberately OUTSIDE
         // the main database's construction and outside anything that gates startup: its migration and its
@@ -2118,7 +2175,11 @@ public sealed class GatewayHost : IAsyncDisposable
         builder.Services.AddSingleton(StreamRegistry);
         // DevThrottle Stats: the hub (constructed per-invocation by SignalR) folds each pushed session's
         // tally into this one aggregator instance, which the /stats dashboard reads.
-        builder.Services.AddSingleton(InputStats);
+        // The HANDLE is registered, never the aggregator itself, so the container can construct the
+        // DirectorHub whether or not statistics are available. Registering the aggregator directly would
+        // make an absent statistics store a hub-construction failure, which is the coupling this handle
+        // exists to break.
+        builder.Services.AddSingleton(InputStatsHandle);
         // Defect 20: the hub lands a deferred snooze's clock through this one observer instance the moment
         // the Director pushes up "the hold landed".
         builder.Services.AddSingleton(SnoozeLandings);
@@ -2959,7 +3020,20 @@ public sealed class GatewayHost : IAsyncDisposable
         // session-ORIGIN counts: how sessions came to exist, which only the durable per-session record
         // can answer - the in-memory aggregates behind the rest of this feed count turns, and a session
         // is born exactly once.
-        Stats.StatsPageEndpoint.Map(_app, InputStats, SessionConcurrency, _tenantSettingsResolver, _tenantBoundary, _sessionHistory);
+        // Mapped only when there IS an aggregator. When statistics are unavailable the two routes answer
+        // 503 with the named reason instead of not existing at all: a surface that vanishes reads as a
+        // broken deploy, and the reason is what tells an operator whether to fix a setting or a database.
+        if (InputStats is not null)
+        {
+            Stats.StatsPageEndpoint.Map(_app, InputStats, SessionConcurrency, _tenantSettingsResolver, _tenantBoundary, _sessionHistory);
+        }
+        else
+        {
+            var statsUnavailable = InputStatsHandle.UnavailableReason ?? "Statistics are unavailable.";
+            _app.MapGet("/stats", () => Results.Text(statsUnavailable, "text/plain", statusCode: 503));
+            _app.MapGet("/stats/data", () => Results.Json(
+                new { available = false, reason = statsUnavailable }, statusCode: 503));
+        }
 
         // The prompt log (issue #1551): Directors push what they captured to POST /prompts, and anyone
         // wanting history reads GET /prompts. It lives here, not on a Director, because the Gateway is

@@ -168,7 +168,7 @@ public sealed class HostedStatsServeTests : IAsyncLifetime
     [Fact]
     public async Task One_tenants_turns_are_invisible_to_another_tenant_on_hosted()
     {
-        _gateway.InputStats.Observe(new SessionDto
+        _gateway.InputStats!.Observe(new SessionDto
         {
             SessionId = "s-alpha",
             RepoPath = @"D:\ReposFred\alpha-only-repo",
