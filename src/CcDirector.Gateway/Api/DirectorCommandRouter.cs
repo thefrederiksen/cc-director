@@ -132,12 +132,18 @@ internal static class DirectorCommandRouter
 
     /// <summary>
     /// The timeout message. Written for a person reading it on a phone in a moving car: it names the machine,
-    /// says what did not happen, and gives the wait in whole seconds. No status code, no stack trace, no jargon.
+    /// says what was observed, and gives the wait in whole seconds. No status code, no stack trace, no jargon.
+    ///
+    /// Like <see cref="DescribeTunnelDrop"/>, it deliberately does not promise the command was skipped. A timeout
+    /// proves only that the GATEWAY stopped waiting: the Director may have received the command, carried it out,
+    /// and answered late. It used to end "The command was not carried out", which read as settled fact - so the
+    /// user re-tapped and the agent got the same prompt twice. The two messages hedge the same way because they
+    /// leave the caller in the same position: the outcome is genuinely unknown.
     /// </summary>
     private static string DescribeTimeout(string? machineName, TimeSpan wait) =>
         string.IsNullOrWhiteSpace(machineName)
-            ? $"The Director did not answer within {wait.TotalSeconds:0} seconds. The command was not carried out."
-            : $"The Director on {machineName} did not answer within {wait.TotalSeconds:0} seconds. The command was not carried out.";
+            ? $"The Director did not answer within {wait.TotalSeconds:0} seconds. It is not known whether the command was carried out."
+            : $"The Director on {machineName} did not answer within {wait.TotalSeconds:0} seconds. It is not known whether the command was carried out.";
 
     /// <summary>
     /// The mid-command tunnel-drop message. Same audience as <see cref="DescribeTimeout"/>. It deliberately does
