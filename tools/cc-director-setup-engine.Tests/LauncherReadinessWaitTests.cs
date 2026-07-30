@@ -25,11 +25,16 @@ public sealed class LauncherReadinessWaitTests
     private static readonly TimeSpan Instant = TimeSpan.FromMilliseconds(1);
 
     /// <summary>
-    /// The incident, as data. The launcher stays silent for far more polls than the old wait allowed,
-    /// then answers from the process the installer started - and the wait must report it HEALTHY.
+    /// The incident, as data. The launcher stays silent for sixty polls - at the installer's
+    /// one-second cadence that is a minute, well past the thirty-seven seconds measured in the
+    /// incident and three times what the old twenty-second allowance permitted - and then answers from
+    /// the process the installer started. The wait must report HEALTHY.
     ///
-    /// Revert-proof: put a fixed clock back in front of the condition and this goes red, because the
-    /// answer arrives after the point at which the old code had already given up.
+    /// Stated plainly, because a test that cannot fail is worse than no test: the poll interval is
+    /// compressed here, so this pins the SHAPE (a late answer is still a healthy one, and the loop
+    /// does not stop early on some clock of its own). What pins the incident's actual number is
+    /// <see cref="TheInstallersCeiling_IsFarBeyondTheColdStartThatWasCalledDead"/>, which reads the
+    /// ceiling the installer really uses.
     /// </summary>
     [Fact]
     public async Task ASlowFirstStartThatEventuallyAnswers_IsHealthy_NotFailed()
@@ -87,13 +92,13 @@ public sealed class LauncherReadinessWaitTests
         var started = DateTime.UtcNow;
         var result = await LauncherHealthProbe.WaitForReadyAsync(
             http, Url, expectedVersion: "1.9.0", expectedPid: 11216,
-            starterIsRunning: () => ++polls < 3, ceiling: TimeSpan.FromMinutes(10), ct: default,
+            starterIsRunning: () => ++polls < 3, ceiling: TimeSpan.FromSeconds(30), ct: default,
             pollInterval: Instant);
         var elapsed = DateTime.UtcNow - started;
 
         Assert.Equal(LauncherWaitStop.StarterExited, result.Stop);
         Assert.Null(result.Health);
-        Assert.True(elapsed < TimeSpan.FromSeconds(20),
+        Assert.True(elapsed < TimeSpan.FromSeconds(5),
             $"The wait took {elapsed} for a process that had already exited - it waited out the ceiling instead of the condition.");
     }
 
