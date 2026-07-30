@@ -87,6 +87,14 @@ public partial class MainWindow : Window
     private global::Avalonia.Threading.DispatcherTimer? _sessionGitTimer;
     private global::Avalonia.Threading.DispatcherTimer? _dictationLockTimer;
 
+    /// <summary>
+    /// 1 while a dictation-lock read is out on the thread pool (issue #1111). The one-second tick skips
+    /// rather than queues, so a slow disk cannot build a backlog of reads whose answers are already stale.
+    /// An int rather than a bool because it is set with <see cref="Interlocked"/> from both the dispatcher
+    /// and the pool thread.
+    /// </summary>
+    private int _dictationLockReadInFlight;
+
     // Interactive TUI mode
     private bool _isInteractiveTuiMode;
 
@@ -343,20 +351,60 @@ public partial class MainWindow : Window
         // only when it flips, so the rail repaints just on the edges. (Task 4 will additionally compute
         // this at the Gateway so the phone and cockpit show the same state.)
         //
-        // Issue #1111: read the marker store ONCE per tick, not once per tick PER SESSION. Asking each
-        // session separately re-enumerated the store and re-read every marker for each one, so the work
-        // was sessions x markers - hundreds of file reads a second on the UI thread at two dozen sessions,
-        // every one of them re-deriving the same store-wide answer. The set is read once here and each
-        // session is then asked against it for free, so this tick costs the same whether one session is
-        // open or fifty.
+        // Issue #1111: this refresh used to be the single most expensive thing the Director did, and it got
+        // worse with every session opened. Two things were wrong and both are fixed here.
+        //
+        // FIRST, the store was read once per tick PER SESSION. Each session asked the marker store about
+        // itself, and each ask re-enumerated the whole directory and re-read every marker in it, so the work
+        // was sessions x markers. Measured on this repository's own harness against a 28-marker store: 2.3ms
+        // a tick at one session, 58ms a tick at twenty-seven - every millisecond of it on the dispatcher,
+        // once a second, forever. It is read ONCE here and each session then asks the resulting set for free,
+        // which is flat and under a millisecond regardless of how many sessions are open.
+        //
+        // SECOND, even the deduped read is file input/output, and file input/output does not belong on the
+        // thread that paints. It runs on the thread pool and only the RESULT comes back to the dispatcher;
+        // RefreshReceivingDictation raises its change event solely on a flip, so an idle Director posts a
+        // set, compares it, and repaints nothing.
+        //
+        // A tick is SKIPPED while the previous read is still running rather than queued behind it. A slow
+        // disk must not build a backlog of reads whose answers are all superseded by the newest one - the
+        // only interesting answer is the current state of the store, and a late tick carries a stale one.
         _dictationLockTimer = new global::Avalonia.Threading.DispatcherTimer
         {
             Interval = TimeSpan.FromSeconds(1),
         };
         _dictationLockTimer.Tick += (_, _) =>
         {
-            var lockedSessionIds = Session.DictationLockedIds();
-            foreach (var vm in _sessions) vm.Session.RefreshReceivingDictation(lockedSessionIds);
+            if (Interlocked.CompareExchange(ref _dictationLockReadInFlight, 1, 0) != 0) return;
+
+            _ = Task.Run(() =>
+            {
+                IReadOnlySet<string> lockedSessionIds;
+                try
+                {
+                    lockedSessionIds = Session.DictationLockedIds();
+                }
+                catch (Exception ex)
+                {
+                    // The reader already fails open per marker; this is the belt for the whole pass, because an
+                    // unhandled throw on a pool thread takes the process down and this runs every second.
+                    FileLog.Write($"[MainWindow] dictation lock read FAILED: {ex.Message}");
+                    Interlocked.Exchange(ref _dictationLockReadInFlight, 0);
+                    return;
+                }
+
+                global::Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+                {
+                    try
+                    {
+                        foreach (var vm in _sessions) vm.Session.RefreshReceivingDictation(lockedSessionIds);
+                    }
+                    finally
+                    {
+                        Interlocked.Exchange(ref _dictationLockReadInFlight, 0);
+                    }
+                });
+            });
         };
         _dictationLockTimer.Start();
 
@@ -2703,13 +2751,55 @@ public partial class MainWindow : Window
     // tailnet URL (Tailscale down) we say so and open nothing, never a loopback URL that only
     // works on this machine. Both failure paths surface as a modal dialog naming the URL we
     // actually probed: a toolbar button that silently does nothing is just confusing.
+    /// <summary>
+    /// Open the Cockpit (issue #1105). Clicking this while the gateway was unreachable used to produce FIVE
+    /// stacked "Cannot Open Cockpit" windows, because the button ran an eight-second probe with no state
+    /// change and no guard: for eight seconds nothing happened, so the user clicked again, and every click
+    /// started its own probe ending in its own modal.
+    ///
+    /// THE DECISION THIS BEHAVIOUR RESTS ON, since the issue asked for it in writing. The issue offered
+    /// "open the browser anyway, we know the Cockpit URL" as the fastest option. WE DO NOT KNOW IT. The
+    /// Gateway owns the Cockpit URL and hands it back from GET /cockpit; the Director only knows the gateway
+    /// BASE address, and composing a Cockpit URL from it is precisely the dumb-client violation that made
+    /// the old Learn button point at a route that did not exist. So the probe cannot be skipped - the probe
+    /// IS how we learn where to send the user.
+    ///
+    /// What was actually wrong was never the probe; it was the eight seconds of silence around it. So: the
+    /// button says what it is doing before the network call starts, a second click cannot start a second
+    /// probe, the timeout is four seconds rather than eight (comfortably longer than a real tailnet round
+    /// trip, short enough not to read as broken), and the failure offers Retry instead of a bare OK, with
+    /// the address it tried and where to change it.
+    /// </summary>
     private async void BtnCockpit_Click(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Control button) return;
+        await BusyAction.RunAsync(button, () => OpenCockpitWithFeedbackAsync(), "Opening...", owner: this,
+            failureTitle: "Cannot Open Cockpit");
+    }
+
+    /// <summary>
+    /// Attempt to open the Cockpit, offering Retry for as long as the user wants one.
+    ///
+    /// A LOOP rather than a recursive call: Retry re-runs exactly the same attempt, and someone clicking it
+    /// twenty times against a gateway that is still down should not be twenty stack frames deep by the end.
+    /// </summary>
+    private async Task OpenCockpitWithFeedbackAsync()
+    {
+        while (await TryOpenCockpitOnceAsync())
+        {
+            FileLog.Write("[MainWindow] BtnCockpit_Click: user chose Retry");
+        }
+    }
+
+    /// <summary>One attempt, plus the dialog for each way it can fail. Returns true when the user asked to
+    /// retry.</summary>
+    private async Task<bool> TryOpenCockpitOnceAsync()
     {
         var baseUrl = CockpitUrlResolver.ResolveCockpitBase(GatewayConfig.Load());
         FileLog.Write($"[MainWindow] BtnCockpit_Click: asking gateway for Cockpit URL, baseUrl={baseUrl}");
         try
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(4) };
             // The entire fetch -> select -> OPEN decision lives in OpenCockpitAsync, off this async-void
             // handler: it fetches the DTO, and when the Gateway hands back a URL it opens THAT url verbatim
             // through the injected OpenUrlInBrowser. This handler keeps NO cockpit-URL logic and makes NO
@@ -2728,6 +2818,8 @@ public partial class MainWindow : Window
                     "URL because it would only work on this one machine.")
                     .ShowDialog<bool?>(this);
             }
+
+            return false;
         }
         catch (Exception ex)
         {
@@ -2735,10 +2827,19 @@ public partial class MainWindow : Window
             // The "is the Gateway tray app running on THIS machine?" hint only makes sense for
             // the loopback default. For a configured remote gateway the failure is about
             // reachability (the remote gateway is down, or the tailnet is unreachable).
-            await new MessageDialog(
+            //
+            // Retry rather than a bare OK: the user wanted the Cockpit, and a gateway that was briefly
+            // unreachable is the common case. The retry runs through this same method, so it is guarded by
+            // the same busy button and cannot stack dialogs either.
+            var retry = await new ConfirmDialog(
                 "Cannot Open Cockpit",
-                BuildGatewayUnreachableMessage(baseUrl, ex.Message))
+                BuildGatewayUnreachableMessage(baseUrl, ex.Message)
+                    + "\n\nYou can change the gateway address in Settings, under Gateway.",
+                confirmLabel: "Retry",
+                cancelLabel: "Close")
                 .ShowDialog<bool?>(this);
+
+            return retry == true;
         }
     }
 
@@ -4709,8 +4810,39 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// 1 while a prompt send is in flight (issue #1107). The send was SAFE BY ACCIDENT: it clears
+    /// PromptInput.Text before its first await, so a second click hit the empty-text early return above.
+    /// That works, but nothing said it was load-bearing, and an edit that moved the clear below an await -
+    /// a perfectly reasonable-looking change - would have silently reintroduced double-send.
+    /// The guard is explicit now so the property does not depend on the order of two unrelated lines.
+    /// </summary>
+    private int _sendPromptInFlight;
+
     private async void SendPrompt()
     {
+        if (_activeSession == null || string.IsNullOrWhiteSpace(PromptInput.Text)) return;
+
+        if (Interlocked.CompareExchange(ref _sendPromptInFlight, 1, 0) != 0)
+        {
+            FileLog.Write("[MainWindow] SendPrompt ignored: a send is already in flight");
+            return;
+        }
+
+        try
+        {
+            await SendPromptCoreAsync();
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _sendPromptInFlight, 0);
+        }
+    }
+
+    private async Task SendPromptCoreAsync()
+    {
+        // Re-checked rather than assumed from the caller: this method must stand on its own, which is the
+        // whole point of not relying on a distant line to hold a property true.
         if (_activeSession == null || string.IsNullOrWhiteSpace(PromptInput.Text)) return;
         // Locked out while the session transcribes a dictated utterance in the background, so a
         // typed Send cannot race the incoming dictated prompt (guards the button AND Ctrl+Enter).
@@ -5609,6 +5741,16 @@ public partial class MainWindow : Window
             return;
 
         FileLog.Write($"[MainWindow] ScreenshotCreateIssue_Click: {filePath}");
+
+        // Issue #1107, item 6. The OwnedWindows check below guards owned WINDOWS; it does not guard the
+        // async gap around the Task.Run further down, so two clicks opened two browser tabs. Minor in
+        // consequence, identical in shape to the Cockpit bug.
+        await BusyAction.RunAsync(btn, () => CreateIssueFromScreenshotAsync(filePath), "Opening...",
+            owner: this, failureTitle: "Cannot Create GitHub Issue");
+    }
+
+    private async Task CreateIssueFromScreenshotAsync(string filePath)
+    {
         try
         {
             // Modal dialogs already block this button; this guards the one

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CcDirector.Core.Drivers;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 
@@ -89,6 +90,12 @@ public static class CodexContextUsage
                     WindowTokens = window > 0 ? window : null,
                     PercentUsed = percent,
                     AsOfUtc = asOf,
+                    // Codex WRITES the window into its own session file, so this number is the agent's
+                    // rather than ours. That is why this driver needed no change for issue #1100 and is
+                    // the reference the others are measured against: it asks instead of mapping.
+                    WindowSource = window > 0
+                        ? nameof(ContextWindowSource.AgentSessionFile)
+                        : nameof(ContextWindowSource.Unknown),
                 };
             }
         }

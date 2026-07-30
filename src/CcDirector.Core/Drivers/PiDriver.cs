@@ -106,9 +106,10 @@ public sealed class PiDriver : IAgentDriver
 
     /// <summary>How full the pi context window is right now (capability
     /// <see cref="DriverCapabilities.ContextUsage"/>). pi's session file carries per-message
-    /// <c>usage.input</c> and the model id; the window is mapped from the model via PiContextWindow
-    /// (pi does not record it). Located by repo path (pi has no Director-preassigned id); the launch
-    /// args are not used.</summary>
+    /// <c>usage.input</c> and the model id, but NOT the window - and since issue #1100 the window is no
+    /// longer derived from that model id, so this reports used tokens with no denominator until pi is
+    /// actually asked. Located by repo path (pi has no Director-preassigned id); the launch args are not
+    /// used.</summary>
     public ContextUsageDto? ReadContextUsage(string agentSessionId, string workingDirectory, string? launchArgs) =>
         Pi.PiContextUsage.ReadForRepo(workingDirectory);
 

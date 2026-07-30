@@ -50,7 +50,32 @@ public partial class WorkflowRecorderWindow : Window
     // Record / Stop / Clear
     // -----------------------------------------------------------------------
 
+    /// <summary>
+    /// Start recording (issue #1107, item 1 - the worst of the nine).
+    ///
+    /// This handler used to fail COMPLETELY SILENTLY. The button was disabled by SetState only AFTER the
+    /// POST, so it stayed live throughout; and when the POST failed the handler simply returned, having
+    /// written to FileLog and nothing else. The interface still said IDLE, so from the user's side the
+    /// Record button did not appear to exist. Every repeat click cleared the recorded actions and orphaned
+    /// another temp directory on disk.
+    ///
+    /// Now: the button shows it is working before the POST, a second click cannot start a second recording,
+    /// a failure says so on the status line, and the temp directory is created only once the daemon has
+    /// actually agreed to record - so a refusal leaves nothing behind.
+    /// </summary>
     private async void BtnRecord_Click(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Control button) return;
+        await BusyAction.RunAsync(button, StartRecordingAsync, "Starting...",
+            onFailure: message =>
+            {
+                StatusText.Text = "COULD NOT START";
+                StatusText.Foreground = new SolidColorBrush(Color.FromRgb(0xE5, 0x3E, 0x3E));
+                FileLog.Write($"[WorkflowRecorder] record/start reported to the user: {message}");
+            });
+    }
+
+    private async Task StartRecordingAsync()
     {
         FileLog.Write("[WorkflowRecorder] BtnRecord_Click");
 
@@ -61,32 +86,29 @@ public partial class WorkflowRecorderWindow : Window
         _recordingStartTime = DateTime.UtcNow;
         _lastScreenshotCount = 0;
 
-        // Create temp directory for recording screenshots
+        // Tell the browser extension to start capturing user actions. This happens BEFORE the temp
+        // directory is created: a daemon that refuses to record must not leave a directory behind, and the
+        // old order (create, then ask, then return on refusal) orphaned one on every failed click.
+        var payload = JsonSerializer.Serialize(new { connection = _connectionName });
+        var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        var response = await _http.PostAsync($"http://127.0.0.1:{_daemonPort}/record/start", content);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var err = await response.Content.ReadAsStringAsync();
+            FileLog.Write($"[WorkflowRecorder] record/start FAILED: {err}");
+            // Thrown, not returned. The helper turns this into something the user can see - returning here
+            // is exactly how this button came to fail invisibly.
+            throw new InvalidOperationException(
+                $"The browser daemon refused to start recording (HTTP {(int)response.StatusCode}). {err}".Trim());
+        }
+
+        FileLog.Write("[WorkflowRecorder] record/start OK");
+
+        // Only now is there a recording to keep screenshots for.
         _recordingTempDir = Path.Combine(Path.GetTempPath(), $"wf-rec-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_recordingTempDir);
         FileLog.Write($"[WorkflowRecorder] Recording temp dir: {_recordingTempDir}");
-
-        // Tell the browser extension to start capturing user actions
-        try
-        {
-            var payload = JsonSerializer.Serialize(new { connection = _connectionName });
-            var content = new StringContent(payload, Encoding.UTF8, "application/json");
-            var response = await _http.PostAsync($"http://127.0.0.1:{_daemonPort}/record/start", content);
-
-            if (!response.IsSuccessStatusCode)
-            {
-                var err = await response.Content.ReadAsStringAsync();
-                FileLog.Write($"[WorkflowRecorder] record/start FAILED: {err}");
-                return;
-            }
-
-            FileLog.Write("[WorkflowRecorder] record/start OK");
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[WorkflowRecorder] record/start FAILED: {ex.Message}");
-            return;
-        }
 
         SetState(RecorderState.Recording);
 
@@ -114,6 +136,13 @@ public partial class WorkflowRecorderWindow : Window
 
     private async void BtnStop_Click(object? sender, RoutedEventArgs e)
     {
+        if (sender is not Control button) return;
+        await BusyAction.RunAsync(button, StopRecordingAsync, "Stopping...",
+            onFailure: message => FileLog.Write($"[WorkflowRecorder] record/stop reported to the user: {message}"));
+    }
+
+    private async Task StopRecordingAsync()
+    {
         FileLog.Write($"[WorkflowRecorder] BtnStop_Click: {_actions.Count} actions recorded");
 
         _pollTimer?.Stop();
@@ -128,7 +157,11 @@ public partial class WorkflowRecorderWindow : Window
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[WorkflowRecorder] record/stop FAILED: {ex.Message}");
+            // Deliberately swallowed, unlike the start path. The poll timer is already stopped and the local
+            // recording is already over, so telling the daemon is best-effort housekeeping - and going back
+            // to IDLE below is the honest report of the state the user is actually in. Failing loudly here
+            // would say "stop did not work" when it did.
+            FileLog.Write($"[WorkflowRecorder] record/stop FAILED (recording is stopped locally regardless): {ex.Message}");
         }
 
         SetState(RecorderState.Idle);

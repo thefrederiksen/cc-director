@@ -320,24 +320,44 @@ public partial class ChangesDiffView : UserControl
         }
     }
 
+    /// <summary>
+    /// Commit the staged changes (issue #1107, item 5).
+    ///
+    /// The commit message was cleared only AFTER the await returned, so a second click during the commit
+    /// read the same non-empty message and ran a SECOND git commit. The second one failed (nothing left
+    /// staged) and its failure went to FileLog only, so the user saw nothing at all - and there was no busy
+    /// state for the duration either.
+    ///
+    /// A failed commit is now reported on screen. A commit that git refused is not an edge case worth
+    /// hiding: it is the moment the user most needs to know why.
+    /// </summary>
     private async void CommitButton_Click(object? sender, RoutedEventArgs e)
     {
-        try
+        if (sender is not Control button) return;
+
+        await BusyAction.RunAsync(button, async () =>
         {
             var repo = _repoPath;
             var message = CommitMessage.Text;
             if (repo is null || string.IsNullOrWhiteSpace(message))
                 return;
+
             var result = await _write.CommitAsync(repo, message.Trim());
             if (result.Success)
+            {
                 CommitMessage.Text = "";
+            }
             else
+            {
                 FileLog.Write($"[ChangesDiffView] commit failed: {result.Error}");
+                await RefreshAsync();
+                throw new InvalidOperationException(result.Error ?? "git refused the commit.");
+            }
+
             await RefreshAsync();
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[ChangesDiffView] CommitButton_Click FAILED: {ex.Message}");
-        }
+        },
+        "Committing...",
+        owner: TopLevel.GetTopLevel(this) as Window,
+        failureTitle: "Could not commit");
     }
 }

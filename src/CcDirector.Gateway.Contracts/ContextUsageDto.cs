@@ -24,4 +24,18 @@ public sealed class ContextUsageDto
     /// <summary>When this reading was last true (the latest counted assistant line's timestamp),
     /// or null when no usage-bearing line exists yet.</summary>
     public DateTime? AsOfUtc { get; set; }
+
+    /// <summary>
+    /// WHERE <see cref="WindowTokens"/> came from (issue #1100). The string form of
+    /// <c>CcDirector.Core.Drivers.ContextWindowSource</c> - the contracts assembly carries no enum of its
+    /// own so a new source never needs a lock-step change on both sides of the wire.
+    ///
+    /// It exists because provenance is the difference between a measurement and an assumption, and the
+    /// screen could not previously tell you which one it was showing. "ctx 184k / 200k (92%)" in red
+    /// looked exactly like a fact; the 200,000 had been derived from the letters "opus" in a model name,
+    /// and the true window was 1,000,000.
+    ///
+    /// Null or "Unknown" means no window is known, and the gauge shows the raw used-token count alone.
+    /// </summary>
+    public string? WindowSource { get; set; }
 }

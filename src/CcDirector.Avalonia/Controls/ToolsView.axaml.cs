@@ -165,11 +165,23 @@ public partial class ToolsView : UserControl
         DetailStatusChip.Background = brush;
     }
 
+    /// <summary>
+    /// Run the selected tool's checks (issue #1107, item 7).
+    ///
+    /// This is the whole problem in one file: RunAllAsync two methods below opens with an explicit
+    /// re-entrancy guard and a label change, and this handler - which also spawns processes - had neither.
+    /// Same screen, same file, two different standards.
+    /// </summary>
     private async void RunButton_Click(object? sender, RoutedEventArgs e)
     {
         if (ToolList.SelectedItem is not ToolItemViewModel vm) return;
-        await RunToolAsync(vm, refreshDetailIfSelected: true);
-        UpdateSummary();
+        if (sender is not Control button) return;
+
+        await BusyAction.RunAsync(button, async () =>
+        {
+            await RunToolAsync(vm, refreshDetailIfSelected: true);
+            UpdateSummary();
+        }, "Running...", owner: TopLevel.GetTopLevel(this) as Window, failureTitle: "Could not run the tool");
     }
 
     private async void RunAllButton_Click(object? sender, RoutedEventArgs e)

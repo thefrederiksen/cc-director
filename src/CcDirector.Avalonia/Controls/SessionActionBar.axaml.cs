@@ -147,38 +147,38 @@ public partial class SessionActionBar : UserControl
 
     // Entry-point handlers per CodingStyle: try-catch lives here, the Session throws.
 
+    // Stop and Interrupt (issue #1107, item 8). The mildest two of the nine and the most-clicked in the
+    // application - and they are pressed at the exact moment the user is already frustrated, which is why
+    // "nothing appears to happen" matters here even though a repeated interrupt is harmless. The status
+    // line used to be written only AFTER the await, so for the whole call there was no sign the click had
+    // registered at all. It now says so before the work starts.
+
     private async void BtnStopTurn_Click(object? sender, RoutedEventArgs e)
     {
         var session = _session;
-        if (session is null) return;
-        try
+        if (session is null || sender is not Control button) return;
+
+        await BusyAction.RunAsync(button, async () =>
         {
             FileLog.Write($"[SessionActionBar] Stop clicked: session={session.Id}");
+            ShowStatus("stopping...");
             await session.CancelTurnAsync();
             ShowStatus("turn stopped");
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[SessionActionBar] Stop FAILED: {ex.Message}");
-            ShowStatus($"stop failed: {ex.Message}");
-        }
+        }, "Stopping...", onFailure: message => ShowStatus($"stop failed: {message}"));
     }
 
     private async void BtnInterrupt_Click(object? sender, RoutedEventArgs e)
     {
         var session = _session;
-        if (session is null) return;
-        try
+        if (session is null || sender is not Control button) return;
+
+        await BusyAction.RunAsync(button, async () =>
         {
             FileLog.Write($"[SessionActionBar] Interrupt clicked: session={session.Id}");
+            ShowStatus("interrupting...");
             await session.InterruptAsync();
             ShowStatus("interrupted");
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[SessionActionBar] Interrupt FAILED: {ex.Message}");
-            ShowStatus($"interrupt failed: {ex.Message}");
-        }
+        }, "Interrupting...", onFailure: message => ShowStatus($"interrupt failed: {message}"));
     }
 
     /// <summary>
@@ -231,9 +231,20 @@ public partial class SessionActionBar : UserControl
         return await new ConfirmDialog(title, message, confirmLabel).ShowDialog<bool?>(owner) == true;
     }
 
+    /// <summary>
+    /// Issue #1107, item 3: A LABEL IS NOT A GUARD. This button set its content to "Compacting..." but was
+    /// never disabled, so three clicks bought three compactions - and because compaction is an expensive
+    /// model operation, that one cost real money. The label made it worse rather than better: it looked
+    /// like a working state, so it read as though re-entrancy had been considered and handled.
+    ///
+    /// The guard now sits on the click, which also means a second click cannot stack a second confirmation
+    /// dialog on top of the first.
+    /// </summary>
     private async void BtnCompact_Click(object? sender, RoutedEventArgs e)
     {
-        await CompactContextWithConfirmationAsync();
+        if (sender is not Control button) return;
+        await BusyAction.RunAsync(button, CompactContextWithConfirmationAsync, "Compacting...",
+            onFailure: message => ShowStatus($"compact failed: {message}"));
     }
 
     /// <summary>
@@ -275,7 +286,8 @@ public partial class SessionActionBar : UserControl
             return;
         }
 
-        BtnCompact.Content = "Compacting...";
+        // The button's working state and its restoration belong to the caller's BusyAction wrapper, which
+        // also DISABLES it - the label juggling that used to live here was never a guard.
         try
         {
             FileLog.Write($"[SessionActionBar] Compact confirmed: session={session.Id}");
@@ -291,15 +303,13 @@ public partial class SessionActionBar : UserControl
             FileLog.Write($"[SessionActionBar] Compact FAILED: {ex.Message}");
             ShowStatus($"compact failed: {ex.Message}");
         }
-        finally
-        {
-            BtnCompact.Content = "Compact";
-        }
     }
 
     private async void BtnClearContext_Click(object? sender, RoutedEventArgs e)
     {
-        await ClearContextWithConfirmationAsync();
+        if (sender is not Control button) return;
+        await BusyAction.RunAsync(button, ClearContextWithConfirmationAsync, "Clearing...",
+            onFailure: message => ShowStatus($"clear failed: {message}"));
     }
 
     /// <summary>

@@ -114,18 +114,124 @@ public static class DictationLockReader
             return locked;
         }
 
+        var stillPresent = new HashSet<string>(dirs.Length, StringComparer.OrdinalIgnoreCase);
+
         foreach (var dir in dirs)
         {
-            var marker = ReadMarker(Path.Combine(dir, "record.json"));
+            var path = Path.Combine(dir, "record.json");
+            stillPresent.Add(path);
+
+            if (IsKnownSettled(path)) continue;
+
+            var marker = ReadMarker(path);
             if (marker is null) continue;
+
             if (string.Equals(marker.State, "Pending", StringComparison.OrdinalIgnoreCase)
                 && !string.IsNullOrWhiteSpace(marker.SessionId))
             {
                 locked.Add(marker.SessionId);
             }
+            else
+            {
+                RememberIfSettled(path, marker.State);
+            }
         }
 
+        ForgetVanished(stillPresent);
         return locked;
+    }
+
+    // ---- the settled-marker memo (issue #1111, item c) -------------------------------------------------
+    //
+    // The store is never cleaned up on the Director side: SweepAbandoned is wired to the voice-TURN uploads
+    // root, not to this one, and a terminal tombstone is retired only when the phone acknowledges it. On the
+    // machine in the issue that left 28 markers, EVERY ONE of them terminal, the oldest three weeks old - so
+    // the whole per-second bill was being paid to re-confirm, over and over, that there was nothing to report.
+    //
+    // The Director cannot fix that by deleting them: these markers are the Gateway's deduplication guard, and
+    // retiring one early would let a replayed upload id deliver twice. Bounding the store is therefore filed
+    // as Gateway work. What the READER can do is stop paying for them - a marker that has settled will never
+    // say anything different, so it is read once and skipped thereafter.
+    //
+    // WHICH STATES COUNT AS SETTLED IS THE WHOLE CORRECTNESS QUESTION, and it is narrower than "not Pending".
+    // DictationDeliveryRecord says in terms that a state can transition FAILED back to PENDING, so treating
+    // every non-Pending marker as settled would pin a retried dictation unlocked forever. Only Delivered and
+    // Abandoned - the two the store itself calls terminal - are memoized.
+    //
+    // The last-write time is carried as a second, independent guard: if anything at all rewrites a marker we
+    // had settled, the stamp moves and it is re-read. That makes the memo safe even if the set of terminal
+    // states is ever widened without this comment being noticed.
+    private static readonly Dictionary<string, DateTime> SettledMarkers = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly object SettledLock = new();
+
+    private static bool IsKnownSettled(string markerPath)
+    {
+        DateTime seenAt;
+        lock (SettledLock)
+        {
+            if (!SettledMarkers.TryGetValue(markerPath, out seenAt)) return false;
+        }
+
+        try
+        {
+            // One stat instead of an open, a read and a JSON parse. A marker rewritten since we settled it
+            // (which should never happen for these two states) fails this check and is read again.
+            return File.GetLastWriteTimeUtc(markerPath) == seenAt;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void RememberIfSettled(string markerPath, string? state)
+    {
+        if (!string.Equals(state, "Delivered", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(state, "Abandoned", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        try
+        {
+            var stamp = File.GetLastWriteTimeUtc(markerPath);
+            lock (SettledLock) SettledMarkers[markerPath] = stamp;
+        }
+        catch (Exception ex)
+        {
+            // Not being able to memoize costs a re-read next tick, which is exactly the old behaviour.
+            FileLog.Write($"[DictationLockReader] stamp {markerPath} failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Drop memo entries for markers that are no longer on disk, so the memo is bounded by what the store
+    /// actually holds rather than by everything it has ever held for the life of the process.
+    /// </summary>
+    private static void ForgetVanished(HashSet<string> stillPresent)
+    {
+        lock (SettledLock)
+        {
+            if (SettledMarkers.Count == 0) return;
+            var gone = SettledMarkers.Keys.Where(k => !stillPresent.Contains(k)).ToList();
+            foreach (var k in gone) SettledMarkers.Remove(k);
+        }
+    }
+
+    /// <summary>Test seam: forget every memoized marker, so one test's store cannot mask another's.</summary>
+    internal static void ResetSettledMemo()
+    {
+        lock (SettledLock) SettledMarkers.Clear();
+    }
+
+    /// <summary>
+    /// Test seam: how many markers the memo is holding. Exists so a test can prove the memo is bounded by
+    /// what the store currently holds - a fix for an unbounded per-marker cost must not itself grow without
+    /// bound per marker.
+    /// </summary>
+    internal static int SettledMemoCount
+    {
+        get { lock (SettledLock) return SettledMarkers.Count; }
     }
 
     private static Marker? ReadMarker(string path)

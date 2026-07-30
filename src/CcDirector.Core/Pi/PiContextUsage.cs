@@ -14,8 +14,9 @@ namespace CcDirector.Core.Pi;
 ///       "usage":{"input":3838,"output":33,"cacheRead":0,"cacheWrite":0,"totalTokens":3871, ...}}}
 ///
 /// UsedTokens = the latest assistant message's <c>usage.input</c> (the conversation the model last
-/// ingested = context fullness). pi does NOT record the window, so it is mapped from the model id via
-/// <see cref="PiContextWindow"/>; an unmapped model yields a null window (raw-number fallback, no guess).
+/// ingested = context fullness). pi does NOT record the window anywhere in this file, and since issue
+/// #1100 it is no longer inferred from the model id - the window is reported as unknown and the gauge
+/// shows the raw token count with no percentage. See <see cref="Drivers.ContextWindowSource"/>.
 /// The session file for a repo is located by reading each session line's <c>cwd</c> (pi has no
 /// preassigned id the Director can use), newest matching file wins.
 /// </summary>
@@ -71,14 +72,16 @@ public static class PiContextUsage
                 if (used <= 0)
                     continue;
 
-                var model = msg.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String
-                    ? m.GetString()
-                    : null;
-                var window = PiContextWindow.WindowTokensForModel(model);
-                var percent = window is > 0
-                    ? Math.Round((double)used / window.Value * 100.0, 1)
-                    : (double?)null;
-
+                // NO WINDOW, for the same reason as Claude (issue #1100): pi does not record one in its
+                // session file, so the old code inferred it from the model id - and inherited the Claude
+                // bug wholesale by delegating Claude models into that same table. It carried a second copy
+                // of the pattern of its own: a hardcoded 272,000 for gpt-5.5, with a comment noting it
+                // disagreed with the 258,400 the Codex backend reports. Two numbers for one window, and no
+                // way for the screen to say which one it was showing.
+                //
+                // pi does have a route - an extension call that answers directly - and wiring it is tracked
+                // separately. Until then this reports the used tokens, which are honestly measured, and no
+                // denominator.
                 var asOf = root.TryGetProperty("timestamp", out var tsEl) && tsEl.ValueKind == JsonValueKind.String
                            && DateTime.TryParse(tsEl.GetString(), null, System.Globalization.DateTimeStyles.AdjustToUniversal, out var parsed)
                     ? parsed
@@ -87,9 +90,10 @@ public static class PiContextUsage
                 latest = new ContextUsageDto
                 {
                     UsedTokens = used,
-                    WindowTokens = window,
-                    PercentUsed = percent,
+                    WindowTokens = null,
+                    PercentUsed = null,
                     AsOfUtc = asOf,
+                    WindowSource = nameof(ContextWindowSource.Unknown),
                 };
             }
         }

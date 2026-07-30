@@ -266,21 +266,36 @@ public sealed class ClaudeDriver : IAgentDriver
         if (usage is null || usage.AssistantMessageCount == 0)
             return null;
 
-        // Prefer the launched model id (carries [1m]); fall back to the transcript model, which is
-        // stripped of [1m] and so needs the observed-size self-correction as its only [1m] signal.
-        var launchModelId = ExtractLaunchModelId(launchArgs);
-        var window = ClaudeContextWindow.WindowTokensForModel(launchModelId)
-                  ?? ClaudeContextWindow.WindowTokensForModel(usage.ContextModel, usage.ContextTokens);
-        var percent = window is > 0
-            ? Math.Round((double)usage.ContextTokens / window.Value * 100.0, 1)
-            : (double?)null;
-
+        // NO WINDOW IS REPORTED, BECAUSE CLAUDE HAS NOT TOLD US ONE (issue #1100).
+        //
+        // This used to map the model id to a window through a table of family names: an id containing
+        // "opus" meant 200,000 unless it also contained "[1m]". On the model the whole fleet runs, both
+        // inputs to that table fail. The launch arguments carry no model at all when it was chosen inside
+        // Claude Code with /model, and the transcript records the BASE id - a 1-million session and a
+        // 200k session are byte-identical there, because Claude Code logs "claude-opus-5" and discards
+        // the alias. So the table saw "opus", returned 200,000, and the gauge showed 92% in red for a
+        // session with roughly 800,000 tokens of headroom.
+        //
+        // Adding the new model to the table would have cleared that screenshot and fixed nothing. A table
+        // of model facts is a stale measurement: correct the day it is written and rotting silently from
+        // then on, with no error, no log line and no failing test - just a plausible wrong number on
+        // screen. It was wrong the day Opus 5 shipped and it would be wrong again on the next model, the
+        // next window size and the next alias.
+        //
+        // The rule now, for every driver: A DRIVER MAY ONLY REPORT A CONTEXT WINDOW ITS AGENT TOLD IT, AND
+        // MAY NEVER DERIVE ONE. The derivation is deleted rather than left unused, because code that stays
+        // gets called again. Claude Code does have a route to tell us - the status line receives
+        // context_window.context_window_size for the live session - and building it is tracked separately.
+        // Until then the honest answer is that we do not know, and the gauge shows the raw token count
+        // with no percentage, no bar and no colour. That is a correct shipped state: a missing number is
+        // an annoyance, a confident wrong one gets acted on.
         return new ContextUsageDto
         {
             UsedTokens = usage.ContextTokens,
-            WindowTokens = window,
-            PercentUsed = percent,
+            WindowTokens = null,
+            PercentUsed = null,
             AsOfUtc = usage.LastMessageUtc,
+            WindowSource = nameof(ContextWindowSource.Unknown),
         };
     }
 
