@@ -95,3 +95,44 @@ jobs:
 
       - name: Build the Cockpit
         run: npm run build --workspace @devthrottle/cockpit
+
+  # The Python guards over the shipped cc-* toolbelt.
+  #
+  # This job exists for the same reason the two above it do: nothing ran these. CI ran the .NET
+  # solution, the installer projects and the JavaScript workspaces, and NO Python at all - so
+  # tools/test_shipped_tools_contract.py, which was written specifically to catch the things that
+  # have silently broken a clean install before (a pyproject name that no longer matches the
+  # registry, a missing console-script entry point, non-ASCII in shipped source), had been FAILING
+  # on main with nobody to see it. A guard nobody runs cannot fail, and a red nobody sees is
+  # indistinguishable from green. Found while cutting cc-playwright from the toolbelt (#1002).
+  #
+  # Windows on purpose: these tools are installed and run on Windows, and that is where this suite
+  # was verified. The dependencies are named explicitly rather than installed from cc-devthrottle's
+  # pyproject, because that package depends on the local cc-shared distribution which is not on
+  # PyPI. If a dependency is added this job fails loudly with a ModuleNotFoundError rather than
+  # quietly skipping anything.
+  #
+  # cc-devthrottle's OWN tests are deliberately not run here yet. Adding them was the first thing
+  # this job did, and it immediately found why they had never survived an unattended run: five of
+  # them assert plain substrings against Rich-STYLED output, so they pass on a plain console and
+  # fail wherever colour is on - which is what a CI runner is. That is a real defect in those tests
+  # and it gets its own change rather than being silenced here with a colour flag.
+  tool-contracts:
+    name: Tool contracts (Python)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip pytest typer rich requests
+
+      # The shipped-tool contract: registry/pyproject name agreement, console-script entry points,
+      # ASCII-only shipped source, and the Rich ASCII patches.
+      - name: Run the shipped-tool contract guard
+        run: python -m pytest tools/test_shipped_tools_contract.py -q
