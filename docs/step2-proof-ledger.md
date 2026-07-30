@@ -134,8 +134,35 @@ on an empty body would rebuild the same false green inside the proof that the ou
 Enumerating sessions needs a pushed snapshot over a tunnel, which is a different rig. **OWED and
 UNOWNED.** |
 | 11 | The SQLite baseline is structurally equivalent to a real version 5 file, and the comparison is proven to detect | **CLOSED for the BASELINE, independently confirmed. The MODEL is a separate artefact and it still encodes the four rejected divergences - see row 20.** | Review 4 built one database by constructing `GatewayStatsDatabase` and another by running the migration, and compared `sqlite_master` unnormalised: only Entity Framework bookkeeping differed. It also read the normaliser and confirmed it changes only whitespace and does NOT hide quoting or casing. Detector proven by renaming `ix_stat_delta_hour`. **My claim that this diff "guards the model against the DDL" was WRONG and the reviewer said so - the test never compares model metadata to anything.** | **This is one of the two rows the authorised desktop release will be cut on. Do not read it as closed because the literal-DDL decision was made: that decision made equivalence ACHIEVABLE; only the diff makes it DEMONSTRATED.** Baseline being rewritten as the literal version 5 DDL so equivalence is true by construction; structural `sqlite_master` diff against a file built by RUNNING the existing code, table by table including index names, primary key column order, uniqueness, nullability and column order; detector proven by renaming an index on purpose and watching the failure name it. An independent reviewer already found four divergences here by probing - dropped `tenant` defaults on eight tables, rowid key nullability metadata, named primary key constraints, and `user_version` left at 0. |
-| 12 | Self-host adoption of an existing version 5 store, non-fatal, with the fixture built by running the real old code | **REOPENED by review 4 - three defects PROVED BY RUNNING, one of which WRITES TO A DATABASE IT SHOULD REFUSE** | Worker 2. Evidence packaged for the authorised desktop release at `docs/evidence/step2-self-host-adoption.md`, for a release seat that will not have us to ask. |
-| 13 | A migration added without moving `PRAGMA user_version` fails a test that NAMES the omission | **REOPENED - the test does not enforce what its name and failure text claim** | Enforcement must be MECHANICAL, not a comment and not a remembered rule. The expected stamp is DERIVED FROM THE CHAIN - four plus the number of migrations, where the 4 encodes that the baseline collapses versions 1 through 5 into one migration and must be commented as such or someone will "correct" it as an off-by-one. A constant is the same forgettable rule wearing a different hat. **RED, actual string:** `The SQLite statistics chain has 2 migration(s), so a freshly migrated store
+| 12 | Self-host adoption of an existing version 5 store, non-fatal, with the fixture built by running the real old code | **STILL OPEN after two review rounds. The FIX ROUND INTRODUCED TWO NEW DEFECTS, one of which reintroduces this mission's own failure mode.** | Worker 2.
+
+**NEW, and it is the worst thing found today by consequence:** the adoption path now takes Entity
+Framework's SQLite MIGRATION LOCK, and that lock is **UNBOUNDED**. Review 5 built a genuine version-5
+store carrying `__EFMigrationsLock` with a persisted lock row, called `Adopt`, watched it fail to
+complete within 2.5 seconds, then read the provider source and confirmed the synchronous acquisition
+**retries forever with no timeout and no cancellation path**. That is inside a path whose entire
+contract is containment. **A statistics store that HANGS startup is precisely what this mission exists
+to remove**, arriving through the fix for the check-then-create race.
+
+**NEW, and it breaks existing installs:** both baseline migration IDs were changed. Review 5 created the
+exact history state written by the previous revision over a genuine, healthy version-5 store, and
+adoption returned `NotAdoptable/NotAStatisticsStore`. A healthy store tracked by the earlier build is
+now REJECTED, and the PostgreSQL baseline appears pending.
+
+**Finding 3 remains PARTIAL:** `stat_delta` recreated with the exact expected column NAMES but no
+primary key, no `NOT NULL`, no tenant default and no indexes was Adopted and stamped.
+
+Confirmed FIXED by the same review: the target-model divergences (and the new rebuild test genuinely
+DETECTS - run against the restored old model it failed on the tenant default), the invalid tracked and
+foreign store certifications, the check-then-create race, and the evidence table. All five refused
+states returned the intended reason AND the database file SHA-256 was identical before and after each
+call - refused AND unmodified, both asserted. Evidence packaged for the authorised desktop release at `docs/evidence/step2-self-host-adoption.md`, for a release seat that will not have us to ask. |
+| 13 | A migration added without moving `PRAGMA user_version` fails a test that NAMES the omission | **STILL OPEN - review 5 confirmed NOT FIXED by running it** | Enforcement must be MECHANICAL, not a comment and not a remembered rule. The expected stamp is DERIVED FROM THE CHAIN - four plus the number of migrations, where the 4 encodes that the baseline collapses versions 1 through 5 into one migration and must be commented as such or someone will "correct" it as an off-by-one. A constant is the same forgettable rule wearing a different hat. **Review 5 defeated it again, PROVED BY RUNNING:** it added two deliberately malformed migrations - one
+that does not move the stamp, one that jumps straight to the final arithmetic value - both with empty
+`Down()` methods, and the test STILL PASSED. The final-sum check remains defeatable exactly as
+originally reported, and no `Down()` is exercised at all.
+
+**RED, actual string:** `The SQLite statistics chain has 2 migration(s), so a freshly migrated store
 should stamp PRAGMA user_version = 6, but it stamps 5. A MIGRATION WAS ADDED TO THE CHAIN WITHOUT MOVING
 THE VERSION STAMP. Every migration that changes this schema must raise the stamp by one, in its own
 Up(), with a matching reset in its Down(). The stamp is what an OLDER build of DevThrottle reads to
