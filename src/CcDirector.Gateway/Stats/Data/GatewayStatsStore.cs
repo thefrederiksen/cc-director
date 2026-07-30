@@ -82,8 +82,25 @@ public sealed class GatewayStatsStore : IDisposable
     /// completely as one that threw, and it would do it without a single exception in the log. So the
     /// containment is on the clock as well as on the exception.
     ///
-    /// Twenty seconds is chosen to be comfortably longer than opening and migrating a reachable database,
-    /// and far shorter than any deadline it sits in front of.
+    /// TWENTY SECONDS IS CURRENTLY TOO SHORT, MEASURED. This comment used to say the number was "comfortably
+    /// longer than opening and migrating a reachable database". That was REASONED AND NEVER MEASURED, and
+    /// review 9 has now measured the self-host adoption path taking 35.065 seconds to return its named busy
+    /// result against a local writer lock. So the justification is false and is corrected here rather than
+    /// left sitting beside a number somebody would otherwise trust.
+    ///
+    /// THE CONSEQUENCE IS WORSE THAN A SHORT WAIT, and it is this class's own doing rather than the adoption
+    /// step's. On timeout the attempt is ABANDONED and not cancelled - deliberately, so a migration in flight
+    /// is not torn out from under itself - and only the code past the timeout assigns the factory. So an open
+    /// that would have SUCCEEDED at thirty-five seconds runs to completion and can never publish: the store
+    /// is unavailable for the LIFE OF THE PROCESS, not merely for the first twenty seconds. A store that is
+    /// only SLOW is therefore indistinguishable, from outside, from one that is broken.
+    ///
+    /// The timeout also reports <see cref="StatsStoreUnavailableReason.Unreachable"/>, whose sentence sends
+    /// the reader to the database and the network - misleading when the truth is a local writer lock.
+    ///
+    /// The number is NOT changed here, and neither is the reason. Raising it, giving the timeout its own
+    /// reason, or both, is the Manager's call: worker 2 owns the adoption cost this is measured against, and
+    /// a deadline that sits in front of a platform startup limit is not a number one seat should move alone.
     /// </summary>
     public static readonly TimeSpan OpenDeadline = TimeSpan.FromSeconds(20);
 
