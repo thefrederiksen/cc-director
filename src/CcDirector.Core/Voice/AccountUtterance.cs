@@ -25,16 +25,25 @@ namespace CcDirector.Core.Voice;
 /// serves English; a language selecting an ENGINE is what got this feature reverted
 /// (devthrottle_internal#547), which is why nothing on this path can carry one.
 ///
-/// STANDALONE IS NOT A FAILURE AND NOT A FALLBACK. A Director with no Gateway configured has no account, so
-/// there is no per-account language to have; <see cref="ForAsync"/> returns null and the caller speaks exactly
-/// as it did before any of this existed, from the machine's own configuration. That is the complete and correct
-/// answer for that topology, not a degraded one.
+/// TWO ABSENCES THAT MUST NEVER LOOK ALIKE, and collapsing them into one null was a real defect (client audit,
+/// finding 1).
 ///
-/// AN ATTACHED-BUT-UNREACHABLE GATEWAY CANNOT MAKE THE DESKTOP SPEAK IN THE WRONG VOICE, which is the case
-/// that looks dangerous. Desktop speech also needs the account KEY, and that key comes from the same Gateway
-/// through the same configuration (<see cref="HostedAiKeyResolver"/>). No Gateway means no key, which means no
-/// audio: the two fail together. There is no state where this returns null quietly and a sentence is still
-/// spoken.
+///   - NO ACCOUNT. A Director with no Gateway configured has no account, so there is no per-account language to
+///     have. The machine's own configured voice is the only truth, and speaking with it is the complete and
+///     correct answer for that topology.
+///   - COULD NOT ASK. A Director that IS attached, whose lookup timed out, was refused, or answered partially.
+///     Here the account HAS a language and we do not know what it is.
+///
+/// This returned null for both, so the caller could not tell them apart and fell back to the machine voice in the
+/// second case too. The argument that made that look safe was that speech also needs the account KEY from the
+/// same Gateway, so the two would fail together. THAT ARGUMENT IS WRONG: the key is fetched by a different route
+/// and CACHED IN MEMORY (<see cref="HostedAiKeyResolver"/>). The real sequence is a French account speaking once
+/// while healthy, caching its key, and then having its next sentence read aloud in the machine's English voice
+/// because one lookup timed out. Silently. That is the reverted bug in a new place.
+///
+/// So the two states are different values and a caller must handle them differently: speak for the first, REFUSE
+/// for the second. A wrong-language voice is not a degraded success - it is the failure this mission exists to
+/// remove, and the desktop already has somewhere to report a failure to.
 /// </summary>
 public class AccountUtterance
 {
@@ -56,7 +65,8 @@ public class AccountUtterance
 
     /// <summary>
     /// The account's decision, packaged: <paramref name="text"/> with the language this account is spoken to in
-    /// and the voice that speaks it. Null when there is no account to ask (see the standalone note above).
+    /// and the voice that speaks it - or WHICH KIND of absence this is, so a caller can never treat "could
+    /// not ask" as "nothing to ask about" (see the two-absences note above).
     ///
     /// ASKED EVERY TIME, AND DELIBERATELY NOT CACHED. The language and voice settings are defined to take
     /// effect on the next spoken output; a cache is precisely what would make the Language tab appear to do
@@ -64,11 +74,12 @@ public class AccountUtterance
     /// that was reverted. One small request against a Gateway that is about to be asked to synthesize a whole
     /// sentence is not the cost worth optimizing here.
     /// </summary>
-    public async Task<SpokenUtterance?> ForAsync(string text, CancellationToken ct = default)
+    public async Task<AccountVoiceLookup> ForAsync(string text, CancellationToken ct = default)
     {
         var gateway = _gatewayProvider();
-        if (!gateway.IsEnabled) return null;
-        if (string.IsNullOrWhiteSpace(text)) return null;
+        if (!gateway.IsEnabled) return AccountVoiceLookup.NoAccount();
+        if (string.IsNullOrWhiteSpace(text))
+            return AccountVoiceLookup.Unavailable("there are no words to speak");
 
         var url = gateway.Url.TrimEnd('/') + "/gateway/spoken-language";
         try
@@ -80,8 +91,8 @@ public class AccountUtterance
             using var resp = await _http.SendAsync(req, ct);
             if (!resp.IsSuccessStatusCode)
             {
-                FileLog.Write($"[AccountUtterance] GET {url} -> {(int)resp.StatusCode}; speaking with the machine's own voice");
-                return null;
+                FileLog.Write($"[AccountUtterance] GET {url} -> {(int)resp.StatusCode}");
+                return AccountVoiceLookup.Unavailable($"the Gateway answered {(int)resp.StatusCode}");
             }
 
             var json = await resp.Content.ReadAsStringAsync(ct);
@@ -90,19 +101,61 @@ public class AccountUtterance
             var voice = doc.RootElement.TryGetProperty("voice", out var v) ? v.GetString() : null;
             if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(voice))
             {
-                FileLog.Write($"[AccountUtterance] GET {url} answered without a language or a voice; speaking with the machine's own voice");
-                return null;
+                FileLog.Write($"[AccountUtterance] GET {url} answered without a language or a voice");
+                return AccountVoiceLookup.Unavailable("the Gateway did not say which language or voice to use");
             }
 
             // Resolve, not parse-or-throw: a code from a NEWER Gateway that this build does not know reads as
             // English rather than taking the voice away entirely - the same direction SpokenLanguages.Resolve
             // documents for every read, and the reason a rollback stays safe.
-            return SpokenUtterance.For(SpokenLanguages.Resolve(code), voice, text);
+            return AccountVoiceLookup.Resolved(SpokenUtterance.For(SpokenLanguages.Resolve(code), voice, text));
         }
         catch (Exception ex)
         {
             FileLog.Write($"[AccountUtterance] fetch failed ({url}): {ex.Message}");
-            return null;
+            return AccountVoiceLookup.Unavailable("the Gateway could not be reached");
         }
     }
+}
+
+/// <summary>
+/// The answer to "what is this account spoken with": the utterance, or WHICH KIND of absence.
+///
+/// Three states rather than a nullable, because two of them are absences that must not be handled the same way
+/// (client audit, finding 1). A caller holding one null cannot tell "this machine has no account" from "the
+/// account has a language and I could not find out what it is" - and treating the second like the first is what
+/// read a French account's sentence aloud in the machine's English voice.
+/// </summary>
+public sealed class AccountVoiceLookup
+{
+    private AccountVoiceLookup(SpokenUtterance? utterance, bool hasAccount, string? reason)
+    {
+        Utterance = utterance;
+        HasAccount = hasAccount;
+        Reason = reason;
+    }
+
+    /// <summary>The packaged utterance when it resolved; null otherwise.</summary>
+    public SpokenUtterance? Utterance { get; }
+
+    /// <summary>Whether this Director is attached to a Gateway at all - whether there IS an account whose
+    ///  language could have been asked for.</summary>
+    public bool HasAccount { get; }
+
+    /// <summary>Why the lookup failed, in words a person can act on. Null unless this is a failure. ASCII, and it
+    ///  never contains the spoken text.</summary>
+    public string? Reason { get; }
+
+    /// <summary>It resolved: speak this.</summary>
+    public static AccountVoiceLookup Resolved(SpokenUtterance utterance)
+        => new(utterance ?? throw new ArgumentNullException(nameof(utterance)), hasAccount: true, reason: null);
+
+    /// <summary>There is no Gateway and therefore no account: the machine's own configured voice is the whole
+    ///  truth here, and speaking with it is correct rather than degraded.</summary>
+    public static AccountVoiceLookup NoAccount() => new(null, hasAccount: false, reason: null);
+
+    /// <summary>There IS an account and its language could not be established. The caller must NOT speak: it does
+    ///  not know which language to speak in, and guessing is the failure.</summary>
+    public static AccountVoiceLookup Unavailable(string reason)
+        => new(null, hasAccount: true, reason: reason);
 }

@@ -36,8 +36,10 @@ public sealed class AccountUtteranceTests
         var handler = new CapturingHandler(HttpStatusCode.OK, """{"language":"fr","voice":"ff_siwis"}""");
         var utterances = new AccountUtterance(() => new GatewayConfig { Url = GatewayUrl }, new HttpClient(handler));
 
-        var utterance = await utterances.ForAsync("Trois sessions vous attendent.");
+        var lookup = await utterances.ForAsync("Trois sessions vous attendent.");
 
+        Assert.True(lookup.HasAccount);
+        var utterance = lookup.Utterance;
         Assert.NotNull(utterance);
         Assert.Equal(SpokenLanguages.French, utterance!.Language);
         Assert.Equal("ff_siwis", utterance.Voice);
@@ -72,7 +74,9 @@ public sealed class AccountUtteranceTests
         var handler = new CapturingHandler(HttpStatusCode.OK, """{"language":"fr","voice":"ff_siwis"}""");
         var utterances = new AccountUtterance(() => new GatewayConfig(), new HttpClient(handler));
 
-        Assert.Null(await utterances.ForAsync("some words"));
+        var standalone = await utterances.ForAsync("some words");
+        Assert.False(standalone.HasAccount);
+        Assert.Null(standalone.Utterance);
         Assert.Null(handler.Request);
     }
 
@@ -87,9 +91,9 @@ public sealed class AccountUtteranceTests
         var utterances = new AccountUtterance(
             () => attached ? new GatewayConfig { Url = GatewayUrl } : new GatewayConfig(), new HttpClient(handler));
 
-        Assert.Null(await utterances.ForAsync("some words"));
+        Assert.False((await utterances.ForAsync("some words")).HasAccount);
         attached = true;
-        Assert.Equal("em_alex", (await utterances.ForAsync("unas palabras"))!.Voice);
+        Assert.Equal("em_alex", (await utterances.ForAsync("unas palabras")).Utterance!.Voice);
     }
 
     /// <summary>
@@ -103,7 +107,7 @@ public sealed class AccountUtteranceTests
         var handler = new CapturingHandler(HttpStatusCode.OK, """{"language":"de","voice":"af_bella"}""");
         var utterances = new AccountUtterance(() => new GatewayConfig { Url = GatewayUrl }, new HttpClient(handler));
 
-        Assert.Equal(SpokenLanguages.English, (await utterances.ForAsync("words"))!.Language);
+        Assert.Equal(SpokenLanguages.English, (await utterances.ForAsync("words")).Utterance!.Language);
     }
 
     /// <summary>
@@ -125,7 +129,10 @@ public sealed class AccountUtteranceTests
         var utterances = new AccountUtterance(
             () => new GatewayConfig { Url = GatewayUrl }, new HttpClient(new CapturingHandler(status, body)));
 
-        Assert.Null(await utterances.ForAsync("words"));
+        var lookup = await utterances.ForAsync("words");
+        Assert.Null(lookup.Utterance);
+        Assert.True(lookup.HasAccount, "an attached Gateway that failed is NOT the same as no account");
+        Assert.False(string.IsNullOrWhiteSpace(lookup.Reason));
     }
 
     /// <summary>An unreachable Gateway does not throw into the caller's turn. Desktop speech is something a person
@@ -136,7 +143,9 @@ public sealed class AccountUtteranceTests
         var utterances = new AccountUtterance(
             () => new GatewayConfig { Url = GatewayUrl }, new HttpClient(new ThrowingHandler()));
 
-        Assert.Null(await utterances.ForAsync("words"));
+        var failed = await utterances.ForAsync("words");
+        Assert.Null(failed.Utterance);
+        Assert.True(failed.HasAccount);
     }
 
     /// <summary>
