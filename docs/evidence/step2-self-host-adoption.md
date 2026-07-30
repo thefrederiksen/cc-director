@@ -52,7 +52,7 @@ nobody listed.
 
 ### The fix: the baseline IS the version 5 data definition language
 
-`Stats/Data/Migrations/20260730160415_InitialGatewayStats.cs` `Up()` is raw SQL, copied verbatim from the
+The baseline migration's `Up()` (`Stats/Data/Migrations/`) is raw SQL, copied verbatim from the
 `sql` column of `sqlite_master` in a database built by RUNNING the shipped `GatewayStatsDatabase`. Equivalence
 is therefore true BY CONSTRUCTION rather than by careful matching.
 
@@ -66,9 +66,12 @@ tidied:
   `ALTER TABLE ... RENAME TO` rewrites the stored name in quotes.
 - Rowid keys are a bare `INTEGER PRIMARY KEY AUTOINCREMENT`, and no key carries a constraint name.
 
-The model snapshot is unchanged. Entity Framework compares the model to the snapshot, not to the database, so
-`has-pending-model-changes` stays green; the structural diff is what guards the model against the data
-definition language.
+The MODEL was corrected too, and that is a separate fix from the baseline text - a review caught that doing
+only the latter hides the divergence from the baseline's OUTPUT without correcting the chain's target model,
+which is what a LATER migration is scaffolded against. The tenant column's `DEFAULT 'local'` is now in the
+model and both snapshots were regenerated from it. Entity Framework compares the model to the snapshot rather
+than to the database, so `has-pending-model-changes` stays green, and the later-migration test below is what
+guards the model against the data definition language.
 
 ### The comparison, and that it detects
 
