@@ -26,9 +26,14 @@ public enum StatsStoreAdoptionOutcome
 }
 
 /// <summary>
-/// Why an existing statistics store could not be adopted. A NAMED reason, never a bare failure: these cases
-/// present identically to an operator otherwise, and the next incident would be spent guessing which one it
-/// was.
+/// Why the statistics store is unavailable. A NAMED reason, never a bare failure: these cases present
+/// identically to an operator otherwise, and the next incident would be spent guessing which one it was.
+///
+/// The first four are what the ADOPTION step can find in an existing self-host file. The last two are what
+/// the STARTUP BOUNDARY can find before there is a store at all, and the distinction between those two is an
+/// Architect ruling rather than a nicety: <see cref="NotConfigured"/> is fixed by editing a setting and
+/// <see cref="Unreachable"/> is fixed by fixing a database, and a deploy that simply forgot a variable would
+/// otherwise present identically to a database outage.
 /// </summary>
 public enum StatsStoreUnavailableReason
 {
@@ -105,6 +110,24 @@ public enum StatsStoreUnavailableReason
     /// exactly what was seen.
     /// </summary>
     StoreSchemaIncomplete,
+
+    /// <summary>There is no statistics store CONFIGURED to open. A settings problem, and it is deliberately
+    /// NOT the same reason as <see cref="Unreachable"/>: this one is fixed by setting an environment
+    /// variable, and nobody should spend an incident looking at the network for it.
+    ///
+    /// It covers a self-host misconfiguration, an override that is SET BUT BLANK (a real operator error -
+    /// somebody meant to name a database and left the value empty), a Gateway connection string that cannot
+    /// be parsed to derive from, and a hosted Gateway with no PostgreSQL database named at all. A hosted
+    /// Gateway lands here rather than opening a local statistics file, under any circumstance.</summary>
+    NotConfigured,
+
+    /// <summary>A statistics store IS configured, and it could not be reached, opened or migrated. A
+    /// database or network problem, and deliberately NOT the same reason as <see cref="NotConfigured"/>:
+    /// this one is fixed by fixing the database, and the settings are already right.
+    ///
+    /// This is the case the containment boundary exists for. The Gateway boots, serves its roster and serves
+    /// its tunnels; only the statistics surface is off, and it says why.</summary>
+    Unreachable,
 }
 
 /// <summary>
