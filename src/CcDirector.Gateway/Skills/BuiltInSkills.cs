@@ -50,8 +50,13 @@ public static class BuiltInSkills
         new SkillDefinition(
             Id: "move-session",
             Name: "Move a session",
-            Summary: "Relocate a live session to another Director through the Gateway, with an approval gate.",
-            Triggers: new[] { "move session", "migrate session", "transfer session" }),
+            Summary: "Move a live session to another Director or slot: a right-sized handover, a fresh " +
+                     "session, verification it picked the work up, then DELETE the original.",
+            Triggers: new[]
+            {
+                "move session", "migrate session", "transfer session",
+                "move it to the new director",
+            }),
     };
 
     /// <summary>Every skill the Gateway ships, in the order the register lists them.</summary>
