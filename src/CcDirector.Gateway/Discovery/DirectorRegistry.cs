@@ -48,8 +48,29 @@ public sealed class DirectorRegistry : IDisposable
         WatchDirectory = instancesDirectory ?? InstancesDirectory;
     }
 
-    /// <summary>If an HTTP-registered Director has not heartbeat for this long, it gets swept.</summary>
-    public static TimeSpan HttpHeartbeatTimeout { get; } = TimeSpan.FromSeconds(60);
+    /// <summary>
+    /// Epic #1159 step A: the eviction horizon - how long a machine may be gone before its registry entry
+    /// is swept and its sessions leave the roster. This is THE ONLY elapsed-time rule in the Gateway that
+    /// removes a session, and it is deliberately measured in hours.
+    ///
+    /// IT USED TO BE SIXTY SECONDS, and that was the second half of this step's defect. The roster refused
+    /// to SERVE a machine after twenty seconds of silence, and sixty seconds later the registry DELETED it
+    /// outright - taking its cached sessions, its snoozes (self-host <c>ClearForDirector</c>) and its
+    /// session numbers with them. Restoring the roster read alone would therefore have bought about a
+    /// minute; the acceptance for this step is five. A short timeout is the right instrument for "may I
+    /// route a command at this machine" - which is the tunnel connection, and is answered elsewhere - and
+    /// the wrong one for "does this machine exist".
+    /// </summary>
+    public static TimeSpan DefaultEvictionHorizon { get; } =
+        TimeSpan.FromHours(Core.Configuration.GatewayConfig.DefaultDirectorEvictionHorizonHours);
+
+    /// <summary>
+    /// This registry's eviction horizon. Settable so a test can drive a REAL eviction in milliseconds
+    /// rather than asserting a constant - the destructibility control the roster tests need, since a
+    /// serve-everything bug and a correct fix are indistinguishable without proving something still
+    /// removes sessions eventually.
+    /// </summary>
+    public TimeSpan EvictionHorizon { get; init; } = DefaultEvictionHorizon;
 
     // Gateway Cleanup mission (post-cut): the reachability circuit-breaker (consecutive-failure counting,
     // cooldown, unreachable-evict) and the advertised-endpoint re-verification state machine are DELETED.
@@ -534,15 +555,19 @@ public sealed class DirectorRegistry : IDisposable
             {
                 // Gateway Cleanup mission (tunnel-only): "stream" entries are aged out exactly like "http" -
                 // by staleness. A connected Director refreshes LastSeen on every Hello + the ~10s periodic
-                // re-push, so it never ages; a Director whose tunnel closed stops refreshing and is swept after
-                // HttpHeartbeatTimeout. This is why the DirectorHub does NOT drop the entry the instant the
-                // stream closes: a dead Director's cached roster must survive the sweep window so a Gateway-owned
+                // re-push, so it never ages; a Director whose tunnel closed stops refreshing and is swept once
+                // it passes the eviction horizon. This is why the DirectorHub does NOT drop the entry the
+                // instant the stream closes: a dead Director's cached roster must survive so a Gateway-owned
                 // snooze can still fire it back to "needs you" from the cache, and a brief reconnect blip never
                 // flaps the roster.
+                //
+                // Epic #1159 step A: the horizon is a DAY, not a minute. Passing it is the one elapsed-time
+                // event allowed to remove a session, and it is the event this whole removal cascade hangs off -
+                // session numbers, the snooze rows and the pushed cache are all released here.
                 if (kv.Value.Source == "http" || kv.Value.Source == "stream")
                 {
                     var lastSeen = kv.Value.LastSeen ?? DateTime.MinValue;
-                    if (now - lastSeen > HttpHeartbeatTimeout)
+                    if (now - lastSeen > EvictionHorizon)
                     {
                         if (TryRemoveEntry(kv.Key, out _))
                         {

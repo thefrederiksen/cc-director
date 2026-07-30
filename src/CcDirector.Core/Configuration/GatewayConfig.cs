@@ -117,6 +117,19 @@ public sealed class GatewayConfig
     /// <summary>Default value for <see cref="StreamStaleAfterSeconds"/>.</summary>
     public const int DefaultStreamStaleAfterSeconds = 20;
 
+    /// <summary>
+    /// Epic #1159 step A: how long a machine may be gone before the Gateway forgets it and its sessions
+    /// leave the roster. This is the ONE elapsed-time rule allowed to remove a session; every shorter
+    /// staleness window now decides only what the roster SAYS about a machine, never whether it is served.
+    ///
+    /// It is deliberately far longer than any push or heartbeat interval. The value it replaced was sixty
+    /// seconds - one minute of a closed tunnel and the machine, its sessions and its colours were deleted
+    /// from the roster, which is the defect this step exists to end. A day is long enough that a laptop
+    /// shut overnight is still there in the morning, and short enough that a machine genuinely retired
+    /// does not haunt the roster for a week.
+    /// </summary>
+    public const int DefaultDirectorEvictionHorizonHours = 24;
+
     /// <summary>True when <see cref="Url"/> is configured.</summary>
     public bool IsEnabled => !string.IsNullOrWhiteSpace(Url);
 

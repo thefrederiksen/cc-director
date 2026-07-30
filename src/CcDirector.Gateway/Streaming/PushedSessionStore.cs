@@ -350,6 +350,26 @@ public sealed class PushedSessionStore
     }
 
     /// <summary>
+    /// Drop everything this store holds for one Director in one tenant (epic #1159 step A).
+    ///
+    /// Entries deliberately survive a disconnect - that is what lets the roster keep serving a machine whose
+    /// tunnel has closed - so without this they would survive FOREVER, and "keep the sessions" would quietly
+    /// become an unbounded memory leak keyed by every Director that ever connected. The eviction horizon is
+    /// the event that ends a machine's life in the Gateway, and this is that event applied here: it is called
+    /// from the registry's removal cascade, alongside the session-number release and the snooze clear, so
+    /// there is exactly ONE place a machine is forgotten rather than three timers that can disagree.
+    ///
+    /// Scoped to one (tenant, director) pair, so forgetting a machine in one account cannot reach another's.
+    /// </summary>
+    public void Forget(TenantId tenant, string directorId)
+    {
+        if (string.IsNullOrEmpty(directorId))
+            return;
+        if (DirectorsFor(tenant).TryRemove(directorId, out _))
+            FileLog.Write($"[PushedSessionStore] Forget: tenant={tenant.ToLogString()}, director={directorId} passed the eviction horizon; its sessions leave the roster");
+    }
+
+    /// <summary>
     /// Issue #1177 (Phase 4a): find the Director that currently owns <paramref name="sessionId"/> in a FRESH
     /// pushed cache, without any HTTP pull. Scans <paramref name="tenant"/>'s Directors only (each under its
     /// own lock) and returns the first fresh match as (directorId, deep-copied session). Returns null when no

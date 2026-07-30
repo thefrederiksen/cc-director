@@ -182,14 +182,6 @@ public sealed class GatewayHost : IAsyncDisposable
     public Stats.Data.GatewayStatsStore StatsStore { get; }
 
     /// <summary>
-    /// Issue #1215 (Cockpit plan phase 6): the last-known-good roster cache. The <c>/sessions</c>
-    /// aggregation uses it so a single failed Director poll no longer drops that Director's sessions -
-    /// they are served stale (Wobbly) through a short grace window and only dropped (Offline) once the
-    /// grace window is exhausted. Presentation only; it never touches discovery or the registry constants.
-    /// </summary>
-    public Discovery.FleetRosterCache RosterCache { get; }
-
-    /// <summary>
     /// launcher-persistent-join: the map of which machine's cc-launcher is currently joined over a
     /// persistent stream. When a launcher is stream-connected, the machine lifecycle relay pushes a command
     /// DOWN the open stream instead of dialing the launcher's REST API. Empty until launchers connect and
@@ -924,13 +916,17 @@ public sealed class GatewayHost : IAsyncDisposable
         SessionConcurrency = GatewayHostedMode.IsHosted || GatewayHostedMode.IsHostedImage
             ? null
             : new Stats.GatewaySessionConcurrencyStats();
-        RosterCache = new Discovery.FleetRosterCache();
-        // Issue #1215: when a Director is unregistered or evicted from the registry, forget its cached
-        // roster too so the cache does not grow without bound; a re-registering Director starts clean.
-        // Scoped to the tenant the removal names. The cache is partitioned by (tenant, director) and the
-        // removal now carries its owner, so forgetting one account's Director cannot reach another's - which
-        // it could when this event was a bare string and the forget swept every matching partition.
-        Registry.OnDirectorRemoved += removal => RosterCache.Forget(removal.Tenant, removal.DirectorId);
+        // Epic #1159 step A: when a machine passes the eviction horizon (or unregisters gracefully), forget
+        // what it pushed. The pushed store keeps a Director's sessions across a disconnect on purpose - that
+        // is what lets the roster serve a machine whose tunnel is down - so this is the one place those
+        // entries are ever released, and without it "keep the sessions" would be an unbounded leak keyed by
+        // every Director that ever connected. Scoped to the tenant the removal names, so forgetting one
+        // account's Director cannot reach another's.
+        //
+        // The last-known-good roster cache that used to be forgotten here is DELETED. It was the second
+        // staleness authority in the roster path and the one that declared a machine Offline and dropped its
+        // sessions; the roster read now serves last-known state unconditionally and reports its age instead.
+        Registry.OnDirectorRemoved += removal => PushedSessions.Forget(removal.Tenant, removal.DirectorId);
         LauncherConnections = new Streaming.LauncherConnectionRegistry();
         var gatewayConfig = Core.Configuration.GatewayConfig.Load();
         // Gateway Cleanup: the tunnel is mandatory; the streamMode parameter is ignored and retained only for existing test call sites (removed with the test rewrite).
@@ -2577,7 +2573,6 @@ public sealed class GatewayHost : IAsyncDisposable
             // Issue #1215 (Cockpit plan phase 6): the last-known-good roster cache absorbs a transient poll
             // failure as Wobbly (served stale through a short grace window) instead of blinking the
             // Director's sessions out of the roster; only a sustained failure reads as Offline.
-            rosterCache: RosterCache,
             // Issue #1292: the fleet-wide session-number authority backs POST /session-numbers/allocate
             // (Directors ask here at session creation) and the /sessions adopt-reconcile.
             sessionNumbers: SessionNumbers,

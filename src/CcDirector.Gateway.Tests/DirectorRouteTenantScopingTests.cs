@@ -305,7 +305,7 @@ public sealed class DirectorRouteTenantScopingTests : IAsyncLifetime
 
         var registered = _gateway.Registry.Get(_tenantB, "dir-b-feed-remove");
         Assert.NotNull(registered);
-        registered.LastSeen = DateTime.UtcNow - DirectorRegistry.HttpHeartbeatTimeout - TimeSpan.FromSeconds(1);
+        registered.LastSeen = DateTime.UtcNow - DirectorRegistry.DefaultEvictionHorizon - TimeSpan.FromSeconds(1);
         _gateway.Registry.SweepStale();
 
         using var positiveControlTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));

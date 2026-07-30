@@ -335,6 +335,26 @@ public sealed class SessionDto
     public string MachineName { get; set; } = "";
 
     /// <summary>
+    /// Epic #1159 step A: whether the machine that owns this session is reachable RIGHT NOW - its tunnel is
+    /// up and its last push is current. Stamped by the Gateway's roster read; null in Director-local
+    /// responses, where the question is meaningless because the answering Director is the machine.
+    ///
+    /// This is the Gateway's answer to "may this session nag the human", and it is a Gateway answer on
+    /// purpose. The roster now serves the sessions of a machine nobody can reach - dimmed and dated instead
+    /// of deleted - and the moment it does, "needs you" splits into two different questions that used to be
+    /// one: SHOW it (yes, the work is real and the human should see it) and NAG about it (no, there is
+    /// nothing they can do about a laptop that is asleep). A badge lit all night over three red sessions on
+    /// a machine nobody can act on is not information, it is noise the owner cannot switch off.
+    ///
+    /// Every client reads this field rather than deriving it. The reachability list in the roster envelope
+    /// carries the same fact per MACHINE, and a client could join the two itself - one of them already did,
+    /// for the voice queue - but a join is a rule, and a rule computed in two clients is two rules that
+    /// drift. The desktop shell has no such join at all, which is precisely how its badge and the phone's
+    /// came to disagree. One field, stamped once, read verbatim.
+    /// </summary>
+    public bool? MachineReachable { get; set; }
+
+    /// <summary>
     /// User the owning Director is running as. Populated by the Gateway aggregator.
     /// Empty in Director-local responses.
     /// </summary>
