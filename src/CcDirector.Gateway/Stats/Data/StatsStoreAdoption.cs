@@ -48,6 +48,17 @@ public enum StatsStoreUnavailableReason
     /// <summary>The file could not be read or interrogated at all - a locked, truncated or corrupt file, or
     /// a path that is not a readable database.</summary>
     StoreUnreadable,
+
+    /// <summary>
+    /// The store has a migration history table, but that history does NOT record the baseline, while the
+    /// store's tables are already there. A first migration was interrupted partway - after Entity Framework
+    /// created the history table, before it recorded what it had done.
+    ///
+    /// Running the chain from here would try to create tables that already exist. The store needs a hand,
+    /// and guessing which half of an interrupted migration actually landed is exactly the kind of repair
+    /// that loses data quietly, so it is refused with this reason instead.
+    /// </summary>
+    MigrationHistoryIncomplete,
 }
 
 /// <summary>

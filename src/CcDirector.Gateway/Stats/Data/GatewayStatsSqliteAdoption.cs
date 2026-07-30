@@ -114,13 +114,15 @@ public static class GatewayStatsSqliteAdoption
 
         context.Database.OpenConnection();
 
-        // Already tracked. This is the STEADY STATE, not an exception: every store adopted once, and every
-        // store the chain itself created, is in this state on every later startup.
+        // The tables this store expects, read off the MODEL rather than written out as a list here, so the
+        // expectation cannot drift from the schema the baseline migration actually creates.
+        var expected = ExpectedTableNames(context);
+        var present = ReadTableNames(connection);
+        var missing = expected.Where(t => !present.Contains(t)).OrderBy(t => t, StringComparer.Ordinal).ToList();
+
         var history = context.GetService<IHistoryRepository>();
         if (history.Exists())
-            return new StatsStoreAdoptionResult(
-                StatsStoreAdoptionOutcome.AlreadyTracked, StatsStoreUnavailableReason.None,
-                $"The statistics store at '{path}' already has a migration history table; nothing to adopt.");
+            return InspectTrackedStore(context, path, expected.Count, missing.Count);
 
         // A file with no tables is an empty or newly-created file, not a store to adopt. It is checked BEFORE
         // the version stamp on purpose: an empty file reports user_version 0, which would otherwise be read as
@@ -139,17 +141,7 @@ public static class GatewayStatsSqliteAdoption
                 "in any way. Statistics are unavailable; the rest of the Gateway is unaffected.");
 
         // The second half of the claim. The version stamp alone is not enough: stamping a baseline is an
-        // assertion that these exact tables are already there, so it is checked rather than assumed. The
-        // expected set is read off the MODEL, not written out as a list here, so it cannot drift from the
-        // schema the baseline migration actually creates.
-        var expected = context.Model.GetEntityTypes()
-            .Select(t => t.GetTableName())
-            .Where(t => !string.IsNullOrEmpty(t))
-            .Select(t => t!)
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-        var present = ReadTableNames(connection);
-        var missing = expected.Where(t => !present.Contains(t)).OrderBy(t => t, StringComparer.Ordinal).ToList();
+        // assertion that these exact tables are already there, so it is checked rather than assumed.
         if (missing.Count > 0)
             return new StatsStoreAdoptionResult(
                 StatsStoreAdoptionOutcome.NotAdoptable, StatsStoreUnavailableReason.NotAStatisticsStore,
@@ -166,6 +158,64 @@ public static class GatewayStatsSqliteAdoption
             $"{expected.Count} tables present and no migration history, so the history table was created and " +
             $"the baseline migration stamped as applied. No row was read, written or moved.");
     }
+
+    /// <summary>
+    /// Decide about a store that ALREADY has a migration history table.
+    ///
+    /// "The store has a history table" and "the store is at the baseline" are TWO DIFFERENT CLAIMS, and only
+    /// the second is the one the chain depends on. Treating the first as though it were the second is how an
+    /// interrupted migration turns into a crash: Entity Framework creates the history table before it records
+    /// what it has done, so a first migration that died partway leaves an EMPTY history sitting beside tables
+    /// that already exist. Reporting that store as usable hands the chain a database it will try to build
+    /// again, and the resulting "table already exists" would be thrown from <c>Migrate()</c> - OUTSIDE this
+    /// step, and therefore outside its containment.
+    ///
+    /// Adoption itself can never produce that state (it stamps the history table and the baseline row in one
+    /// transaction), so this is not defending against our own step. It is refusing to certify a state we did
+    /// not create and cannot honestly repair: which half of an interrupted migration actually landed is a
+    /// guess, and guessing it is how a store loses data quietly.
+    /// </summary>
+    private static StatsStoreAdoptionResult InspectTrackedStore(
+        GatewayStatsDbContext context, string path, int expectedTableCount, int missingTableCount)
+    {
+        var baseline = BaselineMigrationOf(context);
+        var applied = context.Database.GetAppliedMigrations().ToList();
+
+        // The steady state, and by far the common one: every store adopted once, and every store the chain
+        // itself created, arrives here on every later startup.
+        if (applied.Contains(baseline, StringComparer.Ordinal))
+            return new StatsStoreAdoptionResult(
+                StatsStoreAdoptionOutcome.AlreadyTracked, StatsStoreUnavailableReason.None,
+                $"The statistics store at '{path}' already records the baseline migration as applied; " +
+                "nothing to adopt.");
+
+        // A history table with no baseline recorded, and no tables either: nothing was ever built here, so
+        // the chain simply builds it. This is a fresh store that happens to have been touched.
+        if (missingTableCount == expectedTableCount)
+            return new StatsStoreAdoptionResult(
+                StatsStoreAdoptionOutcome.FreshStore, StatsStoreUnavailableReason.None,
+                $"The statistics store at '{path}' has a migration history table but records no migrations " +
+                "and holds none of this store's tables; the migration chain will create the schema.");
+
+        // A history table that does not record the baseline, beside tables that ARE there.
+        return new StatsStoreAdoptionResult(
+            StatsStoreAdoptionOutcome.NotAdoptable, StatsStoreUnavailableReason.MigrationHistoryIncomplete,
+            $"The statistics store at '{path}' has a migration history table that does NOT record the " +
+            $"baseline migration '{baseline}', but {expectedTableCount - missingTableCount} of its " +
+            $"{expectedTableCount} tables already exist. A migration was interrupted partway. Running the " +
+            "chain would try to create tables that are already there, so the store has NOT been changed and " +
+            "needs looking at by hand. Statistics are unavailable; the rest of the Gateway is unaffected.");
+    }
+
+    /// <summary>The tables this store expects, read off the MODEL rather than written out as a list, so the
+    /// expectation cannot drift from the schema the baseline migration creates.</summary>
+    private static List<string> ExpectedTableNames(GatewayStatsDbContext context) =>
+        context.Model.GetEntityTypes()
+            .Select(t => t.GetTableName())
+            .Where(t => !string.IsNullOrEmpty(t))
+            .Select(t => t!)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
 
     /// <summary>
     /// Create the migration history table and stamp the baseline migration as applied.

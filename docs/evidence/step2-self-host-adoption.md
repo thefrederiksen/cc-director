@@ -249,19 +249,21 @@ person able to see the gap in it:
 - **A live downgrade has not been exercised end to end.** The stamp is proven to be written and to equal what
   the shipped code writes; that an older BUILD then produces its refusal rests on that build's existing,
   already-shipped version check rather than on a test run here.
-- **An INTERRUPTED first migration is not recovered, and is not contained by the adoption step.** The step
-  treats the presence of `__EFMigrationsHistory` as meaning the store is tracked, and returns `AlreadyTracked`
-  without inspecting which migrations that table records. If a first `Migrate()` ever died partway - after
-  Entity Framework created the history table but before the baseline was recorded - the store would come back
-  with an empty history beside tables that already exist, this step would report it usable, and the chain
-  would then fail on `table "stat_delta" already exists` OUTSIDE the step's containment.
+- **An INTERRUPTED migration is DETECTED and refused, but not repaired.** This was found by reading the step
+  rather than by a test failing, and was closed rather than left as a limitation. Entity Framework creates
+  the history table BEFORE it records what it has done, so a first migration that died partway leaves an
+  EMPTY history beside tables that already exist. The step originally treated the mere presence of
+  `__EFMigrationsHistory` as meaning the store was tracked, reported that store USABLE, and the chain would
+  then have thrown `table "stat_delta" already exists` from `Migrate()` - OUTSIDE the step, and therefore
+  outside its containment.
 
-  Adoption itself cannot produce that state: it creates the history table and stamps the baseline in ONE
-  transaction, so the pair is all-or-nothing. The state is reachable only through an interrupted Entity
-  Framework migration, which is the ordinary interrupted-migration failure for any database on this layer
-  rather than anything specific to adoption, and recovering from it would mean partial-migration repair -
-  well outside this work. It is named here rather than left silent because "the store has a history table"
-  and "the store is at the baseline" are not the same claim, and this step currently only checks the first.
+  It now checks the claim the chain actually depends on: that the history RECORDS THE BASELINE, not merely
+  that a history table exists. A history without the baseline beside tables that are present is refused as
+  `MigrationHistoryIncomplete` - contained, named, non-fatal.
+
+  **It is not repaired, deliberately.** Which half of an interrupted migration actually landed is a guess,
+  and guessing it is how a store loses data quietly. That store needs looking at by hand. Adoption itself can
+  never produce the state, because it stamps the history table and the baseline row in one transaction.
 
 - **THE WHOLE SOLUTION HAS NEVER BEEN BUILT OR TESTED FOR THIS WORK, and no automated check covers it.**
   `.github/workflows/ci.yml` fires only on a push to `main` and on pull requests whose base is `main`. This

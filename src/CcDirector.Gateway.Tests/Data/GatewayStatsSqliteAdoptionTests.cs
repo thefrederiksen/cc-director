@@ -2,6 +2,8 @@ using CcDirector.Gateway.Stats;
 using CcDirector.Gateway.Stats.Data;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests.Data;
@@ -338,6 +340,42 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
         Assert.False(result.IsUsable);
         Assert.NotEqual(StatsStoreUnavailableReason.None, result.Reason);
         Assert.False(string.IsNullOrWhiteSpace(result.Detail));
+    }
+
+    /// <summary>
+    /// AN INTERRUPTED MIGRATION IS NOT A TRACKED STORE. Entity Framework creates the migration history table
+    /// BEFORE it records what it has done, so a first migration that died partway leaves an EMPTY history
+    /// beside tables that already exist.
+    ///
+    /// The naive check - "does a history table exist?" - reports that store as usable, and the chain then
+    /// tries to build tables that are already there, throwing from Migrate() OUTSIDE this step and therefore
+    /// outside its containment. "The store has a history table" and "the store is at the baseline" are two
+    /// different claims, and only the second is the one the chain depends on.
+    /// </summary>
+    [Fact]
+    public void Adopt_HistoryTableWithoutTheBaseline_IsRefusedRatherThanCertifiedAsTracked()
+    {
+        BuildRealVersion5Store();
+
+        // The state an interrupted first migration leaves: the history table exists and records nothing,
+        // while the sixteen tables are already there. Created with Entity Framework's OWN create script, so
+        // this is the table the framework would have made rather than a hand-rolled lookalike.
+        using (var context = OpenContext())
+        {
+            var history = context.GetService<IHistoryRepository>();
+            context.Database.OpenConnection();
+            context.Database.ExecuteSqlRaw(history.GetCreateScript());
+        }
+
+        SqliteConnection.ClearAllPools();
+
+        using var check = OpenContext();
+        var result = GatewayStatsSqliteAdoption.Adopt(check);
+
+        Assert.Equal(StatsStoreAdoptionOutcome.NotAdoptable, result.Outcome);
+        Assert.Equal(StatsStoreUnavailableReason.MigrationHistoryIncomplete, result.Reason);
+        Assert.False(result.IsUsable);
+        Assert.Contains("interrupted", result.Detail, StringComparison.OrdinalIgnoreCase);
     }
 
     // ---- the ordinary new-machine paths ----------------------------------------------------------------
