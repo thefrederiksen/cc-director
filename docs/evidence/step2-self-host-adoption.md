@@ -13,6 +13,50 @@ nothing. Self-host keeps SQLite, and that is correct - the mission is no SQLite 
 
 ---
 
+## STOP - A LATENT DEFECT THAT ARMS ITSELF ON THE SECOND MIGRATION
+
+**Found by reading, not by a test. Not yet fixed. It is harmless today and it condemns every existing
+self-host store the moment a second migration is added to the chain - which is work already in progress.**
+
+`GatewayStatsSqliteAdoption.ExpectedSchema` builds its expectation from `context.Model` - the **current head
+model**. Adoption then refuses any store missing a column or an index that model describes.
+
+Today the chain has exactly one migration, so the head model and the baseline describe the same schema and
+the check is correct. **They stop coinciding at the second migration.** A version 6 that adds columns to the
+watermark tables puts those columns in the head model; a legacy version 5 file on a user's disk does not have
+them; adoption reports `StoreSchemaIncomplete` and refuses. The same applies to any index a later migration
+adds.
+
+The result is every healthy self-host store being condemned at once - and in this design that failure is
+**silent**: the Gateway starts, serves its roster, and reports statistics unavailable with a named reason
+that is a lie. Nothing pages anyone.
+
+### Why it is a conceptual error and not a tuning problem
+
+Adoption's claim is *"this file is what the BASELINE would have produced"* - that is what stamping the
+baseline as applied asserts, and it is all it asserts. Bringing the file up to the head model is
+`Migrate()`'s job, which runs immediately afterwards and exists precisely to apply the migrations the file
+has not seen.
+
+So the expectation must describe **the baseline's schema**, not the head model's. Validating against head
+asks the file to already be somewhere the chain is about to take it.
+
+### What this predicts, so the fix can be checked rather than assumed
+
+Add a second migration that adds a column to any of the sixteen tables, then adopt a real version 5 store
+built by running `GatewayStatsDatabase`. Before the fix it must be refused as `StoreSchemaIncomplete` naming
+the new column; after the fix it must be `Adopted`, and the following `Migrate()` must then add that column.
+The healthy-store cases in `GatewayStatsSqliteAdoptionTests` are the ones that will go red, which is the
+inverse-direction guard doing its job.
+
+### A related correction
+
+`PRAGMA user_version` is **SQLite only**. The PostgreSQL baseline contains no reference to it and cannot.
+Any instruction to "bump the stamp" applies to the SQLite migration, where
+`GatewayStatsSqliteVersionStampTests` enforces it per migration; a PostgreSQL migration has no stamp to move.
+
+---
+
 ## Item 5 first: the SQLite baseline is structurally the same database as a real version 5 file
 
 **This item is numbered five and printed first, deliberately.** Adoption is only correct if this holds. The
