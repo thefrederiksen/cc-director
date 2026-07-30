@@ -1,235 +1,288 @@
+<!--
+  SCREENSHOTS ARE MISSING FROM THIS PAGE. Tracked: thefrederiksen/devthrottle_internal#1053.
+
+  Sixteen images were deleted in thefrederiksen/devthrottle#2287 because every one showed a screen
+  that no longer exists (the Workstation/Gateway role picker, the Prerequisites screen, the Gateway
+  role). The text was rewritten against the shipping wizard; the pictures were not recaptured,
+  because the capture belongs to the clean-machine QA run rather than to a separate walk.
+
+  If you are adding them, read #1053 first. Three things matter more than the images:
+
+    1. Caption every image with its step number from FirstRunWizardModel.CanonicalOrder.
+       Gateway is step 2, NOT 7. Browsers is step 7, NOT 6. Three briefs got that wrong before the
+       prose was fixed, and a caption is where the error comes back.
+    2. The Agents step needs the ZERO-AGENT frame. A found-state picture under this page's
+       zero-state prose is the same failure that got the original sixteen deleted.
+    3. Capture at a roomy resolution. At 1024x768 the Welcome and Done steps clip (#1046), and a
+       screenshot taken where a defect does not appear must not become the reason that defect is
+       closed.
+-->
+
 # Setup Wizard Walkthrough
 
-This page walks through the **DevThrottle Setup wizard** on Windows, one screen at a
-time, with a screenshot of every step. It covers all three things the wizard does:
+Getting DevThrottle running means going through **two** short wizards, and it is worth knowing
+which is which:
 
-- **[Uninstalling or updating](#updating-or-uninstalling-an-existing-install)** an install that is already on the machine
-- **[Installing a Workstation](#workstation-installation)** (the everyday role)
-- **[Installing a Gateway](#gateway-installation)** (the single hub machine)
+| | Where it runs | What it is for |
+|---|---|---|
+| **[The installer](#part-1--the-installer-three-screens)** | **DevThrottle Setup**, before the app exists | Puts the files on the machine. Three screens, no decisions. |
+| **[The setup wizard](#part-2--the-setup-wizard-eight-steps)** | Inside the Director, the first time you open it | Sets this machine up: your gateway, your agents, your code. Eight steps. |
 
-The screenshots were captured against **v0.9.13**. The wizard is self-contained, so
-nothing needs to be installed before you can run it. It does **not** install your
-prerequisites for you — it checks for them and tells you what is missing.
+The split matters, because it is where the account lives. **The installer never asks who you are.**
+The Director installs and runs with no account at all. The one sign-in in DevThrottle is on the
+*second* screen of the *second* wizard, it is about connecting a gateway, and **"Not now" is a real
+answer**.
 
-> Looking for the command-line install instead of the graphical wizard? See
-> [Installation](02-installation.md). Both front-ends share one install engine and
-> produce exactly the same per-user layout under `%LOCALAPPDATA%\cc-director`.
-
----
-
-## Getting the installer
-
-1. Open the [latest release](https://github.com/example-org/devthrottle/releases/latest)
-   on GitHub.
-2. Download two files: **`devthrottle-setup-win-x64.exe`** and **`release-manifest.json`**.
-3. **Verify the download** before running it. Compare the installer's SHA-256 hash to
-   the value recorded for it in the manifest — if they do not match, stop and download
-   again:
-
-   ```powershell
-   $expected = (Get-Content release-manifest.json -Raw | ConvertFrom-Json).assets.'devthrottle-setup-win-x64.exe'.sha256
-   $actual   = (Get-FileHash devthrottle-setup-win-x64.exe -Algorithm SHA256).Hash.ToLower()
-   if ($actual -eq $expected.ToLower()) { "MATCH - safe to run" } else { "MISMATCH - do not run" }
-   ```
-
-4. Double-click `devthrottle-setup-win-x64.exe`. It is unsigned today, so Windows
-   SmartScreen may warn once — choose **More info → Run anyway**. No administrator
-   rights are required at any point.
+> Prefer no window at all? The [Installation](02-installation.md) page covers the command line
+> installer and the one-prompt install. Both front-ends share a single install engine and produce
+> exactly the same per-user layout under `%LOCALAPPDATA%\cc-director`.
 
 ---
 
-## The four steps
+## Part 1 -- The installer (three screens)
 
-Every run of the wizard moves left-to-right through the same rail:
+### Getting it
+
+Download **DevThrottle Setup** from [devthrottle.com/download](https://devthrottle.com/download).
+There is no sign-up in front of the download.
+
+If you would rather verify the file yourself, take it from the
+[latest release](https://github.com/thefrederiksen/devthrottle/releases/latest) instead --
+`devthrottle-setup-win-x64.exe` plus `release-manifest.json` -- and check the hash before running it:
+
+```powershell
+$expected = (Get-Content release-manifest.json -Raw | ConvertFrom-Json).assets.'devthrottle-setup-win-x64.exe'.sha256
+$actual   = (Get-FileHash devthrottle-setup-win-x64.exe -Algorithm SHA256).Hash.ToLower()
+if ($actual -eq $expected.ToLower()) { "MATCH - safe to run" } else { "MISMATCH - do not run" }
+```
+
+The Windows binaries are code-signed as Center Consulting Inc. No administrator rights are needed at
+any point.
+
+### The three screens
 
 | Step | What happens |
 |------|--------------|
-| **1. Welcome** | On a first install, you choose the role (Workstation or Gateway). On an existing install, this becomes the Update / Uninstall screen. |
-| **2. Prerequisites** | The wizard checks for the .NET 10 Runtime, Claude Code, Python, Node.js, and (optionally) Tailscale, and offers to install each missing one for you. Only the .NET 10 Runtime blocks Next - the rest are recommended, and you can install them here or later. |
-| **3. Install** | Downloads and places each component, verifying every file against the manifest's SHA-256. The Gateway role adds a Gateway + Cockpit phase here. |
-| **4. Complete** | Confirms what was installed and offers to launch the app. |
+| **1. Welcome** | Says what is about to be installed. On a machine that already has DevThrottle, this becomes the Update screen and is also where an uninstall starts. |
+| **2. Install** | Downloads and places each component, with its own progress row. |
+| **3. Complete** | Confirms what was installed and offers to open the app. |
 
----
+That is the whole thing, and it is the same path for every install and every update.
 
-## Choosing a role
+**There is nothing to choose.** You are not asked to pick an install type, you are not asked for a
+key, and you are not asked to sign in. The Welcome screen says so in as many words -- *"No account is
+needed to install it"*.
 
-The first screen of a fresh install asks **how you will use this machine**. The picture
-explains the model: you install **one** Gateway, and every other machine is a
-Workstation that connects to it.
+The installer places the **Director** and the **Launcher**. The `cc-*` tools are listed too, marked
+*"Sets up on first launch"* -- as the screen puts it, *"Your cc-\* command-line tools finish setting
+up the first time you open the Director."* That is why you need a new terminal before they are on
+your `PATH`. Every file placed is verified against the release manifest's SHA-256 before it lands,
+though the screen does not say so while it works.
 
-![Welcome screen with the role picker](assets/wizard-ws-welcome.png)
-
-| Role | What it installs | Install it on |
-|------|------------------|---------------|
-| **Workstation** | The DevThrottle app + all command-line tools, entirely per-user. Connects to a Gateway. | Every machine. |
-| **Gateway** | Everything a Workstation installs, **plus** the always-on Gateway tray app and the web Cockpit it supervises. | One machine only. |
-
-Neither card is pre-selected — you must pick one before **Next** turns on (there is no
-silent default). If you are unsure, choose **Workstation**; there should only ever be
-one Gateway on a network.
-
----
-
-## Updating or uninstalling an existing install
-
-If DevThrottle is already on the machine, the wizard opens in **Update** mode instead.
-The Welcome screen now shows the installed version, the version available, and the
-**install type it detected from disk** (it does not re-ask the role). The same screen
-is where you start an uninstall.
-
-![Update / uninstall welcome screen](assets/wizard-update-welcome.png)
-
-Clicking **Next** here updates only the components that are behind. Clicking
-**Uninstall DevThrottle** opens the in-wizard uninstall flow.
-
-### Uninstall — confirm
-
-The confirm screen lists exactly what will be removed and, importantly, what is **kept**.
-Your data — configuration, vault secrets, signed-in browser sessions, and recordings —
-is preserved under `%LOCALAPPDATA%\cc-director` unless you tick **Also delete my data**.
-
-![Uninstall confirm screen](assets/wizard-uninstall-confirm.png)
-
-### Uninstall — progress and completion
-
-The uninstall runs in place with a live checklist, then confirms it is done. The data
-notice is shown again so it is clear nothing personal was touched.
-
-![Uninstall in progress](assets/wizard-uninstall-progress.png)
-
-![Uninstall complete](assets/wizard-uninstall-complete.png)
-
----
-
-## Workstation installation
-
-This is the role you install on every machine. The steps below assume a fresh install
-(if one already exists, uninstall it first, or just let the wizard update it).
-
-### 1. Pick the Workstation role
-
-On the Welcome screen, click the **Workstation** card. It highlights and shows a
-**SELECTED** tag, and **Next** turns on.
-
-![Workstation role selected](assets/wizard-ws-role-selected.png)
-
-### 2. Prerequisites
-
-The wizard checks each prerequisite and shows the version it found. The four required
-tools (.NET 10 Runtime, Claude Code, Python, Node.js) must all be **Found**; Tailscale is
-optional. If something is missing, install it, then click **Re-check**. When everything
-required is present you see **All prerequisites met — ready to install** and **Next**
-turns on.
-
-![Prerequisites all found](assets/wizard-ws-prerequisites.png)
-
-### 3. Install
-
-Installation starts automatically. Each component shows its own progress: the
-**cc-director** app and the **Tools** (the `cc-*` command-line tools). Every downloaded
-file is verified against the manifest before it is placed.
-
-![Workstation install in progress](assets/wizard-ws-installing.png)
-
-When it finishes, each row reads **Done** / **installed**, and the wizard starts the
-always-on Launcher tray app.
-
-![Workstation install complete](assets/wizard-ws-install-done.png)
-
-### 4. Complete
-
-A success summary with the number of components installed and the version. **Open a new
-terminal** for the `cc-*` commands to be available on your `PATH`. You can launch the
-app from here, or close the wizard.
-
-![Setup complete](assets/wizard-ws-complete.png)
-
-After this, the machine has `app\cc-director.exe`, the `cc-*` tool shims in `bin\`, and
-the Launcher tray app set to start at logon — all under `%LOCALAPPDATA%\cc-director`.
-To make it part of a fleet, set the Gateway address in the app's Settings (see
-[Multi-Machine Setup](02-installation.md#multi-machine-setup-remote-access)).
-
----
-
-## Gateway installation
-
-The Gateway role installs everything a Workstation does, **plus** the Gateway tray app
-and the Cockpit. Install it on **one** machine only — usually your main workstation.
-
-> **One requirement first.** A Gateway install needs an OpenAI API key in your user
-> environment **before** you start. The install checks for it and stops loudly if it is
-> missing, rather than half-installing. Set it once, then run the wizard:
+> **This used to be different.** Older versions of this page walked you through a **Workstation or
+> Gateway** role picker, a **Prerequisites** screen, and a **Skills** screen. All three are gone:
 >
-> ```powershell
-> setx OPENAI_API_KEY "sk-...your key..."
-> ```
+> - The **role picker** is gone. Every machine gets the same install. Connecting a gateway is a
+>   later, optional step done from the app.
+> - The **Prerequisites** screen is gone. It existed for the one row that could actually block you --
+>   the .NET runtime. Every Windows binary now carries its own runtime, so nothing needs to be on the
+>   machine first.
+> - The **Skills** screen is gone. Skills are held centrally and fetched by whichever agent uses one;
+>   the installer places none.
 >
-> This is a one-time bootstrap: on first start the Gateway seeds its central key vault
-> from this value, and from then on the vault (managed from the Cockpit's **API Keys**
-> page) is the live source of truth.
+> If you are following an older guide that tells you to run `setx OPENAI_API_KEY` before installing,
+> stop -- that requirement was removed. DevThrottle has no bring-your-own-key.
 
-### 1. Pick the Gateway role
+### Updating or uninstalling
 
-On the Welcome screen, click the **Gateway** card.
+If DevThrottle is already on the machine, the wizard opens in **Update** mode. The Welcome screen
+shows the installed version, the version available, and -- read only -- the install type it detected
+from disk. It does not ask you to choose one. **Next** updates only the components that are behind.
 
-![Gateway role selected](assets/wizard-gw-role-selected.png)
+The same screen is where **Uninstall DevThrottle** starts. The confirm screen explains that it
+removes the Director, the Launcher, the tools and their integration from the machine, and lists them
+under **What gets removed**.
 
-### 2. Prerequisites
+Your data is **kept** by default. It goes only if you tick **Also delete my data**, which the screen
+spells out as permanently removing config, vault secrets, signed-in browser sessions and recordings,
+and warns cannot be undone.
 
-The prerequisite checks are the same as for a Workstation — the OpenAI key gate is
-enforced later, during the Gateway phase of the install, not here.
-
-![Gateway prerequisites](assets/wizard-gw-prerequisites.png)
-
-### 3. Install
-
-The install list now includes an extra card: **Gateway & Cockpit — Always-on tray app +
-fleet dashboard**. This phase extracts the Cockpit, starts the Gateway tray app in
-managed mode, registers its logon autostart, and opens the machine's secure remote
-front door.
-
-![Gateway install in progress, with the Gateway & Cockpit card](assets/wizard-gw-installing.png)
-
-When the Gateway phase finishes it reports **Done**, and the setup log records the live
-Cockpit address (for example `https://your-machine.your-tailnet.ts.net/`).
-
-![Gateway install complete](assets/wizard-gw-install-done.png)
-
-### 4. Complete
-
-The same success screen. The machine is now a live Gateway: the tray app and Cockpit
-are running, ports 7878 (Gateway) and 7470 (Cockpit) are listening, and the Gateway
-starts again at every logon.
-
-![Gateway setup complete](assets/wizard-gw-complete.png)
-
-### Uninstalling a Gateway
-
-When you uninstall a machine that was installed as a Gateway, the confirm screen lists
-two extra removals compared with a Workstation — **the Gateway tray app and the
-Cockpit**, and **the Gateway autostart entry and the remote-access mapping**. As always,
-your data is kept.
-
-![Gateway uninstall confirm](assets/wizard-gw-uninstall-confirm.png)
+Day to day you will not see this wizard again. Updates are silent and automatic -- no banner, no
+prompt, no administrator rights.
 
 ---
 
-## After installation — verifying
+## Part 2 -- The setup wizard (eight steps)
 
-Open a **new** terminal (so the updated `PATH` is loaded) and confirm the tools are
-available:
+The first time you open the Director it walks you through eight steps. Every one of them is about
+**this machine**, and every one can be skipped.
+
+The wizard tells you where you are: beside the progress dots it reads **"Step N of 8"** followed by
+the step's name. If your screen disagrees with the numbering below, trust your screen and please say
+so -- the page is written against the shipping order, and that order has been got wrong before.
+
+| # | Step | The question it answers |
+|---|------|-------------------------|
+| 1 | **Welcome** | What the next few minutes are for. |
+| 2 | **Your gateway** | Do you want your agents on your phone? *This is the only step that involves an account.* |
+| 3 | **Your agents** | Which coding agents are on this machine? |
+| 4 | **Tools** | The `cc-*` toolbelt, installing itself. |
+| 5 | **Your code** | Where do your repositories live? |
+| 6 | **Screenshots** | Which folder do your screenshots land in? |
+| 7 | **Browsers** | Should your agents be able to drive a real browser? |
+| 8 | **Done** | A receipt of what was set up. |
+
+### 1. Welcome
+
+Previews what the wizard is about to ask you -- *"Five quick things, so DevThrottle knows this
+machine. Skip any of them - all of it can be changed later."* -- and lists them: gateway, agents,
+code, screenshots, browsers.
+
+That preview is five items, but the counter reads "Step 1 of 8" and there are six real steps between
+here and the end. The difference is the two bookends, plus Tools, which sets itself up and asks you
+nothing. Nothing is hidden from you; the preview simply lists the steps that want an answer.
+
+Two ways on: **Set me up**, or **Skip setup and figure it out myself**.
+
+### 2. Your gateway
+
+The gateway comes second on purpose. Connecting is *who you are*; everything after it configures one
+particular computer. It is also the step that carries the real payoff, so it sits where it will
+actually be seen rather than five screens in.
+
+> The gateway is what lets you check on your agents from your phone, use voice, and get your morning
+> report.
+
+Three cards:
+
+| Card | What it means |
+|---|---|
+| **Hosted gateway** *(recommended, pre-selected)* | We run it. Sign in and this machine is enrolled -- phone access, voice and the morning report work immediately. Part of **Pro**; see [pricing](https://devthrottle.com/pricing). |
+| **Self-hosted gateway** | Run your own gateway and join it. For advanced setups. |
+| **Not now** | Local-only on this machine. Connect any time from Settings. |
+
+The hosted card's button reads **Sign in and connect**. It opens your browser to sign in with
+**Google, GitHub, or email**, and the wizard continues on its own once you are done -- you do not
+come back and click anything.
+
+If you signed up on the website a moment ago, your browser still holds that session, and this step
+costs **zero clicks and about five seconds**: the tab says *"Signed in to DevThrottle. You can close
+this tab and return to the Director"* and the wizard is already showing **Connected**, naming the
+gateway this machine is now enrolled with. That is the whole of it.
+
+If the sign-in does not complete, the step says so and offers **Try again**. It never carries on as
+though it had worked.
+
+**This is not a gate.** "Not now" is as easy to click as the other two, and everything else in
+DevThrottle works without it. A first screen that read as sign-up-to-continue would change what the
+product is.
+
+### 3. Your agents
+
+Scans the machine for coding agents -- Claude Code, Codex, Gemini, Copilot, Cursor, Grok, opencode,
+Pi -- and lists what it found.
+
+This is the one step that will not let you sail past a genuine problem. On a clean machine it will
+find none, and it says so plainly -- *"You need a coding agent"* -- explains that DevThrottle runs and
+supervises command line coding agents and did not find any here, lists the eight it knows, and gives
+you three ways forward:
+
+| Button | What happens |
+|---|---|
+| **Install Claude Code for me** | Installs it right there. Takes about a minute; you sign in to Claude the first time an agent starts. |
+| **Re-check** | Scans again, for when you have just installed one yourself. |
+| **I'll do this later** | Carries the job forward as a to-do rather than pretending it is done. |
+
+### 4. Tools
+
+The `cc-*` command line tools, which DevThrottle installs and keeps current itself -- you never run
+an updater. The heading carries the count, so it reads **"9 tools, maintained for you"**, and each
+tool has its own row and state.
+
+If a tool has not arrived, the step offers **Fix this now** -- the same repair the Home screen runs.
+
+> **Do not treat this screen as the last word on whether a tool works.** It can report every tool
+> installed and up to date while the Home screen disagrees about one of them. Check with
+> [`status --json`](#verifying-the-install) below if it matters.
+
+### 5. Your code
+
+Finds your git repositories and adds them, so DevThrottle can offer them when you start an agent.
+Remove any you would rather it left alone.
+
+On a machine that has none yet, it says so -- *"No repositories found in the usual places. Browse to
+where your code lives."* -- and gives you **Browse...** and **I don't have code on this machine yet**.
+Neither one blocks you.
+
+> If you are starting from nothing, note that DevThrottle does not install **git** for you, and you
+> need it before you can clone anything. See [Recommended, not
+> required](02-installation.md#recommended-not-required).
+
+### 6. Screenshots
+
+Snap a screen, drag the image straight onto an agent -- the fastest way to show it exactly what you
+mean. DevThrottle watches one folder for new screenshots.
+
+On a new Windows machine there is usually no screenshots folder yet -- Windows does not create one
+until you take your first screenshot -- so the step will tell you honestly that it could not find one:
+*"We could not detect where your screenshots go. Browse to the folder, take a screenshot and we will
+find where it lands - or just continue; you can set this any time in Settings."*
+
+Once a folder exists, the step guesses it, tells you where the guess came from, and shows your most
+recent images as proof it picked the right one. Either way, **Take a screenshot and we'll find it**
+does the work for you: press your normal screenshot shortcut and the wizard watches where the file
+lands.
+
+### 7. Browsers
+
+An agent can drive a real browser that is already signed in to your accounts -- reading a dashboard,
+filling in a form, checking a page for you.
+
+This step is last of the real steps because it is the one that may ask you to sign in to something,
+and that cannot be hurried. It recommends setting up now, and names the tool and who makes it before
+you accept. If the install fails it says so and links the manual page; it never continues as though
+it had worked. The way out -- **Set up browsers later** -- names where later happens: the Browsers
+group in the left rail does the same job.
+
+### 8. Done
+
+A receipt of what was actually set up, then **Start my first agent** or **Take me to the board**.
+
+> Start an agent on one of your repos -- give it a small task and watch the card, not the terminal.
+> Tomorrow morning, DevThrottle reports back on how it went.
+
+**There is no morning-report step**, and that is deliberate. The report is one person, one email,
+delivered through the gateway. Asking about it here would ask the same person the same question again
+on every machine, and write the answer somewhere the other machines could not see it. You set it up
+once, for your account, not once per computer.
+
+---
+
+## Verifying the install
+
+Ask the installer, which reports on the whole install rather than one piece of it:
 
 ```powershell
-cc-pdf --version
-cc-html --version
+devthrottle-setup-cli-win-x64.exe status --json
 ```
 
-The wizard writes a detailed log next to the install for troubleshooting:
+Then open a **new** terminal -- one that was already open still has the old `PATH` -- and confirm the
+tools are on it:
+
+```powershell
+cc-devthrottle --version
+```
+
+> Pick any `cc-*` tool you like for that check, but be aware that a single tool failing does not mean
+> the install failed. `status --json` is the answer that covers everything; one tool that did not
+> arrive is repaired from the Home screen, not by reinstalling.
+
+The installer writes a detailed log for troubleshooting:
 
 ```
 %LOCALAPPDATA%\cc-director\logs\setup\setup-<timestamp>.log
 ```
 
-Updates are automatic and silent from here on — the app and the Gateway tray app keep
-every component current in the background, with no prompts and no administrator rights.
-See [Installation → Auto-update](02-installation.md) for the details.
+From here on, updates are automatic and silent -- the app keeps every component current in the
+background, with no prompts and no administrator rights. See
+[Installation](02-installation.md) for the details.

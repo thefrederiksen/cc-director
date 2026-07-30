@@ -1,8 +1,17 @@
 # Installation
 
-DevThrottle runs on Windows and macOS (Apple Silicon). There are **two ways to install it**: a graphical wizard, and a command line installer for headless machines, scripts, and AI coding agents. Both end with the same working machine, with one difference in timing - the wizard leaves the `cc-*` tools to finish setting up the first time you open the Director, while the command line installer provisions them during the install.
+DevThrottle runs on Windows and macOS (Apple Silicon).
 
-**Nothing has to be on the machine first.** The Director and the Launcher carry their own .NET runtime, the `cc-*` tools bring their own Python, and no inbound port is ever opened - so there is no runtime to install, no account needed to install, and no gateway to set up.
+## Installing is two steps, and only the second one asks who you are
+
+| | | Account? |
+|---|---|---|
+| **Step 1** | **Install the Director.** The app, the `cc-*` tools, and the Launcher. | **No.** Nothing to sign up for. |
+| **Step 2** | **Connect a gateway.** Your agents on your phone, voice, the morning report. | **Yes** -- and it is optional. |
+
+This page is Step 1. Step 2 happens later, inside the app, on the second screen of its setup wizard -- see the [Setup Wizard Walkthrough](04-setup-wizard-walkthrough.md). You can say **Not now** and change your mind at any time in Settings.
+
+**Nothing has to be on the machine first.** Every Windows binary carries its own .NET runtime, the `cc-*` tools bring their own Python, and no inbound port is ever opened. There is no runtime to install, no account needed to install, and no gateway to set up.
 
 ## What gets installed
 
@@ -16,11 +25,15 @@ Three things, and nothing else.
 
 Everything is per-user: no administrator rights, nothing written outside your own profile.
 
+There is **no install type to choose**. Every machine gets the same thing.
+
 ## Install with the wizard
 
 ### Windows
 
-Download **DevThrottle Setup** from your [account page](https://devthrottle.com/signup) and run it. Three steps - Welcome, Install, Complete - and it is done.
+Download **DevThrottle Setup** from [devthrottle.com/download](https://devthrottle.com/download) -- no sign-up -- and run it. Three screens: **Welcome, Install, Complete**. There is nothing to decide on any of them.
+
+The same file is on the [latest release](https://github.com/thefrederiksen/devthrottle/releases/latest) as `devthrottle-setup-win-x64.exe` if you would rather take it straight from there.
 
 ### macOS
 
@@ -102,22 +115,32 @@ If a step needs a person - signing in, or an operating system permission prompt 
 stop and say exactly what is needed. Do not work around it.
 ```
 
-Signing in is the one step that needs a person: `<installer> signin` opens a browser to sign in or create a free account. To join a gateway you already run on another machine, use `<installer> enroll` instead.
+**No step of this needs a person.** Installing the Director involves no account and no sign-in, so an agent can run it start to finish. The sign-in commands exist, but they belong to Step 2 and are yours to run when you want a gateway:
+
+| Command | What it does |
+|---|---|
+| `<installer> signin` | Opens a browser to sign in with Google, GitHub, or email (or create a free account). |
+| `<installer> enroll --hosted` | Signs in and joins DevThrottle's hosted gateway. |
+| `<installer> enroll --gateway <url>` | Joins a gateway you run yourself. Omit `--gateway` to find it from your account. |
 
 ## Verify the install
 
-Open a **new** terminal - one that was already open will not have the new `PATH` - and run:
-
-```bash
-cc-excel --version
-cc-hardware
-```
-
-Or ask the installer directly:
+Ask the installer. This reports on the whole install, which is the question you actually have:
 
 ```bash
 devthrottle-setup-cli-win-x64.exe status --json
 ```
+
+Then open a **new** terminal - one that was already open will not have the new `PATH` - and check a
+tool is on it:
+
+```bash
+cc-devthrottle --version
+```
+
+A single `cc-*` tool that does not answer is not a failed install. The tools finish setting up the
+first time you open the Director, and one that did not arrive is repaired from the Home screen -
+there is no need to reinstall.
 
 ## Recommended, not required
 
@@ -130,6 +153,8 @@ None of these is needed to install DevThrottle or to start it. They are worth ha
 | **GitHub CLI** (`gh`) | The repository picker, pull request lists and merged-pull-request checks are unavailable. Sign in once with `gh auth login`. |
 | **Python 3.11+** | Only your own scripts. The `cc-*` tools bring their own Python. |
 | **Node.js 20+** | MCP servers and the browser tools. |
+
+**You do not need an OpenAI key, or any other AI provider key.** DevThrottle has no bring-your-own-key: transcription, voice and the wingman all run on a DevThrottle key that is minted for your account automatically when you connect a gateway. There is nothing to buy, paste, or set. (A few standalone `cc-*` tools call OpenAI directly on a key of your own -- see [Optional](#optional-for-specific-tools) below -- but that is per-tool and nothing to do with installing.)
 
 The Director checks for these when it opens and can add the coding agents it finds to your board, so you can install any of them later and nothing needs reinstalling.
 
@@ -144,7 +169,7 @@ A shell that was already open still has the old `PATH`. Open a new terminal, or 
 | FFmpeg | cc-transcribe, cc-video |
 | Graphviz | cc-docgen (C4 diagrams) |
 | Playwright browsers | cc-browser, cc-reddit, cc-crawl4ai |
-| OpenAI API key | cc-image, cc-voice, cc-whisper, cc-computer, cc-transcribe, cc-photos |
+| Your own OpenAI API key | cc-image, cc-voice, cc-whisper, cc-computer, cc-transcribe, cc-photos -- these tools call OpenAI directly. Not needed by DevThrottle itself. |
 | Google OAuth credentials | cc-gmail |
 | Azure App Registration | cc-outlook |
 
@@ -207,7 +232,7 @@ npx playwright install chromium
 
 ## Environment Variables
 
-Set the OpenAI API key for AI-powered tools:
+Only the handful of tools listed under [Optional](#optional-for-specific-tools) need a key of your own. For those, set it once:
 
 ```bash
 set OPENAI_API_KEY=your-key-here
@@ -215,7 +240,21 @@ set OPENAI_API_KEY=your-key-here
 
 Or add it permanently through Windows System Properties > Environment Variables.
 
-## Multi-Machine Setup (Remote Access)
+DevThrottle itself never reads this. Its own AI features use a DevThrottle key minted for your account.
+
+## Step 2 - Connect a gateway
+
+The gateway is the inference engine, and it is what makes DevThrottle reachable past this one machine: your agents on your phone, voice control, and the morning report. The Director asks you on the second screen of its setup wizard.
+
+| Choice | What you get |
+|---|---|
+| **Hosted gateway** *(recommended)* | We run it. Sign in and this machine is enrolled -- phone, voice and the morning report work immediately. Part of **Pro**; see [pricing](https://devthrottle.com/pricing). New accounts start on a 14-day Pro trial, no card. |
+| **Self-hosted gateway** | Run the gateway on your own machine and join it. Windows only, needs the machine to stay on, and a DevThrottle sign-in all the same. For advanced setups. |
+| **Not now** | Local-only on this machine. Everything on the board still works. Connect any time from Settings. |
+
+Both gateways need a DevThrottle login -- Google, GitHub, or an email and password. There is no bring-your-own-key: inference always routes through DevThrottle, which is why a gateway asks who you are and installing does not.
+
+### Multi-Machine Setup (Remote Access)
 
 Install DevThrottle on each machine the same way - there is no role to choose during setup. Then connect each one to your gateway:
 
@@ -236,5 +275,6 @@ If a machine does not appear in your fleet, check three things on that machine, 
 
 ## Next Steps
 
-- [Quick Start](quick-start.md) -- Walk through your first session
-- [Tools Overview](../tools/overview.md) -- See all available tools
+- [Setup Wizard Walkthrough](04-setup-wizard-walkthrough.md) -- Every screen the Director asks you about, including the gateway
+- [Quick Start](03-quick-start.md) -- Walk through your first session
+- [Tools Overview](../tools/01-overview.md) -- See all available tools
