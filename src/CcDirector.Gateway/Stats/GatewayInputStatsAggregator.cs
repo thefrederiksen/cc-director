@@ -134,10 +134,16 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     // not a per-tenant statistic, so it stays a single value read tenant-agnostically.
     private string _modelsSinceUtc = "";
 
-    /// <summary>Every statement executed against the database. The seam acceptance criterion 3 measures: an
-    /// IDLE poll must not move this at all, and a fold must move it by an amount bounded by what CHANGED,
-    /// never by how much history is stored.</summary>
-    internal long StatementsExecuted { get; private set; }
+    /// <summary>Statements executed through the RAW helpers at the bottom of this file - the fold path, and
+    /// the startup mirror load. The seam acceptance criterion 3 measures: an IDLE poll must not move this at
+    /// all, and a fold must move it by an amount bounded by what CHANGED, never by how much history is stored.
+    /// Both of those claims are about the fold, and both still hold.
+    ///
+    /// IT IS NOT A COUNT OF TOTAL DATABASE TRAFFIC, and the name says "raw" so that nobody reads it as one.
+    /// The twelve read projections, the two mirror joins and the two since-stamps now execute through Entity
+    /// Framework, which does not pass through these helpers and is not counted here. A counter documenting a
+    /// guarantee it does not provide is worse than no counter, so this one claims only the path it sees.</summary>
+    internal long RawStatementsExecuted { get; private set; }
 
     private sealed class Counters
     {
@@ -318,10 +324,15 @@ public sealed class GatewayInputStatsAggregator : IDisposable
             // from the identity table the id belongs to, by an explicit join: it is read FROM THE DATA, not
             // supplied by a caller, which is why the absence of a request tenant at startup is irrelevant here.
             //
-            // The join is also what stops the load being a whole-table read of every tenant's rows. It is an
-            // explicit join rather than a navigation property or a configured relationship on purpose: version 5
-            // has no foreign keys between these tables, and adding one would change insert and delete ordering -
-            // a semantic change, in a port that must carry semantics forward unchanged.
+            // This IS a whole-table read across every tenant, and it has to be: the mirror is loaded once at
+            // startup, before any request has named a tenant, so there is no tenant available to filter by. The
+            // join does not narrow the read - it attaches the owning tenant to each key and drops orphans. Do
+            // not read it as a scaling measure and do not let it stop you looking: if startup work ever has to
+            // be bounded, that needs a different loading strategy, not this join.
+            //
+            // It is an explicit join rather than a navigation property or a configured relationship on purpose:
+            // version 5 has no foreign keys between these tables, and adding one would change insert and delete
+            // ordering - a semantic change, in a port that must carry semantics forward unchanged.
             //
             // An INNER join, which drops a membership row whose surrogate id names no identity row. There is no
             // such row: both are written inside one transaction, the identity first, so the id a membership row
@@ -1475,7 +1486,8 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     private static string HourKey(DateTime utc) =>
         utc.ToUniversalTime().ToString(HourFormat, System.Globalization.CultureInfo.InvariantCulture);
 
-    // ---- Plumbing. Every statement passes through here so StatementsExecuted is honest. ----
+    // ---- Plumbing. Every statement on the RAW path passes through here, which is what makes
+    // RawStatementsExecuted honest about that path - see the property for what it does NOT count. ----
 
     private void Execute(string sql, SqliteTransaction? tx, params (string Name, object Value)[] args)
     {
@@ -1484,7 +1496,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         cmd.CommandText = sql;
         foreach (var (n, v) in args) cmd.Parameters.AddWithValue(n, v);
         cmd.ExecuteNonQuery();
-        StatementsExecuted++;
+        RawStatementsExecuted++;
     }
 
     private long ExecuteScalarLong(string sql, SqliteTransaction? tx, params (string Name, object Value)[] args)
@@ -1494,7 +1506,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         cmd.CommandText = sql;
         foreach (var (n, v) in args) cmd.Parameters.AddWithValue(n, v);
         var result = cmd.ExecuteScalar();
-        StatementsExecuted++;
+        RawStatementsExecuted++;
         return result is null or DBNull ? 0 : Convert.ToInt64(result);
     }
 
@@ -1504,7 +1516,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         cmd.CommandText = sql;
         foreach (var (n, v) in args) cmd.Parameters.AddWithValue(n, v);
         using var reader = cmd.ExecuteReader();
-        StatementsExecuted++;
+        RawStatementsExecuted++;
         while (reader.Read()) onRow(reader);
     }
 
