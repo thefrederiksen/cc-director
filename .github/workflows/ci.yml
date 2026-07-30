@@ -95,3 +95,44 @@ jobs:
 
       - name: Build the Cockpit
         run: npm run build --workspace @devthrottle/cockpit
+
+  # The Python guards over the shipped cc-* toolbelt.
+  #
+  # This job exists for the same reason the two above it do: nothing ran these. CI ran the .NET
+  # solution, the installer projects and the JavaScript workspaces, and NO Python at all - so
+  # tools/test_shipped_tools_contract.py, which was written specifically to catch the things that
+  # have silently broken a clean install before (a pyproject name that no longer matches the
+  # registry, a missing console-script entry point, non-ASCII in shipped source), had been FAILING
+  # on main with nobody to see it. A guard nobody runs cannot fail, and a red nobody sees is
+  # indistinguishable from green. Found while cutting cc-playwright from the toolbelt (#1002).
+  #
+  # Windows on purpose: these tools are installed and run on Windows, and that is where these
+  # suites were verified. The dependencies are named explicitly rather than installed from
+  # cc-devthrottle's pyproject, because that package depends on the local cc-shared distribution
+  # which is not on PyPI. If the tool gains a dependency this job fails loudly with a
+  # ModuleNotFoundError rather than quietly skipping anything.
+  tool-contracts:
+    name: Tool contracts (Python)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip pytest typer rich requests
+
+      # The shipped-tool contract: registry/pyproject name agreement, console-script entry points,
+      # ASCII-only shipped source, and the Rich ASCII patches.
+      - name: Run the shipped-tool contract guard
+        run: python -m pytest tools/test_shipped_tools_contract.py -q
+
+      # cc-devthrottle is itself a shipped tool and the fleet's command surface; its own tests were
+      # equally unrun. Executed from the tool's directory because its tests import `src` directly.
+      - name: Run the cc-devthrottle tests
+        working-directory: tools/cc-devthrottle
+        run: python -m pytest tests/ -q
