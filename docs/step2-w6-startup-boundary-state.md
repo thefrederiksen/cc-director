@@ -359,6 +359,56 @@ is NOT merely a backstop behind adoption. Adoption is skipped entirely on Postgr
 this check is the ONLY detector of a half-built statistics schema. That matters when the duplicate member is
 collapsed.
 
+## A HALF-BUILT STORE IS RECOGNISED WHEN IT HAPPENS, not only predicted
+
+Two changes, and the second is the one that matters. 38 tests across the five stable classes pass at
+`0995a3383`.
+
+**The pre-check asked the wrong question and was accidentally right.** It fired when the applied migration
+set was EMPTY. With a one-migration chain that agrees with what it means, because the applied set is either
+empty or holds the baseline. Add a second migration - which row 13's work and the concurrency migration both
+do - and a store whose history records something OTHER than the baseline walks straight past it. The
+condition now asks what it means: **the baseline is not recorded**. A condition that is right for a reason
+unrelated to what it says is a defect waiting for an ordinary commit to arm it.
+
+**A pre-check can never be COMPLETE about a state left by a process that died.** Completeness would mean
+enumerating every object each pending migration creates, and the next unusual death produces a shape nobody
+enumerated. So a duplicate-object failure during `Migrate` is now RECOGNISED: it is definitionally "the
+schema already holds what this migration creates", which is a half-built store.
+
+**This is the case that defeats a CORRECT classifier, and that is why it needed its own mechanism.** A
+duplicate-table error genuinely IS a provider exception, so `IsStorageFailure` calls it the operator's fault
+- and it is RIGHT by the rule and WRONG about the world. Left alone the boundary reports UNREACHABLE and
+sends somebody to check a healthy network over a schema sitting half-built on their own disk. The recogniser
+therefore runs BEFORE the boundary sees it, and a test pins that both statements are true at once, so nobody
+later deletes the recogniser as redundant with the classifier.
+
+Recognition is by SQLSTATE and never by message text - protocol contract rather than localised prose that
+gets reworded between server versions. That choice is also what makes it testable with no server at all: six
+duplicate codes recognised and named, and six ordinary faults (`42501`, `3D000`, `28P01`, `53300`, `42P01`,
+`57014`) asserted NOT recognised, because a recogniser that said yes to everything would report every real
+database problem as a half-built schema. The inner chain is walked, since Entity Framework wraps provider
+exceptions during migration and wrapped is how this actually arrives.
+
+### SQLite has NO equivalent code - stated as a finding, not approximated
+
+`table x already exists` is plain `SQLITE_ERROR` (result code 1), the same code SQLite returns for most
+statement failures, and no extended result code distinguishes it. The only thing in a SQLite exception that
+identifies a duplicate object is the MESSAGE, which is what must not be relied on.
+
+So the SQLite arm does not read the exception at all: it RE-READS THE STORE. That is a statement about what
+is on disk rather than an inference from an error string, and it is checkable by looking. It is deliberately
+**not** presented as the PostgreSQL arm's equal - it is weaker (a migration failing for an unrelated reason
+against a store whose tables happen to exist reads as half-built) and narrower on purpose, because on SQLite
+worker 2's adoption step has already refused the ordinary shapes of this state before this code runs.
+
+### The limit on this work, stated rather than left to a green run
+
+**The widened pre-check for case A is not exercised by any test on this branch and cannot be.** On SQLite
+worker 2's adoption fires first and returns before the pre-check runs; on PostgreSQL there is no server here.
+So case A cover is HOSTED-ONLY and its proof belongs to worker 1's rig. The code change is right and the
+reasoning is recorded, but it is NOT proven, and a green run on this branch must not be read as proving it.
+
 ## REFUSED AND UNMODIFIED ARE TWO CLAIMS - the audit, and what it found
 
 A guard that rejects an input has two obligations: to DECLINE it, and to LEAVE IT UNTOUCHED. Almost every
