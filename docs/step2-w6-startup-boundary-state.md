@@ -215,6 +215,35 @@ Recorded so the next seat can check the shape rather than re-deriving it, and so
   one: a difference in whitespace or key order alone would still be the same pool key to Npgsql, so the raw
   comparison could pass on a difference that separates nothing.
 
+### The run, pre-flighted before it was asked for
+
+A contended fleet-wide lock means roughly one narrow run, so the four ways this one could have died for
+reasons unconnected to what it measures were checked by reading first. Recorded because a run that fails on
+its own fixture costs the slot and closes nothing, and because the next seat should not re-derive it:
+
+- **Cross-test contamination by environment variable.** The row 10 and row 15 fixtures set `CC_DIRECTOR_ROOT`,
+  `CC_GATEWAY_HOSTED` and the statistics override, which are process-wide. `TestParallelization.cs` disables
+  parallelisation assembly-wide, so no other class runs beside them. The two containment classes take an
+  explicit `StatsConnectionChoice` and never read the environment at all, so they are immune either way.
+- **The storage root redirect.** `CcStorage.Root()` reads `CC_DIRECTOR_ROOT` on every call and caches
+  nothing, so the row 15 control really does write into the test's own temporary root. Had it cached, the
+  control would have written elsewhere and the test would have reported CONTROL FAILED for a reason that has
+  nothing to do with the hosted path.
+- **The roster response shape.** `/sessions` without `envelope` returns `Results.Json(all)` over a
+  `List<SessionDto>`, so a JSON array is the right assertion, and the enrolment helper the fixture uses is
+  the same one the tenancy suite depends on rather than a fixture written for this test.
+- **Whether the row 15 control can write the file at all with an empty roster.** It can, and only just:
+  `Observe` sets `changed` when it creates the hour bucket, which happens on the first call of a new hour
+  even when the roster is empty. Had the write been gated on a session actually existing, the control would
+  have failed and taken the row with it.
+
+**A scope limit inside row 10 that the fixture cannot remove, so it is stated rather than glossed.** The
+roster body proven is an EMPTY array: the test enrols a device but no Director pushes a session snapshot, so
+the claim earned is that the roster ROUTE answered in roster shape while statistics were unreachable - which
+does exclude an error object, an error page and an empty body, all of which would have carried a 200. It is
+NOT a claim that sessions were enumerated with the statistics store down. Enumerating them needs a pushed
+snapshot over the tunnel, which is a different rig.
+
 ### What is not covered at all, by anything here
 
 - **No run against a real PostgreSQL server.** Every PostgreSQL assertion in this branch is about a
