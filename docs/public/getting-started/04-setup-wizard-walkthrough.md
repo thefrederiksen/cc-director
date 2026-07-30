@@ -50,8 +50,9 @@ any point.
 That is the whole thing, and it is the same path for every install and every update.
 
 **There is nothing to choose.** You are not asked to pick an install type, you are not asked for a
-key, and you are not asked to sign in. The installer lays down the Director, every `cc-*` command
-line tool, and the Launcher, and stops.
+key, and you are not asked to sign in. The Welcome screen says so in as many words -- *"No account is
+needed to install it"*. The installer lays down the Director, every `cc-*` command line tool, and the
+Launcher, and stops.
 
 > **This used to be different.** Older versions of this page walked you through a **Workstation or
 > Gateway** role picker, a **Prerequisites** screen, and a **Skills** screen. All three are gone:
@@ -88,6 +89,10 @@ prompt, no administrator rights.
 The first time you open the Director it walks you through eight steps. Every one of them is about
 **this machine**, and every one can be skipped.
 
+The wizard tells you where you are: beside the progress dots it reads **"Step N of 8"** followed by
+the step's name. If your screen disagrees with the numbering below, trust your screen and please say
+so -- the page is written against the shipping order, and that order has been got wrong before.
+
 | # | Step | The question it answers |
 |---|------|-------------------------|
 | 1 | **Welcome** | What the next few minutes are for. |
@@ -122,7 +127,8 @@ Three cards:
 | **Not now** | Local-only on this machine. Connect any time from Settings. |
 
 Choosing hosted or self-hosted opens your browser to sign in with **Google, GitHub, or email**, and
-the wizard continues by itself once you are done. If the sign-in fails, the step says why in plain
+the wizard continues by itself once you are done. When it lands, the step shows a green **Connected**
+badge and the gateway it enrolled this machine with. If the sign-in fails, the step says why in plain
 English and offers **Try again** -- it never carries on as though it had worked.
 
 **This is not a gate.** "Not now" is as easy to click as the other two, and everything else in
@@ -134,10 +140,16 @@ product is.
 Scans the machine for coding agents -- Claude Code, Codex, Gemini, Copilot, Cursor, Grok, opencode,
 Pi -- and lists what it found.
 
-This is the one step that will not let you sail past a genuine problem: if it finds **no** agent,
-your board has nothing to run. It offers to **install Claude Code for you** right there (about a
-minute; you sign in to Claude the first time an agent starts), a **Re-check**, and an honest **I'll
-do this later** that carries the job forward as a to-do rather than pretending it is done.
+This is the one step that will not let you sail past a genuine problem. On a clean machine it will
+find none, and it says so plainly -- *"You need a coding agent"* -- explains that DevThrottle runs and
+supervises command line coding agents and did not find any here, lists the eight it knows, and gives
+you three ways forward:
+
+| Button | What happens |
+|---|---|
+| **Install Claude Code for me** | Installs it right there. Takes about a minute; you sign in to Claude the first time an agent starts. |
+| **Re-check** | Scans again, for when you have just installed one yourself. |
+| **I'll do this later** | Carries the job forward as a to-do rather than pretending it is done. |
 
 ### 4. Tools
 
