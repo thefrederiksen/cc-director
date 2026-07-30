@@ -125,18 +125,22 @@ stop and say exactly what is needed. Do not work around it.
 
 ## Verify the install
 
-Open a **new** terminal - one that was already open will not have the new `PATH` - and run:
-
-```bash
-cc-excel --version
-cc-hardware
-```
-
-Or ask the installer directly:
+Ask the installer. This reports on the whole install, which is the question you actually have:
 
 ```bash
 devthrottle-setup-cli-win-x64.exe status --json
 ```
+
+Then open a **new** terminal - one that was already open will not have the new `PATH` - and check a
+tool is on it:
+
+```bash
+cc-devthrottle --version
+```
+
+A single `cc-*` tool that does not answer is not a failed install. The tools finish setting up the
+first time you open the Director, and one that did not arrive is repaired from the Home screen -
+there is no need to reinstall.
 
 ## Recommended, not required
 

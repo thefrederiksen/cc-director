@@ -64,15 +64,20 @@ any point.
 | Step | What happens |
 |------|--------------|
 | **1. Welcome** | Says what is about to be installed. On a machine that already has DevThrottle, this becomes the Update screen and is also where an uninstall starts. |
-| **2. Install** | Downloads and places each component, verifying every file against the manifest's SHA-256. |
+| **2. Install** | Downloads and places each component, with its own progress row. |
 | **3. Complete** | Confirms what was installed and offers to open the app. |
 
 That is the whole thing, and it is the same path for every install and every update.
 
 **There is nothing to choose.** You are not asked to pick an install type, you are not asked for a
 key, and you are not asked to sign in. The Welcome screen says so in as many words -- *"No account is
-needed to install it"*. The installer lays down the Director, every `cc-*` command line tool, and the
-Launcher, and stops.
+needed to install it"*.
+
+The installer places the **Director** and the **Launcher**. The `cc-*` tools are listed too, marked
+*"Sets up on first launch"* -- as the screen puts it, *"Your cc-\* command-line tools finish setting
+up the first time you open the Director."* That is why you need a new terminal before they are on
+your `PATH`. Every file placed is verified against the release manifest's SHA-256 before it lands,
+though the screen does not say so while it works.
 
 > **This used to be different.** Older versions of this page walked you through a **Workstation or
 > Gateway** role picker, a **Prerequisites** screen, and a **Skills** screen. All three are gone:
@@ -94,10 +99,13 @@ If DevThrottle is already on the machine, the wizard opens in **Update** mode. T
 shows the installed version, the version available, and -- read only -- the install type it detected
 from disk. It does not ask you to choose one. **Next** updates only the components that are behind.
 
-The same screen is where **Uninstall DevThrottle** starts. The confirm screen lists exactly what will
-be removed and, just as importantly, what is **kept**: your configuration, vault secrets, signed-in
-browser sessions and recordings all stay under `%LOCALAPPDATA%\cc-director` unless you tick **Also
-delete my data**.
+The same screen is where **Uninstall DevThrottle** starts. The confirm screen explains that it
+removes the Director, the Launcher, the tools and their integration from the machine, and lists them
+under **What gets removed**.
+
+Your data is **kept** by default. It goes only if you tick **Also delete my data**, which the screen
+spells out as permanently removing config, vault secrets, signed-in browser sessions and recordings,
+and warns cannot be undone.
 
 Day to day you will not see this wizard again. Updates are silent and automatic -- no banner, no
 prompt, no administrator rights.
@@ -126,8 +134,15 @@ so -- the page is written against the shipping order, and that order has been go
 
 ### 1. Welcome
 
-Lists what the wizard is about to cover, one row per step, so you know what the next few minutes
-are for. Two ways on: **Set me up**, or **Skip setup and figure it out myself**.
+Previews what the wizard is about to ask you -- *"Five quick things, so DevThrottle knows this
+machine. Skip any of them - all of it can be changed later."* -- and lists them: gateway, agents,
+code, screenshots, browsers.
+
+That preview is five items, but the counter reads "Step 1 of 8" and there are six real steps between
+here and the end. The difference is the two bookends, plus Tools, which sets itself up and asks you
+nothing. Nothing is hidden from you; the preview simply lists the steps that want an answer.
+
+Two ways on: **Set me up**, or **Skip setup and figure it out myself**.
 
 ### 2. Your gateway
 
@@ -146,10 +161,17 @@ Three cards:
 | **Self-hosted gateway** | Run your own gateway and join it. For advanced setups. |
 | **Not now** | Local-only on this machine. Connect any time from Settings. |
 
-Choosing hosted or self-hosted opens your browser to sign in with **Google, GitHub, or email**, and
-the wizard continues by itself once you are done. When it lands, the step shows a green **Connected**
-badge and the gateway it enrolled this machine with. If the sign-in fails, the step says why in plain
-English and offers **Try again** -- it never carries on as though it had worked.
+The hosted card's button reads **Sign in and connect**. It opens your browser to sign in with
+**Google, GitHub, or email**, and the wizard continues on its own once you are done -- you do not
+come back and click anything.
+
+If you signed up on the website a moment ago, your browser still holds that session, and this step
+costs **zero clicks and about five seconds**: the tab says *"Signed in to DevThrottle. You can close
+this tab and return to the Director"* and the wizard is already showing **Connected**, naming the
+gateway this machine is now enrolled with. That is the whole of it.
+
+If the sign-in does not complete, the step says so and offers **Try again**. It never carries on as
+though it had worked.
 
 **This is not a gate.** "Not now" is as easy to click as the other two, and everything else in
 DevThrottle works without it. A first screen that read as sign-up-to-continue would change what the
@@ -173,25 +195,43 @@ you three ways forward:
 
 ### 4. Tools
 
-The `cc-*` command line tools, installing themselves while you watch. You never run an updater.
+The `cc-*` command line tools, which DevThrottle installs and keeps current itself -- you never run
+an updater. The heading carries the count, so it reads **"9 tools, maintained for you"**, and each
+tool has its own row and state.
 
-If a tool is still missing after the wizard has waited a reasonable time, it says so and offers
-**Fix this now** -- the same repair the Home screen runs. It will not leave an "Installing..." label
-spinning forever on something that is never going to finish.
+If a tool has not arrived, the step offers **Fix this now** -- the same repair the Home screen runs.
+
+> **Do not treat this screen as the last word on whether a tool works.** It can report every tool
+> installed and up to date while the Home screen disagrees about one of them. Check with
+> [`status --json`](#verifying-the-install) below if it matters.
 
 ### 5. Your code
 
-Sweeps the usual places for git repositories and adds what it finds, so DevThrottle can offer them
-when you start an agent. Remove any you would rather it left alone.
+Finds your git repositories and adds them, so DevThrottle can offer them when you start an agent.
+Remove any you would rather it left alone.
+
+On a machine that has none yet, it says so -- *"No repositories found in the usual places. Browse to
+where your code lives."* -- and gives you **Browse...** and **I don't have code on this machine yet**.
+Neither one blocks you.
+
+> If you are starting from nothing, note that DevThrottle does not install **git** for you, and you
+> need it before you can clone anything. See [Recommended, not
+> required](02-installation.md#recommended-not-required).
 
 ### 6. Screenshots
 
 Snap a screen, drag the image straight onto an agent -- the fastest way to show it exactly what you
 mean. DevThrottle watches one folder for new screenshots.
 
-It guesses the folder, tells you where the guess came from, and shows you your most recent images as
-proof it picked the right one. Not sure? **Take a screenshot and we'll find it** -- press your normal
-screenshot shortcut and the wizard watches where the file lands.
+On a new Windows machine there is usually no screenshots folder yet -- Windows does not create one
+until you take your first screenshot -- so the step will tell you honestly that it could not find one:
+*"We could not detect where your screenshots go. Browse to the folder, take a screenshot and we will
+find where it lands - or just continue; you can set this any time in Settings."*
+
+Once a folder exists, the step guesses it, tells you where the guess came from, and shows your most
+recent images as proof it picked the right one. Either way, **Take a screenshot and we'll find it**
+does the work for you: press your normal screenshot shortcut and the wizard watches where the file
+lands.
 
 ### 7. Browsers
 
@@ -218,20 +258,24 @@ once, for your account, not once per computer.
 
 ---
 
-## After installation -- verifying
+## Verifying the install
 
-Open a **new** terminal, so the updated `PATH` is loaded, and confirm the tools are there:
-
-```powershell
-cc-pdf --version
-cc-html --version
-```
-
-Or ask the installer directly:
+Ask the installer, which reports on the whole install rather than one piece of it:
 
 ```powershell
 devthrottle-setup-cli-win-x64.exe status --json
 ```
+
+Then open a **new** terminal -- one that was already open still has the old `PATH` -- and confirm the
+tools are on it:
+
+```powershell
+cc-devthrottle --version
+```
+
+> Pick any `cc-*` tool you like for that check, but be aware that a single tool failing does not mean
+> the install failed. `status --json` is the answer that covers everything; one tool that did not
+> arrive is repaired from the Home screen, not by reinstalling.
 
 The installer writes a detailed log for troubleshooting:
 
