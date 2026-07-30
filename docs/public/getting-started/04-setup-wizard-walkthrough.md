@@ -1,21 +1,26 @@
 <!--
-  SCREENSHOTS ARE MISSING FROM THIS PAGE. Tracked: thefrederiksen/devthrottle_internal#1053.
+  SCREENSHOTS ARE PARTIAL. Tracked: thefrederiksen/devthrottle_internal#1053.
 
-  Sixteen images were deleted in thefrederiksen/devthrottle#2287 because every one showed a screen
-  that no longer exists (the Workstation/Gateway role picker, the Prerequisites screen, the Gateway
-  role). The text was rewritten against the shipping wizard; the pictures were not recaptured,
-  because the capture belongs to the clean-machine QA run rather than to a separate walk.
+  Present: all three installer screens, and the setup wizard's Gateway step (step 2).
+  Missing: setup wizard steps 1 and 3-8. Step 1 exists only as a 1024x768 capture where the
+  Welcome list is clipped by its own scrollbar (#1046) - deliberately NOT used, because a
+  screenshot taken where a defect does not appear must never become the reason that defect is
+  closed. Steps 3-8 have not been captured yet.
 
-  If you are adding them, read #1053 first. Three things matter more than the images:
+  Every image here is from the clean-machine QA run at
+  devthrottle_internal docs/qa/runs/2026-07-30-FRAMES-NOTGATE/shots/, against v1.8.7, on a clean
+  Windows VM in first-run state. Verified by eye before use, not trusted from the filename - their
+  capture helper is known to overwrite frames (three files in that run are byte-identical).
+
+  If you are adding the rest, read #1053 first. Three things matter more than the images:
 
     1. Caption every image with its step number from FirstRunWizardModel.CanonicalOrder.
        Gateway is step 2, NOT 7. Browsers is step 7, NOT 6. Three briefs got that wrong before the
-       prose was fixed, and a caption is where the error comes back.
+       prose was fixed, and a caption is where the error comes back. The wizard renders
+       "Step N of 8" next to its dots, so a wrong caption is checkable against the pixel.
     2. The Agents step needs the ZERO-AGENT frame. A found-state picture under this page's
        zero-state prose is the same failure that got the original sixteen deleted.
-    3. Capture at a roomy resolution. At 1024x768 the Welcome and Done steps clip (#1046), and a
-       screenshot taken where a defect does not appear must not become the reason that defect is
-       closed.
+    3. Capture at a roomy resolution, not 1024x768. See the note about step 1 above.
 -->
 
 # Setup Wizard Walkthrough
@@ -67,6 +72,10 @@ any point.
 
 ### The three screens
 
+![DevThrottle Setup, screen 1 of 3: Welcome](assets/installer-1-welcome.png)
+
+*Installer screen 1 of 3 - Welcome. The rail shows the whole path: Welcome, Install, Complete. "No account is needed to install it."*
+
 | Step | What happens |
 |------|--------------|
 | **1. Welcome** | Says what is about to be installed. On a machine that already has DevThrottle, this becomes the Update screen and is also where an uninstall starts. |
@@ -84,6 +93,14 @@ The installer places the **Director** and the **Launcher**. The `cc-*` tools are
 up the first time you open the Director."* That is why you need a new terminal before they are on
 your `PATH`. Every file placed is verified against the release manifest's SHA-256 before it lands,
 though the screen does not say so while it works.
+
+![DevThrottle Setup, screen 2 of 3: Installing, with a progress row per component](assets/installer-2-install.png)
+
+*Installer screen 2 of 3 - Install. Director and Launcher download; Tools reads "Sets up on first launch".*
+
+![DevThrottle Setup, screen 3 of 3: Complete](assets/installer-3-complete.png)
+
+*Installer screen 3 of 3 - Complete. "2 components installed" - the Director and the Launcher. On a machine with no coding agent it says so here, rather than letting you find out later.*
 
 > **This used to be different.** Older versions of this page walked you through a **Workstation or
 > Gateway** role picker, a **Prerequisites** screen, and a **Skills** screen. All three are gone:
@@ -158,6 +175,10 @@ actually be seen rather than five screens in.
 
 > The gateway is what lets you check on your agents from your phone, use voice, and get your morning
 > report.
+
+![The setup wizard on step 2 of 8, Your gateway, showing three cards with Hosted pre-selected](assets/setup-02-gateway.png)
+
+*Setup wizard, **step 2 of 8** - Your gateway. The counter beside the dots reads "Step 2 of 8": the gateway is the second screen, not the seventh. Hosted is pre-selected, marked RECOMMENDED, and priced as "Part of Pro" with no figure.*
 
 Three cards:
 
