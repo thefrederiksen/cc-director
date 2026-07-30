@@ -154,6 +154,22 @@ public enum StatsStoreUnavailableReason
     /// two make a claim about the OPERATOR'S world; this one makes a claim about ours.
     /// </summary>
     InternalError,
+
+    /// <summary>
+    /// The store did not answer within the STARTUP deadline, so the Gateway finished starting without it -
+    /// and the attempt IS STILL RUNNING and will publish on its own if it succeeds.
+    ///
+    /// DELIBERATELY NOT <see cref="Unreachable"/>, on the same rule as every other member here: the two lead
+    /// to DIFFERENT OPERATOR ACTIONS. Unreachable means go and look - at the database, the network, the
+    /// credentials. This one means WAIT AND RE-CHECK, because nothing is known to be wrong yet and the most
+    /// likely cause is something slow and local, such as another writer holding a lock. Sending somebody to
+    /// audit a network because a lock was held for a few seconds is the same misdirection this set of reasons
+    /// exists to prevent, arriving through TIMING rather than through classification.
+    ///
+    /// It is also the only unavailability here that can clear ITSELF, with no restart and no intervention.
+    /// Any surface rendering it should say so, or a reader will treat a transient state as a permanent one.
+    /// </summary>
+    DidNotAnswerInTime,
 }
 
 /// <summary>

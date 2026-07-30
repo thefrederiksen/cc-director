@@ -82,34 +82,43 @@ public sealed class GatewayStatsStore : IDisposable
     /// completely as one that threw, and it would do it without a single exception in the log. So the
     /// containment is on the clock as well as on the exception.
     ///
-    /// TWENTY SECONDS IS CURRENTLY TOO SHORT, MEASURED. This comment used to say the number was "comfortably
-    /// longer than opening and migrating a reachable database". That was REASONED AND NEVER MEASURED, and
-    /// review 9 has now measured the self-host adoption path taking 35.065 seconds to return its named busy
-    /// result against a local writer lock. So the justification is false and is corrected here rather than
-    /// left sitting beside a number somebody would otherwise trust.
+    /// IT BOUNDS STARTUP, NOT THE STORE'S LIFETIME, and that distinction is the whole design. Exceeding it
+    /// does NOT abandon the store: the attempt keeps running and PUBLISHES when it finishes, so a slow store
+    /// costs the first seconds of ONE BOOT rather than everything after it.
     ///
-    /// THE CONSEQUENCE IS WORSE THAN A SHORT WAIT, and it is this class's own doing rather than the adoption
-    /// step's. On timeout the attempt is ABANDONED and not cancelled - deliberately, so a migration in flight
-    /// is not torn out from under itself - and only the code past the timeout assigns the factory. So an open
-    /// that would have SUCCEEDED at thirty-five seconds runs to completion and can never publish: the store
-    /// is unavailable for the LIFE OF THE PROCESS, not merely for the first twenty seconds. A store that is
-    /// only SLOW is therefore indistinguishable, from outside, from one that is broken.
+    /// WHY THE NUMBER CAME DOWN RATHER THAN UP. The obvious response to "the inner call took longer than the
+    /// deadline" is to wait longer. That was the wrong instinct and it is worth writing down why: once a late
+    /// arrival can publish, WAITING BUYS NOTHING. A longer wait only delays the port bind on every boot -
+    /// including the overwhelming majority where the store is healthy - to buy an earlier statistics surface
+    /// in the rare slow one, which the late arrival now delivers anyway. So the deadline should be as SHORT
+    /// as the inner bound allows.
     ///
-    /// The timeout also reports <see cref="StatsStoreUnavailableReason.Unreachable"/>, whose sentence sends
-    /// the reader to the database and the network - misleading when the truth is a local writer lock.
-    ///
-    /// The number is NOT changed here, and neither is the reason. Raising it, giving the timeout its own
-    /// reason, or both, is the Manager's call: worker 2 owns the adoption cost this is measured against, and
-    /// a deadline that sits in front of a platform startup limit is not a number one seat should move alone.
+    /// DERIVED FROM THE INNER BOUND, NOT PICKED. The adoption step bounds its own write wait, and this must
+    /// sit outside that with margin or the inner bound is useless - the caller would stop waiting first and
+    /// report a generic failure over a named one, which is precisely the operator misdirection this work
+    /// exists to remove. The relationship is what matters and it is ASSERTED BY A TEST rather than kept as a
+    /// pair of literals that agree today: see <c>StatsStoreDeadlineRelationshipTests</c>. Any measured number
+    /// will move, so a test that pins two constants would go stale the first time either does.
     /// </summary>
-    public static readonly TimeSpan OpenDeadline = TimeSpan.FromSeconds(20);
+    public static readonly TimeSpan OpenDeadline = TimeSpan.FromSeconds(8);
 
     private readonly StatsFailureCounters _health = new(ObserverName);
-    private readonly ServiceProvider? _provider;
+    private readonly object _gate = new();
+    private ServiceProvider? _provider;
+    private StatsStoreAvailability _availability;
+    private IDbContextFactory<GatewayStatsDbContext>? _factory;
     private bool _disposed;
 
-    /// <summary>What the statistics surface should say about itself. Folded once, here.</summary>
-    public StatsStoreAvailability Availability { get; }
+    /// <summary>
+    /// What the statistics surface should say about itself. Folded once, here.
+    ///
+    /// READ UNDER THE LOCK because a LATE ARRIVAL can change it: an open that exceeded the startup deadline
+    /// keeps running and publishes when it finishes, so this is not write-once. See <see cref="OpenDeadline"/>.
+    /// </summary>
+    public StatsStoreAvailability Availability
+    {
+        get { lock (_gate) return _availability; }
+    }
 
     /// <summary>This store's own health, in the shape the statistics failure surface consumes.</summary>
     public IStatsFailureState Health => _health;
@@ -121,8 +130,14 @@ public sealed class GatewayStatsStore : IDisposable
     /// store. That decision is always the same and it is never a substitute store: record a DROP on the
     /// consumer's own failure state and carry on. The type system asking the question is what stops the
     /// answer from being forgotten on the one path that runs during an incident.
+    ///
+    /// It can go from null to non-null ONCE, when a late arrival publishes. It never goes the other way, so a
+    /// caller that has obtained a factory keeps a usable one; only Dispose ends that.
     /// </summary>
-    public IDbContextFactory<GatewayStatsDbContext>? Factory { get; }
+    public IDbContextFactory<GatewayStatsDbContext>? Factory
+    {
+        get { lock (_gate) return _factory; }
+    }
 
     /// <summary>Whether the statistics store is usable.</summary>
     public bool IsAvailable => Availability.IsAvailable;
@@ -174,7 +189,7 @@ public sealed class GatewayStatsStore : IDisposable
         {
             // NOT CONFIGURED. Non-fatal, and LOUD: logged once at startup with the variable named, so an
             // operator reading the log finds the setting rather than starting a network investigation.
-            Availability = Unavailable(choice.Reason, choice.Detail, choice.Source, choice.Target);
+            _availability = Unavailable(choice.Reason, choice.Detail, choice.Source, choice.Target);
             _health.RecordFailure(choice.Detail);
             FileLog.Write(
                 $"[GatewayStatsStore] Open: statistics are UNAVAILABLE, reason={Availability.ReasonCode}: " +
@@ -205,23 +220,31 @@ public sealed class GatewayStatsStore : IDisposable
             var finished = Task.WhenAny(work, Task.Delay(OpenDeadline)).GetAwaiter().GetResult() == work;
             if (!finished)
             {
-                // Timed out. The attempt is ABANDONED, not cancelled - a migration in flight must not be
-                // torn out from under itself - so the provider is handed to a continuation that releases it
-                // once the attempt finally settles. Disposing it here instead would dispose a provider whose
-                // pooled context is still in use. The abandoned attempt can never publish anything: only the
-                // code below assigns the factory, and this path does not reach it.
-                var abandoned = provider;
+                // TIMED OUT - AND THE ATTEMPT KEEPS RUNNING AND WILL PUBLISH WHEN IT FINISHES.
+                //
+                // The deadline bounds STARTUP, not the store's lifetime. That distinction is the whole fix:
+                // an abandoned-and-discarded attempt made a store that was merely SLOW unavailable for the
+                // LIFE OF THE PROCESS, because only the code below assigned the factory and this path never
+                // reached it. Now boot proceeds without statistics exactly as before, the attempt continues,
+                // and when it succeeds it publishes - so a slow store costs the first seconds of ONE BOOT
+                // instead of everything after it. The pathological case does not become less likely; it
+                // stops existing.
+                //
+                // Still ABANDONED rather than cancelled: a migration in flight must not be torn out from
+                // under itself.
+                var late = provider;
                 provider = null;
-                _ = work.ContinueWith(_ => abandoned.Dispose(), TaskScheduler.Default);
+                _ = work.ContinueWith(t => PublishLateArrival(t, late, choice), TaskScheduler.Default);
 
                 var timedOut =
-                    $"The statistics database ({choice.Target}) did not open within " +
-                    $"{OpenDeadline.TotalSeconds:0} seconds, so the Gateway stopped waiting for it. The " +
-                    "settings name a database, so this is a database or network problem rather than a " +
-                    "missing setting. Statistics are unavailable; the Gateway is serving normally and the " +
-                    "rest of it is unaffected.";
-                Availability = Unavailable(
-                    StatsStoreUnavailableReason.Unreachable, timedOut, choice.Source, choice.Target);
+                    $"The statistics database ({choice.Target}) did not answer within " +
+                    $"{OpenDeadline.TotalSeconds:0} seconds, so the Gateway finished starting without it. " +
+                    "This is NOT a sign that the database is unreachable - the attempt is STILL RUNNING, and " +
+                    "if it succeeds the statistics surface will come up on its own with no restart needed. " +
+                    "Wait and re-check before investigating anything. The Gateway is serving normally and " +
+                    "the rest of it is unaffected.";
+                _availability = Unavailable(
+                    StatsStoreUnavailableReason.DidNotAnswerInTime, timedOut, choice.Source, choice.Target);
                 _health.RecordFailure(timedOut);
                 FileLog.Write(
                     $"[GatewayStatsStore] Open TIMED OUT (CONTAINED) after {OpenDeadline.TotalSeconds:0} " +
@@ -238,7 +261,7 @@ public sealed class GatewayStatsStore : IDisposable
                 // changed on disk. Released here rather than held: an unusable store's pooled connections
                 // are of no use to anybody.
                 provider.Dispose();
-                Availability = Unavailable(prepared.Reason, prepared.Detail, choice.Source, choice.Target);
+                _availability = Unavailable(prepared.Reason, prepared.Detail, choice.Source, choice.Target);
                 _health.RecordFailure(prepared.Detail);
                 FileLog.Write(
                     $"[GatewayStatsStore] Open: statistics are UNAVAILABLE, reason={Availability.ReasonCode}: " +
@@ -247,8 +270,8 @@ public sealed class GatewayStatsStore : IDisposable
             }
 
             _provider = provider;
-            Factory = factory;
-            Availability = new StatsStoreAvailability(
+            _factory = factory;
+            _availability = new StatsStoreAvailability(
                 IsAvailable: true,
                 Reason: StatsStoreUnavailableReason.None,
                 ReasonCode: "available",
@@ -291,7 +314,7 @@ public sealed class GatewayStatsStore : IDisposable
                   "help, and reporting it to us will. The details are in the Gateway log. The Gateway is " +
                   "serving normally and the rest of it is unaffected.";
 
-            Availability = Unavailable(
+            _availability = Unavailable(
                 theirs ? StatsStoreUnavailableReason.Unreachable : StatsStoreUnavailableReason.InternalError,
                 detail, choice.Source, choice.Target);
             _health.RecordFailure(detail);
@@ -310,6 +333,77 @@ public sealed class GatewayStatsStore : IDisposable
                   $"source={choice.Source} target={choice.Target}: {ex.GetType().FullName}. Statistics are " +
                   $"UNAVAILABLE, reason={Availability.ReasonCode}. The Gateway starts and serves normally " +
                   $"without them. Stack:{Environment.NewLine}{ex.StackTrace}");
+        }
+    }
+
+    /// <summary>
+    /// THE LATE ARRIVAL. An open that outlived the startup deadline has finished; publish it if it succeeded,
+    /// release it if it did not.
+    ///
+    /// This runs on a thread pool thread, long after the constructor returned and the Gateway began serving,
+    /// so everything it touches is behind the same lock the readers use. It is the only place other than the
+    /// constructor that may make the store available.
+    ///
+    /// DISPOSE RACES IT AND MUST WIN. If the store was disposed while this attempt was still running there is
+    /// nothing left to publish into, so the provider is released and nothing is assigned - otherwise a
+    /// disposed store would quietly become available again and hand out contexts over a provider nobody owns.
+    /// </summary>
+    private void PublishLateArrival(
+        Task<StatsStoreAdoptionResult> attempt, ServiceProvider late, StatsConnectionChoice choice)
+    {
+        StatsStoreAdoptionResult? prepared = null;
+        string? failure = null;
+
+        // Read the outcome OUTSIDE the lock: it can throw, and a fault must not be observed while holding a
+        // lock the readers need.
+        if (attempt.IsCompletedSuccessfully)
+            prepared = attempt.Result;
+        else
+            failure = attempt.Exception?.GetBaseException().GetType().Name ?? "unknown";
+
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                late.Dispose();
+                FileLog.Write(
+                    "[GatewayStatsStore] Late arrival DISCARDED: the store was disposed while the open was " +
+                    "still running, so there is nothing to publish into.");
+                return;
+            }
+
+            if (prepared is { IsUsable: true })
+            {
+                _provider = late;
+                _factory = late.GetRequiredService<IDbContextFactory<GatewayStatsDbContext>>();
+                _availability = new StatsStoreAvailability(
+                    IsAvailable: true,
+                    Reason: StatsStoreUnavailableReason.None,
+                    ReasonCode: "available",
+                    Detail: choice.Detail,
+                    Source: choice.Source,
+                    Target: choice.Target);
+
+                FileLog.Write(
+                    $"[GatewayStatsStore] LATE ARRIVAL PUBLISHED: the statistics store finished opening " +
+                    $"after the {OpenDeadline.TotalSeconds:0}-second startup deadline and is now AVAILABLE " +
+                    $"({choice.Target}). No restart was needed.");
+                return;
+            }
+
+            // It finished and it is not usable - either an unusable store with its own named reason, or a
+            // throw. Released rather than held: an unusable store's pooled connections are of no use, and
+            // the availability already on the surface stays as it is unless there is something better to say.
+            late.Dispose();
+
+            var detail = prepared?.Detail ??
+                $"The statistics store ({choice.Target}) failed after the startup deadline ({failure}).";
+            var reason = prepared?.Reason ?? StatsStoreUnavailableReason.Unreachable;
+            _availability = Unavailable(reason, detail, choice.Source, choice.Target);
+            _health.RecordFailure(detail);
+
+            FileLog.Write(
+                $"[GatewayStatsStore] Late arrival FAILED (CONTAINED): {_availability.ReasonCode}: {detail}");
         }
     }
 
@@ -724,21 +818,40 @@ public sealed class GatewayStatsStore : IDisposable
         StatsStoreUnavailableReason.IncompatibleSchemaVersion => "incompatible_schema_version",
         StatsStoreUnavailableReason.NotAStatisticsStore => "not_a_statistics_store",
         StatsStoreUnavailableReason.StoreUnreadable => "store_unreadable",
+        StatsStoreUnavailableReason.StoreIsNewerThanThisBuild => "store_is_newer_than_this_build",
+        StatsStoreUnavailableReason.DidNotAnswerInTime => "did_not_answer_in_time",
         StatsStoreUnavailableReason.InternalError => "internal_error",
         _ => throw new ArgumentOutOfRangeException(nameof(reason), reason,
             "A statistics unavailability reason with no stable code. Add one here - a surface cannot key " +
             "off a reason it has no spelling for."),
     };
 
+    /// <summary>
+    /// Close the store.
+    ///
+    /// UNDER THE SAME LOCK AS THE LATE ARRIVAL, because they race. Setting <c>_disposed</c> inside the lock is
+    /// what lets <see cref="PublishLateArrival"/> see that there is nothing left to publish into and release
+    /// its provider instead - without that, a store disposed while an open was still running could quietly
+    /// become available again afterwards and hand out contexts over a provider nobody owns.
+    /// </summary>
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
-        _provider?.Dispose();
+        StatsStoreAvailability availability;
+        lock (_gate)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _provider?.Dispose();
+            _provider = null;
+            _factory = null;
+            availability = _availability;
+        }
+
         // Release the underlying SQLite connections so a test can delete the file. SQLite-only: the
-        // PostgreSQL path has no local file and its pooling is the provider's to manage.
-        if (Availability.Source == StatsConnectionSource.SqliteFile)
+        // PostgreSQL path has no local file and its pooling is the provider's to manage. Outside the lock:
+        // it is process-wide and has no business being held under this store's gate.
+        if (availability.Source == StatsConnectionSource.SqliteFile)
             SqliteConnection.ClearAllPools();
-        FileLog.Write($"[GatewayStatsStore] Dispose: closed {Availability.Target}");
+        FileLog.Write($"[GatewayStatsStore] Dispose: closed {availability.Target}");
     }
 }
