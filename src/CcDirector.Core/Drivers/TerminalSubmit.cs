@@ -72,6 +72,10 @@ public static class TerminalSubmit
     /// <see cref="ScreenShowsText"/>).
     /// <paramref name="submitVerifyBeat"/> overrides the post-Enter watchdog's beat length; tests pass
     /// a fast one so the suite does not wait out real-time beats.
+    /// <paramref name="sessionId"/> attributes composer-echo misses to a session in
+    /// <see cref="PromptDeliveryFailures"/> so they can be counted and shown on that session's row
+    /// (issue internal#811). Default (empty) on the driver and backend routes, which have no session
+    /// to name; the Director's own send path passes it.
     /// </summary>
     public static async Task SharedSubmitAsync(
         ISessionBackend backend,
@@ -83,7 +87,8 @@ public static class TerminalSubmit
         TimeSpan? pollInterval = null,
         TimeSpan? enterSettleDelay = null,
         Func<string[]>? screenSnapshot = null,
-        TimeSpan? submitVerifyBeat = null)
+        TimeSpan? submitVerifyBeat = null,
+        Guid sessionId = default)
     {
         ArgumentNullException.ThrowIfNull(backend);
 
@@ -101,7 +106,8 @@ public static class TerminalSubmit
                 pollInterval,
                 enterSettleDelay,
                 screenSnapshot,
-                submitVerifyBeat);
+                submitVerifyBeat,
+                sessionId);
             return;
         }
 
@@ -115,7 +121,7 @@ public static class TerminalSubmit
 
             if (!string.IsNullOrWhiteSpace(backend.WorkingDirectory))
             {
-                await SubmitViaAtReferenceAsync(backend, textForCheck, driverTag, echoTimeout, pollInterval, enterSettleDelay, screenSnapshot, submitVerifyBeat);
+                await SubmitViaAtReferenceAsync(backend, textForCheck, driverTag, echoTimeout, pollInterval, enterSettleDelay, screenSnapshot, submitVerifyBeat, sessionId);
                 return;
             }
         }
@@ -130,7 +136,8 @@ public static class TerminalSubmit
                 pollInterval,
                 enterSettleDelay,
                 screenSnapshot,
-                submitVerifyBeat);
+                submitVerifyBeat,
+                sessionId);
         }
         else
         {
@@ -152,7 +159,8 @@ public static class TerminalSubmit
         TimeSpan? pollInterval = null,
         TimeSpan? enterSettleDelay = null,
         Func<string[]>? screenSnapshot = null,
-        TimeSpan? submitVerifyBeat = null)
+        TimeSpan? submitVerifyBeat = null,
+        Guid sessionId = default)
         => await SharedSubmitAsync(
             backend,
             text,
@@ -163,7 +171,8 @@ public static class TerminalSubmit
             pollInterval,
             enterSettleDelay,
             screenSnapshot,
-            submitVerifyBeat);
+            submitVerifyBeat,
+            sessionId);
 
     private static async Task EchoVerifiedInlineSubmitAsync(
         ISessionBackend backend,
@@ -173,7 +182,8 @@ public static class TerminalSubmit
         TimeSpan? pollInterval = null,
         TimeSpan? enterSettleDelay = null,
         Func<string[]>? screenSnapshot = null,
-        TimeSpan? submitVerifyBeat = null)
+        TimeSpan? submitVerifyBeat = null,
+        Guid sessionId = default)
     {
         ArgumentNullException.ThrowIfNull(backend);
 
@@ -224,6 +234,10 @@ public static class TerminalSubmit
             FileLog.Write($"[{driverTag}] EchoVerifiedSubmit: composer echo not seen on attempt {attempt} " +
                           $"(len={text.Length}) - clearing the composer and retyping. " +
                           EchoMissDiagnostics(buffer, cursor, screenSnapshot, needle, visibleTailNeedle));
+            // Count it as well as log it (issue internal#811). A miss that recovers on the retype costs
+            // the user nothing, so it raises no alarm - but it is the leading indicator of the failures
+            // that DO cost them their words, and it was invisible until somebody grepped a log file.
+            PromptDeliveryFailures.RecordComposerEchoMiss(sessionId, driverTag, attempt, text.Length);
             backend.Write(EscapeByte);
             await Task.Delay(TimeSpan.FromMilliseconds(300));
         }
@@ -283,7 +297,8 @@ public static class TerminalSubmit
         TimeSpan? pollInterval = null,
         TimeSpan? enterSettleDelay = null,
         Func<string[]>? screenSnapshot = null,
-        TimeSpan? submitVerifyBeat = null)
+        TimeSpan? submitVerifyBeat = null,
+        Guid sessionId = default)
     {
         var tempPath = LargeInputHandler.CreateTempFile(text, backend.WorkingDirectory);
         var relRef = LargeInputHandler.MakeAtReference(tempPath, backend.WorkingDirectory);
@@ -298,7 +313,8 @@ public static class TerminalSubmit
             pollInterval,
             enterSettleDelay,
             screenSnapshot,
-            submitVerifyBeat);
+            submitVerifyBeat,
+            sessionId);
     }
 
     private static async Task SubmitViaInstructionFileAsync(
@@ -311,7 +327,8 @@ public static class TerminalSubmit
         TimeSpan? pollInterval = null,
         TimeSpan? enterSettleDelay = null,
         Func<string[]>? screenSnapshot = null,
-        TimeSpan? submitVerifyBeat = null)
+        TimeSpan? submitVerifyBeat = null,
+        Guid sessionId = default)
     {
         var tempPath = LargeInputHandler.CreateTempFile(text, backend.WorkingDirectory);
         var relRef = LargeInputHandler.MakeAtReference(tempPath, backend.WorkingDirectory);
@@ -332,7 +349,8 @@ public static class TerminalSubmit
                 pollInterval,
                 enterSettleDelay,
                 screenSnapshot,
-                submitVerifyBeat);
+                submitVerifyBeat,
+                sessionId);
         }
         else
         {

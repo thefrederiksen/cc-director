@@ -586,6 +586,26 @@
                                                        FontSize="9"
                                                        FontWeight="SemiBold" />
                                         </Border>
+                                        <!-- Not-delivered badge (issue internal#811): a prompt to this
+                                             session never reached the agent - the user's words are gone.
+                                             The ONE badge on this row that is not neutral gray, and the
+                                             only one that reports a LOSS rather than a state, so it is
+                                             red and it leads. Still a BADGE, NEVER A COLOUR: the agent
+                                             is doing exactly what it was doing, having heard nothing, so
+                                             the dot keeps telling the truth about the work. It clears
+                                             when a prompt actually lands, never on a click. -->
+                                        <Border Background="#33DC4444"
+                                                CornerRadius="6"
+                                                Padding="6,1"
+                                                VerticalAlignment="Center"
+                                                Margin="0,0,6,0"
+                                                IsVisible="{Binding HasUndeliveredPrompt}"
+                                                ToolTip.Tip="{Binding UndeliveredPromptTooltip}">
+                                            <TextBlock Text="NOT DELIVERED"
+                                                       Foreground="#F08A8A"
+                                                       FontSize="9"
+                                                       FontWeight="SemiBold" />
+                                        </Border>
                                         <!-- Winding-down badge (defect 23): the session is flagged for
                                              deletion and the reaper will remove it shortly. A BADGE,
                                              NEVER A COLOUR (owner's ruling, 14 July 2026): pending

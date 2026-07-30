@@ -12,6 +12,7 @@ import { SourceControlTab } from "./SourceControlTab";
 import { QueuePanel } from "./QueuePanel";
 import { ScreenshotsPanel } from "./ScreenshotsPanel";
 import { appendToCompose } from "./composerInsert";
+import { promptDeliveryHistory, promptDeliveryNotice } from "@devthrottle/client-core/sessions/delivery";
 
 // The selected session's detail region (issue #972): the live terminal (issue #971's TerminalPane,
 // reused verbatim) stacked over the driver action bar and the composer, with a tabbed dock for the
@@ -139,6 +140,17 @@ export function SessionDetail() {
           )}
         </div>
 
+        {/* A prompt to this session was not delivered (issue internal#811). It sits directly above the
+            composer - the place the words were typed and the place the next attempt will be made - and it
+            stays until something actually lands. The sentence is the Gateway's, rendered verbatim. */}
+        {selected && promptDeliveryNotice(selected) !== null && (
+          <div className="delivery-failure-banner" role="alert">
+            <span className="delivery-failure-title">{promptDeliveryNotice(selected)}</span>
+            {promptDeliveryHistory(selected) !== null && (
+              <span className="delivery-failure-history">{promptDeliveryHistory(selected)}</span>
+            )}
+          </div>
+        )}
         <SessionActionBar sessionId={sessionId} capabilities={selected?.driverCapabilities} />
         <SessionComposer
           sessionId={sessionId}

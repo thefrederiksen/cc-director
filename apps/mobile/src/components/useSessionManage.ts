@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { holdSession, killSession, listSessions } from "@devthrottle/client-core/api/client";
 import { classify, isDeferredHold, isWorking, snoozeCountdown } from "@devthrottle/client-core/sessions/ordering";
+import { promptDeliveryNotice } from "@devthrottle/client-core/sessions/delivery";
 import {
   isSnoozing,
   optimisticHoldFor,
@@ -42,6 +43,10 @@ export interface SessionManage {
   snoozed: boolean;
   // "wakes in 3h 48m" from the Gateway-owned snooze clock, or null when there is no running clock.
   holdCountdown: string | null;
+  // "Your last prompt was not delivered ..." - the Gateway's sentence for a prompt that never reached the
+  // agent (issue internal#811), or null when nothing was lost. Rendered VERBATIM by the app bar, so every
+  // per-session screen says it, not just the one the user happened to be on when it happened.
+  deliveryNotice: string | null;
   busy: boolean;
   error: string | null;
   setError: (message: string | null) => void;
@@ -62,6 +67,7 @@ export function useSessionManage(sessionId: string | undefined): SessionManage {
   const [working, setWorking] = useState(false);
   const [snoozed, setSnoozed] = useState(false);
   const [holdCountdown, setHoldCountdown] = useState<string | null>(null);
+  const [deliveryNotice, setDeliveryNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // While a toggle is in flight the optimistic state must not be clobbered by a slower poll.
@@ -83,6 +89,10 @@ export function useSessionManage(sessionId: string | undefined): SessionManage {
         // Whether snoozing NOW would defer (working) or arm (settled) - drives the optimistic affordance.
         setWorking(isWorking(match));
         setHoldCountdown(snoozeCountdown(match));
+        // A prompt that did not reach the agent (issue internal#811). Read on the SAME poll as the hold
+        // state so the banner appears without the user doing anything - the failure happened while they
+        // were looking at some other screen, which is exactly why it has to find them.
+        setDeliveryNotice(promptDeliveryNotice(match));
         // classify fails loud against a Gateway that did not stamp triageBucket; in this polling loop a
         // mixed-version blip must not throw the refresh, so keep the last verdict on that rare miss.
         try {
@@ -185,6 +195,7 @@ export function useSessionManage(sessionId: string | undefined): SessionManage {
     deferred,
     snoozed,
     holdCountdown,
+    deliveryNotice,
     busy,
     error,
     setError,

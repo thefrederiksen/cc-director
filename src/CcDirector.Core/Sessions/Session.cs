@@ -1,6 +1,7 @@
 using CcDirector.Core.Agents;
 using CcDirector.Core.Backends;
 using CcDirector.Core.Claude;
+using CcDirector.Core.Input;
 using CcDirector.Core.Memory;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
@@ -2364,25 +2365,67 @@ public sealed class Session : IDisposable
         catch (Exception ex) { FileLog.Write($"[Session] OnTurnSubmitted handler failed: session={Id}, {ex.Message}"); }
     }
 
+    /// <summary>
+    /// Raised when this session's prompt-delivery alarm turns on (a send was lost) or off (a later send
+    /// landed) - issue internal#811. The desktop rail subscribes so its red "NOT DELIVERED" badge appears
+    /// and clears without waiting for some unrelated repaint; the Gateway learns the same fact from the
+    /// session row on the next push.
+    /// </summary>
+    public event Action? OnPromptDeliveryChanged;
+
+    private void RaisePromptDeliveryChanged()
+    {
+        try { OnPromptDeliveryChanged?.Invoke(); }
+        catch (Exception ex) { FileLog.Write($"[Session] OnPromptDeliveryChanged handler failed: session={Id}, {ex.Message}"); }
+    }
+
     public async Task SendTextAsync(string text, SendSource source = SendSource.UserInput, InputOrigin? origin = null)
     {
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
 
         FileLog.Write($"[Session] SendTextAsync: session={Id}, source={source}, driver={Driver.Kind}, text=\"{(text.Length > 60 ? text[..60] + "..." : text)}\", len={text.Length}");
-        if (BackendType is SessionBackendType.ConPty)
+        // THE delivery boundary (issue internal#811). Everything below this try either delivered the
+        // user's words or threw; there is no third outcome, and no other place in the Director knows both
+        // "which session" and "did it go". A throw here used to travel up as an error string on whichever
+        // caller happened to be listening and a line in a log file nobody reads - which is how two spoken
+        // prompts were lost on 2026-07-15 and went unnoticed for two days. Now the loss is counted against
+        // the session and rides its row to every screen.
+        //
+        // ON THE "TRY-CATCH AT ENTRY POINTS ONLY" RULE (CLAUDE.md #4): this catch does not HANDLE
+        // anything. It records a fact and rethrows the same exception, untouched, so every caller's error
+        // path - the 502 the dictation endpoint returns, the phone's retry, the error the composer shows -
+        // behaves exactly as it did before. The rule exists to stop a catch swallowing a failure and
+        // continuing in a degraded state; this one exists to stop a failure being swallowed by SILENCE.
+        // A test pins the rethrow so it cannot quietly become a handler.
+        try
         {
-            await Drivers.TerminalSubmit.SharedSubmitAsync(
-                _backend,
-                text,
-                Driver.Kind.ToString(),
-                BracketedPasteEnabled,
-                requireEcho: Driver.Kind != Agents.AgentKind.Copilot,
-                screenSnapshot: SnapshotScreenRows);
+            if (BackendType is SessionBackendType.ConPty)
+            {
+                await Drivers.TerminalSubmit.SharedSubmitAsync(
+                    _backend,
+                    text,
+                    Driver.Kind.ToString(),
+                    BracketedPasteEnabled,
+                    requireEcho: Driver.Kind != Agents.AgentKind.Copilot,
+                    screenSnapshot: SnapshotScreenRows,
+                    sessionId: Id);
+            }
+            else
+            {
+                await _backend.SendTextAsync(text);
+            }
         }
-        else
+        catch (Exception ex)
         {
-            await _backend.SendTextAsync(text);
+            PromptDeliveryFailures.RecordFailedDelivery(Id, source.ToString(), ex.Message, text?.Length ?? 0);
+            RaisePromptDeliveryChanged();
+            throw;
         }
+
+        // Only a send that CLEARED a live alarm repaints anything - the common case is a session that has
+        // never lost a prompt, and it must not repaint the rail on every turn.
+        if (PromptDeliveryFailures.RecordDeliverySucceeded(Id))
+            RaisePromptDeliveryChanged();
         IsBrandNew = false;
         // A submitted turn supersedes a hold ONLY when the OWNER submitted it (issue #470 refined). Not
         // every send is the owner coming back: a fleet message from another agent (SendSource.Agent) and
@@ -3113,6 +3156,9 @@ public sealed class Session : IDisposable
         _backend.StatusChanged -= OnBackendStatusChanged;
         if (_htmlParserFeed is not null && _backend.Buffer is not null)
             _backend.Buffer.OnBytesWritten -= _htmlParserFeed;
+        // Nothing can render this session's row any more, so its delivery tally has no reader left. The
+        // fleet-wide recent ring keeps the history; only the per-session counters are dropped.
+        PromptDeliveryFailures.Forget(Id);
         _backend.Dispose();
     }
 }

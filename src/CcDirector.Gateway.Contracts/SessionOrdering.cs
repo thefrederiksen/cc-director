@@ -382,6 +382,31 @@ public static class SessionOrdering
     }
 
     /// <summary>
+    /// THE ONE PLACE that turns "a prompt to this session did not go" into words (issue internal#811),
+    /// or null when there is nothing to say. Every client renders the returned string VERBATIM - no client
+    /// re-derives it, counts anything, or decides what a delivery failure means (CLAUDE.md rule 7).
+    ///
+    /// It speaks ONLY while the failure is UNRESOLVED - the last send threw and nothing has landed since,
+    /// so the user's words are gone right now. Once a later prompt gets through, the alarm has nothing to
+    /// warn about and goes quiet; the COUNTS stay on the row, because "this happened four times today" is a
+    /// fact worth keeping and a lucky retry must not erase it.
+    ///
+    /// Why this is a notice and not a colour: the session's colour says what the AGENT is doing, and the
+    /// agent is doing exactly what it was doing before - it never heard anything. Recolouring it would say
+    /// something false about the agent to say something true about the delivery. The notice says the true
+    /// thing in its own words.
+    /// </summary>
+    public static string? PromptDeliveryNotice(SessionDto s)
+    {
+        if (!s.PromptDeliveryUnresolved) return null;
+
+        var reason = (s.LastPromptDeliveryFailureReason ?? "").Trim();
+        return reason.Length == 0
+            ? "Your last prompt was not delivered - the agent never received it."
+            : $"Your last prompt was not delivered - the agent never received it. {reason}";
+    }
+
+    /// <summary>
     /// Classify a session for triage, folded in the same order as <see cref="EffectiveColor"/> and
     /// <see cref="StateLabel"/> so all three always agree.
     ///

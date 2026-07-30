@@ -182,6 +182,15 @@ export function SessionAppBar({ title, manage, showSnooze = false, showSwitchToV
       </div>
 
       {manage.error !== null && <div className="banner banner-error" role="alert">{manage.error}</div>}
+      {/* A prompt to this session was NOT delivered - the user's words never reached the agent (issue
+          internal#811). It lives on the shared app bar so it is on EVERY per-session screen: the loss
+          usually happens while the phone is somewhere else entirely (a dictation sent from the roster,
+          the screen locked), so a banner that only existed on one tab would be a banner nobody sees.
+          Sticky by design - it clears when a prompt actually lands, never on a tap and never on a timer -
+          because a failure the user can wave away is how two spoken prompts went missing for two days. */}
+      {manage.deliveryNotice !== null && (
+        <div className="banner banner-not-delivered" role="alert">{manage.deliveryNotice}</div>
+      )}
       {/* The snooze pill. A DEFERRED snooze reads "Snoozing when it finishes" (asked for while the agent is
           working, so it arms when the work ends) - this is what makes snoozing a busy session give instant
           feedback instead of looking like nothing happened. An armed snooze reads the Gateway FOLD

@@ -6,6 +6,7 @@ import { useVoiceModeAll } from "@devthrottle/client-core/voice/useVoiceModeAll"
 import { getSessionsEnvelope } from "@devthrottle/client-core/fleet/fleetClient";
 import { emptyRetentionCache, mergeRosterRetention, type RosterSessionMark } from "@devthrottle/client-core/fleet/rosterRetention";
 import { classify, contextLine, deletionReason, dotHex, inBucket, inDesktopOrder, inWaitingOrder, isWorking, pendingDeletion, repoLeaf, snoozeCountdown, snoozeExpired } from "@devthrottle/client-core/sessions/ordering";
+import { DELIVERY_BADGE_TEXT, hasUndeliveredPrompt, promptDeliveryTitle } from "@devthrottle/client-core/sessions/delivery";
 import { applyFilter, filterIsActive, filterSummary, machineName, pruneFilter } from "@devthrottle/client-core/sessions/filter";
 import { useDictationStatusFor } from "@devthrottle/client-core/dictation/status";
 import { useNow, waitingLabel } from "@devthrottle/client-core/sessions/waiting";
@@ -616,6 +617,15 @@ function SessionRow({ session, mark, fromTab = "all" }: { session: SessionDto; m
               an expired snooze on its own (the dead-man's switch fired) - so the reader knows this is a
               "go see why it went quiet" item, not a fresh turn-end. */}
           {snoozeExpired(session) && <span className="row-snooze-ended">Snooze ended</span>}
+          {/* A prompt to this session was NOT delivered - the user's words never reached the agent (issue
+              internal#811). Sticky and red, never a toast: the loss stays on the card until something
+              actually lands. Two spoken prompts died in a log file on 2026-07-15 because no card said
+              anything. The Gateway writes the sentence; this row only refuses to be quiet. */}
+          {hasUndeliveredPrompt(session) && (
+            <span className="row-not-delivered" title={promptDeliveryTitle(session) ?? undefined}>
+              {DELIVERY_BADGE_TEXT}
+            </span>
+          )}
           {/* A session flagged for deletion wears a neutral "winding down" badge (a BADGE, never a colour):
               the dot keeps telling the truth about the work while this rides beside it. */}
           {windingDown && (
