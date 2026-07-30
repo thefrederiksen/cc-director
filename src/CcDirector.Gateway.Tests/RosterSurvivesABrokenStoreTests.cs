@@ -13,6 +13,7 @@ using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Data;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.Snooze;
+using CcDirector.Gateway.Stats;
 using CcDirector.Gateway.Streaming;
 using CcDirector.Gateway.Tests.Data;
 using Microsoft.AspNetCore.Builder;
@@ -55,22 +56,56 @@ public sealed class RosterSurvivesABrokenStoreTests : IDisposable
     }
 
     /// <summary>
-    /// THE INCIDENT, INVERTED. The statistics store is unusable. The roster must still answer, and must
-    /// still carry every session that was pushed.
+    /// THE INCIDENT, INVERTED: the roster answers, and carries every session, on the shipped composition.
     ///
-    /// This is green BY CONSTRUCTION rather than by a guard: GatewayEndpoints.Map no longer accepts a
-    /// statistics collaborator at all, so the handler has nothing to call and no way to fail this way. To
-    /// watch it red, put the direct call back in the handler where it used to be - it answers 500 and this
-    /// test fails, which is the outage reproduced on demand.
+    /// BE HONEST ABOUT WHAT THIS DOES AND DOES NOT PROVE. An earlier version created a corrupt database file
+    /// and never connected it to anything - it was a roster baseline wearing a broken-store name, and it
+    /// would have passed just as happily with the fault fully restored, because the collaborator it claimed
+    /// to break was never wired in. The unused file is gone rather than left to imply a coverage that was
+    /// not there.
+    ///
+    /// What this genuinely proves: the shipped handler answers 200 with the complete roster, and it goes RED
+    /// with a 500 when a throwing statistics write is put back inside it - watched, not assumed. What it
+    /// cannot prove is that the collaborator is unreachable, because a null passed by omission looks
+    /// identical to a parameter that does not exist. That is the structural test above's job.
     /// </summary>
+    /// <summary>
+    /// THE STRUCTURAL GUARD, and it is the one that cannot be satisfied by accident.
+    ///
+    /// The outage happened because the roster handler could REACH a statistics collaborator. The fix was not
+    /// to guard that call - it was to remove the collaborator from the handler's reach entirely, so there is
+    /// nothing to call and no guard to forget. This asserts exactly that, by inspecting the shipped
+    /// signature: if anyone re-introduces a statistics parameter to the roster's Map, this goes red the
+    /// moment they compile, wherever they wire it and whether or not they pass null.
+    ///
+    /// It exists because the HTTP test below CANNOT prove this. That test passes a null collaborator by
+    /// omission, so re-adding the parameter and leaving the test's argument unset keeps it green while the
+    /// production wiring reintroduces the exact fault. A test that a regression can walk straight past is
+    /// not a guard; a signature that will not compile is.
+    /// </summary>
+    [Fact]
+    public void TheRosterHandlerCannotReachAStatisticsCollaboratorAtAll()
+    {
+        var map = typeof(GatewayEndpoints).GetMethods()
+            .Single(m => m.Name == nameof(GatewayEndpoints.Map) && m.GetParameters().Length > 3);
+
+        var statisticsParameters = map.GetParameters()
+            .Where(p => p.ParameterType == typeof(GatewayInputStatsAggregator)
+                     || p.ParameterType == typeof(GatewaySessionConcurrencyStats))
+            .Select(p => $"{p.ParameterType.Name} {p.Name}")
+            .ToList();
+
+        Assert.True(statisticsParameters.Count == 0,
+            "GatewayEndpoints.Map accepts a statistics collaborator again: "
+            + string.Join(", ", statisticsParameters)
+            + ". On 2026-07-30 a statistics write reachable from this handler answered HTTP 500 to the whole "
+            + "fleet for 32 minutes. Statistics are observed at the push ingress; the roster must have no way "
+            + "to call them, because a call that cannot be written cannot be forgotten to be guarded.");
+    }
+
     [Fact]
     public async Task WithTheStatisticsStoreUnusable_TheRosterStillAnswersAndCarriesEverySession()
     {
-        // A statistics store that is genuinely broken: a file that is not a database at all, which is what
-        // "disk image is malformed" means in practice.
-        var corrupt = Path.Combine(Path.GetTempPath(), "cc-corrupt-" + Guid.NewGuid().ToString("N") + ".db");
-        await File.WriteAllTextAsync(corrupt, "this is not a database");
-
         await WithGateway(seedSessions: new[] { "session-alpha", "session-beta", "session-gamma" },
             snoozeRegistry: NewRegistry(),
             assertion: async http =>
@@ -89,8 +124,6 @@ public sealed class RosterSurvivesABrokenStoreTests : IDisposable
                 Assert.Contains("session-beta", served);
                 Assert.Contains("session-gamma", served);
             });
-
-        try { File.Delete(corrupt); } catch (Exception) { /* best-effort */ }
     }
 
     /// <summary>
