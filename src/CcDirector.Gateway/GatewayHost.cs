@@ -2059,6 +2059,12 @@ public sealed class GatewayHost : IAsyncDisposable
                 // up-stream producer still chunks at MaxBinaryFrameBytes, so backpressure is unchanged.
                 o.MaximumReceiveMessageSize = Contracts.DirectorStreamLimits.MaxInboundMessageBytes;
                 o.StreamBufferCapacity = Contracts.DirectorStreamLimits.StreamBufferCapacity;
+                // Tunnel liveness (issue #1153). SET EXPLICITLY, and set from the SAME shared constants the
+                // Director's client uses, so the two halves of one timing budget cannot drift apart and
+                // neither side is left running on a framework default nobody chose. Before this, both ends
+                // ran on defaults and a Director hung up 35 times in a day on a Gateway that was alive.
+                o.KeepAliveInterval = Contracts.DirectorStreamLimits.KeepAlivePing;
+                o.ClientTimeoutInterval = Contracts.DirectorStreamLimits.SilenceTolerance;
             });
         builder.Services.AddSingleton(PushedSessions);
         builder.Services.AddSingleton(PushedRepositories);
