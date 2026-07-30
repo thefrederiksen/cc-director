@@ -288,6 +288,73 @@ INCOMPLETE SCHEMA: incomplete_schema: ... has a HALF-BUILT SCHEMA ... this is NO
 
 Three different sentences sending a reader to three different places: a setting, a database, a disk.
 
+## THE SECOND RUN, after rebasing onto worker 2 - 26 passed, 4 failed, and THREE CLAIMS ARE UNPROVEN
+
+Run at head `a668f2430` over six classes: **30 tests, 26 passed, 4 failed.** Recorded honestly rather than
+as "mostly green", because three of those failures leave real claims unproven right now.
+
+**Three failures are the Manager's collapse ruling taking effect at runtime, observed rather than predicted.**
+After rebasing onto worker 2's head, a half-built store is detected by worker 2's ADOPTION step and comes
+back `MigrationHistoryIncomplete`, so the three tests asserting this branch's `IncompleteSchema` fail with
+`Expected: IncompleteSchema, Actual: MigrationHistoryIncomplete`. Worker 2's detection wins because it sits
+earlier, which is exactly what was ruled. They are NOT renamed yet: worker 2 owns the collapse, its member
+still carries the MECHANISM name, and the ruling says the survivor must name the STATE - so renaming now
+would mean renaming twice and guessing the final name.
+
+**WHAT DID NOT EXECUTE, named rather than left to be inferred from a failure count.** In each of the three,
+the reason equality is what failed, so every assertion after it never ran:
+
+- `HalfBuiltStore_IsContained_AndReportsIncompleteSchema` - the reason code, the null factory, `CreateContext`
+  throwing, all four health fields and the three operator-sentence assertions.
+- `ContainedOpen_ChangesNothingOnDisk` - the failure is INSIDE the `using` block, so the ENTIRE
+  unchanged-on-disk section never ran. That section is the whole point of the test, so this claim is
+  currently proving nothing at all.
+- `TheThreeReasons_AreAllDifferentFromEachOther` - every pairwise comparison and every detail assertion.
+
+Those three claims are UNPROVEN at this head, not merely red.
+
+**The fourth failure was this branch's own fixture, and it is fixed.** The uncontained twin pinned the table
+name `agent_delta`, because the baseline created its sixteen tables alphabetically and died on the first.
+Worker 2 changed that order, so it went red reporting `table stat_delta already exists`. The test was RIGHT
+about the substance and WRONG to pin an incidental ordering - a fixture pinned to an incidental detail goes
+red for a reason unconnected to what it measures, which teaches people to re-run until green. It now requires
+the failure to name ANY table the model owns, read from the model rather than written out beside it. Re-run:
+passes.
+
+### OUR FAULT OR THEIRS - the mechanism behind the reason-code bug, and the fix
+
+A containment that catches EVERYTHING cannot tell "the store is unreachable" from "we have a bug". Guessing
+"unreachable" hands every programming error inside the boundary a plausible INFRASTRUCTURE label and sends
+the operator to audit a database, a network and settings that are all healthy while the fault sits in our
+code where they will never look. Three separate defects in one day came from that one mechanism; the missing
+reason-code entry was only its most recent vehicle.
+
+Failures are now CLASSIFIED before they are named. A recognised storage or transport failure keeps
+UNREACHABLE; anything else gets INTERNAL ERROR, whose sentence says plainly that this is a fault in
+DevThrottle rather than in the operator's machine or network, that checking those will not help, and that
+telling us will. The exception type and STACK go to the log on that path only - the message is still never
+used anywhere, because a provider echoes a malformed connection string back in it.
+
+`IsStorageFailure` asks the .NET TYPE SYSTEM rather than matching type NAMES, because a name whitelist rots
+silently the day a provider renames an exception or a new one is added. `DbException` is the base every
+ADO.NET provider derives from, so a new provider classifies correctly with no edit. The whole inner chain is
+walked, since Entity Framework wraps provider exceptions and a wrapped outage must not be called our bug.
+**What it cannot classify with confidence is named in the method itself** - our bug thrown while a provider
+exception is in flight reads as theirs; an `InvalidOperationException` with no inner provider exception reads
+as ours; `IOException` reads as theirs even when our own path handling produced it. The bias is deliberately
+away from crying wolf about somebody's infrastructure.
+
+Proven against REAL provider exceptions rather than stand-ins, because a stand-in proves the rule against a
+shape the providers may not actually throw: a genuine refused `NpgsqlException` and a genuine
+`SqliteException` are theirs, a provider failure wrapped in an `InvalidOperationException` is still theirs,
+and six ordinary programming errors plus the `ArgumentOutOfRangeException` from the missing reason code are
+ours.
+
+**A correction to an earlier statement in this document and to the Manager.** The boundary's half-built check
+is NOT merely a backstop behind adoption. Adoption is skipped entirely on PostgreSQL, so on the HOSTED path
+this check is the ONLY detector of a half-built statistics schema. That matters when the duplicate member is
+collapsed.
+
 ## REFUSED AND UNMODIFIED ARE TWO CLAIMS - the audit, and what it found
 
 A guard that rejects an input has two obligations: to DECLINE it, and to LEAVE IT UNTOUCHED. Almost every
@@ -333,7 +400,8 @@ The rows are the Manager's to close, not mine; what follows is what this run doe
 
 - **Everything added after the run of 2026-07-30 is UNRUN.** The two refusal tests above, the reason-code
   guard, and the rebase onto worker 2's head all postdate the run whose output is quoted in this document.
-  The quoted evidence belongs to the tree as it was at `ed966b50c`, not to the current head.
+  The quoted evidence in the first-run section belongs to the tree at `ed966b50c`; the second run above is at
+  `a668f2430`.
 - **The duplicate reason members are UNRESOLVED and awaiting the Manager.** Worker 2's
   `MigrationHistoryIncomplete` and this branch's `IncompleteSchema` are the SAME STATE, found independently
   from opposite ends - worker 2 inside adoption, worker 6 inside the startup boundary. Both are currently in
