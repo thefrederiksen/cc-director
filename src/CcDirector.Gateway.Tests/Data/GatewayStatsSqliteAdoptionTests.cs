@@ -631,9 +631,14 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
 
         var before = FingerprintStore();
 
-        using var context = OpenContext();
+        // The context is scoped so it is DISPOSED before the closing fingerprint. Holding it open leaves the
+        // file open, and the fingerprint cannot read it - which is a defect in the test, not the store.
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        var result = GatewayStatsSqliteAdoption.Adopt(context);
+        StatsStoreAdoptionResult result;
+        using (var context = OpenContext())
+        {
+            result = GatewayStatsSqliteAdoption.Adopt(context);
+        }
         stopwatch.Stop();
 
         Assert.False(result.IsUsable);
