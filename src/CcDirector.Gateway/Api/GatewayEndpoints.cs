@@ -1897,6 +1897,10 @@ internal static class GatewayEndpoints
                         Accepted = false,
                         BlockedByMenu = true,
                         BlockedSpoken = Speech.SpokenPhrases.WaitingScreenMenu.In(tenantSettings.SpokenLanguage(guardTenant.Value)),
+                        // The language those words are in (issue #1031). The client speaks this one through the
+                        // BROWSER's own synthesis and cannot build an utterance without a language; without this
+                        // field a correct French refusal is read out in the device's default English voice.
+                        BlockedSpokenLanguage = tenantSettings.SpokenLanguage(guardTenant.Value).Code,
                         Error = Wingman.WaitingScreenReader.MenuMessage,
                         ActivityState = session.ActivityState,
                     });

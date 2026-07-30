@@ -31,9 +31,16 @@ public sealed class DesktopTtsPlayer : IDisposable
     // local vault when standalone. Passed to TtsService so desktop speech honors the hosted voice setup.
     private readonly HostedAiKeyResolver _keyResolver = new();
 
-    public DesktopTtsPlayer(AgentOptions options)
+    // Where an utterance comes from on the desktop (issue #1031): it ASKS the Gateway, which owns the one
+    // language-and-voice decision, and packages the answer into the same type the Gateway's own sinks take.
+    // This class decides nothing about how it sounds - it used to, from a machine-global file that no account
+    // setting could reach, which is why a French account was read aloud in an English voice.
+    private readonly AccountUtterance _utterances;
+
+    public DesktopTtsPlayer(AgentOptions options, AccountUtterance? utterances = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
+        _utterances = utterances ?? new AccountUtterance();
     }
 
     /// <summary>True when a text-to-speech credential is configured for the selected provider.</summary>
@@ -58,7 +65,13 @@ public sealed class DesktopTtsPlayer : IDisposable
         if (string.IsNullOrWhiteSpace(text)) return false;
 
         var svc = new TtsService(_options, _keyResolver);
-        var result = await svc.GenerateAsync(text, voiceOverride: null, modelOverride: null, ct);
+        // The account's decision, or null when this Director is standalone - no Gateway means no account, so
+        // the machine's own configured voice is the only truth there and the legacy path is the right answer
+        // rather than a degraded one.
+        var utterance = await _utterances.ForAsync(text, ct);
+        var result = utterance is not null
+            ? await svc.GenerateAsync(utterance, ct)
+            : await svc.GenerateAsync(text, voiceOverride: null, modelOverride: null, ct);
         if (!result.Success || result.AudioBytes is null)
         {
             FileLog.Write($"[DesktopTtsPlayer] TTS not played: status={result.Status} error={result.ErrorMessage}");

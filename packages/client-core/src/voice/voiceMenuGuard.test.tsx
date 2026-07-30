@@ -87,6 +87,9 @@ describe("the wingman menu guard on a voice reply", () => {
       kind: "menu",
       canType: false,
       spoken: "This session is waiting on a menu.",
+      // The language those words are in, sent beside them by the Gateway (issue #1031). The hook builds a
+      // SpokenUtterance from the pair and cannot build one without this.
+      spokenLanguage: "en",
       message: "Open it and pick an option.",
     });
 
@@ -127,6 +130,9 @@ describe("the wingman menu guard on a voice reply", () => {
       sent: false,
       blockedByMenu: true,
       spoken: "This session is waiting on a menu.",
+      // The language those words are in, sent beside them by the Gateway (issue #1031). The hook builds a
+      // SpokenUtterance from the pair and cannot build one without this.
+      spokenLanguage: "en",
       message: "Open it and pick an option.",
     });
 
@@ -142,7 +148,8 @@ describe("the wingman menu guard on a voice reply", () => {
 
   it("clears the notice when Respond is opened again", async () => {
     voicePromptMock.mockResolvedValue({
-      sent: false, blockedByMenu: true, spoken: "spoken", message: "Open it and pick an option.",
+      sent: false, blockedByMenu: true, spoken: "spoken", spokenLanguage: "en",
+      message: "Open it and pick an option.",
     });
 
     const { view } = mount();

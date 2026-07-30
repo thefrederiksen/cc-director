@@ -826,6 +826,9 @@ internal static class GatewayWingmanVoiceEndpoint
                 spoken = kind == WaitingScreenKind.Menu
                     ? SpokenPhrases.WaitingScreenMenu.In(tenantSettings.SpokenLanguage(reqTenant.Value))
                     : "",
+                // The language those words are in (issue #1031), sent as a fact beside them: the client speaks
+                // this notice with the BROWSER's own voice and cannot build an utterance without a language.
+                spokenLanguage = tenantSettings.SpokenLanguage(reqTenant.Value).Code,
                 message = kind == WaitingScreenKind.Menu ? WaitingScreenReader.MenuMessage : "",
             });
         });

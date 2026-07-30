@@ -108,6 +108,18 @@ public sealed class PromptResponse
     /// <summary>The line to SPEAK when <see cref="BlockedByMenu"/> is true - the wingman is hands-free, so the
     /// refusal has to reach the ear, not just a screen. Empty otherwise.</summary>
     public string? BlockedSpoken { get; set; }
+
+    /// <summary>
+    /// The language <see cref="BlockedSpoken"/> is written in, as the short code (<c>en</c>/<c>fr</c>/<c>es</c>)
+    /// - issue #1031.
+    ///
+    /// It travels WITH the words because this particular notice is spoken by the BROWSER's own speech synthesis
+    /// rather than by the Gateway, and the browser cannot build an utterance without a language. Before it, the
+    /// client was handed a bare string, set no language, and pronounced a correctly translated French refusal
+    /// with the device's default English voice: the audio plays, nothing errors, and it is wrong. The client
+    /// cannot work this out for itself - it does not know the account's language - so the Gateway states it.
+    /// </summary>
+    public string? BlockedSpokenLanguage { get; set; }
 }
 
 /// <summary>

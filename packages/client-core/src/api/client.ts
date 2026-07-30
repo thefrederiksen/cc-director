@@ -588,6 +588,9 @@ export interface WaitingScreen {
   canType: boolean;
   /** The line to speak when a menu is blocking; empty otherwise. */
   spoken: string;
+  /** The language `spoken` is in, as the code the Gateway decided ("en"/"fr"/"es") - issue #1031. The caller
+   *  builds a SpokenUtterance from the pair, and cannot build one without this. */
+  spokenLanguage: string;
   /** The line to show on screen when a menu is blocking; empty otherwise. */
   message: string;
 }
@@ -611,6 +614,7 @@ export async function getWaitingScreen(sessionId: string, signal?: AbortSignal):
     kind,
     canType: kind !== "menu",
     spoken: body.spoken ?? "",
+    spokenLanguage: body.spokenLanguage ?? "",
     message: body.message ?? "",
   };
 }
@@ -623,6 +627,9 @@ export interface VoicePromptResult {
   blockedByMenu: boolean;
   /** The line to speak on a refusal; empty when the prompt was sent. */
   spoken: string;
+  /** The language `spoken` is in, as the code the Gateway decided ("en"/"fr"/"es") - issue #1031. The caller
+   *  builds a SpokenUtterance from the pair, and cannot build one without this. */
+  spokenLanguage: string;
   /** The line to show on a refusal; empty when the prompt was sent. */
   message: string;
 }
@@ -648,16 +655,23 @@ export async function sendVoicePrompt(
   if (!res.ok) {
     throw new GatewayError(res.status, `POST prompt failed: ${res.status}`);
   }
-  const answer = (await res.json()) as { accepted?: boolean; blockedByMenu?: boolean; blockedSpoken?: string; error?: string };
+  const answer = (await res.json()) as {
+    accepted?: boolean;
+    blockedByMenu?: boolean;
+    blockedSpoken?: string;
+    blockedSpokenLanguage?: string;
+    error?: string;
+  };
   if (answer.blockedByMenu === true) {
     return {
       sent: false,
       blockedByMenu: true,
       spoken: answer.blockedSpoken ?? "",
+      spokenLanguage: answer.blockedSpokenLanguage ?? "",
       message: answer.error ?? "",
     };
   }
-  return { sent: true, blockedByMenu: false, spoken: "", message: "" };
+  return { sent: true, blockedByMenu: false, spoken: "", spokenLanguage: "", message: "" };
 }
 
 // Soft-stop the current turn (the agent driver's Escape). POST /sessions/{sid}/escape.

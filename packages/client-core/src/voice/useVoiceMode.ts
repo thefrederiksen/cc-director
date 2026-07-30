@@ -15,6 +15,8 @@ import {
 import { backgroundTranscribeAndSend, type CapturedUtterance } from "../dictation/backgroundSend";
 import { ensureClip, getClipState, getVoiceMeta, saveVoiceMeta, stopPlayback, useVoiceClips, type ClipPhase } from "./clips";
 import { positionFor, saveMark, wasAutoPlayed } from "./playbackPositions";
+import { speakLocally } from "../speech/localSpeech";
+import { utteranceFor } from "../speech/spokenUtterance";
 import { isWorking } from "../sessions/ordering";
 
 // Session Voice mode (issue #850): the hands-free Wingman narration screen, the third session view
@@ -644,17 +646,14 @@ export function useVoiceMode(
   // uses LOCAL synthesis rather than the Gateway voice, the same choice Car Mode makes for its state
   // announcements: this is the product telling you it will not act, not the wingman reading the agent's
   // words, so it should cost nothing, need no network, and never be the thing that fails.
-  const speakBlocked = useCallback((line: string) => {
+  // It hands the sink an UTTERANCE, and it cannot build one without the language (issue #1031). The words arrive
+  // already translated - that part was never broken - but this speech is local, and an utterance carrying no
+  // language is pronounced with the device's default voice, so a correct French refusal came out in an English
+  // one. The language is a FACT FROM THE GATEWAY, sent beside the words: this hook cannot know the account's
+  // language and must not guess one, because a guess here and a guess in the Cockpit are two different guesses.
+  const speakBlocked = useCallback((line: string, language: string) => {
     if (line.length === 0) return;
-    try {
-      const synth = (window as unknown as { speechSynthesis?: SpeechSynthesis }).speechSynthesis;
-      if (synth) {
-        synth.cancel();
-        synth.speak(new SpeechSynthesisUtterance(line));
-      }
-    } catch {
-      // Speaking is on top of the on-screen notice, never instead of it; never let it throw into a send.
-    }
+    speakLocally(utteranceFor(language, line));
   }, []);
 
   const onRespondSend = useCallback(
@@ -671,7 +670,7 @@ export function useVoiceMode(
         const result = await sendVoicePrompt(sid, trimmed);
         if (result.blockedByMenu) {
           setMenuBlocked(result.message);
-          speakBlocked(result.spoken);
+          speakBlocked(result.spoken, result.spokenLanguage);
           return false;
         }
         setMenuBlocked(null);
@@ -702,7 +701,7 @@ export function useVoiceMode(
           const screen = await getWaitingScreen(sid);
           if (screen.kind === "menu") {
             setMenuBlocked(screen.message);
-            speakBlocked(screen.spoken);
+            speakBlocked(screen.spoken, screen.spokenLanguage);
             return;
           }
         } catch {
