@@ -125,6 +125,25 @@ Every fault was removed and the four rules pass on a clean tree: `Failed: 0, Pas
 
 ---
 
+## 3a. DT-SQL-5 - WRITTEN, BUILDS, NEVER RUN. NOT PROVEN.
+
+Stated first and plainly so this section cannot be skim-read as finished.
+
+DT-SQL-5 binds every allowlist entry to a condition the scan evaluates instead of to prose, in one of two
+directions - TRANSITIONAL entries fail when the world that ends them arrives, STRUCTURAL entries fail when
+the property they rest on stops holding. All four current entries carry one (section 4, limitation 4 is
+what it answers). The record type has no constructor without a condition, so a prose-only entry cannot be
+written.
+
+**It has never been executed.** The build is clean; that is all that is known. Every attempt to run it was
+aborted by the fleet-wide test lock. In particular the trip proof that the other five rules got - inject a
+stub statistics `DbContext`, watch DT-SQL-5 go red naming the stale `GatewayStatsDatabase` exemption,
+remove it, watch it go green - **has not been done**.
+
+Until that pair is watched, DT-SQL-5 is decoration by this document's own standard, and the ledger row for
+it stays OPEN. A guard that has never been seen tripping proves nothing, and that applies to the rule that
+polices the other rules exactly as it applies to them.
+
 ## 4. What the guard does NOT cover
 
 Stated plainly, because a guard whose limits are unstated gets trusted past them.
