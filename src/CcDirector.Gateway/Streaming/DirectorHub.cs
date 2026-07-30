@@ -235,8 +235,12 @@ public sealed class DirectorHub : Hub
         // on a network share where a write can hang - which would hold this hub thread and, through the
         // concurrency store's lock, every other one. See StatisticsObservationQueue.
         var snapshotTenant = RequireBoundTenant();
-        _statsQueue?.Offer(Stats.StatisticsObservationQueue.InputStatsObserver,
-            _ => { _inputStats.ObserveSnapshot(set, tenant: snapshotTenant); return Task.CompletedTask; });
+        // GATED ON ACCEPTANCE like every other observer on this path. A push the store REJECTED - a
+        // superseded connection or a stale sequence - is not authoritative, and folding its tallies
+        // records facts the fleet never had.
+        if (accepted)
+            _statsQueue?.Offer(Stats.StatisticsObservationQueue.InputStatsObserver,
+                _ => { _inputStats.ObserveSnapshot(set, tenant: snapshotTenant); return Task.CompletedTask; });
         // Fleet concurrency and the hourly activity log - max concurrent live and actively-working sessions,
         // plus the distinct sessions/machines/repositories active each hour. MOVED here from the GET /sessions
         // handler: the tracker keeps only the higher value per hour, so observing every push is idempotent in
@@ -319,8 +323,10 @@ public sealed class DirectorHub : Hub
         // DevThrottle Stats: fold this session's tally into the always-available aggregate, under this
         // connection's bound tenant (MTR-08). Offered to the queue, never written here - see PushSnapshot.
         var deltaTenant = RequireBoundTenant();
-        _statsQueue?.Offer(Stats.StatisticsObservationQueue.InputStatsObserver,
-            _ => { _inputStats.Observe(session, tenant: deltaTenant); return Task.CompletedTask; });
+        // Gated on acceptance like every other observer here.
+        if (accepted)
+            _statsQueue?.Offer(Stats.StatisticsObservationQueue.InputStatsObserver,
+                _ => { _inputStats.Observe(session, tenant: deltaTenant); return Task.CompletedTask; });
         // Concurrency is timer-sampled, not observed here - and this is the HOTTEST path in the Gateway, so
         // it is the one that must never materialise the whole tenant fleet or touch the shared file.
         // Issue #1292: claim this session's number the moment it arrives - gated on acceptance so a stale or
@@ -370,8 +376,13 @@ public sealed class DirectorHub : Hub
         // unwrapped throw would have failed the whole removal - skipping the role, display and history
         // observers below - for a high-water row. That is the same shape as the outage, one method over.
         var removeTenant = RequireBoundTenant();
-        _statsQueue?.Offer(Stats.StatisticsObservationQueue.InputStatsObserver,
-            _ => { _inputStats.Forget(sessionId, removeTenant); return Task.CompletedTask; });
+        // GATED, AND THIS IS THE ONE THAT DAMAGES DATA IF IT IS NOT. Forget DELETES the session's
+        // high-water row. Run from a rejected remove - a stale or superseded connection - the row goes
+        // while the session is still live, and the next authoritative delta then presents the same
+        // cumulative counters as new, so they are counted twice. A rejected push must never inflate totals.
+        if (accepted)
+            _statsQueue?.Offer(Stats.StatisticsObservationQueue.InputStatsObserver,
+                _ => { _inputStats.Forget(sessionId, removeTenant); return Task.CompletedTask; });
         // A departure changes how many sessions are live, but concurrency is timer-sampled, so the next
         // sample picks it up rather than this path writing to the shared file.
         // A DEPARTURE RE-ROLES THE SURVIVORS, exactly as an arrival does: a controller leaving should stop

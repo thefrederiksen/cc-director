@@ -237,8 +237,20 @@ public sealed class StatisticsCannotFailTheFleetTests
         Assert.True(clock.Elapsed < TimeSpan.FromSeconds(10),
             "shutdown waited for the whole backlog - a bounded deadline is what stops the next container "
             + "starting while this one is still writing to the shared file");
-        // Offers after shutdown are refused, not written.
+
+        // THE ASSERTION THIS TEST WAS MISSING. It computed wroteAfterShutdown and never looked at it, so it
+        // passed while the consumer drained all twenty writes after shutdown began - the exact behaviour the
+        // name says it prevents. A counter nobody asserts on is not a test, it is a decoration, and this one
+        // certified the opposite of its own title for as long as it existed.
+        var drainedAfterShutdown = Volatile.Read(ref wroteAfterShutdown);
+        Assert.True(drainedAfterShutdown == 0,
+            $"{drainedAfterShutdown} queued write(s) ran after shutdown began - the point of the bounded "
+            + "deadline is that this process stops writing to the shared file before its successor starts, "
+            + "and draining the backlog on the way out rebuilds the two-writer window in the cleanup path");
+
+        // Offers after shutdown are refused outright, not queued and not written.
         queue.Offer(StatisticsObservationQueue.InputStatsObserver, _ => { Interlocked.Increment(ref wroteAfterShutdown); return Task.CompletedTask; });
+        Assert.Equal(drainedAfterShutdown, Volatile.Read(ref wroteAfterShutdown));
     }
 
     /// <summary>xUnit facts are synchronous here, and the queue is IAsyncDisposable by design (shutdown is

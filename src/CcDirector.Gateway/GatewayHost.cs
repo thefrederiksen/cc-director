@@ -3661,6 +3661,23 @@ public sealed class GatewayHost : IAsyncDisposable
         _autoDismissTimer = null;
         try { _displayStateSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] display-state sweep timer dispose error: {ex.Message}"); }
         _displayStateSweepTimer = null;
+
+        // THE STATISTICS WRITER STOPS BEFORE THIS PROCESS LETS GO OF THE SHARED STATE, AND IN THIS ORDER.
+        //
+        // The sampling timer first: it is a PRODUCER, and disposing the queue while a timer can still offer
+        // work would leave observations arriving at a closed queue. Then the queue itself, which stops
+        // accepting work and gives whatever is in flight a bounded chance to finish rather than draining the
+        // backlog into the share.
+        //
+        // This block existed in the queue and was never called. A shutdown containment that production never
+        // invokes is a comment: the whole point is that THIS container stops writing to the shared mount
+        // before its successor starts, and a slot swap starts the successor while this one is still tearing
+        // down. Writing the logic and not wiring it would have left the two-writer window exactly as it was
+        // on 2026-07-30, while the code claimed otherwise.
+        try { _concurrencySampleTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] concurrency sample timer dispose error: {ex.Message}"); }
+        _concurrencySampleTimer = null;
+        try { _statsQueue.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+        catch (Exception ex) { FileLog.Write($"[GatewayHost] statistics queue shutdown error: {ex.Message}"); }
         try { _voiceTurnUploadSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] voice-turn upload sweep timer dispose error: {ex.Message}"); }
         _voiceTurnUploadSweepTimer = null;
         try { _dictationTombstoneSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] dictation tombstone sweep timer dispose error: {ex.Message}"); }
