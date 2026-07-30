@@ -125,10 +125,18 @@ one that never died. |
 - Worker 5: **model-built (`EnsureCreated`), therefore NOT a schema proof.** Measured, not assumed, to be
   currently harmless: none of the three concurrency tables exists at version 5 in any spelling, because
   that record was a JSON file and never a table. **Must be rebuilt on worker 2's migration once it lands.**
-- Worker 4: **half and half, and it corrected me on this itself.** The SQLite facts are built by RUNNING
-  the existing `GatewayStatsDatabase`. The **Postgres** facts create their tables from the MODEL via
-  `GenerateCreateScript`, because no statistics migration exists on that branch yet - so those are
-  CONCURRENCY proofs and NOT schema proofs.
+- Worker 4: **half and half, and it corrected me on this itself, twice.** The SQLite facts are built by
+  RUNNING the existing `GatewayStatsDatabase`, so a wrong `ToTable` or `HasColumnName` throws there. The
+  **Postgres** facts create the `gateway_stats` schema and its tables from the MODEL via
+  `ctx.Database.GenerateCreateScript()`, because no statistics migration existed on that branch - so
+  **rows 3 and 4 are CONCURRENCY proofs and NOT schema proofs, and must be rebuilt on worker 2's
+  migration.**
+
+  Its race also guards against its own non-occurrence, which is the fixture-shape rule applied to
+  concurrency: if PostgreSQL never reports another session with `wait_event_type='Lock'` in the
+  database, the fact **THROWS** `No other session ever blocked on a lock, so the two writers never
+  actually interleaved` rather than reporting a green. A concurrency test that passes when the race did
+  not happen is the commonest false green there is, and this one cannot.
 
 ## (Row 17 covers what this section used to only warn about)
 
