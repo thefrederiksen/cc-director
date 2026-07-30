@@ -1905,7 +1905,15 @@ public sealed class GatewayHost : IAsyncDisposable
                 // immediately - the waiting and the re-send happen on its own background task.
                 try
                 {
-                    _sessionSupervisor?.OnTurnEnd(signal);
+                    // ENTER THE OWNING TENANT'S SCOPE, exactly as the voice generation below does, and for the
+                    // same reason: everything the supervisor then touches is partitioned - the per-tenant
+                    // settings read, the tunnel connection lookup that carries its screen read and its send,
+                    // and the activity-ledger write. The scope is an async-local, so the background ladder the
+                    // engine starts inside this call inherits it and keeps it for the whole episode. Without
+                    // it the pass runs with no tenant in scope and every one of those reads is denied - the
+                    // engine would wake up and silently do nothing.
+                    using (_tenantBoundary.EnterScope(tenant))
+                        _sessionSupervisor?.OnTurnEnd(signal);
                 }
                 catch (Exception ex)
                 {

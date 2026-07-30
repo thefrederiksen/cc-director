@@ -16,11 +16,13 @@ namespace CcDirector.Gateway.Supervision;
 /// merely REMEMBERS an old error must never be sent a "continue". This is the rule that stops the engine
 /// re-firing on a session it already rescued.
 ///
-/// THE ASYMMETRY IS DELIBERATE. For the two classes that ACT on a session (transient transport, rate
-/// limited) a class signature is not enough: the same line must also carry an error marker, so a session
+/// THE ASYMMETRY IS DELIBERATE. For the two classes that ACT on a session (transient transport, rate limited)
+/// an ordinary English signature is not enough: the same line must also carry an error marker, so a session
 /// whose agent happened to PRINT the words "connection refused" while discussing a log is never typed into.
-/// For the two classes that only RAISE A HAND (non-recoverable, context full) the signature alone is enough -
-/// they touch nothing, so the safe direction there is to notice more, not less.
+/// Signatures that cannot plausibly occur in ordinary prose - the errno codes, "socket hang up",
+/// "rate_limit_error" - stand on their own, because demanding a marker beside them would only lose real
+/// faults. For the two classes that only RAISE A HAND (non-recoverable, context full) the signature alone is
+/// always enough: they touch nothing, so the safe direction there is to notice more, not less.
 /// </summary>
 public static class TerminatingFaultClassifier
 {
@@ -44,9 +46,13 @@ public static class TerminatingFaultClassifier
             return new SessionFault(SessionFaultClass.NonRecoverable, nonRecoverable);
         if (FirstMatch(window, ContextFullSignatures, requireErrorMarker: false) is { } contextFull)
             return new SessionFault(SessionFaultClass.ContextFull, contextFull);
-        if (FirstMatch(window, RateLimitedSignatures, requireErrorMarker: true) is { } rateLimited)
+        if (FirstMatch(window, RateLimitedSelfEvident, requireErrorMarker: false) is { } rateLimitedPlain)
+            return new SessionFault(SessionFaultClass.RateLimited, rateLimitedPlain);
+        if (FirstMatch(window, RateLimitedGeneric, requireErrorMarker: true) is { } rateLimited)
             return new SessionFault(SessionFaultClass.RateLimited, rateLimited);
-        if (FirstMatch(window, TransientTransportSignatures, requireErrorMarker: true) is { } transient)
+        if (FirstMatch(window, TransientTransportSelfEvident, requireErrorMarker: false) is { } transientPlain)
+            return new SessionFault(SessionFaultClass.TransientTransport, transientPlain);
+        if (FirstMatch(window, TransientTransportGeneric, requireErrorMarker: true) is { } transient)
             return new SessionFault(SessionFaultClass.TransientTransport, transient);
 
         // Nothing recognized. If the turn nonetheless ended on something that announces itself as an error,
@@ -122,27 +128,46 @@ public static class TerminatingFaultClassifier
         return false;
     }
 
-    /// <summary>Words that mark a line as an agent-emitted failure rather than prose that merely mentions
-    /// one. Required before either ACTING class may match.</summary>
+    /// <summary>
+    /// Words that mark a line as an agent-emitted failure rather than prose that merely mentions one.
+    /// Required beside a GENERIC signature before either acting class may match.
+    ///
+    /// Deliberately NOT including "refused", "timed out" or "disconnected": each of those is already part of a
+    /// generic signature below, so listing it here would let that signature satisfy its own marker test and
+    /// the guard would wave through the very sentence it exists to reject.
+    /// </summary>
     private static readonly string[] ErrorMarkers =
     {
-        "error", "failed", "failure", "unable", "cannot", "can't", "refused", "timed out", "timeout",
-        "disconnect", "aborted", "retrying",
+        "error", "failed", "failure", "unable", "cannot", "can't", "aborted", "retrying",
     };
 
-    /// <summary>The transport faults this feature exists for. The July 21 incident matched the first one.</summary>
-    private static readonly string[] TransientTransportSignatures =
+    /// <summary>Transport faults that cannot plausibly appear in ordinary prose - an errno code or a runtime's
+    /// own error text. These stand on their own. The July 21 incident matched the first one.</summary>
+    private static readonly string[] TransientTransportSelfEvident =
     {
         "enotfound", "econnreset", "econnrefused", "etimedout", "eai_again", "epipe",
-        "socket hang up", "unable to connect to api", "fetch failed", "network error",
-        "connection error", "connection reset", "connection refused", "connection closed",
-        "request timed out", "getaddrinfo", "upstream connect error",
+        "socket hang up", "getaddrinfo", "upstream connect error", "fetch failed",
+        "unable to connect to api",
     };
 
-    /// <summary>Provider throttling and overload - recoverable, but only after backing off.</summary>
-    private static readonly string[] RateLimitedSignatures =
+    /// <summary>Transport faults phrased in ordinary English - a session could be DISCUSSING one of these
+    /// rather than dying on it, so they need an error marker on the same line.</summary>
+    private static readonly string[] TransientTransportGeneric =
     {
-        "rate limit", "rate_limit_error", "too many requests", "429", "overloaded_error", "overloaded",
+        "network error", "connection error", "connection reset", "connection refused",
+        "connection closed", "request timed out",
+    };
+
+    /// <summary>Provider throttling in the provider's own vocabulary - recoverable after backing off.</summary>
+    private static readonly string[] RateLimitedSelfEvident =
+    {
+        "rate_limit_error", "too many requests", "overloaded_error",
+    };
+
+    /// <summary>Throttling phrased in ordinary English, or a bare status number - marker required.</summary>
+    private static readonly string[] RateLimitedGeneric =
+    {
+        "rate limit", "429", "overloaded",
     };
 
     /// <summary>A full context window. Recoverable only by compacting first, which is phase 2.</summary>

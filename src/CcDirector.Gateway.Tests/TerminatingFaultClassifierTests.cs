@@ -41,7 +41,7 @@ public sealed class TerminatingFaultClassifierTests
     [InlineData("API Error: request failed (ECONNRESET)", "econnreset")]
     [InlineData("Error: socket hang up", "socket hang up")]
     [InlineData("fetch failed: connection reset by peer", "fetch failed")]
-    [InlineData("Request timed out after 60s", "request timed out")]
+    [InlineData("API Error: Request timed out after 60s", "request timed out")]
     public void TransportFaults_AreRecoverable(string line, string expectedSignature)
     {
         var fault = TerminatingFaultClassifier.Classify(Screen(line));
@@ -78,12 +78,24 @@ public sealed class TerminatingFaultClassifierTests
     public void OrdinaryProseMentioningAConnectionFailure_IsNotAFault()
     {
         // The strict test on the ACTING classes: a session that merely PRINTED the words must never be typed
-        // into. No error marker on the line, so no fault - the agent is discussing a log, not dying on one.
+        // into. "connection refused" is ordinary English, and no error marker sits beside it here, so there is
+        // no fault - the agent is discussing a log, not dying on one.
         var fault = TerminatingFaultClassifier.Classify(Screen(
             "The service log shows connection refused entries from last Tuesday.",
             "Shall I open an issue for them?"));
 
         Assert.Equal(SessionFaultClass.None, fault.Class);
+    }
+
+    [Fact]
+    public void TheSameProseWithTheAgentDyingOnIt_IsAFault()
+    {
+        // The other direction, so the rule above is a guard and not merely a way to miss things: the SAME
+        // English phrase with a failure marker beside it is the real thing.
+        var fault = TerminatingFaultClassifier.Classify(Screen("Error: connection refused by the API host"));
+
+        Assert.Equal(SessionFaultClass.TransientTransport, fault.Class);
+        Assert.Equal("connection refused", fault.Signature);
     }
 
     [Theory]

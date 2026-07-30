@@ -333,9 +333,12 @@ public sealed class SessionSupervisor : IDisposable
     /// fault on the screen, which is the only evidence that the work actually resumed.
     /// </summary>
     private void RecordRecovered(TenantId tenant, string directorId, string sessionId, int attempt, string how)
-        => _env.Record(new SupervisorRecord(tenant, directorId, sessionId,
+    {
+        var which = attempt > 0 ? $"attempt {attempt}" : "before any continue was sent";
+        _env.Record(new SupervisorRecord(tenant, directorId, sessionId,
             ActivityEventTypes.SupervisorRecovered, ActivityCauses.WorkingObservation,
-            $"attempt {attempt}: {how} - the attempt count is kept until a turn ends with no fault"));
+            $"{which}: {how} - the attempt count is kept until a turn ends with no fault"));
+    }
 
     private async Task EscalateAsync(TenantId tenant, string directorId, string sessionId,
         string cause, string detail, CancellationToken ct)
