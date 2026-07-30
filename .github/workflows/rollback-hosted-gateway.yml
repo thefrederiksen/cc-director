@@ -28,6 +28,19 @@ on:
         required: false
         default: B1
 
+# SERIALISATION. Shares ONE group with deploy-hosted-gateway.yml and
+# provision-hosted-gateway-slots.yml, so a rollback can never run while a deploy or the slot
+# provisioning is in flight. Production and staging mount the SAME Azure Files share, so two of
+# these at once means two containers writing one set of files - the mechanism that corrupted the
+# statistics database and took GET /sessions down for 32 minutes on 2026-07-30.
+#
+# cancel-in-progress is FALSE: a swap-back that arrives while a deploy is mid-swap must WAIT, not
+# cut the deploy off half-finished. If the rollback is needed immediately, cancel the deploy run in
+# the Actions user interface - that releases the group and this run starts.
+concurrency:
+  group: hosted-gateway-production
+  cancel-in-progress: false
+
 permissions:
   id-token: write
   contents: read

@@ -29,6 +29,19 @@ on:
         required: false
         default: S1
 
+# SERIALISATION. Shares ONE group with deploy-hosted-gateway.yml and rollback-hosted-gateway.yml.
+# This workflow creates the staging slot, mounts the shared Azure Files share on it, changes app
+# settings and STOPS the slot - all of which fight a deploy or a rollback that is starting, swapping
+# or stopping that same slot. Production and staging mount the SAME share, so two of these running at
+# once puts two containers on one set of files; that is what corrupted the statistics database and
+# took GET /sessions down for 32 minutes on 2026-07-30.
+#
+# cancel-in-progress is FALSE: whatever is already in flight finishes first. Cancelling a
+# half-finished swap is worse than queueing behind it.
+concurrency:
+  group: hosted-gateway-production
+  cancel-in-progress: false
+
 permissions:
   id-token: write
   contents: read

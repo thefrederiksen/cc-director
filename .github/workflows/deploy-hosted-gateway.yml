@@ -33,20 +33,39 @@ on:
   # The branch/tag picked when starting the run is the commit that ships.
   workflow_dispatch:
 
-# A second release WAITS for the one in flight. It must never cancel it (issue #2222).
+# SERIALISATION. Everything that touches the live hosted Gateway - this deploy, the rollback
+# (rollback-hosted-gateway.yml) and the slot provisioning/cleanup (provision-hosted-gateway-slots.yml)
+# - shares the ONE group named below. Only one of them can run at a time; the rest queue.
 #
-# This used to be cancel-in-progress: true, on the reasoning that the cancel is safe during the
+# Why one group and not one per workflow: production and staging mount the SAME Azure Files share at
+# /home/gateway/cc-director, so any two of these running at once puts two containers on one set of
+# files. On 2026-07-30 a swap overlapped two containers for 144 seconds, which corrupted the SQLite
+# statistics database on that share; GET /sessions then returned HTTP 500 for 32 minutes across the
+# Cockpit, the phone and the command line. Every previous deploy had been rolling the same dice.
+# A deploy racing a rollback, or a deploy racing the provisioning job that starts and stops the
+# staging slot, is the same hazard with more moving parts.
+#
+# Why cancel-in-progress is FALSE. A second release WAITS for the one in flight; it must never cancel
+# it (issue #2222). This used to be true, on the reasoning that the cancel is safe during the
 # ~5-minute build because nothing live has changed yet. That reasoning only holds if the cancel
 # lands during the build, and there is no way to promise it does. On 2026-07-27 one landed INSIDE
 # "Deploy the new image to the staging slot and warm it" - after the staging slot had been started
 # and before anything could stop it. The stop step is skipped on a cancelled run, so the slot was
 # abandoned RUNNING: two Gateway containers on one worker for ten minutes, unattended, with the app
 # degraded the whole time. No probe failed and /healthz never dropped, so nothing caught it.
+# Cancelling a half-finished swap is worse than queueing behind it.
 #
 # Waiting costs a few minutes of build time. Cancelling costs an abandoned slot and a degraded
 # production service. Queue.
+#
+# The cost this accepts: a deploy holds the group for its full run, including the ten-minute
+# post-swap watch, so an emergency swap-back started during a deploy queues behind it. If a rollback
+# is genuinely needed NOW, cancel the deploy run in the Actions user interface first - that releases
+# the group and the rollback starts. Queueing is the right default because the common case is a
+# rollback started against a deploy that is still mid-swap, where running both at once is what
+# breaks production.
 concurrency:
-  group: deploy-hosted-gateway
+  group: hosted-gateway-production
   cancel-in-progress: false
 
 permissions:
