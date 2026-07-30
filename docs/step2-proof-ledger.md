@@ -367,6 +367,29 @@ three SQLite classes, **all green together on the rebased tree**.
 
 A green belongs to the tree it was run against. Nobody asked it to check.
 
+## A STATUS FILE ANSWERS WHAT WAS; ONLY THE OPERATION ANSWERS WHAT IS
+
+The general form of the two mistakes below, and of the classifier being right by the rule and wrong
+about the world. An artefact that DESCRIBES a state is not the state, and the convincing ones are
+convincing because **every field in them is true** - they are accurate records of a moment that has
+passed.
+
+Two instances this evening, one on each of us. I read the fleet lock file as live state for an
+afternoon. The Architect read timestamps off CANCELLED CI runs and told Step 1 that main finishes in
+eight to twelve minutes when it actually takes an hour, and has had to retract it.
+
+## A DERIVED EXPECTED SET IS A VACUOUS TEST - assert a PROPERTY instead
+
+I filed issue 1151 proposing that a stale hardcoded expected list be DERIVED instead. **That was wrong
+and would have been worse than the stale list.** Deriving the expected set from the same source as the
+actual set means the test compares the database to itself and passes whatever the collation is - a guard
+supplying its own evidence. **A stale list fails loudly; a vacuous test never speaks again.**
+
+The fix is an asserted PROPERTY - every text column in a natural key has collation C - expressed as a
+rule the schema must satisfy rather than an inventory it must match. A new column then satisfies it
+silently or fails it loudly, with no list for anyone to maintain. Genuine exceptions get an allowlist
+entry with a MACHINE-CHECKABLE EXPIRY, per row 17.
+
 ## THE LOCK FILE IS NOT THE LOCK
 
 The fleet test lock is an OPEN FILE HANDLE. The file beside it carries the holder's process id, worktree
