@@ -89,6 +89,15 @@ public sealed class GatewaySessionConcurrencyStore
         // The dedup sets for the CURRENT hour, with the comparers that have always decided identity here
         // (property 3). Rehydrated from concurrency_hour_member when the hour rolls or the tenant is first
         // touched, so a restart mid-hour keeps counting the same hour correctly.
+        //
+        // KNOWN LIMITATION, CARRIED FORWARD DELIBERATELY - do not "fix" it by counting rows in the member
+        // table. Two containers folding the same hour hold SEPARATE sets, and each rehydrates only when the
+        // hour rolls or it first touches the tenant. So within one hour each can write a distinct count
+        // below the true union of what both saw, and the stored count is the larger of the two rather than
+        // the count of the union. This is exactly what the JSON store did (and strictly better than its
+        // whole-file last-writer-wins clobber), and counting rows instead would hand the decision "are
+        // these two machine names the same machine" to the database's collation, which is not equivalent to
+        // the OrdinalIgnoreCase comparer that decides it here. Ruled on and recorded rather than improved.
         public readonly HashSet<string> CurSessions = new(StringComparer.Ordinal);
         public readonly HashSet<string> CurMachines = new(StringComparer.OrdinalIgnoreCase);
         public readonly HashSet<string> CurRepos = new(StringComparer.OrdinalIgnoreCase);
@@ -219,6 +228,21 @@ public sealed class GatewaySessionConcurrencyStore
                 }
                 catch (Exception ex)
                 {
+                    // The fold above already put this observation's new members into the dedup sets, but
+                    // nothing was stored. Take them back out. Left in, they would be treated as
+                    // already-persisted for the rest of the hour - HashSet.Add is what decides whether a
+                    // member row is written - so their rows would never be written at all, and a container
+                    // restarting later in the same hour would rehydrate an incomplete set.
+                    foreach (var (kind, member) in newMembers)
+                    {
+                        switch (kind)
+                        {
+                            case ConcurrencyMemberKinds.Session: sh.CurSessions.Remove(member); break;
+                            case ConcurrencyMemberKinds.Machine: sh.CurMachines.Remove(member); break;
+                            case ConcurrencyMemberKinds.Repo: sh.CurRepos.Remove(member); break;
+                        }
+                    }
+
                     FileLog.Write($"[GatewaySessionConcurrencyStore] Observe FAILED: tenant={tenantValue} hour={key}: {ex.Message}");
                     throw;
                 }

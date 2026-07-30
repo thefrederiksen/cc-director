@@ -252,6 +252,41 @@ public sealed class GatewaySessionConcurrencyStoreTests : IDisposable
     }
 
     [Fact]
+    public void AFailedWrite_KeepsTheMembersItNeverStored_Pending()
+    {
+        // HashSet.Add is what decides whether a member row gets written, and the fold adds the members
+        // BEFORE the write. So a write that fails must put them back, or they are treated as already
+        // persisted for the rest of the hour and their rows are never written at all - after which a
+        // container restarting inside that hour rehydrates an incomplete set and can double-count.
+        var s = NewStore();
+        using (var ctx = _db.NewFactory().CreateDbContext())
+            ctx.Database.ExecuteSqlRaw("ALTER TABLE concurrency_hour_member RENAME TO concurrency_hour_member_hidden");
+
+        Assert.ThrowsAny<Exception>(() => s.Observe(new List<SessionDto> { S("a", "Working") }, T0));
+
+        using (var ctx = _db.NewFactory().CreateDbContext())
+            ctx.Database.ExecuteSqlRaw("ALTER TABLE concurrency_hour_member_hidden RENAME TO concurrency_hour_member");
+
+        // The whole observation was one transaction, so nothing of it reached the store ...
+        using (var ctx = _db.NewFactory().CreateDbContext())
+        {
+            Assert.Empty(ctx.ConcurrencyPeaks);
+            Assert.Empty(ctx.ConcurrencyHours);
+        }
+
+        // ... and the same session observed again is still treated as unseen, so its row is written now.
+        s.Observe(new List<SessionDto> { S("a", "Working") }, T0.AddMinutes(1));
+
+        using (var ctx = _db.NewFactory().CreateDbContext())
+        {
+            var sessions = ctx.ConcurrencyHourMembers
+                .Where(m => m.Kind == ConcurrencyMemberKinds.Session).Select(m => m.MemberId).ToList();
+            Assert.Contains("a", sessions);
+            Assert.Equal(1, ctx.ConcurrencyHours.Single().DistinctSessions);
+        }
+    }
+
+    [Fact]
     public void UnseenTenant_ReturnsAnAllZeroSnapshotWithNoHours()
     {
         var s = NewStore();
