@@ -14,8 +14,9 @@ namespace CcDirector.Core.Pi;
 ///       "usage":{"input":3838,"output":33,"cacheRead":0,"cacheWrite":0,"totalTokens":3871, ...}}}
 ///
 /// UsedTokens = the latest assistant message's <c>usage.input</c> (the conversation the model last
-/// ingested = context fullness). pi does NOT record the window, so it is mapped from the model id via
-/// <see cref="PiContextWindow"/>; an unmapped model yields a null window (raw-number fallback, no guess).
+/// ingested = context fullness). pi does NOT record the window anywhere in this file, and since issue
+/// #1100 it is no longer inferred from the model id - the window is reported as unknown and the gauge
+/// shows the raw token count with no percentage. See <see cref="Drivers.ContextWindowSource"/>.
 /// The session file for a repo is located by reading each session line's <c>cwd</c> (pi has no
 /// preassigned id the Director can use), newest matching file wins.
 /// </summary>

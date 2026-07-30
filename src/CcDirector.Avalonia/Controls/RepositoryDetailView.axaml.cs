@@ -324,8 +324,6 @@ public partial class RepositoryDetailView : UserControl
         // hides BranchesStatus when it succeeds - so a summary written here would be painted and then wiped
         // a moment later by a task nobody was waiting on. The outcome of a destructive action is the last
         // thing that should flicker out of existence.
-        _loadedTabs.Remove("Branches");
-        _loadedTabs.Add("Branches");
         await LoadBranchesAsync();
 
         // A refusal is a real outcome and it used to be invisible - the branch simply stayed in the list with
