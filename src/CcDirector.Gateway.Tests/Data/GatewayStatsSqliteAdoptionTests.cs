@@ -249,12 +249,41 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
 
     // ---- what is NOT adopted, and what that must cost --------------------------------------------------
 
+    /// <summary>
+    /// A refused store must be left EXACTLY as it was found, and that is TWO claims, not one: nothing was
+    /// ADDED, and nothing was LOST. Asserting only the first passes a refusal that dropped a table on its way
+    /// out - the same half-checked shape that let a foreign database be written into.
+    ///
+    /// The row count is what makes the second claim able to fail. A refusal path that dropped and recreated a
+    /// table would keep every table NAME and lose every row, and a names-only check would call that untouched.
+    /// </summary>
+    private void AssertStoreSurvivedUntouched(int expectedStatDeltaRows)
+    {
+        using var check = new SqliteConnection(
+            new SqliteConnectionStringBuilder { DataSource = _path }.ToString());
+        check.Open();
+
+        // Nothing ADDED - no history table, so nothing was stamped.
+        Assert.Equal(0, ScalarInt(check,
+            "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('__EFMigrationsHistory', '__EFMigrationsLock')"));
+
+        // Nothing LOST - all sixteen tables and all four named indexes still there.
+        Assert.Equal(16, ScalarInt(check,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"));
+        Assert.Equal(4, ScalarInt(check,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name LIKE 'ix_%'"));
+
+        // And the operator's DATA, which is the thing that actually matters to them.
+        Assert.Equal(expectedStatDeltaRows, ScalarInt(check, "SELECT COUNT(*) FROM stat_delta"));
+    }
+
     [Theory]
     [InlineData(4)]  // older than the baseline was ported from
     [InlineData(6)]  // written by a newer build that knows something this one does not
     public void Adopt_StatisticsStoreAtAnotherVersion_IsRefusedWithANamedReasonAndLeftUntouched(int version)
     {
         BuildRealVersion5Store();
+        SeedDistinguishableStatDeltaRows();
 
         // Move the REAL store's version stamp. The file keeps its genuine version 5 table shape, so this
         // tests the version gate itself rather than a hand-made file that differs in other ways too.
@@ -269,21 +298,18 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
 
         SqliteConnection.ClearAllPools();
 
-        using var context = OpenContext();
-        var result = GatewayStatsSqliteAdoption.Adopt(context);
+        using (var context = OpenContext())
+        {
+            var result = GatewayStatsSqliteAdoption.Adopt(context);
 
-        Assert.Equal(StatsStoreAdoptionOutcome.NotAdoptable, result.Outcome);
-        Assert.Equal(StatsStoreUnavailableReason.IncompatibleSchemaVersion, result.Reason);
-        Assert.False(result.IsUsable);
-        Assert.Contains(version.ToString(), result.Detail, StringComparison.Ordinal);
+            Assert.Equal(StatsStoreAdoptionOutcome.NotAdoptable, result.Outcome);
+            Assert.Equal(StatsStoreUnavailableReason.IncompatibleSchemaVersion, result.Reason);
+            Assert.False(result.IsUsable);
+            Assert.Contains(version.ToString(), result.Detail, StringComparison.Ordinal);
+        }
 
-        // NOT stamped. A refused store must be left exactly as it was found - the operator's file is
-        // evidence, and a half-adopted one would be worse than an unadopted one.
-        using var check = new SqliteConnection(
-            new SqliteConnectionStringBuilder { DataSource = _path }.ToString());
-        check.Open();
-        Assert.Equal(0, ScalarInt(check,
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='__EFMigrationsHistory'"));
+        SqliteConnection.ClearAllPools();
+        AssertStoreSurvivedUntouched(expectedStatDeltaRows: 2);
     }
 
     [Fact]
@@ -335,6 +361,7 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
     public void Adopt_NeverThrowsOnAnyStateAUsersFileCanBeIn()
     {
         BuildRealVersion5Store();
+        SeedDistinguishableStatDeltaRows();
 
         using (var connection = new SqliteConnection(
                    new SqliteConnectionStringBuilder { DataSource = _path }.ToString()))
@@ -347,12 +374,18 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
 
         SqliteConnection.ClearAllPools();
 
-        using var context = OpenContext();
-        var result = GatewayStatsSqliteAdoption.Adopt(context);
+        using (var context = OpenContext())
+        {
+            var result = GatewayStatsSqliteAdoption.Adopt(context);
 
-        Assert.False(result.IsUsable);
-        Assert.NotEqual(StatsStoreUnavailableReason.None, result.Reason);
-        Assert.False(string.IsNullOrWhiteSpace(result.Detail));
+            Assert.False(result.IsUsable);
+            Assert.NotEqual(StatsStoreUnavailableReason.None, result.Reason);
+            Assert.False(string.IsNullOrWhiteSpace(result.Detail));
+        }
+
+        // Containment is not only about not throwing - the operator's data must survive the refusal too.
+        SqliteConnection.ClearAllPools();
+        AssertStoreSurvivedUntouched(expectedStatDeltaRows: 2);
     }
 
     /// <summary>
@@ -389,6 +422,126 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
         Assert.Equal(StatsStoreUnavailableReason.MigrationHistoryIncomplete, result.Reason);
         Assert.False(result.IsUsable);
         Assert.Contains("interrupted", result.Detail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // ---- THE INVERSE DIRECTION: a healthy store must never be condemned --------------------------------
+    //
+    // This direction matters MORE than the false-accept direction, and the reason is the containment design
+    // itself. A statistics failure is quiet BY CONSTRUCTION: the Gateway starts, serves its roster, and
+    // reports statistics unavailable with a named reason. So a healthy store that is wrongly refused produces
+    // a Gateway that works perfectly well, with statistics off, and a named reason that is a LIE - and
+    // nothing pages anyone. It would sit unnoticed for months.
+    //
+    // A false ACCEPT eventually breaks loudly on the chain. A false REFUSE never breaks at all. Every guard
+    // added to this step tightened the accept direction, so each one is a chance to have quietly narrowed
+    // what counts as healthy.
+
+    /// <summary>
+    /// The plain case, restated as its own assertion rather than left implied by the adoption tests: a real
+    /// version 5 store WITH ROWS IN IT is adopted, not refused. If a tightening ever makes this red, the
+    /// tightening is wrong - it has started condemning the exact population this step exists to rescue.
+    /// </summary>
+    [Fact]
+    public void Adopt_AHealthyVersion5StoreWithRows_IsNeverRefused()
+    {
+        BuildRealVersion5Store();
+        SeedDistinguishableStatDeltaRows();
+
+        using var context = OpenContext();
+        var result = GatewayStatsSqliteAdoption.Adopt(context);
+
+        Assert.True(result.IsUsable,
+            $"A healthy version 5 store was refused as {result.Reason}: {result.Detail}");
+        Assert.Equal(StatsStoreAdoptionOutcome.Adopted, result.Outcome);
+        Assert.Equal(StatsStoreUnavailableReason.None, result.Reason);
+    }
+
+    /// <summary>
+    /// A store carrying rows in EVERY one of the sixteen tables, not just the one the other tests seed.
+    /// The column check walks all sixteen, so a mistake in the expected shape of a table nothing else
+    /// populates would only show here - and would show as a healthy store being condemned.
+    /// </summary>
+    [Fact]
+    public void Adopt_AHealthyVersion5StoreWithEveryTablePopulated_IsNeverRefused()
+    {
+        BuildRealVersion5Store();
+
+        using (var db = new GatewayStatsDatabase(_path))
+        {
+            void Run(string sql)
+            {
+                using var command = db.Connection.CreateCommand();
+                command.CommandText = sql;
+                command.ExecuteNonQuery();
+            }
+
+            Run("INSERT INTO stat_delta(hour_utc, session_id, modality, surface, is_voice, repo_id, wingman, " +
+                "turns, chars, model_id, checkout_id, tenant) " +
+                "VALUES ('2026-07-30T09', 's1', 'typed', 'terminal', 1, 3, 0, 7, 42, 11, 22, 'local')");
+            Run("INSERT INTO token_delta(hour_utc, model_id, input_tokens, output_tokens, cache_read_tokens, " +
+                "cache_creation_tokens, tenant) VALUES ('2026-07-30T09', 11, 1, 2, 3, 4, 'local')");
+            Run("INSERT INTO agent_delta(agent_id, is_voice, turns, chars, tenant) VALUES (1, 1, 5, 6, 'local')");
+            Run("INSERT INTO agent_driven_delta(agent_id, turns, chars, tenant) VALUES (1, 7, 8, 'local')");
+            Run("INSERT INTO repo_identity(repo_display, tenant) VALUES ('owner/repo', 'local')");
+            Run("INSERT INTO agent_identity(agent_display, tenant) VALUES ('claude', 'local')");
+            Run("INSERT INTO model_identity(model_display, tenant) VALUES ('opus', 'local')");
+            Run("INSERT INTO checkout_identity(checkout_display, tenant) VALUES ('D:/repo', 'local')");
+            Run("INSERT INTO session_highwater(tenant, session_id, modality, surface, turns, chars) " +
+                "VALUES ('local', 's1', 'typed', 'terminal', 7, 42)");
+            Run("INSERT INTO token_highwater(tenant, session_id, input_tokens, output_tokens, " +
+                "cache_read_tokens, cache_creation_tokens) VALUES ('local', 's1', 1, 2, 3, 4)");
+            Run("INSERT INTO agent_driven_highwater(tenant, session_id, turns, chars) VALUES ('local', 's1', 7, 8)");
+            Run("INSERT INTO wingman_session(tenant, session_id) VALUES ('local', 's1')");
+            Run("INSERT INTO agents_seeded(tenant, session_id) VALUES ('local', 's1')");
+            Run("INSERT INTO repo_session(repo_id, session_id) VALUES (1, 's1')");
+            Run("INSERT INTO agent_session(agent_id, session_id) VALUES (1, 's1')");
+            Run("INSERT OR IGNORE INTO meta(tenant, name, value) VALUES ('local', 'agents_since_utc', '2026-07-30T00:00:00Z')");
+        }
+
+        SqliteConnection.ClearAllPools();
+
+        using var context = OpenContext();
+        var result = GatewayStatsSqliteAdoption.Adopt(context);
+
+        Assert.True(result.IsUsable,
+            $"A healthy fully-populated version 5 store was refused as {result.Reason}: {result.Detail}");
+        Assert.Equal(StatsStoreAdoptionOutcome.Adopted, result.Outcome);
+
+        // And it is genuinely usable afterwards, not merely blessed.
+        context.Database.Migrate();
+        Assert.Empty(context.Database.GetPendingMigrations());
+        Assert.Single(context.StatDeltas.ToList());
+        Assert.Single(context.Meta.ToList());
+    }
+
+    /// <summary>
+    /// A store the CHAIN built and has been running on for a while - the state every machine is in after the
+    /// first adopted startup. It must come back tracked and usable, not refused by one of the guards added
+    /// for damaged stores.
+    /// </summary>
+    [Fact]
+    public void Adopt_AHealthyChainBuiltStoreWithRows_IsTrackedAndNeverRefused()
+    {
+        using (var context = OpenContext())
+        {
+            context.Database.Migrate();
+            context.StatDeltas.Add(new Stats.Data.Entities.StatDeltaEntity
+            {
+                HourUtc = "2026-07-30T09", SessionId = "s1", Modality = "typed", Surface = "terminal",
+                IsVoice = true, RepoId = 3, Wingman = false, Turns = 7, Chars = 42, Tenant = "local",
+            });
+            context.SaveChanges();
+        }
+
+        SqliteConnection.ClearAllPools();
+
+        using var reopened = OpenContext();
+        var result = GatewayStatsSqliteAdoption.Adopt(reopened);
+
+        Assert.True(result.IsUsable,
+            $"A healthy chain-built store was refused as {result.Reason}: {result.Detail}");
+        Assert.Equal(StatsStoreAdoptionOutcome.AlreadyTracked, result.Outcome);
+        Assert.Single(reopened.StatDeltas.ToList());
     }
 
     // ---- the ordinary new-machine paths ----------------------------------------------------------------
