@@ -268,11 +268,21 @@ public class RepositoryMonitorTests
 
             await monitor.RecomputeOneAsync(wt); // the watcher hands over a linked-worktree path
 
+            // Compare paths the way the monitor itself does. This used to use Path.GetFullPath,
+            // which resolves "." and ".." but NOT junctions or symbolic links, while the primary
+            // path arrives here from git (rev-parse --git-common-dir), which reports the RESOLVED
+            // real path. On any machine whose temporary directory is reached through a junction or
+            // a symbolic link the two spellings name the same directory and the string comparison
+            // still failed - a red that said "the monitor stored the wrong path" when the monitor
+            // was right and only the assertion was too literal. NormalizePath is the production
+            // canonicalizer (it follows links via GetFinalPathNameByHandle) and is what keys the
+            // model, so asserting through it tests the promise the monitor actually makes.
             lock (computedPaths)
                 Assert.All(computedPaths, p => Assert.Equal(
-                    System.IO.Path.GetFullPath(primary), System.IO.Path.GetFullPath(p)));
+                    WorktreeReaperService.NormalizePath(primary), WorktreeReaperService.NormalizePath(p)));
             var entry = Assert.Single(monitor.Snapshot());
-            Assert.Equal(System.IO.Path.GetFullPath(primary), System.IO.Path.GetFullPath(entry.Path));
+            Assert.Equal(
+                WorktreeReaperService.NormalizePath(primary), WorktreeReaperService.NormalizePath(entry.Path));
         }
         finally
         {
