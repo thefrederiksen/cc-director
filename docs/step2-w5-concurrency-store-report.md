@@ -127,14 +127,59 @@ database's collation, which is not equivalent to the `OrdinalIgnoreCase` compare
 The Manager ruled: carry it forward unchanged and write it down, because an under-count nobody has recorded
 reads as a bug to the next person who notices it, and they will "fix" it by counting rows.
 
-## Outstanding
+## A PostgreSQL result that is real but narrow, and must not be read as more
 
-The PostgreSQL arms of both proofs are written and gated on `CC_GATEWAY_TEST_PG_STATS_CONNECTION`, pointed
-at the per-caller rig (`scripts/pg-stats-proof-rig.ps1`, instance `w5`, port 55435), whose login role holds
-exactly the hosted role's measured grants - a green under a superuser would prove nothing about the role we
-will actually run as. They had not been RUN when this was written: the Gateway suite takes a per-user
-per-machine lock, worker 4's interleaved-writer proof has priority on it, and this worker stood down from
-the queue rather than push that proof further down it.
+`docs/step2-w5-pg-statement-probe.sql` was run against the rig with `psql`, using `PREPARE` with the same
+parameter types Npgsql infers. Actual output, not a reading of it:
+
+- first write where live peaked and working did not: `live_max 5 | 2026-07-11 20:00:00+00 | working_max 0 |
+  (null)` - the `CASE`-with-`NULL` types correctly and no instant is invented;
+- the race with the LOWER value landing last: `live_max 8 | 2026-07-11 20:02:00+00` - `GREATEST` holds eight
+  and the stamp is the write that SET it, not the later one;
+- a write advancing only working: `8 | 20:02 | 9 | 21:00` - the two timestamps move independently;
+- all five per-hour columns as maxima: `8 | 2 | 9 | 2 | 1`;
+- `ON CONFLICT DO NOTHING` inserted 0 on a repeat, and the ordinal key held both `SOREN_NORTH` and
+  `Soren_North` as two rows;
+- the hour keys sorted chronologically and the prune text range deleted exactly the two stale hours.
+
+**What it is not.** It is NOT a run of the store: no C# path, no Npgsql parameter inference, no
+model-to-table mapping, no store logic, and it ran as the superuser in a throwaway schema, so it says
+nothing about the restricted role either. It removes the "does this SQL run on PostgreSQL at all" risk and
+removes nothing else.
+
+## Outstanding - all of it still owed, none of it closed
+
+1. **The PostgreSQL arms of both proofs.** Written and gated on `CC_GATEWAY_TEST_PG_STATS_CONNECTION`,
+   pointed at the per-caller rig (`scripts/pg-stats-proof-rig.ps1`, instance `w5`, port 55435), whose login
+   role holds exactly the hosted role's measured grants. **NOT RUN.** Three attempts produced no result: one
+   died at a ten-minute tool timeout (killed, exit 143), two never reached a test while the fleet suite lock
+   was held elsewhere. A killed run and a queued run are the absence of an answer, not a verdict, and the
+   earlier per-class SQLite greens are not a substitute for them.
+2. **The product-code mutation for the lost update.** `docs/step2-w5-mutate-product-to-read-modify-write.py`
+   replaces the store's own upserts with a change-tracked read-then-save. It is written and NOT RUN. Note
+   which test judges it: the permanent red in the suite uses a fake writer, which proves the ASSERTION can
+   fail but not that the SHIPPED upserts are what makes it pass. The product mutation must be judged by the
+   THREADED four-container test, not the deterministic race - this store decides whether to write from its
+   in-memory shadow rather than from a database read, so a read-then-save would re-read at write time, see
+   the other container's eight, and correctly decline to write seven. The lost update for a read-then-save
+   lives between ITS read and ITS write, and only genuine concurrency opens that window.
+3. **The SQLite migration for these three tables, and rebuilding the fixtures on it.** Ownership was settled
+   late and it is MINE, not worker 2's: worker 2 carries none of these three tables. What is left is to
+   rebase onto `origin/nosqlite-stats-w2-model` (literal version 5 DDL baseline, `e0c401b50`), add the three
+   `DbSet`s to that context through the single `ConcurrencyStatsModel.Configure` call, generate the SECOND
+   migration in the SQLite chain, and bump `PRAGMA user_version` from 5 to 6 in its `Up()` with a matching
+   reset in `Down()` - worker 2's row-13 test derives the expected stamp from the migration count, so a
+   second migration without the bump turns it red and says so.
+
+   A rebase was attempted and ABORTED rather than left half-finished. It produced exactly one conflict, an
+   add/add on `GatewayStatsDbContext.cs`, and the resolution is mechanical: keep worker 2's file whole, add
+   the three concurrency `DbSet`s after `Meta`, and call `ConcurrencyStatsModel.Configure(modelBuilder)`
+   inside `OnModelCreating` BEFORE the `if (Database.IsNpgsql())` block - before it, so the three tables'
+   text columns also get the `"C"` collation that block pins, which is what makes the retention text range
+   compare identically on both providers. Nothing was lost by aborting; every commit is on the remote.
+
+None of this depends on a signal that does not exist: no claim here rests on continuous integration, which
+has never run on this worker branch.
 
 ## Merge notes for worker 2
 
