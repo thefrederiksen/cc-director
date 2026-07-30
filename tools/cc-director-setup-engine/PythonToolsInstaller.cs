@@ -389,17 +389,30 @@ public sealed class PythonToolsInstaller
     }
 
     /// <summary>
-    /// The retired per-tool fleet commands that were consolidated into the single cc-devthrottle command
+    /// Command names that no longer ship, and whose bin shim an older install may still be carrying.
+    /// Two groups:
+    /// <list type="bullet">
+    /// <item>The retired per-tool fleet commands consolidated into the single cc-devthrottle command
     /// (issue #823): cc-send, cc-ask, cc-spawn, cc-sessions, cc-whoami, cc-settings, cc-cron,
-    /// cc-fleet-selftest. Their executables no longer ship in the venv, so any bin shim an older install
-    /// left for them resolves to a missing target and fails with exit 127. The installer purges these on
-    /// every install/repair. Kept in sync with cc-devthrottle's setup_ops.LEGACY_ALIAS_NAMES (the doctor
-    /// diagnostic) so the same retired names are reported and cleaned. These names never overlap the
-    /// shipping tools, so purging them can never remove a live tool's shim.
+    /// cc-fleet-selftest.</item>
+    /// <item>cc-playwright, cut from the shipped toolbelt (issue #1002).</item>
+    /// </list>
+    /// In both cases the venv console script is gone, so a leftover shim resolves to a missing target.
+    /// For the fleet aliases that is exit 127; for a tool dropped from the manifest it is worse - the
+    /// self-checking shim body tells a HEALTHY install that "cc-* tools are not fully installed" and
+    /// sends the user to a repair that will never put the tool back. Note the ordinary
+    /// <c>RemoveManagedShims</c> pass cannot clean either group: it only walks the CURRENT manifest, and
+    /// these names are in no manifest. That is precisely why this explicit purge exists, and why cutting
+    /// a tool from the shipped set means adding its name here.
+    /// The installer purges these on every install/repair. Kept in sync with cc-devthrottle's
+    /// setup_ops.LEGACY_ALIAS_NAMES (the doctor diagnostic) so the same retired names are reported and
+    /// cleaned. These names never overlap the shipping tools, so purging them can never remove a live
+    /// tool's shim - guarded by a test against the shipped manifest rather than left as a promise.
     /// </summary>
     public static readonly IReadOnlyList<string> LegacyAliasShimNames = new[]
     {
         "cc-send", "cc-ask", "cc-spawn", "cc-sessions", "cc-whoami", "cc-settings", "cc-cron", "cc-fleet-selftest",
+        "cc-playwright",
     };
 
     /// <summary>

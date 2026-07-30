@@ -34,11 +34,13 @@ SETUP_CLI_COMMAND_NAMES = [
     "cc-director-setup-cli.exe",
 ]
 
-# Retired per-tool fleet commands that were consolidated into the single cc-devthrottle
-# command (issue #823). Their executables no longer ship, so any leftover bin shim pointing at
-# them fails with exit 127. The installer engine purges these (PythonToolsInstaller
-# .LegacyAliasShimNames - keep the two lists in sync); doctor reports their resolved path so a
-# machine that still carries one is visible.
+# Command names that no longer ship, and whose leftover bin shim points at a venv executable that
+# is gone: the retired per-tool fleet commands consolidated into the single cc-devthrottle command
+# (issue #823), plus cc-playwright, cut from the shipped toolbelt (issue #1002). A leftover fleet
+# alias fails with exit 127; a leftover shim for a tool dropped from the manifest instead tells a
+# healthy install that "cc-* tools are not fully installed", which is worse. The installer engine
+# purges these (PythonToolsInstaller.LegacyAliasShimNames - keep the two lists in sync); doctor
+# reports their resolved path so a machine that still carries one is visible.
 LEGACY_ALIAS_NAMES = [
     "cc-send",
     "cc-ask",
@@ -48,6 +50,7 @@ LEGACY_ALIAS_NAMES = [
     "cc-settings",
     "cc-cron",
     "cc-fleet-selftest",
+    "cc-playwright",
 ]
 
 

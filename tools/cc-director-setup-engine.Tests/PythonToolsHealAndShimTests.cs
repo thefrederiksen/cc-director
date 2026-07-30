@@ -209,14 +209,56 @@ public sealed class PythonToolsHealAndShimTests : IDisposable
     // --- Orphaned legacy alias shim purge (issue #823) --------------------------------------------
 
     [Fact]
-    public void LegacyAliasShimNames_AreTheEightRetiredFleetCommands()
+    public void LegacyAliasShimNames_AreTheRetiredFleetCommandsPlusUnshippedTools()
     {
-        // The retired per-tool fleet commands that were consolidated into cc-devthrottle. Guards the list
-        // against accidental drift and against ever including a shipping tool name (which would be purged).
+        // The retired per-tool fleet commands consolidated into cc-devthrottle (#823), plus cc-playwright,
+        // cut from the shipped toolbelt (#1002). Guards the list against accidental drift.
         Assert.Equal(
-            new[] { "cc-send", "cc-ask", "cc-spawn", "cc-sessions", "cc-whoami", "cc-settings", "cc-cron", "cc-fleet-selftest" },
+            new[]
+            {
+                "cc-send", "cc-ask", "cc-spawn", "cc-sessions", "cc-whoami", "cc-settings", "cc-cron", "cc-fleet-selftest",
+                "cc-playwright",
+            },
             PythonToolsInstaller.LegacyAliasShimNames);
-        Assert.DoesNotContain("cc-devthrottle", PythonToolsInstaller.LegacyAliasShimNames);
+    }
+
+    [Fact]
+    public void LegacyAliasShimNames_NameNoShippedTool()
+    {
+        // The property that makes the purge safe: it deletes shims by name, so a SHIPPED tool's name in
+        // this list would delete a live tool's shim on every install. That was previously asserted for
+        // one name (cc-devthrottle) by hand, which says nothing about the other eight - and the list now
+        // grows whenever a tool is unshipped, which is exactly when the mistake would be made. Checked
+        // against the shipped manifest itself so the guard cannot go stale as the shipped set changes.
+        var shipped = ShippedToolNames();
+        Assert.NotEmpty(shipped);
+        var overlap = PythonToolsInstaller.LegacyAliasShimNames.Where(shipped.Contains).ToArray();
+        Assert.Empty(overlap);
+    }
+
+    /// <summary>
+    /// The tool names in the shipped health manifest (src/CcDirector.Core/Tools/tools-manifest.json),
+    /// read off disk by walking up from the test binary - the same way the Core guard test finds it.
+    /// </summary>
+    private static HashSet<string> ShippedToolNames()
+    {
+        var relative = Path.Combine("src", "CcDirector.Core", "Tools", "tools-manifest.json");
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        string? found = null;
+        while (dir is not null && found is null)
+        {
+            var candidate = Path.Combine(dir.FullName, relative);
+            if (File.Exists(candidate)) found = candidate;
+            dir = dir.Parent;
+        }
+        Assert.NotNull(found);
+
+        using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(found!));
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var tool in doc.RootElement.GetProperty("tools").EnumerateArray())
+            if (tool.TryGetProperty("name", out var n) && n.GetString() is { } name)
+                names.Add(name);
+        return names;
     }
 
     [Fact]

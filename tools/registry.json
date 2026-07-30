@@ -84,9 +84,8 @@
       "name": "cc-playwright",
       "category": "web-social",
       "type": "python",
-      "description": "Playwright-backed browser CLI - trusted-event sibling to cc-browser for React form fills, signin/OTP flows, and dropdown selection",
+      "description": "Playwright-backed browser CLI for scripted or CI browser work - repeatable tests and high-volume same-origin loops. NOT shipped: our own guidance makes browser-harness the default for interactive browser work, this is the only tool that would pull a browser engine onto a stranger's machine, and a developer who already runs Playwright has their own version (issue #1002)",
       "built": true,
-      "ship": true,
       "requirements": ["Python 3.10+", "Playwright", "Chrome or Edge (Chromium)"]
     },
     {
