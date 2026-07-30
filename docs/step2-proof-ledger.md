@@ -151,7 +151,7 @@ including the new interrupted-migration test.
 The message is the artefact. It does not report a failed assertion - it names the omission and then
 explains the CONSEQUENCE in plain words, so somebody hitting it in eighteen months needs no archaeology,
 and it explains the offset inside itself so the 4 cannot be mistaken for an off-by-one. |
-| 16 | A fresh statistics file stamps `PRAGMA user_version = 5`, so an OLDER build meeting a NEWER file refuses loudly instead of crashing | **CLOSED** | **The second of the two rows the authorised desktop release will be cut on.** Found by an independent reviewer, and named by nobody before that: a file left at `user_version = 0` is not safely openable by the OLD build - it reads 0, tries to run migrations 1 through 5 against tables that already exist, and dies on a duplicate `ALTER TABLE`. A user rolling back a desktop build is a thing that will actually happen, so this is our regression arriving on their machine by a route none of us was looking at. Stamping 5 turns that crash into the loud refusal the original author already designed for, since the old code ALREADY fails correctly on a file whose version exceeds its build. Owed: the stamp, and a test that a downgrade gets the refusal rather than the crash. |
+| 16 | A fresh statistics file stamps `PRAGMA user_version = 5`, so an OLDER build meeting a NEWER file refuses loudly instead of crashing | **STAMP half CLOSED; the REFUSAL half is OPEN and UNOWNED** - the stamp is the mechanism, the refusal is the property, and a live desktop downgrade has never been exercised end to end | **The second of the two rows the authorised desktop release will be cut on.** Found by an independent reviewer, and named by nobody before that: a file left at `user_version = 0` is not safely openable by the OLD build - it reads 0, tries to run migrations 1 through 5 against tables that already exist, and dies on a duplicate `ALTER TABLE`. A user rolling back a desktop build is a thing that will actually happen, so this is our regression arriving on their machine by a route none of us was looking at. Stamping 5 turns that crash into the loud refusal the original author already designed for, since the old code ALREADY fails correctly on a file whose version exceeds its build. Owed: the stamp, and a test that a downgrade gets the refusal rather than the crash. |
 | 18 | An interrupted first migration leaves a history table with NO baseline recorded, and adoption reports the store USABLE | **DETECTION CLOSED IN STEP 2 by worker 2; only REPAIR remains out of scope (issue 1132)** | Found by worker 2 in its own step and reported rather than quietly handled. `Adopt` treats the mere PRESENCE of `__EFMigrationsHistory` as meaning the store is tracked, and never inspects WHICH migrations it records. An interrupted first `Migrate` - history table created, baseline not yet recorded - comes back as an empty history beside tables that already exist; adoption reports it usable and the chain then dies on "table stat_delta already exists" **OUTSIDE the containment**. Adoption cannot create that state itself, because it stamps history and baseline in one transaction, and this is the ordinary interrupted-migration failure for anything on this layer rather than an adoption-specific defect - which is why worker 2 did NOT build partial-migration repair. It is named in the evidence document because "the store HAS a history table" and "the store is AT the baseline" are two different claims and only the first is checked.
 
 **Worker 2 then CLOSED the detection half rather than only documenting it** (`e43922319`): the step now
@@ -329,6 +329,43 @@ that has since moved. It re-ran instead: `Passed! - Failed: 0, Passed: 96, Skipp
 three SQLite classes, **all green together on the rebased tree**.
 
 A green belongs to the tree it was run against. Nobody asked it to check.
+
+## NEVER LEARN WHAT YOU CHANGED FROM YOUR OWN PRIOR BELIEF
+
+Learn it from the response of whatever ARBITRATES. Architect ruling, and it is the root cause of four
+separate defects that looked like four problems.
+
+Each writer computed its growth against its OWN PRIOR BELIEF - a private in-memory mirror - and then
+appended that growth to a SHARED ledger, while the shared watermark was arbitrated by the DATABASE.
+**Those two things cannot both be authoritative.** Every one of the four write-path defects was that
+contradiction surfacing somewhere different: doubled delta growth, two identities minted for one
+display, the same rows archived twice, and a counter reset recounted after a restart.
+
+The fix is not four guards. Raise the watermark and RETURN the old and new values in the SAME ATOMIC
+STATEMENT, then append exactly that difference. Growth becomes what THIS writer added to the shared
+value rather than what it believed it was adding, **the sum of appended deltas equals final minus
+initial BY CONSTRUCTION, and the stale-baseline case DISAPPEARS rather than being detected** - which is
+the difference between a fix and a guard. Retention archives exactly the rows its own statement claimed;
+identity minting reads back WHICH ID WON rather than assuming it minted one.
+
+## THE AUDIT QUESTION FOR EVERY CLOSED ROW
+
+**Does it assert the quantity that would BREAK, or a neighbouring one that would not?**
+
+The write-path suite asserted WATERMARKS, which were always going to be right, and never DELTA TOTALS,
+which were always going to be wrong. A proof that does not assert the quantity that breaks is not a
+weaker proof - **it is a proof of a different claim.**
+
+Applied to every closed row, this surfaces one that had not been split:
+
+**Row 16 asserts that a fresh file STAMPS version 5. It does not assert that an OLDER BUILD REFUSES.**
+The stamp is the mechanism; the refusal is the property that protects a user rolling a desktop build
+back. Worker 2 has already said a live desktop downgrade was never exercised end to end. So the stamp
+half is closed and **the refusal half is OPEN and UNOWNED** - and it is on the desktop release path.
+
+The other closed rows survive the question because their neighbouring quantities were already split out:
+row 1's rig-fidelity precondition, row 10's non-empty roster, row 11's model-versus-baseline, row 15's
+independent verifier, and row 9's named non-coverage.
 
 ## A containment that catches EVERYTHING labels our bugs as their infrastructure
 
