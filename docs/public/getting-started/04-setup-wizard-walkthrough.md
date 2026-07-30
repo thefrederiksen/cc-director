@@ -2,17 +2,27 @@
   SCREENSHOTS ARE PARTIAL. Tracked: thefrederiksen/devthrottle_internal#1053.
 
   Present: all three installer screens, and the setup wizard's Gateway step (step 2).
-  Missing: setup wizard steps 1 and 3-8. Step 1 exists only as a 1024x768 capture where the
-  Welcome list is clipped by its own scrollbar (#1046) - deliberately NOT used, because a
-  screenshot taken where a defect does not appear must never become the reason that defect is
-  closed. Steps 3-8 have not been captured yet.
+  Missing: setup wizard steps 1 and 3-8, including the zero-agent Agents frame.
 
-  Every image here is from the clean-machine QA run at
-  devthrottle_internal docs/qa/runs/2026-07-30-FRAMES-NOTGATE/shots/, against v1.8.7, on a clean
-  Windows VM in first-run state. Verified by eye before use, not trusted from the filename - their
-  capture helper is known to overwrite frames (three files in that run are byte-identical).
+  RESOLUTION, stated plainly because it was reported to me wrongly once: every frame on this page
+  came from a 916x679 window (a 1024x768 desktop), NOT from a larger re-shoot. The larger re-shoot
+  was reported as delivered and had not happened - the capture wrote into a directory that still
+  held the previous run's files, skipped each shot it would have overwritten, and left the old file
+  in place, so fetching by filename returned run one's image. Verify by HASH against the run you
+  think you are taking from, not by filename or by a report.
 
-  If you are adding the rest, read #1053 first. Three things matter more than the images:
+  These two are still correct as illustrations at that size - "Step 2 of 8" is legible, so
+  gateway-at-step-2 is provable from the pixel. Nothing on this page claims a resolution.
+
+  Step 1 was captured but is NOT used: its list of what the wizard covers is cut off at the bottom.
+  Do not repeat the claim that the window size causes that - #1046 is being corrected, and whether
+  size is the cause was never measured. It is not used because the frame is a poor illustration,
+  which stands on its own.
+
+  Every image here was opened and looked at before use, never trusted from its filename. Three
+  files in that run are byte-identical, so a filename is not evidence of what a frame shows.
+
+  If you are adding the rest, read #1053 first. Two things matter more than the images:
 
     1. Caption every image with its step number from FirstRunWizardModel.CanonicalOrder.
        Gateway is step 2, NOT 7. Browsers is step 7, NOT 6. Three briefs got that wrong before the
@@ -20,7 +30,6 @@
        "Step N of 8" next to its dots, so a wrong caption is checkable against the pixel.
     2. The Agents step needs the ZERO-AGENT frame. A found-state picture under this page's
        zero-state prose is the same failure that got the original sixteen deleted.
-    3. Capture at a roomy resolution, not 1024x768. See the note about step 1 above.
 -->
 
 # Setup Wizard Walkthrough
