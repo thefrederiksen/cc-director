@@ -37,12 +37,24 @@ namespace CcDirector.Gateway.Stats;
 ///    A full queue DROPS and COUNTS.
 /// 2. CONCURRENCY IS COALESCED PER TENANT, latest sample wins. It is a high-water measure, so ten pending
 ///    identical samples cost memory and buy nothing a maximum can detect.
-/// 3. THE CONSUMER BOUNDS EACH OPERATION, and the bound is a HEALTH CHECK, not a capacity knob. A
-///    synchronous write to a hung share cannot be cancelled - so exceeding the bound does not abandon the
-///    operation (that would let a second write start, and two concurrent writers to one file is the
-///    original corruption). It marks the observer STUCK, with the time it got stuck, and waits. The
-///    system can then state "the consumer has been stuck for forty minutes" rather than leaving somebody
-///    to infer it from a rising drop count.
+/// 3. THE CONSUMER BOUNDS EACH OPERATION, and the bound is a HEALTH CHECK, not a capacity knob.
+///
+///    BE PRECISE ABOUT WHICH HALF THE BOUND PROTECTS, because reading it as more than it is would be
+///    exactly the kind of unproven claim this incident was made of. The bound decides WHEN WE REPORT a
+///    write as stuck. It does NOT stop the write: the work is a synchronous file write wrapped in a task,
+///    File.WriteAllText does not honour a cancellation token, and nothing here can make it.
+///
+///    So when the bound fires we mark the observer STUCK, with the time, and then WAIT for the write
+///    anyway (see RunOneAsync - the await after the report is deliberate and load-bearing). Abandoning it
+///    to start the next one would put a second writer on the same file over the same network share, which
+///    is the corruption this whole mission exists to remove; it would also accumulate a hung thread per
+///    observation on a wedged mount. Waiting means at most ONE write is ever in flight.
+///
+///    THE LIMITATION THAT REMAINS, stated rather than left to be discovered: a permanently wedged share
+///    parks this consumer forever. One thread stays blocked, every later observation fills the queue and
+///    is dropped-and-counted, and NO statistic is written again until the process restarts. That is the
+///    deliberate trade - statistics stop, the fleet does not - and "stuck since" plus a climbing drop
+///    count is what says so out loud. Step 2 removes these file writes entirely, which retires it.
 /// 4. SHUTDOWN DOES NOT DRAIN INTO THE SHARE. A consumer still writing while a slot swap has started the
 ///    next container IS the two-writer window, rebuilt by the cleanup path. Flush with a bounded deadline;
 ///    whatever is past it is counted as lost and let go.
