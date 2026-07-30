@@ -77,6 +77,50 @@ public sealed class GatewayStatsReadParityTests : IDisposable
     }
 
     /// <summary>
+    /// The comparison CAN fail, and it names what differs.
+    ///
+    /// A parity test that has only ever agreed is not evidence that two readers agree - only that nothing
+    /// disagreed loudly enough to be noticed. So one number the FROZEN reader returns is changed, by exactly
+    /// the amount a lost turn would change it, and the comparison is required to reject the pair and to say
+    /// which field moved. That failure message is the whole value of this test to whoever hits it next year:
+    /// a comparison that fails without naming the field sends them reading two thousand lines of JSON.
+    ///
+    /// This rides the same run as the parity assertion above, so the detector is validated every time rather
+    /// than once, by hand, in a session nobody can re-open.
+    /// </summary>
+    [Fact]
+    public void TheComparison_RejectsAOneNumberDifference_AndNamesTheField()
+    {
+        WriteFixture();
+
+        string ported;
+        using (var aggregator = new GatewayInputStatsAggregator(_path))
+            ported = RenderPorted(aggregator);
+
+        string frozen;
+        using (var reader = new FrozenSqliteStatsReader(_path))
+            frozen = RenderFrozen(reader);
+
+        // Sanity: the two really do agree before the change, or "it failed after" would prove nothing.
+        Assert.Equal(frozen, ported);
+
+        var marker = "\"Turns\": ";
+        var at = frozen.IndexOf(marker, StringComparison.Ordinal);
+        Assert.True(at >= 0, "the rendered document must contain a Turns field for this to perturb");
+
+        var valueStart = at + marker.Length;
+        var valueEnd = frozen.IndexOfAny(new[] { ',', '\r', '\n' }, valueStart);
+        var original = long.Parse(frozen[valueStart..valueEnd]);
+        var damaged = frozen[..valueStart] + (original - 1) + frozen[valueEnd..];
+
+        Assert.NotEqual(frozen, damaged);
+
+        var failure = Record.Exception(() => Assert.Equal(damaged, ported));
+        Assert.NotNull(failure);
+        Assert.Contains("Turns", failure!.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// The fixture actually contains the shapes the parity comparison is supposed to be sensitive to.
     ///
     /// Without this, "the two readers agreed" is answerable by an empty database, an archive rule nothing
