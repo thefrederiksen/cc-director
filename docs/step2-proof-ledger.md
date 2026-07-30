@@ -28,6 +28,13 @@ asserting only that it said no would have stayed green throughout. Wherever a gu
 assert that nothing was CHANGED as well as that something was DECLINED - and check the other direction
 too, that it does not condemn a healthy input.
 
+**The inverse is arguably the worse direction IN THIS DESIGN, and the reason is the containment
+itself.** Containment makes a statistics failure non-fatal and quiet by construction. So a guard that
+falsely REFUSES a healthy store produces a Gateway that serves perfectly well, with statistics switched
+off and a named reason that is a LIE, and nobody looking: it never pages anyone and it never throws. It
+would go unnoticed for months. A false ACCEPT at least eventually breaks loudly on the chain. The
+side-effect direction is the one that damages data; this one is the one nobody would ever find.
+
 **A FIXTURE THAT CANNOT DISTINGUISH THE BUG FROM ITS ABSENCE IS REFUSED, NOT RUN.** Worker 3's
 fixture-shape guard caught its own author's fixture: two tenants both totalling the same turns on a
 repository whose display spelling they share is exactly the fixture in which two tenants coalescing into
