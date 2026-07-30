@@ -357,6 +357,38 @@ three SQLite classes, **all green together on the rebased tree**.
 
 A green belongs to the tree it was run against. Nobody asked it to check.
 
+## Our own remedy keeps carrying our own defect
+
+**A fix for the check-then-create race introduced a startup hang inside the containment built to prevent
+startup hangs.**
+
+That is the third time today our own remedy has carried our own defect. The reason-code map made a
+missing enum member report as an unreachable database, through the mechanism built to guarantee named
+reasons. The CI watcher read a cancelled run as an answer, in the fix for CI not running at all. And now
+an unbounded provider lock sits inside the boundary whose entire contract is that statistics can never
+stop the Gateway.
+
+**It is the strongest argument that exists for why every FIX ROUND gets an independent review rather
+than a re-run.** A re-run asks whether the reported defect is gone. It cannot ask what the fix brought
+with it, because nobody wrote a test for a thing that did not exist yet.
+
+Two rulings attached to it. The unbounded retry is a **PROVIDER CONSTRAINT WE DESIGN AROUND, not a
+defect we can fix** - we do not control that acquisition and no amount of care in our code makes it
+bounded, so the honest record is that we work around it. And it makes issue 1134 strictly worse: an
+abandoned migration that holds a migration lock forever is a worse abandoned thing than one that does
+not.
+
+## A MIGRATION ID IS PART OF THE ON-DISK CONTRACT
+
+The schema-version constant law in a different costume. Every store that already exists records the
+migration IDs applied to it, so **renaming one is a breaking change to every install that ran the
+earlier build** - proved by recreating the previous revision's history state over a genuine healthy
+store and watching adoption reject it as not a statistics store.
+
+The original IDs are restored, and the migrations directory says these identifiers may never be renamed
+and why. Without that note a future reader tidies them, **every test passes on fresh databases**, and the
+breakage lands only on machines nobody is testing on.
+
 ## NEVER LEARN WHAT YOU CHANGED FROM YOUR OWN PRIOR BELIEF
 
 Learn it from the response of whatever ARBITRATES. Architect ruling, and it is the root cause of four
