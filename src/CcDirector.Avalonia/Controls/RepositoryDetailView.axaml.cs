@@ -320,8 +320,13 @@ public partial class RepositoryDetailView : UserControl
             FileLog.Write($"[RepositoryDetailView] batch delete {b.Name}: {(deleted ? "ok" : "refused")} - {message}");
         }
 
+        // AWAITED, not routed through ShowTab. ShowTab kicks the reload off fire-and-forget, and that reload
+        // hides BranchesStatus when it succeeds - so a summary written here would be painted and then wiped
+        // a moment later by a task nobody was waiting on. The outcome of a destructive action is the last
+        // thing that should flicker out of existence.
         _loadedTabs.Remove("Branches");
-        ShowTab("Branches");
+        _loadedTabs.Add("Branches");
+        await LoadBranchesAsync();
 
         // A refusal is a real outcome and it used to be invisible - the branch simply stayed in the list with
         // no explanation offered.

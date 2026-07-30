@@ -2774,10 +2774,22 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// One attempt at opening the Cockpit, plus the dialog for each way it can fail. Separate from the
-    /// handler so a Retry re-runs exactly the same attempt rather than a second, subtly different copy.
+    /// Attempt to open the Cockpit, offering Retry for as long as the user wants one.
+    ///
+    /// A LOOP rather than a recursive call: Retry re-runs exactly the same attempt, and someone clicking it
+    /// twenty times against a gateway that is still down should not be twenty stack frames deep by the end.
     /// </summary>
     private async Task OpenCockpitWithFeedbackAsync()
+    {
+        while (await TryOpenCockpitOnceAsync())
+        {
+            FileLog.Write("[MainWindow] BtnCockpit_Click: user chose Retry");
+        }
+    }
+
+    /// <summary>One attempt, plus the dialog for each way it can fail. Returns true when the user asked to
+    /// retry.</summary>
+    private async Task<bool> TryOpenCockpitOnceAsync()
     {
         var baseUrl = CockpitUrlResolver.ResolveCockpitBase(GatewayConfig.Load());
         FileLog.Write($"[MainWindow] BtnCockpit_Click: asking gateway for Cockpit URL, baseUrl={baseUrl}");
@@ -2802,6 +2814,8 @@ public partial class MainWindow : Window
                     "URL because it would only work on this one machine.")
                     .ShowDialog<bool?>(this);
             }
+
+            return false;
         }
         catch (Exception ex)
         {
@@ -2821,11 +2835,7 @@ public partial class MainWindow : Window
                 cancelLabel: "Close")
                 .ShowDialog<bool?>(this);
 
-            if (retry == true)
-            {
-                FileLog.Write("[MainWindow] BtnCockpit_Click: user chose Retry");
-                await OpenCockpitWithFeedbackAsync();
-            }
+            return retry == true;
         }
     }
 
