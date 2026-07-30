@@ -206,6 +206,41 @@ public sealed class GatewayStatsWritePathTests : IDisposable
         Assert.Contains(models, m => m.Model == "claude-opus-5" && m.Turns == 3);
     }
 
+    /// <summary>
+    /// Retention on the SELF-HOST provider: the expired detail leaves, every turn it carried stays, and the
+    /// working-day series stops claiming an hour that is no longer there.
+    ///
+    /// The PostgreSQL half of this is in <see cref="GatewayStatsWritePathPostgresTests"/>. It is worth having
+    /// BOTH, because the sweep is now a <c>DELETE ... RETURNING</c> whose rows are folded into the archive in
+    /// memory, and SQLite is the provider with the sharp edge there: it may emit RETURNING rows while the
+    /// statement is still running, and touching the same table mid-read is undefined. One implementation over
+    /// two providers is only a claim until it has been run twice.
+    /// </summary>
+    [Fact]
+    public void Pruning_KeepsEveryTurn_AndStopsClaimingTheExpiredHour()
+    {
+        using var agg = new GatewayInputStatsAggregator(_path);
+        var now = new DateTime(2026, 7, 30, 12, 0, 0, DateTimeKind.Utc);
+        var longAgo = now.AddDays(-200);
+
+        // Folded at a moment when it was not yet expired, so nothing prunes it on the way in.
+        agg.Observe(Session("s-old", ("typed", "phone", 7, 70)), longAgo);
+        // This fold's own retention sweep is what takes it.
+        agg.Observe(Session("s-new", ("typed", "phone", 5, 50)), now);
+
+        // Twelve turns went in and twelve are still counted - the all-time total does not shrink when the
+        // detail behind it is pruned, which is the whole reason departing rows are folded rather than dropped.
+        var (turns, chars) = Totals(agg);
+        Assert.Equal(12, turns);
+        Assert.Equal(120, chars);
+
+        // But the working-day series only knows about the hour that is still real. An archive row is all-time
+        // data with no honest hour, and letting it through here would invent an hour of the working day.
+        var hours = agg.HourlyTurns();
+        Assert.Equal("2026-07-30T12", Assert.Single(hours).Hour);
+        Assert.Equal(5, hours[0].Turns);
+    }
+
     private static (long Turns, long Chars) Totals(GatewayInputStatsAggregator agg)
     {
         var dto = agg.CurrentTotals();
