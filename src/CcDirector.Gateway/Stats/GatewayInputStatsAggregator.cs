@@ -2,6 +2,7 @@ using CcDirector.Core.Storage;
 using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Stats.Data;
 using Microsoft.Data.Sqlite;
 
 namespace CcDirector.Gateway.Stats;
@@ -53,13 +54,20 @@ namespace CcDirector.Gateway.Stats;
 /// </summary>
 public sealed class GatewayInputStatsAggregator : IDisposable
 {
-    private const string HourFormat = "yyyy-MM-ddTHH";
-    private const int RetentionDays = 90;
-    private const string AgentsSinceKey = "agents_since_utc";
+    // Both constants live with the write path now (StatsHourKey, GatewayStatsAggregatorKeys) and are aliased
+    // here rather than restated: the hour format and the meta key are the same fact on both sides of the
+    // store, and two spellings of one fact drift.
+    private const string HourFormat = StatsHourKey.Format;
+    private const string AgentsSinceKey = GatewayStatsAggregatorKeys.AgentsSince;
 
     private readonly GatewayStatsDatabase _db;
     private readonly bool _ownsDatabase;
     private readonly object _lock = new();
+
+    // The write path. Every row this class stores goes through it, on Entity Framework, with an explicit
+    // upsert on every high-water and membership write - see GatewayStatsWriter for why that is not
+    // negotiable.
+    private readonly GatewayStatsWriter _writer;
 
     // ---- The mirror. Membership and identity ONLY - never a tally (Decision 6). ----
     //
@@ -118,10 +126,13 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     // not a per-tenant statistic, so it stays a single value read tenant-agnostically.
     private string _modelsSinceUtc = "";
 
-    /// <summary>Every statement executed against the database. The seam acceptance criterion 3 measures: an
-    /// IDLE poll must not move this at all, and a fold must move it by an amount bounded by what CHANGED,
-    /// never by how much history is stored.</summary>
-    internal long StatementsExecuted { get; private set; }
+    /// <summary>Every statement executed against the database, reads here plus every write the
+    /// <see cref="GatewayStatsWriter"/> made. The seam acceptance criterion 3 measures it: an IDLE poll must
+    /// not move it at all, and a fold must move it by an amount bounded by what CHANGED, never by how much
+    /// history is stored.</summary>
+    internal long StatementsExecuted => _readStatements + _writer.StatementsExecuted;
+
+    private long _readStatements;
 
     private sealed class Counters
     {
@@ -139,22 +150,9 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         public long CacheCreation { get; set; }
     }
 
-    /// <summary>
-    /// Which identity table a display spelling belongs to. This replaced a <c>bool isRepo</c> when the model
-    /// dimension arrived and made the question three-valued: a boolean cannot name a third kind, and the
-    /// alternative - a second parallel set of NeedIdentity/Resolve methods for models - would have
-    /// duplicated the batch-level OrdinalIgnoreCase dedup, which is the subtle part.
-    ///
-    /// <see cref="Model"/> is a first-class kind here but has NO distinct-session set: nothing asks how many
-    /// sessions ran a model, so <see cref="SessionsFor"/> refuses it rather than carrying a set nothing
-    /// populates. It is also the only kind that can be ABSENT - see <see cref="FoldLocked"/>.
-    ///
-    /// <see cref="Checkout"/> is the local working-directory path retained beside the repo name. Like
-    /// <see cref="Model"/> it keeps no distinct-session set (the session count the Repos page shows is per
-    /// repository, not per checkout), so <see cref="SessionsFor"/> refuses it too. Unlike Model it is never
-    /// absent - a session always has a working directory.
-    /// </summary>
-    private enum IdentityKind { Repo, Agent, Model, Checkout }
+    // IdentityKind moved to CcDirector.Gateway.Stats.Data when the write path became its own type: the fold,
+    // the batch and the writer all have to name the same four kinds, and a kind nested inside this class
+    // could not be one of them.
 
     private Dictionary<TenantId, Dictionary<string, long>> OuterIdsFor(IdentityKind kind) => kind switch
     {
@@ -198,15 +196,6 @@ public sealed class GatewayInputStatsAggregator : IDisposable
             "Only repositories and agents keep distinct-session sets."),
     };
 
-    private static (string Table, string Column) IdentityTableFor(IdentityKind kind) => kind switch
-    {
-        IdentityKind.Repo => ("repo_identity", "repo_display"),
-        IdentityKind.Agent => ("agent_identity", "agent_display"),
-        IdentityKind.Model => ("model_identity", "model_display"),
-        IdentityKind.Checkout => ("checkout_identity", "checkout_display"),
-        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown identity kind."),
-    };
-
     /// <param name="path">The statistics database. Defaults to gateway-stats.db under the cc-director
     /// storage root, beside the store it replaces.</param>
     public GatewayInputStatsAggregator(string? path = null)
@@ -225,6 +214,10 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     {
         _db = database;
         _ownsDatabase = ownsDatabase;
+        // The write path runs on Entity Framework over the SAME open file this class reads through, so the
+        // self-host store keeps its single connection and its single writer while the statements that touch
+        // it become provider-neutral. The hosted Gateway hands the identical writer a pooled Npgsql factory.
+        _writer = new GatewayStatsWriter(new SqliteStatsContextFactory(database.Connection));
         RetireLegacyJsonStore();
         LoadMirror();
     }
@@ -329,7 +322,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         var now = nowUtc ?? DateTime.UtcNow;
         lock (_lock)
         {
-            var batch = new FoldBatch(t, now, HourKey(now));
+            var batch = new StatsWriteBatch(t, now, HourKey(now));
             StampAgentsSinceLocked(batch);
             foreach (var s in sessions) FoldLocked(s, batch);
             CommitLocked(batch);
@@ -345,7 +338,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         var now = nowUtc ?? DateTime.UtcNow;
         lock (_lock)
         {
-            var batch = new FoldBatch(t, now, HourKey(now));
+            var batch = new StatsWriteBatch(t, now, HourKey(now));
             StampAgentsSinceLocked(batch);
             FoldLocked(session, batch);
             CommitLocked(batch);
@@ -362,50 +355,10 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         return t;
     }
 
-    /// <summary>
-    /// Everything one observation wants to write, collected before ANY of it is written, so the mirror is
-    /// advanced only after the commit succeeds. Mutating the mirror as we go would mean a failed write
-    /// leaves the mirror believing a delta was recorded that is not on disk - it would never be folded
-    /// again, and the loss would be silent.
-    /// </summary>
-    private sealed class FoldBatch
-    {
-        public FoldBatch(TenantId tenant, DateTime nowUtc, string hourKey) { Tenant = tenant; NowUtc = nowUtc; HourKey = hourKey; }
+    // Everything one observation wants to write is collected into a StatsWriteBatch (see that type) before
+    // ANY of it is written, so the mirror is advanced only after the commit succeeds.
 
-        // MTR-08: the one tenant this whole batch belongs to. Every row written and every mirror entry
-        // advanced by this batch is keyed by it - the producer stamps it once here, never per row.
-        public TenantId Tenant { get; }
-        public DateTime NowUtc { get; }
-        public string HourKey { get; }
-
-        // Model is the only nullable member of a row: null means the owning Director had recorded no model
-        // for that session when the turn folded, which is the honest state and never a lookup failure.
-        // Repo is the repo name (the grouping key); Checkout is the local working directory the turn ran in,
-        // retained beside it so the path is not lost when worktrees and clones collapse into one repo row.
-        public readonly List<(string Hour, string SessionId, string Modality, string Surface, bool IsVoice, string Repo, string Checkout, string? Model, bool Wingman, long Turns, long Chars)> Rows = new();
-        public readonly List<(string Agent, bool IsVoice, long Turns, long Chars)> AgentRows = new();
-        public readonly List<(string Agent, long Turns, long Chars)> AgentDrivenRows = new();
-        public readonly List<(string SessionId, string Modality, string Surface, long Turns, long Chars)> HighWater = new();
-        public readonly List<(string SessionId, long Turns, long Chars)> AgentDrivenHighWater = new();
-        public readonly List<string> NewWingmanSessions = new();
-        public readonly List<string> NewSeeded = new();
-        public readonly List<(string Display, IdentityKind Kind)> NewIdentities = new();
-        public readonly List<(string Display, string SessionId, IdentityKind Kind)> NewIdentitySessions = new();
-        public string? StampAgentsSince;
-
-        // Token spend (issue #1637). Model is nullable for the same reason it is on Rows: the spend
-        // attributes to the model the session was recorded running, which is null until its records name one.
-        public readonly List<(string Hour, string? Model, long Input, long Output, long CacheRead, long CacheCreation)> TokenRows = new();
-        public readonly List<(string SessionId, long Input, long Output, long CacheRead, long CacheCreation)> TokenHighWater = new();
-
-        public bool IsEmpty => Rows.Count == 0 && AgentRows.Count == 0 && AgentDrivenRows.Count == 0
-            && HighWater.Count == 0 && AgentDrivenHighWater.Count == 0 && NewWingmanSessions.Count == 0
-            && NewSeeded.Count == 0 && NewIdentities.Count == 0 && NewIdentitySessions.Count == 0
-            && TokenRows.Count == 0 && TokenHighWater.Count == 0
-            && StampAgentsSince is null;
-    }
-
-    private void StampAgentsSinceLocked(FoldBatch batch)
+    private void StampAgentsSinceLocked(StatsWriteBatch batch)
     {
         // Per tenant (MTR-08): only stamp when THIS tenant has no start yet, so each account's Agents page
         // states its own window rather than a fleet-global first observation.
@@ -421,7 +374,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     // double-counting. Simplifying it breaks the mission. The ORDER below matters and mirrors the original
     // exactly - in particular the wingman registration and the agent-driven fold both happen BEFORE the
     // empty-buckets return.
-    private void FoldLocked(SessionDto s, FoldBatch batch)
+    private void FoldLocked(SessionDto s, StatsWriteBatch batch)
     {
         if (string.IsNullOrEmpty(s.SessionId)) return;
 
@@ -554,7 +507,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     // The session id is registered even when it brought no turns, so the per-agent session counts describe
     // the agents actually being run rather than only the ones that submitted a turn in the observed window.
     // An agent the Director did not report is counted under the empty key and shown as "(unknown)".
-    private void AttributeToAgentLocked(SessionDto s, string modality, long turns, long characters, FoldBatch batch)
+    private void AttributeToAgentLocked(SessionDto s, string modality, long turns, long characters, StatsWriteBatch batch)
     {
         var agentKey = s.Agent ?? "";
         NeedIdentity(agentKey, IdentityKind.Agent, batch);
@@ -573,7 +526,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     // the human buckets use. Attributed to the RECEIVING session's agent. These never enter the totals, the
     // hourly log or the buckets, because the human voice-versus-typed numbers must stay about the human -
     // which is why they live in their own table where they CANNOT be summed in by accident.
-    private void FoldAgentDrivenLocked(SessionDto s, FoldBatch batch)
+    private void FoldAgentDrivenLocked(SessionDto s, StatsWriteBatch batch)
     {
         var turns = s.InputStats?.AgentDrivenTurns ?? 0;
         var chars = s.InputStats?.AgentDrivenCharacters ?? 0;
@@ -608,7 +561,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     // the session with a fresh conversation - as fresh spend from zero, never a negative. Attributed to the
     // hour and to the model the session was recorded running, on token_delta's own lane. NO modality or
     // surface: tokens are the model's work, not the human's input channel (see MigrateToVersion3).
-    private void FoldTokensLocked(SessionDto s, FoldBatch batch)
+    private void FoldTokensLocked(SessionDto s, StatsWriteBatch batch)
     {
         var t = s.TokenTotals;
         if (t is null) return;
@@ -646,7 +599,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         batch.TokenRows.Add((batch.HourKey, modelKey, dIn, dOut, dCacheR, dCacheC));
     }
 
-    private void NeedIdentity(string display, IdentityKind kind, FoldBatch batch)
+    private void NeedIdentity(string display, IdentityKind kind, StatsWriteBatch batch)
     {
         // Resolve within THIS batch's tenant (MTR-08): a display spelling already known to another tenant is
         // NOT known here, so the two tenants mint separate surrogate ids and their turns never coalesce.
@@ -659,7 +612,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         batch.NewIdentities.Add((display, kind));
     }
 
-    private bool KnownIdentitySession(string display, string sessionId, IdentityKind kind, FoldBatch batch)
+    private bool KnownIdentitySession(string display, string sessionId, IdentityKind kind, StatsWriteBatch batch)
     {
         // The display->id lookup is per tenant; the distinct-session set is keyed by the resolved (tenant-
         // specific) id, so no tenant test is needed on it.
@@ -670,111 +623,18 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         return false;
     }
 
-    // Write everything the batch collected, in ONE transaction, then advance the mirror. An empty batch - an
-    // IDLE poll - writes NOTHING and does not even open a transaction.
-    private void CommitLocked(FoldBatch batch)
+    // Write everything the batch collected, in ONE transaction, then advance the mirror.
+    //
+    // The statements themselves live in GatewayStatsWriter, on Entity Framework, so ONE implementation serves
+    // the self-host SQLite file and the hosted PostgreSQL database. Two properties this class depends on are
+    // enforced there and must not be re-derived here: an EMPTY batch - an idle poll - writes nothing and does
+    // not even open a transaction, and every high-water and membership write is an explicit upsert rather
+    // than a change-tracked read-then-save.
+    private void CommitLocked(StatsWriteBatch batch)
     {
-        if (batch.IsEmpty) return;
-
-        var tenant = batch.Tenant.Value;
-
-        using var tx = _db.Connection.BeginTransaction();
-
-        // agents_since is per tenant (MTR-08): (tenant, name) is the key.
-        if (batch.StampAgentsSince is not null)
-            Execute("INSERT OR REPLACE INTO meta(tenant, name, value) VALUES ($tn, $n, $v)", tx,
-                ("$tn", tenant), ("$n", AgentsSinceKey), ("$v", batch.StampAgentsSince));
-
-        // Freshly minted ids, per kind, keyed with the SAME comparer as the mirror they will join. Every
-        // identity row carries this batch's tenant, so the reload rebuilds the per-tenant display->id map.
-        var newIds = new Dictionary<IdentityKind, Dictionary<string, long>>
-        {
-            [IdentityKind.Repo] = new(StringComparer.OrdinalIgnoreCase),
-            [IdentityKind.Agent] = new(StringComparer.OrdinalIgnoreCase),
-            [IdentityKind.Model] = new(StringComparer.OrdinalIgnoreCase),
-            [IdentityKind.Checkout] = new(StringComparer.OrdinalIgnoreCase),
-        };
-        foreach (var (display, kind) in batch.NewIdentities)
-        {
-            var (table, column) = IdentityTableFor(kind);
-            var id = ExecuteScalarLong($"INSERT INTO {table}({column}, tenant) VALUES ($d, $tn); SELECT last_insert_rowid()", tx,
-                ("$d", display), ("$tn", tenant));
-            newIds[kind][display] = id;
-        }
-
-        long Resolve(string display, IdentityKind kind)
-        {
-            if (newIds[kind].TryGetValue(display, out var fresh)) return fresh;
-            return IdsFor(batch.Tenant, kind)[display];
-        }
-
-        // An absent model resolves to nothing at all - DBNull, so the column is SQL NULL rather than a
-        // sentinel id that a later reader could mistake for a real model.
-        object ResolveModel(string? display) =>
-            display is null ? DBNull.Value : Resolve(display, IdentityKind.Model);
-
-        foreach (var r in batch.Rows)
-            Execute(@"INSERT INTO stat_delta(tenant, hour_utc, session_id, modality, surface, is_voice, repo_id, checkout_id, model_id, wingman, turns, chars)
-                      VALUES ($tn, $h, $s, $m, $u, $v, $r, $k, $d, $w, $t, $c)", tx,
-                ("$tn", tenant), ("$h", r.Hour), ("$s", r.SessionId), ("$m", r.Modality), ("$u", r.Surface),
-                ("$v", r.IsVoice ? 1 : 0), ("$r", Resolve(r.Repo, IdentityKind.Repo)),
-                ("$k", Resolve(r.Checkout, IdentityKind.Checkout)),
-                ("$d", ResolveModel(r.Model)), ("$w", r.Wingman ? 1 : 0),
-                ("$t", r.Turns), ("$c", r.Chars));
-
-        foreach (var a in batch.AgentRows)
-            Execute("INSERT INTO agent_delta(tenant, agent_id, is_voice, turns, chars) VALUES ($tn, $a, $v, $t, $c)", tx,
-                ("$tn", tenant), ("$a", Resolve(a.Agent, IdentityKind.Agent)), ("$v", a.IsVoice ? 1 : 0), ("$t", a.Turns), ("$c", a.Chars));
-
-        foreach (var a in batch.AgentDrivenRows)
-            Execute("INSERT INTO agent_driven_delta(tenant, agent_id, turns, chars) VALUES ($tn, $a, $t, $c)", tx,
-                ("$tn", tenant), ("$a", Resolve(a.Agent, IdentityKind.Agent)), ("$t", a.Turns), ("$c", a.Chars));
-
-        foreach (var h in batch.HighWater)
-            Execute(@"INSERT INTO session_highwater(tenant, session_id, modality, surface, turns, chars)
-                      VALUES ($tn, $s, $m, $u, $t, $c)
-                      ON CONFLICT(tenant, session_id, modality, surface) DO UPDATE SET turns=$t, chars=$c", tx,
-                ("$tn", tenant), ("$s", h.SessionId), ("$m", h.Modality), ("$u", h.Surface), ("$t", h.Turns), ("$c", h.Chars));
-
-        foreach (var h in batch.AgentDrivenHighWater)
-            Execute(@"INSERT INTO agent_driven_highwater(tenant, session_id, turns, chars) VALUES ($tn, $s, $t, $c)
-                      ON CONFLICT(tenant, session_id) DO UPDATE SET turns=$t, chars=$c", tx,
-                ("$tn", tenant), ("$s", h.SessionId), ("$t", h.Turns), ("$c", h.Chars));
-
-        foreach (var r in batch.TokenRows)
-            Execute(@"INSERT INTO token_delta(tenant, hour_utc, model_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
-                      VALUES ($tn, $h, $d, $i, $o, $cr, $cc)", tx,
-                ("$tn", tenant), ("$h", r.Hour), ("$d", ResolveModel(r.Model)),
-                ("$i", r.Input), ("$o", r.Output), ("$cr", r.CacheRead), ("$cc", r.CacheCreation));
-
-        foreach (var h in batch.TokenHighWater)
-            Execute(@"INSERT INTO token_highwater(tenant, session_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
-                      VALUES ($tn, $s, $i, $o, $cr, $cc)
-                      ON CONFLICT(tenant, session_id) DO UPDATE SET input_tokens=$i, output_tokens=$o, cache_read_tokens=$cr, cache_creation_tokens=$cc", tx,
-                ("$tn", tenant), ("$s", h.SessionId), ("$i", h.Input), ("$o", h.Output), ("$cr", h.CacheRead), ("$cc", h.CacheCreation));
-
-        foreach (var sid in batch.NewWingmanSessions)
-            Execute("INSERT OR IGNORE INTO wingman_session(tenant, session_id) VALUES ($tn, $s)", tx, ("$tn", tenant), ("$s", sid));
-
-        foreach (var sid in batch.NewSeeded)
-            Execute("INSERT OR IGNORE INTO agents_seeded(tenant, session_id) VALUES ($tn, $s)", tx, ("$tn", tenant), ("$s", sid));
-
-        foreach (var (display, sessionId, kind) in batch.NewIdentitySessions)
-        {
-            // SessionsFor refuses a model, so a model queued here would fail loudly rather than write a row
-            // into a table that does not exist. Nothing queues one - the fold never adds a model to
-            // NewIdentitySessions - and this is the check that keeps that true.
-            _ = SessionsFor(kind);
-            var (table, column) = kind == IdentityKind.Repo
-                ? ("repo_session", "repo_id")
-                : ("agent_session", "agent_id");
-            Execute($"INSERT OR IGNORE INTO {table}({column}, session_id) VALUES ($i, $s)", tx,
-                ("$i", Resolve(display, kind)), ("$s", sessionId));
-        }
-
-        if (batch.Rows.Count > 0 || batch.TokenRows.Count > 0) PruneLocked(tenant, batch.NowUtc, tx);
-
-        tx.Commit();
+        // The identity map this class holds is what DECIDES identity (a case-insensitive comparer no database
+        // is ever asked to reproduce), so the writer mints the new ids and asks US for the known ones.
+        var newIds = _writer.Commit(batch, (display, kind) => IdsFor(batch.Tenant, kind)[display]);
 
         // ---- Committed. Only now does the mirror move. Every advance is keyed by the batch's tenant. ----
         if (batch.StampAgentsSince is not null) _agentsSinceUtc[batch.Tenant] = batch.StampAgentsSince;
@@ -820,67 +680,15 @@ public sealed class GatewayInputStatsAggregator : IDisposable
             // has both, and dropping only one would leave the other's map growing without bound. Each is
             // removed only if present, so forgetting a session that never spent a token is still a no-op.
             if (_highWater.Remove((t, sessionId)))
-                Execute("DELETE FROM session_highwater WHERE tenant=$tn AND session_id=$s", null, ("$tn", t.Value), ("$s", sessionId));
+                _writer.DeleteSessionHighWater(t.Value, sessionId);
             if (_tokenHighWater.Remove((t, sessionId)))
-                Execute("DELETE FROM token_highwater WHERE tenant=$tn AND session_id=$s", null, ("$tn", t.Value), ("$s", sessionId));
+                _writer.DeleteTokenHighWater(t.Value, sessionId);
         }
     }
 
-    // Prune the working-day detail past the retention window, for ONE tenant only. Caller holds the lock.
-    //
-    // PER-PARTITION (MTR-08, same class as the car-mode #1933 global-prune bug): this runs inside a caller's
-    // per-tenant write transaction, so it archives and deletes ONLY that caller's own tenant's expired rows.
-    // Every statement below is constrained to tenant=$tn - without that, a caller's write would archive and
-    // delete EVERY tenant's rows older than the cutoff, a cross-tenant mutation that violates the invariant
-    // that a caller's write only ever touches its own partition. A quiet tenant's expired detail is reclaimed
-    // when THAT tenant next writes; a global age-sweep, if ever wanted, is a non-caller-triggered background
-    // job, never a side effect of an unrelated tenant's fold.
-    //
-    // The original prunes only the hourly buckets and the all-time totals survive because they live in
-    // separate dictionaries. Here ONE row feeds both, so deleting it would silently shrink the all-time
-    // totals - the #1376 class of failure. Departing rows are therefore folded into ARCHIVE rows first,
-    // preserving every dimension any all-time answer groups by: modality, surface, is_voice, repository and
-    // the wingman flag. Pruning collapses the hour and the session id, and nothing else. agent_delta and
-    // agent_driven_delta carry no hour and are never pruned, matching the all-time agent tally.
-    private void PruneLocked(string tenant, DateTime nowUtc, SqliteTransaction tx)
-    {
-        var cutoff = HourKey(nowUtc.AddDays(-RetentionDays));
-        // model_id and checkout_id are carried through the archive fold, and each MUST be in BOTH lists. Left
-        // out of the SELECT the archive row would read NULL and every pruned turn would silently lose that
-        // dimension (model_id would become "model unknown"; checkout_id would forget which checkout it ran
-        // in); left out of the GROUP BY it would collapse different values into one row and take an arbitrary
-        // id with it. Adding a dimension to this table means adding it here, in both places, or pruning
-        // quietly destroys it ninety days later - long after the change that caused it.
-        //
-        // SQLite groups NULLs together, so every unknown-model row of a bucket archives into ONE row that is
-        // still honestly NULL. That is the wanted behaviour: absence aggregates as absence. (checkout_id is
-        // never NULL on a row this build wrote, but it rides the same fold for the same reason.)
-        // MTR-08: tenant is carried through the archive fold in BOTH the SELECT and the GROUP BY, exactly as
-        // model_id and checkout_id are - left out of either, a pruned tenant's turns would either read the
-        // wrong tenant or collapse across tenants ninety days later. Each tenant's departing rows fold into
-        // that tenant's own archive row.
-        Execute(@"INSERT INTO stat_delta(tenant, hour_utc, session_id, modality, surface, is_voice, repo_id, checkout_id, model_id, wingman, turns, chars)
-                  SELECT tenant, $marker, $marker, modality, surface, is_voice, repo_id, checkout_id, model_id, wingman, SUM(turns), SUM(chars)
-                    FROM stat_delta
-                   WHERE tenant = $tn AND hour_utc <> $marker AND hour_utc < $cutoff
-                   GROUP BY tenant, modality, surface, is_voice, repo_id, checkout_id, model_id, wingman", tx,
-            ("$tn", tenant), ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
-        Execute("DELETE FROM stat_delta WHERE tenant = $tn AND hour_utc <> $marker AND hour_utc < $cutoff", tx,
-            ("$tn", tenant), ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
-
-        // token_delta prunes on the SAME rule and the same care: its one dimension, model_id, is carried in
-        // both the SELECT and the GROUP BY, or the ninety-day fold turns every archived model's spend into
-        // "model unknown". Its all-time totals INCLUDE archive rows (that is the point of archiving), so the
-        // spend must not shrink when detail is pruned.
-        Execute(@"INSERT INTO token_delta(tenant, hour_utc, model_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
-                  SELECT tenant, $marker, model_id, SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_creation_tokens)
-                    FROM token_delta
-                   WHERE tenant = $tn AND hour_utc <> $marker AND hour_utc < $cutoff
-                   GROUP BY tenant, model_id", tx,
-            ("$tn", tenant), ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
-        Execute("DELETE FROM token_delta WHERE tenant = $tn AND hour_utc <> $marker AND hour_utc < $cutoff", tx,
-            ("$tn", tenant), ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
-    }
+    // The prune - the ninety-day archive fold and the delete behind it - moved into GatewayStatsWriter with
+    // the rest of the write path. It still runs inside the caller's own per-tenant transaction and is still
+    // constrained to that one tenant.
 
     /// <summary>
     /// All-time turns that agents drove into other agents' sessions (issue #1636), and their character
@@ -1299,17 +1107,8 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     private static string HourKey(DateTime utc) =>
         utc.ToUniversalTime().ToString(HourFormat, System.Globalization.CultureInfo.InvariantCulture);
 
-    // ---- Plumbing. Every statement passes through here so StatementsExecuted is honest. ----
-
-    private void Execute(string sql, SqliteTransaction? tx, params (string Name, object Value)[] args)
-    {
-        using var cmd = _db.Connection.CreateCommand();
-        if (tx is not null) cmd.Transaction = tx;
-        cmd.CommandText = sql;
-        foreach (var (n, v) in args) cmd.Parameters.AddWithValue(n, v);
-        cmd.ExecuteNonQuery();
-        StatementsExecuted++;
-    }
+    // ---- Read plumbing. Every read passes through here so StatementsExecuted is honest; every WRITE goes
+    // through GatewayStatsWriter, which counts its own and is added in. ----
 
     private long ExecuteScalarLong(string sql, SqliteTransaction? tx, params (string Name, object Value)[] args)
     {
@@ -1318,7 +1117,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         cmd.CommandText = sql;
         foreach (var (n, v) in args) cmd.Parameters.AddWithValue(n, v);
         var result = cmd.ExecuteScalar();
-        StatementsExecuted++;
+        _readStatements++;
         return result is null or DBNull ? 0 : Convert.ToInt64(result);
     }
 
@@ -1328,7 +1127,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         cmd.CommandText = sql;
         foreach (var (n, v) in args) cmd.Parameters.AddWithValue(n, v);
         using var reader = cmd.ExecuteReader();
-        StatementsExecuted++;
+        _readStatements++;
         while (reader.Read()) onRow(reader);
     }
 
@@ -1337,7 +1136,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         using var cmd = _db.Connection.CreateCommand();
         cmd.CommandText = sql;
         foreach (var (n, v) in args) cmd.Parameters.AddWithValue(n, v);
-        StatementsExecuted++;
+        _readStatements++;
         return cmd.ExecuteScalar() as string;
     }
 
