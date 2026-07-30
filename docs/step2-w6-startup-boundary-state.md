@@ -4,15 +4,14 @@ Branch `nosqlite-stats-w6-startup`, worktree `D:\ReposFred\dt-nosqlite-w6`, cut 
 10 and 15 stay OPEN. This file records exactly what is built, what is NOT proven, and what the next seat
 picks up.
 
-**Nothing in this file is a proof. Read the "what is not proven" section before quoting anything from it.**
-Every test named here is written and unrun; the only standing fact about this branch is that it compiles, and
-a compile is evidence about types and about nothing else.
+**Read the "what is still not proven" section before quoting anything from this file.** The tests HAVE now
+been run and the failing direction HAS now been watched - both on 2026-07-30, both quoted verbatim below.
+That is a change of state from every earlier version of this document, which said the opposite.
 
 History: the first worker 6 built the boundary and was parked when the mission cut to three concurrent
 workers; its one queued run produced no output against the fleet-wide test lock and was stopped, which is NO
-RESULT and closed nothing. The seat was re-seated on 2026-07-30 to run the proofs. Since re-seating, this
-document has gained the mid-chain answer, the `IncompleteSchema` reason and the abandon-not-cancel
-limitation - all still unrun.
+RESULT and closed nothing. The seat was re-seated on 2026-07-30, added the mid-chain answer, the
+`IncompleteSchema` reason and the abandon-not-cancel limitation, and then ran the proofs in a granted slot.
 
 ---
 
@@ -157,33 +156,149 @@ worker 2's, and that resolution is the Architect's, done once by the person hold
 
 ---
 
-## WHAT IS NOT PROVEN - rows 10 and 15 are OPEN
+## WHAT IS PROVEN, AND HOW - the run of 2026-07-30
 
-**No test in this branch has been RUN.** One narrow run was queued against the fleet test lock, produced no
-output, and was stopped at stand-down. That is NO RESULT: it is not a pass and it is not a failure, and it
-closes nothing.
+**These tests have now been RUN.** Fifteen tests across the three classes, `Passed: 15, Failed: 0`, twice -
+once at `-v n` and once at detailed verbosity to capture the operator-facing text below. Then the product
+was BROKEN ON PURPOSE and the row 10 pair was watched failing, and then the break was reverted and the
+fifteen went green again. The evidence is the actual output, quoted rather than summarised.
 
-What DOES stand: the Gateway project and the test project both COMPILE (`dotnet build`, succeeded). A
-compile is evidence about types, and about nothing else here.
+### The failing direction: the Gateway WATCHED REFUSING TO START
 
-So all three of the following are written and unexecuted:
+This is the arm that had never been run, and without it every green above rests on a code reading.
 
-| Row | File | What it would prove | State |
-|---|---|---|---|
-| 10 | `GatewayStartsWithStatisticsUnreachableTests.HostedGateway_StartsAndServesARoster_WithTheStatisticsDatabaseUnreachable` | The Gateway starts and `GET /sessions` answers 200 with a real roster body while the statistics store reports UNREACHABLE | **OPEN - written, never run** |
-| 10 (failing direction) | `GatewayStatsStoreContainmentTests.TheSameFault_IsFatal_WhenItIsNotContained` | The SAME connection throws when nothing contains it, so the containment arm is not passing against a fault that never happened | **OPEN - written, never run. The Gateway has NOT been watched refusing to start.** |
-| 10 (the ruling) | `GatewayStatsStoreContainmentTests.NotConfiguredAndUnreachable_AreDifferentNamedReasons` | The two reasons are produced side by side and DIFFER - enum, code and sentence | **OPEN - written, never run** |
-| 15 | `GatewayStartsWithStatisticsUnreachableTests.ConcurrencyStatisticsFile_IsNeverWrittenOnTheHostedPath_AndIsWrittenOnSelfHost` | Nothing writes `gateway-concurrency-stats.json` on the hosted path, with the self-host control that DOES write it | **OPEN - written, never run** |
-| 18 | `GatewayStatsStoreMidChainContainmentTests.TheHalfBuiltStore_IsFatal_WhenItIsNotContained` | The half-built store really does kill an uncontained migration, naming the table | **OPEN - written, never run** |
-| 18 | `GatewayStatsStoreMidChainContainmentTests.HalfBuiltStore_IsContained_AndReportsIncompleteSchema` | The same store through the boundary does not throw and reports INCOMPLETE SCHEMA, pointing at the disk and explicitly not at the network | **OPEN - written, never run** |
-| 18 | `GatewayStatsStoreMidChainContainmentTests.ContainedOpen_ChangesNothingOnDisk` | A contained open is not a quiet repair - seeded row, table count, version stamp and empty history all unchanged | **OPEN - written, never run** |
-| 18 | `GatewayStatsStoreMidChainContainmentTests.TheThreeReasons_AreAllDifferentFromEachOther` | All three reasons produced side by side and different PAIRWISE - enum, code and sentence | **OPEN - written, never run** |
-| 18 | `GatewayStatsStoreMidChainContainmentTests.HealthyStores_AreNotReportedAsIncomplete` | The diagnosis's OTHER failure direction - a fresh store and a fully migrated one are not condemned | **OPEN - written, never run** |
+The fault is a mutation of the PRODUCT code, not a fake inside a test: a single `throw;` added to the end of
+the boundary catch in `GatewayStatsStore`, which is exactly "the statistics migration is fatal to startup".
+Nothing in the test project was touched. The branch was committed first (`9fd3ed8ca`) so that undoing the
+fault could not take real work with it.
+
+Both row 10 and row 15 then failed, and they failed AT THE CONSTRUCTOR:
+
+```
+Failed ...GatewayStartsWithStatisticsUnreachableTests.ConcurrencyStatisticsFile_IsNeverWrittenOnTheHostedPath_AndIsWrittenOnSelfHost
+  Npgsql.NpgsqlException : Failed to connect to 127.0.0.1:1
+  ---- System.TimeoutException : Timeout during connection attempt
+     at CcDirector.Gateway.Stats.Data.GatewayStatsStore..ctor(...) GatewayStatsStore.cs:line 216
+     at CcDirector.Gateway.Stats.Data.GatewayStatsStore.FromEnvironment(...) GatewayStatsStore.cs:line 143
+     at CcDirector.Gateway.GatewayHost..ctor(...) GatewayHost.cs:line 825
+     at ...GatewayStartsWithStatisticsUnreachableTests.NewGateway() line 200
+Total tests: 2   Failed: 2
+```
+
+`GatewayHost..ctor` is in that stack. The Gateway did not start. That is the incident this whole step exists
+to prevent, reproduced on demand and then removed.
+
+**EVERY ASSERTION IN BOTH TESTS WAS UNEXECUTED in that red**, and it is named here rather than left for
+somebody to infer from a "2 failed" line. The throw happens at `NewGateway()`, which is the first statement
+of each test, so not one assertion about reasons, counts, status codes, bodies or files ran. For this
+particular red that is the point rather than a gap - the claim under test is "the Gateway starts", and the
+failure is that it never got far enough to be asked anything - but a reader must not take "2 failed" as
+meaning two claims were tested and disagreed.
+
+Reverted (`git checkout --`), rebuilt, re-run: `Failed: 0, Passed: 15`. So the fifteen greens above belong to
+the un-mutated tree, and the red belongs to the mutation.
+
+### Row 10: the Gateway starts and serves a roster with the statistics database unreachable
+
+```
+STATISTICS: available=False reason=unreachable source=ExplicitOverride
+STATISTICS DETAIL: The statistics database (postgres host=127.0.0.1 database=gateway_live) could not be
+  opened or migrated (NpgsqlException). The settings name a database, so this is a database or network
+  problem rather than a missing setting. Statistics are unavailable; the Gateway is serving normally and
+  the rest of it is unaffected.
+GET /sessions -> 200 OK
+BODY: []
+```
+
+The store ATTEMPTED and FAILED (`reason=unreachable`, not `not_configured`), so this is not a Gateway that
+quietly skipped statistics. The uncontained twin proves the same connection is genuinely fatal:
+
+```
+UNCONTAINED: Npgsql.NpgsqlException: Failed to connect to 127.0.0.1:1
+```
+
+`BODY: []` is the empty roster the pre-flight section predicted - the route answered in roster shape, which
+is the claim, and it is not a claim that sessions were enumerated.
+
+### Row 15: no concurrency file on the hosted path, with its control
+
+```
+HOSTED root contents:
+SELF-HOST root contents: gateway-concurrency-stats.json
+```
+
+One variable different between the two halves. The hosted root is empty and the self-host root has the file,
+so the absence is the hosted path REFUSING to write it rather than a fixture in which nobody would have.
+
+### Row 18: the half-built schema, contained and correctly named
+
+The uncontained twin first, so the fault is known to be real:
+
+```
+UNCONTAINED: Microsoft.Data.Sqlite.SqliteException: SQLite Error 1: 'table "agent_delta" already exists'.
+```
+
+The same file through the boundary does not throw:
+
+```
+CONTAINED: reason=incomplete_schema: The statistics store (sqlite path=...\gateway-stats.db) has a
+  HALF-BUILT SCHEMA: its migration history records nothing as applied, yet 16 table(s) it owns already
+  exist (agent_delta, agent_driven_delta, agent_driven_highwater, agent_identity, agent_session,
+  agents_seeded, checkout_identity, meta, model_identity, repo_identity, repo_session, session_highwater,
+  stat_delta, token_delta, token_highwater, wingman_session). That is what a process stopped part-way
+  through its first migration leaves behind. The database is reachable and the settings are correct, so
+  this is NOT a network or connection problem - it is the store on disk, and it has NOT been changed in
+  any way. Statistics are unavailable; the Gateway is serving normally and the rest of it is unaffected.
+```
+
+Nothing was repaired and nothing was lost - the numbers, not a claim about them:
+
+```
+UNCHANGED: tables=16 user_version=5 history_rows=0 stat_delta_rows=1
+```
+
+And the diagnosis does not condemn a healthy store, which is its other failure direction:
+
+```
+HEALTHY: reopened available=True history_rows=1 tables=17
+```
+
+(Seventeen because the migration history table is one of them; the sixteen are the store's own.)
+
+### The three reasons, side by side and different pairwise
+
+```
+NOT CONFIGURED:    not_configured: CC_GATEWAY_STATS_DB_CONNECTION is set but blank. Set a real PostgreSQL
+  connection string, or unset it entirely so the statistics connection is derived from
+  CC_GATEWAY_DB_CONNECTION (hosted) or the local statistics file (self-host) is used. ...
+UNREACHABLE:       unreachable: The statistics database (postgres host=127.0.0.1 database=gateway_live)
+  could not be opened or migrated (NpgsqlException). The settings name a database, so this is a database
+  or network problem rather than a missing setting. ...
+INCOMPLETE SCHEMA: incomplete_schema: ... has a HALF-BUILT SCHEMA ... this is NOT a network or connection
+  problem - it is the store on disk ...
+```
+
+Three different sentences sending a reader to three different places: a setting, a database, a disk.
+
+## WHAT IS STILL NOT PROVEN
+
+The rows are the Manager's to close, not mine; what follows is what this run does NOT reach.
+
+- **Row 10's roster body is EMPTY.** See the pre-flight section. The route answered in roster shape with
+  statistics dead; enumerating actual sessions needs a pushed snapshot over the tunnel and is a different rig.
+- **Row 15 has no INDEPENDENT verifier.** The ledger assigns that to worker 8's contract suite. This is the
+  claim's own arm, run by the seat that wrote the wiring, and it should not be counted as both.
+- **Nothing here ran against a real PostgreSQL server.** Every PostgreSQL assertion on this branch is about a
+  connection that FAILS.
+- **The twenty-second `OpenDeadline` is still reasoned, not measured**, and the abandon-not-cancel limitation
+  above is neither tested nor measured.
+- **CI has not built this branch.** Draft pull request 2319 covers `nosqlite-stats`, and it would never run
+  the red arm above in any case, since CI only ever sees the un-mutated tree.
 
 ### How these fixtures were built to be able to fail
 
-Recorded so the next seat can check the shape rather than re-deriving it, and so a green - when there is one
-- is worth something:
+Recorded so the next seat can check the shape rather than re-deriving it, and so the greens above
+are worth something:
 
 - The half-built store is built by RUNNING THE REAL OLD CODE - a genuine `GatewayStatsDatabase` creates the
   sixteen tables - and its empty history table comes from Entity Framework's OWN create script, so it is the
