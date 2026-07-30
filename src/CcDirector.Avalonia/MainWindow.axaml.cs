@@ -305,6 +305,15 @@ public partial class MainWindow : Window
         HomeView.RepairToolsRequested += (_, _) => _ = RepairToolsAsync();
         HomeView.OpenSettingsRequested += (_, _) => BtnSettings_Click(this, new RoutedEventArgs());
         HomeView.GatewayClicked += (_, _) => OpenGatewayConnectionPanel();
+
+        // The agent readiness row is a READ of a fact that anything can change while this window is
+        // open - the first-run wizard, the Settings Agents tab, the Control API. Computing it once at
+        // startup is what let the board go on saying "No coding agent found" after the wizard had just
+        // installed one and written it (issue #1047). Re-read it whenever the store is written, so the
+        // board cannot be stale rather than merely being refreshed by someone who remembered to.
+        AgentEntryStore.EntriesChanged += OnAgentEntriesChanged;
+        Closed += (_, _) => AgentEntryStore.EntriesChanged -= OnAgentEntriesChanged;
+
         UpdateHomeVisibility();
 
         // Refresh the rail's relative time labels and the needs-you count every 15 seconds.
@@ -403,6 +412,15 @@ public partial class MainWindow : Window
         // thumbnails appear behind the wizard the moment the folder is confirmed.
         var dialog = new FirstRunWizardDialog(options, ReloadScreenshotsPanelAsync);
         await dialog.ShowDialog<bool?>(this);
+
+        // The wizard installs agents AND tools, so every readiness fact behind the board may have moved
+        // while it was open. Re-read all of them before the user sees the board - arriving at a screen
+        // that contradicts the receipt they just read is the whole of issue #1047. The tool-health cache
+        // is dropped too, or the tools row would keep reporting the pre-wizard run.
+        FileLog.Write("[MainWindow] OpenFirstRunWizardAsync: wizard closed, re-reading readiness");
+        _lastToolHealth = null;
+        UpdateHomeVisibility();
+
         return dialog.WantsNewSession;
     }
 
@@ -934,6 +952,18 @@ public partial class MainWindow : Window
            || RepositoriesOverlay.IsVisible;
 
     /// <summary>
+    /// The configured agents changed (wizard, Settings, or Control API) - re-read the readiness facts
+    /// so the board agrees with whatever just wrote them. Raised on the writer's thread, so it hops to
+    /// the interface thread; going through <see cref="UpdateHomeVisibility"/> keeps the "only refresh
+    /// what is actually on screen" rule in one place.
+    /// </summary>
+    private void OnAgentEntriesChanged()
+    {
+        FileLog.Write("[MainWindow] OnAgentEntriesChanged: agent store written, re-reading readiness");
+        Dispatcher.UIThread.Post(UpdateHomeVisibility);
+    }
+
+    /// <summary>
     /// Show the full-screen home page exactly when this Director has zero sessions - it is
     /// the "nothing is running, here is the state, start something" screen. The window menu
     /// bar stays; the toolbar is hidden so only the home shows beneath it. The home appears
@@ -975,14 +1005,12 @@ public partial class MainWindow : Window
 
             var facts = await Task.Run<(List<AgentCliFact> clis, int built, int total, List<string> missing)>(() =>
             {
-                var detector = new ToolDetectionService();
-                var clis = ToolDetectionService.SupportedTools.Select(tool =>
-                {
-                    var det = detector.DetectTool(tool, options);
-                    var validation = ToolDetectionService.ReadValidationStatus(tool, options);
-                    var version = validation?.Ok == true ? validation.Version : null;
-                    return new AgentCliFact(ToolDetectionService.DisplayName(tool), det.Found, version);
-                }).ToList();
+                // ONE authority for "does this machine have a coding agent" - the same scan the
+                // first-run wizard reads, so the board and the wizard's receipt cannot answer the
+                // same question differently (issue #1047).
+                var clis = AgentReadiness.Scan(options)
+                    .Select(f => new AgentCliFact(f.DisplayName, f.Present, f.Version))
+                    .ToList();
 
                 // Only consider tools this install is EXPECTED to provide (shim, built, or on PATH); tools
                 // never installed here (extras tier, other bundles, manifest drift) must not raise a warning.

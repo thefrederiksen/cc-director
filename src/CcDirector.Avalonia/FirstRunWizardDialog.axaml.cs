@@ -55,6 +55,13 @@ public partial class FirstRunWizardDialog : Window
     private HashSet<AgentKind> _existingAgentTypes = new();
     private bool _agentScanRan;
 
+    // The agents this machine can actually launch, from the SAME scan the status board reads
+    // (AgentReadiness). The receipt and the board have to answer "do you have a coding agent" with one
+    // voice - issue #1047 is what it looks like when they do not - so the wording on this screen and on
+    // the Done receipt is driven from here rather than from the suggestion list alone. A suggestion is
+    // about what the wizard can ADD; this is about what the user HAS.
+    private IReadOnlyList<AgentReadinessFact> _agentReadiness = Array.Empty<AgentReadinessFact>();
+
     // The gateway step's three-way choice. Hosted is the recommended default, pre-selected per the
     // mockup: most users should sign in and be done. Self-host and Not-now are the quiet minority paths.
     private enum GatewayChoice { Hosted, SelfHost, NotNow }
@@ -559,18 +566,19 @@ public partial class FirstRunWizardDialog : Window
         SetAgentsPrimaryBusy(true);
         try
         {
-            var (suggestions, existing) = await Task.Run(() =>
+            var (suggestions, existing, presence) = await Task.Run(() =>
             {
                 var scanned = _toolModel.ScanSuggestions(_options);
                 var present = new HashSet<AgentKind>(AgentEntryStore.ReadCurrentEntries().Select(en => en.Type));
-                return (scanned, present);
+                return (scanned, present, AgentReadiness.Scan(_options));
             });
 
             _agentSuggestions = suggestions;
             _existingAgentTypes = existing;
+            _agentReadiness = presence;
             _agentScanRan = true;
 
-            var anyFound = suggestions.Any(s => s.Found) || existing.Count > 0;
+            var anyFound = presence.Any(f => f.Present);
             _model.SetAgentsFound(anyFound);
 
             // Draw what we have now, with the version cell still pending, so the list builds in front
@@ -585,7 +593,7 @@ public partial class FirstRunWizardDialog : Window
                 name => AgentsScanLine.Text = $"Checking {name}...");
             BuildAgentRows(suggestions, existing, versions);
 
-            var foundCount = suggestions.Count(s => s.Found);
+            var foundCount = presence.Count(f => f.Present);
             if (anyFound)
             {
                 AgentsTitle.Text = $"We found {foundCount} coding {(foundCount == 1 ? "agent" : "agents")}";
@@ -2387,10 +2395,12 @@ public partial class FirstRunWizardDialog : Window
     {
         DoneReceiptPanel.Children.Clear();
 
-        // Agents row.
-        var addedNames = _agentSuggestions
-            .Where(s => s.Found)
-            .Select(s => s.DisplayName)
+        // Agents row. Counted from the shared presence scan, which is the same fact the status board
+        // behind this wizard renders - so "1 agent ready" here and the board's agent row cannot be two
+        // different answers to one question (issue #1047).
+        var addedNames = _agentReadiness
+            .Where(f => f.Present)
+            .Select(f => f.DisplayName)
             .ToList();
         if (addedNames.Count > 0)
             DoneReceiptPanel.Children.Add(ReceiptRow(

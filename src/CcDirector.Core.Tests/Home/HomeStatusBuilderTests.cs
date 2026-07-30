@@ -60,7 +60,7 @@ public class HomeStatusBuilderTests
 
         var clis = Row(status, HomeStatusBuilder.AgentRowTitle);
         Assert.Equal(HomeCheckLevel.Ok, clis.Level);
-        Assert.Equal("Codex 0.21.0 - on PATH", clis.Detail);
+        Assert.Equal("Codex 0.21.0 - ready", clis.Detail);
         Assert.Equal(HomeCheckAction.None, clis.Action);
     }
 
@@ -73,7 +73,7 @@ public class HomeStatusBuilderTests
 
         var clis = Row(status, HomeStatusBuilder.AgentRowTitle);
         Assert.Equal(HomeCheckLevel.Ok, clis.Level);
-        Assert.Equal("Claude Code 2.1.177, Codex - on PATH", clis.Detail);
+        Assert.Equal("Claude Code 2.1.177, Codex - ready", clis.Detail);
     }
 
     [Fact]
@@ -84,7 +84,7 @@ public class HomeStatusBuilderTests
             new[] { Cli("Claude Code", true, "2.1.177 (Claude Code)") },
             toolsBuilt: 31, toolsTotal: 31);
 
-        Assert.Equal("Claude Code 2.1.177 - on PATH", Row(status, HomeStatusBuilder.AgentRowTitle).Detail);
+        Assert.Equal("Claude Code 2.1.177 - ready", Row(status, HomeStatusBuilder.AgentRowTitle).Detail);
     }
 
     [Fact]
@@ -96,7 +96,7 @@ public class HomeStatusBuilderTests
 
         var clis = Row(status, HomeStatusBuilder.AgentRowTitle);
         Assert.Equal(HomeCheckLevel.Ok, clis.Level);
-        Assert.Equal("Claude Code - on PATH", clis.Detail);
+        Assert.Equal("Claude Code - ready", clis.Detail);
     }
 
     [Fact]
