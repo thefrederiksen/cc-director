@@ -205,8 +205,11 @@ public sealed class GatewayStatsReadParityTests : IDisposable
         // Tenant B - the SAME bare session ids and the SAME repository and agent spellings as tenant A, plus a
         // case variant of each within the tenant. Different numbers, so a coalesced identity would show up as
         // a wrong figure rather than as a missing row.
+        // 12, not 11: at 11 this tenant's shared-repository total came to 14 turns and so did tenant A's, and
+        // the assertion that the two tenants' figures DIFFER - the one that would catch two tenants' turns
+        // coalescing into one surrogate identity - cannot see a coalesce when both sides are already equal.
         agg.Observe(Full("s1", "owner/shared", "D:\\Repos\\shared", "ClaudeCode", "claude-opus-5",
-            voiceMode: true, ("typed", "desktop", 11, 1100), tokens: (7, 8, 9, 10)), Now, TenantB);
+            voiceMode: true, ("typed", "desktop", 12, 1200), tokens: (7, 8, 9, 10)), Now, TenantB);
         agg.Observe(Full("s2", "OWNER/Shared", "d:\\repos\\SHARED", "CLAUDECODE", "CLAUDE-OPUS-5",
             voiceMode: true, ("voice", "phone", 3, 33), tokens: (1, 1, 1, 1)), Now, TenantB);
         agg.Observe(AgentDriven("s1", "ClaudeCode", 2, 22), Now, TenantB);

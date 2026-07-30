@@ -322,6 +322,12 @@ public sealed class GatewayInputStatsAggregator : IDisposable
             // explicit join rather than a navigation property or a configured relationship on purpose: version 5
             // has no foreign keys between these tables, and adding one would change insert and delete ordering -
             // a semantic change, in a port that must carry semantics forward unchanged.
+            //
+            // An INNER join, which drops a membership row whose surrogate id names no identity row. There is no
+            // such row: both are written inside one transaction, the identity first, so the id a membership row
+            // carries always exists. If one ever did exist it could only be damage, and dropping it costs
+            // nothing - the mirror would simply not claim to have recorded it, and the next fold's
+            // insert-if-absent would write it again. Keeping it would be worse: an entry that names no tenant.
             using (var db = _contexts.CreateDbContext())
             {
                 foreach (var row in db.RepoSessions
