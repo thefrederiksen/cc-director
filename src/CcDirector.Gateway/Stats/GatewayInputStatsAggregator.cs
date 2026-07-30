@@ -138,6 +138,11 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     {
         public long Turns { get; set; }
         public long Characters { get; set; }
+
+        /// <summary>Which INCARNATION of the session's tally this was read from. Advances when the store
+        /// adopts a reset. Held so the fold can tell the writer which life its reading belongs to - a
+        /// straggling reading from a life that has already ended must count for nothing.</summary>
+        public long Generation { get; set; }
     }
 
     /// <summary>The four CUMULATIVE, additive token spend counts a session carries. Context occupancy is not
@@ -148,6 +153,9 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         public long Output { get; set; }
         public long CacheRead { get; set; }
         public long CacheCreation { get; set; }
+
+        /// <summary>The incarnation this spend was read from. See <see cref="Counters.Generation"/>.</summary>
+        public long Generation { get; set; }
     }
 
     // IdentityKind moved to CcDirector.Gateway.Stats.Data when the write path became its own type: the fold,
@@ -247,7 +255,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
             // Every row carries its owning tenant (MTR-08), so the mirror is rebuilt per tenant - exactly the
             // partition that was written. A surrogate id lands in the flat id->display map (ids are globally
             // unique) AND in its tenant's display->id map.
-            Read("SELECT tenant, session_id, modality, surface, turns, chars FROM session_highwater", r =>
+            Read("SELECT tenant, session_id, modality, surface, turns, chars, generation FROM session_highwater", r =>
             {
                 var key = (new TenantId(r.GetString(0)), r.GetString(1));
                 if (!_highWater.TryGetValue(key, out var hw))
@@ -255,14 +263,15 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                     hw = new Dictionary<(string, string), Counters>();
                     _highWater[key] = hw;
                 }
-                hw[(r.GetString(2), r.GetString(3))] = new Counters { Turns = r.GetInt64(4), Characters = r.GetInt64(5) };
+                hw[(r.GetString(2), r.GetString(3))] = new Counters { Turns = r.GetInt64(4), Characters = r.GetInt64(5), Generation = r.GetInt64(6) };
             });
-            Read("SELECT tenant, session_id, turns, chars FROM agent_driven_highwater",
-                r => _agentDrivenHighWater[(new TenantId(r.GetString(0)), r.GetString(1))] = new Counters { Turns = r.GetInt64(2), Characters = r.GetInt64(3) });
-            Read("SELECT tenant, session_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM token_highwater",
+            Read("SELECT tenant, session_id, turns, chars, generation FROM agent_driven_highwater",
+                r => _agentDrivenHighWater[(new TenantId(r.GetString(0)), r.GetString(1))] = new Counters { Turns = r.GetInt64(2), Characters = r.GetInt64(3), Generation = r.GetInt64(4) });
+            Read("SELECT tenant, session_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, generation FROM token_highwater",
                 r => _tokenHighWater[(new TenantId(r.GetString(0)), r.GetString(1))] = new TokenCounters
                 {
                     Input = r.GetInt64(2), Output = r.GetInt64(3), CacheRead = r.GetInt64(4), CacheCreation = r.GetInt64(5),
+                    Generation = r.GetInt64(6),
                 });
             Read("SELECT tenant, session_id FROM wingman_session", r => _wingmanSessions.Add((new TenantId(r.GetString(0)), r.GetString(1))));
             Read("SELECT tenant, session_id FROM agents_seeded", r => _agentsSeeded.Add((new TenantId(r.GetString(0)), r.GetString(1))));
@@ -500,7 +509,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
             batch.Buckets.Add(new StatsWriteBatch.BucketObservation(
                 s.SessionId, key.Item1, key.Item2, IsVoice(key.Item1),
                 repoKey, checkoutKey, modelKey, wingman, agentKey,
-                b.Turns, b.Characters, prev?.Turns ?? 0, prev?.Characters ?? 0));
+                b.Turns, b.Characters, prev?.Turns ?? 0, prev?.Characters ?? 0, prev?.Generation ?? 0));
 
             // A bucket with nothing in it earns no identity and no membership. Whether it contributes a DELTA
             // is the database's ruling, not this method's, but a session that has never submitted a turn at
@@ -573,7 +582,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         var agentKey = s.Agent ?? "";
         NeedIdentity(agentKey, IdentityKind.Agent, batch);
         batch.AgentDriven.Add(new StatsWriteBatch.AgentDrivenObservation(
-            s.SessionId, agentKey, turns, chars, prev?.Turns ?? 0, prev?.Characters ?? 0));
+            s.SessionId, agentKey, turns, chars, prev?.Turns ?? 0, prev?.Characters ?? 0, prev?.Generation ?? 0));
         if (!string.IsNullOrEmpty(s.SessionId) && !KnownIdentitySession(agentKey, s.SessionId, IdentityKind.Agent, batch))
             batch.NewIdentitySessions.Add((agentKey, s.SessionId, IdentityKind.Agent));
     }
@@ -606,7 +615,8 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         batch.Tokens.Add(new StatsWriteBatch.TokenObservation(
             s.SessionId, modelKey,
             t.InputTokens, t.OutputTokens, t.CacheReadTokens, t.CacheCreationTokens,
-            prev?.Input ?? 0, prev?.Output ?? 0, prev?.CacheRead ?? 0, prev?.CacheCreation ?? 0));
+            prev?.Input ?? 0, prev?.Output ?? 0, prev?.CacheRead ?? 0, prev?.CacheCreation ?? 0,
+            prev?.Generation ?? 0));
     }
 
     private void NeedIdentity(string display, IdentityKind kind, StatsWriteBatch batch)
@@ -670,14 +680,15 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                 hw = new Dictionary<(string, string), Counters>();
                 _highWater[key] = hw;
             }
-            hw[(h.Modality, h.Surface)] = new Counters { Turns = h.Turns, Characters = h.Chars };
+            hw[(h.Modality, h.Surface)] = new Counters { Turns = h.Turns, Characters = h.Chars, Generation = h.Generation };
         }
         foreach (var h in committed.AgentDrivenHighWater)
-            _agentDrivenHighWater[(batch.Tenant, h.SessionId)] = new Counters { Turns = h.Turns, Characters = h.Chars };
+            _agentDrivenHighWater[(batch.Tenant, h.SessionId)] = new Counters { Turns = h.Turns, Characters = h.Chars, Generation = h.Generation };
         foreach (var h in committed.TokenHighWater)
             _tokenHighWater[(batch.Tenant, h.SessionId)] = new TokenCounters
             {
                 Input = h.Input, Output = h.Output, CacheRead = h.CacheRead, CacheCreation = h.CacheCreation,
+                Generation = h.Generation,
             };
         foreach (var sid in batch.NewWingmanSessions) _wingmanSessions.Add((batch.Tenant, sid));
         // Marked seeded whichever writer claimed it: after the commit the row exists either way, and this

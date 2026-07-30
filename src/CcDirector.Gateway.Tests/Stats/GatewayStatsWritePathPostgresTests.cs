@@ -29,13 +29,15 @@ namespace CcDirector.Gateway.Tests.Stats;
 /// returns what the row held before it and what it holds after, and the writer appends exactly that
 /// difference - the identity is by construction, not by care.
 ///
-/// THE RACE IS DETERMINISTIC, NOT A MATTER OF TIMING LUCK. A concurrency test that has never been watched
-/// failing proves nothing: it passes just as happily when the race never happened. So the interleave here is
-/// arranged and OBSERVED - the first writer holds its transaction open at a known point, and the test waits
-/// until PostgreSQL reports the second writer's OWN BACKEND blocked, by the first writer's backend, on a
-/// row-level lock in the contested table. Counting any backend waiting on any lock is not a witness to this
-/// race, and <see cref="TheRaceWitness_RefusesToCertify_AnUnrelatedLock"/> is the fact that proves the weaker
-/// version certified races that never happened.
+/// THE RACE IS CAUSED, NOT WITNESSED. A concurrency test that has never been watched failing proves nothing:
+/// it passes just as happily when the race never happened. An earlier version of this suite tried to prove
+/// the race by OBSERVING the server - and a review showed that a witness can be strengthened in every
+/// dimension and still witness the WRONG EVENT, by making the second writer touch no watermark row at all and
+/// watching the fact pass on an unrelated identity-row block. So <see cref="InterleaveAndCommit"/> now
+/// CONSTRUCTS the interleave through seams inside the writer: it is told when the second writer reaches THE
+/// ROW UNDER TEST, and a writer that never reaches it cannot get past that point. The one observational check
+/// that survives is bound to the contested RELATION, and
+/// <see cref="TheRelationCheck_RefusesToCertify_AnUnrelatedLock"/> is what keeps it honest.
 ///
 /// Gated behind <c>CC_GATEWAY_TEST_PG_STATS_CONNECTION</c> - the RESTRICTED-role, statistics-database
 /// connection string that <c>scripts/pg-stats-proof-rig.ps1</c> hands out, whose role holds exactly the
@@ -164,17 +166,39 @@ public sealed class GatewayStatsWritePathPostgresTests
         batch.NewIdentities.Add((TheAgent, IdentityKind.Agent));
     }
 
-    private static StatsWriteBatch.BucketObservation Bucket(long reportedTurns, long reportedChars, long believedTurns, long believedChars) =>
+    private static StatsWriteBatch.BucketObservation Bucket(
+        long reportedTurns, long reportedChars, long believedTurns, long believedChars, long believedGeneration = 0) =>
         new(Session, "typed", "phone", false, Repo, Checkout, null, false, TheAgent,
-            reportedTurns, reportedChars, believedTurns, believedChars);
+            reportedTurns, reportedChars, believedTurns, believedChars, believedGeneration);
 
-    private static void Write(IDbContextFactory<GatewayStatsDbContext> factory, Action<StatsWriteBatch> fill)
+    /// <summary>The row key the write path names when it is about to raise the session watermark under test -
+    /// what the <c>BeforeRaise</c> seam reports, and what the interleave facts require to have been reached.</summary>
+    private const string SessionRow = "session_highwater:" + Session + "/typed/phone";
+    private const string AgentDrivenRow = "agent_driven_highwater:" + Session;
+    private const string TokenRow = "token_highwater:" + Session;
+
+    private static string Relation(string table) => GatewayStatsDbContext.PostgresSchema + "." + table;
+
+    private static StatsCommitResult Write(IDbContextFactory<GatewayStatsDbContext> factory, Action<StatsWriteBatch> fill)
     {
         var batch = NewBatch();
         WithIdentities(batch);
         fill(batch);
-        new GatewayStatsWriter(factory).Commit(batch, ResolveNothing);
+        return new GatewayStatsWriter(factory).Commit(batch, ResolveNothing);
     }
+
+    /// <summary>
+    /// A resolver over identities that are ALREADY minted, standing in for the aggregator's mirror.
+    ///
+    /// The interleave facts use this so their racing batches queue NO identities at all. That is not
+    /// tidiness - it is the difference between racing the row the fact claims to race and racing whatever
+    /// happens to be locked first. Identity upserts run BEFORE any watermark raise, so a batch that mints
+    /// makes writer B block on writer A's IDENTITY row, and a review proved a fact could then pass with
+    /// writer B doing no watermark work whatsoever. With the spellings pre-minted, the only row either writer
+    /// touches is the watermark row under test.
+    /// </summary>
+    private static Func<string, IdentityKind, long> ResolverFor(StatsCommitResult seeded) =>
+        (display, kind) => seeded.Identities[kind][display];
 
     private static long ReadOne(IDbContextFactory<GatewayStatsDbContext> factory, Func<GatewayStatsDbContext, long> read)
     {
@@ -189,10 +213,11 @@ public sealed class GatewayStatsWritePathPostgresTests
     {
         ResetSchema();
         var factory = Factory();
-        Write(factory, b => b.Buckets.Add(Bucket(5, 50, 0, 0)));
+        var seeded = Write(factory, b => b.Buckets.Add(Bucket(5, 50, 0, 0)));
 
         InterleaveAndCommit(
             factory,
+            ResolverFor(seeded), SessionRow, Relation("session_highwater"),
             // Both writers last learned 5 from the store, which is what a second container's mirror holds
             // when it has not yet seen the first one's write. That is the whole stale-baseline situation.
             holdsOpen: b => b.Buckets.Add(Bucket(10, 100, 5, 50)),
@@ -220,15 +245,16 @@ public sealed class GatewayStatsWritePathPostgresTests
     {
         ResetSchema();
         var factory = Factory();
-        Write(factory, b => b.Tokens.Add(new StatsWriteBatch.TokenObservation(
-            Session, null, 100, 10, 5, 1, 0, 0, 0, 0)));
+        var seeded = Write(factory, b => b.Tokens.Add(new StatsWriteBatch.TokenObservation(
+            Session, null, 100, 10, 5, 1, 0, 0, 0, 0, 0)));
 
         InterleaveAndCommit(
             factory,
+            ResolverFor(seeded), TokenRow, Relation("token_highwater"),
             holdsOpen: b => b.Tokens.Add(new StatsWriteBatch.TokenObservation(
-                Session, null, 900, 90, 45, 9, 100, 10, 5, 1)),
+                Session, null, 900, 90, 45, 9, 100, 10, 5, 1, 0)),
             racesIt: b => b.Tokens.Add(new StatsWriteBatch.TokenObservation(
-                Session, null, 300, 30, 15, 3, 100, 10, 5, 1)),
+                Session, null, 300, 30, 15, 3, 100, 10, 5, 1, 0)),
             witness: (Seed: 100, Held: 900, Raced: 300),
             readWatermark: () => ReadOne(factory, ctx => ctx.TokenHighwater.Single().InputTokens),
             readLedger: () => ReadOne(factory, ctx => ctx.TokenDeltas.Sum(r => r.InputTokens)));
@@ -251,12 +277,13 @@ public sealed class GatewayStatsWritePathPostgresTests
     {
         ResetSchema();
         var factory = Factory();
-        Write(factory, b => b.AgentDriven.Add(new StatsWriteBatch.AgentDrivenObservation(Session, TheAgent, 2, 20, 0, 0)));
+        var seeded = Write(factory, b => b.AgentDriven.Add(new StatsWriteBatch.AgentDrivenObservation(Session, TheAgent, 2, 20, 0, 0, 0)));
 
         InterleaveAndCommit(
             factory,
-            holdsOpen: b => b.AgentDriven.Add(new StatsWriteBatch.AgentDrivenObservation(Session, TheAgent, 12, 120, 2, 20)),
-            racesIt: b => b.AgentDriven.Add(new StatsWriteBatch.AgentDrivenObservation(Session, TheAgent, 6, 60, 2, 20)),
+            ResolverFor(seeded), AgentDrivenRow, Relation("agent_driven_highwater"),
+            holdsOpen: b => b.AgentDriven.Add(new StatsWriteBatch.AgentDrivenObservation(Session, TheAgent, 12, 120, 2, 20, 0)),
+            racesIt: b => b.AgentDriven.Add(new StatsWriteBatch.AgentDrivenObservation(Session, TheAgent, 6, 60, 2, 20, 0)),
             witness: (Seed: 2, Held: 12, Raced: 6),
             readWatermark: () => ReadOne(factory, ctx => ctx.AgentDrivenHighwater.Single().Turns),
             readLedger: () => ReadOne(factory, ctx => ctx.AgentDrivenDeltas.Sum(r => r.Turns)));
@@ -305,6 +332,99 @@ public sealed class GatewayStatsWritePathPostgresTests
     }
 
     /// <summary>
+    /// A DELAYED READING FROM THE LIFE BEFORE A RESET IS NOT COUNTED AS GROWTH IN THE LIFE AFTER IT.
+    ///
+    /// This is the reviewer's scenario, and it was the worst thing left in the write path. A Director
+    /// restarting a session id makes its tally drop to zero and count again; the store adopts that as a reset.
+    /// A writer still in flight with a reading from BEFORE the reset then arrives looking exactly like
+    /// ordinary growth - its number is higher than the freshly reset row - and was counted a SECOND time.
+    /// Measured before the fix: 100 banked turns, a reset to 5, a straggling observation of 110, and the
+    /// ledger ended at 210 against honest activity of 115. Nothing rewrites an appended delta, so the 95 was
+    /// wrong forever, and its size grew with the pre-reset watermark. A Director restart after a counter reset
+    /// is an ordinary event, not an edge case, so this was not an acceptable residual.
+    ///
+    /// The store can SEE a reset, so it can count them: the row carries a GENERATION that advances each time a
+    /// reset is adopted, the writer sends the generation it last saw, and a reading whose belief is from an
+    /// older generation changes nothing at all. No producer change and no wire-contract change were needed -
+    /// the evidence was already here and simply had nowhere to be recorded.
+    ///
+    /// WHAT IS STILL LOST, SAID PLAINLY: the straggler's 110 carried ten turns of the OLD life that had never
+    /// been counted, and dropping the reading drops them. That is an UNDERCOUNT of at most one poll interval
+    /// of the ended life, per collision, and it does NOT scale with the watermark. Recovering those ten would
+    /// mean trusting the writer's own belief about a generation the store no longer holds - no arbiter exists
+    /// for a life that has ended - and two stragglers doing that would overcount again. A small bounded loss
+    /// beats an unbounded permanent gain.
+    /// </summary>
+    [RequiresPostgresFact]
+    public void AStragglerFromTheLifeBeforeAReset_IsNotCountedAsGrowthInTheLifeAfterIt()
+    {
+        ResetSchema();
+        var factory = Factory();
+        var seeded = Write(factory, b => b.Buckets.Add(Bucket(100, 1000, 0, 0)));
+        var resolve = ResolverFor(seeded);
+        var writer = new GatewayStatsWriter(factory);
+
+        // The Director restarted this session id. This writer's baseline is current, so the drop is a real
+        // reset: the row adopts 5 and moves on to its next incarnation.
+        var afterReset = NewBatch();
+        afterReset.Buckets.Add(Bucket(5, 50, 100, 1000, believedGeneration: 0));
+        var reset = writer.Commit(afterReset, resolve);
+        Assert.Equal(1, reset.SessionHighWater.Single().Generation);
+
+        // The straggler: a reading of 110 from the life that has just ended, carrying that life's baseline.
+        var straggler = NewBatch();
+        straggler.Buckets.Add(Bucket(110, 1100, 100, 1000, believedGeneration: 0));
+        var ignored = writer.Commit(straggler, resolve);
+
+        using var ctx = factory.CreateDbContext();
+        var row = ctx.SessionHighwater.Single();
+        // The row is untouched by the straggler: still the new life, still on its generation.
+        Assert.Equal(5, row.Turns);
+        Assert.Equal(50, row.Chars);
+        Assert.Equal(1, row.Generation);
+        Assert.Equal(1, ignored.SessionHighWater.Single().Generation);
+        // 100 banked plus the 5 of the new life. Before the generation column this read 210.
+        Assert.Equal(105, ctx.StatDeltas.Sum(r => r.Turns));
+        Assert.Equal(1050, ctx.StatDeltas.Sum(r => r.Chars));
+    }
+
+    /// <summary>
+    /// And the writer that sent the straggler recovers on its very next poll, because the commit told it what
+    /// the row actually holds - the same rule that governs everything else here. Its mirror moves to the new
+    /// life, and the growth it measures next is growth in that life.
+    /// </summary>
+    [RequiresPostgresFact]
+    public void AWriterThatSentAStraggler_CountsCorrectlyOnItsNextPoll()
+    {
+        ResetSchema();
+        var factory = Factory();
+        var seeded = Write(factory, b => b.Buckets.Add(Bucket(100, 1000, 0, 0)));
+        var resolve = ResolverFor(seeded);
+        var writer = new GatewayStatsWriter(factory);
+
+        var afterReset = NewBatch();
+        afterReset.Buckets.Add(Bucket(5, 50, 100, 1000, believedGeneration: 0));
+        writer.Commit(afterReset, resolve);
+
+        var straggler = NewBatch();
+        straggler.Buckets.Add(Bucket(110, 1100, 100, 1000, believedGeneration: 0));
+        var told = writer.Commit(straggler, resolve).SessionHighWater.Single();
+
+        // What the straggling writer was told is what the row holds, not what it proposed.
+        Assert.Equal(5, told.Turns);
+        Assert.Equal(1, told.Generation);
+
+        // Its next poll reads the restarted session at 8, measured from what it was just told.
+        var next = NewBatch();
+        next.Buckets.Add(Bucket(8, 80, told.Turns, told.Chars, told.Generation));
+        writer.Commit(next, resolve);
+
+        using var ctx = factory.CreateDbContext();
+        Assert.Equal(8, ctx.SessionHighwater.Single().Turns);
+        Assert.Equal(108, ctx.StatDeltas.Sum(r => r.Turns));
+    }
+
+    /// <summary>
     /// The same property without the arranged interleave: many writers, many rounds, all on ONE row, running
     /// in whatever order the server gives them, each keeping its own mirror and updating it ONLY from what the
     /// commit reports - which is exactly how the aggregator behaves.
@@ -334,18 +454,19 @@ public sealed class GatewayStatsWritePathPostgresTests
             {
                 var writer = new GatewayStatsWriter(factory);
                 // This thread's mirror of the row, advanced ONLY from what a commit reports.
-                long believedTurns = 0, believedChars = 0;
+                long believedTurns = 0, believedChars = 0, believedGeneration = 0;
                 start.SignalAndWait();
                 for (var round = 1; round <= rounds; round++)
                 {
                     var value = Interlocked.Increment(ref reported);
                     var batch = NewBatch();
                     WithIdentities(batch);
-                    batch.Buckets.Add(Bucket(value, value * 10, believedTurns, believedChars));
+                    batch.Buckets.Add(Bucket(value, value * 10, believedTurns, believedChars, believedGeneration));
                     var committed = writer.Commit(batch, ResolveNothing);
                     var stored = committed.SessionHighWater.Single();
                     believedTurns = stored.Turns;
                     believedChars = stored.Chars;
+                    believedGeneration = stored.Generation;
                 }
             }
             catch (Exception ex) { failures.Enqueue(ex); }
@@ -409,6 +530,79 @@ public sealed class GatewayStatsWritePathPostgresTests
         using var ctx = factory.CreateDbContext();
         var row = Assert.Single(ctx.RepoIdentities);
         Assert.Equal(row.RepoId, ids.First());
+    }
+
+    /// <summary>
+    /// TWO WRITERS MINTING THE SAME NEW IDENTITIES IN OPPOSITE ORDER DO NOT DEADLOCK.
+    ///
+    /// This defect was created by the fix above it. Making the mint conflict on a unique index is what made
+    /// two writers contend for the SAME identity ROW instead of each quietly inserting its own - and a batch
+    /// arrives in OBSERVATION order, which two containers polling one Director have no reason to agree on.
+    /// Writer A minting "owner/one" then "owner/two" while writer B mints them the other way round is a lock
+    /// cycle, and PostgreSQL breaks a cycle by ABORTING one transaction with SQLSTATE 40P01. That is a LOST
+    /// FOLD on a live request, not a slow one.
+    ///
+    /// The fix is an ORDER, not a retry: both writers sort by a total, stable key before taking any lock, so
+    /// the cycle cannot form. A retry would have left the cycle in the design and made it less visible, which
+    /// costs the ability to notice it at first.
+    ///
+    /// THE ONE-SECOND TRIGGER IS WHAT MAKES THIS DETERMINISTIC rather than a matter of luck. Without it both
+    /// writers would usually finish their two inserts too quickly to overlap, and the fact would pass on a
+    /// cycle that never had the chance to form - green for the wrong reason. Sleeping inside the insert holds
+    /// each writer's FIRST row lock while the other takes its own, which is exactly the window a real
+    /// dual-container fold has and a fast test does not.
+    /// </summary>
+    [RequiresPostgresFact]
+    public void IdentityMints_ArrivingInOppositeOrder_DoNotDeadlock()
+    {
+        ResetSchema();
+        var factory = Factory();
+        const string first = "owner/one";
+        const string second = "owner/two";
+
+        using (var ctx = factory.CreateDbContext())
+        {
+            ctx.Database.ExecuteSqlRaw(
+                $"CREATE FUNCTION {GatewayStatsDbContext.PostgresSchema}.mint_delay() RETURNS trigger " +
+                "LANGUAGE plpgsql AS 'BEGIN PERFORM pg_sleep(1); RETURN NULL; END'");
+            ctx.Database.ExecuteSqlRaw(
+                $"CREATE TRIGGER mint_delay AFTER INSERT ON {GatewayStatsDbContext.PostgresSchema}.repo_identity " +
+                $"FOR EACH ROW EXECUTE FUNCTION {GatewayStatsDbContext.PostgresSchema}.mint_delay()");
+        }
+
+        var results = new System.Collections.Concurrent.ConcurrentQueue<StatsCommitResult>();
+        var failures = new System.Collections.Concurrent.ConcurrentQueue<Exception>();
+        using var start = new Barrier(2);
+        var threads = new[] { new[] { first, second }, new[] { second, first } }
+            .Select(order => new Thread(() =>
+            {
+                try
+                {
+                    var batch = NewBatch();
+                    foreach (var repo in order) batch.NewIdentities.Add((repo, IdentityKind.Repo));
+                    start.SignalAndWait();
+                    results.Enqueue(new GatewayStatsWriter(factory).Commit(batch, ResolveNothing));
+                }
+                catch (Exception ex) { failures.Enqueue(ex); }
+            })).ToList();
+
+        foreach (var t in threads) t.Start();
+        foreach (var t in threads) Assert.True(t.Join(TimeSpan.FromMinutes(2)), "a writer never finished");
+
+        // Name the failure rather than just counting it: a deadlock has its own SQLSTATE and saying so is the
+        // difference between "something went wrong" and a report somebody can act on.
+        Assert.True(failures.IsEmpty,
+            "A writer failed. If this is SQLSTATE 40P01 the canonical lock order has been lost and two " +
+            "writers took the same identity rows in opposite orders: " +
+            string.Join(" | ", failures.Select(e => e.Message)));
+
+        // And both writers agree about who each identity is, which is the property the mint exists for.
+        Assert.Equal(2, results.Count);
+        var ids = results.Select(r => r.Identities[IdentityKind.Repo]).ToList();
+        Assert.Equal(ids[0][first], ids[1][first]);
+        Assert.Equal(ids[0][second], ids[1][second]);
+        using var check = factory.CreateDbContext();
+        Assert.Equal(2, check.RepoIdentities.Count());
     }
 
     // ---- The membership sets and the first-fold back-fill --------------------------------------------
@@ -522,7 +716,7 @@ public sealed class GatewayStatsWritePathPostgresTests
             WithIdentities(batch);
             batch.Buckets.Add(new StatsWriteBatch.BucketObservation(
                 "s-" + StatsHourKey.For(hour), "typed", "phone", false, Repo, Checkout, null, false, TheAgent,
-                7, 70, 0, 0));
+                7, 70, 0, 0, 0));
             var committed = writer.Commit(batch, ResolveNothing);
             if (committed.Identities[IdentityKind.Repo].TryGetValue(Repo, out var id)) repoId = id;
         }
@@ -577,9 +771,9 @@ public sealed class GatewayStatsWritePathPostgresTests
             WithIdentities(batch);
             batch.Buckets.Add(Bucket(9, 90, replay == 0 ? 0 : 9, replay == 0 ? 0 : 90));
             batch.Tokens.Add(new StatsWriteBatch.TokenObservation(Session, null, 500, 50, 25, 5,
-                replay == 0 ? 0 : 500, replay == 0 ? 0 : 50, replay == 0 ? 0 : 25, replay == 0 ? 0 : 5));
+                replay == 0 ? 0 : 500, replay == 0 ? 0 : 50, replay == 0 ? 0 : 25, replay == 0 ? 0 : 5, 0));
             batch.AgentDriven.Add(new StatsWriteBatch.AgentDrivenObservation(Session, TheAgent, 4, 40,
-                replay == 0 ? 0 : 4, replay == 0 ? 0 : 40));
+                replay == 0 ? 0 : 4, replay == 0 ? 0 : 40, 0));
             batch.NewWingmanSessions.Add(Session);
             batch.Seeding.Add((Session, new List<StatsWriteBatch.AgentBackfillRow>()));
             batch.StampAgentsSince = $"2026-07-30T12:0{replay}:00.0000000Z";
@@ -623,11 +817,11 @@ public sealed class GatewayStatsWritePathPostgresTests
         WithIdentities(batch);
         batch.NewIdentities.Add(("claude-opus-5", IdentityKind.Model));
         batch.Buckets.Add(new StatsWriteBatch.BucketObservation(
-            Session, "typed", "phone", false, Repo, Checkout, "claude-opus-5", false, TheAgent, 3, 60, 0, 0));
+            Session, "typed", "phone", false, Repo, Checkout, "claude-opus-5", false, TheAgent, 3, 60, 0, 0, 0));
         batch.Buckets.Add(new StatsWriteBatch.BucketObservation(
-            Session, "voice", "phone", true, Repo, Checkout, null, true, TheAgent, 1, 10, 0, 0));
-        batch.AgentDriven.Add(new StatsWriteBatch.AgentDrivenObservation(Session, TheAgent, 2, 20, 0, 0));
-        batch.Tokens.Add(new StatsWriteBatch.TokenObservation(Session, "claude-opus-5", 500, 50, 25, 5, 0, 0, 0, 0));
+            Session, "voice", "phone", true, Repo, Checkout, null, true, TheAgent, 1, 10, 0, 0, 0));
+        batch.AgentDriven.Add(new StatsWriteBatch.AgentDrivenObservation(Session, TheAgent, 2, 20, 0, 0, 0));
+        batch.Tokens.Add(new StatsWriteBatch.TokenObservation(Session, "claude-opus-5", 500, 50, 25, 5, 0, 0, 0, 0, 0));
         batch.NewIdentitySessions.Add((Repo, Session, IdentityKind.Repo));
         batch.NewIdentitySessions.Add((TheAgent, Session, IdentityKind.Agent));
 
@@ -647,23 +841,42 @@ public sealed class GatewayStatsWritePathPostgresTests
         Assert.Single(ctx.TokenDeltas);
     }
 
-    // ---- The arranged, observed interleave ----------------------------------------------------------
+    // ---- The CAUSED interleave -----------------------------------------------------------------------
 
     /// <summary>
-    /// Run two writers into one row in a KNOWN order: <paramref name="holdsOpen"/> executes its statement and
-    /// holds the transaction open; <paramref name="racesIt"/> then runs and blocks on the row lock; only once
-    /// PostgreSQL reports that block does the first writer commit.
+    /// CAUSE the interleave rather than watch for one.
     ///
-    /// This is what makes the fact deterministic rather than a matter of timing. It is also why the wait is
-    /// an OBSERVATION rather than a sleep: if the second writer never reaches the lock, the interleave never
-    /// happened and this throws instead of letting a green through.
+    /// A previous version of this helper OBSERVED the server and asked "is writer B blocked?". A review broke
+    /// it, and the way it broke is the lesson: the question was strengthened in every dimension - it named
+    /// writer B's backend, required NOT granted, restricted the lock type, required writer A among the
+    /// blockers - and it still witnessed THE WRONG EVENT. Identity mints run before any watermark raise and
+    /// every racing batch minted the same spellings, so writer B blocked on writer A's IDENTITY row and
+    /// satisfied every clause honestly. With racesIt replaced by a no-op, so writer B touched no watermark row
+    /// at all, the fact still passed. No further clause would have fixed that: the defect was the KIND of
+    /// check, not its strength.
+    ///
+    /// So the interleave is now CONSTRUCTED, and the construction is what proves it:
+    ///
+    ///   1. Writer A raises the contested row and HOLDS its transaction open on the BeforeCommit seam.
+    ///   2. Only then is writer B released. Its BeforeRaise seam fires as it is about to raise a row, and
+    ///      asserts that row is THE CONTESTED ONE - so a writer that does no watermark work, or works on a
+    ///      different row, cannot get past this point. The reviewer's no-op mutation now times out here.
+    ///   3. Writer A waits until the server reports B blocked, by A, on a lock in THE CONTESTED RELATION while
+    ///      holding no other write lock in the schema - the relation binding the old witness lacked.
+    ///   4. A checks B has still not finished, then commits. B finishes only afterwards.
+    ///
+    /// The racing batches mint NOTHING - identities are pre-minted and resolved from the caller's map, the way
+    /// the aggregator's mirror does it - so the only row either writer touches is the row under test.
     ///
     /// AND IT IS WHERE THE LEDGER INVARIANT LIVES, so that every interleave carries it and no future fact can
-    /// be written here that checks only the watermark - which is the mistake that let a real double count sit
-    /// under a green suite. Both writers get their OWN pinned connection so the witness can name a backend.
+    /// be written here that checks only the watermark, which is the mistake that let a real double count sit
+    /// under a green suite.
     /// </summary>
     private static void InterleaveAndCommit(
         IDbContextFactory<GatewayStatsDbContext> factory,
+        Func<string, IdentityKind, long> resolveKnown,
+        string contestedRow,
+        string contestedTable,
         Action<StatsWriteBatch> holdsOpen,
         Action<StatsWriteBatch> racesIt,
         (long Seed, long Held, long Raced) witness,
@@ -672,21 +885,17 @@ public sealed class GatewayStatsWritePathPostgresTests
     {
         // REFUSE A FIXTURE THAT COULD NOT SHOW THE FAILURE, rather than trusting whoever wrote it to have
         // thought about it - the author is always the last person able to see the gap in their own fixture.
-        // Three numbers have to be ordered for a lost update to be VISIBLE here:
-        //   raced < held   - so the losing writer's value is distinguishable from the winning one at all;
-        //                    equal values would read identically whether the update was lost or kept.
+        //   raced < held   - so the losing writer's value is distinguishable from the winning one at all.
         //   seed  < raced  - so a lost update is also distinguishable from the second writer having done
-        //                    nothing, which is a different defect with the same reading. It is also what makes
-        //                    the DOUBLE COUNT visible: the racing writer's growth from the seed genuinely
-        //                    overlaps the winning writer's, so appending both is an inflation the ledger
-        //                    invariant below can see.
+        //                    nothing, and so the DOUBLE COUNT is visible: the racing writer's growth from the
+        //                    seed genuinely overlaps the winning writer's.
         Assert.True(witness.Seed < witness.Raced && witness.Raced < witness.Held,
             $"This fixture cannot show a lost update: seed={witness.Seed}, raced={witness.Raced}, " +
             $"held={witness.Held}. The racing value must sit strictly between the seed and the held value, " +
             "or the assertion reads the same whether the update was lost or kept.");
 
-        // And the row must actually be there: a race to UPDATE an existing row and a race to INSERT a new
-        // one are different code paths, and this fact is about the first.
+        // The row must be there, and there must be exactly one of it - readWatermark uses Single(), which is
+        // what lets "a lock in this relation" mean "a lock on THIS row".
         var watermarkBefore = readWatermark();
         Assert.Equal(witness.Seed, watermarkBefore);
         var ledgerBefore = readLedger();
@@ -696,30 +905,47 @@ public sealed class GatewayStatsWritePathPostgresTests
         var firstFactory = new PinnedConnectionFactory(firstConnection);
         var secondFactory = new PinnedConnectionFactory(secondConnection);
 
-        using var firstHasWritten = new ManualResetEventSlim(false);
+        using var firstHoldsTheRow = new ManualResetEventSlim(false);
+        using var secondReachedTheRow = new ManualResetEventSlim(false);
+        using var secondFinished = new ManualResetEventSlim(false);
         Exception? secondFailure = null;
+
         var second = new Thread(() =>
         {
             try
             {
-                if (!firstHasWritten.Wait(TimeSpan.FromMinutes(1)))
-                    throw new InvalidOperationException("The first writer never signalled that it had written.");
+                if (!firstHoldsTheRow.Wait(TimeSpan.FromMinutes(1)))
+                    throw new InvalidOperationException("The first writer never took the contested row.");
                 var batch = NewBatch();
-                WithIdentities(batch);
                 racesIt(batch);
-                new GatewayStatsWriter(secondFactory).Commit(batch, ResolveNothing);
+                new GatewayStatsWriter(secondFactory).Commit(batch, resolveKnown, new StatsWriteSeams
+                {
+                    BeforeRaise = row =>
+                    {
+                        Assert.Equal(contestedRow, row);
+                        secondReachedTheRow.Set();
+                    },
+                });
             }
             catch (Exception ex) { secondFailure = ex; }
+            finally { secondFinished.Set(); }
         });
         second.Start();
 
         var held = NewBatch();
-        WithIdentities(held);
         holdsOpen(held);
-        new GatewayStatsWriter(firstFactory).Commit(held, ResolveNothing, beforeCommit: () =>
+        new GatewayStatsWriter(firstFactory).Commit(held, resolveKnown, new StatsWriteSeams
         {
-            firstHasWritten.Set();
-            WaitUntilTheSecondWriterIsBlockedByTheFirst(secondPid, firstPid);
+            BeforeCommit = () =>
+            {
+                firstHoldsTheRow.Set();
+                Assert.True(secondReachedTheRow.Wait(TimeSpan.FromMinutes(1)),
+                    $"The second writer never reached {contestedRow}. It did no work on the row this fact " +
+                    "claims to race, so there was no race to prove.");
+                WaitUntilBlockedOnRelation(secondPid, firstPid, contestedTable);
+                Assert.False(secondFinished.IsSet,
+                    "The second writer finished while the first still held the row, so they never contended.");
+            },
         });
 
         Assert.True(second.Join(TimeSpan.FromMinutes(2)), "the second writer never finished");
@@ -729,48 +955,33 @@ public sealed class GatewayStatsWritePathPostgresTests
         // THE ASSERTION THAT REPLACES WHAT THIS ROW MEANS. Whatever the two writers proposed and in whatever
         // order they landed, the append-only ledger gained exactly what the watermark moved - no more (which
         // would be the double count) and no less (which would be a lost turn).
-        var watermarkAfter = readWatermark();
-        var ledgerAfter = readLedger();
-        Assert.Equal(watermarkAfter - watermarkBefore, ledgerAfter - ledgerBefore);
+        Assert.Equal(readWatermark() - watermarkBefore, readLedger() - ledgerBefore);
     }
 
-    /// <summary>
-    /// Wait, on a THIRD connection, until the second writer's OWN backend is blocked BY the first writer's
-    /// backend on a row-level lock in this schema. That moment is the interleave.
-    ///
-    /// EVERY CLAUSE OF THIS QUERY IS LOAD BEARING, because the version it replaces was not a witness at all:
-    /// it counted any backend in the database waiting on any lock, so an unrelated advisory lock taken by
-    /// anything else on the server made it certify a race that never happened. What is asserted now:
-    ///
-    ///   pid = the second writer's backend      not "somebody", but the writer this fact is about.
-    ///   NOT granted                            it is waiting, not holding.
-    ///   locktype in (transactionid, tuple)     a ROW-level wait - the shape a conflicting upsert produces.
-    ///                                          Advisory, relation and object locks are excluded by name.
-    ///   blocked by the first writer's backend  it is waiting for THIS transaction, not some third party.
-    ///
-    /// The specific ROW follows from the fixture rather than from the lock catalogue, which does not name a
-    /// tuple reliably across server versions. Every fact using this helper contests exactly ONE row: the
-    /// caller's <c>readWatermark</c> reads it with <c>Single()</c>, which throws if the contested table holds
-    /// anything other than that one row, and that read happens before the interleave is arranged. One row in
-    /// the table plus a row-level wait between these two named backends leaves nothing else it could be
-    /// blocked on.
-    /// </summary>
-    private static void WaitUntilTheSecondWriterIsBlockedByTheFirst(int blockedPid, int blockerPid)
+    private static void WaitUntilBlockedOnRelation(int blockedPid, int blockerPid, string table)
     {
         var deadline = DateTime.UtcNow.AddMinutes(1);
         while (DateTime.UtcNow < deadline)
         {
-            if (IsBlockedBy(blockedPid, blockerPid)) return;
+            if (IsBlockedOnRelation(blockedPid, blockerPid, table)) return;
             Thread.Sleep(25);
         }
 
         throw new InvalidOperationException(
-            $"Backend {blockedPid} (the second writer) never blocked on a row-level lock held by backend " +
-            $"{blockerPid} (the first writer), so the two never actually interleaved. This fact proves " +
-            "nothing unless the race really happens, so it fails rather than reporting a green.");
+            $"Backend {blockedPid} (the second writer) never blocked on a row of {table} held by backend " +
+            $"{blockerPid} (the first writer).");
     }
 
-    private static bool IsBlockedBy(int blockedPid, int blockerPid)
+    /// <summary>
+    /// Is <paramref name="blockedPid"/> waiting for a ROW in <paramref name="table"/> that
+    /// <paramref name="blockerPid"/> holds - and for nothing else?
+    ///
+    /// The relation clauses are what the previous witness lacked. Naming the backend and the lock type was
+    /// satisfied honestly by a block on an unrelated identity row; requiring the blocked backend to hold a
+    /// write lock on the contested relation AND no other write lock in this schema is what ties the wait to
+    /// the row under test, which the fixture has already established is the only row in that table.
+    /// </summary>
+    private static bool IsBlockedOnRelation(int blockedPid, int blockerPid, string table)
     {
         using var ctx = Factory().CreateDbContext();
         return ctx.Database.SqlQueryRaw<long>(
@@ -778,20 +989,32 @@ public sealed class GatewayStatsWritePathPostgresTests
                WHERE blocked.pid = {0}
                  AND NOT blocked.granted
                  AND blocked.locktype IN ('transactionid', 'tuple')
-                 AND {1} = ANY (pg_blocking_pids(blocked.pid))", blockedPid, blockerPid).Single() > 0;
+                 AND {1} = ANY (pg_blocking_pids(blocked.pid))
+                 AND EXISTS (SELECT 1 FROM pg_locks held
+                              WHERE held.pid = {0} AND held.granted
+                                AND held.locktype = 'relation'
+                                AND held.relation = CAST({2} AS regclass))
+                 AND NOT EXISTS (SELECT 1 FROM pg_locks other
+                                   JOIN pg_class c ON c.oid = other.relation
+                                   JOIN pg_namespace n ON n.oid = c.relnamespace
+                                  WHERE other.pid = {0} AND other.granted
+                                    AND other.locktype = 'relation'
+                                    AND other.mode = 'RowExclusiveLock'
+                                    AND n.nspname = {3}
+                                    AND other.relation <> CAST({2} AS regclass))",
+            blockedPid, blockerPid, table, GatewayStatsDbContext.PostgresSchema).Single() > 0;
     }
 
     /// <summary>
-    /// VALIDATE THE DETECTOR BEFORE TRUSTING ITS VERDICTS. The witness must NOT fire for a backend that is
-    /// blocked on something else, which is precisely how its predecessor - "is any backend in this database
-    /// waiting on any lock?" - certified interleaves that never happened.
+    /// VALIDATE THE DETECTOR BEFORE TRUSTING ITS VERDICTS. The relation check must NOT fire for a backend
+    /// blocked on something that is not a row of the contested table - which is exactly how its predecessor
+    /// certified interleaves that never reached the watermark.
     ///
-    /// Here one connection takes an advisory lock and a second blocks on it. That is a real, observable block
-    /// between two real backends; the only thing wrong with it is that it is not the race this suite is about.
-    /// The witness has to say no.
+    /// One connection takes an advisory lock and a second blocks on it: a real block between two real
+    /// backends, wrong in only one way - it is not the row this suite is about. The check has to say no.
     /// </summary>
     [RequiresPostgresFact]
-    public void TheRaceWitness_RefusesToCertify_AnUnrelatedLock()
+    public void TheRelationCheck_RefusesToCertify_AnUnrelatedLock()
     {
         ResetSchema();
         using var holder = OpenPinned(out var holderPid);
@@ -828,8 +1051,7 @@ public sealed class GatewayStatsWritePathPostgresTests
             }
             Assert.True(reallyBlocked, "the advisory-lock waiter never blocked, so this fact tested nothing");
 
-            // The situation is real and the witness still says no, because an advisory lock is not a row.
-            Assert.False(IsBlockedBy(waiterPid, holderPid));
+            Assert.False(IsBlockedOnRelation(waiterPid, holderPid, Relation("session_highwater")));
         }
         finally
         {

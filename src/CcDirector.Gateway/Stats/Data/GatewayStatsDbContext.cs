@@ -254,6 +254,7 @@ public sealed class GatewayStatsDbContext : DbContext
             b.Property(e => e.Chars).HasColumnName("chars").IsRequired();
             b.Property(e => e.PreviousTurns).HasColumnName("previous_turns").IsRequired();
             b.Property(e => e.PreviousChars).HasColumnName("previous_chars").IsRequired();
+            b.Property(e => e.Generation).HasColumnName("generation").IsRequired();
         });
 
         modelBuilder.Entity<TokenHighwaterEntity>(b =>
@@ -270,6 +271,7 @@ public sealed class GatewayStatsDbContext : DbContext
             b.Property(e => e.PreviousOutputTokens).HasColumnName("previous_output_tokens").IsRequired();
             b.Property(e => e.PreviousCacheReadTokens).HasColumnName("previous_cache_read_tokens").IsRequired();
             b.Property(e => e.PreviousCacheCreationTokens).HasColumnName("previous_cache_creation_tokens").IsRequired();
+            b.Property(e => e.Generation).HasColumnName("generation").IsRequired();
         });
 
         modelBuilder.Entity<AgentDrivenHighwaterEntity>(b =>
@@ -282,6 +284,7 @@ public sealed class GatewayStatsDbContext : DbContext
             b.Property(e => e.Chars).HasColumnName("chars").IsRequired();
             b.Property(e => e.PreviousTurns).HasColumnName("previous_turns").IsRequired();
             b.Property(e => e.PreviousChars).HasColumnName("previous_chars").IsRequired();
+            b.Property(e => e.Generation).HasColumnName("generation").IsRequired();
         });
 
         // ---- Membership tables - all-time distinct sets, never pruned ------------------------------

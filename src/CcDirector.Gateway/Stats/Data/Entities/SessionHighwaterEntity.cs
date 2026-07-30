@@ -51,4 +51,14 @@ public sealed class SessionHighwaterEntity
     /// <summary>What <see cref="Chars"/> held immediately before the most recent raise
     /// (<c>previous_chars</c>). See <see cref="PreviousTurns"/>.</summary>
     public long PreviousChars { get; set; }
+
+    /// <summary>Which INCARNATION of this session's tally the row is counting (<c>generation</c>). It advances
+    /// by one every time the store adopts a RESET - a Director restarting this session id and counting from
+    /// zero again. A writer sends the generation it believed the row was on; a reading whose belief comes from
+    /// an older generation is a straggler from a life that has already ended, and it contributes nothing.
+    ///
+    /// Without it, a delayed pre-reset reading is indistinguishable from ordinary growth after the reset, and
+    /// it is counted a second time - permanently, because nothing rewrites an appended delta, and by an amount
+    /// that scales with the pre-reset watermark. See <c>GatewayStatsWriter</c>.</summary>
+    public long Generation { get; set; }
 }

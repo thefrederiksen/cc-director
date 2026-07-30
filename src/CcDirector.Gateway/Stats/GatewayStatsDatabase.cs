@@ -36,7 +36,7 @@ public sealed class GatewayStatsDatabase : IDisposable
 {
     /// <summary>The schema version this build understands. Bump it and add a migration step; never reshape
     /// an existing table in place without one.</summary>
-    public const int SchemaVersion = 6;
+    public const int SchemaVersion = 7;
 
     /// <summary>
     /// The oldest schema version this build can migrate FORWARD without losing data. Below it the store is
@@ -154,6 +154,9 @@ public sealed class GatewayStatsDatabase : IDisposable
 
         if (current < 6)
             MigrateToVersion6(tx);
+
+        if (current < 7)
+            MigrateToVersion7(tx);
 
         Execute($"PRAGMA user_version={SchemaVersion}", tx);
         tx.Commit();
@@ -674,6 +677,31 @@ public sealed class GatewayStatsDatabase : IDisposable
         Execute("CREATE UNIQUE INDEX ux_agent_identity_tenant_display ON agent_identity(tenant, agent_display)", tx);
         Execute("CREATE UNIQUE INDEX ux_model_identity_tenant_display ON model_identity(tenant, model_display)", tx);
         Execute("CREATE UNIQUE INDEX ux_checkout_identity_tenant_display ON checkout_identity(tenant, checkout_display)", tx);
+    }
+
+    // Version 7: give each high-water row an INCARNATION, so a straggling reading from a session's previous
+    // life cannot be counted as growth in its current one.
+    //
+    // THE DEFECT THIS CLOSES IS PERMANENT AND SCALES, which is why it is worth a column. A Director restarting
+    // a session id makes its reported tally drop to zero and count again; the store adopts that as a reset. If
+    // a second writer is in flight with a reading from BEFORE the reset, that reading arrives looking exactly
+    // like ordinary growth - it is higher than the freshly-reset row - and is counted a second time. Measured:
+    // 100 banked turns, a reset to 5, a straggling observation of 110, and the ledger ends at 210 against
+    // honest activity of 115. Nothing rewrites an appended delta, so the 95 is wrong FOREVER, and its size
+    // grows with the pre-reset watermark. A Director restart after a counter reset is an ordinary event, not
+    // an edge case.
+    //
+    // The store can SEE a reset happen, so it can count them: generation advances by one each time a reset is
+    // adopted, a writer sends the generation it last saw, and a reading whose belief is from an older
+    // generation changes nothing. No producer change and no wire-contract change - the evidence was already
+    // here, it just had nowhere to be recorded. See GatewayStatsWriter for the full rule.
+    //
+    // ADD-only, like version 6: every existing row starts at generation 0, which is exactly right - whatever
+    // life it is counting, that is the first one this store has knowingly seen.
+    private void MigrateToVersion7(SqliteTransaction tx)
+    {
+        foreach (var table in new[] { "session_highwater", "agent_driven_highwater", "token_highwater" })
+            Execute($"ALTER TABLE {table} ADD COLUMN generation INTEGER NOT NULL DEFAULT 0", tx);
     }
 
     // Rebuild one table so the tenant can join its primary key: create the new shape, copy every existing row

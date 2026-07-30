@@ -54,6 +54,14 @@ namespace CcDirector.Gateway.Stats.Data;
 ///    <c>agents_seeded</c> insert claimed the row, which the statement reports. Two writers first-folding one
 ///    session used to both see an unseeded mirror and both attribute it.
 ///
+/// AND ONE RULE THAT CAME WITH THEM, because making writers contend for shared ROWS is what created it:
+/// EVERY SET OF ROWS A BATCH LOCKS IS TAKEN IN ONE CANONICAL ORDER (see the sort at the top of
+/// <see cref="Commit"/>). A batch arrives in observation order, which two containers polling the same Director
+/// have no reason to agree on; opposite orders over the same two rows is a cycle, and PostgreSQL breaks a
+/// cycle by ABORTING one transaction with SQLSTATE 40P01 - a lost fold, not a slow one. This was found by
+/// review, in production code, after the identity-mint fix introduced it. The order makes the cycle
+/// impossible; a retry would only have made it survivable.
+///
 /// WHAT IS STILL TRUE AND MUST STAY TRUE:
 ///
 ///  - EVERY high-water and membership write is an explicit statement, never a change-tracked read-then-save.
@@ -75,11 +83,23 @@ namespace CcDirector.Gateway.Stats.Data;
 ///  - The append-only delta tables and the archive rows are ordinary Entity Framework inserts. An INSERT of a
 ///    brand new row is not a read-modify-write and has no lost update to lose.
 ///
-/// WHAT THIS DOES NOT COVER, stated rather than left to be discovered: two writers observing DIFFERENT
-/// INCARNATIONS of one session concurrently - a Director restart landing between two containers' polls, so one
-/// writer is still carrying a pre-restart reading while the other has already reset the row. Telling those two
-/// readings apart needs an incarnation stamp from the producer, which the wire contract does not carry. It is
-/// bounded (one poll interval, one session) and it is the only case left where a reset can be miscounted.
+/// WHAT THIS DOES NOT COVER, stated rather than left to be discovered, AND CORRECTED AFTER REVIEW BECAUSE THE
+/// FIRST STATEMENT OF IT WAS TOO KIND TO ITSELF: two writers observing DIFFERENT INCARNATIONS of one session
+/// concurrently - a Director restart landing between two containers' polls, so one writer is still carrying a
+/// pre-restart reading while the other has already reset the row. Telling those two readings apart needs an
+/// incarnation stamp from the producer, which the wire contract does not carry.
+///
+/// This was originally written down as "bounded to one poll interval, one session". THE SESSION BOUND IS
+/// REAL; THE POLL-INTERVAL BOUND WAS NOT, and reading it as one understated the defect. One poll interval
+/// describes at best how long both readings are in the air. It does not bound the ERROR, which lands in the
+/// append-only ledger and is therefore PERMANENT - nothing in this store rewrites an appended delta - and
+/// whose MAGNITUDE SCALES WITH THE PRE-RESET WATERMARK rather than with any interval. Measured: 100 banked
+/// turns, a new-incarnation reset to 5, then a delayed old-incarnation observation of 110 carrying the stale
+/// belief of 100. Watermark ended at 110, ledger at 210, honest activity 115 - one collision overcounting by
+/// 95, for good. An in-flight writer held up on database work can also land later than one nominal interval.
+///
+/// So: rare, one session per collision, unbounded in size, and permanent until an incarnation stamp exists or
+/// the row is repaired by hand. That is what it is; the earlier phrasing made it sound self-limiting.
 ///
 /// Threading: NOT thread-safe by itself, and it does not need to be - callers serialise (the aggregator holds
 /// its own lock, and one batch is one tenant). Two INDEPENDENT writers on two processes against one database
@@ -120,14 +140,14 @@ internal sealed class GatewayStatsWriter
     /// because the map is what DECIDES identity - a case-insensitive comparer this store deliberately never
     /// asks a database to reproduce - and because a spelling the mirror already knows needs no round trip,
     /// which is what keeps an idle poll free.</param>
-    /// <param name="beforeCommit">Test seam, and only a test seam: run after every statement of the batch has
-    /// executed and before the transaction commits. The interleaved-writer proof needs to hold one
-    /// transaction open at a known point to make the race deterministic instead of a matter of timing luck;
-    /// production passes null and this is a no-op.</param>
+    /// <param name="seams">Test seams, and only test seams. The interleaved-writer proof has to CAUSE the
+    /// race rather than watch for it, which needs two control points inside one commit: one to hold a
+    /// transaction open after its raise, and one that fires as a specific row is about to be raised.
+    /// Production passes null and both are no-ops. See <see cref="StatsWriteSeams"/>.</param>
     public StatsCommitResult Commit(
         StatsWriteBatch batch,
         Func<string, IdentityKind, long> resolveKnownIdentity,
-        Action? beforeCommit = null)
+        StatsWriteSeams? seams = null)
     {
         var result = new StatsCommitResult();
         if (batch.IsEmpty) return result;
@@ -137,15 +157,55 @@ internal sealed class GatewayStatsWriter
         var sql = StatementsFor(ctx);
         using var tx = ctx.Database.BeginTransaction();
 
+        // ---- Take every row lock in ONE CANONICAL ORDER. ----
+        //
+        // A DEADLOCK IS A FAILED REQUEST, and the fix for it is an ORDER, not a retry.
+        //
+        // Every statement below takes a row lock, and the batch arrives in OBSERVATION order - the order the
+        // roster happened to list its sessions in, which two hosted containers polling the same Director have
+        // no reason to agree on. Writer A minting "owner/one" then "owner/two" while writer B mints them the
+        // other way round is a lock cycle, and PostgreSQL resolves a cycle by ABORTING one of the transactions
+        // with SQLSTATE 40P01. That is not a slow request, it is a lost fold - and it became possible the
+        // moment the identity mint started conflicting on a unique index, because that is what made two
+        // writers contend for the SAME identity ROW rather than each inserting its own.
+        //
+        // Sorting first makes the cycle impossible rather than survivable. A retry would be second best: it
+        // would turn a lost fold into a slow one while leaving the cycle in the design, and it would need a
+        // budget, a backoff and a test nobody can write deterministically. Two writers that take the same rows
+        // in the same order cannot form a cycle at all - there is nothing left to detect.
+        //
+        // The comparer has to be TOTAL and IDENTICAL IN EVERY PROCESS, so it is StringComparer.Ordinal
+        // throughout: byte order, no culture, no case folding. It deliberately does NOT match the
+        // case-insensitive comparer that decides identity - it does not have to. All that is required is that
+        // any two writers order THE SAME ROW the same way, and the same row means the same key bytes.
+        //
+        // The order BETWEEN tables is already canonical: it is the order of the code below, which is the same
+        // code in both processes. Only the order WITHIN each set was free, and this is where it stops being.
+        var identities = batch.NewIdentities
+            .OrderBy(i => (int)i.Kind).ThenBy(i => i.Display, StringComparer.Ordinal).ToList();
+        var buckets = batch.Buckets
+            .OrderBy(b => b.SessionId, StringComparer.Ordinal)
+            .ThenBy(b => b.Modality, StringComparer.Ordinal)
+            .ThenBy(b => b.Surface, StringComparer.Ordinal).ToList();
+        var agentDriven = batch.AgentDriven.OrderBy(a => a.SessionId, StringComparer.Ordinal).ToList();
+        var tokens = batch.Tokens.OrderBy(t => t.SessionId, StringComparer.Ordinal).ToList();
+        var seeding = batch.Seeding.OrderBy(s => s.SessionId, StringComparer.Ordinal).ToList();
+        var wingman = batch.NewWingmanSessions.OrderBy(s => s, StringComparer.Ordinal).ToList();
+        var identitySessions = batch.NewIdentitySessions
+            .OrderBy(m => (int)m.Kind)
+            .ThenBy(m => m.Display, StringComparer.Ordinal)
+            .ThenBy(m => m.SessionId, StringComparer.Ordinal).ToList();
+
         // agents_since is per tenant (MTR-08): (tenant, name) is the key, and the stamp is written ONCE and
         // never moved. Insert-if-absent, so a tenant that already has a start keeps its own earliest one even
-        // when a second writer's mirror had not seen it yet.
+        // when a second writer's mirror had not seen it yet. One row, so it has no order to get wrong, and it
+        // goes first in both processes.
         if (batch.StampAgentsSince is not null)
             Execute(ctx, sql.InsertMetaIfAbsent, tenant, GatewayStatsAggregatorKeys.AgentsSince, batch.StampAgentsSince);
 
         // ---- Identity, first: every row below is filed under a surrogate id. ----
 
-        var resolvedIds = ResolveIdentities(ctx, sql, tenant, batch);
+        var resolvedIds = ResolveIdentities(ctx, sql, tenant, identities);
         foreach (var (kind, map) in resolvedIds) result.Identities[kind] = map;
 
         long Resolve(string display, IdentityKind kind) =>
@@ -163,10 +223,12 @@ internal sealed class GatewayStatsWriter
 
         var deltaRows = 0;
 
-        foreach (var b in batch.Buckets)
+        foreach (var b in buckets)
         {
-            var (turns, chars) = RaiseSessionHighWater(ctx, sql, tenant, b);
-            result.SessionHighWater.Add((b.SessionId, b.Modality, b.Surface, turns.Stored, chars.Stored));
+            var raised = RaiseSessionHighWater(ctx, sql, tenant, b, seams);
+            var turns = raised.Metrics[0];
+            var chars = raised.Metrics[1];
+            result.SessionHighWater.Add((b.SessionId, b.Modality, b.Surface, turns.Stored, chars.Stored, raised.Generation));
             if (turns.Growth <= 0 && chars.Growth <= 0) continue;
 
             ctx.StatDeltas.Add(new StatDeltaEntity
@@ -199,10 +261,12 @@ internal sealed class GatewayStatsWriter
             deltaRows++;
         }
 
-        foreach (var a in batch.AgentDriven)
+        foreach (var a in agentDriven)
         {
-            var (turns, chars) = RaiseAgentDrivenHighWater(ctx, sql, tenant, a);
-            result.AgentDrivenHighWater.Add((a.SessionId, turns.Stored, chars.Stored));
+            var driven = RaiseAgentDrivenHighWater(ctx, sql, tenant, a, seams);
+            var turns = driven.Metrics[0];
+            var chars = driven.Metrics[1];
+            result.AgentDrivenHighWater.Add((a.SessionId, turns.Stored, chars.Stored, driven.Generation));
             if (turns.Growth <= 0 && chars.Growth <= 0) continue;
 
             ctx.AgentDrivenDeltas.Add(new AgentDrivenDeltaEntity
@@ -215,22 +279,23 @@ internal sealed class GatewayStatsWriter
             deltaRows++;
         }
 
-        foreach (var t in batch.Tokens)
+        foreach (var t in tokens)
         {
-            var raised = RaiseTokenHighWater(ctx, sql, tenant, t);
+            var spend = RaiseTokenHighWater(ctx, sql, tenant, t, seams);
+            var m = spend.Metrics;
             result.TokenHighWater.Add((t.SessionId,
-                raised[0].Stored, raised[1].Stored, raised[2].Stored, raised[3].Stored));
-            if (raised.All(r => r.Growth <= 0)) continue;
+                m[0].Stored, m[1].Stored, m[2].Stored, m[3].Stored, spend.Generation));
+            if (m.All(r => r.Growth <= 0)) continue;
 
             ctx.TokenDeltas.Add(new TokenDeltaEntity
             {
                 Tenant = tenant,
                 HourUtc = batch.HourKey,
                 ModelId = ResolveModel(t.Model),
-                InputTokens = raised[0].Growth,
-                OutputTokens = raised[1].Growth,
-                CacheReadTokens = raised[2].Growth,
-                CacheCreationTokens = raised[3].Growth,
+                InputTokens = m[0].Growth,
+                OutputTokens = m[1].Growth,
+                CacheReadTokens = m[2].Growth,
+                CacheCreationTokens = m[3].Growth,
             });
             deltaRows++;
         }
@@ -241,7 +306,7 @@ internal sealed class GatewayStatsWriter
         // created the row. Two writers first-folding one session both find an unseeded mirror; without this,
         // both would attribute the session's standing count and the agent's numbers would double.
 
-        foreach (var (sessionId, rows) in batch.Seeding)
+        foreach (var (sessionId, rows) in seeding)
         {
             if (!ClaimedSeeding(ctx, sql, tenant, sessionId)) continue;
             foreach (var row in rows)
@@ -266,10 +331,10 @@ internal sealed class GatewayStatsWriter
 
         // ---- The membership sets. Insert-if-absent, never a read-then-insert. ----
 
-        foreach (var sid in batch.NewWingmanSessions)
+        foreach (var sid in wingman)
             Execute(ctx, sql.InsertWingmanSessionIfAbsent, tenant, sid);
 
-        foreach (var (display, sessionId, kind) in batch.NewIdentitySessions)
+        foreach (var (display, sessionId, kind) in identitySessions)
         {
             // A model and a checkout keep no distinct-session set, deliberately. One queued here is a
             // programming error and says so, loudly, rather than writing a row into a table that does not
@@ -287,7 +352,7 @@ internal sealed class GatewayStatsWriter
         if (batch.Buckets.Count > 0 || batch.Tokens.Count > 0)
             Prune(ctx, sql, tenant, batch.NowUtc);
 
-        beforeCommit?.Invoke();
+        seams?.BeforeCommit?.Invoke();
         tx.Commit();
         return result;
     }
@@ -330,39 +395,54 @@ internal sealed class GatewayStatsWriter
     private static Raised Grow(long stored, long previous) =>
         new(stored, stored >= previous ? stored - previous : stored);
 
-    private (Raised Turns, Raised Chars) RaiseSessionHighWater(
-        GatewayStatsDbContext ctx, StatsUpsertSql sql, string tenant, StatsWriteBatch.BucketObservation b)
+    /// <summary>What one raise reported: the growth per metric, and the incarnation the row is now on.</summary>
+    private readonly record struct RaisedRow(Raised[] Metrics, long Generation);
+
+    private RaisedRow RaiseSessionHighWater(
+        GatewayStatsDbContext ctx, StatsUpsertSql sql, string tenant,
+        StatsWriteBatch.BucketObservation b, StatsWriteSeams? seams)
     {
-        var r = ReadRow(ctx, sql.RaiseSessionHighWater,
+        seams?.BeforeRaise?.Invoke($"session_highwater:{b.SessionId}/{b.Modality}/{b.Surface}");
+        return Raised2(ReadRow(ctx, sql.RaiseSessionHighWater,
             tenant, b.SessionId, b.Modality, b.Surface,
             b.ReportedTurns, b.ReportedChars,
-            b.BelievedTurns, b.BelievedChars);
-        return (Grow(Number(r[0]), Number(r[1])), Grow(Number(r[2]), Number(r[3])));
+            b.BelievedTurns, b.BelievedChars, b.BelievedGeneration));
     }
 
-    private (Raised Turns, Raised Chars) RaiseAgentDrivenHighWater(
-        GatewayStatsDbContext ctx, StatsUpsertSql sql, string tenant, StatsWriteBatch.AgentDrivenObservation a)
+    private RaisedRow RaiseAgentDrivenHighWater(
+        GatewayStatsDbContext ctx, StatsUpsertSql sql, string tenant,
+        StatsWriteBatch.AgentDrivenObservation a, StatsWriteSeams? seams)
     {
-        var r = ReadRow(ctx, sql.RaiseAgentDrivenHighWater,
+        seams?.BeforeRaise?.Invoke($"agent_driven_highwater:{a.SessionId}");
+        return Raised2(ReadRow(ctx, sql.RaiseAgentDrivenHighWater,
             tenant, a.SessionId,
             a.ReportedTurns, a.ReportedChars,
-            a.BelievedTurns, a.BelievedChars);
-        return (Grow(Number(r[0]), Number(r[1])), Grow(Number(r[2]), Number(r[3])));
+            a.BelievedTurns, a.BelievedChars, a.BelievedGeneration));
     }
 
-    private Raised[] RaiseTokenHighWater(
-        GatewayStatsDbContext ctx, StatsUpsertSql sql, string tenant, StatsWriteBatch.TokenObservation t)
+    private RaisedRow RaiseTokenHighWater(
+        GatewayStatsDbContext ctx, StatsUpsertSql sql, string tenant,
+        StatsWriteBatch.TokenObservation t, StatsWriteSeams? seams)
     {
+        seams?.BeforeRaise?.Invoke($"token_highwater:{t.SessionId}");
         var r = ReadRow(ctx, sql.RaiseTokenHighWater,
             tenant, t.SessionId,
             t.ReportedInput, t.ReportedOutput, t.ReportedCacheRead, t.ReportedCacheCreation,
-            t.BelievedInput, t.BelievedOutput, t.BelievedCacheRead, t.BelievedCacheCreation);
-        return new[]
-        {
-            Grow(Number(r[0]), Number(r[1])), Grow(Number(r[2]), Number(r[3])),
-            Grow(Number(r[4]), Number(r[5])), Grow(Number(r[6]), Number(r[7])),
-        };
+            t.BelievedInput, t.BelievedOutput, t.BelievedCacheRead, t.BelievedCacheCreation,
+            t.BelievedGeneration);
+        return new RaisedRow(
+            new[]
+            {
+                Grow(Number(r[0]), Number(r[1])), Grow(Number(r[2]), Number(r[3])),
+                Grow(Number(r[4]), Number(r[5])), Grow(Number(r[6]), Number(r[7])),
+            },
+            Number(r[8]));
     }
+
+    // The two-metric shape, which session_highwater and agent_driven_highwater share: value, previous, value,
+    // previous, generation.
+    private static RaisedRow Raised2(object[] r) =>
+        new(new[] { Grow(Number(r[0]), Number(r[1])), Grow(Number(r[2]), Number(r[3])) }, Number(r[4]));
 
     // Mark a session back-filled and report whether THIS statement is the one that marked it. Insert-if-absent
     // with a RETURNING clause: a conflict does nothing and returns no row, so an empty result means another
@@ -389,8 +469,12 @@ internal sealed class GatewayStatsWriter
     // spellings differing only by case are two rows here, and it is the caller's OrdinalIgnoreCase mirror -
     // which is why this method is only ever asked about spellings that mirror did not recognise - that folds
     // them into one. See RepoIdentityEntity.
+    /// <param name="identities">Already in canonical order - see the sort at the top of
+    /// <see cref="Commit"/>. This method must not re-order them: minting is where the deadlock lived, because
+    /// the unique index is what made two writers contend for the same identity ROW.</param>
     private Dictionary<IdentityKind, Dictionary<string, long>> ResolveIdentities(
-        GatewayStatsDbContext ctx, StatsUpsertSql sql, string tenant, StatsWriteBatch batch)
+        GatewayStatsDbContext ctx, StatsUpsertSql sql, string tenant,
+        IReadOnlyList<(string Display, IdentityKind Kind)> identities)
     {
         // Keyed with the SAME comparer as the mirror they will join, so two spellings differing only by case
         // resolve to one identity here exactly as they do there.
@@ -401,9 +485,9 @@ internal sealed class GatewayStatsWriter
             [IdentityKind.Model] = new(StringComparer.OrdinalIgnoreCase),
             [IdentityKind.Checkout] = new(StringComparer.OrdinalIgnoreCase),
         };
-        if (batch.NewIdentities.Count == 0) return resolved;
+        if (identities.Count == 0) return resolved;
 
-        foreach (var (display, kind) in batch.NewIdentities)
+        foreach (var (display, kind) in identities)
         {
             var statement = kind switch
             {
@@ -411,7 +495,7 @@ internal sealed class GatewayStatsWriter
                 IdentityKind.Agent => sql.MintAgentIdentity,
                 IdentityKind.Model => sql.MintModelIdentity,
                 IdentityKind.Checkout => sql.MintCheckoutIdentity,
-                _ => throw new ArgumentOutOfRangeException(nameof(batch), kind, "Unknown identity kind."),
+                _ => throw new ArgumentOutOfRangeException(nameof(identities), kind, "Unknown identity kind."),
             };
             resolved[kind][display] = Number(ReadRow(ctx, statement, tenant, display)[0]);
         }
@@ -661,19 +745,38 @@ internal sealed class StatsUpsertSql
     /// caller can append exactly the difference this statement made.
     ///
     /// The parameters are, in order: the key columns, then the REPORTED cumulative value of each metric, then
-    /// the value this writer BELIEVED the row held for each metric.
+    /// the value this writer BELIEVED the row held for each metric, and finally the GENERATION it believed the
+    /// row was on.
     ///
     /// The rule each metric follows, in full:
     ///
+    ///   belief from an older generation an OLD INCARNATION'S reading, arriving after this row has already
+    ///                                   been reset into a new life. Nothing it says is about the life being
+    ///                                   counted now. The row does not move and nothing is appended - see the
+    ///                                   generation note below, which is the whole reason this branch exists.
     ///   reported >= stored              the ordinary case, a count that has grown. Take the reported value.
     ///   reported <  stored, belief current   a RESET: this writer's baseline was level with or ahead of the
     ///                                   stored row, so it is looking at fresh state and the drop is real - a
     ///                                   Director restarted this session id and is counting from zero again.
     ///                                   Take the reported value; the caller reports the whole of it as new
-    ///                                   activity, because that is what the returned previous value says.
+    ///                                   activity, because that is what the returned previous value says. The
+    ///                                   row's GENERATION advances, which is what makes the first branch able
+    ///                                   to recognise the readings that belong to the life just ended.
     ///   reported <  stored, belief behind    a STALE read. Another writer has already carried this row past
     ///                                   what this one believed, so its lower number is only lower relative to
     ///                                   a state it never saw. Keep the floor; nothing was added.
+    ///
+    /// THE GENERATION COLUMN IS WHAT CLOSES THE CROSS-INCARNATION OVERCOUNT, and it needs no change to the
+    /// wire contract - the store can see a reset happen, so it can count them. Without it, a delayed reading
+    /// from the life BEFORE a reset is indistinguishable from ordinary growth in the life after it: 100 banked
+    /// turns, a reset to 5, then a straggling observation of 110 was read as growth of 105 and the ledger
+    /// ended at 210 against honest activity of 115. That error is PERMANENT (nothing rewrites an appended
+    /// delta) and its size scales with the pre-reset watermark, so it is not a rounding artefact - it is the
+    /// statistics being wrong forever for anyone whose Director restarts after a counter reset, which is an
+    /// ordinary event. With generations the straggler carries a belief from generation 0 while the row is on
+    /// generation 1, so it contributes nothing; the writer's mirror then learns the new row and its next poll
+    /// measures growth from the new life's baseline. The error does not get corrected afterwards - it never
+    /// happens.
     ///
     /// The last branch is the lost-update protection, and it is why the raise compares rather than overwrites:
     /// under <c>DO UPDATE SET turns = excluded.turns</c> the loser of a race pushes the watermark DOWN and the
@@ -690,24 +793,42 @@ internal sealed class StatsUpsertSql
         var keyValues = keys.Select(_ => "@p" + parameter++).ToArray();
         var reported = metrics.Select(_ => "@p" + parameter++).ToArray();
         var believed = metrics.Select(_ => "@p" + parameter++).ToArray();
+        var believedGeneration = "@p" + parameter;
+
+        var stored = metrics.Select(m => Existing(table, m)).ToArray();
+        var storedGeneration = Existing(table, "generation");
+
+        // The reading belongs to an incarnation the row has already left behind. Nothing it says is about the
+        // life this row is currently counting, so the row does not move and nothing is appended.
+        var fromAnOlderLife = $"{believedGeneration} < {storedGeneration}";
+
+        // A reset is being adopted: some metric came back LOWER than the row holds, from a writer whose
+        // baseline was level with or ahead of it - so it is looking at current state and the drop is real.
+        var adoptingAReset = string.Join(" OR ", metrics.Select((m, i) =>
+            $"(excluded.{m} < {stored[i]} AND {believed[i]} >= {stored[i]})"));
 
         var set = new List<string>();
         // Written before the metric assignments purely for readability: every right-hand side in an UPDATE is
         // evaluated against the ORIGINAL row on both providers, so the order of the SET list cannot matter.
         for (var i = 0; i < metrics.Length; i++)
-            set.Add($"{previous[i]} = {Existing(table, metrics[i])}");
+            set.Add($"{previous[i]} = {stored[i]}");
         for (var i = 0; i < metrics.Length; i++)
-            set.Add($@"{metrics[i]} = CASE WHEN excluded.{metrics[i]} >= {Existing(table, metrics[i])}
-                                             OR {believed[i]} >= {Existing(table, metrics[i])}
-                                        THEN excluded.{metrics[i]}
-                                        ELSE {Existing(table, metrics[i])} END");
+            set.Add($@"{metrics[i]} = CASE WHEN {fromAnOlderLife} THEN {stored[i]}
+                                          WHEN excluded.{metrics[i]} >= {stored[i]}
+                                            OR {believed[i]} >= {stored[i]}
+                                          THEN excluded.{metrics[i]}
+                                          ELSE {stored[i]} END");
+        set.Add($@"generation = CASE WHEN {fromAnOlderLife} THEN {storedGeneration}
+                                    WHEN {adoptingAReset} THEN {storedGeneration} + 1
+                                    ELSE {storedGeneration} END");
 
         // The previous_* columns are seeded to zero on a first insert, so a brand new row reports its whole
-        // reported count as the difference - which is exactly right: everything about it is new.
-        return $@"INSERT INTO {Table(table)} ({string.Join(", ", keys)}, {string.Join(", ", metrics)}, {string.Join(", ", previous)})
-                  VALUES ({string.Join(", ", keyValues)}, {string.Join(", ", reported)}, {string.Join(", ", metrics.Select(_ => "0"))})
+        // reported count as the difference - which is exactly right: everything about it is new. Generation
+        // starts at zero, which is the first life this row has counted.
+        return $@"INSERT INTO {Table(table)} ({string.Join(", ", keys)}, {string.Join(", ", metrics)}, {string.Join(", ", previous)}, generation)
+                  VALUES ({string.Join(", ", keyValues)}, {string.Join(", ", reported)}, {string.Join(", ", metrics.Select(_ => "0"))}, 0)
                   ON CONFLICT ({string.Join(", ", keys)}) DO UPDATE SET {string.Join(", ", set)}
-                  RETURNING {string.Join(", ", metrics.Select((m, i) => $"{m}, {previous[i]}"))}";
+                  RETURNING {string.Join(", ", metrics.Select((m, i) => $"{m}, {previous[i]}"))}, generation";
     }
 
     public string RaiseSessionHighWater =>

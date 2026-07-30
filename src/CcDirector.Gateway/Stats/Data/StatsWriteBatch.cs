@@ -48,6 +48,11 @@ internal sealed class StatsWriteBatch
     /// One session bucket as OBSERVED: the cumulative counts the Director reported, the baseline this writer
     /// believed the store held, and the dimensions any row derived from it is filed under.
     ///
+    /// <c>BelievedGeneration</c> is which INCARNATION of this row the writer last saw. A row's generation
+    /// advances every time the store adopts a reset, so a reading whose belief comes from an older generation
+    /// is a straggler from a life that has already ended and contributes nothing - see the raise statement in
+    /// <see cref="GatewayStatsWriter"/>, which is where that ruling is made.
+    ///
     /// <c>Believed*</c> is evidence, never authority. The database compares it with what the row ACTUALLY
     /// holds to tell two indistinguishable-looking cases apart: a reported count below the stored watermark is
     /// a genuine RESET (a Director restarted this session id and is counting fresh from zero) when the writer's
@@ -57,20 +62,23 @@ internal sealed class StatsWriteBatch
     public readonly record struct BucketObservation(
         string SessionId, string Modality, string Surface, bool IsVoice,
         string Repo, string Checkout, string? Model, bool Wingman, string Agent,
-        long ReportedTurns, long ReportedChars, long BelievedTurns, long BelievedChars);
+        long ReportedTurns, long ReportedChars, long BelievedTurns, long BelievedChars,
+        long BelievedGeneration);
 
     /// <summary>One session's agent-to-agent counts as observed (issue #1636), on its own lane. Same
     /// reported-plus-believed shape as <see cref="BucketObservation"/>, and same reason.</summary>
     public readonly record struct AgentDrivenObservation(
         string SessionId, string Agent,
-        long ReportedTurns, long ReportedChars, long BelievedTurns, long BelievedChars);
+        long ReportedTurns, long ReportedChars, long BelievedTurns, long BelievedChars,
+        long BelievedGeneration);
 
     /// <summary>One session's cumulative token spend as observed (issue #1637). Four scalars, each
     /// high-watered independently, each reported alongside what this writer believed was stored.</summary>
     public readonly record struct TokenObservation(
         string SessionId, string? Model,
         long ReportedInput, long ReportedOutput, long ReportedCacheRead, long ReportedCacheCreation,
-        long BelievedInput, long BelievedOutput, long BelievedCacheRead, long BelievedCacheCreation);
+        long BelievedInput, long BelievedOutput, long BelievedCacheRead, long BelievedCacheCreation,
+        long BelievedGeneration);
 
     /// <summary>
     /// One row of the FIRST-FOLD back-fill (issue #1633): turns this session had already counted before the
@@ -124,11 +132,35 @@ internal sealed class StatsCommitResult
     public Dictionary<IdentityKind, IReadOnlyDictionary<string, long>> Identities { get; } = new();
 
     /// <summary>What <c>session_highwater</c> now holds for each bucket this batch raised.</summary>
-    public List<(string SessionId, string Modality, string Surface, long Turns, long Chars)> SessionHighWater { get; } = new();
+    public List<(string SessionId, string Modality, string Surface, long Turns, long Chars, long Generation)> SessionHighWater { get; } = new();
 
     /// <summary>What <c>agent_driven_highwater</c> now holds for each session this batch raised.</summary>
-    public List<(string SessionId, long Turns, long Chars)> AgentDrivenHighWater { get; } = new();
+    public List<(string SessionId, long Turns, long Chars, long Generation)> AgentDrivenHighWater { get; } = new();
 
     /// <summary>What <c>token_highwater</c> now holds for each session this batch raised.</summary>
-    public List<(string SessionId, long Input, long Output, long CacheRead, long CacheCreation)> TokenHighWater { get; } = new();
+    public List<(string SessionId, long Input, long Output, long CacheRead, long CacheCreation, long Generation)> TokenHighWater { get; } = new();
+}
+
+
+/// <summary>
+/// Control points inside one <see cref="GatewayStatsWriter.Commit"/>, for tests and ONLY for tests.
+///
+/// They exist because a concurrency proof has to CAUSE its interleave rather than watch for one. A witness
+/// that observes the server and asks "is somebody blocked?" can be strengthened in every dimension and still
+/// witness the WRONG EVENT - a review demonstrated exactly that here, by making the second writer touch no
+/// watermark row at all and watching the fact pass anyway on an unrelated identity-row block. Seams remove
+/// the question: the test holds one writer open at a known point and is told when the other reaches the
+/// specific row under test, so a race that did not happen cannot report one.
+///
+/// Production passes null.
+/// </summary>
+internal sealed class StatsWriteSeams
+{
+    /// <summary>Runs after every statement of the batch has executed and before the transaction commits.</summary>
+    public Action? BeforeCommit { get; init; }
+
+    /// <summary>Runs immediately before a watermark row is raised, naming that row - for example
+    /// <c>session_highwater:s-1/typed/phone</c>. It fires per ROW, which is what lets a test prove the writer
+    /// reached the row it claims to be racing rather than some other row that happened to be locked.</summary>
+    public Action<string>? BeforeRaise { get; init; }
 }
