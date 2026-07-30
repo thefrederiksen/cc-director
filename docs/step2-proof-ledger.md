@@ -65,7 +65,7 @@ Until that runs, the creation proof stands on a rig whose fidelity is assumed. R
 container, plaintext passwords in output and process arguments, a changed superuser password producing a
 green rig with an invalid connection string - are unaddressed script defects. |
 | 2 | All sixteen tables, write path and read projection | **OPEN** | Worker 8 (contract suite, not yet seated). Worker 3 has the read side building; worker 4 the write side. |
-| 3 | Interleaved writers on the high-water paths - no lost update | **CLOSED - red and green both witnessed, with strings** | The assertion the step cannot ship without. The deliberate red is a **mutation of the PRODUCT code** - the three high-water upserts in `GatewayStatsWriter` replaced by change-tracked read-then-save, keeping the comparison so it still LOOKS correct - not a fake writer inside the test. **RED, against the mutated shipped upserts** (the three high-water writes replaced by change-tracked
+| 3 | Interleaved writers on the high-water paths - no lost update | **REOPENED. The watermark claim holds; the PROOF DID NOT COVER THE DEFECT THAT MATTERS.** | The assertion the step cannot ship without. The deliberate red is a **mutation of the PRODUCT code** - the three high-water upserts in `GatewayStatsWriter` replaced by change-tracked read-then-save, keeping the comparison so it still LOOKS correct - not a fake writer inside the test. **RED, against the mutated shipped upserts** (the three high-water writes replaced by change-tracked
 read-then-save, with the comparison KEPT so the code still looks correct) - Failed 4, Passed 3:
 `SessionHighWater_InterleavedWriters_DoNotLoseAnUpdate` gave `Assert.Equal() Failure: Values differ /
 Expected: 10 / Actual: 7`; `TokenHighWater` gave `Expected: 900 / Actual: 300`; `AgentDrivenHighWater`
@@ -79,13 +79,33 @@ plus 80 SQLite facts green.
 other three token columns, agent-driven chars, and the highest-value readback in `ManyConcurrentWriters`.
 All four executed and passed in the green.
 
+**REVIEW 7 REOPENED THIS ROW, PROVED BY RUNNING.** The explicit upserts do stop the watermark
+regressing - that was audited, not sampled, and every named high-water and membership write uses the
+right conflict clause. But **concurrent writers APPEND THE SAME LOGICAL GROWTH TWICE**: each computes
+its delta against its OWN private mirror, and raising a shared high-water row does not arbitrate WHO
+OWNS that growth. Seeded at 100, two real concurrent transactions from that stale baseline - one
+proposing 300 with growth 200, the other 200 with growth 100 - left the watermark correctly at 300 and
+`token_delta` summing to **300 where 200 is correct**. So the all-time and hourly numbers PERMANENTLY
+OVERCOUNT during exactly the two-container overlap this port exists to survive. **The shipped proof
+asserted only the high-water rows and never the delta totals after an interleave, which is why it went
+green.** A proof that does not assert the quantity that breaks is not a weaker proof, it is a proof of a
+different claim.
+
+Three more, all proved by running: two containers MINT TWO IDENTITIES for one display (2 rows where 1 is
+correct, splitting a repository across surrogate ids); concurrent retention pruning ARCHIVES THE SAME
+ROWS TWICE (202 where 102 is correct, permanently doubling aged history); and the race witness itself
+can FALSE-GREEN - it counts any backend in the database waiting on a Lock without identifying writer
+B's backend, transaction, table or row, and the reviewer made it accept a race that never happened by
+holding an unrelated advisory lock. **I had recorded that refusal as exemplary. The idea is right and
+the identification is too loose.**
+
 **The race is FORCED, not hoped for**, and this belongs with the numbers or a later reader will assume
 it is timing-dependent: two real threads, two connections, two transactions open at once, with only the
 ORDER arranged. Writer B starts only after A signals from inside `beforeCommit` - statement executed,
 not yet committed - and A does not commit until the SERVER reports another session blocked on a lock,
 which can only be B's `UPDATE` and therefore only after B's `SELECT`. So B is guaranteed to read the
 pre-A value. **When closed this is a CONCURRENCY proof and NOT a schema proof** - see the fixture note below. |
-| 4 | Idempotency - replaying one snapshot ten times equals replaying it once | **CLOSED** | Green in the same window as row 3, 7 of 7 on Postgres plus 80 SQLite facts. **When closed this is a CONCURRENCY proof and NOT a schema proof** - see the fixture note below. |
+| 4 | Idempotency - replaying one snapshot ten times equals replaying it once | **REOPENED - the ordinary replay holds; a Director counter RESET followed by a Gateway RESTART double-counts.** | Green in the same window as row 3, 7 of 7 on Postgres plus 80 SQLite facts. **When closed this is a CONCURRENCY proof and NOT a schema proof** - see the fixture note below. |
 | 5 | Tenant partitioning, every table, on the canonicalised identifier | **PARTIAL** | Worker 3 closed the accessor half: the two `SessionCounts` accessors take a tenant and cannot return a foreign row (explicit LINQ join to the identity tables), the membership mirror is keyed by `(TenantId, Id, SessionId)`, five scope tests green. The whole-store sweep across all sixteen tables is OWED by worker 8. |
 | 6 | Boundaries - hour and day rollover, clock skew, out-of-order, integer limits, decreasing counters, null and absent fields, non-ASCII | **OPEN** | Worker 8. Worker 5's concurrency boundary cases (hour and day rolls, weekly window, retention boundary, empty rosters) hold **but EXCLUDE out-of-order observation** - see row 7. |
 | 7 | Output parity - identical `/stats/data` bodies | **DTO-level arm CLOSED (worker 3); BODY-level for the sixteen tables OPEN, owed by WORKER 8; concurrency arm's re-run OPEN and UNOWNED** | **REOPENED by review 3, which found a REAL DIVERGENCE, not a test gap. FIXED and pushed at `26b0bf48b`; the fix is unrun so the row stays open.** Observe hour H with session-a, then hour H+1, then hour H again with session-b: the original `Snapshot` reports `sessions=1`, the database port reports `2`. The original CLEARS its in-memory dedup set whenever the hour key changes - including moving BACKWARDS - so a returning hour starts counting again and its stored maximum does not grow; the port keeps member rows and unions them. Out-of-order timestamps are explicitly named in the boundary list, so this is in scope, not an edge nobody promised. **Worker 5's own parity suite had NAMED this divergence in a scope comment and left it uncovered, on the grounds that production time is monotonic. Naming a gap is not closing it, and that comment is now replaced by the test** - which is the general lesson, not a note about one comment. The fix makes `concurrency_hour_member` hold the CURRENT HOUR ONLY, discarding every other hour's rows for that tenant the moment the hour changes in either direction, because that is exactly what the three in-memory lists in the JSON file were. **Worker 2 needs this for the merge: that table is not 90 days of hours.** The 90-day prune stays, because it is what clears the last hour of a tenant that stopped being observed. Worker 5 owes the re-run. Worker 3's read parity is **DTO-level, NOT body-level, and must not be counted as covering this**. Its
