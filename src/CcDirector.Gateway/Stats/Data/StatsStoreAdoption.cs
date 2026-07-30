@@ -50,6 +50,25 @@ public enum StatsStoreUnavailableReason
     StoreUnreadable,
 
     /// <summary>
+    /// Another process holds this store for writing, or an Entity Framework migration lock row was left
+    /// behind by one that never finished.
+    ///
+    /// REFUSED FAST AND ON PURPOSE. Entity Framework's migration lock is acquired by retrying forever, with
+    /// no timeout and no cancellation, and its row is removed on DISPOSAL - so a process that crashed while
+    /// migrating leaves a row that nothing will ever clear. Any later open that reaches
+    /// <c>Migrate()</c> then waits for ever on it.
+    ///
+    /// The containment boundary bounds that at twenty seconds, so startup survives - but it would burn the
+    /// WHOLE deadline, on every single start, to learn what one query answers immediately. Worse, the wait
+    /// is ABANDONED rather than cancelled, so each start leaks another thread blocked for the life of the
+    /// process. Detecting the row up front turns a twenty-second stall into an instant, named refusal.
+    ///
+    /// The operator's action is the same either way: restart, and if it persists, a migration is stuck or its
+    /// lock row was abandoned and must be cleared by hand. One state, one member.
+    /// </summary>
+    StoreLockedByAnotherProcess,
+
+    /// <summary>
     /// THE STORE IS HALF-BUILT: it is ours, and it says so, but it is not in a state the chain can take
     /// forward. A table or column is absent, a name that should be a table is something else, or the tables
     /// are there while the migration history records nothing.

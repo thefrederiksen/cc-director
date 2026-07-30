@@ -124,6 +124,28 @@ public static class GatewayStatsSqliteAdoption
 
         context.Database.OpenConnection();
 
+        // BEFORE ANYTHING ELSE: is a migration lock row sitting in this store?
+        //
+        // This runs first because every usable outcome below hands the store to the caller, whose next move
+        // is Migrate() - and Migrate() takes Entity Framework's migration lock, which is acquired by retrying
+        // FOREVER with no timeout and no cancellation. That is a provider constraint we do not control and
+        // cannot make bounded; the only thing in our gift is to refuse before walking into it.
+        //
+        // The containment boundary does bound it - the caller races this whole open against a twenty-second
+        // deadline, so startup survives. But without this check we would burn that entire deadline on every
+        // start to learn what one query answers instantly, and because the boundary ABANDONS the wait rather
+        // than cancelling it, each start would also leak a thread blocked for the life of the process.
+        var lockHolder = ReadMigrationLockRow(connection);
+        if (lockHolder is not null)
+            return new StatsStoreAdoptionResult(
+                StatsStoreAdoptionOutcome.NotAdoptable, StatsStoreUnavailableReason.StoreLockedByAnotherProcess,
+                $"The statistics store at '{path}' carries an Entity Framework migration lock taken at " +
+                $"{lockHolder}. Either another process is migrating it right now, or one crashed while doing " +
+                "so and left the lock behind - that row is removed on disposal, so a crash never clears it. " +
+                "Running the chain would wait for it forever. The store has NOT been changed. Restart, and if " +
+                "this persists the lock row must be cleared by hand. Statistics are unavailable; the rest of " +
+                "the Gateway is unaffected.");
+
         // What the model expects, and what the file actually holds. Both read once, here, so every branch
         // below decides from the SAME picture.
         var expected = ExpectedSchema(context);
@@ -178,7 +200,7 @@ public static class GatewayStatsSqliteAdoption
                 "Framework something untrue about it, so it has NOT been changed in any way. Statistics are " +
                 "unavailable; the rest of the Gateway is unaffected.");
 
-        return StampUnderLock(context, history, path, expected.Count, version);
+        return StampUnderLock(context, history, connection, path, expected.Count, version);
     }
 
     /// <summary>
@@ -198,35 +220,120 @@ public static class GatewayStatsSqliteAdoption
     /// Re-checking under the lock is not a fallback - it is reading the state again once it can no longer
     /// change, and reporting what is actually true.
     /// </summary>
+    /// <summary>How long to wait for another writer before giving up and reporting the store busy. A BOUND,
+    /// not a retry budget: whatever happens, this path returns.</summary>
+    private const int WriteLockWaitMilliseconds = 5_000;
+
     private static StatsStoreAdoptionResult StampUnderLock(
-        GatewayStatsDbContext context, IHistoryRepository history, string path, int tableCount, int version)
+        GatewayStatsDbContext context, IHistoryRepository history, SqliteConnection connection,
+        string path, int tableCount, int version)
     {
-        using var databaseLock = history.AcquireDatabaseLock();
+        var baseline = BaselineMigrationOf(context);
 
-        if (history.Exists())
+        // SQLite's OWN write lock, bounded by busy_timeout - deliberately NOT Entity Framework's migration
+        // lock. That one creates a __EFMigrationsLock row and retries forever with no timeout and no
+        // cancellation, and its row is removed on DISPOSAL, so a process that crashes holding it leaves it
+        // behind permanently. A later adoption then waits for ever, INSIDE a path whose entire contract is
+        // containment - it does not even throw, so the boundary catch never sees it and the caller simply
+        // hangs. That is this mission's own failure mode (a statistics fault stalling startup) reintroduced
+        // by the fix for the check-then-create race, which is worse than the race it was fixing.
+        //
+        // BEGIN IMMEDIATE takes the write lock UP FRONT, so the re-check below cannot be raced by a second
+        // adopter between reading and writing - which is the actual thing that needed serialising. There is
+        // no lock row to leak: SQLite releases the lock when the connection goes, crash included.
+        Execute(connection, $"PRAGMA busy_timeout = {WriteLockWaitMilliseconds}");
+
+        SqliteTransaction transaction;
+        try
         {
-            var baseline = BaselineMigrationOf(context);
-            if (context.Database.GetAppliedMigrations().Contains(baseline, StringComparer.Ordinal))
-                return new StatsStoreAdoptionResult(
-                    StatsStoreAdoptionOutcome.AlreadyTracked, StatsStoreUnavailableReason.None,
-                    $"The statistics store at '{path}' was adopted by another instance while this one was " +
-                    "inspecting it; it records the baseline migration as applied. Nothing to do.");
-
+            transaction = connection.BeginTransaction(deferred: false);
+        }
+        catch (SqliteException ex)
+        {
+            // Another process holds the write lock and did not release it inside the bound. Nothing has been
+            // changed, and the next startup will simply try again.
+            FileLog.Write($"[GatewayStatsSqliteAdoption] StampUnderLock: path={path} busy: {ex.Message}");
             return new StatsStoreAdoptionResult(
-                StatsStoreAdoptionOutcome.NotAdoptable, StatsStoreUnavailableReason.StoreSchemaIncomplete,
-                $"The statistics store at '{path}' gained a migration history table while this instance was " +
-                $"inspecting it, and that history does not record the baseline migration. Another instance " +
-                "may be part-way through adopting or migrating it. The store has NOT been changed here. " +
-                "Statistics are unavailable; the rest of the Gateway is unaffected.");
+                StatsStoreAdoptionOutcome.NotAdoptable, StatsStoreUnavailableReason.StoreLockedByAnotherProcess,
+                $"The statistics store at '{path}' is being written by another process and did not become " +
+                $"available within {WriteLockWaitMilliseconds} milliseconds, so it has NOT been changed. " +
+                "Restart, and if this persists a process is stuck holding the file. The rest of the Gateway " +
+                "is unaffected.");
         }
 
-        Stamp(context, history, path);
+        using (transaction)
+        {
+            // Re-read under the write lock, where the answer can no longer change.
+            if (HistoryTableExists(connection, transaction))
+            {
+                if (HistoryRecords(connection, transaction, baseline))
+                    return new StatsStoreAdoptionResult(
+                        StatsStoreAdoptionOutcome.AlreadyTracked, StatsStoreUnavailableReason.None,
+                        $"The statistics store at '{path}' was adopted by another instance while this one " +
+                        "was inspecting it; it records the baseline migration as applied. Nothing to do.");
+
+                return new StatsStoreAdoptionResult(
+                    StatsStoreAdoptionOutcome.NotAdoptable, StatsStoreUnavailableReason.StoreSchemaIncomplete,
+                    $"The statistics store at '{path}' gained a migration history table while this instance " +
+                    "was inspecting it, and that history does not record the baseline migration. Another " +
+                    "instance may be part-way through adopting or migrating it. The store has NOT been " +
+                    "changed here. Statistics are unavailable; the rest of the Gateway is unaffected.");
+            }
+
+            Stamp(connection, transaction, history, path, baseline);
+            transaction.Commit();
+        }
 
         return new StatsStoreAdoptionResult(
             StatsStoreAdoptionOutcome.Adopted, StatsStoreUnavailableReason.None,
             $"Adopted the statistics store at '{path}': it was at schema version {version} with all " +
             $"{tableCount} tables present in the right shape and no migration history, so the history " +
             "table was created and the baseline migration stamped as applied. No row was read, written or moved.");
+    }
+
+    /// <summary>
+    /// The timestamp on Entity Framework's migration lock row, or null if no lock is held.
+    ///
+    /// The row is what <c>Migrate()</c> waits on. Entity Framework stores a timestamp beside it but does NOT
+    /// use it for expiry - nothing ever times a lock out - so it is read here only to tell the operator HOW
+    /// OLD the lock is, which is what distinguishes "a migration is running right now" from "a migration
+    /// died three weeks ago".
+    /// </summary>
+    private static string? ReadMigrationLockRow(SqliteConnection connection)
+    {
+        using var exists = connection.CreateCommand();
+        exists.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='__EFMigrationsLock'";
+        if (Convert.ToInt32(exists.ExecuteScalar()) == 0) return null;
+
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT \"Timestamp\" FROM \"__EFMigrationsLock\" LIMIT 1";
+        var value = command.ExecuteScalar();
+        return value is null or DBNull ? null : value.ToString();
+    }
+
+    private static bool HistoryTableExists(SqliteConnection connection, SqliteTransaction transaction)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=$n";
+        command.Parameters.AddWithValue("$n", "__EFMigrationsHistory");
+        return Convert.ToInt32(command.ExecuteScalar()) > 0;
+    }
+
+    private static bool HistoryRecords(SqliteConnection connection, SqliteTransaction transaction, string migration)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT COUNT(*) FROM \"__EFMigrationsHistory\" WHERE \"MigrationId\" = $m";
+        command.Parameters.AddWithValue("$m", migration);
+        return Convert.ToInt32(command.ExecuteScalar()) > 0;
+    }
+
+    private static void Execute(SqliteConnection connection, string sql)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.ExecuteNonQuery();
     }
 
     /// <summary>
@@ -438,16 +545,27 @@ public static class GatewayStatsSqliteAdoption
     /// which is WORSE than the state we started in: the chain would read an empty history, decide the
     /// baseline is pending, and try again to create sixteen tables that exist.
     /// </summary>
-    private static void Stamp(GatewayStatsDbContext context, IHistoryRepository history, string path)
+    private static void Stamp(
+        SqliteConnection connection, SqliteTransaction transaction, IHistoryRepository history,
+        string path, string baseline)
     {
-        var baseline = BaselineMigrationOf(context);
-
         FileLog.Write($"[GatewayStatsSqliteAdoption] Stamp: path={path}, baseline={baseline}");
 
-        using var transaction = context.Database.BeginTransaction();
-        context.Database.ExecuteSqlRaw(history.GetCreateScript());
-        context.Database.ExecuteSqlRaw(history.GetInsertScript(new HistoryRow(baseline, ProductInfo.GetVersion())));
-        transaction.Commit();
+        // The two statements come from Entity Framework's OWN history repository rather than being written
+        // out here, so the history table this creates is byte-identical to the one the chain would have
+        // created itself and cannot drift from it when the framework version moves. They are executed on the
+        // caller's write transaction, which already holds the file's write lock.
+        foreach (var sql in new[]
+                 {
+                     history.GetCreateScript(),
+                     history.GetInsertScript(new HistoryRow(baseline, ProductInfo.GetVersion())),
+                 })
+        {
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = sql;
+            command.ExecuteNonQuery();
+        }
 
         FileLog.Write($"[GatewayStatsSqliteAdoption] Stamp: path={path}, baseline={baseline} applied");
     }

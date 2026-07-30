@@ -10,7 +10,7 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace CcDirector.Gateway.Stats.Data.Migrations
 {
     [DbContext(typeof(GatewayStatsDbContext))]
-    [Migration("20260730181222_InitialGatewayStats")]
+    [Migration("20260730160415_InitialGatewayStats")]
     partial class InitialGatewayStats
     {
         /// <inheritdoc />

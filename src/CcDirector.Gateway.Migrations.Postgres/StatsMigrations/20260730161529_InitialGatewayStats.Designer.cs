@@ -11,7 +11,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 {
     [DbContext(typeof(GatewayStatsDbContext))]
-    [Migration("20260730181312_InitialGatewayStats")]
+    [Migration("20260730161529_InitialGatewayStats")]
     partial class InitialGatewayStats
     {
         /// <inheritdoc />
