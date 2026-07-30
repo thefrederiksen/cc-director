@@ -938,6 +938,17 @@ body {
   color: #f5d060;
 }
 
+/* A prompt to this session was NOT delivered - the user's words never reached the agent (issue
+   internal#811). Alarm red, because this is the one chip that reports a LOSS rather than a state. The dot
+   is deliberately untouched: the agent is doing exactly what it was doing, having heard nothing, and
+   recolouring it would tell a lie about the agent to tell the truth about the delivery. */
+.roster-tag.not-delivered {
+  background: rgba(220, 68, 68, 0.18);
+  border-color: rgba(220, 68, 68, 0.7);
+  color: #f08a8a;
+  font-weight: 600;
+}
+
 /* A session flagged for deletion wears a neutral "winding down" badge (a BADGE, never a colour): the dot
    still tells the truth about the work while this rides beside it. Mirrors the desktop rail's badge. */
 .roster-tag.winding-down {
@@ -1054,6 +1065,30 @@ body {
   flex: 1 1 auto;
   min-height: 0;
   height: auto;
+}
+
+/* "Your last prompt was not delivered" (issue internal#811), pinned above the action bar and the composer.
+   It does not fade and it cannot be dismissed: it goes away when a prompt actually lands, which is the
+   only thing that fixes it. Two lines - the Gateway's sentence, then how often this has happened here. */
+.delivery-failure-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  background: rgba(220, 68, 68, 0.14);
+  border-top: 1px solid rgba(220, 68, 68, 0.7);
+  flex: 0 0 auto;
+}
+
+.delivery-failure-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #f08a8a;
+}
+
+.delivery-failure-history {
+  font-size: 11.5px;
+  color: var(--text-dim);
 }
 
 .action-bar {

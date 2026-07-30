@@ -14,6 +14,11 @@ import {
   snoozeExpired,
 } from "@devthrottle/client-core/sessions/ordering";
 import { changesBadge, changesTitle } from "@devthrottle/client-core/sessions/changes";
+import {
+  DELIVERY_BADGE_TEXT,
+  hasUndeliveredPrompt,
+  promptDeliveryTitle,
+} from "@devthrottle/client-core/sessions/delivery";
 import { supervisionStats } from "@devthrottle/client-core/sessions/supervision";
 import { machinePortLabel } from "@devthrottle/client-core/fleet/directorEndpoint";
 import { useNow, waitingLabel } from "@devthrottle/client-core/sessions/waiting";
@@ -311,9 +316,14 @@ function RosterRow({
   // this roster and the mobile one cannot say it two different ways. Null on a clean tree AND on an
   // unknown one - see client-core/sessions/changes for why those stay distinct upstream.
   const changes = changesBadge(session);
-  // The tag row (changes / voice / hold-time / snooze-ended / winding-down / last-seen / waiting) renders
-  // only when it has something to say, so a plain working session stays a compact two lines (name + state).
+  // A prompt to this session did not go and nothing has landed since (issue internal#811). The Gateway
+  // decides that and writes the words; the card only has to refuse to be quiet about it.
+  const undelivered = hasUndeliveredPrompt(session);
+  // The tag row (not-delivered / changes / voice / hold-time / snooze-ended / winding-down / last-seen /
+  // waiting) renders only when it has something to say, so a plain working session stays a compact two
+  // lines (name + state).
   const hasTags =
+    undelivered ||
     changes !== null ||
     holdCountdown !== null ||
     snoozeExpired(session) ||
@@ -351,6 +361,14 @@ function RosterRow({
           {/* Line 4 (only when there is something to show): the tags and the live waiting timer. */}
           {hasTags && (
             <span className="roster-tags">
+              {/* First chip in the row, in alarm red: the user's words did not reach the agent. Everything
+                  else on this card describes what the session is doing; only this one says something was
+                  lost. It leads. */}
+              {undelivered && (
+                <span className="roster-tag not-delivered" title={promptDeliveryTitle(session) ?? undefined}>
+                  {DELIVERY_BADGE_TEXT}
+                </span>
+              )}
               {changes !== null && (
                 <span className="roster-tag changes" title={changesTitle(session) ?? undefined}>
                   {changes}

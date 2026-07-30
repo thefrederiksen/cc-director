@@ -208,6 +208,55 @@ public sealed class SessionDto
     public DateTime? LastOwnerTurnAtUtc { get; set; }
 
     /// <summary>
+    /// How many prompts to this session have FAILED to be delivered - the send threw, so the user's words
+    /// never reached the agent (issue internal#811). Reported by the owning Director from
+    /// <c>PromptDeliveryFailures</c>; 0 from a Director too old to count them. Counts survive a recovery,
+    /// so this is the honest "how often does this happen here" number, not a live alarm - that is
+    /// <see cref="PromptDeliveryUnresolved"/>.
+    /// </summary>
+    public int FailedPromptDeliveries { get; set; }
+
+    /// <summary>
+    /// How many times this session's composer failed to echo typed text and had to be cleared and retyped.
+    /// A miss that recovers costs the user nothing, which is why it is a count and never an alarm - but it
+    /// is the leading indicator of the outright failures, and it was invisible outside a log file until
+    /// issue internal#811. Reported by the owning Director; 0 from a Director too old to count them.
+    /// </summary>
+    public int ComposerEchoMisses { get; set; }
+
+    /// <summary>
+    /// When the most recent prompt delivery to this session failed, or null if none ever has. Reported by
+    /// the owning Director.
+    /// </summary>
+    public DateTime? LastPromptDeliveryFailureAtUtc { get; set; }
+
+    /// <summary>
+    /// Why the most recent delivery failed, in the words the submit protocol used ("the composer never
+    /// echoed the typed text after 2 attempts ..."), or null if none ever has. Reported by the owning
+    /// Director, one line, length-capped. A client never renders this as the headline - the Gateway's
+    /// <see cref="PromptDeliveryNotice"/> is the headline - but it is the detail behind it.
+    /// </summary>
+    public string? LastPromptDeliveryFailureReason { get; set; }
+
+    /// <summary>
+    /// True when the LAST thing that happened on this session was a failed delivery and nothing has landed
+    /// since: the user's words are gone RIGHT NOW. Cleared by the next successful delivery. Reported by the
+    /// owning Director, because only the Director can see whether a later send got through.
+    ///
+    /// This is the fact; the Gateway turns it into <see cref="PromptDeliveryNotice"/>, the words a client
+    /// renders.
+    /// </summary>
+    public bool PromptDeliveryUnresolved { get; set; }
+
+    /// <summary>
+    /// Gateway-owned plain-English notice that this session lost a prompt, or null when there is nothing to
+    /// say. Folded once by <c>SessionOrdering.PromptDeliveryNotice</c> from the Director-reported facts
+    /// above and rendered VERBATIM by every client (CLAUDE.md rule 7). Always null in Director-local
+    /// responses, which carry the raw facts and no verdict.
+    /// </summary>
+    public string? PromptDeliveryNotice { get; set; }
+
+    /// <summary>
     /// Gateway-owned presentation color after all overlays are folded in
     /// (<see cref="SessionOrdering.EffectiveColor"/>): on-hold, transcribing, explaining,
     /// briefing, and voice-generation state. Stamped by the Gateway aggregator so browser

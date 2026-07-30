@@ -3440,6 +3440,10 @@ internal static class GatewayEndpoints
                               "docs/new_architecture/session-state.html.");
             s.EffectiveColorHex = SessionColorPalette.HexFor(effectiveColor);
             s.StateLabel = SessionOrdering.StateLabel(s);
+            // The words for a prompt that did not go (issue internal#811), folded here beside the colour and
+            // the label so every client renders one sentence it did not compose. Null on a session that has
+            // not lost anything, which is almost all of them.
+            s.PromptDeliveryNotice = SessionOrdering.PromptDeliveryNotice(s);
             s.TriageBucket = SessionOrdering.Classify(s) switch
             {
                 SessionOrdering.TriageBucket.NeedsYou => "needsYou",

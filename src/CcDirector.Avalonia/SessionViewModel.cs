@@ -85,6 +85,10 @@ public class SessionViewModel : INotifyPropertyChanged
         // The uncommitted-file count now arrives from the Director's monitor rather than from a timer this
         // window owns, so the badge needs its own invalidation the same way every other pushed fact does.
         session.OnUncommittedCountChanged += OnUncommittedCountChangedVm;
+        // A prompt was lost, or a later one landed and cleared the alarm (issue internal#811). Its own
+        // handler, like the deletion badge, because it is a raw local FACT and not one of the Gateway-fold
+        // inputs RaiseFoldProjection re-reads.
+        session.OnPromptDeliveryChanged += OnPromptDeliveryChangedVm;
 
         if (session.PromptQueue != null)
         {
@@ -347,6 +351,31 @@ public class SessionViewModel : INotifyPropertyChanged
     /// </summary>
     public bool IsPendingDeletion => Session.PendingDeletion;
 
+    /// <summary>
+    /// True when a prompt to this session was NOT delivered and nothing has landed since - the user's
+    /// words are gone right now (issue internal#811). Drives the rail's red "NOT DELIVERED" badge.
+    ///
+    /// THE RAIL CALLS THE SHARED FOLD HERE, AND THAT IS NOT A RELAPSE. The rail deliberately does not
+    /// fold the COLOUR (see <see cref="EffectiveColor"/>): that fold reads inputs only the Gateway has -
+    /// a phone dictation, a voice summary in preparation, the snooze clock - so a local re-run diverges.
+    /// This fold reads the opposite kind of input. Every fact behind it is DIRECTOR-LOCAL and firsthand:
+    /// only the machine running the terminal can see a submit fail, and <see cref="FoldInput"/> carries
+    /// those facts because this Director is the thing that reported them upward in the first place.
+    /// Calling <see cref="SessionOrdering.PromptDeliveryNotice"/> here is therefore the SAME answer the
+    /// Gateway gives, from the same function - not a second one - and it survives the tunnel being down,
+    /// which is exactly when a delivery is most likely to have failed.
+    ///
+    /// A BADGE, NEVER A COLOUR, for the same reason as the winding-down badge above: the agent never
+    /// heard the prompt, so nothing about what it is DOING changed. Recolouring the dot would tell a lie
+    /// about the agent in order to tell the truth about the delivery.
+    /// </summary>
+    public bool HasUndeliveredPrompt => SessionOrdering.PromptDeliveryNotice(FoldInput) is not null;
+
+    /// <summary>The "NOT DELIVERED" badge tooltip: the Gateway fold's own sentence, so the rail, the
+    /// Cockpit and the phone all say the words once.</summary>
+    public string UndeliveredPromptTooltip =>
+        SessionOrdering.PromptDeliveryNotice(FoldInput) ?? "";
+
     /// <summary>The "winding down" badge tooltip: the human reason captured when the session was
     /// flagged (e.g. "jobs-auto: nothing to report"), or a plain fallback when none was given.</summary>
     public string PendingDeletionTooltip => Session.DeletionReason is { } reason
@@ -357,6 +386,17 @@ public class SessionViewModel : INotifyPropertyChanged
     /// badge on the UI thread. This is the session's own signal (<see cref="Session.OnPendingDeletionChanged"/>);
     /// the rail used to learn about deletion only because MarkForDeletion wrote a colour, which it no
     /// longer does and was never allowed to.</summary>
+    /// <summary>Issue internal#811: the delivery alarm turned on or off - repaint the badge on the UI
+    /// thread. Both properties move together; they read the same fold.</summary>
+    private void OnPromptDeliveryChangedVm()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            OnPropertyChanged(nameof(HasUndeliveredPrompt));
+            OnPropertyChanged(nameof(UndeliveredPromptTooltip));
+        });
+    }
+
     private void OnPendingDeletionChangedVm(bool _)
     {
         Dispatcher.UIThread.Post(() =>

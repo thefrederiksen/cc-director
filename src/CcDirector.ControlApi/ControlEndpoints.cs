@@ -44,6 +44,35 @@ internal static class ControlEndpoints
             MachineName = Environment.MachineName,
         }));
 
+        // ===== Prompts that did not go (issue internal#811) =====
+        // The question the issue is named after - "how often is this happening?" - answered without
+        // grepping a log file. Every session's row already carries its own counts and shows the loud
+        // badge; this is the FLEET view for a person or an agent asking the Director directly.
+        //
+        // In-memory and process-lifetime, exactly like the browser error ring: the FileLog line remains
+        // the durable record, and an empty list means nothing has failed since this Director started - it
+        // never means nothing ever failed. Carries no prompt text, only its length.
+        app.MapGet("/prompt-delivery-failures", (int? count) =>
+        {
+            var max = count is > 0 ? count.Value : 50;
+            var recent = CcDirector.Core.Input.PromptDeliveryFailures.Recent(max);
+            return Results.Json(new
+            {
+                failedDeliveries = recent.Count(r => r.Kind == "failed-delivery"),
+                composerEchoMisses = recent.Count(r => r.Kind == "composer-echo-miss"),
+                note = "In memory since this Director started. The durable record is the Director log.",
+                recent = recent.Select(r => new
+                {
+                    atUtc = r.AtUtc,
+                    sessionId = r.SessionId.ToString(),
+                    kind = r.Kind,
+                    source = r.Source,
+                    reason = r.Reason,
+                    textLength = r.TextLength,
+                }),
+            });
+        });
+
         // The launch-time "fleet awareness" preamble for a session: its own identity plus the
         // cc-devthrottle commands to reach the rest of the fleet. The Claude SessionStart hook fetches this
         // and injects it as additionalContext so the agent knows the fleet instantly, with no
@@ -1593,6 +1622,9 @@ internal static class ControlEndpoints
         // Issue #335: build the viewUrl from the resolved tailnetEndpoint and the configured
         // gatewayUrl. Format: {tailnetEndpoint}/sessions/{sid}/view?gw={gatewayBase}
         // Only set when a real (non-empty) tailnetEndpoint resolved - never a loopback lie.
+        // The prompt-delivery ledger for this session, read once for the row (issue internal#811).
+        var deliveryTally = CcDirector.Core.Input.PromptDeliveryFailures.Tally(s.Id);
+
         var viewUrl = "";
         if (!string.IsNullOrEmpty(tailnetEndpoint))
         {
@@ -1660,6 +1692,15 @@ internal static class ControlEndpoints
             // Only a Director can see this: desktop typing never leaves the machine, and the origin is
             // known only at the input choke points. The Gateway rules on what it means.
             LastOwnerTurnAtUtc = s.LastOwnerTurnAtUtc,
+            // Prompts that did not go (issue internal#811). Only this machine can see a delivery fail, so
+            // the counts and the unresolved flag are reported here as FACTS; the Gateway folds the words.
+            // Before this they existed solely as a line in a Director log file, which is how two spoken
+            // prompts were lost on 2026-07-15 and nobody found out for two days.
+            FailedPromptDeliveries = deliveryTally.FailedDeliveries,
+            ComposerEchoMisses = deliveryTally.ComposerEchoMisses,
+            LastPromptDeliveryFailureAtUtc = deliveryTally.LastFailureAtUtc,
+            LastPromptDeliveryFailureReason = deliveryTally.LastFailureReason,
+            PromptDeliveryUnresolved = deliveryTally.Unresolved,
             PendingDeletion = s.PendingDeletion,
             DeletionReason = s.DeletionReason,
             WingmanEnabled = s.WingmanEnabled,

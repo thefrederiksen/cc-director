@@ -86,6 +86,34 @@ public sealed class ControlApiHostTests : IAsyncLifetime
     // route-not-found, not session-not-found - so they green-lit machinery that no longer exists.)
 
     [Fact]
+    public async Task PromptDeliveryFailures_answers_how_often_this_is_happening_without_a_log_file()
+    {
+        // Issue internal#811. The whole point of the issue is that "Command FAILED: the composer never
+        // echoed the typed text" existed ONLY in a log file, so nobody found out for two days. This route
+        // is the fleet-wide answer a person or an agent can just ask the Director for.
+        CcDirector.Core.Input.PromptDeliveryFailures.ResetForTests();
+        var session = Guid.NewGuid();
+        CcDirector.Core.Input.PromptDeliveryFailures.RecordComposerEchoMiss(session, "ClaudeDriver", 1, 739);
+        CcDirector.Core.Input.PromptDeliveryFailures.RecordFailedDelivery(
+            session, "Delivery", "the composer never echoed the typed text after 2 attempts", 739);
+
+        using var doc = JsonDocument.Parse(await _client.GetStringAsync("prompt-delivery-failures"));
+        var root = doc.RootElement;
+
+        Assert.Equal(1, root.GetProperty("failedDeliveries").GetInt32());
+        Assert.Equal(1, root.GetProperty("composerEchoMisses").GetInt32());
+        var newest = root.GetProperty("recent").EnumerateArray().First();
+        Assert.Equal("failed-delivery", newest.GetProperty("kind").GetString());
+        Assert.Equal(session.ToString(), newest.GetProperty("sessionId").GetString());
+        Assert.Contains("never echoed", newest.GetProperty("reason").GetString());
+        // The prompt TEXT is never served - only how long it was.
+        Assert.Equal(739, newest.GetProperty("textLength").GetInt32());
+        Assert.False(newest.TryGetProperty("text", out _));
+
+        CcDirector.Core.Input.PromptDeliveryFailures.ResetForTests();
+    }
+
+    [Fact]
     public async Task Shutdown_triggers_callback()
     {
         Assert.False(_shutdownRequested);
