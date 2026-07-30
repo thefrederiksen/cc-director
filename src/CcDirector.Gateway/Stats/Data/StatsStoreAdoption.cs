@@ -50,6 +50,16 @@ public enum StatsStoreUnavailableReason
     StoreUnreadable,
 
     /// <summary>
+    /// The database is this store's, and says so, but its shape is not what the baseline builds - a table or
+    /// a column is absent, or a name that should be a table is something else.
+    ///
+    /// Stamping the baseline against it would tell Entity Framework something untrue, and a store that
+    /// RECORDS the baseline while missing a table reports nothing pending and then fails on the first query,
+    /// where the failure is no longer contained by this step.
+    /// </summary>
+    StoreSchemaIncomplete,
+
+    /// <summary>
     /// The store has a migration history table, but that history does NOT record the baseline, while the
     /// store's tables are already there. A first migration was interrupted partway - after Entity Framework
     /// created the history table, before it recorded what it had done.

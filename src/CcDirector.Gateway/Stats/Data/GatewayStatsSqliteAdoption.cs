@@ -46,14 +46,24 @@ namespace CcDirector.Gateway.Stats.Data;
 public static class GatewayStatsSqliteAdoption
 {
     /// <summary>
-    /// The SQLite schema version an adoptable store reports in <c>PRAGMA user_version</c> - the version the
-    /// Entity Framework baseline migration was ported FROM, and therefore the only version whose on-disk
-    /// shape the baseline can honestly be stamped as having produced.
+    /// The schema version of the LEGACY files this adoption path exists to recognise - the shape the OLD
+    /// hand-rolled code wrote, which is sitting on users' disks right now.
     ///
-    /// Read from <see cref="GatewayStatsDatabase.SchemaVersion"/> rather than written as a literal 5, so it
-    /// cannot quietly disagree with the code that actually wrote those files.
+    /// THIS IS FROZEN FOREVER AT 5 AND MUST NEVER BE RAISED. It is a historical fact about files that already
+    /// exist, not a version this build is at. Those files cannot be retroactively changed, so the number that
+    /// identifies them cannot move either.
+    ///
+    /// IT IS DELIBERATELY A LITERAL AND NOT <see cref="GatewayStatsDatabase.SchemaVersion"/>, even though the
+    /// two are both 5 today. That coincidence ENDS at the second migration in this chain. They are different
+    /// concepts: this one describes a file on a disk in the past, that one describes what a build understands
+    /// now. Wiring adoption to a moving value means the day anybody advances it, adoption stops recognising
+    /// the very version 5 no-history files it was built to protect - and every existing self-host install
+    /// silently loses its statistics, which is precisely the failure this path prevents.
+    ///
+    /// The version the CHAIN is currently at is a different number entirely, it advances with every
+    /// migration, and it is governed by <c>GatewayStatsSqliteVersionStampTests</c>. Do not merge the two.
     /// </summary>
-    public static int AdoptableSchemaVersion => GatewayStatsDatabase.SchemaVersion;
+    public const int LegacyBaselineSchemaVersion = 5;
 
     /// <summary>
     /// Adopt the SQLite statistics store behind <paramref name="context"/> if it needs adopting, and report
@@ -114,49 +124,109 @@ public static class GatewayStatsSqliteAdoption
 
         context.Database.OpenConnection();
 
-        // The tables this store expects, read off the MODEL rather than written out as a list here, so the
-        // expectation cannot drift from the schema the baseline migration actually creates.
-        var expected = ExpectedTableNames(context);
-        var present = ReadTableNames(connection);
-        var missing = expected.Where(t => !present.Contains(t)).OrderBy(t => t, StringComparer.Ordinal).ToList();
+        // What the model expects, and what the file actually holds. Both read once, here, so every branch
+        // below decides from the SAME picture.
+        var expected = ExpectedSchema(context);
+        var objects = ReadObjects(connection);
 
         var history = context.GetService<IHistoryRepository>();
         if (history.Exists())
-            return InspectTrackedStore(context, path, expected.Count, missing.Count);
+            return InspectTrackedStore(context, path, expected, objects);
 
-        // A file with no tables is an empty or newly-created file, not a store to adopt. It is checked BEFORE
-        // the version stamp on purpose: an empty file reports user_version 0, which would otherwise be read as
-        // an incompatible version and take the statistics surface down over a file with nothing in it.
-        if (CountUserTables(connection) == 0)
+        // NOTHING AT ALL in the file - no table, no view, no trigger, no index of its own. Only THIS is a
+        // fresh store. It is checked before the version stamp on purpose: an empty file reports user_version
+        // 0, which would otherwise read as an incompatible version and take statistics down over a file with
+        // nothing in it.
+        //
+        // "Nothing at all" rather than "no tables": a database holding a VIEW named stat_delta has no tables,
+        // and calling it fresh would hand the chain a database it did not create and would then write sixteen
+        // tables into.
+        if (objects.Count == 0)
             return new StatsStoreAdoptionResult(
                 StatsStoreAdoptionOutcome.FreshStore, StatsStoreUnavailableReason.None,
                 $"The statistics store at '{path}' is empty; the migration chain will create the schema.");
 
+        // The file holds SOMETHING and has no migration history. It may only be adopted if it is genuinely a
+        // version 5 store of ours - and anything else must be left strictly alone, because the caller's next
+        // move is to run the chain, which WRITES.
+        var foreign = objects.Keys.Where(n => !expected.ContainsKey(n))
+            .OrderBy(n => n, StringComparer.Ordinal).ToList();
+        if (foreign.Count > 0)
+            return new StatsStoreAdoptionResult(
+                StatsStoreAdoptionOutcome.NotAdoptable, StatsStoreUnavailableReason.NotAStatisticsStore,
+                $"The database at '{path}' holds {foreign.Count} object(s) that do not belong to this store " +
+                $"({string.Join(", ", foreign)}), so it is not a statistics store. It has NOT been changed in " +
+                "any way and the migration chain must not be run against it. Statistics are unavailable; the " +
+                "rest of the Gateway is unaffected.");
+
         var version = QueryUserVersion(connection);
-        if (version != AdoptableSchemaVersion)
+        if (version != LegacyBaselineSchemaVersion)
             return new StatsStoreAdoptionResult(
                 StatsStoreAdoptionOutcome.NotAdoptable, StatsStoreUnavailableReason.IncompatibleSchemaVersion,
                 $"The statistics store at '{path}' is at schema version {version}, and only version " +
-                $"{AdoptableSchemaVersion} can be adopted into the migration chain. It has NOT been changed " +
+                $"{LegacyBaselineSchemaVersion} can be adopted into the migration chain. It has NOT been changed " +
                 "in any way. Statistics are unavailable; the rest of the Gateway is unaffected.");
 
-        // The second half of the claim. The version stamp alone is not enough: stamping a baseline is an
-        // assertion that these exact tables are already there, so it is checked rather than assumed.
-        if (missing.Count > 0)
+        // The rest of the claim. A stamp asserts the file is what the baseline would have BUILT, so the
+        // shape is checked, not just the names.
+        var mismatch = DescribeMismatch(connection, expected, objects);
+        if (mismatch is not null)
             return new StatsStoreAdoptionResult(
-                StatsStoreAdoptionOutcome.NotAdoptable, StatsStoreUnavailableReason.NotAStatisticsStore,
-                $"The database at '{path}' reports statistics schema version {version} but is missing " +
-                $"{missing.Count} of the {expected.Count} tables this store expects ({string.Join(", ", missing)}), " +
-                "so it is not a statistics store and has NOT been changed in any way. Statistics are " +
+                StatsStoreAdoptionOutcome.NotAdoptable, StatsStoreUnavailableReason.StoreSchemaIncomplete,
+                $"The database at '{path}' reports statistics schema version {version} but does not have the " +
+                $"shape that version 5 builds: {mismatch}. Stamping the baseline against it would tell Entity " +
+                "Framework something untrue about it, so it has NOT been changed in any way. Statistics are " +
                 "unavailable; the rest of the Gateway is unaffected.");
+
+        return StampUnderLock(context, history, path, expected.Count, version);
+    }
+
+    /// <summary>
+    /// Take the migration lock, confirm the store STILL needs adopting, and stamp it.
+    ///
+    /// TWO GATEWAYS CAN OPEN THE SAME FILE. Inspection and stamping are separated by the whole of the
+    /// eligibility check, so without a lock two adopters both see "no history", both try to CREATE the
+    /// history table, and the loser's create fails. That failure would land in the boundary catch and be
+    /// reported as <see cref="StatsStoreUnavailableReason.StoreUnreadable"/> - a healthy, correctly adopted
+    /// database described as unreadable, leaving that Gateway with statistics off until someone restarts it.
+    ///
+    /// THE LOCK IS TAKEN HERE AND NOT AROUND THE INSPECTION, deliberately. Acquiring it WRITES a lock table
+    /// into whatever file it is pointed at, and the inspection's whole job is to decide whether we are
+    /// allowed to write to this file at all. Taking it first would put a table into the foreign databases
+    /// finding 2 exists to refuse. By this line eligibility is established and stamping is legitimate.
+    ///
+    /// Re-checking under the lock is not a fallback - it is reading the state again once it can no longer
+    /// change, and reporting what is actually true.
+    /// </summary>
+    private static StatsStoreAdoptionResult StampUnderLock(
+        GatewayStatsDbContext context, IHistoryRepository history, string path, int tableCount, int version)
+    {
+        using var databaseLock = history.AcquireDatabaseLock();
+
+        if (history.Exists())
+        {
+            var baseline = BaselineMigrationOf(context);
+            if (context.Database.GetAppliedMigrations().Contains(baseline, StringComparer.Ordinal))
+                return new StatsStoreAdoptionResult(
+                    StatsStoreAdoptionOutcome.AlreadyTracked, StatsStoreUnavailableReason.None,
+                    $"The statistics store at '{path}' was adopted by another instance while this one was " +
+                    "inspecting it; it records the baseline migration as applied. Nothing to do.");
+
+            return new StatsStoreAdoptionResult(
+                StatsStoreAdoptionOutcome.NotAdoptable, StatsStoreUnavailableReason.MigrationHistoryIncomplete,
+                $"The statistics store at '{path}' gained a migration history table while this instance was " +
+                $"inspecting it, and that history does not record the baseline migration. Another instance " +
+                "may be part-way through adopting or migrating it. The store has NOT been changed here. " +
+                "Statistics are unavailable; the rest of the Gateway is unaffected.");
+        }
 
         Stamp(context, history, path);
 
         return new StatsStoreAdoptionResult(
             StatsStoreAdoptionOutcome.Adopted, StatsStoreUnavailableReason.None,
             $"Adopted the statistics store at '{path}': it was at schema version {version} with all " +
-            $"{expected.Count} tables present and no migration history, so the history table was created and " +
-            $"the baseline migration stamped as applied. No row was read, written or moved.");
+            $"{tableCount} tables present in the right shape and no migration history, so the history " +
+            "table was created and the baseline migration stamped as applied. No row was read, written or moved.");
     }
 
     /// <summary>
@@ -176,46 +246,170 @@ public static class GatewayStatsSqliteAdoption
     /// guess, and guessing it is how a store loses data quietly.
     /// </summary>
     private static StatsStoreAdoptionResult InspectTrackedStore(
-        GatewayStatsDbContext context, string path, int expectedTableCount, int missingTableCount)
+        GatewayStatsDbContext context, string path,
+        IReadOnlyDictionary<string, HashSet<string>> expected, IReadOnlyDictionary<string, string> objects)
     {
+        var connection = (SqliteConnection)context.Database.GetDbConnection();
         var baseline = BaselineMigrationOf(context);
         var applied = context.Database.GetAppliedMigrations().ToList();
 
-        // The steady state, and by far the common one: every store adopted once, and every store the chain
-        // itself created, arrives here on every later startup.
         if (applied.Contains(baseline, StringComparer.Ordinal))
+        {
+            // The steady state, and by far the common one - but "the history says the baseline ran" is a
+            // CLAIM ABOUT THE PAST, and the tables are the present. A store whose stat_delta has since been
+            // dropped records the baseline, reports nothing pending, and dies on the first query. Reporting
+            // it usable puts that failure outside this step's containment, so the shape is checked here too.
+            var damaged = DescribeMismatch(connection, expected, objects);
+            if (damaged is not null)
+                return new StatsStoreAdoptionResult(
+                    StatsStoreAdoptionOutcome.NotAdoptable, StatsStoreUnavailableReason.StoreSchemaIncomplete,
+                    $"The statistics store at '{path}' records the baseline migration as applied, but the " +
+                    $"database no longer matches it: {damaged}. Nothing is pending, so the chain would report " +
+                    "success and the first query would fail. The store has NOT been changed and needs looking " +
+                    "at by hand. Statistics are unavailable; the rest of the Gateway is unaffected.");
+
             return new StatsStoreAdoptionResult(
                 StatsStoreAdoptionOutcome.AlreadyTracked, StatsStoreUnavailableReason.None,
-                $"The statistics store at '{path}' already records the baseline migration as applied; " +
-                "nothing to adopt.");
+                $"The statistics store at '{path}' records the baseline migration as applied and has all " +
+                $"{expected.Count} tables in the right shape; nothing to adopt.");
+        }
 
-        // A history table with no baseline recorded, and no tables either: nothing was ever built here, so
-        // the chain simply builds it. This is a fresh store that happens to have been touched.
-        if (missingTableCount == expectedTableCount)
+        // The baseline is NOT recorded. The caller's next move is to run the chain, which WRITES - so this
+        // may only be called fresh when the database is genuinely empty AND has no migration history of its
+        // own. A foreign database carrying its own Entity Framework history satisfies neither, and certifying
+        // it fresh is how sixteen statistics tables get written into somebody else's database.
+        if (applied.Count == 0 && objects.Count == 0)
             return new StatsStoreAdoptionResult(
                 StatsStoreAdoptionOutcome.FreshStore, StatsStoreUnavailableReason.None,
-                $"The statistics store at '{path}' has a migration history table but records no migrations " +
-                "and holds none of this store's tables; the migration chain will create the schema.");
+                $"The statistics store at '{path}' has a migration history table that records nothing and " +
+                "holds no objects of its own; the migration chain will create the schema.");
 
-        // A history table that does not record the baseline, beside tables that ARE there.
+        var foreign = objects.Keys.Where(n => !expected.ContainsKey(n))
+            .OrderBy(n => n, StringComparer.Ordinal).ToList();
+        if (foreign.Count > 0 || applied.Count > 0)
+            return new StatsStoreAdoptionResult(
+                StatsStoreAdoptionOutcome.NotAdoptable, StatsStoreUnavailableReason.NotAStatisticsStore,
+                $"The database at '{path}' has a migration history recording {applied.Count} migration(s), " +
+                $"none of them this store's baseline '{baseline}', and holds {foreign.Count} object(s) that " +
+                "are not this store's. It belongs to something else. It has NOT been changed in any way and " +
+                "the migration chain must not be run against it. Statistics are unavailable; the rest of the " +
+                "Gateway is unaffected.");
+
+        // Our own tables, present, with an empty history: an interrupted migration.
         return new StatsStoreAdoptionResult(
             StatsStoreAdoptionOutcome.NotAdoptable, StatsStoreUnavailableReason.MigrationHistoryIncomplete,
             $"The statistics store at '{path}' has a migration history table that does NOT record the " +
-            $"baseline migration '{baseline}', but {expectedTableCount - missingTableCount} of its " +
-            $"{expectedTableCount} tables already exist. A migration was interrupted partway. Running the " +
-            "chain would try to create tables that are already there, so the store has NOT been changed and " +
-            "needs looking at by hand. Statistics are unavailable; the rest of the Gateway is unaffected.");
+            $"baseline migration '{baseline}', but {objects.Count} of its {expected.Count} tables already " +
+            "exist. A migration was interrupted partway. Running the chain would try to create tables that " +
+            "are already there, so the store has NOT been changed and needs looking at by hand. Statistics " +
+            "are unavailable; the rest of the Gateway is unaffected.");
     }
 
-    /// <summary>The tables this store expects, read off the MODEL rather than written out as a list, so the
-    /// expectation cannot drift from the schema the baseline migration creates.</summary>
-    private static List<string> ExpectedTableNames(GatewayStatsDbContext context) =>
-        context.Model.GetEntityTypes()
-            .Select(t => t.GetTableName())
-            .Where(t => !string.IsNullOrEmpty(t))
-            .Select(t => t!)
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
+    /// <summary>
+    /// The shape this store expects - table name to its column names - read off the MODEL rather than written
+    /// out as a list, so the expectation cannot drift from the schema the baseline migration creates.
+    /// </summary>
+    private static Dictionary<string, HashSet<string>> ExpectedSchema(GatewayStatsDbContext context)
+    {
+        var schema = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        foreach (var entity in context.Model.GetEntityTypes())
+        {
+            var table = entity.GetTableName();
+            if (string.IsNullOrEmpty(table)) continue;
+
+            var columns = new HashSet<string>(
+                entity.GetProperties().Select(p => p.GetColumnName()), StringComparer.Ordinal);
+            schema[table] = columns;
+        }
+        return schema;
+    }
+
+    /// <summary>
+    /// Every object the database holds that is not SQLite's own and not Entity Framework's bookkeeping, as
+    /// name to type. VIEWS and triggers are included, not just tables: a database holding a view named
+    /// stat_delta holds no tables at all, and treating it as empty would hand the chain a database it did not
+    /// create and then write sixteen tables into it.
+    /// </summary>
+    private static Dictionary<string, string> ReadObjects(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT name, type FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'";
+
+        var objects = new Dictionary<string, string>(StringComparer.Ordinal);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var name = reader.GetString(0);
+            if (IsEntityFrameworkBookkeeping(name)) continue;
+            // Indexes belong to their tables and are not independent evidence about what the file holds.
+            var type = reader.GetString(1);
+            if (string.Equals(type, "index", StringComparison.Ordinal)) continue;
+            objects[name] = type;
+        }
+        return objects;
+    }
+
+    /// <summary>Entity Framework's own two bookkeeping tables, which are never part of the statistics
+    /// schema and are what adoption ADDS rather than what it inspects.</summary>
+    private static bool IsEntityFrameworkBookkeeping(string name) =>
+        string.Equals(name, "__EFMigrationsHistory", StringComparison.Ordinal) ||
+        string.Equals(name, "__EFMigrationsLock", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Describe the first way the database fails to be the shape the baseline builds, or null if it matches.
+    ///
+    /// COLUMNS, NOT JUST TABLE NAMES. A stamp asserts the file is what the baseline would have BUILT, and a
+    /// table name proves only that something with that name exists. A real version 5 file whose stat_delta
+    /// had been recreated as a single id column passed a names-only check, was stamped, and then failed on
+    /// "no such column: s.chars" - a store certified as adopted and immediately broken.
+    /// </summary>
+    private static string? DescribeMismatch(
+        SqliteConnection connection,
+        IReadOnlyDictionary<string, HashSet<string>> expected,
+        IReadOnlyDictionary<string, string> objects)
+    {
+        var missing = expected.Keys.Where(t => !objects.ContainsKey(t))
+            .OrderBy(t => t, StringComparer.Ordinal).ToList();
+        if (missing.Count > 0)
+            return $"{missing.Count} of the {expected.Count} tables it should have are absent " +
+                   $"({string.Join(", ", missing)})";
+
+        var notTables = expected.Keys
+            .Where(t => !string.Equals(objects[t], "table", StringComparison.Ordinal))
+            .OrderBy(t => t, StringComparer.Ordinal).ToList();
+        if (notTables.Count > 0)
+            return $"{notTables.Count} of its names are not tables " +
+                   $"({string.Join(", ", notTables.Select(t => $"{t} is a {objects[t]}"))})";
+
+        foreach (var table in expected.Keys.OrderBy(t => t, StringComparer.Ordinal))
+        {
+            var actual = ReadColumnNames(connection, table);
+            var missingColumns = expected[table].Except(actual, StringComparer.Ordinal)
+                .OrderBy(c => c, StringComparer.Ordinal).ToList();
+            var extraColumns = actual.Except(expected[table], StringComparer.Ordinal)
+                .OrderBy(c => c, StringComparer.Ordinal).ToList();
+
+            if (missingColumns.Count > 0 || extraColumns.Count > 0)
+                return $"table {table} does not have the expected columns" +
+                       (missingColumns.Count > 0 ? $" (missing: {string.Join(", ", missingColumns)})" : "") +
+                       (extraColumns.Count > 0 ? $" (unexpected: {string.Join(", ", extraColumns)})" : "");
+        }
+
+        return null;
+    }
+
+    private static HashSet<string> ReadColumnNames(SqliteConnection connection, string table)
+    {
+        using var command = connection.CreateCommand();
+        // The table name comes from the MODEL, never from user input, and PRAGMA does not accept a bound
+        // parameter for it. Quoted so an unusual but legitimate name cannot change the statement's shape.
+        command.CommandText = $"PRAGMA table_info(\"{table.Replace("\"", "\"\"")}\")";
+
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        using var reader = command.ExecuteReader();
+        while (reader.Read()) names.Add(reader.GetString(1));
+        return names;
+    }
 
     /// <summary>
     /// Create the migration history table and stamp the baseline migration as applied.

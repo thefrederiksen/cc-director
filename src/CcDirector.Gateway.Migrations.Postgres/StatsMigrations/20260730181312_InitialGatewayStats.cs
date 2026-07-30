@@ -25,7 +25,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
                     is_voice = table.Column<bool>(type: "boolean", nullable: false),
                     turns = table.Column<long>(type: "bigint", nullable: false),
                     chars = table.Column<long>(type: "bigint", nullable: false),
-                    tenant = table.Column<string>(type: "text", nullable: false, collation: "C")
+                    tenant = table.Column<string>(type: "text", nullable: false, defaultValue: "local", collation: "C")
                 },
                 constraints: table =>
                 {
@@ -42,7 +42,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
                     agent_id = table.Column<long>(type: "bigint", nullable: false),
                     turns = table.Column<long>(type: "bigint", nullable: false),
                     chars = table.Column<long>(type: "bigint", nullable: false),
-                    tenant = table.Column<string>(type: "text", nullable: false, collation: "C")
+                    tenant = table.Column<string>(type: "text", nullable: false, defaultValue: "local", collation: "C")
                 },
                 constraints: table =>
                 {
@@ -72,7 +72,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
                     agent_id = table.Column<long>(type: "bigint", nullable: false)
                         .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityByDefaultColumn),
                     agent_display = table.Column<string>(type: "text", nullable: false, collation: "C"),
-                    tenant = table.Column<string>(type: "text", nullable: false, collation: "C")
+                    tenant = table.Column<string>(type: "text", nullable: false, defaultValue: "local", collation: "C")
                 },
                 constraints: table =>
                 {
@@ -113,7 +113,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
                     checkout_id = table.Column<long>(type: "bigint", nullable: false)
                         .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityByDefaultColumn),
                     checkout_display = table.Column<string>(type: "text", nullable: false, collation: "C"),
-                    tenant = table.Column<string>(type: "text", nullable: false, collation: "C")
+                    tenant = table.Column<string>(type: "text", nullable: false, defaultValue: "local", collation: "C")
                 },
                 constraints: table =>
                 {
@@ -142,7 +142,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
                     model_id = table.Column<long>(type: "bigint", nullable: false)
                         .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityByDefaultColumn),
                     model_display = table.Column<string>(type: "text", nullable: false, collation: "C"),
-                    tenant = table.Column<string>(type: "text", nullable: false, collation: "C")
+                    tenant = table.Column<string>(type: "text", nullable: false, defaultValue: "local", collation: "C")
                 },
                 constraints: table =>
                 {
@@ -157,7 +157,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
                     repo_id = table.Column<long>(type: "bigint", nullable: false)
                         .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityByDefaultColumn),
                     repo_display = table.Column<string>(type: "text", nullable: false, collation: "C"),
-                    tenant = table.Column<string>(type: "text", nullable: false, collation: "C")
+                    tenant = table.Column<string>(type: "text", nullable: false, defaultValue: "local", collation: "C")
                 },
                 constraints: table =>
                 {
@@ -212,7 +212,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
                     chars = table.Column<long>(type: "bigint", nullable: false),
                     model_id = table.Column<long>(type: "bigint", nullable: true),
                     checkout_id = table.Column<long>(type: "bigint", nullable: true),
-                    tenant = table.Column<string>(type: "text", nullable: false, collation: "C")
+                    tenant = table.Column<string>(type: "text", nullable: false, defaultValue: "local", collation: "C")
                 },
                 constraints: table =>
                 {
@@ -232,7 +232,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
                     output_tokens = table.Column<long>(type: "bigint", nullable: false),
                     cache_read_tokens = table.Column<long>(type: "bigint", nullable: false),
                     cache_creation_tokens = table.Column<long>(type: "bigint", nullable: false),
-                    tenant = table.Column<string>(type: "text", nullable: false, collation: "C")
+                    tenant = table.Column<string>(type: "text", nullable: false, defaultValue: "local", collation: "C")
                 },
                 constraints: table =>
                 {

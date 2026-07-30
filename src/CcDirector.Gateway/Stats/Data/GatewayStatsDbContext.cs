@@ -43,6 +43,24 @@ public sealed class GatewayStatsDbContext : DbContext
     /// schemaless and uses none of this.</summary>
     public const string PostgresSchema = "gateway_stats";
 
+    /// <summary>
+    /// The database-level default on the <c>tenant</c> column of the eight delta and identity tables.
+    ///
+    /// It is in the MODEL, not only in the baseline's raw data definition language, and that distinction is
+    /// what a review caught. Schema version 5 added this column with
+    /// <c>ALTER TABLE ... ADD COLUMN tenant TEXT NOT NULL DEFAULT 'local'</c>, so the default is part of the
+    /// shape of every self-host file on disk. Writing the correct text in the baseline while leaving the
+    /// model silent about it hid the divergence from the baseline's output WITHOUT correcting the chain's
+    /// target model - and the model is what a LATER migration is scaffolded against. The first migration
+    /// needing a table rebuild would have diffed against a snapshot that does not know about this default and
+    /// quietly dropped it.
+    ///
+    /// The eight tables that carry it are exactly the ones version 5 reached by ALTER TABLE. The high-water,
+    /// membership and meta tables were REBUILT with the tenant in their primary key and have no default, so
+    /// they must not be given one here.
+    /// </summary>
+    public const string TenantColumnDefault = "local";
+
     public GatewayStatsDbContext(DbContextOptions<GatewayStatsDbContext> options) : base(options)
     {
     }
@@ -122,7 +140,8 @@ public sealed class GatewayStatsDbContext : DbContext
             // bearing at runtime as well - see the entity.
             b.Property(e => e.ModelId).HasColumnName("model_id");
             b.Property(e => e.CheckoutId).HasColumnName("checkout_id");
-            b.Property(e => e.Tenant).HasColumnName("tenant").IsRequired();
+            b.Property(e => e.Tenant).HasColumnName("tenant").IsRequired()
+                .HasDefaultValue(TenantColumnDefault);
             // Index names are pinned to the version 5 names with HasDatabaseName. Entity Framework would
             // otherwise mint IX_stat_delta_hour_utc, which is a DIFFERENT index from the ix_stat_delta_hour
             // already on every self-host file - so an adopted store would carry both the old index under its
@@ -142,7 +161,8 @@ public sealed class GatewayStatsDbContext : DbContext
             b.Property(e => e.OutputTokens).HasColumnName("output_tokens").IsRequired();
             b.Property(e => e.CacheReadTokens).HasColumnName("cache_read_tokens").IsRequired();
             b.Property(e => e.CacheCreationTokens).HasColumnName("cache_creation_tokens").IsRequired();
-            b.Property(e => e.Tenant).HasColumnName("tenant").IsRequired();
+            b.Property(e => e.Tenant).HasColumnName("tenant").IsRequired()
+                .HasDefaultValue(TenantColumnDefault);
             b.HasIndex(e => e.HourUtc).HasDatabaseName("ix_token_delta_hour");
             b.HasIndex(e => new { e.Tenant, e.HourUtc }).HasDatabaseName("ix_token_delta_tenant_hour");
         });
@@ -156,7 +176,8 @@ public sealed class GatewayStatsDbContext : DbContext
             b.Property(e => e.IsVoice).HasColumnName("is_voice").IsRequired();
             b.Property(e => e.Turns).HasColumnName("turns").IsRequired();
             b.Property(e => e.Chars).HasColumnName("chars").IsRequired();
-            b.Property(e => e.Tenant).HasColumnName("tenant").IsRequired();
+            b.Property(e => e.Tenant).HasColumnName("tenant").IsRequired()
+                .HasDefaultValue(TenantColumnDefault);
         });
 
         modelBuilder.Entity<AgentDrivenDeltaEntity>(b =>
@@ -167,7 +188,8 @@ public sealed class GatewayStatsDbContext : DbContext
             b.Property(e => e.AgentId).HasColumnName("agent_id").IsRequired();
             b.Property(e => e.Turns).HasColumnName("turns").IsRequired();
             b.Property(e => e.Chars).HasColumnName("chars").IsRequired();
-            b.Property(e => e.Tenant).HasColumnName("tenant").IsRequired();
+            b.Property(e => e.Tenant).HasColumnName("tenant").IsRequired()
+                .HasDefaultValue(TenantColumnDefault);
         });
 
         // ---- Identity tables - surrogate id to FIRST-SEEN display spelling -------------------------
@@ -182,7 +204,8 @@ public sealed class GatewayStatsDbContext : DbContext
             b.HasKey(e => e.RepoId);
             b.Property(e => e.RepoId).HasColumnName("repo_id").ValueGeneratedOnAdd();
             b.Property(e => e.RepoDisplay).HasColumnName("repo_display").IsRequired();
-            b.Property(e => e.Tenant).HasColumnName("tenant").IsRequired();
+            b.Property(e => e.Tenant).HasColumnName("tenant").IsRequired()
+                .HasDefaultValue(TenantColumnDefault);
         });
 
         modelBuilder.Entity<AgentIdentityEntity>(b =>
@@ -191,7 +214,8 @@ public sealed class GatewayStatsDbContext : DbContext
             b.HasKey(e => e.AgentId);
             b.Property(e => e.AgentId).HasColumnName("agent_id").ValueGeneratedOnAdd();
             b.Property(e => e.AgentDisplay).HasColumnName("agent_display").IsRequired();
-            b.Property(e => e.Tenant).HasColumnName("tenant").IsRequired();
+            b.Property(e => e.Tenant).HasColumnName("tenant").IsRequired()
+                .HasDefaultValue(TenantColumnDefault);
         });
 
         modelBuilder.Entity<ModelIdentityEntity>(b =>
@@ -200,7 +224,8 @@ public sealed class GatewayStatsDbContext : DbContext
             b.HasKey(e => e.ModelId);
             b.Property(e => e.ModelId).HasColumnName("model_id").ValueGeneratedOnAdd();
             b.Property(e => e.ModelDisplay).HasColumnName("model_display").IsRequired();
-            b.Property(e => e.Tenant).HasColumnName("tenant").IsRequired();
+            b.Property(e => e.Tenant).HasColumnName("tenant").IsRequired()
+                .HasDefaultValue(TenantColumnDefault);
         });
 
         modelBuilder.Entity<CheckoutIdentityEntity>(b =>
@@ -209,7 +234,8 @@ public sealed class GatewayStatsDbContext : DbContext
             b.HasKey(e => e.CheckoutId);
             b.Property(e => e.CheckoutId).HasColumnName("checkout_id").ValueGeneratedOnAdd();
             b.Property(e => e.CheckoutDisplay).HasColumnName("checkout_display").IsRequired();
-            b.Property(e => e.Tenant).HasColumnName("tenant").IsRequired();
+            b.Property(e => e.Tenant).HasColumnName("tenant").IsRequired()
+                .HasDefaultValue(TenantColumnDefault);
         });
 
         // ---- High-water tables - the read-modify-write paths ---------------------------------------

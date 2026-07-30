@@ -37,7 +37,9 @@ namespace CcDirector.Gateway.Stats.Data.Migrations
 
                     b.Property<string>("Tenant")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("TEXT")
+                        .HasDefaultValue("local")
                         .HasColumnName("tenant");
 
                     b.Property<long>("Turns")
@@ -66,7 +68,9 @@ namespace CcDirector.Gateway.Stats.Data.Migrations
 
                     b.Property<string>("Tenant")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("TEXT")
+                        .HasDefaultValue("local")
                         .HasColumnName("tenant");
 
                     b.Property<long>("Turns")
@@ -115,7 +119,9 @@ namespace CcDirector.Gateway.Stats.Data.Migrations
 
                     b.Property<string>("Tenant")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("TEXT")
+                        .HasDefaultValue("local")
                         .HasColumnName("tenant");
 
                     b.HasKey("AgentId");
@@ -167,7 +173,9 @@ namespace CcDirector.Gateway.Stats.Data.Migrations
 
                     b.Property<string>("Tenant")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("TEXT")
+                        .HasDefaultValue("local")
                         .HasColumnName("tenant");
 
                     b.HasKey("CheckoutId");
@@ -209,7 +217,9 @@ namespace CcDirector.Gateway.Stats.Data.Migrations
 
                     b.Property<string>("Tenant")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("TEXT")
+                        .HasDefaultValue("local")
                         .HasColumnName("tenant");
 
                     b.HasKey("ModelId");
@@ -231,7 +241,9 @@ namespace CcDirector.Gateway.Stats.Data.Migrations
 
                     b.Property<string>("Tenant")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("TEXT")
+                        .HasDefaultValue("local")
                         .HasColumnName("tenant");
 
                     b.HasKey("RepoId");
@@ -334,7 +346,9 @@ namespace CcDirector.Gateway.Stats.Data.Migrations
 
                     b.Property<string>("Tenant")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("TEXT")
+                        .HasDefaultValue("local")
                         .HasColumnName("tenant");
 
                     b.Property<long>("Turns")
@@ -390,7 +404,9 @@ namespace CcDirector.Gateway.Stats.Data.Migrations
 
                     b.Property<string>("Tenant")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("TEXT")
+                        .HasDefaultValue("local")
                         .HasColumnName("tenant");
 
                     b.HasKey("Id");

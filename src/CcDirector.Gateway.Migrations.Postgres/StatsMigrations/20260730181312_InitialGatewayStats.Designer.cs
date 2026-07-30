@@ -4,348 +4,410 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
 #nullable disable
 
-namespace CcDirector.Gateway.Stats.Data.Migrations
+namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 {
     [DbContext(typeof(GatewayStatsDbContext))]
-    [Migration("20260730160415_InitialGatewayStats")]
+    [Migration("20260730181312_InitialGatewayStats")]
     partial class InitialGatewayStats
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
-            modelBuilder.HasAnnotation("ProductVersion", "9.0.2");
+            modelBuilder
+                .HasDefaultSchema("gateway_stats")
+                .HasAnnotation("ProductVersion", "9.0.2")
+                .HasAnnotation("Relational:MaxIdentifierLength", 63);
+
+            NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
             modelBuilder.Entity("CcDirector.Gateway.Stats.Data.Entities.AgentDeltaEntity", b =>
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("id");
 
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
                     b.Property<long>("AgentId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("agent_id");
 
                     b.Property<long>("Chars")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("chars");
 
                     b.Property<bool>("IsVoice")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_voice");
 
                     b.Property<string>("Tenant")
                         .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("tenant");
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("local")
+                        .HasColumnName("tenant")
+                        .UseCollation("C");
 
                     b.Property<long>("Turns")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("turns");
 
                     b.HasKey("Id");
 
-                    b.ToTable("agent_delta", (string)null);
+                    b.ToTable("agent_delta", "gateway_stats");
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Stats.Data.Entities.AgentDrivenDeltaEntity", b =>
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("id");
 
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
                     b.Property<long>("AgentId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("agent_id");
 
                     b.Property<long>("Chars")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("chars");
 
                     b.Property<string>("Tenant")
                         .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("tenant");
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("local")
+                        .HasColumnName("tenant")
+                        .UseCollation("C");
 
                     b.Property<long>("Turns")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("turns");
 
                     b.HasKey("Id");
 
-                    b.ToTable("agent_driven_delta", (string)null);
+                    b.ToTable("agent_driven_delta", "gateway_stats");
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Stats.Data.Entities.AgentDrivenHighwaterEntity", b =>
                 {
                     b.Property<string>("Tenant")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("tenant");
+                        .HasColumnType("text")
+                        .HasColumnName("tenant")
+                        .UseCollation("C");
 
                     b.Property<string>("SessionId")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("session_id");
+                        .HasColumnType("text")
+                        .HasColumnName("session_id")
+                        .UseCollation("C");
 
                     b.Property<long>("Chars")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("chars");
 
                     b.Property<long>("Turns")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("turns");
 
                     b.HasKey("Tenant", "SessionId");
 
-                    b.ToTable("agent_driven_highwater", (string)null);
+                    b.ToTable("agent_driven_highwater", "gateway_stats");
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Stats.Data.Entities.AgentIdentityEntity", b =>
                 {
                     b.Property<long>("AgentId")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("agent_id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("AgentId"));
 
                     b.Property<string>("AgentDisplay")
                         .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("agent_display");
+                        .HasColumnType("text")
+                        .HasColumnName("agent_display")
+                        .UseCollation("C");
 
                     b.Property<string>("Tenant")
                         .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("tenant");
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("local")
+                        .HasColumnName("tenant")
+                        .UseCollation("C");
 
                     b.HasKey("AgentId");
 
-                    b.ToTable("agent_identity", (string)null);
+                    b.ToTable("agent_identity", "gateway_stats");
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Stats.Data.Entities.AgentSessionEntity", b =>
                 {
                     b.Property<long>("AgentId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("agent_id");
 
                     b.Property<string>("SessionId")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("session_id");
+                        .HasColumnType("text")
+                        .HasColumnName("session_id")
+                        .UseCollation("C");
 
                     b.HasKey("AgentId", "SessionId");
 
-                    b.ToTable("agent_session", (string)null);
+                    b.ToTable("agent_session", "gateway_stats");
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Stats.Data.Entities.AgentsSeededEntity", b =>
                 {
                     b.Property<string>("Tenant")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("tenant");
+                        .HasColumnType("text")
+                        .HasColumnName("tenant")
+                        .UseCollation("C");
 
                     b.Property<string>("SessionId")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("session_id");
+                        .HasColumnType("text")
+                        .HasColumnName("session_id")
+                        .UseCollation("C");
 
                     b.HasKey("Tenant", "SessionId");
 
-                    b.ToTable("agents_seeded", (string)null);
+                    b.ToTable("agents_seeded", "gateway_stats");
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Stats.Data.Entities.CheckoutIdentityEntity", b =>
                 {
                     b.Property<long>("CheckoutId")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("checkout_id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("CheckoutId"));
 
                     b.Property<string>("CheckoutDisplay")
                         .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("checkout_display");
+                        .HasColumnType("text")
+                        .HasColumnName("checkout_display")
+                        .UseCollation("C");
 
                     b.Property<string>("Tenant")
                         .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("tenant");
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("local")
+                        .HasColumnName("tenant")
+                        .UseCollation("C");
 
                     b.HasKey("CheckoutId");
 
-                    b.ToTable("checkout_identity", (string)null);
+                    b.ToTable("checkout_identity", "gateway_stats");
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Stats.Data.Entities.MetaEntity", b =>
                 {
                     b.Property<string>("Tenant")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("tenant");
+                        .HasColumnType("text")
+                        .HasColumnName("tenant")
+                        .UseCollation("C");
 
                     b.Property<string>("Name")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("name");
+                        .HasColumnType("text")
+                        .HasColumnName("name")
+                        .UseCollation("C");
 
                     b.Property<string>("Value")
                         .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("value");
+                        .HasColumnType("text")
+                        .HasColumnName("value")
+                        .UseCollation("C");
 
                     b.HasKey("Tenant", "Name");
 
-                    b.ToTable("meta", (string)null);
+                    b.ToTable("meta", "gateway_stats");
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Stats.Data.Entities.ModelIdentityEntity", b =>
                 {
                     b.Property<long>("ModelId")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("model_id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("ModelId"));
 
                     b.Property<string>("ModelDisplay")
                         .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("model_display");
+                        .HasColumnType("text")
+                        .HasColumnName("model_display")
+                        .UseCollation("C");
 
                     b.Property<string>("Tenant")
                         .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("tenant");
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("local")
+                        .HasColumnName("tenant")
+                        .UseCollation("C");
 
                     b.HasKey("ModelId");
 
-                    b.ToTable("model_identity", (string)null);
+                    b.ToTable("model_identity", "gateway_stats");
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Stats.Data.Entities.RepoIdentityEntity", b =>
                 {
                     b.Property<long>("RepoId")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("repo_id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("RepoId"));
 
                     b.Property<string>("RepoDisplay")
                         .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("repo_display");
+                        .HasColumnType("text")
+                        .HasColumnName("repo_display")
+                        .UseCollation("C");
 
                     b.Property<string>("Tenant")
                         .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("tenant");
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("local")
+                        .HasColumnName("tenant")
+                        .UseCollation("C");
 
                     b.HasKey("RepoId");
 
-                    b.ToTable("repo_identity", (string)null);
+                    b.ToTable("repo_identity", "gateway_stats");
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Stats.Data.Entities.RepoSessionEntity", b =>
                 {
                     b.Property<long>("RepoId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("repo_id");
 
                     b.Property<string>("SessionId")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("session_id");
+                        .HasColumnType("text")
+                        .HasColumnName("session_id")
+                        .UseCollation("C");
 
                     b.HasKey("RepoId", "SessionId");
 
-                    b.ToTable("repo_session", (string)null);
+                    b.ToTable("repo_session", "gateway_stats");
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Stats.Data.Entities.SessionHighwaterEntity", b =>
                 {
                     b.Property<string>("Tenant")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("tenant");
+                        .HasColumnType("text")
+                        .HasColumnName("tenant")
+                        .UseCollation("C");
 
                     b.Property<string>("SessionId")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("session_id");
+                        .HasColumnType("text")
+                        .HasColumnName("session_id")
+                        .UseCollation("C");
 
                     b.Property<string>("Modality")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("modality");
+                        .HasColumnType("text")
+                        .HasColumnName("modality")
+                        .UseCollation("C");
 
                     b.Property<string>("Surface")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("surface");
+                        .HasColumnType("text")
+                        .HasColumnName("surface")
+                        .UseCollation("C");
 
                     b.Property<long>("Chars")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("chars");
 
                     b.Property<long>("Turns")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("turns");
 
                     b.HasKey("Tenant", "SessionId", "Modality", "Surface");
 
-                    b.ToTable("session_highwater", (string)null);
+                    b.ToTable("session_highwater", "gateway_stats");
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Stats.Data.Entities.StatDeltaEntity", b =>
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("id");
 
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
                     b.Property<long>("Chars")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("chars");
 
                     b.Property<long?>("CheckoutId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("checkout_id");
 
                     b.Property<string>("HourUtc")
                         .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("hour_utc");
+                        .HasColumnType("text")
+                        .HasColumnName("hour_utc")
+                        .UseCollation("C");
 
                     b.Property<bool>("IsVoice")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_voice");
 
                     b.Property<string>("Modality")
                         .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("modality");
+                        .HasColumnType("text")
+                        .HasColumnName("modality")
+                        .UseCollation("C");
 
                     b.Property<long?>("ModelId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("model_id");
 
                     b.Property<long>("RepoId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("repo_id");
 
                     b.Property<string>("SessionId")
                         .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("session_id");
+                        .HasColumnType("text")
+                        .HasColumnName("session_id")
+                        .UseCollation("C");
 
                     b.Property<string>("Surface")
                         .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("surface");
+                        .HasColumnType("text")
+                        .HasColumnName("surface")
+                        .UseCollation("C");
 
                     b.Property<string>("Tenant")
                         .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("tenant");
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("local")
+                        .HasColumnName("tenant")
+                        .UseCollation("C");
 
                     b.Property<long>("Turns")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("turns");
 
                     b.Property<bool>("Wingman")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("boolean")
                         .HasColumnName("wingman");
 
                     b.HasKey("Id");
@@ -356,45 +418,51 @@ namespace CcDirector.Gateway.Stats.Data.Migrations
                     b.HasIndex("Tenant", "HourUtc")
                         .HasDatabaseName("ix_stat_delta_tenant_hour");
 
-                    b.ToTable("stat_delta", (string)null);
+                    b.ToTable("stat_delta", "gateway_stats");
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Stats.Data.Entities.TokenDeltaEntity", b =>
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("id");
 
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
                     b.Property<long>("CacheCreationTokens")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("cache_creation_tokens");
 
                     b.Property<long>("CacheReadTokens")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("cache_read_tokens");
 
                     b.Property<string>("HourUtc")
                         .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("hour_utc");
+                        .HasColumnType("text")
+                        .HasColumnName("hour_utc")
+                        .UseCollation("C");
 
                     b.Property<long>("InputTokens")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("input_tokens");
 
                     b.Property<long?>("ModelId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("model_id");
 
                     b.Property<long>("OutputTokens")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("output_tokens");
 
                     b.Property<string>("Tenant")
                         .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("tenant");
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("local")
+                        .HasColumnName("tenant")
+                        .UseCollation("C");
 
                     b.HasKey("Id");
 
@@ -404,53 +472,57 @@ namespace CcDirector.Gateway.Stats.Data.Migrations
                     b.HasIndex("Tenant", "HourUtc")
                         .HasDatabaseName("ix_token_delta_tenant_hour");
 
-                    b.ToTable("token_delta", (string)null);
+                    b.ToTable("token_delta", "gateway_stats");
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Stats.Data.Entities.TokenHighwaterEntity", b =>
                 {
                     b.Property<string>("Tenant")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("tenant");
+                        .HasColumnType("text")
+                        .HasColumnName("tenant")
+                        .UseCollation("C");
 
                     b.Property<string>("SessionId")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("session_id");
+                        .HasColumnType("text")
+                        .HasColumnName("session_id")
+                        .UseCollation("C");
 
                     b.Property<long>("CacheCreationTokens")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("cache_creation_tokens");
 
                     b.Property<long>("CacheReadTokens")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("cache_read_tokens");
 
                     b.Property<long>("InputTokens")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("input_tokens");
 
                     b.Property<long>("OutputTokens")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("output_tokens");
 
                     b.HasKey("Tenant", "SessionId");
 
-                    b.ToTable("token_highwater", (string)null);
+                    b.ToTable("token_highwater", "gateway_stats");
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Stats.Data.Entities.WingmanSessionEntity", b =>
                 {
                     b.Property<string>("Tenant")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("tenant");
+                        .HasColumnType("text")
+                        .HasColumnName("tenant")
+                        .UseCollation("C");
 
                     b.Property<string>("SessionId")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("session_id");
+                        .HasColumnType("text")
+                        .HasColumnName("session_id")
+                        .UseCollation("C");
 
                     b.HasKey("Tenant", "SessionId");
 
-                    b.ToTable("wingman_session", (string)null);
+                    b.ToTable("wingman_session", "gateway_stats");
                 });
 #pragma warning restore 612, 618
         }

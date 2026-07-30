@@ -45,7 +45,9 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.Property<string>("Tenant")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("text")
+                        .HasDefaultValue("local")
                         .HasColumnName("tenant")
                         .UseCollation("C");
 
@@ -77,7 +79,9 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.Property<string>("Tenant")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("text")
+                        .HasDefaultValue("local")
                         .HasColumnName("tenant")
                         .UseCollation("C");
 
@@ -132,7 +136,9 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.Property<string>("Tenant")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("text")
+                        .HasDefaultValue("local")
                         .HasColumnName("tenant")
                         .UseCollation("C");
 
@@ -191,7 +197,9 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.Property<string>("Tenant")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("text")
+                        .HasDefaultValue("local")
                         .HasColumnName("tenant")
                         .UseCollation("C");
 
@@ -240,7 +248,9 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.Property<string>("Tenant")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("text")
+                        .HasDefaultValue("local")
                         .HasColumnName("tenant")
                         .UseCollation("C");
 
@@ -266,7 +276,9 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.Property<string>("Tenant")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("text")
+                        .HasDefaultValue("local")
                         .HasColumnName("tenant")
                         .UseCollation("C");
 
@@ -381,7 +393,9 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.Property<string>("Tenant")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("text")
+                        .HasDefaultValue("local")
                         .HasColumnName("tenant")
                         .UseCollation("C");
 
@@ -441,7 +455,9 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.Property<string>("Tenant")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("text")
+                        .HasDefaultValue("local")
                         .HasColumnName("tenant")
                         .UseCollation("C");
 
