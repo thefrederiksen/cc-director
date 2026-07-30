@@ -213,7 +213,7 @@ public static class GatewayStatsSqliteAdoption
                     "inspecting it; it records the baseline migration as applied. Nothing to do.");
 
             return new StatsStoreAdoptionResult(
-                StatsStoreAdoptionOutcome.NotAdoptable, StatsStoreUnavailableReason.MigrationHistoryIncomplete,
+                StatsStoreAdoptionOutcome.NotAdoptable, StatsStoreUnavailableReason.StoreSchemaIncomplete,
                 $"The statistics store at '{path}' gained a migration history table while this instance was " +
                 $"inspecting it, and that history does not record the baseline migration. Another instance " +
                 "may be part-way through adopting or migrating it. The store has NOT been changed here. " +
@@ -295,14 +295,17 @@ public static class GatewayStatsSqliteAdoption
                 "the migration chain must not be run against it. Statistics are unavailable; the rest of the " +
                 "Gateway is unaffected.");
 
-        // Our own tables, present, with an empty history: an interrupted migration.
+        // Our own tables, present, with a history that records nothing: a migration was interrupted partway.
+        // The same STATE as a store missing a table or a column - half-built, no safe automatic repair - so
+        // it carries the same reason. Which route found it is carried in the detail, not in the reason.
         return new StatsStoreAdoptionResult(
-            StatsStoreAdoptionOutcome.NotAdoptable, StatsStoreUnavailableReason.MigrationHistoryIncomplete,
+            StatsStoreAdoptionOutcome.NotAdoptable, StatsStoreUnavailableReason.StoreSchemaIncomplete,
             $"The statistics store at '{path}' has a migration history table that does NOT record the " +
             $"baseline migration '{baseline}', but {objects.Count} of its {expected.Count} tables already " +
             "exist. A migration was interrupted partway. Running the chain would try to create tables that " +
-            "are already there, so the store has NOT been changed and needs looking at by hand. Statistics " +
-            "are unavailable; the rest of the Gateway is unaffected.");
+            "are already there, so the store has NOT been changed and needs looking at by hand - restore it " +
+            "from a backup, or move it aside to start a fresh one. Statistics are unavailable; the rest of " +
+            "the Gateway is unaffected.");
     }
 
     /// <summary>

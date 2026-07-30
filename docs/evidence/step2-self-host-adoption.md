@@ -179,7 +179,7 @@ model rather than written out as a list, so it cannot drift from the schema the 
 | History records the baseline but a table or column is now absent | `NotAdoptable`, reason `StoreSchemaIncomplete`, file untouched |
 | History records nothing and the database holds nothing of its own | `FreshStore` - the chain creates the schema |
 | History records something else, or foreign objects are present | `NotAdoptable`, reason `NotAStatisticsStore`, file untouched |
-| History present without the baseline, our tables present | `NotAdoptable`, reason `MigrationHistoryIncomplete`, file untouched |
+| History present without the baseline, our tables present | `NotAdoptable`, reason `StoreSchemaIncomplete`, file untouched |
 | Version 5, all sixteen tables, right columns, no history | `Adopted` |
 | Any other `user_version` | `NotAdoptable`, reason `IncompatibleSchemaVersion`, file untouched |
 | Version 5 but a table or column is MISSING | `NotAdoptable`, reason `StoreSchemaIncomplete`, file untouched |
@@ -283,7 +283,7 @@ person able to see the gap in it:
 
   It now checks the claim the chain actually depends on: that the history RECORDS THE BASELINE, not merely
   that a history table exists. A history without the baseline beside tables that are present is refused as
-  `MigrationHistoryIncomplete` - contained, named, non-fatal.
+  `StoreSchemaIncomplete` - contained, named, non-fatal.
 
   **It is not repaired, deliberately.** Which half of an interrupted migration actually landed is a guess,
   and guessing it is how a store loses data quietly. That store needs looking at by hand. Adoption itself can

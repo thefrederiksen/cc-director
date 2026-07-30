@@ -419,7 +419,7 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
         var result = GatewayStatsSqliteAdoption.Adopt(check);
 
         Assert.Equal(StatsStoreAdoptionOutcome.NotAdoptable, result.Outcome);
-        Assert.Equal(StatsStoreUnavailableReason.MigrationHistoryIncomplete, result.Reason);
+        Assert.Equal(StatsStoreUnavailableReason.StoreSchemaIncomplete, result.Reason);
         Assert.False(result.IsUsable);
         Assert.Contains("interrupted", result.Detail, StringComparison.OrdinalIgnoreCase);
     }

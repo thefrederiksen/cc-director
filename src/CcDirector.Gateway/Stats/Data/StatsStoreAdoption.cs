@@ -50,25 +50,27 @@ public enum StatsStoreUnavailableReason
     StoreUnreadable,
 
     /// <summary>
-    /// The database is this store's, and says so, but its shape is not what the baseline builds - a table or
-    /// a column is absent, or a name that should be a table is something else.
+    /// THE STORE IS HALF-BUILT: it is ours, and it says so, but it is not in a state the chain can take
+    /// forward. A table or column is absent, a name that should be a table is something else, or the tables
+    /// are there while the migration history records nothing.
     ///
-    /// Stamping the baseline against it would tell Entity Framework something untrue, and a store that
-    /// RECORDS the baseline while missing a table reports nothing pending and then fails on the first query,
-    /// where the failure is no longer contained by this step.
+    /// THIS IS ONE REASON COVERING WHAT USED TO BE TWO, and the collapse is deliberate. The old pair -
+    /// "schema incomplete" and "migration history incomplete" - named the two ROUTES by which the same state
+    /// was noticed, not two different states. A reason named after its detection route ages badly the moment
+    /// a second route finds the same state, which is exactly what happened: two different layers found the
+    /// same half-built store within an afternoon and disagreed about what to call it.
+    ///
+    /// The test that settles it is the OPERATOR'S ACTION, and it is identical either way: this store cannot
+    /// be taken forward automatically, so restore it from a backup or move it aside and start fresh. There
+    /// is no safe automatic repair in either case - which half of an interrupted migration actually landed
+    /// is a guess, and guessing it is how a store loses data quietly.
+    ///
+    /// WHICH ROUTE FOUND IT IS NOT LOST - it is in <see cref="StatsStoreAdoptionResult.Detail"/>, which names
+    /// the missing tables or columns, or the fact that the history records nothing. The REASON names the
+    /// state, so it stays a short stable set; the DETAIL names the mechanism, so the operator still learns
+    /// exactly what was seen.
     /// </summary>
     StoreSchemaIncomplete,
-
-    /// <summary>
-    /// The store has a migration history table, but that history does NOT record the baseline, while the
-    /// store's tables are already there. A first migration was interrupted partway - after Entity Framework
-    /// created the history table, before it recorded what it had done.
-    ///
-    /// Running the chain from here would try to create tables that already exist. The store needs a hand,
-    /// and guessing which half of an interrupted migration actually landed is exactly the kind of repair
-    /// that loses data quietly, so it is refused with this reason instead.
-    /// </summary>
-    MigrationHistoryIncomplete,
 }
 
 /// <summary>
