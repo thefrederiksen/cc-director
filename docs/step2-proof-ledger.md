@@ -15,7 +15,22 @@ row somebody can act on. Name the cause when it is known and say so when it is n
 
 **A test that fails partway leaves every later assertion in it UNEXECUTED.** One failure can silently
 un-prove several claims that were never reached, and a report listing "1 failed" reads as one lost
-claim. When a run fails, say which assertions did not run and do not count them.
+claim. This is a false-coverage mechanism hiding inside an ordinary test report, and it is invisible in
+every summary format anyone uses: a count of passing tests says nothing about which assertions inside a
+failing one never ran. **A partially-executed test must NAME the assertions that did not run, and the
+rows depending on them stay OPEN.**
+
+**A FIXTURE THAT CANNOT DISTINGUISH THE BUG FROM ITS ABSENCE IS REFUSED, NOT RUN.** Worker 3's
+fixture-shape guard caught its own author's fixture: two tenants both totalling the same turns on a
+repository whose display spelling they share is exactly the fixture in which two tenants coalescing into
+one surrogate identity is invisible, because the numbers are identical whether the defect is present or
+absent. Every assertion downstream would have passed with the defect sitting there.
+
+Adopt the SHAPE, not that specific check: before a fixture is used, assert that it COULD show the
+failure - distinct values where a collapse would be visible, more than one tenant where partitioning is
+the claim, a second row where a lost update would show. It does not ask the author to be thoughtful; it
+refuses a fixture that cannot fail. The author is always the last person able to see the gap, so a guard
+that rejects its own author's work is the only kind that reliably works.
 
 Last updated by the Step 2 Manager. Branch `nosqlite-stats`.
 
