@@ -74,6 +74,60 @@ public sealed class UpdaterState
     [JsonPropertyName("pinnedBadVersion")]
     public string? PinnedBadVersion { get; set; }
 
+    // ---- What the last check and the last install pass actually concluded (issue #1030) -------
+    //
+    // Auto-update has always worked and has always been silent, and silence is indistinguishable
+    // from broken: up to date, never checked, downloading, downloaded-and-waiting, and a check that
+    // failed all rendered as an unchanged version number, so the owner concluded the feature was
+    // broken and had no way to conclude anything else.
+    //
+    // These fields are the record that makes the difference sayable. They are deliberately kept in
+    // THIS file rather than in a new one, because two processes already read and write it and it is
+    // already the shared record: the Director writes what its check found, the launcher writes what
+    // its install pass decided (issue #1033), and whoever renders the status reads both from one
+    // place. A second file would have needed a second discovery path and could disagree with this one.
+
+    /// <summary>
+    /// What the last completed check concluded, as an <see cref="UpdatePhase"/> name: UpToDate,
+    /// Staged, ReleaseNotReady, or Failed. Stored as text, not as the enum, so an older build reading
+    /// a newer state file gets an unrecognised word it can show rather than a deserialization failure.
+    /// </summary>
+    [JsonPropertyName("lastCheckOutcome")]
+    public string? LastCheckOutcome { get; set; }
+
+    /// <summary>Why the last check failed, when it did. Null on success.</summary>
+    [JsonPropertyName("lastCheckError")]
+    public string? LastCheckError { get; set; }
+
+    /// <summary>The newest version the last check saw published, whether or not it could be staged.</summary>
+    [JsonPropertyName("lastCheckLatestVersion")]
+    public string? LastCheckLatestVersion { get; set; }
+
+    /// <summary>
+    /// What the launcher's last install pass decided, as a <c>DirectorUpdateDecision</c> name -
+    /// HeldBecauseBusy, RolledBack, Applied, and the rest. Written by the launcher, read by whoever
+    /// shows the status. Text for the same reason as <see cref="LastCheckOutcome"/>.
+    ///
+    /// Two of these are worth as much as the version number and neither could be learned any other
+    /// way: HeldBecauseBusy is "waiting for your sessions to finish", which looked exactly like a
+    /// stall, and RolledBack is "the new build did not come up, so the old one is back", which a
+    /// person had no way to find out at all.
+    /// </summary>
+    [JsonPropertyName("lastApplyDecision")]
+    public string? LastApplyDecision { get; set; }
+
+    /// <summary>When the launcher recorded <see cref="LastApplyDecision"/>.</summary>
+    [JsonPropertyName("lastApplyDecisionAt")]
+    public DateTimeOffset? LastApplyDecisionAt { get; set; }
+
+    /// <summary>The version that decision was about, so a stale decision is not read as being about a new download.</summary>
+    [JsonPropertyName("lastApplyVersion")]
+    public string? LastApplyVersion { get; set; }
+
+    /// <summary>One plain sentence of detail from the launcher's pass - the session count it held for, or why it failed.</summary>
+    [JsonPropertyName("lastApplyDetail")]
+    public string? LastApplyDetail { get; set; }
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,

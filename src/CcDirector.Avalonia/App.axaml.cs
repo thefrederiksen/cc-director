@@ -448,22 +448,42 @@ public partial class App : Application
                     () => mainWindow.ShowUpdateReady(staged.Version));
             };
             Updater.ProgressChanged += progress =>
+            {
+                // The board first, and off the UI thread: it is what the Control API and any later
+                // surface read, and it must not depend on a window existing to be correct.
+                UpdateStatusBoard.ReportProgress(progress);
                 global::Avalonia.Threading.Dispatcher.UIThread.Post(
                     () => mainWindow.OnUpdateProgress(progress));
+            };
+
+            // Registered even when this build has no updater. A development or slot build has to be able
+            // to SAY it does not update itself; leaving the board empty would have made it look like a
+            // machine that simply had nothing to report, which is the confusion this all exists to end.
+            UpdateStatusBoard.Register(
+                Updater,
+                currentVersion: $"{current.Major}.{current.Minor}.{Math.Max(current.Build, 0)}",
+                automaticUpdatesEnabled: enabled,
+                runningSessionCount: () => SessionManager?.ListSessions().Count ?? 0);
+
+            // The window is built before this runs, so its panel has nothing to show until now. Paint it
+            // immediately rather than leaving a blank where the status goes until the next slow tick -
+            // a gap where the status is missing is a small version of the whole problem.
+            global::Avalonia.Threading.Dispatcher.UIThread.Post(mainWindow.RefreshUpdateStatus);
 
             FileLog.Write($"[App] StartUpdateService: enabled={enabled}, current={current}, target={options.InstallTarget}");
 
             _ = Task.Run(async () =>
             {
                 await Task.Delay(TimeSpan.FromSeconds(2));
-                await Updater.CheckAndStageAsync();   // initial Director self-check (inert if !enabled)
-                if (!enabled) return;                 // dev/slot build: no periodic auto-update
+                var outcome = await Updater.CheckAndStageAsync();   // initial Director self-check (inert if !enabled)
+                if (!enabled) return;                               // dev/slot build: no periodic auto-update
 
                 // Periodic silent auto-update of the per-user tier (Director self + tools), on the
                 // configured cadence. Tools aren't locked, so they swap in place; the Director self-update
                 // stages and applies at the next restart. All failures only log. Re-reads the config each
                 // cycle so toggling autoUpdate.enabled / intervalHours takes effect without a restart.
                 var layout = CcDirector.Setup.Engine.InstallLayout.Default();
+                var releaseNotReadyRetry = new ReleaseNotReadyRetry();
                 while (true)
                 {
                     var cfg = CcDirector.Setup.Engine.AutoUpdateConfig.Load(layout);
@@ -471,12 +491,13 @@ public partial class App : Application
                     {
                         try
                         {
-                            await Updater.CheckAndStageAsync();
+                            outcome = await Updater.CheckAndStageAsync();
                             var toolResult = await new CcDirector.Setup.Engine.ToolUpdater(layout).RefreshAsync();
                             FileLog.Write($"[App] tool auto-update: updated={toolResult.Updated}, failed={toolResult.Failed}");
                         }
                         catch (Exception ex)
                         {
+                            outcome = UpdatePhase.Failed;
                             FileLog.Write($"[App] auto-update cycle FAILED: {ex.Message}");
                         }
                     }
@@ -488,8 +509,25 @@ public partial class App : Application
                     // under multiple Directors via the engine's machine-wide mutex (no new lock here).
                     await CcDirector.Setup.Engine.ToolAutoUpdateTrigger.RunIfEnabledAsync(layout, "periodic");
 
-                    // When enabled, wait the configured interval; when disabled, re-poll the config hourly.
-                    await Task.Delay(cfg.Enabled ? cfg.Interval : TimeSpan.FromHours(1));
+                    // A release whose downloads have not been attached yet is worth another look in
+                    // MINUTES, not in an hour (issue #1079) - but a BOUNDED number of times. Publishing
+                    // makes a release "latest" the instant the tag is pushed and its files arrive about
+                    // five and a half minutes later, so a machine checking inside that window has found a
+                    // real update it cannot yet fetch. A release whose assets never arrive at all is
+                    // permanently in that state, though, and an unbounded short poll against one would
+                    // hammer GitHub for as long as this Director runs. See ReleaseNotReadyRetry for the
+                    // policy and why it is bounded; every other outcome uses the configured cadence.
+                    var ordinary = cfg.Enabled ? cfg.Interval : TimeSpan.FromHours(1);
+                    // A cycle with auto-update switched off did not check anything, so it has no outcome
+                    // to pace from - and must not go on pacing from the last one it had, which would spin
+                    // this loop every few minutes doing nothing at all.
+                    if (!cfg.Enabled) releaseNotReadyRetry.Reset();
+                    var delay = cfg.Enabled ? releaseNotReadyRetry.NextDelay(outcome, ordinary) : ordinary;
+                    if (delay != ordinary)
+                        FileLog.Write($"[App] the latest release has no downloads attached yet; looking again in "
+                                      + $"{delay.TotalMinutes:0} minutes (attempt {releaseNotReadyRetry.Consecutive} of "
+                                      + $"{ReleaseNotReadyRetry.MaxConsecutive}) rather than waiting for the next full cycle.");
+                    await Task.Delay(delay);
                 }
             });
         }

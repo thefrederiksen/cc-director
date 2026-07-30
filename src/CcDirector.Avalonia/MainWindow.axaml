@@ -303,32 +303,40 @@
                     </StackPanel>
                 </Border>
 
-                <!-- Auto-update status indicator. Mirrors the Gateway indicator above.
-                     Hidden when there is nothing to report; surfaces checking /
-                     downloading (with %) / ready / failed so updates are never silent.
-                     Click = check now. All colors/text set from code-behind off
-                     UpdateService.ProgressChanged. -->
+                <!-- Auto-update status. ALWAYS VISIBLE (issue #1030): it used to hide itself
+                     whenever there was "nothing to report", which meant up to date, never
+                     checked, and a check that failed all looked the same as each other and
+                     the same as a broken feature. Every word, color and offered action comes
+                     finished from UpdateStatusFold - this markup decides nothing. -->
                 <Border x:Name="UpdateIndicator" DockPanel.Dock="Bottom"
                         Margin="8,0,8,4" Padding="10,8" CornerRadius="4"
-                        Background="#2A2A2A" BorderBrush="#3C3C3C" BorderThickness="1"
-                        Cursor="Hand" IsVisible="False"
+                        Background="#242424" BorderBrush="#3C3C3C" BorderThickness="1"
                         PointerPressed="UpdateIndicator_PointerPressed">
                     <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
                         <Viewbox Width="22" Height="22" VerticalAlignment="Center">
                             <Path x:Name="UpdateIndicatorIcon"
-                                  Fill="#777777"
+                                  Fill="#8A8A8A"
                                   Data="M8,1 A7,7 0 1 0 8,15 A7,7 0 1 0 8,1 Z M8,3 A5,5 0 1 1 8,13 A5,5 0 1 1 8,3 Z" />
                         </Viewbox>
                         <StackPanel VerticalAlignment="Center">
                             <TextBlock x:Name="UpdateIndicatorLabel"
-                                       Text="UP TO DATE"
+                                       Text="NOT CHECKED YET"
                                        FontSize="11" FontWeight="SemiBold"
-                                       Foreground="#777777" />
+                                       Foreground="#8A8A8A" />
                             <TextBlock x:Name="UpdateIndicatorSub"
                                        Text=""
                                        FontSize="10" Foreground="#666666"
                                        TextWrapping="Wrap" MaxWidth="186"
                                        MaxLines="2" TextTrimming="CharacterEllipsis" />
+                            <!-- The action the fold says is available, in its own words. Absent
+                                 when nothing can usefully be done, so there is never a button
+                                 offering something that cannot work. -->
+                            <TextBlock x:Name="UpdateIndicatorAction"
+                                       Text="" IsVisible="False" Margin="0,3,0,0"
+                                       FontSize="10" FontWeight="SemiBold"
+                                       Foreground="#8A8A8A"
+                                       TextDecorations="Underline"
+                                       TextWrapping="Wrap" MaxWidth="186" />
                         </StackPanel>
                     </StackPanel>
                 </Border>

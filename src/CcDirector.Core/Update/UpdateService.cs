@@ -39,6 +39,31 @@ public enum UpdatePhase
     Staged,
     /// <summary>Already on the latest build (or the only newer build was dismissed); nothing to do.</summary>
     UpToDate,
+    /// <summary>
+    /// A newer release exists but its downloads have not been attached to it yet, so there is nothing
+    /// to fetch. NOT a failure and NOT up to date (issue #1079).
+    ///
+    /// Publishing makes a release "latest" the instant the tag is pushed; the workflow that builds and
+    /// attaches its assets finishes about five and a half minutes later. Every release we have ever cut
+    /// has had that window, and any machine that checks inside it sees a newest release with no
+    /// manifest. Reporting that as <see cref="UpToDate"/> - which is what this code did - meant a
+    /// machine that had just failed to update looked exactly like a machine that had nothing to do, and
+    /// then waited a full hour before trying again. It gets its own phase so it can say what it is and
+    /// be retried in minutes.
+    /// </summary>
+    ReleaseNotReady,
+    /// <summary>
+    /// The latest release is COMPLETE - its manifest is attached - and it carries no build for this
+    /// computer's operating system and processor.
+    ///
+    /// It shared a line with <see cref="ReleaseNotReady"/> and the pair reported "up to date", but the
+    /// two are opposites: one is a release that has not finished publishing and gets better by itself,
+    /// this one is a release that finished and has nothing for this machine. Waiting does not fix it, so
+    /// it must not drive the short retry - that would poll a finished release for ever - and a person on
+    /// such a machine needs to be told, because their Director will never update again until a release
+    /// carries their platform.
+    /// </summary>
+    NoBuildForThisPlatform,
     /// <summary>The check/download failed (<see cref="UpdateProgress.Error"/> has the reason).</summary>
     Failed,
 }
@@ -100,26 +125,47 @@ public sealed class UpdateService
     /// <summary>
     /// Check for, download, and stage an update. Safe to fire-and-forget: this is
     /// the root of a background task, so it catches and logs all failures.
+    ///
+    /// Returns what the check CONCLUDED, and writes the same conclusion into the updater state
+    /// (issue #1030). Both matter for different readers. The caller uses the return value to decide
+    /// how soon to try again - a release whose assets have not attached yet is worth another look in
+    /// minutes, not in an hour. Anything showing the status reads the persisted copy, because the
+    /// conclusion has to survive the check that produced it: a Director started ten minutes after its
+    /// last check still has to be able to say what that check found, and before this it could not.
     /// </summary>
-    public async Task CheckAndStageAsync(CancellationToken ct = default)
+    public async Task<UpdatePhase> CheckAndStageAsync(CancellationToken ct = default)
     {
         FileLog.Write($"[UpdateService] CheckAndStageAsync: current={_options.CurrentVersion}, enabled={_options.Enabled}");
+
+        // Every terminal path goes through here, so no conclusion can be reported to the user without
+        // also being written down - the split that let a failed check render as "up to date".
+        UpdatePhase Conclude(UpdaterState state, UpdatePhase phase, string? version = null, string? error = null)
+        {
+            state.LastCheckOutcome = phase.ToString();
+            state.LastCheckError = error;
+            state.LastCheckLatestVersion = version ?? state.LastCheckLatestVersion;
+            state.Save();
+            Report(new UpdateProgress(phase, version, Error: error));
+            return phase;
+        }
+
+        UpdaterState? loaded = null;
         try
         {
             if (!_options.Enabled)
             {
                 FileLog.Write("[UpdateService] Disabled for this build; skipping.");
-                return;
+                return UpdatePhase.UpToDate;
             }
 
             var assetName = AssetNameFor(GetOSPlatform(), RuntimeInformation.OSArchitecture);
             if (assetName is null)
             {
                 FileLog.Write($"[UpdateService] No asset mapping for {RuntimeInformation.OSDescription}/{RuntimeInformation.OSArchitecture}; skipping.");
-                return;
+                return UpdatePhase.UpToDate;
             }
 
-            var state = UpdaterState.Load();
+            var state = loaded = UpdaterState.Load();
             state.LastCheckedAt = DateTimeOffset.UtcNow;
 
             Report(new UpdateProgress(UpdatePhase.Checking));
@@ -129,51 +175,66 @@ public sealed class UpdateService
             if (latest is null)
             {
                 FileLog.Write($"[UpdateService] Could not parse version from tag '{tag}'; skipping.");
-                Report(new UpdateProgress(UpdatePhase.UpToDate));
-                state.Save();
-                return;
+                return Conclude(state, UpdatePhase.Failed, error: $"the latest release is tagged '{tag}', which is not a version");
             }
+
+            var versionText = $"{latest.Major}.{latest.Minor}.{Math.Max(latest.Build, 0)}";
 
             if (!ShouldStage(_options.CurrentVersion, latest, state))
             {
                 FileLog.Write($"[UpdateService] Up to date or dismissed (latest={latest}, dismissed={state.DismissedVersion}).");
-                Report(new UpdateProgress(UpdatePhase.UpToDate));
-                state.Save();
-                return;
+                return Conclude(state, UpdatePhase.UpToDate, versionText);
             }
 
             var assetUrl = FindAssetUrl(release.RootElement, assetName);
             var manifestUrl = FindAssetUrl(release.RootElement, ManifestAssetName);
-            if (assetUrl is null || manifestUrl is null)
+
+            // These two used to be ONE test, and the pair reported "up to date". They are not the same
+            // thing and only one of them gets better on its own.
+            if (manifestUrl is null)
             {
-                FileLog.Write($"[UpdateService] Release {tag} missing asset '{assetName}' or manifest; skipping.");
-                Report(new UpdateProgress(UpdatePhase.UpToDate));
-                state.Save();
-                return;
+                // The release exists and is newer, but nothing has been attached to it yet: the
+                // five-and-a-half-minute publish window (issue #1079). The manifest is the sentinel,
+                // because it is what names and hashes everything else. Waiting fixes this.
+                FileLog.Write($"[UpdateService] Release {tag} has no manifest yet; its downloads have not been attached. "
+                              + "Not up to date and not a failure - worth another look shortly.");
+                return Conclude(state, UpdatePhase.ReleaseNotReady, versionText);
             }
 
-            var versionText = $"{latest.Major}.{latest.Minor}.{Math.Max(latest.Build, 0)}";
+            if (assetUrl is null)
+            {
+                // The release is COMPLETE - its manifest is attached - and carries no build for this
+                // computer. Waiting does not fix that, so it must not be reported as the window above and
+                // must not drive the short retry: a machine would poll a finished release for ever.
+                FileLog.Write($"[UpdateService] Release {tag} is complete but has no '{assetName}'; there is no build for "
+                              + "this platform in that release.");
+                return Conclude(state, UpdatePhase.NoBuildForThisPlatform, versionText,
+                    $"the release has no {assetName}");
+            }
+
             var staged = await DownloadAndStageAsync(versionText, assetName, assetUrl, manifestUrl, ct);
             if (staged is null)
-            {
-                Report(new UpdateProgress(UpdatePhase.Failed, versionText, Error: "download or verification failed"));
-                state.Save();
-                return;
-            }
+                return Conclude(state, UpdatePhase.Failed, versionText, "the download could not be verified");
 
             state.StagedVersion = versionText;
             state.StagedExecutable = staged.StagedExecutable;
             state.InstallTarget = staged.InstallTarget;
-            state.Save();
 
             FileLog.Write($"[UpdateService] Staged update {versionText}: {staged.StagedExecutable}");
-            Report(new UpdateProgress(UpdatePhase.Staged, versionText));
+            var phase = Conclude(state, UpdatePhase.Staged, versionText);
             UpdateStaged?.Invoke(staged);
+            return phase;
         }
         catch (Exception ex)
         {
             FileLog.Write($"[UpdateService] CheckAndStageAsync FAILED: {ex.Message}");
+            // Write the failure down too. A check that fell over on the network used to leave the last
+            // successful conclusion in place, so the display kept claiming the machine was up to date on
+            // the strength of a check that had not worked for days.
+            if (loaded is not null)
+                return Conclude(loaded, UpdatePhase.Failed, error: ex.Message);
             Report(new UpdateProgress(UpdatePhase.Failed, Error: ex.Message));
+            return UpdatePhase.Failed;
         }
     }
 

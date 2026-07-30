@@ -218,6 +218,66 @@ internal static class ControlEndpoints
             return Results.Json(new { received = true });
         });
 
+        // ===== Update status (issue #1030) =====
+        //
+        // What this machine knows about its own updates: the running version, when it last looked, what
+        // that look concluded, and what the launcher decided to do about anything it downloaded. The
+        // same folded answer the desktop window renders - one fold, so nothing can say two things.
+        //
+        // The body carries FINISHED text and the finished list of available actions, not raw state for a
+        // caller to interpret (critical rule 7). A caller that wanted to group machines can key on
+        // "state"; a caller that wants to SHOW something uses the words that are already here.
+        app.MapGet("/update/status", () =>
+        {
+            var status = CcDirector.Core.Update.UpdateStatusBoard.Current();
+            if (status is null)
+            {
+                // Startup has not built the updater yet. Say that, rather than answering "up to date"
+                // for a machine that has not looked - the exact confusion this endpoint exists to end.
+                FileLog.Write("[ControlEndpoints] GET update/status before the updater was registered");
+                return Results.Json(new { ready = false, reason = "the updater has not started yet" }, statusCode: 503);
+            }
+
+            return Results.Json(new
+            {
+                ready = true,
+                state = status.State,
+                headline = status.Headline,
+                detail = status.Detail,
+                tooltip = status.Tooltip,
+                accent = status.Accent,
+                background = status.Background,
+                border = status.Border,
+                icon = status.Icon,
+                busy = status.Busy,
+                percentComplete = status.PercentComplete,
+                canCheckNow = status.CanCheckNow,
+                checkNowLabel = status.CheckNowLabel,
+                canInstallNow = status.CanInstallNow,
+                installNowLabel = status.InstallNowLabel,
+            });
+        });
+
+        // Run a check on demand and answer with what it CONCLUDED plus the refolded status, so the
+        // caller learns the result of the thing it asked for rather than having to poll and guess.
+        app.MapPost("/update/check", async (CancellationToken ct) =>
+        {
+            FileLog.Write("[ControlEndpoints] POST update/check");
+            var outcome = await CcDirector.Core.Update.UpdateStatusBoard.CheckNowAsync(ct);
+            if (outcome is null)
+                return Results.Json(new { ok = false, reason = "the updater has not started yet" }, statusCode: 503);
+
+            var status = CcDirector.Core.Update.UpdateStatusBoard.Current();
+            return Results.Json(new
+            {
+                ok = true,
+                outcome = outcome.Value.ToString(),
+                state = status?.State,
+                headline = status?.Headline,
+                detail = status?.Detail,
+            });
+        });
+
         // ===== Shutdown =====
         app.MapPost("/shutdown", (HttpContext ctx) =>
         {

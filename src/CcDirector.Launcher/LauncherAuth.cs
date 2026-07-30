@@ -17,8 +17,13 @@ namespace CcDirector.Launcher;
 /// </summary>
 public static class LauncherAuth
 {
-    public static string TokenFile { get; } =
-        Path.Combine(CcStorage.ToolConfig("launcher"), "launcher-token.txt");
+    /// <remarks>
+    /// The path is stated once, in <see cref="CcDirector.Core.Update.LauncherRestartClient.TokenFile"/>,
+    /// because the Director reads this file too - it is how the update status offers "install it now"
+    /// (issue #1030). Two spellings of the same path would let one of them be corrected and the other
+    /// quietly keep pointing at nothing.
+    /// </remarks>
+    public static string TokenFile { get; } = CcDirector.Core.Update.LauncherRestartClient.TokenFile;
 
     private static readonly HashSet<string> PublicPaths = new(StringComparer.OrdinalIgnoreCase)
     {

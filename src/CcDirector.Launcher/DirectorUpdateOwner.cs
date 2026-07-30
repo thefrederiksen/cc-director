@@ -95,8 +95,14 @@ public sealed class DirectorUpdateOwner
     /// Pure decision, unit-tested. This is the gate that used to sit inside the Director; the rule is
     /// unchanged, only the process that acts on it.
     /// </summary>
+    /// <remarks>
+    /// The rule itself moved to <see cref="UpdateApplyRule"/> when the status display began offering an
+    /// "install it now" action (issue #1030). That offer has to be governed by the same rule the launcher
+    /// acts on, and a second copy of it would eventually let the display offer something the launcher
+    /// refuses to do. This stays as the launcher's name for it.
+    /// </remarks>
     public static bool ShouldApply(bool hasStagedUpdate, int runningSessionCount)
-        => hasStagedUpdate && runningSessionCount == 0;
+        => UpdateApplyRule.ShouldApply(hasStagedUpdate, runningSessionCount);
 
     /// <summary>
     /// One pass of the launcher's ownership: look for a staged Director update, and install it if the
@@ -141,7 +147,8 @@ public sealed class DirectorUpdateOwner
         {
             FileLog.Write($"[DirectorUpdateOwner] {staged.Version} is staged but the Director is not running. Leaving both "
                           + "alone: it will be applied on the next start, and nothing here reopens a closed Director.");
-            return DirectorUpdateDecision.HeldBecauseDirectorNotRunning;
+            return Record(staged, DirectorUpdateDecision.HeldBecauseDirectorNotRunning,
+                "The Director was not running when the launcher looked, so nothing was installed.");
         }
 
         // How busy is it? A Director that cannot be asked must NOT be read as idle: it may well be
@@ -152,14 +159,16 @@ public sealed class DirectorUpdateOwner
         {
             FileLog.Write($"[DirectorUpdateOwner] {staged.Version} is staged but the running Director did not answer, "
                           + "so whether it is idle is unknown; holding the update rather than guessing.");
-            return DirectorUpdateDecision.HeldBecauseUnknown;
+            return Record(staged, DirectorUpdateDecision.HeldBecauseUnknown,
+                "The running Director did not answer when asked whether it was busy.");
         }
 
         if (health.Sessions is null)
         {
             FileLog.Write($"[DirectorUpdateOwner] {staged.Version} is staged but the Director answered without a session "
                           + "count; holding the update rather than guessing.");
-            return DirectorUpdateDecision.HeldBecauseUnknown;
+            return Record(staged, DirectorUpdateDecision.HeldBecauseUnknown,
+                "The Director answered without saying how many sessions it holds.");
         }
 
         // The Director is already the staged version - it was installed by a route other than this one,
@@ -177,7 +186,8 @@ public sealed class DirectorUpdateOwner
         {
             FileLog.Write($"[DirectorUpdateOwner] {staged.Version} is staged but {sessions} session(s) are running; "
                           + "holding it until the Director is idle. No session is ever interrupted to update.");
-            return DirectorUpdateDecision.HeldBecauseBusy;
+            return Record(staged, DirectorUpdateDecision.HeldBecauseBusy,
+                $"{sessions} session(s) were running, so the update waits rather than interrupting them.");
         }
 
         FileLog.Write($"[DirectorUpdateOwner] installing {staged.Version}: staged={staged.StagedBuild}, "
@@ -202,15 +212,17 @@ public sealed class DirectorUpdateOwner
             FileLog.Write($"[DirectorUpdateOwner]   step: {step}");
 
         if (result.Outcome == SelfUpdateOutcome.Updated)
-            return DirectorUpdateDecision.Applied;
+            return Record(staged, DirectorUpdateDecision.Applied, result.Message);
 
         // The build did not come up. Pin it so neither the launcher nor the Director tries it again when
         // it is offered a second time - the Director re-downloads on its own schedule and would
         // otherwise present the same dead build every hour, for ever.
         PinBadVersion(staged);
-        return result.Outcome == SelfUpdateOutcome.RolledBack
-            ? DirectorUpdateDecision.RolledBack
-            : DirectorUpdateDecision.Failed;
+        return Record(staged,
+            result.Outcome == SelfUpdateOutcome.RolledBack
+                ? DirectorUpdateDecision.RolledBack
+                : DirectorUpdateDecision.Failed,
+            result.Message);
     }
 
     /// <summary>
@@ -296,6 +308,39 @@ public sealed class DirectorUpdateOwner
 
         foreach (var home in instanceHomes)
             yield return Path.Combine(home, "config", "director", "updater-state.json");
+    }
+
+    /// <summary>
+    /// Write down what this pass decided, so something other than the launcher's own log can say it
+    /// (issue #1030).
+    ///
+    /// Until this existed, every one of these decisions was reachable only by reading a log file on the
+    /// machine. Two of them are the whole difference between a working feature and an apparently broken
+    /// one: HeldBecauseBusy is "waiting for your sessions to finish", which from outside looks exactly
+    /// like a stall, and RolledBack is "the new build did not come up, so the old one is back", which a
+    /// person had no way to learn at all. Both were invisible, and invisible is the defect.
+    ///
+    /// Written into the same file the staged record lives in, and into that exact file rather than the
+    /// launcher's own storage home - see <see cref="UpdaterStateFiles"/> for why the two are not the
+    /// same place. Failing to write it must never change what the launcher DID, so this only logs.
+    /// </summary>
+    internal static DirectorUpdateDecision Record(StagedDirectorUpdate staged, DirectorUpdateDecision decision, string? detail)
+    {
+        try
+        {
+            var state = UpdaterState.LoadFrom(staged.StateFilePath);
+            state.LastApplyDecision = decision.ToString();
+            state.LastApplyDecisionAt = DateTimeOffset.UtcNow;
+            state.LastApplyVersion = staged.Version;
+            state.LastApplyDetail = detail;
+            state.SaveTo(staged.StateFilePath);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DirectorUpdateOwner] could not record decision {decision} in {staged.StateFilePath}: {ex.Message}");
+        }
+
+        return decision;
     }
 
     /// <summary>

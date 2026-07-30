@@ -16,6 +16,15 @@ dots.
 The sidebar footer shows this Director's gateway connection, auto-update status,
 Control API status, and the build version.
 
+The auto-update panel is always there and always says which situation you are in:
+up to date and when it last looked, not checked yet, checking, downloading, a
+build downloaded and waiting for your sessions to finish, a check that failed and
+why, a release whose downloads have not been attached yet, or an update that was
+installed and rolled back because it did not start. When something can usefully be
+done it offers exactly one action - check for updates now, or install a downloaded
+build now and restart - and when nothing can, it offers nothing rather than a
+button that would not work.
+
 _The sidebar is the left column of the main window screenshot above._
 
 ## Embedded console tab
