@@ -36,7 +36,19 @@ Last updated by the Step 2 Manager. Branch `nosqlite-stats`.
 
 | # | Proof row | Status | Evidence, or what is owed and by whom |
 |---|---|---|---|
-| 1 | The hosted role can create its own schema, tables and migrations history | **CLOSED** | Restricted role holding only CREATE on the database creates `gateway_stats`, owns it, applies a two-migration chain with history at `gateway_stats.__EFMigrationsHistory`. Role asserted from the catalog to mirror the live-measured hosted grants, **including that it is NOT the database owner**. Watched failing: CREATE revoked gives SQLSTATE 42501 inside `NpgsqlHistoryRepository.CreateIfNotExists`; the failing direction is a PERMANENT test (revoke, assert, restore in a finally, re-migrate green). `docs/step2-postgres-privilege-proof.md`. Independent review re-running its criticals against the branch head. |
+| 1 | The hosted role can create its own schema, tables and migrations history | **PARTIAL - the creation proof is CLOSED, the RIG-FIDELITY arm is OPEN and UNOWNED** | Restricted role holding only CREATE on the database creates `gateway_stats`, owns it, applies a two-migration chain with history at `gateway_stats.__EFMigrationsHistory`. Role asserted from the catalog to mirror the live-measured hosted grants, **including that it is NOT the database owner**. Watched failing: CREATE revoked gives SQLSTATE 42501 inside `NpgsqlHistoryRepository.CreateIfNotExists`; the failing direction is a PERMANENT test (revoke, assert, restore in a finally, re-migrate green). `docs/step2-postgres-privilege-proof.md`.
+
+**WHAT IS NOT CLOSED, and it is the precondition rather than the proof.** Review 2 (branch
+`nosqlite-stats-step2-rig-review2`, head `6711c2018`) PROVED BY RUNNING that a REUSED rig can keep extra
+role memberships, or acquire database or gateway-schema ownership, and still exit zero - it built those
+drifted rigs and the restricted login really did create a table in `public` and really did drop the
+`gateway` schema. Worker 1's test asserts the mirror from the catalog, so the guard may well exist at
+the point of use - **but the run that would settle it never executed, because the lock never yielded.**
+So it is unverified whether that test CATCHES a drifted rig or merely asserts a shape it can be handed.
+Until that runs, the creation proof stands on a rig whose fidelity is assumed. Review 2's other findings
+- a non-container port squatter passing readiness, an arbitrary `-Port` accepted on an existing
+container, plaintext passwords in output and process arguments, a changed superuser password producing a
+green rig with an invalid connection string - are unaddressed script defects. |
 | 2 | All sixteen tables, write path and read projection | **OPEN** | Worker 8 (contract suite, not yet seated). Worker 3 has the read side building; worker 4 the write side. |
 | 3 | Interleaved writers on the high-water paths - no lost update | **OPEN - owed by WORKER 4** | The assertion the step cannot ship without. The deliberate red is a **mutation of the PRODUCT code** - the three high-water upserts in `GatewayStatsWriter` replaced by change-tracked read-then-save, keeping the comparison so it still LOOKS correct - not a fake writer inside the test. Red and green both owed against a real Postgres; the run is queued and has **produced no result**. **When closed this is a CONCURRENCY proof and NOT a schema proof** - see the fixture note below. |
 | 4 | Idempotency - replaying one snapshot ten times equals replaying it once | **OPEN - owed by WORKER 4** | Run queued, **no result** yet. **When closed this is a CONCURRENCY proof and NOT a schema proof** - see the fixture note below. |
