@@ -457,6 +457,34 @@ stable key before locking removes the cycle. **A retry is not the fix** - it mak
 visible while leaving the cycle intact, so the first thing it costs is the ability to notice. Any retry
 kept for what ordering cannot cover is BOUNDED and COUNTED, with the count on the health surface.
 
+## A CONFIGURATION SETTING IS A REQUEST, NOT A GUARANTEE
+
+Third costume of the same law in one day. You cannot read a BOUND off a setting any more than you can
+read LIVENESS off a lock file - both must be EXERCISED.
+
+`PRAGMA busy_timeout = 5000` was set and believed. The provider executes the contested statement through
+an internal command that retries on the CONNECTION's default timeout instead, and the two mechanisms
+compound rather than one replacing the other: measured **35.065 seconds** for a nominal five-second
+bound. Nobody had run it.
+
+**And the invariant that would have caught all three rounds of this:** THE INNER BOUND MUST BE STRICTLY
+LESS THAN THE OUTER DEADLINE. An adoption that takes 35 seconds inside a containment that gives up at 20
+means the containment cannot do its job however correct either piece looks alone - and **nothing in
+either file said those two numbers were related**. Assert the RELATIONSHIP, not the values, so that a
+tightened deadline or a changed provider default is caught by a test rather than by a user.
+
+## A GATE THAT RUNS ONLY ON THE FRESH CASE NEVER RUNS WHERE IT MATTERS
+
+The version gate ran only on stores with NO history table - which is the case that cannot occur on any
+machine that has ever started this software. The check existed, looked present, and never fired where it
+was needed.
+
+For a tracked store the check is small and precise: **every APPLIED MIGRATION ID must be one this build
+knows.** An id this build does not have means the store was written by a NEWER build, which is the
+desktop downgrade exactly. The applied list is the authority once a store is tracked; `user_version` is
+not needed on that branch. The code must say WHY the gate runs on both branches, because the next reader
+will see the untracked path checking and assume the tracked one is redundant.
+
 ## A STATUS FILE ANSWERS WHAT WAS; ONLY THE OPERATION ANSWERS WHAT IS
 
 The general form of the two mistakes below, and of the classifier being right by the rule and wrong
