@@ -772,7 +772,15 @@ public sealed class GatewayHost : IAsyncDisposable
         // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store, at a Gateway-side file path
         // (CcStorage.Root(), the same location the cron and snooze stores use), NOT the Director's tool-config
         // missions.json. Reuses Core.Sessions.MissionStore unchanged.
-        Missions = new Core.Sessions.MissionStore(missionsPath ?? Path.Combine(CcStorage.Root(), "missions.json"));
+        //
+        // #1039: the store is partitioned by tenant, and the answer for rows written BEFORE it was differs by
+        // deployment. Self-host has exactly one tenant, so its existing missions are Local's and it keeps
+        // listing them unchanged. Hosted shares this one file across every account, so an unattributed row
+        // cannot be attributed after the fact and is quarantined - readable by nobody, left on disk. Decided
+        // from GatewayHostedMode.IsHosted, the same signal that picks the tenant context below.
+        Missions = new Core.Sessions.MissionStore(
+            missionsPath ?? Path.Combine(CcStorage.Root(), "missions.json"),
+            adoptUnattributedAs: GatewayHostedMode.IsHosted ? null : Core.Tenancy.TenantId.Local);
         StreamRegistry = new Streaming.GatewayStreamRegistry();
         InputStats = new Stats.GatewayInputStatsAggregator(inputStatsPath);
         _promptLog = new Prompts.GatewayPromptLog(promptLogPath);

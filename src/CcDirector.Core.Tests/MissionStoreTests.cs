@@ -1,4 +1,5 @@
 using CcDirector.Core.Sessions;
+using CcDirector.Core.Tenancy;
 using Xunit;
 
 namespace CcDirector.Core.Tests;
@@ -9,24 +10,34 @@ namespace CcDirector.Core.Tests;
 /// throwaway temp file and asserts the create / get / list / delete API plus survival across a fresh store
 /// instance (the "survives a restart" guarantee), and the session-side MissionId/MissionName round-trip
 /// through <see cref="PersistedSession"/>.
+///
+/// These are the SINGLE-TENANT behaviours - one owner, everything Local - which is what a Director and a
+/// self-host Gateway are. The partitioning the store gained in #1039 is exercised separately in
+/// <see cref="MissionStoreTenantPartitionTests"/>.
 /// </summary>
 public class MissionStoreTests
 {
+    /// <summary>A single-tenant store: one owner, so unattributed rows are that owner's.</summary>
+    private static MissionStore NewStore(string path) => new(path, adoptUnattributedAs: TenantId.Local);
+
+    private static string TempPath() =>
+        Path.Combine(Path.GetTempPath(), $"test_missions_{Guid.NewGuid()}.json");
+
     [Fact]
     public void Create_MintsIdAndPersists_GetReturnsIt()
     {
-        var tempFile = Path.Combine(Path.GetTempPath(), $"test_missions_{Guid.NewGuid()}.json");
+        var tempFile = TempPath();
         try
         {
-            var store = new MissionStore(tempFile);
+            var store = NewStore(tempFile);
 
-            var mission = store.Create("Session Lifecycle");
+            var mission = store.Create(TenantId.Local, "Session Lifecycle");
 
             Assert.NotEqual(Guid.Empty, mission.MissionId);
             Assert.Equal("Session Lifecycle", mission.MissionName);
             Assert.Null(mission.ParentMissionId);
 
-            var fetched = store.Get(mission.MissionId);
+            var fetched = store.Get(TenantId.Local, mission.MissionId);
             Assert.NotNull(fetched);
             Assert.Equal(mission.MissionId, fetched.MissionId);
             Assert.Equal("Session Lifecycle", fetched.MissionName);
@@ -41,13 +52,13 @@ public class MissionStoreTests
     [Fact]
     public void Create_WithParent_NestsUnderIt()
     {
-        var tempFile = Path.Combine(Path.GetTempPath(), $"test_missions_{Guid.NewGuid()}.json");
+        var tempFile = TempPath();
         try
         {
-            var store = new MissionStore(tempFile);
-            var parent = store.Create("Parent Mission");
+            var store = NewStore(tempFile);
+            var parent = store.Create(TenantId.Local, "Parent Mission");
 
-            var child = store.Create("Child Mission", parent.MissionId);
+            var child = store.Create(TenantId.Local, "Child Mission", parent.MissionId);
 
             Assert.Equal(parent.MissionId, child.ParentMissionId);
         }
@@ -61,21 +72,21 @@ public class MissionStoreTests
     [Fact]
     public void Create_BlankName_Throws()
     {
-        var store = new MissionStore(Path.Combine(Path.GetTempPath(), $"test_missions_{Guid.NewGuid()}.json"));
-        Assert.Throws<ArgumentException>(() => store.Create("   "));
+        var store = NewStore(TempPath());
+        Assert.Throws<ArgumentException>(() => store.Create(TenantId.Local, "   "));
     }
 
     [Fact]
     public void List_ReturnsEveryMission_OldestFirst()
     {
-        var tempFile = Path.Combine(Path.GetTempPath(), $"test_missions_{Guid.NewGuid()}.json");
+        var tempFile = TempPath();
         try
         {
-            var store = new MissionStore(tempFile);
-            var first = store.Create("First");
-            var second = store.Create("Second");
+            var store = NewStore(tempFile);
+            var first = store.Create(TenantId.Local, "First");
+            var second = store.Create(TenantId.Local, "Second");
 
-            var all = store.List();
+            var all = store.List(TenantId.Local);
 
             Assert.Equal(2, all.Count);
             Assert.Equal(first.MissionId, all[0].MissionId);
@@ -91,25 +102,25 @@ public class MissionStoreTests
     [Fact]
     public void Get_UnknownId_ReturnsNull()
     {
-        var store = new MissionStore(Path.Combine(Path.GetTempPath(), $"test_missions_{Guid.NewGuid()}.json"));
-        Assert.Null(store.Get(Guid.NewGuid()));
+        var store = NewStore(TempPath());
+        Assert.Null(store.Get(TenantId.Local, Guid.NewGuid()));
     }
 
     [Fact]
     public void Missions_SurviveANewStoreInstance_PersistReload()
     {
-        var tempFile = Path.Combine(Path.GetTempPath(), $"test_missions_{Guid.NewGuid()}.json");
+        var tempFile = TempPath();
         try
         {
-            var created = new MissionStore(tempFile).Create("Durable Mission");
+            var created = NewStore(tempFile).Create(TenantId.Local, "Durable Mission");
 
             // A brand-new store instance against the same file models a Director restart.
-            var reopened = new MissionStore(tempFile);
-            var fetched = reopened.Get(created.MissionId);
+            var reopened = NewStore(tempFile);
+            var fetched = reopened.Get(TenantId.Local, created.MissionId);
 
             Assert.NotNull(fetched);
             Assert.Equal("Durable Mission", fetched.MissionName);
-            Assert.Single(reopened.List());
+            Assert.Single(reopened.List(TenantId.Local));
         }
         finally
         {
@@ -121,17 +132,17 @@ public class MissionStoreTests
     [Fact]
     public void Delete_RemovesMission_AndReturnsTrue()
     {
-        var tempFile = Path.Combine(Path.GetTempPath(), $"test_missions_{Guid.NewGuid()}.json");
+        var tempFile = TempPath();
         try
         {
-            var store = new MissionStore(tempFile);
-            var mission = store.Create("Doomed Mission");
+            var store = NewStore(tempFile);
+            var mission = store.Create(TenantId.Local, "Doomed Mission");
 
-            var removed = store.Delete(mission.MissionId);
+            var removed = store.Delete(TenantId.Local, mission.MissionId);
 
             Assert.True(removed);
-            Assert.Null(store.Get(mission.MissionId));
-            Assert.Empty(store.List());
+            Assert.Null(store.Get(TenantId.Local, mission.MissionId));
+            Assert.Empty(store.List(TenantId.Local));
         }
         finally
         {
@@ -143,8 +154,8 @@ public class MissionStoreTests
     [Fact]
     public void Delete_UnknownId_ReturnsFalse()
     {
-        var store = new MissionStore(Path.Combine(Path.GetTempPath(), $"test_missions_{Guid.NewGuid()}.json"));
-        Assert.False(store.Delete(Guid.NewGuid()));
+        var store = NewStore(TempPath());
+        Assert.False(store.Delete(TenantId.Local, Guid.NewGuid()));
     }
 
     [Fact]

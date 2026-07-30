@@ -194,7 +194,10 @@ public sealed class ControlApiHost : IAsyncDisposable
     private TurnSummaryCache? _turnSummaryCache;
     // Mission records (mission-as-first-class-unit-of-work): a durable, file-backed store with no runtime
     // dependencies, so it is ready from construction (unlike the caches wired up in StartAsync).
-    private readonly Core.Sessions.MissionStore _missionStore = new();
+    // A Director runs on one person's machine and serves one owner, so its store is single-tenant: every
+    // record is Local's, including any written before missions carried an owner (#1039).
+    private readonly Core.Sessions.MissionStore _missionStore =
+        new(filePath: null, adoptUnattributedAs: Core.Tenancy.TenantId.Local);
     private SessionStatusWingman? _statusWingman;
     private ProactiveExplainService? _proactiveExplain;
     private TerminalStateDetector? _terminalStateDetector;
