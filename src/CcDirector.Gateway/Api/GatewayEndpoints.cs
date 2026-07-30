@@ -1668,6 +1668,34 @@ internal static class GatewayEndpoints
             if (snoozeRegistry is null)
                 return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
 
+            // A DEAD SESSION CANNOT BE SNOOZED (issue #824).
+            //
+            // Every edge that LIFTS a hold is driven by an activity push (SnoozeLandingObserver.Observe), and
+            // an exited session never pushes again. So a hold recorded AFTER the exit takes the not-working
+            // branch below, lands Held, and nothing in the system ever clears it: parked Snoozed forever.
+            // Worse, the fold reads OnHold BEFORE the base activity colour, so the row renders grey "Snoozed"
+            // over what should be grey "Exited" - or over DEEP RED "Crashed", hiding the one state that most
+            // needs the owner's eyes for the whole snooze length.
+            //
+            // This is the same rule the exit edge already applies in the other direction ("EXITED - drop the
+            // hold entirely... a dead session must never hide behind a Snoozed label"), stated once more at
+            // the entry point, because dropping on exit cannot help a hold that arrives after it.
+            //
+            // Only the PARK direction is refused. Clearing stays allowed unconditionally: un-holding a dead
+            // session is the repair, and refusing it would strand any hold that was already recorded.
+            if (holdReq.OnHold
+                && string.Equals(session.ActivityState?.Trim(), nameof(Core.Sessions.ActivityState.Exited),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                FileLog.Write($"[GatewayEndpoints] POST /sessions/{sid}/hold REFUSED - the session has exited; "
+                              + "a hold recorded now has no edge that could ever lift it");
+                return Results.Json(new
+                {
+                    error = "This session has exited, so it cannot be snoozed. There is no turn left to come "
+                            + "back to, and a snooze would hide how it ended."
+                }, statusCode: StatusCodes.Status409Conflict);
+            }
+
             // THE GATEWAY DECIDES, HERE, AND NOWHERE ELSE.
             //
             // This used to forward the hold to the Director, read HoldResponse.Pending back, and record
