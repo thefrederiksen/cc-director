@@ -133,7 +133,13 @@ public static class StatsPageEndpoint
         // counts. Null (older callers, tests) omits that block from the feed entirely rather than serving
         // zeroes - a zero here would read as "no agent ever started a session", which is a different and
         // much more interesting claim than "this Gateway is not keeping the record".
-        History.SessionHistoryStore? sessionHistory = null)
+        History.SessionHistoryStore? sessionHistory = null,
+        // The statistics write queue, so this page can REPORT ON ITS OWN WRITER. Without it the four health
+        // counters exist and nothing consumes them - a corrupted store makes the queue log failures forever
+        // while this route keeps answering 200 from in-memory aggregates that are quietly going stale. That
+        // is the same silence the whole incident was made of, one layer up: the numbers look fine because
+        // nothing that knows they are wrong is asked. Null (older callers, tests) omits the block.
+        StatisticsObservationQueue? writeQueue = null)
     {
         FileLog.Write($"[StatsPageEndpoint] mapping /stats (redirect to /your-throttle) and /stats/data; hosted={GatewayHostedMode.IsHosted} - the data route serves the caller's own tenant totals, 403 when unresolved (issue #1848 deny retired)");
 
@@ -210,6 +216,24 @@ public static class StatsPageEndpoint
                 // why that is not zero.
                 sessionOrigins = sessionHistory is null ? null : OriginBlock(sessionHistory),
                 notCaptured = NotCaptured,
+                // THE WRITER'S OWN HEALTH, on the page the writer feeds. Four facts per observer, because a
+                // bare failure count cannot tell "broke an hour ago and recovered" from "has written nothing
+                // since": how many writes failed, how many were dropped unwritten, the last error, and when
+                // a write last actually succeeded. A reader who sees numbers that look wrong can tell here
+                // whether they are wrong, stale, or fine.
+                writeHealth = writeQueue is null ? null : new
+                {
+                    degraded = writeQueue.IsDegraded(),
+                    observers = writeQueue.Health().Select(h => new
+                    {
+                        observer = h.Observer,
+                        failureCount = h.FailureCount,
+                        dropCount = h.DropCount,
+                        lastError = h.LastError,
+                        lastSuccessfulWriteUtc = h.LastSuccessfulWriteUtc,
+                        stuckSinceUtc = h.StuckSinceUtc,
+                    }).ToList(),
+                },
             });
             }
             catch (Exception ex)
@@ -227,16 +251,56 @@ public static class StatsPageEndpoint
                 // this page fail needs to know immediately whether their fleet is in trouble or just their
                 // numbers. It is a report of a real fault, not a fallback: no substitute figures are
                 // invented, no empty totals are served that could be mistaken for "you did nothing".
+                // DO NOT BLAME THE STORE FOR OUR OWN BUG.
+                //
+                // This catch used to say "the statistics store could not be read" for EVERY exception. A null
+                // reference in the projection below, or a missing arm in a switch, would then be reported as
+                // an infrastructure failure - sending whoever read it to check a database, a network and a
+                // file share for a fault that lives in our own code. That is worse than an unexplained error,
+                // because it is a confident explanation pointing the wrong way.
+                //
+                // So the message is chosen by what actually failed. A storage or database failure is named as
+                // such and is not retryable, because a corrupt store answers the same way however many times
+                // it is asked. Anything else is named as OUR internal error, WITH the exception type, so the
+                // reader starts where the fault is.
+                var isStorageFault = ex is System.Data.Common.DbException
+                                  or Microsoft.Data.Sqlite.SqliteException
+                                  or IOException
+                                  or UnauthorizedAccessException
+                                  or TimeoutException;
                 FileLog.Write($"[StatsPageEndpoint] GET /stats/data FAILED for tenant={tenant}: "
-                              + $"{ex.GetType().Name}: {ex.Message}");
+                              + $"{ex.GetType().Name}: {ex.Message} (classified as "
+                              + $"{(isStorageFault ? "a storage fault" : "our own internal error")})");
+                var writeHealthNote = writeQueue is not null && writeQueue.IsDegraded()
+                    ? " The statistics writer is also reporting failures - see the write health on this page."
+                    : "";
                 return Results.Json(new
                 {
-                    error = "Your Throttle cannot be shown right now - the statistics store could not be "
-                            + "read. Your sessions and the rest of DevThrottle are unaffected.",
-                    // NOT retryable. The failure this route actually sees is a corrupted store, and a
-                    // corrupted store answers the same way however many times it is asked - telling a client
-                    // to retry would spin it against a wall and hide a fault that needs a human.
+                    error = isStorageFault
+                        ? "Your Throttle cannot be shown right now - the statistics store could not be read. "
+                          + "Your sessions and the rest of DevThrottle are unaffected." + writeHealthNote
+                        : $"Your Throttle cannot be shown right now because of a fault in DevThrottle itself "
+                          + $"({ex.GetType().Name}), not in the statistics store. Your sessions and the rest "
+                          + "of DevThrottle are unaffected.",
+                    // A storage fault answers the same way however many times it is asked, so retrying spins
+                    // against a wall. Our own bug is not retryable either, and saying so honestly is better
+                    // than inviting a retry that cannot help.
                     retryable = false,
+                    // The writer's health rides the failure too, so a reader who cannot load the page still
+                    // learns whether writes are failing - which is usually the more urgent of the two.
+                    writeHealth = writeQueue is null ? null : new
+                    {
+                        degraded = writeQueue.IsDegraded(),
+                        observers = writeQueue.Health().Select(h => new
+                        {
+                            observer = h.Observer,
+                            failureCount = h.FailureCount,
+                            dropCount = h.DropCount,
+                            lastError = h.LastError,
+                            lastSuccessfulWriteUtc = h.LastSuccessfulWriteUtc,
+                            stuckSinceUtc = h.StuckSinceUtc,
+                        }).ToList(),
+                    },
                 }, statusCode: StatusCodes.Status503ServiceUnavailable);
             }
         });

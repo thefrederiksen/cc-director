@@ -2929,7 +2929,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // session-ORIGIN counts: how sessions came to exist, which only the durable per-session record
         // can answer - the in-memory aggregates behind the rest of this feed count turns, and a session
         // is born exactly once.
-        Stats.StatsPageEndpoint.Map(_app, InputStats, SessionConcurrency, _tenantSettingsResolver, _tenantBoundary, _sessionHistory);
+        // The write queue is passed so Your Throttle reports on its own writer. Without it the health
+        // counters exist and nothing reads them, and a corrupted store would keep this page answering 200
+        // from aggregates that were quietly going stale.
+        Stats.StatsPageEndpoint.Map(_app, InputStats, SessionConcurrency, _tenantSettingsResolver, _tenantBoundary, _sessionHistory, _statsQueue);
 
         // The prompt log (issue #1551): Directors push what they captured to POST /prompts, and anyone
         // wanting history reads GET /prompts. It lives here, not on a Director, because the Gateway is

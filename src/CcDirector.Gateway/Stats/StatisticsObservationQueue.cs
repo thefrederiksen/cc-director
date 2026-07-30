@@ -197,6 +197,13 @@ public sealed class StatisticsObservationQueue : IAsyncDisposable
         {
             // The consumer loop itself must never die quietly - that would silently stop every statistic
             // with nothing to show for it, which is the failure mode this whole class exists to remove.
+            // RECORD IT AS HEALTH, not only as a log line. A dead consumer writes nothing ever again, and on
+            // a quiet Gateway the queue never fills, so no drop counter climbs either - the failure would be
+            // completely invisible to anyone reading /stats/data. It is recorded against every observer this
+            // queue knows about, because none of them will be written again.
+            foreach (var health in _health.Values)
+                health.RecordFailure(new InvalidOperationException(
+                    $"the statistics writer stopped: {ex.GetType().Name}: {ex.Message}"));
             FileLog.Write($"[StatisticsObservationQueue] CONSUMER STOPPED: {ex.GetType().Name}: {ex.Message} "
                           + "- statistics are no longer being written; the Gateway is otherwise unaffected.");
         }
