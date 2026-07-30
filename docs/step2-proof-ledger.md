@@ -20,6 +20,14 @@ every summary format anyone uses: a count of passing tests says nothing about wh
 failing one never ran. **A partially-executed test must NAME the assertions that did not run, and the
 rows depending on them stay OPEN.**
 
+**REFUSED AND UNMODIFIED ARE TWO CLAIMS.** A guard that rejects an input has TWO obligations - decline
+it, and leave it untouched - and almost every test written for one asserts only the first. That is not
+hypothetical here: adoption certified a FOREIGN database as fresh and then wrote sixteen statistics
+tables and a baseline row INTO IT. **The harm was the side effect, not the verdict**, and a test
+asserting only that it said no would have stayed green throughout. Wherever a guard refuses something,
+assert that nothing was CHANGED as well as that something was DECLINED - and check the other direction
+too, that it does not condemn a healthy input.
+
 **A FIXTURE THAT CANNOT DISTINGUISH THE BUG FROM ITS ABSENCE IS REFUSED, NOT RUN.** Worker 3's
 fixture-shape guard caught its own author's fixture: two tenants both totalling the same turns on a
 repository whose display spelling they share is exactly the fixture in which two tenants coalescing into
