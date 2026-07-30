@@ -82,6 +82,38 @@ Last updated by the Step 2 Manager. Branch `nosqlite-stats`.
 
 ## (Row 17 covers what this section used to only warn about)
 
+## PARKED WORK - rows that currently have NO LIVE OWNER
+
+The mission was cut to three concurrent workers (2, 3 and 4) because seven sessions were queueing on
+one fleet-wide test lock, which is a seven-deep queue rather than seven times the work. **Rows 6, 7, 8
+(concurrency arm), 14, 15 and 17 are OWED BY NOBODY RIGHT NOW.** They are not abandoned and they are not
+closed; they are parked, and they must be reassigned when a slot frees. Written here because an unowned
+row reads exactly like a covered one, which is the defect that has bitten this ledger twice already.
+
+**Worker 5, parked - branch `nosqlite-stats-w5-concurrency`, head `d4885c414`, verified identical to
+origin, tree clean, rebase aborted rather than parked half-finished.** Still owed on its rows:
+
+1. The Postgres arms of both proofs - written, gated, UNRUN. Three attempts produced NO RESULT (one
+   killed at a ten-minute timeout, two that never reached a test behind the lock). It did not fall back
+   on its earlier per-class greens.
+2. The PRODUCT-code read-then-save mutation, written as
+   `docs/step2-w5-mutate-product-to-read-modify-write.py`, UNRUN. **Whoever picks it up must judge it
+   with the THREADED four-container test, not the deterministic race** - this store decides from its
+   in-memory shadow rather than a database read, so a read-then-save re-reads at write time and
+   correctly declines. Only real concurrency opens that window.
+3. The SQLite migration for its three tables, plus rebuilding its fixtures on it. Rebase onto
+   `e0c401b50`; three DbSets through the single `ConcurrencyStatsModel.Configure` call placed **BEFORE**
+   the `IsNpgsql` block so its text columns get the C collation; then the second migration with
+   `PRAGMA user_version` 5 to 6 in `Up` and the reset in `Down`. **Until that migration exists its suite
+   is model-built and is NOT a schema proof.**
+
+Its rig container `cc-pg-stats-proof-w5` on port 55435 is left running deliberately, for whoever takes
+these rows. It holds no test lock.
+
+**Worker 6, parked** - branch `nosqlite-stats-w6-startup`, head `e47e591ad`. Rows 10 and 15.
+**Worker 7, parked** - branch `nosqlite-stats-w7-guard`, head `ac9f84585`. Row 17, and the head re-run
+on row 9.
+
 ## The allowlist entry that is knowingly FALSE today
 
 `GatewayStatsDatabase` sits in the no-SQLite guard's allowlist with a written reason, and **that reason
