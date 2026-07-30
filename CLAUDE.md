@@ -198,6 +198,31 @@ Do NOT put try-catch in helper methods or service methods.
 - Use Arrange-Act-Assert pattern
 - Name tests: `MethodName_Scenario_ExpectedResult`
 
+### 5a. RUN THE TESTS LOCALLY - GITHUB IS NOT THE GATE
+
+**Run `.\scripts\test-local.ps1` before you open a pull request. That run is the gate.**
+
+Do NOT run `gh pr checks --watch` on "Build & Test (.NET)" and wait for it. That job takes about
+FIFTY MINUTES and runs the same tests you can run here, on a machine with 24 logical cores and 64 GB.
+Waiting on it was the single largest source of dead time in this repository (issue #1156).
+
+- **Use the script, not a hand-rolled `dotnet test`.** It builds once and starts every test project
+  together, so the six that do not serialize finish while the Gateway suite queues for its
+  machine-wide lock. It is also the ONE place the whole fleet gets faster when the suite improves -
+  a convention each caller re-implements cannot be improved centrally.
+- `-Fast` skips the Gateway suite for a change that provably does not touch it. Say so in the pull
+  request if you rely on it.
+- **Do wait for the three fast checks** - "Build & Test (web)", "Tool contracts (Python)",
+  "Inventory drift". They take about a minute each and cover things the local .NET run does not.
+- The .NET job still runs after the merge as a backstop. If it reddens on main, fix it forward
+  immediately. That is the trade for not waiting on it.
+- **Do wait for the .NET job anyway** when the change is genuinely risky: a release commit, a change
+  to the build or to CI itself, anything cross-platform, or anything you could not test locally.
+
+If the Gateway suite says it is WAITING on a lock held by another run, that is not a hang - it is
+one run at a time by design, and it prints its holder every 30 seconds. See issue #1156 for why that
+queue exists and the work to remove it.
+
 ### 6. UI Thread Safety
 
 ```csharp

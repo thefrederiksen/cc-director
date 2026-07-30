@@ -88,8 +88,13 @@ public sealed class HostedImagePublishedArtifactTests
     /// </summary>
     private static void AssertEntryFailsClosed(string publishDir, string entryDll)
     {
-        var port = FreeTcpPort();
-        var psi = new ProcessStartInfo("dotnet", $"\"{entryDll}\" --port {port}")
+        // Reserved for the whole child run rather than probed and released (issue #1156). The entry is
+        // expected to refuse on the missing hosted contract BEFORE it ever binds, so holding the port does
+        // not change the passing path - but it stops another process claiming the number mid-test, which
+        // would otherwise turn this contract assertion into an unrelated address-conflict failure. If the
+        // entry ever regresses and does try to bind, it fails here too, which is the correct outcome.
+        using var deadPort = DeadPortReservation.Reserve();
+        var psi = new ProcessStartInfo("dotnet", $"\"{entryDll}\" --port {deadPort.Port}")
         {
             WorkingDirectory = publishDir,
             RedirectStandardOutput = true,
@@ -113,7 +118,7 @@ public sealed class HostedImagePublishedArtifactTests
             try { proc.Kill(entireProcessTree: true); } catch { /* best effort */ }
             Assert.Fail(
                 $"{Path.GetFileName(entryDll)} did NOT fail closed: it was still running (serving on port "
-                + $"{port}) after 60s with the hosted contract missing. The hosted image must refuse to start, "
+                + $"{deadPort.Port}) after 60s with the hosted contract missing. The hosted image must refuse to start, "
                 + "not boot as a self-host Gateway.");
         }
 
@@ -173,17 +178,6 @@ public sealed class HostedImagePublishedArtifactTests
                 entries.Add(dll);
         }
         return entries;
-    }
-
-    /// <summary>An OS-assigned free TCP port. The listener is closed immediately; a launched entry is
-    /// expected to refuse before it ever binds, so the tiny reuse window does not matter.</summary>
-    private static int FreeTcpPort()
-    {
-        var listener = new TcpListener(System.Net.IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
     }
 
     /// <summary>The hosted host csproj, located from this source file's own path - the tests always run from

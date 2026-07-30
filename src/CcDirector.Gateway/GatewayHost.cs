@@ -777,7 +777,9 @@ public sealed class GatewayHost : IAsyncDisposable
     /// Shared instances that write to the real user's directories). Production omits it and the host builds
     /// the service over its own key vault, exactly as before.
     /// </param>
-    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? promptLogPath = null, string? snoozePath = null, string? pushSubscriptionsPath = null, string? wingmanInstructionsPath = null, string? missionsPath = null, string? missionNotesPath = null, Transcription.GatewayTranscriptionService? dictationTranscription = null, Core.Agents.AgentKind? brainTool = null)
+    private readonly TimeSpan? _directorLaunchTimeout;
+
+    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? promptLogPath = null, string? snoozePath = null, string? pushSubscriptionsPath = null, string? wingmanInstructionsPath = null, string? missionsPath = null, string? missionNotesPath = null, Transcription.GatewayTranscriptionService? dictationTranscription = null, Core.Agents.AgentKind? brainTool = null, TimeSpan? directorLaunchTimeout = null)
     {
         var retiredFilesRemoved = Core.Configuration.LegacyPrivacyDataCleanup.Run();
         if (retiredFilesRemoved > 0)
@@ -791,6 +793,13 @@ public sealed class GatewayHost : IAsyncDisposable
         BrainTool = Core.Configuration.BrainToolConfig.EnsureHostable(brainTool ?? Core.Configuration.BrainToolConfig.Get());
 
         Port = port;
+        // How long a spawn waits for an auto-launched Director to appear. Production's default lives in
+        // RegistryDirectorTargetResolver (90s). A test that only needs to prove a route's AUTH behaviour
+        // passes a short one: the control request in the hosted deny-by-default theory used to sit through
+        // the full ninety seconds for a Director that was never going to appear, which was the single
+        // slowest test in the suite (issue #1156). Injected rather than a static test hook, so two hosts in
+        // one process can hold different values.
+        _directorLaunchTimeout = directorLaunchTimeout;
         Token = token ?? _gatewayAuth.LoadOrCreate();
         Registry = new DirectorRegistry(instancesDirectory);
         // Issue #1292: free a removed Director's session numbers so a Director that died without releasing
@@ -1207,7 +1216,8 @@ public sealed class GatewayHost : IAsyncDisposable
             // The auto-launch runs IN-PROCESS through the shared launcher relay, carrying the resolved tenant
             // as an argument. It used to POST to this Gateway's own /machines/{m}/director/start over
             // loopback, which cannot carry a device key and so arrived with no tenant at all.
-            new Running.RelayDirectorLauncher(Launchers, SendLauncherCommandAsync));
+            new Running.RelayDirectorLauncher(Launchers, SendLauncherCommandAsync),
+            launchTimeout: _directorLaunchTimeout);
         // The single resolve-then-create path shared by the cron firing engine and the interactive
         // POST /machines/{machine}/sessions relay ("start a session on another computer"). Gateway Cleanup
         // Phase 2 (PR E-B2): both the spawner and the work-list drain driver ride the tunnel. Tunnel-only:

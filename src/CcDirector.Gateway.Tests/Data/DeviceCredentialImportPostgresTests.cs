@@ -40,9 +40,9 @@ public sealed class DeviceCredentialImportPostgresTests
         }
     }
 
-    private static string Connection =>
-        Environment.GetEnvironmentVariable(ConnectionEnvVar)
-        ?? throw new InvalidOperationException($"{ConnectionEnvVar} is not set.");
+    // Per RUN, not per operator: PostgresProofDatabase appends a unique suffix to the supplied
+    // database name so two concurrent runs cannot EnsureDeleted() each other's schema (issue #1156).
+    private static string Connection => PostgresProofDatabase.Connection;
 
     /// <summary>The same wiring the runtime hosted Gateway uses: Npgsql, the Postgres migrations assembly, and
     /// the migrations history table in the <c>gateway</c> schema.</summary>
@@ -63,14 +63,7 @@ public sealed class DeviceCredentialImportPostgresTests
     /// Postgres proofs: the target database NAME must begin with the dedicated <c>ccpg</c> prefix, a token no
     /// real database would carry, so pointing the env var at a real database can never drop it.
     /// </summary>
-    private static void GuardThrowawayDatabase()
-    {
-        var database = new NpgsqlConnectionStringBuilder(Connection).Database ?? "";
-        if (!database.StartsWith("ccpg", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException(
-                $"Refusing to EnsureDeleted() the database '{database}': its name must begin with the throwaway " +
-                "prefix 'ccpg'. Point CC_GATEWAY_TEST_PG_CONNECTION at a disposable database (e.g. 'ccpgproof').");
-    }
+    private static void GuardThrowawayDatabase() => PostgresProofDatabase.GuardThrowawayDatabase();
 
     private static int ScalarInt(GatewayDbContext ctx, string sql)
     {

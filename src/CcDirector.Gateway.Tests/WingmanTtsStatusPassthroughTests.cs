@@ -81,7 +81,12 @@ public sealed class WingmanTtsStatusPassthroughTests
             vault,
             voice,
             tenantSettings,
-            ttsHttpClient: new HttpClient(upstream) { Timeout = Timeout.InfiniteTimeSpan });
+            ttsHttpClient: new HttpClient(upstream) { Timeout = Timeout.InfiniteTimeSpan },
+            // The stall test proves a never-answering upstream becomes 504 rather than 502. What is under
+            // test is WHICH status comes back, not how long the Gateway is willing to wait - so the deadline
+            // is injected short. It used to run production's sixty-second base and cost a full minute of
+            // every suite run to assert one status code (issue #1156).
+            ttsDeadline: TimeSpan.FromMilliseconds(250));
 
         await app.StartAsync();
         return (app, new HttpClient { BaseAddress = new Uri(app.Urls.First()) });

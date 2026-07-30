@@ -226,7 +226,8 @@ public sealed class WorkListRunnerEndpointProofTests : IAsyncLifetime
     private static string TempRepo()
     {
         // A real existing directory so the Director (real one) would accept it; the stub ignores it.
-        var dir = Path.Combine(Path.GetTempPath(), "cc274-repo");
+        // Unique per run: a fixed temp name is shared by every concurrent run on the machine (issue #1156).
+        var dir = Path.Combine(Path.GetTempPath(), "cc274-repo-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         return dir;
     }
