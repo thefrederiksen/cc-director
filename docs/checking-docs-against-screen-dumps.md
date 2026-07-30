@@ -36,6 +36,28 @@ gh api repos/thefrederiksen/devthrottle_internal/contents/docs/qa/runs/2026-07-3
 The documents being checked live in this repository; the dumps live in the internal one. Look in the
 wrong repository and you will conclude the evidence does not exist.
 
+## The split is load-bearing, so know which side you are on
+
+Nothing else states this plainly, and it has caused the same mistake three times in a single task:
+
+| | Lives in |
+|---|---|
+| Product code, and the public documents in `docs/public/` | **`devthrottle`** (this repository) |
+| Issues, design notes, the website, and the QA runs with their dumps | **`devthrottle_internal`** |
+
+So an issue in `devthrottle_internal` will routinely name a file that is in `devthrottle`, and the
+evidence for a sentence in `devthrottle` will routinely be in `devthrottle_internal`.
+
+**An absent result is only evidence once you have established that the search could have found the
+thing.** A grep that returns nothing because you are in the wrong repository looks *exactly* like a
+grep that returns nothing because the claim is false. Same empty output, opposite conclusions. Before
+you report an absence as a finding, prove the search had reach: run it against something you know is
+there, or name the repository, path and revision you searched.
+
+This is the same failure as a truncated list read as "not running", or a `head -3` that hides the
+fourth match. The tool answered a smaller question than the one you asked, and the answer looked
+identical.
+
 ## How to use it
 
 1. List every sentence in your page that asserts what a screen **says**, **shows**, or **offers**.
