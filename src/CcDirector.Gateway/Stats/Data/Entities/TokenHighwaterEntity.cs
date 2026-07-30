@@ -34,4 +34,21 @@ public sealed class TokenHighwaterEntity
 
     /// <summary>The highest cumulative cache-creation token count seen (<c>cache_creation_tokens</c>).</summary>
     public long CacheCreationTokens { get; set; }
+
+    /// <summary>What <see cref="InputTokens"/> held immediately before the most recent raise
+    /// (<c>previous_input_tokens</c>), so the raise statement returns what it changed rather than leaving the
+    /// writer to infer it. See <see cref="SessionHighwaterEntity.PreviousTurns"/>.</summary>
+    public long PreviousInputTokens { get; set; }
+
+    /// <summary>What <see cref="OutputTokens"/> held immediately before the most recent raise
+    /// (<c>previous_output_tokens</c>).</summary>
+    public long PreviousOutputTokens { get; set; }
+
+    /// <summary>What <see cref="CacheReadTokens"/> held immediately before the most recent raise
+    /// (<c>previous_cache_read_tokens</c>).</summary>
+    public long PreviousCacheReadTokens { get; set; }
+
+    /// <summary>What <see cref="CacheCreationTokens"/> held immediately before the most recent raise
+    /// (<c>previous_cache_creation_tokens</c>).</summary>
+    public long PreviousCacheCreationTokens { get; set; }
 }

@@ -6,9 +6,17 @@ and 5 build against it. **If a worker needs this shape changed, it asks the Mana
 change it locally.**
 
 The source of truth for what these tables ARE is
-`src/CcDirector.Gateway/Stats/GatewayStatsDatabase.cs` at SQLite schema version 5. Every table and
-column name below is carried forward UNCHANGED. That is deliberate: the self-host SQLite store already
+`src/CcDirector.Gateway/Stats/GatewayStatsDatabase.cs`, whose version 5 shape every table and column
+name below is carried forward from UNCHANGED. That is deliberate: the self-host SQLite store already
 exists on disk with these exact names, and a rename would strand it.
+
+**AMENDED BY THE STEP 2 ARCHITECT'S RULING ON THE WRITE PATH: the shape is now SQLite schema version
+6.** Version 6 is purely ADDITIVE - no table is rebuilt, no row is rewritten, and every version 5 name
+is untouched. It adds `previous_*` columns to the three high-water tables and a unique index on each
+identity table's exact `(tenant, display)` pair, both so that a statement can tell a writer what IT
+changed instead of the writer inferring it from its own mirror. The two sections below say what each is
+for and why it is not optional. Worker 2's PostgreSQL migration must generate version 6, not version 5;
+the model in `GatewayStatsDbContext` already carries it.
 
 ## Conventions
 
@@ -57,21 +65,59 @@ Indexes, names preserved: `ix_stat_delta_hour` on `(hour_utc)`, `ix_stat_delta_t
 | `model_identity` | `model_id` generated | `model_display` string, `tenant` string |
 | `checkout_identity` | `checkout_id` generated | `checkout_display` string, `tenant` string |
 
-**No unique constraint on the display column, on either provider.** Version 5 says why at length:
-identity here is case-INSENSITIVE and a database can only enforce it under some collation, which would
-be the wrong question asked authoritatively. The in-memory `StringComparer.OrdinalIgnoreCase` map is
-what guarantees one id per distinct-ignoring-case spelling. Do not "tidy this up".
+**The database never decides whether two DIFFERENT spellings are one identity.** That question is
+case-INSENSITIVE and a database can only answer it under some collation, which would be the wrong
+question asked authoritatively. The in-memory `StringComparer.OrdinalIgnoreCase` map is what guarantees
+one id per distinct-ignoring-case spelling. Do not "tidy this up".
+
+**Each identity table DOES carry a unique index on the exact `(tenant, display)` pair** (schema version
+6): `ux_repo_identity_tenant_display`, `ux_agent_identity_tenant_display`,
+`ux_model_identity_tenant_display`, `ux_checkout_identity_tenant_display`. That is a strictly weaker
+question - a byte-for-byte duplicate is a duplicate under every comparer, the case-insensitive one
+included - and no collation is being trusted to decide anything. Both providers compare these columns
+byte-ordinally already (SQLite BINARY; the `"C"` collation the context pins on PostgreSQL).
+
+It exists so a mint can be an upsert that RETURNS the winning id rather than an insert that assumes it
+minted one. Without a conflict target, two hosted containers minting `owner/repo` for one tenant at the
+same moment each keep their OWN id and that tenant's turns split silently across two rows - a wrong
+number that looks exactly like a right one. Spellings differing only by case still mint separate ids;
+that stays the mirror's business.
 
 ### High-water tables - the read-modify-write paths, and the whole reason for the upsert ruling
 
 | Table | Composite key | Columns |
 |---|---|---|
-| `session_highwater` | `(tenant, session_id, modality, surface)` | `turns` long, `chars` long |
-| `token_highwater` | `(tenant, session_id)` | `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, all long |
-| `agent_driven_highwater` | `(tenant, session_id)` | `turns` long, `chars` long |
+| `session_highwater` | `(tenant, session_id, modality, surface)` | `turns`, `chars`, `previous_turns`, `previous_chars`, all long |
+| `token_highwater` | `(tenant, session_id)` | `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens` and a `previous_` column for each, all long |
+| `agent_driven_highwater` | `(tenant, session_id)` | `turns`, `chars`, `previous_turns`, `previous_chars`, all long |
 
 **Every write to these three is an explicit `ON CONFLICT DO UPDATE`, never a change-tracked
 read-then-save.** This is worker 4's core task and proof row 2 exists to prove it.
+
+**And every one of them RETURNS what it changed.** The `previous_*` columns (schema version 6) hold
+what the row held immediately before the last raise; the raise statement writes them itself and returns
+them beside the new values, so the writer appends exactly the difference IT made rather than the
+difference it believed it was making. Nothing reads them as a statistic.
+
+That is not decoration, it is the correctness core. Before it, each writer computed a session's growth
+against its own in-memory mirror and appended that growth to the SHARED delta ledger, while the
+watermark was arbitrated by the database. Two authorities on one number: two containers measuring from
+two stale baselines append MORE in total than the watermark ever moves, and every all-time total - which
+is the SUM of that ledger - inflates on every interleave. The watermark assertion passes throughout,
+which is why the original proof suite was green.
+
+**The rule, and it governs the whole write path:** *never learn what you changed from your own prior
+belief - learn it from the response of whatever arbitrates.* It applies four times: the high-water
+raises, the retention sweep (`DELETE ... RETURNING`, archive exactly the rows the statement removed),
+the identity mints (upsert, read back the winning id), and the `agents_seeded` claim (insert-if-absent
+`RETURNING`, back-fill only if this writer marked it).
+
+The raise also carries the RESET rule, which cannot live in the fold any more. A reported count below
+the stored watermark is either a Director restart counting from zero or a stale read another writer has
+overtaken, and those look identical from outside. The writer therefore sends the baseline it BELIEVED
+the store held as evidence, and the statement rules: belief current means a real reset (adopt the
+reported count, report all of it as new activity); belief already overtaken means a stale read (keep the
+floor, report nothing). The belief is an input to the arbiter, never the authority.
 
 ### Membership tables - all-time distinct sets, never pruned
 
@@ -88,6 +134,11 @@ tenant-unique. Carry the shape forward unchanged and let the contract suite asse
 partitioning. Adding a tenant column here is a behaviour change and is out of Step 2's scope.
 
 Writes to all four are insert-if-absent. Use `ON CONFLICT DO NOTHING`, not a read-then-insert.
+
+`agents_seeded` additionally carries `RETURNING session_id`, so the writer learns whether ITS insert
+created the row. The first-fold back-fill (issue #1633) attributes a session's standing count to its
+agent, and two writers first-folding one session both find an unmarked mirror; without the claim, both
+attribute it and the agent's numbers multiply by however many containers are running.
 
 ### Scalar table
 

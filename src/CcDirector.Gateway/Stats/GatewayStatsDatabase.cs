@@ -36,7 +36,7 @@ public sealed class GatewayStatsDatabase : IDisposable
 {
     /// <summary>The schema version this build understands. Bump it and add a migration step; never reshape
     /// an existing table in place without one.</summary>
-    public const int SchemaVersion = 5;
+    public const int SchemaVersion = 6;
 
     /// <summary>
     /// The oldest schema version this build can migrate FORWARD without losing data. Below it the store is
@@ -151,6 +151,9 @@ public sealed class GatewayStatsDatabase : IDisposable
 
         if (current < 5)
             MigrateToVersion5(tx);
+
+        if (current < 6)
+            MigrateToVersion6(tx);
 
         Execute($"PRAGMA user_version={SchemaVersion}", tx);
         tx.Commit();
@@ -625,6 +628,52 @@ public sealed class GatewayStatsDatabase : IDisposable
                   PRIMARY KEY (tenant, name)
               )",
             "tenant, name, value", "name, value", local);
+    }
+
+    // Version 6: let the DATABASE tell a writer what it changed, instead of the writer inferring it.
+    //
+    // THE RULE THIS VERSION EXISTS TO MAKE POSSIBLE: never learn what you changed from your own prior belief -
+    // learn it from the response of whatever arbitrates. Two things follow, and both are additive.
+    //
+    //  1. THE previous_* COLUMNS on the three high-water tables. A writer used to compute a session's growth
+    //     against its OWN in-memory mirror and append that growth to the shared delta ledger, while the stored
+    //     watermark was arbitrated by the database. Those two cannot both be authoritative: two hosted
+    //     containers each measuring growth from their own stale mirror append MORE in total than the watermark
+    //     ever moved, so the all-time totals drift upward with every interleave. Now the raise statement parks
+    //     the pre-raise value in these columns and returns it beside the new one, so a writer appends exactly
+    //     the difference IT made. The sum of appended deltas equals the movement of the watermark by
+    //     construction rather than by hope. Nothing reads them as a statistic.
+    //
+    //  2. A UNIQUE INDEX on each identity table's (tenant, display) pair. The database still never decides
+    //     whether two DIFFERENT spellings are one identity - that is case-insensitive and stays in the
+    //     aggregator's mirror. This forbids only the byte-for-byte duplicate, which is a duplicate under every
+    //     comparer, and it exists so a mint can be an upsert that RETURNS the winning id instead of an insert
+    //     that assumes it minted one. Creating it cannot fail on an existing self-host file: the mirror is
+    //     loaded from these tables at startup and every insert goes through it, so one process could never have
+    //     written the same spelling twice under one tenant, and the self-host store has only ever had one
+    //     process.
+    //
+    // Both are ADD-only, so no table is rebuilt and no row is rewritten. A version 5 row's previous_* columns
+    // land at zero, which reads as "this row has never been raised by a returning statement yet" - the first
+    // raise after the upgrade then reports its whole reported count as the difference. That is the same
+    // arithmetic a fresh row gets and it is the honest answer: the previous value genuinely is not recorded.
+    private void MigrateToVersion6(SqliteTransaction tx)
+    {
+        Execute("ALTER TABLE session_highwater ADD COLUMN previous_turns INTEGER NOT NULL DEFAULT 0", tx);
+        Execute("ALTER TABLE session_highwater ADD COLUMN previous_chars INTEGER NOT NULL DEFAULT 0", tx);
+
+        Execute("ALTER TABLE agent_driven_highwater ADD COLUMN previous_turns INTEGER NOT NULL DEFAULT 0", tx);
+        Execute("ALTER TABLE agent_driven_highwater ADD COLUMN previous_chars INTEGER NOT NULL DEFAULT 0", tx);
+
+        Execute("ALTER TABLE token_highwater ADD COLUMN previous_input_tokens INTEGER NOT NULL DEFAULT 0", tx);
+        Execute("ALTER TABLE token_highwater ADD COLUMN previous_output_tokens INTEGER NOT NULL DEFAULT 0", tx);
+        Execute("ALTER TABLE token_highwater ADD COLUMN previous_cache_read_tokens INTEGER NOT NULL DEFAULT 0", tx);
+        Execute("ALTER TABLE token_highwater ADD COLUMN previous_cache_creation_tokens INTEGER NOT NULL DEFAULT 0", tx);
+
+        Execute("CREATE UNIQUE INDEX ux_repo_identity_tenant_display ON repo_identity(tenant, repo_display)", tx);
+        Execute("CREATE UNIQUE INDEX ux_agent_identity_tenant_display ON agent_identity(tenant, agent_display)", tx);
+        Execute("CREATE UNIQUE INDEX ux_model_identity_tenant_display ON model_identity(tenant, model_display)", tx);
+        Execute("CREATE UNIQUE INDEX ux_checkout_identity_tenant_display ON checkout_identity(tenant, checkout_display)", tx);
     }
 
     // Rebuild one table so the tenant can join its primary key: create the new shape, copy every existing row

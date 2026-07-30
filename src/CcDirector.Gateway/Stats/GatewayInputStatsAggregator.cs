@@ -367,13 +367,29 @@ public sealed class GatewayInputStatsAggregator : IDisposable
             .ToString("o", System.Globalization.CultureInfo.InvariantCulture);
     }
 
-    // Fold one session's tally via the high-water increment. Caller holds the lock.
+    // Fold one session's tally. Caller holds the lock.
     //
-    // THE CORRECTNESS CORE OF THE MISSION, SEMANTICS UNCHANGED from GatewayInputStatsAggregator on
-    // origin/main. It is what makes re-reading a roster safe and what lets counts survive a restart without
-    // double-counting. Simplifying it breaks the mission. The ORDER below matters and mirrors the original
-    // exactly - in particular the wingman registration and the agent-driven fold both happen BEFORE the
-    // empty-buckets return.
+    // THE CORRECTNESS CORE OF THE MISSION. It is what makes re-reading a roster safe and what lets counts
+    // survive a restart without double-counting. Simplifying it breaks the mission. The ORDER below matters
+    // and mirrors the original exactly - in particular the wingman registration and the agent-driven fold both
+    // happen BEFORE the empty-buckets return.
+    //
+    // WHAT THIS METHOD NO LONGER DOES, AND WHY THAT IS THE POINT: it does not compute growth. It used to
+    // subtract the mirror's counts from the reported ones and queue the difference as a row to append. That
+    // made this PRIVATE MIRROR the authority on what changed, while the shared watermark those rows are
+    // reconciled against was arbitrated by the DATABASE - and two authorities on one number is not a
+    // near-miss, it is a guaranteed drift the moment a second writer exists. Two hosted containers each
+    // measuring growth from their own mirror append more in total than the watermark ever moves, and the
+    // all-time totals inflate on every interleave.
+    //
+    // So this reports what it SAW - the session's reported cumulative counts - together with what it BELIEVED
+    // the store held. The raise statement compares the two against the row itself and returns what it actually
+    // changed, and THAT is what gets appended. The general rule, which holds everywhere in this store: never
+    // learn what you changed from your own prior belief; learn it from the response of whatever arbitrates.
+    //
+    // The mirror still earns its keep, and still holds membership and identity only (Decision 6): an
+    // observation is queued only when the reported counts DIFFER from what it believes is stored, which is
+    // what keeps an unchanged roster poll at zero statements.
     private void FoldLocked(SessionDto s, StatsWriteBatch batch)
     {
         if (string.IsNullOrEmpty(s.SessionId)) return;
@@ -406,18 +422,30 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         if (s.InputStats?.Buckets is null || s.InputStats.Buckets.Count == 0) return;
 
         _highWater.TryGetValue((batch.Tenant, s.SessionId), out var hw);
+        var agentKey = s.Agent ?? "";
 
         // Issue #1633: the first time this session is folded, attribute what it has ALREADY counted to its
-        // agent. Read before the loop below moves the high-water on. On a fresh database this contributes
-        // nothing (the high-water is empty); after a RESTART it would contribute real turns, which is why
-        // agents_seeded is persisted. Keyed by (tenant, session id) so one tenant seeding a session id can
-        // never suppress another tenant's back-fill of the same id (MTR-08).
+        // agent. On a fresh database this contributes nothing (the high-water is empty); after a RESTART it
+        // would contribute real turns, which is why agents_seeded is persisted. Keyed by (tenant, session id)
+        // so one tenant seeding a session id can never suppress another tenant's back-fill of the same id
+        // (MTR-08).
+        //
+        // The rows are only PROPOSED here. Two writers first-folding one session both find an unseeded mirror,
+        // so both would attribute the same standing count and double the agent's numbers; the writer emits
+        // these only if its own agents_seeded insert is the one that claimed the row, which the statement
+        // reports. Same rule as everywhere else here - the arbiter says who did what, not the belief.
         if (!_agentsSeeded.Contains((batch.Tenant, s.SessionId)))
         {
-            batch.NewSeeded.Add(s.SessionId);
+            var backfill = new List<StatsWriteBatch.AgentBackfillRow>();
             if (hw is not null)
                 foreach (var (key, prior) in hw)
-                    AttributeToAgentLocked(s, key.Modality, prior.Turns, prior.Characters, batch);
+                {
+                    RegisterAgentLocked(s, batch);
+                    if (prior.Turns > 0 || prior.Characters > 0)
+                        backfill.Add(new StatsWriteBatch.AgentBackfillRow(
+                            agentKey, IsVoice(key.Modality), prior.Turns, prior.Characters));
+                }
+            batch.Seeding.Add((s.SessionId, backfill));
         }
 
         // The repository grouping key is a two-tier identity:
@@ -460,63 +488,67 @@ public sealed class GatewayInputStatsAggregator : IDisposable
             var key = (b.Modality ?? "", b.Surface ?? "");
             Counters? prev = null;
             hw?.TryGetValue(key, out prev);
-            var prevTurns = prev?.Turns ?? 0;
-            var prevChars = prev?.Characters ?? 0;
 
-            // Normal case: counts only grow, so add the increase. Reset case (a Director restarted this
-            // session id with a fresh tally): the reported count is LOWER than last seen, so the whole
-            // current count is new activity from zero.
-            var deltaTurns = b.Turns >= prevTurns ? b.Turns - prevTurns : b.Turns;
-            var deltaChars = b.Characters >= prevChars ? b.Characters - prevChars : b.Characters;
+            // Nothing to report: the counts are exactly what this writer already believes the store holds, so
+            // there is no observation to make and no statement to run. This one test is the whole idle-poll
+            // property - the roster is re-read every few seconds and almost every bucket lands here.
+            if (prev is not null && prev.Turns == b.Turns && prev.Characters == b.Characters) continue;
 
-            if (deltaTurns > 0 || deltaChars > 0)
-            {
-                // Decided HERE, in C#, with the same case-INSENSITIVE test the original uses - while the
-                // totals bucket key stays case-SENSITIVE. That asymmetry is current behaviour and storing
-                // the flag keeps it out of the query layer.
-                var isVoice = string.Equals(key.Item1, "voice", StringComparison.OrdinalIgnoreCase);
+            // Decided HERE, in C#, with the same case-INSENSITIVE test the original uses - while the totals
+            // bucket key stays case-SENSITIVE. That asymmetry is current behaviour and storing the flag keeps
+            // it out of the query layer.
+            batch.Buckets.Add(new StatsWriteBatch.BucketObservation(
+                s.SessionId, key.Item1, key.Item2, IsVoice(key.Item1),
+                repoKey, checkoutKey, modelKey, wingman, agentKey,
+                b.Turns, b.Characters, prev?.Turns ?? 0, prev?.Characters ?? 0));
 
-                batch.Rows.Add((batch.HourKey, s.SessionId, key.Item1, key.Item2, isVoice, repoKey, checkoutKey, modelKey, wingman, deltaTurns, deltaChars));
-                NeedIdentity(repoKey, IdentityKind.Repo, batch);
-                if (!KnownIdentitySession(repoKey, s.SessionId, IdentityKind.Repo, batch))
-                    batch.NewIdentitySessions.Add((repoKey, s.SessionId, IdentityKind.Repo));
+            // A bucket with nothing in it earns no identity and no membership. Whether it contributes a DELTA
+            // is the database's ruling, not this method's, but a session that has never submitted a turn at
+            // all cannot contribute one under any ruling - so the identities stay unqueued and an empty
+            // session does not appear on the Repos page as a session that did nothing.
+            if (b.Turns <= 0 && b.Characters <= 0) continue;
 
-                // The checkout the turn ran in earns an identity, retained beside the repository. No
-                // distinct-session set (the Repos page counts sessions per repository, not per checkout), so
-                // it is never queued into NewIdentitySessions - SessionsFor(Checkout) would refuse it.
-                NeedIdentity(checkoutKey, IdentityKind.Checkout, batch);
+            NeedIdentity(repoKey, IdentityKind.Repo, batch);
+            if (!KnownIdentitySession(repoKey, s.SessionId, IdentityKind.Repo, batch))
+                batch.NewIdentitySessions.Add((repoKey, s.SessionId, IdentityKind.Repo));
 
-                // Only a model the Director actually named earns an identity. An absent model writes a null
-                // model_id and creates nothing, so model_identity never grows a row for "not said".
-                if (modelKey is not null)
-                    NeedIdentity(modelKey, IdentityKind.Model, batch);
+            // The checkout the turn ran in earns an identity, retained beside the repository. No
+            // distinct-session set (the Repos page counts sessions per repository, not per checkout), so
+            // it is never queued into NewIdentitySessions - SessionsFor(Checkout) would refuse it.
+            NeedIdentity(checkoutKey, IdentityKind.Checkout, batch);
 
-                AttributeToAgentLocked(s, key.Item1, deltaTurns, deltaChars, batch);
-            }
+            // Only a model the Director actually named earns an identity. An absent model writes a null
+            // model_id and creates nothing, so model_identity never grows a row for "not said".
+            if (modelKey is not null)
+                NeedIdentity(modelKey, IdentityKind.Model, batch);
 
-            if (prev is null || prev.Turns != b.Turns || prev.Characters != b.Characters)
-                batch.HighWater.Add((s.SessionId, key.Item1, key.Item2, b.Turns, b.Characters));
+            RegisterAgentLocked(s, batch);
         }
     }
 
-    // Attribute turns/characters to the agent CLI the session drives. Used by BOTH the ordinary delta path
-    // and the first-fold back-fill, so the two can never drift apart - which is exactly why the agent tally
-    // has its OWN table rather than being derived from stat_delta (the back-fill has no stat_delta
-    // counterpart, so deriving it would either inflate the totals or lose the attribution).
+    // The voice test, in one place. Case-INSENSITIVE on the modality, while the totals bucket key stays
+    // case-SENSITIVE - an asymmetry carried forward from the original deliberately.
+    private static bool IsVoice(string modality) =>
+        string.Equals(modality, "voice", StringComparison.OrdinalIgnoreCase);
+
+    // Register the agent CLI this session drives: its identity, and this session in its distinct-session set.
     //
-    // The session id is registered even when it brought no turns, so the per-agent session counts describe
-    // the agents actually being run rather than only the ones that submitted a turn in the observed window.
-    // An agent the Director did not report is counted under the empty key and shown as "(unknown)".
-    private void AttributeToAgentLocked(SessionDto s, string modality, long turns, long characters, StatsWriteBatch batch)
+    // It no longer carries the counts. The per-agent tally is attributed from the SAME difference the session
+    // bucket got - the one the raise statement returned - because the writer builds both rows from one
+    // number. Computing the agent's share here from a second subtraction is exactly how two figures that must
+    // agree stop agreeing, and it would put the count back on the wrong side of the arbitration.
+    //
+    // The agent tally still has its OWN table rather than being derived from stat_delta: the first-fold
+    // back-fill has no stat_delta counterpart, so deriving it would either inflate the totals or lose the
+    // attribution.
+    //
+    // The session id is registered even when it brought no turns this fold, so the per-agent session counts
+    // describe the agents actually being run rather than only the ones that submitted a turn in the observed
+    // window. An agent the Director did not report is counted under the empty key and shown as "(unknown)".
+    private void RegisterAgentLocked(SessionDto s, StatsWriteBatch batch)
     {
         var agentKey = s.Agent ?? "";
         NeedIdentity(agentKey, IdentityKind.Agent, batch);
-
-        if (turns > 0 || characters > 0)
-        {
-            var isVoice = string.Equals(modality, "voice", StringComparison.OrdinalIgnoreCase);
-            batch.AgentRows.Add((agentKey, isVoice, turns, characters));
-        }
 
         if (!string.IsNullOrEmpty(s.SessionId) && !KnownIdentitySession(agentKey, s.SessionId, IdentityKind.Agent, batch))
             batch.NewIdentitySessions.Add((agentKey, s.SessionId, IdentityKind.Agent));
@@ -533,25 +565,15 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         if (turns == 0 && chars == 0) return;
 
         _agentDrivenHighWater.TryGetValue((batch.Tenant, s.SessionId), out var prev);
-        var prevTurns = prev?.Turns ?? 0;
-        var prevChars = prev?.Characters ?? 0;
 
-        var deltaTurns = turns >= prevTurns ? turns - prevTurns : turns;
-        var deltaChars = chars >= prevChars ? chars - prevChars : chars;
-
-        // The watermark moves whether or not the delta did - matching the original, which assigns it before
-        // the delta check. But only queue a WRITE when the value actually changed: the original's assignment
-        // is a free in-memory store, whereas here it would be a database upsert on every poll of a session
-        // whose agent-driven counts are steady - a permanent write where there should be silence, which is
-        // the same idle-poll property the human high-water above protects. The mirror lands on the same
-        // value either way. (Codex non-blocking finding on the fold review.)
-        if (prev is null || prev.Turns != turns || prev.Characters != chars)
-            batch.AgentDrivenHighWater.Add((s.SessionId, turns, chars));
-        if (deltaTurns <= 0 && deltaChars <= 0) return;
+        // Steady counts say nothing new, so nothing is queued and this session costs no statement. Whether
+        // what IS queued turns into a delta row is the raise statement's ruling, not this method's.
+        if (prev is not null && prev.Turns == turns && prev.Characters == chars) return;
 
         var agentKey = s.Agent ?? "";
         NeedIdentity(agentKey, IdentityKind.Agent, batch);
-        batch.AgentDrivenRows.Add((agentKey, deltaTurns, deltaChars));
+        batch.AgentDriven.Add(new StatsWriteBatch.AgentDrivenObservation(
+            s.SessionId, agentKey, turns, chars, prev?.Turns ?? 0, prev?.Characters ?? 0));
         if (!string.IsNullOrEmpty(s.SessionId) && !KnownIdentitySession(agentKey, s.SessionId, IdentityKind.Agent, batch))
             batch.NewIdentitySessions.Add((agentKey, s.SessionId, IdentityKind.Agent));
     }
@@ -567,28 +589,13 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         if (t is null) return;
 
         _tokenHighWater.TryGetValue((batch.Tenant, s.SessionId), out var prev);
-        var prevIn = prev?.Input ?? 0;
-        var prevOut = prev?.Output ?? 0;
-        var prevCacheR = prev?.CacheRead ?? 0;
-        var prevCacheC = prev?.CacheCreation ?? 0;
 
-        // Per-scalar reset test, exactly as the turns/characters fold: a value below the last seen is a fresh
-        // conversation counting from zero, so the whole current value is new spend. All four are running sums
-        // over the same transcript, so on a real restart they drop together; testing each independently is
-        // simply the same safe rule applied per column.
-        var dIn = t.InputTokens >= prevIn ? t.InputTokens - prevIn : t.InputTokens;
-        var dOut = t.OutputTokens >= prevOut ? t.OutputTokens - prevOut : t.OutputTokens;
-        var dCacheR = t.CacheReadTokens >= prevCacheR ? t.CacheReadTokens - prevCacheR : t.CacheReadTokens;
-        var dCacheC = t.CacheCreationTokens >= prevCacheC ? t.CacheCreationTokens - prevCacheC : t.CacheCreationTokens;
-
-        // Advance the high-water whenever the reported totals moved, even if nothing is folded this poll -
-        // but only queue the upsert when they actually changed, so an idle re-poll of a steady session writes
-        // nothing (the same idle-poll silence the other high-waters protect).
-        if (prev is null || prev.Input != t.InputTokens || prev.Output != t.OutputTokens
-            || prev.CacheRead != t.CacheReadTokens || prev.CacheCreation != t.CacheCreationTokens)
-            batch.TokenHighWater.Add((s.SessionId, t.InputTokens, t.OutputTokens, t.CacheReadTokens, t.CacheCreationTokens));
-
-        if (dIn <= 0 && dOut <= 0 && dCacheR <= 0 && dCacheC <= 0) return;
+        // Steady spend says nothing new, so an idle re-poll of a quiet session writes nothing - the same
+        // silence the other two high-waters protect. All four scalars are running sums over one transcript,
+        // and each is raised and judged on its own by the statement, which is simply the same safe rule
+        // applied per column.
+        if (prev is not null && prev.Input == t.InputTokens && prev.Output == t.OutputTokens
+            && prev.CacheRead == t.CacheReadTokens && prev.CacheCreation == t.CacheCreationTokens) return;
 
         // Attribute to the model the session was RECORDED running, null until its records name one - the same
         // records-only nullability as stat_delta.model_id. Only a named model earns an identity row.
@@ -596,7 +603,10 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         if (modelKey is not null)
             NeedIdentity(modelKey, IdentityKind.Model, batch);
 
-        batch.TokenRows.Add((batch.HourKey, modelKey, dIn, dOut, dCacheR, dCacheC));
+        batch.Tokens.Add(new StatsWriteBatch.TokenObservation(
+            s.SessionId, modelKey,
+            t.InputTokens, t.OutputTokens, t.CacheReadTokens, t.CacheCreationTokens,
+            prev?.Input ?? 0, prev?.Output ?? 0, prev?.CacheRead ?? 0, prev?.CacheCreation ?? 0));
     }
 
     private void NeedIdentity(string display, IdentityKind kind, StatsWriteBatch batch)
@@ -623,24 +633,36 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         return false;
     }
 
-    // Write everything the batch collected, in ONE transaction, then advance the mirror.
+    // Write everything the batch observed, in ONE transaction, then advance the mirror TO WHAT THE STORE NOW
+    // HOLDS.
+    //
+    // Every value the mirror takes below comes back from the writer, which read it out of the row the
+    // statement wrote - never from what this class proposed. That is the difference between a mirror and a
+    // second opinion. The old code set the high-water mirror to the count it had just SENT, which is only the
+    // stored value when nobody else is writing: under two hosted containers, and under the reset rule (where
+    // the raise deliberately does not take the proposed value), the mirror and the row would part company
+    // silently, and every later fold would measure growth from a number the store had never agreed to. On the
+    // next Gateway restart the mirror reloads from the row and the disagreement becomes lost turns.
     //
     // The statements themselves live in GatewayStatsWriter, on Entity Framework, so ONE implementation serves
     // the self-host SQLite file and the hosted PostgreSQL database. Two properties this class depends on are
     // enforced there and must not be re-derived here: an EMPTY batch - an idle poll - writes nothing and does
-    // not even open a transaction, and every high-water and membership write is an explicit upsert rather
+    // not even open a transaction, and every high-water and membership write is an explicit statement rather
     // than a change-tracked read-then-save.
     private void CommitLocked(StatsWriteBatch batch)
     {
         // The identity map this class holds is what DECIDES identity (a case-insensitive comparer no database
-        // is ever asked to reproduce), so the writer mints the new ids and asks US for the known ones.
-        var newIds = _writer.Commit(batch, (display, kind) => IdsFor(batch.Tenant, kind)[display]);
+        // is ever asked to reproduce), so the writer resolves the spellings this fold did not recognise and
+        // asks US for the ones it already knows.
+        var committed = _writer.Commit(batch, (display, kind) => IdsFor(batch.Tenant, kind)[display]);
 
         // ---- Committed. Only now does the mirror move. Every advance is keyed by the batch's tenant. ----
         if (batch.StampAgentsSince is not null) _agentsSinceUtc[batch.Tenant] = batch.StampAgentsSince;
-        foreach (var (kind, minted) in newIds)
-            foreach (var (d, id) in minted) { IdsFor(batch.Tenant, kind)[d] = id; DisplayFor(kind)[id] = d; }
-        foreach (var h in batch.HighWater)
+        // The id that WON, which may have been minted by another writer. Recorded first, because the
+        // membership advances below resolve their ids through this map.
+        foreach (var (kind, resolved) in committed.Identities)
+            foreach (var (d, id) in resolved) { IdsFor(batch.Tenant, kind)[d] = id; DisplayFor(kind)[id] = d; }
+        foreach (var h in committed.SessionHighWater)
         {
             var key = (batch.Tenant, h.SessionId);
             if (!_highWater.TryGetValue(key, out var hw))
@@ -650,15 +672,17 @@ public sealed class GatewayInputStatsAggregator : IDisposable
             }
             hw[(h.Modality, h.Surface)] = new Counters { Turns = h.Turns, Characters = h.Chars };
         }
-        foreach (var h in batch.AgentDrivenHighWater)
+        foreach (var h in committed.AgentDrivenHighWater)
             _agentDrivenHighWater[(batch.Tenant, h.SessionId)] = new Counters { Turns = h.Turns, Characters = h.Chars };
-        foreach (var h in batch.TokenHighWater)
+        foreach (var h in committed.TokenHighWater)
             _tokenHighWater[(batch.Tenant, h.SessionId)] = new TokenCounters
             {
                 Input = h.Input, Output = h.Output, CacheRead = h.CacheRead, CacheCreation = h.CacheCreation,
             };
         foreach (var sid in batch.NewWingmanSessions) _wingmanSessions.Add((batch.Tenant, sid));
-        foreach (var sid in batch.NewSeeded) _agentsSeeded.Add((batch.Tenant, sid));
+        // Marked seeded whichever writer claimed it: after the commit the row exists either way, and this
+        // mirror answers only "have I already recorded this?", never "did I record it?".
+        foreach (var (sessionId, _) in batch.Seeding) _agentsSeeded.Add((batch.Tenant, sessionId));
         foreach (var (display, sessionId, kind) in batch.NewIdentitySessions)
             SessionsFor(kind).Add((IdsFor(batch.Tenant, kind)[display], sessionId));
     }

@@ -26,4 +26,13 @@ public sealed class AgentDrivenHighwaterEntity
 
     /// <summary>The highest agent-driven character count seen (<c>chars</c>).</summary>
     public long Chars { get; set; }
+
+    /// <summary>What <see cref="Turns"/> held immediately before the most recent raise
+    /// (<c>previous_turns</c>), so the raise statement can return what it changed rather than leaving the
+    /// writer to infer it. See <see cref="SessionHighwaterEntity.PreviousTurns"/>.</summary>
+    public long PreviousTurns { get; set; }
+
+    /// <summary>What <see cref="Chars"/> held immediately before the most recent raise
+    /// (<c>previous_chars</c>).</summary>
+    public long PreviousChars { get; set; }
 }

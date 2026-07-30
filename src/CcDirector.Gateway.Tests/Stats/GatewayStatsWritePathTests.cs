@@ -54,9 +54,12 @@ public sealed class GatewayStatsWritePathTests : IDisposable
         var batch = new StatsWriteBatch(TenantId.Local, DateTime.UtcNow, "2026-07-30T12");
 
         Assert.True(batch.IsEmpty);
-        var minted = writer.Commit(batch, (_, _) => throw new InvalidOperationException("nothing to resolve"));
+        var committed = writer.Commit(batch, (_, _) => throw new InvalidOperationException("nothing to resolve"));
 
-        Assert.Empty(minted);
+        Assert.Empty(committed.Identities);
+        Assert.Empty(committed.SessionHighWater);
+        Assert.Empty(committed.AgentDrivenHighWater);
+        Assert.Empty(committed.TokenHighWater);
         Assert.Equal(0, writer.StatementsExecuted);
     }
 
@@ -107,13 +110,14 @@ public sealed class GatewayStatsWritePathTests : IDisposable
     }
 
     /// <summary>
-    /// The reset rule the high-water comparison must NOT have changed: a reported count LOWER than the last
-    /// one seen means a Director restarted that session id and is counting fresh from zero, so the whole
-    /// current count is new activity. It lives in the fold, against the in-memory mirror - not in the stored
-    /// row, which is a floor - and this is the test that says so.
+    /// The reset rule, unchanged in meaning: a reported count LOWER than the last one seen means a Director
+    /// restarted that session id and is counting fresh from zero, so the whole current count is new activity.
+    /// It is now applied by the raise statement rather than by the fold against its own mirror - see
+    /// <see cref="AResetSurvivesAGatewayRestart_BecauseTheStoreAndTheMirrorAgreeAboutIt"/> for why that
+    /// relocation is the fix and not a detail.
     /// </summary>
     [Fact]
-    public void ADroppedCount_StillFoldsAsFreshActivity_AfterThePortToUpserts()
+    public void ADroppedCount_StillFoldsAsFreshActivity()
     {
         using var agg = new GatewayInputStatsAggregator(_path);
 
@@ -123,6 +127,64 @@ public sealed class GatewayStatsWritePathTests : IDisposable
         var (turns, chars) = Totals(agg);
         Assert.Equal(13, turns);
         Assert.Equal(340, chars);
+    }
+
+    /// <summary>
+    /// THE RESET DEFECT, and the fact that says it is gone. Folding a reset correctly ONCE is not enough - the
+    /// stored row has to agree with the mirror about what happened, because the mirror is thrown away on every
+    /// Gateway restart and rebuilt from that row.
+    ///
+    /// It used to disagree, and silently. The fold noticed the drop and counted the restarted session's whole
+    /// tally, then set its mirror to the new low count - while the stored watermark, raised by a comparison
+    /// that only ever moves upward, kept the pre-restart high one. Two different numbers for one fact, and the
+    /// stored one wins the moment the Gateway restarts: the rebuilt mirror measures the restarted session's
+    /// growth from a watermark it already passed, so every turn between the reset and the old high mark is
+    /// counted twice on the way there and lost on the way back.
+    ///
+    /// Here: ten turns, a restart to three, then growth to five. The honest all-time total is 10 + 3 + 2 = 15,
+    /// and it has to survive the aggregator being torn down and rebuilt from the file in between.
+    /// </summary>
+    [Fact]
+    public void AResetSurvivesAGatewayRestart_BecauseTheStoreAndTheMirrorAgreeAboutIt()
+    {
+        using (var before = new GatewayInputStatsAggregator(_path))
+        {
+            before.Observe(Session("s1", ("typed", "phone", 10, 300)));
+            before.Observe(Session("s1", ("typed", "phone", 3, 40)));   // the Director restarted this session
+            Assert.Equal(13, Totals(before).Turns);
+        }
+
+        // A new aggregator has no memory at all: whatever it believes now, it read out of the stored row.
+        using var after = new GatewayInputStatsAggregator(_path);
+        after.Observe(Session("s1", ("typed", "phone", 5, 60)));        // the restarted session grows by two
+
+        var (turns, chars) = Totals(after);
+        Assert.Equal(15, turns);
+        Assert.Equal(360, chars);
+    }
+
+    /// <summary>
+    /// The other half of the same property: the per-agent tally is attributed from the SAME difference the
+    /// session bucket got, so the two can never disagree about how much a session did. They used to be two
+    /// separate subtractions against the same mirror, which agreed only for as long as both kept computing
+    /// the same thing.
+    /// </summary>
+    [Fact]
+    public void ThePerAgentTally_MatchesTheSessionTotals_AcrossAResetAndARestart()
+    {
+        using (var before = new GatewayInputStatsAggregator(_path))
+        {
+            before.Observe(Agent(Session("s1", ("typed", "phone", 10, 300))));
+            before.Observe(Agent(Session("s1", ("typed", "phone", 3, 40))));
+        }
+
+        using var after = new GatewayInputStatsAggregator(_path);
+        after.Observe(Agent(Session("s1", ("typed", "phone", 5, 60))));
+
+        var (turns, chars) = Totals(after);
+        var agent = Assert.Single(after.AgentTotals());
+        Assert.Equal(turns, agent.Turns);
+        Assert.Equal(chars, agent.Characters);
     }
 
     /// <summary>A model a Director never named is stored as SQL NULL, not as an identity spelled "". The port
@@ -148,6 +210,12 @@ public sealed class GatewayStatsWritePathTests : IDisposable
     {
         var dto = agg.CurrentTotals();
         return (dto.Buckets.Sum(b => b.Turns), dto.Buckets.Sum(b => b.Characters));
+    }
+
+    private static SessionDto Agent(SessionDto session, string agent = "ClaudeCode")
+    {
+        session.Agent = agent;
+        return session;
     }
 
     private static SessionDto Session(string id, params (string modality, string surface, long turns, long chars)[] buckets)
