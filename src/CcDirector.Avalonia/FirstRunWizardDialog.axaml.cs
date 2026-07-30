@@ -63,6 +63,11 @@ public partial class FirstRunWizardDialog : Window
     private bool _gatewayConnected;
     private CancellationTokenSource? _hostedEnrollCts;
 
+    // True while RefreshGatewayChoiceUi is pushing _gatewayChoice INTO the cards' IsChecked. The cards
+    // are RadioButtons now, so writing IsChecked raises IsCheckedChanged, which would call straight back
+    // into the selection handler. One flag, set around the three writes, keeps the data flowing one way.
+    private bool _syncingGatewayCards;
+
     // A gateway that is ALREADY configured when the step opens. Read once, from the saved config, so
     // a re-run does not ask the user to enroll a machine that is already enrolled. Before this,
     // _gatewayConnected was a this-run-only flag and the step always opened on the choice cards
@@ -383,6 +388,12 @@ public partial class FirstRunWizardDialog : Window
 
             case WizardStep.Gateway:
                 PrimaryButton.IsVisible = true;
+                // Re-entering the step drops a previous attempt's banner. Coming back to this screen
+                // must not re-present a cancellation the user has already navigated away from - and this
+                // is where the old cancelled state got STUCK: the step set no sub-view at all, so
+                // whichever one was last visible survived, and after a cancel that was the cards-less
+                // failure view (issue #1070).
+                ClearGatewayFailure();
                 AdoptExistingGateway();
                 RefreshGatewayChoiceUi();
                 break;
@@ -2163,13 +2174,29 @@ public partial class FirstRunWizardDialog : Window
         RefreshGatewayChoiceUi();
     }
 
-    /// <summary>Paint the three choice cards and the primary CTA from the current selection.</summary>
+    /// <summary>
+    /// Paint the primary CTA from the current selection, and keep the cards' checked state in step with
+    /// it.
+    ///
+    /// The card VISUALS are no longer set here. Selection is a real control state now
+    /// (<c>RadioButton.IsChecked</c>), so the accent border and tint come from the
+    /// <c>RadioButton.gatewayCard:checked</c> style, and the selected state reaches a screen reader
+    /// through the SelectionItem pattern instead of being smuggled into the accessible help text.
+    /// </summary>
     private void RefreshGatewayChoiceUi()
     {
-        // Card selection visuals: the chosen card carries the accent border + tint; the others rest.
-        StyleGatewayCard(GatewayHostedCard, _gatewayChoice == GatewayChoice.Hosted, emphasized: true);
-        StyleGatewayCard(GatewaySelfHostCard, _gatewayChoice == GatewayChoice.SelfHost, emphasized: false);
-        StyleGatewayCard(GatewayNotNowCard, _gatewayChoice == GatewayChoice.NotNow, emphasized: false);
+        // Guard the round trip: setting IsChecked raises IsCheckedChanged, which calls back in here.
+        _syncingGatewayCards = true;
+        try
+        {
+            GatewayHostedCard.IsChecked = _gatewayChoice == GatewayChoice.Hosted;
+            GatewaySelfHostCard.IsChecked = _gatewayChoice == GatewayChoice.SelfHost;
+            GatewayNotNowCard.IsChecked = _gatewayChoice == GatewayChoice.NotNow;
+        }
+        finally
+        {
+            _syncingGatewayCards = false;
+        }
 
         PrimaryButton.Content = _gatewayConnected
             ? "Continue"
@@ -2182,18 +2209,6 @@ public partial class FirstRunWizardDialog : Window
         PrimaryButton.IsEnabled = true;
     }
 
-    private static void StyleGatewayCard(Border card, bool selected, bool emphasized)
-    {
-        card.BorderBrush = Brush(selected ? "#0066B8" : "#E6E8EC");
-        card.BorderThickness = new global::Avalonia.Thickness(selected && emphasized ? 2 : selected ? 1.5 : 1);
-        card.Background = Brush(selected ? "#F2F8FD" : "#FFFFFF");
-
-        // The selection has to be readable without seeing the border. A Border is not a radio button
-        // and exposes no selected state, so the state is carried in the accessible help text - the one
-        // channel a screen reader will actually read out.
-        AutomationProperties.SetHelpText(card, selected ? "Selected" : "Not selected. Press Enter to choose it.");
-    }
-
     private void SelectGatewayChoice(GatewayChoice choice)
     {
         FileLog.Write($"[FirstRunWizardDialog] SelectGatewayChoice: {choice}");
@@ -2201,33 +2216,17 @@ public partial class FirstRunWizardDialog : Window
         RefreshGatewayChoiceUi();
     }
 
-    private void GatewayHostedCard_Pressed(object? sender, PointerPressedEventArgs e) => SelectGatewayChoice(GatewayChoice.Hosted);
-    private void GatewaySelfHostCard_Pressed(object? sender, PointerPressedEventArgs e) => SelectGatewayChoice(GatewayChoice.SelfHost);
-    private void GatewayNotNowCard_Pressed(object? sender, PointerPressedEventArgs e) => SelectGatewayChoice(GatewayChoice.NotNow);
-
     /// <summary>
-    /// Space or Enter picks the focused card - the keyboard equivalent of clicking it. Tab already
-    /// reaches the cards now that they are focusable; without this they could be reached and not used.
+    /// A card became the checked one - by mouse, by Space, or by an arrow key inside the group. One
+    /// handler for all three inputs, because a RadioButton makes them the same event; the Border version
+    /// needed a PointerPressed per card plus its own KeyDown, and still reached no keyboard at all.
     /// </summary>
-    private void GatewayCard_KeyDown(object? sender, KeyEventArgs e)
+    private void GatewayCard_IsCheckedChanged(object? sender, RoutedEventArgs e)
     {
-        if (e.Key is not (Key.Space or Key.Enter)) return;
-        if (!TryChoiceForCard(sender, out var choice)) return;
+        if (_syncingGatewayCards) return;
+        if (sender is not RadioButton card || card.IsChecked != true) return;
+        if (!TryChoiceForCard(card, out var choice)) return;
         SelectGatewayChoice(choice);
-        e.Handled = true;
-    }
-
-    /// <summary>
-    /// Focus alone does NOT change the choice. Tabbing through the options to read them must not
-    /// silently move the selection - a keyboard or screen-reader user has to be able to review all
-    /// three before committing, exactly as a mouse user can. Space or Enter is the commit.
-    /// </summary>
-    private void GatewayCard_GotFocus(object? sender, GotFocusEventArgs e)
-    {
-        // Announce what is focused and whether it is the current choice, since a Border exposes no
-        // selection state of its own.
-        if (TryChoiceForCard(sender, out var choice) && sender is Border card)
-            AutomationProperties.SetHelpText(card, choice == _gatewayChoice ? "Selected" : "Not selected. Press Enter to choose it.");
     }
 
     private bool TryChoiceForCard(object? sender, out GatewayChoice choice)
@@ -2239,13 +2238,12 @@ public partial class FirstRunWizardDialog : Window
         return false;
     }
 
-    /// <summary>Show exactly one of the gateway step's sub-views (choice / connecting / connected / failed / advanced).</summary>
+    /// <summary>Show exactly one of the gateway step's sub-views (choice / connecting / connected / advanced).</summary>
     private void ShowGatewayView(Control view)
     {
         GatewayChoiceView.IsVisible = view == GatewayChoiceView;
         GatewayConnectingView.IsVisible = view == GatewayConnectingView;
         GatewayConnectedView.IsVisible = view == GatewayConnectedView;
-        GatewayFailedView.IsVisible = view == GatewayFailedView;
         GatewayAdvancedView.IsVisible = view == GatewayAdvancedView;
     }
 
@@ -2258,6 +2256,9 @@ public partial class FirstRunWizardDialog : Window
     private async Task StartHostedEnrollAsync()
     {
         FileLog.Write("[FirstRunWizardDialog] StartHostedEnrollAsync");
+        // A new attempt supersedes the last one's reason; leaving it up would let a stale cancellation sit
+        // above a sign-in that is in flight right now.
+        ClearGatewayFailure();
         ShowGatewayView(GatewayConnectingView);
         PrimaryButton.IsEnabled = false;
 
@@ -2314,12 +2315,26 @@ public partial class FirstRunWizardDialog : Window
         }
     }
 
+    /// <summary>
+    /// Report a failed or cancelled gateway attempt WITHOUT taking the other options away (issue #1070).
+    ///
+    /// The banner is shown on the choice view and the choice view stays visible. That single change is
+    /// what makes the state recoverable: every card is still there, "Not now" included, so the user who
+    /// tried the recommended path and changed their mind can still decline the gateway and finish the
+    /// remaining six steps. It also ends the stickiness - the visible sub-view is the choice view, so
+    /// leaving the step and coming back cannot land on a cards-less screen.
+    /// </summary>
     private void ShowGatewayFailure(string message)
     {
         GatewayFailText.Text = message;
-        ShowGatewayView(GatewayFailedView);
+        GatewayFailBanner.IsVisible = true;
+        ShowGatewayView(GatewayChoiceView);
+        RefreshGatewayChoiceUi();
         PrimaryButton.IsEnabled = true;
     }
+
+    /// <summary>Drop a previous attempt's banner, so a stale reason cannot reappear two navigations later.</summary>
+    private void ClearGatewayFailure() => GatewayFailBanner.IsVisible = false;
 
     private void GatewayCancelSignIn_Click(object? sender, RoutedEventArgs e)
     {
@@ -2327,16 +2342,17 @@ public partial class FirstRunWizardDialog : Window
         _hostedEnrollCts?.Cancel();
     }
 
-    private void GatewayTryAgain_Click(object? sender, RoutedEventArgs e)
-    {
-        FileLog.Write("[FirstRunWizardDialog] GatewayTryAgain_Click");
-        ShowGatewayView(GatewayChoiceView);
-        RefreshGatewayChoiceUi();
-    }
+    // There is no GatewayTryAgain_Click any more. Its only caller was the failure view's "Try again"
+    // button, and that button was redundant the moment the failure became a banner ON the choice view:
+    // the primary button is already the retry and already says what it will do - "Sign in and connect"
+    // with the hosted card selected, which stays selected through a cancellation. A second button
+    // labelled "Try again" would either duplicate it or, worse, merely dismiss the message, which is a
+    // control that appears to act and does not.
 
     private void GatewayBackToOptions_Click(object? sender, RoutedEventArgs e)
     {
         FileLog.Write("[FirstRunWizardDialog] GatewayBackToOptions_Click");
+        ClearGatewayFailure();
         ShowGatewayView(GatewayChoiceView);
         RefreshGatewayChoiceUi();
     }
@@ -2607,6 +2623,36 @@ public partial class FirstRunWizardDialog : Window
 
     /// <summary>The wizard's current step, so a UI test can assert navigation moved as expected.</summary>
     internal WizardStep CurrentStepForTests => _model.Current;
+
+    /// <summary>Open a step exactly as navigation does, so a test can arrive at it without clicking through.</summary>
+    internal void ShowStepForTests(WizardStep step)
+    {
+        _model.GoTo(step);
+        ShowStep(step);
+    }
+
+    /// <summary>
+    /// Report a failed or cancelled gateway sign-in through the REAL failure path, so a test asserts what
+    /// a user would see. It drives <see cref="ShowGatewayFailure"/> itself rather than a copy of it - a
+    /// test that reproduced the rendering would pass while the product's own path stayed broken.
+    /// </summary>
+    internal void ReportGatewayFailureForTests(string message) => ShowGatewayFailure(message);
+
+    /// <summary>
+    /// The three gateway option cards, in the order they read on screen.
+    ///
+    /// Typed as <see cref="Control"/> ON PURPOSE, not as RadioButton. The seam must not presuppose the
+    /// fix: if it returned the fixed type, then putting the defect back - cards as plain Borders - would
+    /// stop the TEST PROJECT COMPILING, and "the build broke" is not the same evidence as "the test
+    /// failed". A check has to be able to observe the thing it rules out, so the assertion that these are
+    /// real controls belongs in the test, where it can go red, rather than in the signature, where it
+    /// would go unbuildable.
+    /// </summary>
+    internal IReadOnlyList<Control> GatewayOptionCardsForTests =>
+        new Control[] { GatewayHostedCard, GatewaySelfHostCard, GatewayNotNowCard };
+
+    /// <summary>Which gateway option is selected, named as the user would name it.</summary>
+    internal string GatewayChoiceForTests => _gatewayChoice.ToString();
 
     private static SolidColorBrush Brush(string hex) => new(Color.Parse(hex));
 }

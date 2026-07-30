@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Json;
 using CcDirector.Core.Account;
@@ -53,6 +53,15 @@ public sealed record DiscoveredGateway(string Name, string EndpointUrl);
 /// installer step renders it and BLOCKS completion. The sign-in step, the HTTP handler, and the persist
 /// action are all injectable so the join logic is unit-testable with no browser, no network, and no disk.
 /// The captured access token and both device keys are NEVER written to the log (security rule DT-05).
+///
+/// THESE MESSAGES STATE THE FACT AND NAME NO CONTROL. This engine is shared by surfaces whose buttons
+/// are labelled differently - the wizard's gateway step offers "Try again" and "Sign in and connect",
+/// the shared gateway panel offers "Sign in with DevThrottle" - so any button name written here is
+/// wrong somewhere. All three cancel messages used to end <c>Click "Sign in to DevThrottle" to try
+/// again</c>, which was wrong EVERYWHERE: no surface has a control with that label. It is the heading of
+/// the browser sign-in page, which at the moment of a cancellation is precisely the thing the user just
+/// closed. So the engine reports WHAT HAPPENED and each surface adds its own recovery wording next to
+/// its own buttons (issue #1070).
 /// </summary>
 public sealed class GatewayAccountEnrollRunner
 {
@@ -151,7 +160,7 @@ public sealed class GatewayAccountEnrollRunner
         {
             EngineLog.Write("[GatewayAccountEnrollRunner] VerifyAndSaveAsync: sign-in cancelled before a credential arrived");
             return OperationResult<MobileEnrollmentResponse>.Fail(
-                "Sign-in was cancelled. Click \"Sign in to DevThrottle\" to try again.");
+                "Sign-in was cancelled.");
         }
         catch (Exception ex)
         {
@@ -194,7 +203,7 @@ public sealed class GatewayAccountEnrollRunner
         {
             EngineLog.Write("[GatewayAccountEnrollRunner] SignInAndDiscoverGatewaysAsync: sign-in cancelled before a credential arrived");
             return OperationResult<IReadOnlyList<DiscoveredGateway>>.Fail(
-                "Sign-in was cancelled. Click \"Sign in to DevThrottle\" to try again.");
+                "Sign-in was cancelled.");
         }
         catch (Exception ex)
         {
@@ -332,7 +341,7 @@ public sealed class GatewayAccountEnrollRunner
         {
             EngineLog.Write("[GatewayAccountEnrollRunner] SignInAndEnrollHostedAsync: sign-in cancelled before a credential arrived");
             return OperationResult<MobileEnrollmentResponse>.Fail(
-                "Sign-in was cancelled. Click \"Sign in to DevThrottle\" to try again.");
+                "Sign-in was cancelled.");
         }
         catch (Exception ex)
         {
