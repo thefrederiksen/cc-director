@@ -50,6 +50,21 @@ public enum StatsStoreUnavailableReason
     StoreUnreadable,
 
     /// <summary>
+    /// The store was written by a NEWER build: its migration history records migrations this build does not
+    /// have.
+    ///
+    /// This is the desktop-rollback case, and refusing it is the whole point of the version discipline. An
+    /// older build running against a newer store finds nothing pending - its chain is behind, not ahead - so
+    /// it reports success and then fails on the first write that meets a constraint the newer build added,
+    /// outside any containment. The hand-rolled code this replaces always refused a file newer than itself;
+    /// this keeps that promise for stores the migration chain already tracks.
+    ///
+    /// The operator's action is specific and different from every other reason here: UPGRADE, do not repair.
+    /// The store is not damaged - this build is simply behind it.
+    /// </summary>
+    StoreIsNewerThanThisBuild,
+
+    /// <summary>
     /// Another process holds this store for writing, or an Entity Framework migration lock row was left
     /// behind by one that never finished.
     ///

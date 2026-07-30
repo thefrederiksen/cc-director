@@ -221,9 +221,15 @@ public static class GatewayStatsSqliteAdoption
     /// Re-checking under the lock is not a fallback - it is reading the state again once it can no longer
     /// change, and reporting what is actually true.
     /// </summary>
-    /// <summary>How long to wait for another writer before giving up and reporting the store busy. A BOUND,
-    /// not a retry budget: whatever happens, this path returns.</summary>
-    private const int WriteLockWaitMilliseconds = 5_000;
+    /// <summary>
+    /// How long to wait for another writer before giving up and reporting the store busy.
+    ///
+    /// IT MUST STAY WELL UNDER THE CALLER'S CONTAINMENT DEADLINE - twenty seconds - or the bound is useless:
+    /// the caller stops waiting first and reports a generic "database or network problem", which is precisely
+    /// the operator misdirection this work exists to remove. A local writer lock must arrive as a local
+    /// writer lock.
+    /// </summary>
+    private const int WriteLockWaitSeconds = 5;
 
     private static StatsStoreAdoptionResult StampUnderLock(
         GatewayStatsDbContext context, IHistoryRepository history, SqliteConnection connection,
@@ -231,7 +237,7 @@ public static class GatewayStatsSqliteAdoption
     {
         var baseline = BaselineMigrationOf(context);
 
-        // SQLite's OWN write lock, bounded by busy_timeout - deliberately NOT Entity Framework's migration
+        // SQLite's OWN write lock, bounded by the provider's command timeout - deliberately NOT Entity Framework's migration
         // lock. That one creates a __EFMigrationsLock row and retries forever with no timeout and no
         // cancellation, and its row is removed on DISPOSAL, so a process that crashes holding it leaves it
         // behind permanently. A later adoption then waits for ever, INSIDE a path whose entire contract is
@@ -242,7 +248,19 @@ public static class GatewayStatsSqliteAdoption
         // BEGIN IMMEDIATE takes the write lock UP FRONT, so the re-check below cannot be raced by a second
         // adopter between reading and writing - which is the actual thing that needed serialising. There is
         // no lock row to leak: SQLite releases the lock when the connection goes, crash included.
-        Execute(connection, $"PRAGMA busy_timeout = {WriteLockWaitMilliseconds}");
+        // THE PROVIDER'S OWN TIMEOUT, NOT A PRAGMA. PRAGMA busy_timeout does NOT bound BeginTransaction:
+        // Microsoft.Data.Sqlite issues BEGIN IMMEDIATE through its own command, which retries a BUSY result
+        // according to SqliteConnection.DefaultTimeout - thirty seconds by default - and the native busy
+        // handler COMPOUNDS with that managed retry rather than replacing it. Measured, after this path was
+        // written believing otherwise: a two-process probe returned the named busy result after 35.065
+        // seconds while its own message promised five. The caller had already given up at twenty and reported
+        // a database-or-network problem.
+        //
+        // A bound that is believed rather than measured is not a bound. This sets the value that actually
+        // controls the wait, and restores it afterwards - DefaultTimeout is connection-global and this
+        // connection outlives adoption, going on to serve Migrate() and every query after it.
+        var previousTimeout = connection.DefaultTimeout;
+        connection.DefaultTimeout = WriteLockWaitSeconds;
 
         SqliteTransaction transaction;
         try
@@ -251,19 +269,22 @@ public static class GatewayStatsSqliteAdoption
         }
         catch (SqliteException ex)
         {
+            connection.DefaultTimeout = previousTimeout;
             // Another process holds the write lock and did not release it inside the bound. Nothing has been
             // changed, and the next startup will simply try again.
             FileLog.Write($"[GatewayStatsSqliteAdoption] StampUnderLock: path={path} busy: {ex.Message}");
             return new StatsStoreAdoptionResult(
                 StatsStoreAdoptionOutcome.NotAdoptable, StatsStoreUnavailableReason.StoreLockedByAnotherProcess,
                 $"The statistics store at '{path}' is being written by another process and did not become " +
-                $"available within {WriteLockWaitMilliseconds} milliseconds, so it has NOT been changed. " +
+                $"available within {WriteLockWaitSeconds} seconds, so it has NOT been changed. " +
                 "Restart, and if this persists a process is stuck holding the file. The rest of the Gateway " +
                 "is unaffected.");
         }
 
-        using (transaction)
+        try
         {
+            using var scope = transaction;
+
             // Re-read under the write lock, where the answer can no longer change.
             if (HistoryTableExists(connection, transaction))
             {
@@ -283,6 +304,10 @@ public static class GatewayStatsSqliteAdoption
 
             Stamp(connection, transaction, history, path, baseline);
             transaction.Commit();
+        }
+        finally
+        {
+            connection.DefaultTimeout = previousTimeout;
         }
 
         return new StatsStoreAdoptionResult(
@@ -358,11 +383,41 @@ public static class GatewayStatsSqliteAdoption
         IReadOnlyDictionary<string, ExpectedTable> expected, IReadOnlyDictionary<string, string> objects)
     {
         var connection = (SqliteConnection)context.Database.GetDbConnection();
+        var chain = context.Database.GetMigrations().ToList();
         var baseline = BaselineMigrationOf(context);
         var applied = context.Database.GetAppliedMigrations().ToList();
 
         if (applied.Contains(baseline, StringComparer.Ordinal))
         {
+            // IS THIS FILE NEWER THAN THIS BUILD? Ask FIRST, before anything else about a tracked store.
+            //
+            // The version gate used to run only on stores with NO history, so once a history table existed a
+            // store from a LATER build sailed through: the baseline was in its applied list, the current
+            // model's shape was still present, and it came back usable. Migrate() was then a no-op, because
+            // this older chain has nothing pending against a newer database - and the first write that met a
+            // constraint the newer build added failed OUTSIDE this step's containment.
+            //
+            // That is the desktop-rollback path, and it removes exactly the safety the per-migration stamp
+            // rule exists to preserve. The hand-rolled code has always refused a file newer than itself; a
+            // tracked store must be refused for the same reason.
+            //
+            // THE EVIDENCE IS THE APPLIED MIGRATION LIST, NOT user_version, and that is a deliberate choice.
+            // An applied id this chain does not contain is proof that some other build wrote here, it NAMES
+            // the migration in the message, and it cannot be defeated by a bump somebody forgot - whereas an
+            // arithmetic check on user_version would condemn a legitimate store the moment a migration
+            // shipped without moving the stamp. The stamp rule is enforced where it belongs, in the tests.
+            var unknown = applied.Where(m => !chain.Contains(m, StringComparer.Ordinal))
+                .OrderBy(m => m, StringComparer.Ordinal).ToList();
+            if (unknown.Count > 0)
+                return new StatsStoreAdoptionResult(
+                    StatsStoreAdoptionOutcome.NotAdoptable, StatsStoreUnavailableReason.StoreIsNewerThanThisBuild,
+                    $"The statistics store at '{path}' records {unknown.Count} migration(s) this build does " +
+                    $"not have ({string.Join(", ", unknown)}), so it was written by a NEWER build of " +
+                    "DevThrottle. Running against it would report nothing pending and then fail on the first " +
+                    "write that meets something the newer build added. The store has NOT been changed. " +
+                    "Upgrade the Gateway rather than running an older build against it. Statistics are " +
+                    "unavailable; the rest of the Gateway is unaffected.");
+
             // The steady state, and by far the common one - but "the history says the baseline ran" is a
             // CLAIM ABOUT THE PAST, and the tables are the present. A store whose stat_delta has since been
             // dropped records the baseline, reports nothing pending, and dies on the first query. Reporting

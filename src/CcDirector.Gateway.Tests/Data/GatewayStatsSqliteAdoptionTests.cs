@@ -611,6 +611,12 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
     ///
     /// The timing assertion is deliberately generous: it is here to catch an unbounded WAIT, not to measure
     /// performance, and the failure it guards against does not finish at all.
+    ///
+    /// This case needs no contention - it refuses on sight of the lock ROW. The other bound, the one that
+    /// applies when another process genuinely holds the write lock, cannot be exercised in-process: it needs
+    /// two real writers. It is set through SqliteConnection.DefaultTimeout rather than PRAGMA busy_timeout,
+    /// because the pragma does NOT bound BeginTransaction - measured at 35.065 seconds against a promise of
+    /// five before that was corrected, and 6.9 seconds after, against the caller's twenty-second deadline.
     /// </summary>
     [Fact]
     public void Adopt_StoreCarryingAnAbandonedMigrationLock_RefusesImmediatelyRatherThanWaitingForever()
@@ -649,6 +655,63 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
             "abandoned migration lock. It must refuse on sight: Entity Framework's own acquisition retries " +
             "forever, and the containment boundary would otherwise burn its whole twenty-second deadline on " +
             "every start and leak an abandoned thread each time.");
+
+        Assert.Equal(before, FingerprintStore());
+    }
+
+    /// <summary>
+    /// THE DESKTOP-ROLLBACK PATH, and the one the version discipline exists for.
+    ///
+    /// The version gate used to run only on stores with NO history table, so once a store was tracked a file
+    /// from a LATER build sailed through: the baseline was in its applied list, the current model's shape was
+    /// still present, and it came back usable. Migrate() was then a no-op - this older chain has nothing
+    /// pending against a newer database - and the first write meeting a constraint the newer build added
+    /// failed OUTSIDE the containment boundary.
+    ///
+    /// That silently removed the protection the per-migration stamp rule exists to preserve, and it is the
+    /// path a user takes when they roll a desktop build back.
+    /// </summary>
+    [Fact]
+    public void Adopt_TrackedStoreWrittenByANewerBuild_IsRefusedAndLeavesTheFileByteIdentical()
+    {
+        BuildRealVersion5Store();
+
+        using (var context = OpenContext())
+        {
+            Assert.Equal(StatsStoreAdoptionOutcome.Adopted, GatewayStatsSqliteAdoption.Adopt(context).Outcome);
+            context.Database.Migrate();
+        }
+        SqliteConnection.ClearAllPools();
+
+        // What a NEWER build leaves behind: a migration this chain does not have, plus the schema changes
+        // that migration made. The model's own shape is all still present, which is why a shape-only check
+        // called this healthy.
+        using (var connection = new SqliteConnection(
+                   new SqliteConnectionStringBuilder { DataSource = _path }.ToString()))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                "INSERT INTO \"__EFMigrationsHistory\" VALUES ('20990101000000_FutureStats','9.0.2'); " +
+                "CREATE TABLE future_table (id INTEGER PRIMARY KEY); " +
+                "ALTER TABLE stat_delta ADD COLUMN future_column TEXT; " +
+                "CREATE UNIQUE INDEX ux_future ON repo_identity(tenant, repo_display); " +
+                "PRAGMA user_version=6";
+            command.ExecuteNonQuery();
+        }
+
+        var before = FingerprintStore();
+
+        using (var context = OpenContext())
+        {
+            var result = GatewayStatsSqliteAdoption.Adopt(context);
+
+            Assert.False(result.IsUsable);
+            Assert.Equal(StatsStoreUnavailableReason.StoreIsNewerThanThisBuild, result.Reason);
+            // It NAMES the migration, which is what makes the message actionable - the operator learns the
+            // store is ahead rather than broken, and that the answer is to upgrade rather than to repair.
+            Assert.Contains("20990101000000_FutureStats", result.Detail, StringComparison.Ordinal);
+        }
 
         Assert.Equal(before, FingerprintStore());
     }
