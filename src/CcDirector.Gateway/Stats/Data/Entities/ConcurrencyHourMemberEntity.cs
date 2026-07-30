@@ -25,9 +25,13 @@ namespace CcDirector.Gateway.Stats.Data.Entities;
 /// <c>repo_identity</c> in <c>GatewayStatsDatabase.MigrateToVersion1</c>: the only component allowed to
 /// decide identity is the comparer that decides it today.
 ///
-/// Retention: these rows are pruned together with their hour at 90 days. They are the highest-cardinality
-/// rows in the concurrency store (one per distinct session per hour), so an hour bucket that is pruned while
-/// its members are left behind would make this the largest table in the statistics database.
+/// LIFETIME: ONE HOUR PER TENANT, NOT NINETY DAYS OF THEM. The dedup sets belong to the CURRENT hour, and
+/// the file store held exactly one hour's worth - three lists beside a single current-hour key - clearing
+/// them whenever the observed hour differed from that key, in either direction of travel. So the moment a
+/// tenant's hour changes, its rows for every other hour are discarded here too. Keeping them and unioning
+/// them across a returning hour would report a higher distinct count than the file store did, which is a
+/// better answer and the wrong one for a port. The ninety-day prune still runs over this table as well, and
+/// it is not redundant: it is what eventually clears the last hour of a tenant that stopped being observed.
 /// </summary>
 public sealed class ConcurrencyHourMemberEntity
 {

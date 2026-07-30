@@ -196,6 +196,14 @@ public sealed class GatewaySessionConcurrencyPostgresTests : IDisposable
     }
 
     [RequiresPostgresStatsFact]
+    public void AnHourObservedAgainAfterALaterOne_MatchesTheFileStore()
+    {
+        var factory = FreshStore();
+        ConcurrencyStoreScenarios.AssertAnHourObservedAgainAfterALaterOneMatchesTheFileStore(
+            () => factory, _jsonPath, TenantId.Local);
+    }
+
+    [RequiresPostgresStatsFact]
     public void TheParityComparison_NoticesWhenTheTwoStoresDiverge()
     {
         var factory = FreshStore();

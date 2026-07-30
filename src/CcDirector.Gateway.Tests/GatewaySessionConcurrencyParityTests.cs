@@ -20,11 +20,13 @@ namespace CcDirector.Gateway.Tests;
 /// The fixture and the comparison live in <see cref="ConcurrencyStoreScenarios"/> and are run against real
 /// PostgreSQL too, in <see cref="GatewaySessionConcurrencyPostgresTests"/>.
 ///
-/// SCOPE, stated rather than implied. The fixture moves forward in time, because production time does. If an
-/// observation ever arrived for an hour EARLIER than one already folded, the two implementations would
-/// diverge - the JSON store cleared its dedup sets and started that hour's distinct counts again from
-/// nothing, whereas the database store rehydrates that hour's members and carries on counting. The database
-/// store is the more accurate of the two there; it is called out because this test does not cover it.
+/// SCOPE. The main fixture moves forward in time, because production time does. Observations that arrive
+/// for an EARLIER hour than one already folded are covered separately, by
+/// <see cref="AnHourObservedAgainAfterALaterOne_MatchesTheFileStore"/> - and they were the one place these
+/// two implementations really did disagree. An earlier draft of this file called that divergence out in
+/// prose and left it uncovered on the grounds that production time is monotonic; review 3 was right that
+/// naming a gap is not the same as closing it, and out-of-order observations are on the mission's boundary
+/// list. The store now reproduces the file store's behaviour there and the test holds it to it.
 /// </summary>
 public sealed class GatewaySessionConcurrencyParityTests : IDisposable
 {
@@ -48,6 +50,13 @@ public sealed class GatewaySessionConcurrencyParityTests : IDisposable
     public void RenderedSnapshot_IsIdentical_OnTheRetentionBoundary()
     {
         ConcurrencyStoreScenarios.AssertOutputParityOnTheRetentionBoundary(
+            () => _db.NewFactory(), _jsonPath, TenantId.Local);
+    }
+
+    [Fact]
+    public void AnHourObservedAgainAfterALaterOne_MatchesTheFileStore()
+    {
+        ConcurrencyStoreScenarios.AssertAnHourObservedAgainAfterALaterOneMatchesTheFileStore(
             () => _db.NewFactory(), _jsonPath, TenantId.Local);
     }
 

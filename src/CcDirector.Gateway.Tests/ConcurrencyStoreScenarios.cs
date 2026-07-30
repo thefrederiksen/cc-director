@@ -291,6 +291,48 @@ internal static class ConcurrencyStoreScenarios
     }
 
     /// <summary>
+    /// AN HOUR OBSERVED AGAIN AFTER A LATER ONE - found by review 3, and a real behaviour divergence rather
+    /// than a test gap.
+    ///
+    /// Observe hour H with one session, then hour H+1, then hour H AGAIN with a different session. The file
+    /// store reports ONE session for H, not two, and the reason is in its Observe: it clears its three dedup
+    /// lists whenever the observed hour differs from its single current-hour key, and "differs" fires when
+    /// the hour moves BACKWARDS exactly as it does when it moves forwards. So the returning hour starts its
+    /// dedup from nothing, and because the stored counts are maxima that only ever grow, H's stored number
+    /// does not move.
+    ///
+    /// A store that kept every hour's members and unioned them would report two - the better answer, and the
+    /// wrong one for a port. Out-of-order observations are named in the mission's boundary list, so this is
+    /// in scope and not an edge nobody promised. Both stores are driven here and must agree.
+    /// </summary>
+    public static void AssertAnHourObservedAgainAfterALaterOneMatchesTheFileStore(
+        Func<IDbContextFactory<GatewayStatsDbContext>> newContainerFactory, string jsonPath, TenantId tenant)
+    {
+        var json = new GatewaySessionConcurrencyStats(jsonPath);
+        var db = new GatewaySessionConcurrencyStore(newContainerFactory());
+
+        void Both(IReadOnlyCollection<SessionDto> roster, DateTime at)
+        {
+            json.Observe(roster, at, tenant);
+            db.Observe(roster, at, tenant);
+        }
+
+        Both(new List<SessionDto> { S("session-a", "Working", "M1", "R1") }, T0);
+        Both(new List<SessionDto> { S("session-c", "Working", "M2", "R2") }, T0.AddHours(1));
+        Both(new List<SessionDto> { S("session-b", "Working", "M3", "R3") }, T0.AddMinutes(30)); // back to hour H
+
+        var readAt = T0.AddHours(2);
+        AssertRenderedSnapshotsMatch(json, db, readAt, tenant, "a returning hour restarts its dedup in both stores");
+
+        // Stated as a number as well as a comparison, so the expectation is legible without running the file
+        // store: hour H reports ONE distinct session, not the two it has now seen.
+        var hourH = db.Snapshot(readAt, tenant).Hourly.Single(h => h.Hour == RaceHourKey);
+        Assert.Equal(1, hourH.Sessions);
+        Assert.Equal(1, hourH.Machines);
+        Assert.Equal(1, hourH.Repos);
+    }
+
+    /// <summary>
     /// VALIDATE THE DETECTOR. The parity check passes; this is what says the passing means something.
     ///
     /// A comparison of two rendered snapshots would also pass if the renderer returned a constant, if both

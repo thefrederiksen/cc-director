@@ -353,10 +353,23 @@ public sealed class GatewaySessionConcurrencyStore
         FileLog.Write($"[GatewaySessionConcurrencyStore] LoadPeak: tenant={tenantValue} liveMax={sh.LiveMax} workingMax={sh.WorkingMax} (row={(row is null ? "none" : "found")})");
     }
 
-    // Move the shadow onto a new clock hour: clear the dedup sets and rebuild them, and this hour's row, from
-    // the store. Rebuilding is what makes a restart mid-hour keep counting the same hour rather than starting
-    // its distinct counts again - the JSON store did the same thing from its persisted current-hour lists.
-    private static void RollHour(GatewayStatsDbContext ctx, string tenantValue, TenantShadow sh, string key)
+    // Move the shadow onto a new clock hour: clear the dedup sets, rebuild them and this hour's row from the
+    // store, and DISCARD every member row this tenant holds for any other hour.
+    //
+    // The discard is what makes this a port rather than an improvement, and it is worth reading twice. The
+    // JSON store held exactly ONE hour's dedup sets - three lists in the file, beside a single
+    // CurrentHourKey - and it cleared them whenever the observed hour differed from that key. That test is
+    // "different", not "later", so an observation for an EARLIER hour cleared them too: a returning hour
+    // started its distinct counts from nothing, and because the stored counts are maxima that only grow, its
+    // stored number did not move. Keeping every hour's members and unioning them would report a HIGHER
+    // number than the file store did for that sequence - a better answer, and the wrong one here. Parity is
+    // the bar; if the union is what we want, it is asked for as a change on its own merits, where the owner
+    // can see a number move and knows why. So the member table holds the current hour and nothing else,
+    // which is precisely what the three lists in the file were.
+    //
+    // Rebuilding the current hour's sets from the table is what makes a restart mid-hour keep counting the
+    // same hour rather than starting its distinct counts again - also exactly what the JSON store's Load did.
+    private void RollHour(GatewayStatsDbContext ctx, string tenantValue, TenantShadow sh, string key)
     {
         sh.CurrentHourKey = key;
         sh.CurSessions.Clear();
@@ -378,6 +391,11 @@ public sealed class GatewaySessionConcurrencyStore
             .Where(m => m.Tenant == tenantValue && m.HourUtc == key)
             .Select(m => new { m.Kind, m.MemberId })
             .ToList();
+
+        // Everything this tenant holds for any OTHER hour goes now, at the same moment the file store
+        // cleared its lists. Deliberately unconditional and in both directions of travel.
+        var discarded = ctx.Database.ExecuteSqlRaw(StatementsFor(ctx).DeleteMembersOfOtherHours, tenantValue, key);
+
         foreach (var m in members)
         {
             switch (m.Kind)
@@ -393,7 +411,7 @@ public sealed class GatewaySessionConcurrencyStore
             }
         }
 
-        FileLog.Write($"[GatewaySessionConcurrencyStore] RollHour: tenant={tenantValue} hour={key} rowExists={sh.HourExists} rehydrated sessions={sh.CurSessions.Count} machines={sh.CurMachines.Count} repos={sh.CurRepos.Count}");
+        FileLog.Write($"[GatewaySessionConcurrencyStore] RollHour: tenant={tenantValue} hour={key} rowExists={sh.HourExists} rehydrated sessions={sh.CurSessions.Count} machines={sh.CurMachines.Count} repos={sh.CurRepos.Count} discardedOtherHourMembers={discarded}");
     }
 
     private static void InsertMembers(GatewayStatsDbContext ctx, Statements sql, string tenantValue, string key,
@@ -459,6 +477,7 @@ public sealed class GatewaySessionConcurrencyStore
         public required string PruneHourInclusive { get; init; }
         public required string PruneMemberExclusive { get; init; }
         public required string PruneMemberInclusive { get; init; }
+        public required string DeleteMembersOfOtherHours { get; init; }
     }
 
     private Statements StatementsFor(GatewayStatsDbContext ctx)
@@ -530,6 +549,10 @@ public sealed class GatewaySessionConcurrencyStore
             PruneHourInclusive = $"DELETE FROM {hour.Qualified} WHERE tenant = {{0}} AND hour_utc <= {{1}}",
             PruneMemberExclusive = $"DELETE FROM {member.Qualified} WHERE tenant = {{0}} AND hour_utc < {{1}}",
             PruneMemberInclusive = $"DELETE FROM {member.Qualified} WHERE tenant = {{0}} AND hour_utc <= {{1}}",
+            // The dedup sets belong to ONE hour, so the members of any other hour are discarded the moment
+            // the hour changes - in either direction. See RollHour for why this is the port and not a
+            // shortcut.
+            DeleteMembersOfOtherHours = $"DELETE FROM {member.Qualified} WHERE tenant = {{0}} AND hour_utc <> {{1}}",
         };
         return _statements;
     }
