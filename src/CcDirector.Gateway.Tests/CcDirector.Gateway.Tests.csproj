@@ -46,6 +46,21 @@
     <ProjectReference Include="..\CcDirector.Gateway.Host\CcDirector.Gateway.Host.csproj" />
   </ItemGroup>
 
+  <!-- The reference above drags the host project's CONTENT across too, and one of those files is
+       hosted-gateway.image - the IMMUTABLE marker that means "this deployment is the hosted container".
+       GatewayHostedMode.IsHostedImage looks for it in the application base directory, which for a test run
+       is this output directory, so its presence makes EVERY test in this assembly believe it is hosted.
+       That is not a cosmetic problem: it silently inverts the self-host arm of every test that contrasts
+       the two deployments, and such a test then passes or fails for a reason that has nothing to do with
+       what it is checking.
+
+       The guard needs the host's DLL, not its content. Remove the marker from the test output after the
+       copy, so the assembly the metadata scan reads is present and the deployment identity this process
+       reports is the truthful one: these tests are not a hosted container. -->
+  <Target Name="RemoveHostedImageMarkerFromTestOutput" AfterTargets="Build">
+    <Delete Files="$(OutputPath)hosted-gateway.image" />
+  </Target>
+
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>

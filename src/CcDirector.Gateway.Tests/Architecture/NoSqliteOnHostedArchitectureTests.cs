@@ -1,4 +1,5 @@
 using CcDirector.Gateway.Data;
+using CcDirector.Gateway.Stats.Data;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
 using Xunit;
@@ -125,21 +126,111 @@ public sealed class NoSqliteOnHostedArchitectureTests
                   .Any(i => i.Contains("IDesignTimeDbContextFactory", StringComparison.Ordinal))),
 
         ["GatewayStatsDatabase"] = new(
-            "THE SUBJECT OF THE REMEDIATION, NOT AN EXEMPTION, and its reason is FALSE TODAY: this store is " +
-            "ungated and really does open SQLite on hosted - it is the file on the Azure Files share that " +
-            "caused the 2026-07-30 outage. It is listed only so the guard could land ahead of the port.",
-            ConditionKind.ExpiresWhenTrue,
-            "A statistics DbContext exists in the hosted Gateway assemblies. Its presence is the machine-" +
-            "checkable signal that the port HAS happened, so this accommodation has expired and must be deleted.",
-            f => f.StatisticsDbContextExists),
+            "GUARD-GATED. This was the file on the Azure Files share that caused the 2026-07-30 outage, and " +
+            "it is now the SELF-HOST statistics store only: its constructor calls HostedSqliteGuard." +
+            "EnsureNotHosted before it creates a directory or opens a connection, so a hosted Gateway is " +
+            "refused by name rather than handed a file. The hosted store is PostgreSQL, chosen by " +
+            "StatsConnectionSelection, which never returns a SQLite file when hosted.",
+            ConditionKind.RequiresToStayTrue,
+            "GatewayStatsDatabase still calls HostedSqliteGuard.EnsureNotHosted. That call IS the gate - " +
+            "remove it and a hosted Gateway can open this file again, which is the outage.",
+            f => f.Calls("GatewayStatsDatabase")
+                  .Any(c => c.Contains("EnsureNotHosted", StringComparison.Ordinal))),
 
         ["GatewayInputStatsAggregator"] = new(
-            "Reads and writes through the connection GatewayStatsDatabase already opened; it opens none of its " +
-            "own. It is gated exactly as well as that store is, and it goes away with it.",
-            ConditionKind.ExpiresWhenTrue,
-            "The same signal as the store above - a statistics DbContext exists, so the port has landed and " +
-            "this entry expires with it.",
-            f => f.StatisticsDbContextExists),
+            "OPENS NOTHING OF ITS OWN. Every statement it runs rides on the connection GatewayStatsDatabase " +
+            "opened, so it is gated exactly as well as that store is - and that store now refuses hosted at " +
+            "its constructor. GatewayHost does not even construct this type on a hosted Gateway.",
+            ConditionKind.RequiresToStayTrue,
+            "It still constructs no SqliteConnection and opens none. Give it a connection of its own and it " +
+            "stops inheriting GatewayStatsDatabase's guard, and this justification goes with it.",
+            f => !f.Calls("GatewayInputStatsAggregator")
+                   .Any(c => c.Contains("SqliteConnection::.ctor", StringComparison.Ordinal)
+                          || c.Contains("SqliteConnection::Open", StringComparison.Ordinal))),
+
+        // ---- The ported statistics store. -----------------------------------------------------------
+        //
+        // These eight names arrived with the port itself, and they are all on ONE gate: the statistics
+        // connection is chosen in exactly one place, StatsConnectionSelection.Resolve, and that method
+        // returns a SQLite source only when it is told the Gateway is NOT hosted. So a hosted Gateway's
+        // statistics store is PostgreSQL or nothing, and every SQLite-shaped type below is reachable only
+        // down the self-host branch.
+        //
+        // The conditions below check that gate from both ends - that the chooser still refuses hosted, and
+        // that no type underneath it has quietly acquired a connection of its own and stepped around the
+        // chooser. That second half is the one that matters: a type that opens its own SQLite connection is
+        // no longer gated by anything, however self-host it looks.
+
+        [nameof(StatsConnectionSelection)] = new(
+            "THE CHOOSER, and the gate every other statistics entry rests on. It names a SQLite file only " +
+            "on the self-host branch; when it is told the Gateway is hosted it returns NotConfigured with a " +
+            "named reason BEFORE reaching that branch. It opens nothing - it only decides.",
+            ConditionKind.RequiresToStayTrue,
+            "Its hosted branch is still there, carrying the sentence that states the law. Delete the branch " +
+            "and the literal goes with it, and a hosted Gateway would be handed a file path.",
+            f => f.Literals(nameof(StatsConnectionSelection))
+                  .Any(l => l.Contains("A hosted Gateway NEVER opens a local statistics file", StringComparison.Ordinal))),
+
+        ["GatewayStatsStore"] = new(
+            "BRANCH-GATED on the chooser. Its SQLite branch runs only when StatsConnectionSelection returned " +
+            "a SQLite source, and it reads the hosted signal from BOTH the environment variable and the " +
+            "published image marker, so a hosted container that lost its variable still does not get a file.",
+            ConditionKind.RequiresToStayTrue,
+            "It still asks StatsConnectionSelection rather than deciding for itself, and it still consults " +
+            "GatewayHostedMode. Lose either and the SQLite branch stops being gated.",
+            f => f.Calls("GatewayStatsStore").Any(c => c.Contains("StatsConnectionSelection::Resolve", StringComparison.Ordinal))
+                 && f.Calls("GatewayStatsStore").Any(c => c.Contains("GatewayHostedMode::get_IsHosted", StringComparison.Ordinal))),
+
+        [nameof(GatewayStatsDbContextDesignTimeFactory)] = new(
+            "DESIGN-TIME ONLY: constructed by the 'dotnet ef' tooling to scaffold the statistics migrations, " +
+            "never by the Gateway process. It serves no request and holds no data.",
+            ConditionKind.RequiresToStayTrue,
+            "It still implements IDesignTimeDbContextFactory, which is what makes it tooling-only. Give it " +
+            "any runtime role and that interface goes, and with it the justification.",
+            f => f.Interfaces(nameof(GatewayStatsDbContextDesignTimeFactory))
+                  .Any(i => i.Contains("IDesignTimeDbContextFactory", StringComparison.Ordinal))),
+
+        ["GatewayStatsSqliteContextFactory"] = new(
+            "TAKES a connection, opens none. It wraps a SqliteConnection the caller already owns so the " +
+            "reads can run on Entity Framework over it; whether that connection exists at all is the " +
+            "chooser's decision, not this type's.",
+            ConditionKind.RequiresToStayTrue,
+            "It still constructs no SqliteConnection. The moment it makes its own, it is no longer downstream " +
+            "of the chooser and this justification is void.",
+            f => !f.Calls("GatewayStatsSqliteContextFactory")
+                   .Any(c => c.Contains("SqliteConnection::.ctor", StringComparison.Ordinal))),
+
+        ["SqliteStatsContextFactory"] = new(
+            "TAKES a connection, opens none - the same shape as GatewayStatsSqliteContextFactory, which it " +
+            "duplicates. Both arrived from different branches of the port; collapsing them is tidying, not a " +
+            "hosted-reachability question.",
+            ConditionKind.RequiresToStayTrue,
+            "It still constructs no SqliteConnection. The moment it makes its own, it is no longer downstream " +
+            "of the chooser and this justification is void.",
+            f => !f.Calls("SqliteStatsContextFactory")
+                   .Any(c => c.Contains("SqliteConnection::.ctor", StringComparison.Ordinal))),
+
+        ["GatewayStatsSqliteAdoption"] = new(
+            "ADOPTS AN EXISTING SELF-HOST FILE, and only one. It is handed a DbContext that is already open " +
+            "on the store the chooser selected, and it decides whether that store may be carried forward. " +
+            "There is no hosted store for it to adopt - a hosted Gateway has no statistics file to inspect.",
+            ConditionKind.RequiresToStayTrue,
+            "It still constructs no SqliteConnection and opens nothing - it works only on the context it is " +
+            "given. Let it open a store by path and it stops being downstream of the chooser.",
+            f => !f.Calls("GatewayStatsSqliteAdoption")
+                   .Any(c => c.Contains("SqliteConnection::.ctor", StringComparison.Ordinal))),
+
+        ["GatewaySessionConcurrencyStore"] = new(
+            "PROVIDER-NEUTRAL. It asks the context which provider it is on so it can write the dialect that " +
+            "provider needs; it neither chooses a provider nor opens a connection. On hosted that context is " +
+            "PostgreSQL, and the file store this type replaced - gateway-concurrency-stats.json - is not " +
+            "written on the hosted path at all.",
+            ConditionKind.RequiresToStayTrue,
+            "It still constructs no SqliteConnection and never calls UseSqlite, so it cannot select a store " +
+            "of its own behind the chooser's back.",
+            f => !f.Calls("GatewaySessionConcurrencyStore")
+                   .Any(c => c.Contains("SqliteConnection::.ctor", StringComparison.Ordinal)
+                          || c.Contains("::UseSqlite", StringComparison.Ordinal))),
     };
 
     // ----------------------------------------------------------------------------------------------------
