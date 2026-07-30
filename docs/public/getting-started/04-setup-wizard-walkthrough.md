@@ -1,3 +1,23 @@
+<!--
+  SCREENSHOTS ARE MISSING FROM THIS PAGE. Tracked: thefrederiksen/devthrottle_internal#1053.
+
+  Sixteen images were deleted in thefrederiksen/devthrottle#2287 because every one showed a screen
+  that no longer exists (the Workstation/Gateway role picker, the Prerequisites screen, the Gateway
+  role). The text was rewritten against the shipping wizard; the pictures were not recaptured,
+  because the capture belongs to the clean-machine QA run rather than to a separate walk.
+
+  If you are adding them, read #1053 first. Three things matter more than the images:
+
+    1. Caption every image with its step number from FirstRunWizardModel.CanonicalOrder.
+       Gateway is step 2, NOT 7. Browsers is step 7, NOT 6. Three briefs got that wrong before the
+       prose was fixed, and a caption is where the error comes back.
+    2. The Agents step needs the ZERO-AGENT frame. A found-state picture under this page's
+       zero-state prose is the same failure that got the original sixteen deleted.
+    3. Capture at a roomy resolution. At 1024x768 the Welcome and Done steps clip (#1046), and a
+       screenshot taken where a defect does not appear must not become the reason that defect is
+       closed.
+-->
+
 # Setup Wizard Walkthrough
 
 Getting DevThrottle running means going through **two** short wizards, and it is worth knowing
