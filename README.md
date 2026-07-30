@@ -52,7 +52,7 @@ The gateway is what makes DevThrottle reachable beyond the one machine: your age
 | **Self-hosted gateway** | Run the gateway on your own machine and join it. Windows only, and it still needs a DevThrottle sign-in. For advanced setups. |
 | **Not now** | Local-only on this machine. Connect any time from Settings. |
 
-Either gateway needs a DevThrottle login -- with Google, GitHub, or an email and password. There is no bring-your-own-key: inference always routes through DevThrottle, which is exactly why connecting a gateway asks you to sign in.
+Either gateway needs a DevThrottle login -- Google, GitHub, or email. The email route sends you a sign-in link rather than asking for a password, so Google or GitHub is the quicker way in. There is no bring-your-own-key: inference always routes through DevThrottle, which is exactly why connecting a gateway asks you to sign in.
 
 <p align="center">
   <a href="https://devthrottle.com"><img src="https://img.shields.io/badge/Start%20free-devthrottle.com-2EA44F?style=for-the-badge" alt="Start free at devthrottle.com"></a>
