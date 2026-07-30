@@ -461,6 +461,118 @@ public sealed class SpokenLanguageContractTests
         Assert.Equal(new[] { "Code", "EnglishName", "NativeName" }.OrderBy(x => x), members.OrderBy(x => x));
     }
 
+    /// <summary>
+    /// NO LANGUAGE EVER SELECTS A SPEECH MODEL - AND THIS VERSION CANNOT BE WALKED AROUND (issue #1031).
+    ///
+    /// The method-local scan above is the original guard and it stays, because it catches the blunt form. It has
+    /// two documented holes, both found by the independent inspection of Phases 1 and 2:
+    ///
+    ///   1. IT IS BLIND THROUGH A RESOLVER. It counts a method as touching a language only when the operand is
+    ///      declared directly on SpokenLanguage/SpokenLanguages. A call to
+    ///      <c>tenantSettings.SpokenLanguage(tenant)</c> is declared on the RESOLVER, so it does not count -
+    ///      and that is how the language is actually read everywhere in the product.
+    ///   2. IT IS ONE METHOD DEEP. Reading the language in one method and setting the model in a helper it calls
+    ///      splits the offence across two methods and neither one looks suspicious.
+    ///
+    /// So this scan widens both: a language is touched by ANY member named for one (including through the
+    /// resolver and through an utterance), and the offence is MODEL SELECTION reached DIRECTLY OR THROUGH A
+    /// CALL. Selection, not reading: a synthesis call site legitimately holds both an utterance and the engine
+    /// it is posting to, and the Architect confirmed there is no language-dependent model branch in the code
+    /// today - what must be impossible is a language DECIDING an engine.
+    ///
+    /// Sabotage-tested both ways, which is the only reason to believe it: plant
+    /// <c>if (language.Code == "fr") SetTtsModel(...)</c> in one method and it goes red; move the
+    /// <c>SetTtsModel</c> into a helper and it still goes red, naming the pair.
+    /// </summary>
+    [Fact]
+    public void No_language_selects_a_speech_model_even_through_a_resolver_or_a_helper()
+    {
+        using var module = ModuleDefinition.ReadModule(typeof(SpeechContract).Assembly.Location);
+        var methods = AllTypes(module).SelectMany(t => t.Methods).Where(m => m.HasBody).ToList();
+
+        // Which methods CHOOSE a model: they write one, or they name the stored key a write goes to. Reading the
+        // effective model is not selecting it, which is why TtsModel and TtsModelConfig.Resolve are absent here.
+        var selectors = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var method in methods)
+        {
+            foreach (var name in OperandNames(method))
+            {
+                if (name.Contains("SetTtsModel", StringComparison.Ordinal)
+                    || name.Contains("TtsModelConfig.Set", StringComparison.Ordinal)
+                    || name.Contains("TenantSettingKeys.TtsModel", StringComparison.Ordinal))
+                {
+                    selectors.Add(Key(method));
+                    break;
+                }
+            }
+        }
+
+        // The scan must SEE model selection at all, or an empty offender list proves nothing.
+        Assert.True(selectors.Count > 0,
+            "The scan found no method that selects a speech model, so it is not looking where it thinks it is.");
+
+        var offenders = new List<string>();
+        var sawLanguage = 0;
+        foreach (var method in methods)
+        {
+            var names = OperandNames(method).ToList();
+            if (!names.Any(TouchesLanguage)) continue;
+            sawLanguage++;
+
+            if (selectors.Contains(Key(method)))
+            {
+                offenders.Add($"{Key(method)} (selects a model itself)");
+                continue;
+            }
+            // One hop: this method reads a language and calls something that selects a model. Model selection is
+            // rare, so the reachable set stays tiny and this cannot flood with false positives.
+            foreach (var instruction in method.Body.Instructions)
+            {
+                if (instruction.Operand is MethodReference called && selectors.Contains(called.FullName))
+                {
+                    offenders.Add($"{Key(method)} -> {called.Name} (selects a model)");
+                    break;
+                }
+            }
+        }
+
+        Assert.True(sawLanguage >= 3,
+            $"Only {sawLanguage} compiled methods reference a spoken language through the widened match - the "
+            + "scan is not looking where it thinks it is.");
+        Assert.True(offenders.Count == 0,
+            "A spoken language must never select the speech MODEL - not directly, not through the settings "
+            + "resolver, and not through a helper one call away. Choosing a language switched the engine in the "
+            + "build that was reverted (devthrottle_internal#547) and that engine could not speak real narration "
+            + "lengths. A language selects a VOICE inside the one engine. Offenders: "
+            + string.Join(", ", offenders));
+
+        static string Key(MethodDefinition m) => m.FullName;
+
+        static IEnumerable<string> OperandNames(MethodDefinition m)
+        {
+            foreach (var instruction in m.Body.Instructions)
+            {
+                var name = instruction.Operand switch
+                {
+                    TypeReference declaredType => declaredType.FullName,
+                    MemberReference member => member.DeclaringType?.FullName + "." + member.Name,
+                    _ => null,
+                };
+                if (name is not null) yield return name;
+            }
+        }
+
+        // A language is touched by any member NAMED for one, wherever it is declared - which is what closes the
+        // resolver hole. An utterance counts too: it carries a language by construction, so a method holding one
+        // is holding a language whether it says the word or not.
+        static bool TouchesLanguage(string operandName)
+            => operandName.StartsWith(typeof(SpokenLanguage).FullName!, StringComparison.Ordinal)
+               || operandName.StartsWith(typeof(SpokenLanguages).FullName!, StringComparison.Ordinal)
+               || operandName.StartsWith(typeof(SpokenUtterance).FullName!, StringComparison.Ordinal)
+               || operandName.EndsWith(".SpokenLanguage", StringComparison.Ordinal)
+               || operandName.EndsWith(".Utterance", StringComparison.Ordinal);
+    }
+
     /// <summary>Every type reachable in the module, nested types included.</summary>
     private static IEnumerable<TypeDefinition> AllTypes(ModuleDefinition module)
     {

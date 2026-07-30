@@ -47,6 +47,21 @@ internal static class NarrationText
     // the exact "English fragment in a French session" the owner ruled out.
 
     /// <summary>
+    /// The runaway guard, applied to an UTTERANCE (issue #1031): the same text rules, with the language and the
+    /// voice travelling through untouched.
+    ///
+    /// This overload exists so a sink never has to take an utterance apart and rebuild it. Handing a language in
+    /// again at a call site that is already holding one is exactly the loose-arguments shape the utterance type
+    /// removes, and it is where a language went missing twice.
+    /// </summary>
+    public static SpokenUtterance LimitForSpeech(SpokenUtterance utterance, out bool wasCut)
+    {
+        ArgumentNullException.ThrowIfNull(utterance);
+        var limited = LimitForSpeech(utterance.Text, utterance.Language, out wasCut);
+        return wasCut ? utterance.WithText(limited) : utterance;
+    }
+
+    /// <summary>
     /// Bound <paramref name="text"/> for synthesis. Returns the text unchanged when it is within
     /// <see cref="MaxChars"/>. Otherwise it cuts at the last sentence end (falling back to a word
     /// boundary, never mid-word) and appends <see cref="SpokenPhrases.NarrationCutNotice"/>, in the

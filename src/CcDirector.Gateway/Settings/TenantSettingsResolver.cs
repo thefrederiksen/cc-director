@@ -87,6 +87,38 @@ public sealed class TenantSettingsResolver
     }
 
     /// <summary>
+    /// THE ONE PLACE AN UTTERANCE IS BORN (issue #1031). Given this account and some words, decide the language
+    /// it is spoken in and the voice that speaks it, and hand back a package no sink can misread.
+    ///
+    /// This is what "one place we speak from" means. Not one speaker - some speech must be local and
+    /// network-free, so there will always be more than one engine - but one DECIDER. Every sink in the product
+    /// takes a <see cref="Speech.SpokenUtterance"/> and plays it; none of them reads a setting, resolves a
+    /// voice, or picks a language, because none of them can: a bare string does not compile against that
+    /// parameter.
+    ///
+    /// ADDING A FOURTH LANGUAGE IS A ONE-PLACE CHANGE, and this method is why. Every spoken path in the Gateway
+    /// gets its language and voice from here, so a new entry in <see cref="Speech.SpokenLanguages"/> plus its
+    /// voices reaches all of them at once - there is no second list to remember and no call site to revisit.
+    /// The compiler and the phrase tests then hold the other end: a language with no translated phrases, or no
+    /// registered voice, does not build.
+    ///
+    /// It resolves a VOICE and never a model. The engine is <see cref="TtsModel"/>, resolved separately from a
+    /// tenant and a transcription mode with no knowledge of any language - so a language cannot select an
+    /// engine, which is the failure that got this feature reverted (devthrottle_internal#547).
+    /// </summary>
+    /// <param name="voiceOverride">An explicit voice, for AUDITIONING one - the Language tab's Play sample
+    ///  offers a voice before it is chosen. Blank means "the account's own voice", which is the normal path.
+    ///  Note what is NOT overridable: the language. A caller may ask to hear a different voice; it may not ask
+    ///  to be spoken to in a language the account did not choose.</param>
+    public Speech.SpokenUtterance Utterance(TenantId tenant, TranscriptionMode mode, string text,
+        string? voiceOverride = null)
+    {
+        var language = SpokenLanguage(tenant);
+        var voice = string.IsNullOrWhiteSpace(voiceOverride) ? TtsVoice(tenant, mode) : voiceOverride.Trim();
+        return Speech.SpokenUtterance.For(language, voice, text);
+    }
+
+    /// <summary>
     /// The voice this tenant has chosen for <paramref name="language"/>, or null when it has chosen none
     /// - and also null when the stored id is not a voice of that language, so a caller can never be
     /// handed a voice that cannot speak the words it is about to be given.

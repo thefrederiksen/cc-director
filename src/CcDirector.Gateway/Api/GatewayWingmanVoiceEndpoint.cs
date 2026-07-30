@@ -410,11 +410,19 @@ internal static class GatewayWingmanVoiceEndpoint
             // product limit here - only the runaway guard, which announces itself when it fires
             // (issue #1612). This used to cut at 4000 characters, silently and mid-word, to satisfy
             // OpenAI's limit long after we stopped calling OpenAI.
-            var input = Wingman.NarrationText.LimitForSpeech(req.Text, tenantSettings.SpokenLanguage(reqTenant.Value), out var wasCut);
+            // ONE decision, made by the one decider (issue #1031). The language and the voice arrive together
+            // in an utterance this route cannot have built without a language; a caller-supplied voice is an
+            // AUDITION (the Language tab offering a voice before it is chosen) and rides through the same
+            // factory. Nothing here reads a language setting or picks a voice - that is the whole point.
+            var spoken = Wingman.NarrationText.LimitForSpeech(
+                tenantSettings.Utterance(reqTenant.Value, mode, req.Text, req.Voice), out var wasCut);
             if (wasCut)
                 FileLog.Write($"[GatewayWingmanVoice] tts text EXCEEDED {Wingman.NarrationText.MaxChars} chars " +
                               $"({req.Text.Length}) - spoken text cut and the listener told");
-            var voice = string.IsNullOrWhiteSpace(req.Voice) ? tenantSettings.TtsVoice(reqTenant.Value, mode) : req.Voice.Trim();
+            // The ENGINE, resolved on its own from the tenant and the transcription mode. It never sees the
+            // language: a language selects a voice inside the one engine, never the engine
+            // (devthrottle_internal#547). A caller may name a model explicitly - that is a model choice made
+            // by a person, not derived from a language.
             var model = string.IsNullOrWhiteSpace(req.Model) ? tenantSettings.TtsModel(reqTenant.Value, mode) : req.Model.Trim();
             var url = tts.BaseUrl.TrimEnd('/') + "/audio/speech";
             // Time the read-aloud call (request -> done) so its speed is in the log, matching the
@@ -429,7 +437,7 @@ internal static class GatewayWingmanVoiceEndpoint
                 // preferBackup is false here: the silent-primary backup routing (issue devthrottle_internal#405) is driven by
                 // the per-session narration path (WingmanVoiceService), which owns the sticky state this
                 // interactive read-aloud endpoint does not carry. It still gets the proxy's own failover.
-                using var resp = await TtsSynthesis.PostAsync(ttsHttp, url, key, new { model, voice, input, response_format = "mp3" }, input.Length, preferBackup: false, ct);
+                using var resp = await TtsSynthesis.PostAsync(ttsHttp, url, key, new { model, voice = spoken.Voice, input = spoken.Text, response_format = "mp3" }, spoken.Length, preferBackup: false, ct);
                 if (!resp.IsSuccessStatusCode)
                 {
                     var status = (int)resp.StatusCode;
@@ -482,7 +490,7 @@ internal static class GatewayWingmanVoiceEndpoint
                 // may return audio/wav for some models - the browser must be told which so it can play it.
                 var contentType = resp.Content.Headers.ContentType?.MediaType ?? "audio/mpeg";
                 sw.Stop();
-                FileLog.Write($"[GatewayWingmanVoice] tts ok: elapsedMs={sw.ElapsedMilliseconds}, provider={mode.ToConfigString()}, chars={input.Length}, bytes={bytes.Length}, model={model}, voice={voice}, type={contentType}");
+                FileLog.Write($"[GatewayWingmanVoice] tts ok: elapsedMs={sw.ElapsedMilliseconds}, provider={mode.ToConfigString()}, chars={spoken.Length}, bytes={bytes.Length}, model={model}, voice={spoken.Voice}, type={contentType}");
                 return Results.Bytes(bytes, contentType);
             }
             // TtsSynthesis exhausted its attempts: the worker never answered inside the per-attempt cap.
