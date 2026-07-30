@@ -39,10 +39,13 @@ statement was a `SELECT` against the catalog. Nothing was created, altered or dr
 `gateway_stats.__EFMigrationsHistory` there - the existing history table in `gateway` is already owned
 by `gateway_app`, which is direct evidence the role can create and own a migrations history table.
 
-The trap that had to be avoided: the `gateway` schema EXISTING is **not** evidence the role can create
-one. `migrationBuilder.EnsureSchema` emits `CREATE SCHEMA IF NOT EXISTS`, which is a silent no-op when
-a superuser created the schema at provisioning time. The database privilege is the thing that answers
-the question, and that is what was read.
+**The trap, recorded here rather than only in a message because someone will otherwise re-derive the
+wrong answer from the schema simply being there.** The `gateway` schema EXISTING is **not** evidence
+that the role can create one. `migrationBuilder.EnsureSchema` emits `CREATE SCHEMA IF NOT EXISTS`,
+which is a silent no-op when a superuser created the schema at provisioning time - so the check would
+have passed identically whether the privilege was present or absent. That is a guard supplying its own
+evidence: it cannot fail, so its passing means nothing. The database privilege is the thing that
+answers the question, and that is what was read.
 
 **A correction to the stated fallback.** Verdict 3 names the fallback as "the same physical database,
 default schema, table names prefixed". That fallback is **not available**: `gateway_app` has no CREATE
@@ -86,6 +89,39 @@ surrogate. That is a real invariant and it holds, but it holds by construction e
 a column here. Step 2 carries the shape forward unchanged - changing it is a behaviour change outside
 this step - and the contract suite asserts the indirect partitioning explicitly rather than skipping
 those two tables on proof row 4. Named here so it is a recorded decision and not an omission.
+
+### And the finding that came out of looking: THREE accessors return every tenant's rows
+
+The Architect's ruling was that asserting the indirect partitioning is not enough - the property that
+actually protects us is the one `devthrottle_internal#1039` achieved on the missions leak: a foreign
+record is unreachable because **no method would return one**, not because every call site remembered to
+filter. He asked whether such an accessor exists today. It does, and there are three of them.
+
+| Where | Statement | Scope |
+|---|---|---|
+| `GatewayInputStatsAggregator.cs:1101` `SessionCounts` | `SELECT {column}, COUNT(*) FROM {table} GROUP BY {column}` | **no tenant filter** - every tenant |
+| `GatewayInputStatsAggregator.cs:297` `LoadMirror` | `SELECT repo_id, session_id FROM repo_session` | **no tenant filter** - every tenant |
+| `GatewayInputStatsAggregator.cs:298` `LoadMirror` | `SELECT agent_id, session_id FROM agent_session` | **no tenant filter** - every tenant |
+
+`SessionCounts` has two call sites - `RepoTotals` (line 988) and `AgentTotals` (line 1051) - and both
+are correct TODAY: each looks up only ids it obtained from a tenant-filtered source, so no other
+tenant's number is ever served. `LoadMirror` loads both membership sets into
+`HashSet<(long Id, string SessionId)>` - note the tuple has **no tenant**, unlike every other mirror in
+the class, which is keyed by `(TenantId, string)` - and that global set is what `KnownIdentitySession`
+consults to decide whether a membership row needs writing. Correct today for the same reason.
+
+**So no leak is being served, and this is still the 1039 shape one table over.** Safety rests on every
+one of those call sites continuing to remember, and the class's own comment at line 296 states the rule
+that has to be remembered. A fourth call site that looked up an id from anywhere else - or simply
+enumerated the returned dictionary - would leak, and nothing in the code would stop it. There is a
+second, smaller cost too: `SessionCounts` reads the whole table on every Repos and Agents page render,
+across every tenant, on a hosted store that only grows.
+
+Per the ruling, **no filter is being quietly added.** It is reported to the Architect as a finding and
+the decision on scope is his. Step 2 carries the behaviour forward unchanged, and the contract suite
+proves BOTH properties the ruling named: that the indirect partitioning holds, and that these accessors
+return foreign rows - the second asserted as the CURRENT behaviour, so that whenever it is fixed the
+test turns red and names what changed rather than silently passing.
 
 ---
 
@@ -131,6 +167,13 @@ The rule that goes with it, so it cannot decay into a fallback: **when
 the statistics store is UNAVAILABLE with a named reason. It never opens a SQLite file.** That is the
 no-SQLite guard doing its job on a misconfiguration, and the provisioning workflow sets the variable.
 
+**NOT CONFIGURED and UNREACHABLE are two DIFFERENT named reasons** - on the failure surface, in the
+log, and in the 503 body. Architect ruling, and it is not optional. A deploy that simply forgets to set
+`CC_GATEWAY_STATS_DB_CONNECTION` would otherwise present identically to a database outage, and the next
+incident would be spent hunting a network fault that is really a missing variable. Absence on hosted
+stays NON-FATAL, but it is LOUD: logged once at startup with the variable named, and visible on the
+health surface. Never quiet. Never a SQLite file.
+
 ---
 
 ## 4. Worker assignments
@@ -166,13 +209,32 @@ to trust this Manager's report, and told to write its review to a file and reply
 |---|---|---|
 | W8 | The provider-parametrised contract suite: all sixteen tables read and write, interleaved writers, idempotency on replay, tenant partitioning, boundaries, output parity on `/stats/data` bodies, and the suite watched going red against a deliberately broken implementation | Proof rows 1-7 |
 
-### The one collision risk with Step 1, named up front
+### The Step 1 overlap - DECIDED by the Architect, not reconciled at land
 
-Step 1 (a different Manager, a different worktree) is building the statistics failure surface: the
-bounded queue at the push ingress, the per-observer failure, drop, last-error and last-successful-write
-counters, and the 503 on the statistics surface. Step 2's worker 6 needs that same surface for the
-non-fatal startup boundary.
+**Step 1 owns the statistics failure surface and lands first. Worker 6 CONSUMES it and does not build a
+second one.** The shape Step 1 is building, which worker 6 codes against today: per-observer FAILURE
+COUNT, DROP COUNT, LAST ERROR and LAST SUCCESSFUL WRITE, surfaced on `/stats/data` and inside the 503
+body.
 
-Step 2 does not wait on Step 1 and does not depend on it. Worker 6 builds its own boundary against the
-same shape, and the two are reconciled when the Architect lands them. Recorded here so the overlap is a
-known merge, not a surprise.
+So worker 6 defines its side as a **small interface its code depends on**, and keeps the endpoint
+wiring out of this branch entirely. If Step 1 lands a different shape the Architect adapts this side at
+merge - a rename, not a rebuild.
+
+### Pace
+
+Waves 1 and 2 are the critical path. The contract suite in wave 4 proves the port and stops - it does
+not become a project of its own. Everything in the mission brief's proof bar stands; nothing beyond it
+is Step 2.
+
+### A note on the mission brief, and on rebasing
+
+This worktree does **not** carry a copy of the mission brief. It was deleted on the Architect's
+instruction: the Step 1 branch has it tracked, and two copies on two branches means a correction
+applied to one silently leaves the other wrong for whoever reads that branch - which had already
+happened once today, to the schema fallback paragraph. The brief lands on `main` with Step 1 and there
+will be exactly one after that. Until then the **Architect's messages are the authority** when they
+differ from any copy anyone is holding.
+
+`origin/main` moved four times on 2026-07-30. **Rebase before every push**, and never hand a reviewer a
+`git diff origin/main` without checking the merge base first - the first Codex review on this mission
+was spent reading 336 lines of a phantom revert of somebody else's shipped work.
