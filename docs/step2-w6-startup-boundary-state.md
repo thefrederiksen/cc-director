@@ -1,8 +1,12 @@
 # Step 2, worker 6: the startup boundary - current state
 
-Branch `nosqlite-stats-w6-startup`, worktree `D:\ReposFred\dt-nosqlite-w6`, cut from worker 2's branch. Rows
-10 and 15 stay OPEN. This file records exactly what is built, what is NOT proven, and what the next seat
-picks up.
+Branch `nosqlite-stats-w6-startup`, worktree `D:\ReposFred\dt-nosqlite-w6`, cut from worker 2's branch. This
+file records exactly what is built, what is NOT proven, and what the next seat picks up.
+
+**Ledger state after the Manager's ruling of 2026-07-30, which is narrower than this branch's evidence might
+suggest at a glance.** Row 10 was SPLIT rather than closed: *starts-and-answers* is CLOSED on the evidence
+below, *serves-a-non-empty-roster* is OPEN and UNOWNED. Row 15's claim arm is CLOSED and its INDEPENDENT
+verifier is OPEN and UNOWNED. Nobody may cite this document as closing more than that.
 
 **Read the "what is still not proven" section before quoting anything from this file.** The tests HAVE now
 been run and the failing direction HAS now been watched - both on 2026-07-30, both quoted verbatim below.
@@ -198,7 +202,10 @@ meaning two claims were tested and disagreed.
 Reverted (`git checkout --`), rebuilt, re-run: `Failed: 0, Passed: 15`. So the fifteen greens above belong to
 the un-mutated tree, and the red belongs to the mutation.
 
-### Row 10: the Gateway starts and serves a roster with the statistics database unreachable
+### Row 10, STARTS-AND-ANSWERS half: the Gateway starts and the roster route answers with statistics dead
+
+The heading says what the evidence earns and no more. The other half of row 10 - that a NON-EMPTY roster is
+served - is not below and is not proven; see "what is still not proven".
 
 ```
 STATISTICS: available=False reason=unreachable source=ExplicitOverride
@@ -217,8 +224,9 @@ quietly skipped statistics. The uncontained twin proves the same connection is g
 UNCONTAINED: Npgsql.NpgsqlException: Failed to connect to 127.0.0.1:1
 ```
 
-`BODY: []` is the empty roster the pre-flight section predicted - the route answered in roster shape, which
-is the claim, and it is not a claim that sessions were enumerated.
+`BODY: []` is the empty roster the pre-flight section predicted. It excludes an error object, an error page
+and an empty body, all of which would have carried a 200. It does NOT distinguish a working roster from
+nothing to serve, and that distinction is why the Manager split this row rather than closing it.
 
 ### Row 15: no concurrency file on the hosted path, with its control
 
@@ -284,12 +292,24 @@ Three different sentences sending a reader to three different places: a setting,
 
 The rows are the Manager's to close, not mine; what follows is what this run does NOT reach.
 
-- **Row 10's roster body is EMPTY.** See the pre-flight section. The route answered in roster shape with
-  statistics dead; enumerating actual sessions needs a pushed snapshot over the tunnel and is a different rig.
-- **Row 15 has no INDEPENDENT verifier.** The ledger assigns that to worker 8's contract suite. This is the
-  claim's own arm, run by the seat that wrote the wiring, and it should not be counted as both.
+- **Row 10's roster body is EMPTY, and this SPLIT THE ROW.** The route answered in roster shape with
+  statistics dead; enumerating actual sessions needs a pushed snapshot over a tunnel and is a different rig.
+  *Serves-a-non-empty-roster* is OPEN and UNOWNED.
+
+  **Why the Manager reopened this after closing it, because the reasoning generalises well past this row.**
+  ABSENT READS IDENTICAL TO EMPTY. It is issue 8 of the very incident this mission exists for: the
+  post-swap health check returned 200 with ZERO ROWS because the tunnels had not reconnected, so any check
+  looking for HTTP 200 would have declared success over an empty fleet. Closing row 10 on `BODY: []` would
+  have rebuilt that exact false green INSIDE the proof that the outage was about. A 200 with an empty array
+  cannot tell "statistics are down and the roster still works" from "statistics are down and there is
+  nothing to serve" - and the second is the failure the row exists to catch.
+- **Row 15's INDEPENDENT verifier is OPEN and UNOWNED; only the claim arm is closed.** The ledger assigns
+  the independent check to worker 8's contract suite. The arm run here was run by the seat that wrote the
+  wiring, and one seat cannot be both the claim and its check.
 - **Nothing here ran against a real PostgreSQL server.** Every PostgreSQL assertion on this branch is about a
-  connection that FAILS.
+  connection that FAILS. That is the right rig for containment and it is SILENT about a live server: that the
+  derived connection actually opens, migrates into `gateway_stats` and lands its history there is worker 1's
+  rig, not this one.
 - **The twenty-second `OpenDeadline` is still reasoned, not measured**, and the abandon-not-cancel limitation
   above is neither tested nor measured.
 - **CI has not built this branch.** Draft pull request 2319 covers `nosqlite-stats`, and it would never run
