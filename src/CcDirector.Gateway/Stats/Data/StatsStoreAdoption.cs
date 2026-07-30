@@ -26,9 +26,19 @@ public enum StatsStoreAdoptionOutcome
 }
 
 /// <summary>
-/// Why an existing statistics store could not be adopted. A NAMED reason, never a bare failure: these cases
-/// present identically to an operator otherwise, and the next incident would be spent guessing which one it
-/// was.
+/// Why the statistics store is unavailable. A NAMED reason, never a bare failure: these cases present
+/// identically to an operator otherwise, and the next incident would be spent guessing which one it was.
+///
+/// The first four are what the ADOPTION step can find in an existing self-host file. The last three are what
+/// the STARTUP BOUNDARY can find, and the distinctions between those three are an Architect ruling rather
+/// than a nicety.
+///
+/// THE RULE THE THREE OF THEM ENCODE, so that a fourth is added on the same grounds rather than on taste: a
+/// named reason exists to separate causes that send a first responder to DIFFERENT PLACES. <see
+/// cref="NotConfigured"/> is fixed by editing a setting, <see cref="Unreachable"/> is fixed by fixing a
+/// database or a network, and <see cref="StoreSchemaIncomplete"/> is fixed on the store's own disk with both of
+/// those already healthy. Collapsing any pair costs an incident spent looking in the wrong place, which is
+/// the whole reason the distinction is worth a member.
 /// </summary>
 public enum StatsStoreUnavailableReason
 {
@@ -105,6 +115,61 @@ public enum StatsStoreUnavailableReason
     /// exactly what was seen.
     /// </summary>
     StoreSchemaIncomplete,
+
+    /// <summary>There is no statistics store CONFIGURED to open. A settings problem, and it is deliberately
+    /// NOT the same reason as <see cref="Unreachable"/>: this one is fixed by setting an environment
+    /// variable, and nobody should spend an incident looking at the network for it.
+    ///
+    /// It covers a self-host misconfiguration, an override that is SET BUT BLANK (a real operator error -
+    /// somebody meant to name a database and left the value empty), a Gateway connection string that cannot
+    /// be parsed to derive from, and a hosted Gateway with no PostgreSQL database named at all. A hosted
+    /// Gateway lands here rather than opening a local statistics file, under any circumstance.</summary>
+    NotConfigured,
+
+    /// <summary>A statistics store IS configured, and it could not be reached, opened or migrated. A
+    /// database or network problem, and deliberately NOT the same reason as <see cref="NotConfigured"/>:
+    /// this one is fixed by fixing the database, and the settings are already right.
+    ///
+    /// This is the case the containment boundary exists for. The Gateway boots, serves its roster and serves
+    /// its tunnels; only the statistics surface is off, and it says why.</summary>
+    Unreachable,
+
+    /// <summary>
+    /// A FAULT IN DEVTHROTTLE'S OWN CODE, not in the operator's database, network or settings.
+    ///
+    /// WHY THIS MEMBER EXISTS, AND IT IS THE MECHANISM BEHIND A WHOLE CLASS OF DEFECT. A containment that
+    /// catches EVERYTHING cannot tell "the store is unreachable" from "we have a bug" - so without this,
+    /// every programming error inside the boundary is handed a plausible INFRASTRUCTURE label and sends the
+    /// reader somewhere the fault is not. It is not hypothetical and it is not rare: on 2026-07-30 it
+    /// happened three times in one day - an endpoint catch reporting a null reference as a storage fault, a
+    /// watcher reading a cancelled run as an answer, and a missing entry in this file's own reason-code map
+    /// reported as an unreachable database.
+    ///
+    /// THE OPERATOR SENTENCE SAYS IT IS OURS, and that is the whole point. A user sent to check their
+    /// network for a bug in our switch statement is worse off than a user told "something in DevThrottle's
+    /// own code failed", because the second is at least TRUE, and it is actionable by them in the only way
+    /// that matters - telling us. The exception type and stack go to the log, never to the surface.
+    ///
+    /// This reason must NEVER be reported as <see cref="Unreachable"/> or <see cref="NotConfigured"/>. Those
+    /// two make a claim about the OPERATOR'S world; this one makes a claim about ours.
+    /// </summary>
+    InternalError,
+
+    /// <summary>
+    /// The store did not answer within the STARTUP deadline, so the Gateway finished starting without it -
+    /// and the attempt IS STILL RUNNING and will publish on its own if it succeeds.
+    ///
+    /// DELIBERATELY NOT <see cref="Unreachable"/>, on the same rule as every other member here: the two lead
+    /// to DIFFERENT OPERATOR ACTIONS. Unreachable means go and look - at the database, the network, the
+    /// credentials. This one means WAIT AND RE-CHECK, because nothing is known to be wrong yet and the most
+    /// likely cause is something slow and local, such as another writer holding a lock. Sending somebody to
+    /// audit a network because a lock was held for a few seconds is the same misdirection this set of reasons
+    /// exists to prevent, arriving through TIMING rather than through classification.
+    ///
+    /// It is also the only unavailability here that can clear ITSELF, with no restart and no intervention.
+    /// Any surface rendering it should say so, or a reader will treat a transient state as a permanent one.
+    /// </summary>
+    DidNotAnswerInTime,
 }
 
 /// <summary>
