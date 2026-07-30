@@ -330,6 +330,29 @@ function isGatewayUnreachable(err: unknown): boolean {
   return err instanceof Error;
 }
 
+// The header the Gateway stamps when a failure is the DIRECTOR's and not its own - it did not answer in
+// time, or its tunnel died mid-command (issue #1153, TunnelCatchAllDispatch.FaultSideHeader).
+const FAULT_SIDE_HEADER = "X-DevThrottle-Fault";
+const FAULT_SIDE_DIRECTOR = "director";
+
+// True when a 502/504 came from OUR Gateway, about a Director, rather than from an edge proxy in front of a
+// Gateway that is down.
+//
+// WHY THIS EXISTS. 502/503/504 are read as "the backend could not be reached", which is right when they come
+// from a proxy and wrong when the Gateway itself composed them to say a MACHINE behind it went quiet. Without
+// this, one Director stalling for seven seconds put "Bad connection - showing last known information" on the
+// owner's phone while the Gateway was answering him in the same millisecond - the app blaming the one part of
+// the system that was working. A Director being slow is not a connection problem and must not be reported as
+// one; the screen that asked for that machine's data still surfaces its own failure, and the Gateway's error
+// body already names the machine in plain words.
+//
+// ABSENCE IS THE SAFE DEFAULT: a proxy in front of a dead Gateway cannot stamp this, so an unstamped 502
+// still means unreachable, exactly as before. Only a stamped response is treated as proof the Gateway
+// answered.
+function isDirectorFault(res: Response): boolean {
+  return res.headers.get(FAULT_SIDE_HEADER) === FAULT_SIDE_DIRECTOR;
+}
+
 // The ONE transport choke point every Gateway contact in this client routes through, so the shared
 // connection-health signal (connection/health.ts) is fed in exactly one place instead of hand-wired
 // into each page's poll. It is a transparent wrapper around the browser fetch: it returns the same
@@ -391,7 +414,7 @@ export async function gatewayFetch(
     if (timer !== undefined) clearTimeout(timer);
     if (onCallerAbort && callerSignal) callerSignal.removeEventListener("abort", onCallerAbort);
   }
-  if (res.status === 0 || res.status === 502 || res.status === 503 || res.status === 504) {
+  if ((res.status === 0 || res.status === 502 || res.status === 503 || res.status === 504) && !isDirectorFault(res)) {
     reportGatewayUnreachable();
   } else {
     reportGatewayReachable();

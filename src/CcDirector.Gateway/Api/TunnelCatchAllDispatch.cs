@@ -92,7 +92,45 @@ internal sealed class TunnelCatchAllDispatch
             PayloadJson = payloadJson,
         };
 
-        var result = await _sendCommand(directorId, command, ctx.RequestAborted);
+        // BOUNDED, and the bound is the whole point (issue #1153). This path used to await the tunnel with
+        // nothing but ctx.RequestAborted - no deadline at all - which is how a slow Director came to be
+        // reported as an offline GATEWAY. The phone polls these reads with a 10 second cap of its own, so a
+        // Director slower than that made the CLIENT give up first; a client-side abort has no response, no
+        // header, and no way to tell whose fault it was, so it was reported as the Gateway being unreachable.
+        //
+        // Answering FIRST is what makes the truth available. The read bound sits comfortably under the
+        // client's cap so the Gateway always gets to say "the machine did not answer" - stamped, attributable,
+        // and naming the machine - instead of leaving the client to guess from a silence. Nothing is lost by
+        // cutting at eight seconds that the client would not have abandoned two seconds later anyway.
+        //
+        // WRITES ARE NOT BOUNDED THIS WAY. They are one-shot, the caller passes no client-side cap, and some
+        // legitimately run long; they keep the router's ordinary deadline so this change cannot turn a slow
+        // but succeeding write into a failed one.
+        var isPolledRead = plan.Payload == Payload.None && plan.ItemId is null;
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ctx.RequestAborted);
+        if (isPolledRead) deadline.CancelAfter(PolledReadTimeout);
+
+        DirectorCommandResult? result;
+        try
+        {
+            result = await _sendCommand(directorId, command, deadline.Token);
+        }
+        catch (Exception) when (deadline.IsCancellationRequested && !ctx.RequestAborted.IsCancellationRequested)
+        {
+            // OUR deadline fired, not the caller's. Catching every exception type rather than
+            // OperationCanceledException is deliberate and is the same lesson DirectorCommandRouter records:
+            // SignalR completes a cancelled client-result invocation with a plain exception reading
+            // "Invocation canceled by the server", so filtering on the type here silently misreports every
+            // real timeout as something else. The TOKEN is the ground truth for whose deadline fired.
+            FileLog.Write($"[TunnelCatchAllDispatch] {ctx.Request.Method} {rest} -> verb={plan.Verb} sid={sid}: "
+                + $"director did not answer within {PolledReadTimeout.TotalSeconds:F0}s");
+            await WriteResultAsync(ctx, DirectorCommandResult.Fail(
+                DirectorCommandStatus.Timeout,
+                $"The Director did not answer within {PolledReadTimeout.TotalSeconds:F0} seconds. "
+                + "What you are seeing is the last information this machine sent."));
+            return true;
+        }
+
         FileLog.Write($"[TunnelCatchAllDispatch] {ctx.Request.Method} {rest} -> verb={plan.Verb} sid={sid}: {(result is null ? "owner not tunnel-connected" : result.Status.ToString())}");
         if (result is null) return false; // owner dropped the tunnel between locate and dispatch (rare) -> caller answers
 
@@ -158,6 +196,47 @@ internal sealed class TunnelCatchAllDispatch
         return obj.ToJsonString();
     }
 
+    /// <summary>
+    /// Response header naming WHOSE fault a failure was, stamped only when the answer is one this Gateway
+    /// produced ABOUT A DIRECTOR (issue #1153).
+    ///
+    /// THE PROBLEM IT SOLVES. A Director that is slow, or whose tunnel blipped, makes this route answer 504
+    /// or 502 - and the browser client treats every 502/503/504 as "the Gateway is unreachable", because that
+    /// is what those codes mean when they come from an edge proxy in front of a Gateway that is DOWN. So one
+    /// machine going quiet for seven seconds told the owner, on his phone, that the GATEWAY was offline, while
+    /// the Gateway was answering him in the same millisecond. The status code alone genuinely cannot carry the
+    /// difference: the same 502 means "I could not be reached" from a proxy and "I am fine, the machine behind
+    /// me did not answer" from us.
+    ///
+    /// WHY A HEADER AND NOT A BODY FIELD. The client's decision is made at the transport choke point, before
+    /// anything reads or parses the body, and reading it there would consume the stream the caller still needs.
+    /// A header is readable at exactly the point the decision is made.
+    ///
+    /// WHY ITS ABSENCE IS THE SAFE DEFAULT. An edge proxy in front of a dead Gateway cannot stamp this, so an
+    /// unstamped 502 keeps meaning exactly what it meant before - unreachable. Only a response carrying this
+    /// header is treated as proof the Gateway itself answered, and only this Gateway can put it there.
+    /// </summary>
+    internal const string FaultSideHeader = "X-DevThrottle-Fault";
+
+    /// <summary>The value of <see cref="FaultSideHeader"/> meaning "the Gateway answered; the Director did not".</summary>
+    internal const string FaultSideDirector = "director";
+
+    /// <summary>
+    /// How long a POLLED READ (turns, history, buffer-html, usage, context, github-urls, queue) waits for its
+    /// Director before the Gateway answers on its own.
+    ///
+    /// It is set FROM the client's own poll cap and must stay strictly under it. The phone caps these polls at
+    /// 10 seconds (POLL_TIMEOUT_MS in packages/client-core/src/api/client.ts); whichever side gives up first
+    /// decides what the owner is told, and only the GATEWAY's answer can say whose fault it was. If the client
+    /// wins the race it has no response, no header and no machine name - just a silence it reports as the
+    /// Gateway being unreachable, which is the defect. Eight seconds leaves two seconds of headroom so this
+    /// bound reliably fires first.
+    ///
+    /// RAISING THIS ABOVE THE CLIENT'S CAP SILENTLY UNDOES THE FIX. If it is ever changed, change it against
+    /// that constant, not on its own.
+    /// </summary>
+    private static readonly TimeSpan PolledReadTimeout = TimeSpan.FromSeconds(8);
+
     // Map a DirectorCommandResult back to the HTTP response the browser expects - the same shape the Director
     // REST route returned (200 + application/json for Ok; the matching typed error code otherwise). BodyJson is
     // already the serialized DTO, so it is written verbatim.
@@ -186,6 +265,16 @@ internal sealed class TunnelCatchAllDispatch
             DirectorCommandStatus.TunnelDropped => StatusCodes.Status502BadGateway,
             _ => StatusCodes.Status500InternalServerError,
         };
+
+        // Stamped for exactly the two outcomes where the Gateway is demonstrably healthy and the DIRECTOR is
+        // the one that failed - it did not answer in time, or its tunnel died mid-command. Both are answers
+        // this Gateway composed, so its own reachability is not in question and must not be reported as though
+        // it were. Every other status is left unstamped: a 400/404/409/423 already proves the Gateway answered
+        // and the client never treated those as unreachable, and a 500 is a Gateway fault, which is precisely
+        // what this header must never be used to disown.
+        if (result.Status is DirectorCommandStatus.Timeout or DirectorCommandStatus.TunnelDropped)
+            ctx.Response.Headers[FaultSideHeader] = FaultSideDirector;
+
         await ctx.Response.WriteAsJsonAsync(new { error = result.Error ?? $"director returned {result.Status}" });
     }
 }

@@ -14,6 +14,12 @@ function mockFetch(status: number, body: unknown) {
       ({
         ok: status >= 200 && status < 300,
         status,
+        // A real Response ALWAYS carries headers, and this double must too. gatewayFetch reads
+        // X-DevThrottle-Fault on a 502/504 to tell "the Gateway could not be reached" from "the Gateway
+        // answered, and the Director behind it did not" (issue #1153). A double without headers is not a
+        // Response, and the `as unknown as Response` cast is what let it pretend to be one - so the omission
+        // surfaced as a TypeError in the transport instead of a type error here.
+        headers: new Headers(),
         json: async () => body,
         text: async () => (typeof body === "string" ? body : JSON.stringify(body)),
       }) as unknown as Response,
