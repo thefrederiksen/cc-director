@@ -72,6 +72,22 @@ function primarySubtag(tag: string): string {
  * know can ask.
  */
 export function speakLocally(utterance: SpokenUtterance): boolean {
+  // IT REFUSES AT RUN TIME WHEN THERE IS NO LANGUAGE (client audit, finding 4). The type is not the guarantee it
+  // looks like: `decided` is an ordinary property, so a plain object literal with the marker set and an empty
+  // language type-checks and would have been spoken - no cast needed, no factory involved. TypeScript cannot make
+  // a private constructor the way the C# side can, so the sink closes what the type cannot.
+  //
+  // A THROW rather than a quiet skip. This is not the "swallow it" case below: an engine that fails is the
+  // platform's problem and the notice is already on screen, but an utterance with no language is OUR bug, and it
+  // means the words are about to be pronounced with whatever voice the device defaults to. That reaches the error
+  // channel, where a bug belongs.
+  if (utterance.language.trim().length === 0) {
+    throw new Error(
+      "Refusing to speak an utterance with no language (issue #1031). It did not come from utteranceFor, and "
+        + "speaking it would pronounce the words with the device's default voice - which is how correctly "
+        + "translated French came to be read aloud in English.",
+    );
+  }
   const engine = platformEngine();
   if (!engine) return false;
   try {

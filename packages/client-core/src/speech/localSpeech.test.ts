@@ -136,3 +136,30 @@ describe("pickVoiceFor", () => {
     expect(pickVoiceFor([], "fr")).toBeNull();
   });
 });
+
+// ---- The sink refuses what the type cannot (client audit, finding 4) -------------------------------------
+//
+// `decided` is an ordinary property, not a real brand: a plain object literal with the marker set and an empty
+// language type-checks, needs no cast, and skipped the factory entirely. So the sink checks at run time. These are
+// the tests for the hole the type does not close.
+describe("speakLocally refusing an utterance that skipped the factory", () => {
+  it("throws rather than speaking words with no language", () => {
+    const { spoken } = fakeEngine([{ lang: "en-US", name: "Samantha" }]);
+    const forged = { text: "Cette session attend une réponse.", language: "", decided: true } as const;
+
+    expect(() => speakLocally(forged)).toThrow(/no language/);
+    expect(spoken).toHaveLength(0);
+  });
+
+  it("throws on a whitespace language too", () => {
+    fakeEngine();
+    expect(() => speakLocally({ text: "words", language: "   ", decided: true } as const)).toThrow(/no language/);
+  });
+
+  // The refusal must not depend on there being an engine: the bug is ours either way, and a browser with no
+  // speech synthesis must not silently absorb it.
+  it("throws even when the platform has no speech engine at all", () => {
+    vi.stubGlobal("speechSynthesis", undefined);
+    expect(() => speakLocally({ text: "words", language: "", decided: true } as const)).toThrow(/no language/);
+  });
+});
