@@ -31,7 +31,9 @@ There is **no install type to choose**. Every machine gets the same thing.
 
 ### Windows
 
-Download **DevThrottle Setup** from [devthrottle.com/download](https://devthrottle.com/download) -- no sign-up -- and run it. Three screens: **Welcome, Install, Complete**. There is nothing to decide on any of them.
+Download **DevThrottle Setup** from [devthrottle.com/download](https://devthrottle.com/download) and run it. Three screens: **Welcome, Install, Complete**. There is nothing to decide on any of them.
+
+Go to `/download` directly. It says *"Free, no account needed"* and means it. The home page's main **Get started** button takes the other route -- sign up first, download second -- so you will be asked for an account before you have downloaded anything.
 
 The same file is on the [latest release](https://github.com/thefrederiksen/devthrottle/releases/latest) as `devthrottle-setup-win-x64.exe` if you would rather take it straight from there.
 
@@ -119,7 +121,7 @@ stop and say exactly what is needed. Do not work around it.
 
 | Command | What it does |
 |---|---|
-| `<installer> signin` | Opens a browser to sign in with Google, GitHub, or email (or create a free account). |
+| `<installer> signin` | Opens a browser to sign in with Google, GitHub, or email (or create a free account). The email route sends a sign-in link, not a password prompt. |
 | `<installer> enroll --hosted` | Signs in and joins DevThrottle's hosted gateway. |
 | `<installer> enroll --gateway <url>` | Joins a gateway you run yourself. Omit `--gateway` to find it from your account. |
 
@@ -252,7 +254,7 @@ The gateway is the inference engine, and it is what makes DevThrottle reachable 
 | **Self-hosted gateway** | Run the gateway on your own machine and join it. Windows only, needs the machine to stay on, and a DevThrottle sign-in all the same. For advanced setups. |
 | **Not now** | Local-only on this machine. Everything on the board still works. Connect any time from Settings. |
 
-Both gateways need a DevThrottle login -- Google, GitHub, or an email and password. There is no bring-your-own-key: inference always routes through DevThrottle, which is why a gateway asks who you are and installing does not.
+Both gateways need a DevThrottle login -- Google, GitHub, or email. The email route emails you a sign-in link instead of asking for a password, which means a trip to your inbox; Google or GitHub is one click. There is no bring-your-own-key: inference always routes through DevThrottle, which is why a gateway asks who you are and installing does not.
 
 ### Multi-Machine Setup (Remote Access)
 

@@ -44,7 +44,13 @@ answer**.
 ### Getting it
 
 Download **DevThrottle Setup** from [devthrottle.com/download](https://devthrottle.com/download).
-There is no sign-up in front of the download.
+That page puts it better than this one can -- *"Download the Director. Free, no account needed"*, and
+of the sign-in that comes later, *"This is the moment you sign in - never before it."*
+
+> Go to `/download` directly. If you start at the DevThrottle home page instead, its main
+> **Get started** button takes the account-first route -- its own rail reads "1 Account, 2 Download" --
+> and you will be asked to sign up before you have downloaded anything. Nothing is wrong with that
+> route, but it is not the one this page describes.
 
 If you would rather verify the file yourself, take it from the
 [latest release](https://github.com/thefrederiksen/devthrottle/releases/latest) instead --
@@ -161,9 +167,25 @@ Three cards:
 | **Self-hosted gateway** | Run your own gateway and join it. For advanced setups. |
 | **Not now** | Local-only on this machine. Connect any time from Settings. |
 
-The hosted card's button reads **Sign in and connect**. It opens your browser to sign in with
-**Google, GitHub, or email**, and the wizard continues on its own once you are done -- you do not
-come back and click anything.
+The hosted card's button reads **Sign in and connect**. It opens your browser, and the wizard waits:
+*"We opened your browser to sign you in with Google, GitHub, or email. This window continues
+automatically when you are done."* There is a **Cancel sign-in** link, and the primary button greys
+out while it waits.
+
+The browser page says what it is for -- *"Sign in to connect the Director on this machine"* -- and
+offers three ways in:
+
+| | What happens |
+|---|---|
+| **Continue with Google** | One click, if you are already signed in to Google in that browser. |
+| **Continue with GitHub** | The same. |
+| **Continue with email** | *"We'll email you a link to sign in - no password needed."* You get a **link**, not a password box. |
+
+**The email route sends you to your inbox, so pick Google or GitHub if you can.** There is no password
+field on that page at all -- even if you set a password when you created the account. Signing in by
+email means leaving the machine you are setting up, opening your mail, and clicking a link. On a
+freshly installed Windows box with no mail client configured, that means a second device. The wizard
+will wait as long as it takes, but "when you are done" can be a trip across the room.
 
 If you signed up on the website a moment ago, your browser still holds that session, and this step
 costs **zero clicks and about five seconds**: the tab says *"Signed in to DevThrottle. You can close
