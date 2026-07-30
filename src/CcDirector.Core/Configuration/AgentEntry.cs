@@ -173,9 +173,23 @@ public static class AgentEntryStore
     }
 
     /// <summary>
+    /// Raised after the entries have been written, so every surface showing "do I have a coding
+    /// agent" re-reads the fact instead of holding the answer it computed at startup
+    /// (devthrottle_internal issue #1047: the wizard installed an agent and wrote it here, and the
+    /// status board went on saying "No coding agent found" because nothing told it the fact had
+    /// changed). Every writer - the first-run wizard, the Settings Agents tab and the Control API -
+    /// goes through this one method, so subscribing here catches all of them rather than relying on
+    /// each caller remembering to announce itself.
+    ///
+    /// Raised on the calling thread; interface subscribers marshal to their own thread.
+    /// </summary>
+    public static event Action? EntriesChanged;
+
+    /// <summary>
     /// Persist the ordered entries to <c>config.json</c> under <c>agent.entries</c>. The array is
     /// REPLACED wholesale (MergePatch replaces arrays), so removing/reordering takes effect; all
-    /// other config sections are left exactly as they were.
+    /// other config sections are left exactly as they were. Raises <see cref="EntriesChanged"/>
+    /// once the write has landed.
     /// </summary>
     public static void SaveEntries(IReadOnlyList<AgentEntry> entries)
     {
@@ -191,6 +205,9 @@ public static class AgentEntryStore
             ["agent"] = new JsonObject { ["entries"] = array }
         };
         CcDirectorConfigService.MergePatch(patch);
+
+        FileLog.Write("[AgentEntryStore] SaveEntries: raising EntriesChanged");
+        EntriesChanged?.Invoke();
     }
 
     /// <summary>
