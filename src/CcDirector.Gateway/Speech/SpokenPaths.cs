@@ -92,7 +92,7 @@ public static class SpokenPaths
     /// entry here is a one-line, review-visible act - the same shape the tenant-isolation gate uses for
     /// its global-table allowlist. There is no silent fourth category.
     ///
-    /// Both entries produce MACHINE-READ text, and nothing they produce ever reaches a person's ears.
+    /// Every entry produces MACHINE-READ text, and nothing they produce ever reaches a person's ears.
     /// </summary>
     public static readonly IReadOnlyDictionary<string, string> NotSpokenOutput = new Dictionary<string, string>(StringComparer.Ordinal)
     {
@@ -101,5 +101,11 @@ public static class SpokenPaths
         ["DictionarySuggestionScreen.BuildPrompt"] =
             "Screens candidate dictation-dictionary terms and returns JSON verdicts read by code. Nothing "
             + "it produces reaches a person's ears, or their eyes.",
+        ["SupervisorVerdict.BuildPrompt"] =
+            "Asks why a stalled session stopped and returns exactly ONE word from a fixed English answer "
+            + "set (transient_recoverable / needs_human / healthy_done / context_full), which code parses "
+            + "to decide whether to resume the session. Translating either half would break it: the words "
+            + "are an enumeration the parser matches, not prose, and an unparsable reply is deliberately "
+            + "treated as no verdict at all. Nothing it produces is ever spoken or shown.",
     };
 }

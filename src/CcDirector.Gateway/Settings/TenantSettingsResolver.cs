@@ -300,6 +300,50 @@ public sealed class TenantSettingsResolver
         return Speech.SpokenLanguages.Require(stored);
     }
 
+    /// <summary>
+    /// This tenant's session-supervisor settings (issue #915) - the auto-recovery master switch, the two
+    /// waits, the retry ceiling and the model-fallback switch.
+    ///
+    /// Every value falls back to the documented default on <see cref="Supervision.SupervisorSettings"/> when
+    /// the tenant has expressed no choice, and ALSO when the stored value is unparsable or outside the
+    /// validated bounds. That direction is deliberate: a corrupt override must never widen the engine's
+    /// licence. A zero-second first wait would hammer a session and an unbounded ceiling would be the
+    /// infinite blind loop the issue explicitly forbids, so an unusable number reads as the shipped default,
+    /// never as "no limit".
+    /// </summary>
+    public Supervision.SupervisorSettings SessionSupervisor(TenantId tenant)
+    {
+        var defaults = Supervision.SupervisorSettings.Defaults;
+
+        var firstRetrySeconds = (int)defaults.FirstRetry.TotalSeconds;
+        var storedFirst = _store.Get(tenant, TenantSettingKeys.SessionSupervisorFirstRetrySeconds);
+        if (storedFirst is not null && int.TryParse(storedFirst, out var first)
+            && Supervision.SupervisorSettings.IsValidFirstRetrySeconds(first))
+            firstRetrySeconds = first;
+
+        var cadenceMinutes = (int)defaults.RetryCadence.TotalMinutes;
+        var storedCadence = _store.Get(tenant, TenantSettingKeys.SessionSupervisorRetryCadenceMinutes);
+        if (storedCadence is not null && int.TryParse(storedCadence, out var cadence)
+            && Supervision.SupervisorSettings.IsValidRetryCadenceMinutes(cadence))
+            cadenceMinutes = cadence;
+
+        var maxLongRetries = defaults.MaxLongRetries;
+        var storedCeiling = _store.Get(tenant, TenantSettingKeys.SessionSupervisorMaxLongRetries);
+        if (storedCeiling is not null && int.TryParse(storedCeiling, out var ceiling)
+            && Supervision.SupervisorSettings.IsValidMaxLongRetries(ceiling))
+            maxLongRetries = ceiling;
+
+        return new Supervision.SupervisorSettings
+        {
+            Enabled = ParseBool(_store.Get(tenant, TenantSettingKeys.SessionSupervisorEnabled)) ?? defaults.Enabled,
+            FirstRetry = TimeSpan.FromSeconds(firstRetrySeconds),
+            RetryCadence = TimeSpan.FromMinutes(cadenceMinutes),
+            MaxLongRetries = maxLongRetries,
+            ModelFallbackEnabled = ParseBool(_store.Get(tenant, TenantSettingKeys.SessionSupervisorModelFallbackEnabled))
+                                   ?? defaults.ModelFallbackEnabled,
+        };
+    }
+
     // ---- writes: validate like the global setters, then persist a per-tenant override -------------------
 
     /// <summary>Set the tenant's wingman model for a role.</summary>
@@ -456,6 +500,48 @@ public sealed class TenantSettingsResolver
         chosen[language.Code] = trimmed;
         _store.Set(tenant, TenantSettingKeys.SpokenVoiceByLanguage,
             System.Text.Json.JsonSerializer.Serialize(chosen), nowUtc);
+    }
+
+    /// <summary>Turn this tenant's session supervisor on or off (issue #915). Stored explicitly, like voice
+    /// mode, so "off" is a decision this account made rather than the absence of one.</summary>
+    public void SetSessionSupervisorEnabled(TenantId tenant, bool enabled, DateTime nowUtc)
+        => _store.Set(tenant, TenantSettingKeys.SessionSupervisorEnabled, enabled ? "true" : "false", nowUtc);
+
+    /// <summary>Turn this tenant's supervisor model fallback on or off.</summary>
+    public void SetSessionSupervisorModelFallbackEnabled(TenantId tenant, bool enabled, DateTime nowUtc)
+        => _store.Set(tenant, TenantSettingKeys.SessionSupervisorModelFallbackEnabled, enabled ? "true" : "false", nowUtc);
+
+    /// <summary>Set the first (short) wait before the supervisor's first "continue", in seconds.</summary>
+    /// <exception cref="ArgumentOutOfRangeException">Outside the validated bounds.</exception>
+    public void SetSessionSupervisorFirstRetrySeconds(TenantId tenant, int seconds, DateTime nowUtc)
+    {
+        if (!Supervision.SupervisorSettings.IsValidFirstRetrySeconds(seconds))
+            throw new ArgumentOutOfRangeException(nameof(seconds), seconds,
+                $"The first wait must be between {Supervision.SupervisorSettings.MinFirstRetrySeconds} and " +
+                $"{Supervision.SupervisorSettings.MaxFirstRetrySeconds} seconds.");
+        _store.Set(tenant, TenantSettingKeys.SessionSupervisorFirstRetrySeconds, seconds.ToString(), nowUtc);
+    }
+
+    /// <summary>Set this tenant's long retry cadence, in minutes.</summary>
+    /// <exception cref="ArgumentOutOfRangeException">Outside the validated bounds.</exception>
+    public void SetSessionSupervisorRetryCadenceMinutes(TenantId tenant, int minutes, DateTime nowUtc)
+    {
+        if (!Supervision.SupervisorSettings.IsValidRetryCadenceMinutes(minutes))
+            throw new ArgumentOutOfRangeException(nameof(minutes), minutes,
+                $"The retry cadence must be between {Supervision.SupervisorSettings.MinRetryCadenceMinutes} and " +
+                $"{Supervision.SupervisorSettings.MaxRetryCadenceMinutes} minutes.");
+        _store.Set(tenant, TenantSettingKeys.SessionSupervisorRetryCadenceMinutes, minutes.ToString(), nowUtc);
+    }
+
+    /// <summary>Set how many long-cadence retries this tenant allows before the supervisor escalates.</summary>
+    /// <exception cref="ArgumentOutOfRangeException">Outside the validated bounds.</exception>
+    public void SetSessionSupervisorMaxLongRetries(TenantId tenant, int retries, DateTime nowUtc)
+    {
+        if (!Supervision.SupervisorSettings.IsValidMaxLongRetries(retries))
+            throw new ArgumentOutOfRangeException(nameof(retries), retries,
+                $"The retry ceiling must be between {Supervision.SupervisorSettings.MinLongRetries} and " +
+                $"{Supervision.SupervisorSettings.MaxLongRetriesAllowed}.");
+        _store.Set(tenant, TenantSettingKeys.SessionSupervisorMaxLongRetries, retries.ToString(), nowUtc);
     }
 
     /// <summary>Record this tenant's daily-email cadence state after a mention is emitted.</summary>

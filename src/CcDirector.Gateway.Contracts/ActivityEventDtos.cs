@@ -124,11 +124,40 @@ public static class ActivityEventTypes
     /// <summary>A snooze entry was retired - the cause says why (the July 24 question).</summary>
     public const string SnoozeEnded = "snooze-ended";
 
+    /// <summary>
+    /// The session supervisor classified a terminating fault on a session that has just gone idle (issue
+    /// #915). The cause carries the fault class; the detail carries the matched SIGNATURE (our own token,
+    /// never the terminal line it came from).
+    /// </summary>
+    public const string SupervisorFaultDetected = "supervisor-fault-detected";
+
+    /// <summary>The supervisor is waiting before it re-sends "continue" - the detail carries the attempt
+    /// number and the delay it chose.</summary>
+    public const string SupervisorWaiting = "supervisor-waiting";
+
+    /// <summary>The supervisor sent "continue" into the session - the detail carries the attempt number and
+    /// whether the send landed.</summary>
+    public const string SupervisorContinueSent = "supervisor-continue-sent";
+
+    /// <summary>The supervised session started working again, so the recovery episode ended successfully.</summary>
+    public const string SupervisorRecovered = "supervisor-recovered";
+
+    /// <summary>The supervisor raised its hand instead of acting: a non-recoverable fault, an unclassified
+    /// one, a menu owning the screen, or the retry ceiling. The cause says which. This event type means a
+    /// PERSON WAS TOLD - it is never used for an episode that merely ended.</summary>
+    public const string SupervisorEscalated = "supervisor-escalated";
+
+    /// <summary>The supervisor stopped without acting and without raising a hand - the session is gone, or its
+    /// state is no longer one a "continue" may be sent to. Nothing needed a person's attention.</summary>
+    public const string SupervisorStoodDown = "supervisor-stood-down";
+
     /// <summary>Every legal event type, for validation.</summary>
     public static readonly IReadOnlyList<string> All = new[]
     {
         TurnSubmitted, BackendActivityStarted, TerminalOutputWhileSettled, ActivityTransition,
         TurnObservedInTranscript, SessionExited, SnoozeCreated, SnoozeLanded, SnoozeEnded,
+        SupervisorFaultDetected, SupervisorWaiting, SupervisorContinueSent, SupervisorRecovered,
+        SupervisorEscalated, SupervisorStoodDown,
     };
 }
 
@@ -190,12 +219,42 @@ public static class ActivityCauses
     /// <summary>The producer could not decide (the shadow classifier's honest "unknown").</summary>
     public const string Unknown = "unknown";
 
+    /// <summary>A transient transport fault ended the turn - a name-resolution failure, a reset connection,
+    /// a dropped socket (issue #915). The class the supervisor recovers from.</summary>
+    public const string TransientTransport = "transient-transport";
+
+    /// <summary>The model provider rate-limited the turn, so the supervisor backs off and resumes.</summary>
+    public const string RateLimited = "rate-limited";
+
+    /// <summary>The agent's context window filled up. Recovering it needs a compaction, which is phase 2
+    /// (thefrederiksen/devthrottle_internal#1403), so phase 1 escalates rather than sending into a session
+    /// that swallows prompts.</summary>
+    public const string ContextFull = "context-full";
+
+    /// <summary>The work itself cannot proceed - out of allowance, out of credits, a failed sign-in. Never
+    /// auto-continued.</summary>
+    public const string NonRecoverable = "non-recoverable";
+
+    /// <summary>The turn ended on a fault the deterministic classifier does not recognize, and the model
+    /// fallback either was switched off or could not decide.</summary>
+    public const string UnclassifiedFault = "unclassified-fault";
+
+    /// <summary>A menu owns the session's screen, so typing "continue" would answer it. The supervisor
+    /// refuses and raises its hand.</summary>
+    public const string MenuOwnsScreen = "menu-owns-screen";
+
+    /// <summary>The supervisor exhausted its retry ceiling, so a real outage raises a hand instead of
+    /// retrying forever.</summary>
+    public const string RetryCeiling = "retry-ceiling";
+
     /// <summary>Every legal cause, for validation.</summary>
     public static readonly IReadOnlyList<string> All = new[]
     {
         OwnerSubmit, AgentSubmit, FrameworkSubmit, BackendSignal, TerminalOutputOnly, QuietThreshold,
         DriverCompletion, OwnerTurn, ManualRelease, TimerExpired, SessionExit, WorkingObservation,
         SnoozeRequested, WorkSettled, DirectorRemoved, SessionNotLive, Unknown,
+        TransientTransport, RateLimited, ContextFull, NonRecoverable, UnclassifiedFault,
+        MenuOwnsScreen, RetryCeiling,
     };
 }
 
