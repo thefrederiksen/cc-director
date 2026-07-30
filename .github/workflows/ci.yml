@@ -6,6 +6,23 @@ on:
   pull_request:
     branches: [main]
 
+# One run per workflow per branch, and supersede an older run ONLY on a pull request.
+#
+# Why the asymmetry, because getting it the other way round is the expensive mistake. On a pull request
+# the head commit is the only one anyone acts on, so an older run for a commit that has already been
+# pushed past is spending a runner on an answer nobody will read - cancelling it is right. On a push to
+# main, EVERY commit must keep its own verification: cancelling there would leave main commits
+# permanently unverified, and a green that belongs to a specific commit is the whole point of having CI
+# rather than a memory of a run.
+#
+# Added after a draft pull request queued six simultaneous runs on one branch, none of which superseded
+# any other, so the answer everybody was waiting for kept being pushed further out by the very commits
+# that were waiting on it. When a resource serialises, parallelism converts into latency rather than
+# throughput, and the cost lands on whoever is waiting rather than on whoever is holding.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-and-test:
     name: Build & Test (.NET)
