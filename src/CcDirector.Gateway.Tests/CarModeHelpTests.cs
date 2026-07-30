@@ -14,7 +14,7 @@ public sealed class CarModeHelpTests
     [Fact]
     public void Script_TeachesBothAddressingModes_AndHowToEndATurn()
     {
-        var script = CarModeHelp.SpokenScript(SpokenLanguages.English, "over and out");
+        var script = CarModeHelp.SpokenScript(SpokenLanguages.English);
         Assert.False(string.IsNullOrWhiteSpace(script));
         // It must teach commanding the manager AND relaying into a session (at least one relay verb), plus
         // the sign-off phrase - the three things the owner needs to drive Car Mode.

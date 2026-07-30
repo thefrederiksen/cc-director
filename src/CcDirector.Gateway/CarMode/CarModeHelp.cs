@@ -20,26 +20,21 @@ namespace CcDirector.Gateway.CarMode;
 public static class CarModeHelp
 {
     /// <summary>
-    /// The curated spoken explanation, read aloud verbatim by both help triggers. One or two short
-    /// paragraphs of plain spoken prose - it names the two ways to talk to Car Mode, the key commands, a
-    /// concrete relay example, how to end a turn, and that help is always available.
+    /// The curated spoken explanation, read aloud verbatim when the person asks for help. Plain spoken prose: it
+    /// names the two ways to talk to the Assistant, the key commands, and a concrete relay example.
     ///
-    /// It became a method in issue #1009. It is SPOKEN, so it is spoken in the account's language, and
-    /// the words themselves live with every other fixed spoken sentence in
-    /// <see cref="SpokenPhrases.CarModeHelpScript"/>.
+    /// IT TAKES NO SETTING (audit finding C6). It used to quote the tenant's configured end phrase, because Car
+    /// Mode ended a hands-free turn on a spoken phrase. Car Mode is gone and the Assistant has an explicit Send
+    /// action, so the help was teaching a command that ends nothing - and this is the second time this script has
+    /// gone stale against a setting, the first being a hardcoded "over and out" while the phrase was
+    /// configurable. There is now nothing in it that can go stale.
     ///
-    /// <paramref name="endPhrase"/> is the tenant's CONFIGURED end phrase, and it is not translated. The
-    /// owner has to say that phrase for a turn to end and it is matched literally, so the help has to
-    /// teach the phrase that actually works. This also fixes a defect that predates the translation: the
-    /// script used to hardcode "over and out" while the phrase was a setting, so it taught the wrong word
-    /// to anyone who had changed it.
+    /// It is SPOKEN, so it is spoken in the account's language, and the words live with every other fixed spoken
+    /// sentence in <see cref="SpokenPhrases.AssistantHelpScript"/>.
     /// </summary>
-    public static string SpokenScript(SpokenLanguage language, string endPhrase)
+    public static string SpokenScript(SpokenLanguage language)
     {
         ArgumentNullException.ThrowIfNull(language);
-        if (string.IsNullOrWhiteSpace(endPhrase))
-            throw new ArgumentException("The configured Car Mode end phrase is required - the spoken help "
-                + "quotes it, and a help script that omits it teaches no way to end a turn.", nameof(endPhrase));
-        return SpokenPhrases.CarModeHelpScript.In(language, endPhrase.Trim());
+        return SpokenPhrases.AssistantHelpScript.In(language);
     }
 }

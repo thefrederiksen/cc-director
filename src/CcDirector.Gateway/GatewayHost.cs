@@ -2460,7 +2460,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // The Assistant (POST /assistant/turn) is the ONE surface on this brain now: Car Mode was removed from
         // the product (#1028) and its own brain instance and turn door went with it. The loop, the tools, the
         // per-device stores and the turn cache were always shared and are untouched.
-        var assistantBrain = new CarMode.CarModeBrain(carModeChat, carModeFleetForCaller, _carModeConversations, _carModePending, _carModeSubjects, _tenantSettingsResolver.SpokenLanguage, _tenantSettingsResolver.CarModeEndPhrase);
+        var assistantBrain = new CarMode.CarModeBrain(carModeChat, carModeFleetForCaller, _carModeConversations, _carModePending, _carModeSubjects, _tenantSettingsResolver.SpokenLanguage);
         // Keep-warm (Car Mode performance round): warm the SAME hosted model the brain uses and the SAME
         // text-to-speech target /wingman/tts uses, resolved fresh each warmup so a settings change applies.
         var carModeWarmup = new CarMode.CarModeWarmup(

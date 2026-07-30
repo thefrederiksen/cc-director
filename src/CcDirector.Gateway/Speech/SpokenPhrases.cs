@@ -81,45 +81,51 @@ public static class SpokenPhrases
         es: "Ahora mismo no consigo responder a eso. Inténtalo de nuevo, por favor.");
 
     /// <summary>
-    /// The Car Mode help script, spoken verbatim by both help triggers. {0} is the owner's CONFIGURED
-    /// end phrase, which is a setting and is NOT translated: it is matched literally when the owner says
-    /// it, so a help script that spoke a translated phrase would teach a word that does not work. That
-    /// is also why it is a placeholder now and was a hardcoded "over and out" before - the old text was
-    /// already wrong for anyone who had changed the setting.
+    /// The Assistant's help script, spoken verbatim when the person asks what it can do.
     ///
-    /// The relay verbs ARE translated, because the model does the matching and is told (in the Car Mode
-    /// system prompt) that the equivalent verbs in the owner's own language count the same.
+    /// IT TEACHES WHAT ACTUALLY WORKS (audit finding C6). This used to be the Car Mode help script, and it ended
+    /// by telling the listener to say the configured end phrase when they were done. Car Mode was removed from
+    /// the product (#1028) and the Assistant has an explicit Send action and no end-phrase watcher - so the help
+    /// was teaching a command that ends nothing, on the one surface the deletion was required to preserve. The
+    /// end phrase is gone from the script, and with it the last consumer of that setting.
+    ///
+    /// It takes NO ARGUMENTS now, which is the point: there is nothing left in it that depends on a setting, so
+    /// it cannot go stale against one again. The previous version had already been wrong once for the same
+    /// reason - it hardcoded "over and out" while the phrase was configurable.
+    ///
+    /// The two ways to address it are unchanged and still true: command the manager, or start with a relay verb
+    /// and name a session. The relay verbs ARE translated, because the model classifies the intent rather than
+    /// matching words literally, and its system prompt says the equivalent verb in the owner's own language
+    /// counts the same.
     /// </summary>
-    public static readonly SpokenPhrase CarModeHelpScript = new(
-        "car-mode.help-script",
+    public static readonly SpokenPhrase AssistantHelpScript = new(
+        "assistant.help-script",
         en: "I'm your fleet manager, and you talk to me two ways. "
             + "By default you command me - ask who needs you, read me the next one, snooze it, approve it, or remove it. "
             + "To talk to a session instead, start with tell, answer, reply, or message, and name it - "
             + "like, tell the devthrottle session to run the tests. Whatever you say after that goes straight into that session. "
-            + "Say {0} when you're done, and ask for help any time.",
-        // The French stays in "vous" THROUGHOUT, trigger words included. The first draft handed the
-        // listener tu-form words to say ("commencez par dis, reponds") inside an otherwise formal
-        // script, which a native speaker hears as a register break within one sentence. It is safe to
-        // use the polite forms because nothing matches these words literally - the Car Mode model
-        // classifies the intent, and its system prompt says the equivalent verb in the owner's own
-        // language counts the same.
+            + "Ask for help any time.",
+        // The French stays in "vous" THROUGHOUT, trigger words included. An earlier draft handed the listener
+        // tu-form words to say inside an otherwise formal script, which a native speaker hears as a register
+        // break within one sentence. The polite forms are safe because nothing matches these words literally -
+        // the model classifies the intent, and its system prompt says the equivalent verb counts the same.
         fr: "Je suis votre gestionnaire de flotte, et vous pouvez me parler de deux façons. "
             + "Par défaut, vous me donnez des ordres : demandez qui a besoin de vous, faites-moi lire la session suivante, "
             + "reportez-la, approuvez-la ou supprimez-la. "
             + "Pour parler à une session plutôt qu'à moi, commencez par un de ces mots : dites, répondez, transmettez ou envoyez, "
             + "puis nommez la session. Par exemple : dites à la session devthrottle de lancer les tests. "
             + "Tout ce que vous dites ensuite est transmis tel quel à cette session. "
-            + "Dites {0} quand vous avez terminé, et demandez de l'aide à tout moment.",
-        // Spanish keeps "tu" throughout, and says "dile a la sesion" rather than "di a la sesion" -
-        // spoken Spanish doubles the indirect object almost without exception, and this is an example
-        // the owner is being told to copy.
+            + "Demandez de l'aide à tout moment.",
+        // Spanish keeps "tu" throughout, and says "dile a la sesion" rather than "di a la sesion" - spoken
+        // Spanish doubles the indirect object almost without exception, and this is an example the owner is
+        // being told to copy.
         es: "Soy tu gestor de flota y puedes hablarme de dos maneras. "
             + "Por defecto me das órdenes: pregunta quién te necesita, pídeme que te lea la siguiente sesión, "
             + "aplázala, apruébala o elimínala. "
             + "Para hablar con una sesión en lugar de conmigo, empieza por una de estas palabras: di, responde, transmite o envía, "
             + "y luego nombra la sesión. Por ejemplo: dile a la sesión devthrottle que ejecute las pruebas. "
             + "Todo lo que digas después va directo a esa sesión. "
-            + "Di {0} cuando hayas terminado, y pide ayuda en cualquier momento.");
+            + "Pide ayuda en cualquier momento.");
 
     // ---- Voice turn: when the product will not answer, and says why ---------------------------------
 
@@ -261,7 +267,7 @@ public static class SpokenPhrases
     ///  on this class appears in the list.</summary>
     public static readonly IReadOnlyList<SpokenPhrase> All = new[]
     {
-        CarModeDeleteCancelled, CarModeDeleteDone, CarModeGiveUp, CarModeHelpScript,
+        CarModeDeleteCancelled, CarModeDeleteDone, CarModeGiveUp, AssistantHelpScript,
         VoiceTurnBlockedMenu, VoiceTurnBlockedUnreadable,
         WaitingScreenMenu, WaitingScreenMenuNarrationSuffix, NarrationCutNotice,
         MenuOption, MenuOptionRecommended, MenuAnswerSingle, MenuAnswerMultiple,

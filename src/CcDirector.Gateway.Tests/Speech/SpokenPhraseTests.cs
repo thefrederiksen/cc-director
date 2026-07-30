@@ -356,22 +356,29 @@ public sealed class SpokenPhraseTests
     }
 
     /// <summary>
-    /// The Car Mode help script speaks the account's language but quotes the CONFIGURED end phrase
-    /// untranslated. The owner has to say that phrase for a turn to end and it is matched literally, so
-    /// a help script that translated it would teach a word that does not work.
+    /// The Assistant's help script speaks the account's language, and it QUOTES NO SETTING at all.
+    ///
+    /// It used to quote the configured end phrase, because Car Mode ended a hands-free turn on a spoken phrase.
+    /// Car Mode was removed from the product (#1028) and the Assistant has an explicit Send action with no
+    /// end-phrase watcher, so the help was teaching a command that ends nothing (Gateway audit, finding C6). The
+    /// absence is what is asserted: a script with no slot cannot go stale against a setting, and this one had
+    /// already done so once before, hardcoding "over and out" while the phrase was configurable.
     /// </summary>
     [Fact]
-    public void The_help_script_speaks_the_language_but_never_translates_the_end_phrase()
+    public void The_help_script_speaks_the_language_and_quotes_no_setting()
     {
-        var french = CarModeHelp.SpokenScript(SpokenLanguages.French, "over and out");
+        var french = CarModeHelp.SpokenScript(SpokenLanguages.French);
 
-        Assert.Contains("over and out", french);
         Assert.Contains("gestionnaire de flotte", french);
         Assert.DoesNotContain("I'm your fleet manager", french);
 
-        // A different configured phrase is quoted as configured, in every language.
+        // No end phrase, in any language - not the old default, and no leftover format slot for one.
         foreach (var language in SpokenLanguages.All)
-            Assert.Contains("banana split", CarModeHelp.SpokenScript(language, "banana split"));
+        {
+            var script = CarModeHelp.SpokenScript(language);
+            Assert.DoesNotContain("over and out", script);
+            Assert.DoesNotContain("{0}", script);
+        }
     }
 
     /// <summary>
