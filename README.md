@@ -36,7 +36,7 @@ Three ways to get it, all the same install:
 
 | | How |
 |---|---|
-| **Download it** | **[devthrottle.com/download](https://devthrottle.com/download)** -- pick your platform and run it. No sign-up. |
+| **Download it** | **[devthrottle.com/download](https://devthrottle.com/download)** -- the Windows installer, and the one-line install for macOS. *"Free, no account needed."* Go to `/download` directly; the home page's **Get started** button takes the account-first route instead. |
 | **By prompt** | Paste [one prompt](docs/install/install-prompt.md) into a coding agent you already have and it installs the Director for you, unattended. |
 | **From a release** | The same assets, direct: [latest release](https://github.com/thefrederiksen/devthrottle/releases/latest). |
 

@@ -44,7 +44,13 @@ answer**.
 ### Getting it
 
 Download **DevThrottle Setup** from [devthrottle.com/download](https://devthrottle.com/download).
-There is no sign-up in front of the download.
+That page puts it better than this one can -- *"Download the Director. Free, no account needed"*, and
+of the sign-in that comes later, *"This is the moment you sign in - never before it."*
+
+> Go to `/download` directly. If you start at the DevThrottle home page instead, its main
+> **Get started** button takes the account-first route -- its own rail reads "1 Account, 2 Download" --
+> and you will be asked to sign up before you have downloaded anything. Nothing is wrong with that
+> route, but it is not the one this page describes.
 
 If you would rather verify the file yourself, take it from the
 [latest release](https://github.com/thefrederiksen/devthrottle/releases/latest) instead --

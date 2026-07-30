@@ -31,7 +31,9 @@ There is **no install type to choose**. Every machine gets the same thing.
 
 ### Windows
 
-Download **DevThrottle Setup** from [devthrottle.com/download](https://devthrottle.com/download) -- no sign-up -- and run it. Three screens: **Welcome, Install, Complete**. There is nothing to decide on any of them.
+Download **DevThrottle Setup** from [devthrottle.com/download](https://devthrottle.com/download) and run it. Three screens: **Welcome, Install, Complete**. There is nothing to decide on any of them.
+
+Go to `/download` directly. It says *"Free, no account needed"* and means it. The home page's main **Get started** button takes the other route -- sign up first, download second -- so you will be asked for an account before you have downloaded anything.
 
 The same file is on the [latest release](https://github.com/thefrederiksen/devthrottle/releases/latest) as `devthrottle-setup-win-x64.exe` if you would rather take it straight from there.
 
