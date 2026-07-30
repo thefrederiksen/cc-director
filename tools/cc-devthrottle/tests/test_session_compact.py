@@ -151,7 +151,7 @@ def test_a_failure_is_reported_and_exits_nonzero(posted, monkeypatch, capsys):
     assert "director returned Timeout" in capsys.readouterr().out
 
 
-def test_a_bracketed_error_does_not_crash_the_verb(posted, monkeypatch, capsys):
+def test_a_bracketed_error_does_not_crash_the_verb(posted, monkeypatch, capsys, plain):
     # The server's error text can quote a path or a fragment of the session's own output. Interpolated
     # raw into Rich markup, a token like [/tmp/x] raises MarkupError out of the branch whose only job is
     # to explain a failure - the same defect already fixed for the buffer verb.
@@ -165,7 +165,7 @@ def test_a_bracketed_error_does_not_crash_the_verb(posted, monkeypatch, capsys):
     with pytest.raises(typer.Exit):
         session_ops.compact_session(None, "continue")
 
-    assert "no session at [/tmp/x] on that Director" in capsys.readouterr().out
+    assert "no session at [/tmp/x] on that Director" in plain(capsys.readouterr().out)
 
 
 def test_the_actions_are_discoverable_with_their_command_lines():
