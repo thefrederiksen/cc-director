@@ -164,7 +164,9 @@ creating its history table - which is the operation the hosted deploy will perfo
 Passed!  - Failed:     0, Passed:     4, Skipped:     0, Total:     4, Duration: 3 s
 ```
 
-**The gate, with both variables unset - the four skip and the ordinary run is untouched:**
+**The gate, with both variables unset - the four skip and the ordinary run is untouched.** This is
+the `Data` filter (`--filter "FullyQualifiedName~Data"`), the data-layer tests, not the whole
+project:
 
 ```
   Skipped ...GatewayStatsSchemaPrivilegeProofTests.RestrictedRole_MirrorsTheMeasuredHostedGrants [1 ms]
@@ -174,6 +176,21 @@ Passed!  - Failed:     0, Passed:     4, Skipped:     0, Total:     4, Duration:
 
 Passed!  - Failed:     0, Passed:    86, Skipped:    20, Total:   106, Duration: 42 s
 ```
+
+---
+
+### The whole-project run was NOT completed, and why
+
+A full `dotnet test` of `CcDirector.Gateway.Tests` was started and then STOPPED after twenty-two
+minutes without finishing. The suite serialises fleet-wide on a per-user lock
+(`%LOCALAPPDATA%\cc-director\test-locks\gateway-test-suite.lock`), and this run was holding it with
+three other agents queued behind it. It was killed to let them through.
+
+So the regression evidence for this change is the `Data` filter above, not a whole-project green.
+What this branch touches outside its own new files is one line of
+`CcDirector.Gateway.Tests.csproj`: a `Microsoft.EntityFrameworkCore.Design` package reference, which
+is a development dependency used by `dotnet ef migrations add` and does not change what the test
+binary loads at run time. Whoever lands this should run the full suite once when the lock is quiet.
 
 ---
 
