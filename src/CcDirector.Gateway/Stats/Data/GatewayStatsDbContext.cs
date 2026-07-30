@@ -28,9 +28,11 @@ namespace CcDirector.Gateway.Stats.Data;
 ///    write paths' job, and the contract suite asserts it, including asserting the accessors that currently
 ///    return every tenant's rows so that whenever that is changed the test turns red and NAMES the change
 ///    rather than passing silently.
-///  - NO unique constraint on any identity table's display column, on either provider. Identity there is
-///    case-INSENSITIVE and a database can only enforce it under some collation; see
-///    <see cref="RepoIdentityEntity"/> for the full reasoning.
+///  - NO constraint anywhere that asks a database to decide whether two DIFFERENT display spellings are the
+///    same identity. That decision is case-INSENSITIVE and stays in the aggregator's mirror; see
+///    <see cref="RepoIdentityEntity"/>. The unique index each identity table DOES carry is on the exact
+///    (tenant, spelling) pair, which is a duplicate under every comparer and asks no collation question -
+///    it is what lets a mint read back which id won instead of assuming it minted one.
 ///
 /// Threading: used through a pooled IDbContextFactory - a fresh context per operation, never shared across
 /// threads.
@@ -194,9 +196,23 @@ public sealed class GatewayStatsDbContext : DbContext
 
         // ---- Identity tables - surrogate id to FIRST-SEEN display spelling -------------------------
         //
-        // No unique index on any display column, on either provider. Do not add one: identity here is
-        // case-INSENSITIVE and a database can only enforce it under some collation, which would be the wrong
-        // question asked authoritatively. RepoIdentityEntity carries the full reasoning.
+        // THE DATABASE STILL DOES NOT DECIDE IDENTITY. It never case-folds, never compares two DIFFERENT
+        // spellings, and is never grouped or ordered by a display column; the StringComparer.OrdinalIgnoreCase
+        // in the aggregator's mirror remains the only thing that decides whether two strings are one
+        // repository. RepoIdentityEntity carries that reasoning and it is unchanged.
+        //
+        // What IS enforced, per table, is a unique index on (tenant, display) - the EXACT byte-for-byte pair.
+        // Two rows with the identical spelling under one tenant are a duplicate under EVERY comparer, the
+        // case-insensitive one included, so forbidding them asks no question about collation at all. Both
+        // providers compare these columns byte-ordinally (SQLite BINARY; the "C" collation pinned below on
+        // PostgreSQL), so the index means the same thing on both.
+        //
+        // It exists because a surrogate id must be MINTED ONCE and READ BACK, never assumed. Without a unique
+        // index there is no conflict target, so two hosted containers minting "owner/repo" for one tenant at
+        // the same moment each get their OWN id and that tenant's turns split silently across two rows. With
+        // it, the second writer's insert conflicts, the statement returns the id that WON, and both writers
+        // file under it. Spellings that differ only by case still mint separate ids - that is the mirror's
+        // business, exactly as before, and is called out again in GatewayStatsWriter.
 
         modelBuilder.Entity<RepoIdentityEntity>(b =>
         {
@@ -206,6 +222,7 @@ public sealed class GatewayStatsDbContext : DbContext
             b.Property(e => e.RepoDisplay).HasColumnName("repo_display").IsRequired();
             b.Property(e => e.Tenant).HasColumnName("tenant").IsRequired()
                 .HasDefaultValue(TenantColumnDefault);
+            b.HasIndex(e => new { e.Tenant, e.RepoDisplay }).IsUnique().HasDatabaseName("ux_repo_identity_tenant_display");
         });
 
         modelBuilder.Entity<AgentIdentityEntity>(b =>
@@ -216,6 +233,7 @@ public sealed class GatewayStatsDbContext : DbContext
             b.Property(e => e.AgentDisplay).HasColumnName("agent_display").IsRequired();
             b.Property(e => e.Tenant).HasColumnName("tenant").IsRequired()
                 .HasDefaultValue(TenantColumnDefault);
+            b.HasIndex(e => new { e.Tenant, e.AgentDisplay }).IsUnique().HasDatabaseName("ux_agent_identity_tenant_display");
         });
 
         modelBuilder.Entity<ModelIdentityEntity>(b =>
@@ -226,6 +244,7 @@ public sealed class GatewayStatsDbContext : DbContext
             b.Property(e => e.ModelDisplay).HasColumnName("model_display").IsRequired();
             b.Property(e => e.Tenant).HasColumnName("tenant").IsRequired()
                 .HasDefaultValue(TenantColumnDefault);
+            b.HasIndex(e => new { e.Tenant, e.ModelDisplay }).IsUnique().HasDatabaseName("ux_model_identity_tenant_display");
         });
 
         modelBuilder.Entity<CheckoutIdentityEntity>(b =>
@@ -236,12 +255,18 @@ public sealed class GatewayStatsDbContext : DbContext
             b.Property(e => e.CheckoutDisplay).HasColumnName("checkout_display").IsRequired();
             b.Property(e => e.Tenant).HasColumnName("tenant").IsRequired()
                 .HasDefaultValue(TenantColumnDefault);
+            b.HasIndex(e => new { e.Tenant, e.CheckoutDisplay }).IsUnique().HasDatabaseName("ux_checkout_identity_tenant_display");
         });
 
         // ---- High-water tables - the read-modify-write paths ---------------------------------------
         //
         // The tenant is the FIRST key column on all three, as version 5 rebuilt them. Without it in the key,
         // two tenants pushing the same bare session id collide and one silently overwrites the other.
+        //
+        // Every one of them carries previous_* columns beside its counts (schema version 6). They hold what
+        // the row held immediately BEFORE the last raise, written by the raise statement itself so that one
+        // atomic statement can return both halves and the writer can append exactly the difference the
+        // database made. Nothing reads them as a statistic; see SessionHighwaterEntity and GatewayStatsWriter.
 
         modelBuilder.Entity<SessionHighwaterEntity>(b =>
         {
@@ -253,6 +278,9 @@ public sealed class GatewayStatsDbContext : DbContext
             b.Property(e => e.Surface).HasColumnName("surface").IsRequired();
             b.Property(e => e.Turns).HasColumnName("turns").IsRequired();
             b.Property(e => e.Chars).HasColumnName("chars").IsRequired();
+            b.Property(e => e.PreviousTurns).HasColumnName("previous_turns").IsRequired();
+            b.Property(e => e.PreviousChars).HasColumnName("previous_chars").IsRequired();
+            b.Property(e => e.Generation).HasColumnName("generation").IsRequired();
         });
 
         modelBuilder.Entity<TokenHighwaterEntity>(b =>
@@ -265,6 +293,11 @@ public sealed class GatewayStatsDbContext : DbContext
             b.Property(e => e.OutputTokens).HasColumnName("output_tokens").IsRequired();
             b.Property(e => e.CacheReadTokens).HasColumnName("cache_read_tokens").IsRequired();
             b.Property(e => e.CacheCreationTokens).HasColumnName("cache_creation_tokens").IsRequired();
+            b.Property(e => e.PreviousInputTokens).HasColumnName("previous_input_tokens").IsRequired();
+            b.Property(e => e.PreviousOutputTokens).HasColumnName("previous_output_tokens").IsRequired();
+            b.Property(e => e.PreviousCacheReadTokens).HasColumnName("previous_cache_read_tokens").IsRequired();
+            b.Property(e => e.PreviousCacheCreationTokens).HasColumnName("previous_cache_creation_tokens").IsRequired();
+            b.Property(e => e.Generation).HasColumnName("generation").IsRequired();
         });
 
         modelBuilder.Entity<AgentDrivenHighwaterEntity>(b =>
@@ -275,6 +308,9 @@ public sealed class GatewayStatsDbContext : DbContext
             b.Property(e => e.SessionId).HasColumnName("session_id").IsRequired();
             b.Property(e => e.Turns).HasColumnName("turns").IsRequired();
             b.Property(e => e.Chars).HasColumnName("chars").IsRequired();
+            b.Property(e => e.PreviousTurns).HasColumnName("previous_turns").IsRequired();
+            b.Property(e => e.PreviousChars).HasColumnName("previous_chars").IsRequired();
+            b.Property(e => e.Generation).HasColumnName("generation").IsRequired();
         });
 
         // ---- Membership tables - all-time distinct sets, never pruned ------------------------------

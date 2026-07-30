@@ -34,4 +34,31 @@ public sealed class TokenHighwaterEntity
 
     /// <summary>The highest cumulative cache-creation token count seen (<c>cache_creation_tokens</c>).</summary>
     public long CacheCreationTokens { get; set; }
+
+    /// <summary>What <see cref="InputTokens"/> held immediately before the most recent raise
+    /// (<c>previous_input_tokens</c>), so the raise statement returns what it changed rather than leaving the
+    /// writer to infer it. See <see cref="SessionHighwaterEntity.PreviousTurns"/>.</summary>
+    public long PreviousInputTokens { get; set; }
+
+    /// <summary>What <see cref="OutputTokens"/> held immediately before the most recent raise
+    /// (<c>previous_output_tokens</c>).</summary>
+    public long PreviousOutputTokens { get; set; }
+
+    /// <summary>What <see cref="CacheReadTokens"/> held immediately before the most recent raise
+    /// (<c>previous_cache_read_tokens</c>).</summary>
+    public long PreviousCacheReadTokens { get; set; }
+
+    /// <summary>What <see cref="CacheCreationTokens"/> held immediately before the most recent raise
+    /// (<c>previous_cache_creation_tokens</c>).</summary>
+    public long PreviousCacheCreationTokens { get; set; }
+
+    /// <summary>Which INCARNATION of this session's tally the row is counting (<c>generation</c>). It advances
+    /// by one every time the store adopts a RESET - a Director restarting this session id and counting from
+    /// zero again. A writer sends the generation it believed the row was on; a reading whose belief comes from
+    /// an older generation is a straggler from a life that has already ended, and it contributes nothing.
+    ///
+    /// Without it, a delayed pre-reset reading is indistinguishable from ordinary growth after the reset, and
+    /// it is counted a second time - permanently, because nothing rewrites an appended delta, and by an amount
+    /// that scales with the pre-reset watermark. See <c>GatewayStatsWriter</c>.</summary>
+    public long Generation { get; set; }
 }
