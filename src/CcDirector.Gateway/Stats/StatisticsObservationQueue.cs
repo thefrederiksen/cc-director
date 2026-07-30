@@ -85,7 +85,12 @@ public sealed class StatisticsObservationQueue : IAsyncDisposable
 
     // Coalescing slots for concurrency: at most one pending observation per tenant. The Func is the work
     // to run; replacing it means the latest sample wins, which is exactly the semantics of a high-water mark.
-    private readonly ConcurrentDictionary<TenantId, Func<CancellationToken, Task>> _pendingConcurrency = new();
+    private readonly ConcurrentDictionary<TenantId, PendingSample> _pendingConcurrency = new();
+
+    /// <summary>One tenant's pending concurrency observation. <paramref name="LiveSessions"/> is what makes
+    /// coalescing by MAXIMUM possible - without a magnitude the queue can only keep the latest, which
+    /// silently discards real peaks.</summary>
+    private sealed record PendingSample(int LiveSessions, Func<CancellationToken, Task> Work);
 
     /// <param name="operationBound">How long one statistics write may take before it is reported as stuck.
     /// A health threshold, not a cancellation - see rule 3.</param>
@@ -131,7 +136,7 @@ public sealed class StatisticsObservationQueue : IAsyncDisposable
     /// been written. Rule 2: latest wins, because a maximum cannot tell the difference and the queue
     /// should not fill with samples that are already superseded.
     /// </summary>
-    public void OfferConcurrency(TenantId tenant, Func<CancellationToken, Task> work)
+    public void OfferConcurrency(TenantId tenant, int liveSessions, Func<CancellationToken, Task> work)
     {
         if (work is null) return;
         var health = HealthFor(ConcurrencyObserver);
@@ -140,14 +145,30 @@ public sealed class StatisticsObservationQueue : IAsyncDisposable
             health.RecordDrop();
             return;
         }
-        // Replace first: whether or not a marker is already queued, the newest sample is the one to write.
-        var hadPending = _pendingConcurrency.ContainsKey(tenant);
-        _pendingConcurrency[tenant] = work;
-        if (hadPending) return;    // a marker is already in flight for this tenant; it will pick this up
 
+        // KEEP THE LARGER SAMPLE, atomically. AddOrUpdate is what makes this safe against two producers:
+        // an earlier read-then-write pair could lose a peak to a racing writer, which is the same defect as
+        // "latest wins" arriving by a different route.
+        _pendingConcurrency.AddOrUpdate(
+            tenant,
+            _ => new PendingSample(liveSessions, work),
+            (_, existing) => existing.LiveSessions >= liveSessions ? existing : new PendingSample(liveSessions, work));
+
+        // SCHEDULE A MARKER UNCONDITIONALLY, and let a redundant one be harmless.
+        //
+        // The first version checked whether a marker already existed and skipped writing one if so. That
+        // check and the assignment above were separate operations, so a consumer that removed the pending
+        // sample in between left a producer believing a marker was still coming when none was - and that
+        // tenant's samples were then orphaned FOREVER, with no drop and no failure recorded. Silence again.
+        //
+        // An extra marker costs one slot and finds nothing to do (see RunOneAsync, which returns when the
+        // slot is already empty). That is a far better trade than a lost-update window, and it needs no
+        // state machine to reason about.
         if (!_channel.Writer.TryWrite(new WorkItem(ConcurrencyObserver, null, tenant)))
         {
-            _pendingConcurrency.TryRemove(tenant, out _);
+            // Deliberately DO NOT remove the pending sample here - it may belong to another producer, and
+            // the timer offers again shortly, so the next marker collects it. Dropping the marker delays a
+            // sample; removing someone else's pending work would lose it.
             health.RecordDrop();
         }
     }
@@ -187,9 +208,11 @@ public sealed class StatisticsObservationQueue : IAsyncDisposable
         var work = item.Work;
         if (work is null && item.Tenant is TenantId t)
         {
-            // A coalescing marker: take whatever the latest sample for this tenant is now.
-            if (!_pendingConcurrency.TryRemove(t, out var latest)) return;
-            work = latest;
+            // A coalescing marker: take this tenant's pending sample - the LARGEST offered since the last
+            // drain, not the most recent. A redundant marker finds nothing and returns; see OfferConcurrency
+            // for why markers are written unconditionally rather than guarded by a check that could race.
+            if (!_pendingConcurrency.TryRemove(t, out var pending)) return;
+            work = pending.Work;
         }
         if (work is null) return;
 

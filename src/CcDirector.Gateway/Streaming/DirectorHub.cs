@@ -89,6 +89,32 @@ public sealed class DirectorHub : Hub
     }
 
     /// <summary>
+    /// Offer queued work, re-entering this connection's tenant scope ON THE CONSUMER'S THREAD.
+    ///
+    /// THE BUG THIS EXISTS TO PREVENT, which shipped on this branch and was caught in review: a push handler
+    /// runs inside `using var tenantScope = EnterBoundTenantScope()`, and it is tempting to assume queued
+    /// work inherits it. IT DOES NOT. The scope is an AsyncLocal; a delegate handed through a channel to a
+    /// consumer started separately, in its own Task.Run, carries none of the producer's execution context.
+    /// On hosted, SnoozeRegistry.PruneNotLive then calls CreateContext, finds no ambient tenant, and THROWS
+    /// EVERY TIME - so the prune I moved here would never have run in production, and would have failed
+    /// silently into a counter rather than loudly. Local tests use a single-tenant context that always
+    /// supplies a tenant, so they cannot see it; only hosted would have.
+    ///
+    /// So the tenant is captured HERE, at offer time, from the connection that actually owns it, and entered
+    /// explicitly over there. Never rely on ambient state crossing a thread you did not start.
+    /// </summary>
+    private void OfferScoped(string observer, TenantId tenant, Action work)
+    {
+        var boundary = _tenantBoundary;
+        _statsQueue?.Offer(observer, _ =>
+        {
+            using var scope = boundary is null ? (IDisposable)NoScope.Instance : boundary.EnterScope(tenant);
+            work();
+            return Task.CompletedTask;
+        });
+    }
+
+    /// <summary>
     /// Claim every session number in <paramref name="sessions"/> into this tenant's in-use set (issue #1292),
     /// so the allocator never re-issues a number a Director assigned offline or one still live across a
     /// Gateway restart.
@@ -239,8 +265,8 @@ public sealed class DirectorHub : Hub
         // superseded connection or a stale sequence - is not authoritative, and folding its tallies
         // records facts the fleet never had.
         if (accepted)
-            _statsQueue?.Offer(Stats.StatisticsObservationQueue.InputStatsObserver,
-                _ => { _inputStats.ObserveSnapshot(set, tenant: snapshotTenant); return Task.CompletedTask; });
+            OfferScoped(Stats.StatisticsObservationQueue.InputStatsObserver, snapshotTenant,
+                    () => _inputStats.ObserveSnapshot(set, tenant: snapshotTenant));
         // Fleet concurrency and the hourly activity log - max concurrent live and actively-working sessions,
         // plus the distinct sessions/machines/repositories active each hour. MOVED here from the GET /sessions
         // handler: the tracker keeps only the higher value per hour, so observing every push is idempotent in
@@ -277,8 +303,8 @@ public sealed class DirectorHub : Hub
                             && !string.Equals(x.ActivityState, "Exited", StringComparison.OrdinalIgnoreCase))
                    .Select(x => x.SessionId),
                 StringComparer.Ordinal);
-            _statsQueue?.Offer(Stats.StatisticsObservationQueue.SnoozePruneObserver,
-                _ => { _snoozeRegistry.PruneNotLive(directorId, liveIds); return Task.CompletedTask; });
+            OfferScoped(Stats.StatisticsObservationQueue.SnoozePruneObserver, RequireBoundTenant(),
+                () => _snoozeRegistry.PruneNotLive(directorId, liveIds));
         }
         // A push the store REJECTED (from a superseded connection, or a stale sequence) is NOT authoritative,
         // so it must not drive the snooze observer - whose edges MUTATE the authoritative registry
@@ -325,8 +351,8 @@ public sealed class DirectorHub : Hub
         var deltaTenant = RequireBoundTenant();
         // Gated on acceptance like every other observer here.
         if (accepted)
-            _statsQueue?.Offer(Stats.StatisticsObservationQueue.InputStatsObserver,
-                _ => { _inputStats.Observe(session, tenant: deltaTenant); return Task.CompletedTask; });
+            OfferScoped(Stats.StatisticsObservationQueue.InputStatsObserver, deltaTenant,
+                    () => _inputStats.Observe(session, tenant: deltaTenant));
         // Concurrency is timer-sampled, not observed here - and this is the HOTTEST path in the Gateway, so
         // it is the one that must never materialise the whole tenant fleet or touch the shared file.
         // Issue #1292: claim this session's number the moment it arrives - gated on acceptance so a stale or
@@ -381,8 +407,8 @@ public sealed class DirectorHub : Hub
         // while the session is still live, and the next authoritative delta then presents the same
         // cumulative counters as new, so they are counted twice. A rejected push must never inflate totals.
         if (accepted)
-            _statsQueue?.Offer(Stats.StatisticsObservationQueue.InputStatsObserver,
-                _ => { _inputStats.Forget(sessionId, removeTenant); return Task.CompletedTask; });
+            OfferScoped(Stats.StatisticsObservationQueue.InputStatsObserver, removeTenant,
+                    () => _inputStats.Forget(sessionId, removeTenant));
         // A departure changes how many sessions are live, but concurrency is timer-sampled, so the next
         // sample picks it up rather than this path writing to the shared file.
         // A DEPARTURE RE-ROLES THE SURVIVORS, exactly as an arrival does: a controller leaving should stop

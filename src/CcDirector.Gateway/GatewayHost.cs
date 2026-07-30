@@ -3090,7 +3090,9 @@ public sealed class GatewayHost : IAsyncDisposable
                             .Select(x => x.Session).ToList();
                         if (fleet.Count == 0) return;
                         var at = DateTime.UtcNow;
-                        _statsQueue.OfferConcurrency(tenant,
+                        // The live count rides along so the queue coalesces by MAXIMUM rather than by arrival
+                        // order: a later, smaller sample must never displace a peak that really happened.
+                        _statsQueue.OfferConcurrency(tenant, fleet.Count,
                             _ => { SessionConcurrency.Observe(fleet, at, tenant); return Task.CompletedTask; });
                     });
                 }
