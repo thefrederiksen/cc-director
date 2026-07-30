@@ -117,6 +117,16 @@ public sealed class GatewayStatsDbContext : DbContext
     /// <summary>Runtime scalars keyed by (tenant, name) (<c>meta</c>).</summary>
     public DbSet<MetaEntity> Meta => Set<MetaEntity>();
 
+    /// <summary>All-time concurrency peaks, one row per tenant (<c>concurrency_peak</c>).</summary>
+    public DbSet<ConcurrencyPeakEntity> ConcurrencyPeaks => Set<ConcurrencyPeakEntity>();
+
+    /// <summary>The per-hour fleet activity log (<c>concurrency_hour</c>).</summary>
+    public DbSet<ConcurrencyHourEntity> ConcurrencyHours => Set<ConcurrencyHourEntity>();
+
+    /// <summary>The raw members of each hour's distinct sets (<c>concurrency_hour_member</c>) - restart
+    /// durability for the in-memory dedup sets, nothing else.</summary>
+    public DbSet<ConcurrencyHourMemberEntity> ConcurrencyHourMembers => Set<ConcurrencyHourMemberEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -392,5 +402,7 @@ public sealed class GatewayStatsDbContext : DbContext
                     if (property.ClrType == typeof(string))
                         property.SetCollation("C");
         }
+
+        ConcurrencyStatsModel.Configure(modelBuilder);
     }
 }

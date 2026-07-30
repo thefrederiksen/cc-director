@@ -152,6 +152,45 @@ written once and never moved), so `ON CONFLICT DO NOTHING` - matching version 5'
 
 ---
 
+## The concurrency store - three more tables, worker 5
+
+`gateway-concurrency-stats.json` (`GatewaySessionConcurrencyStats`) is in Step 2's scope by ruling 13.
+It earns its place: it is rewritten IN FULL, atomically, on every `/sessions` read on which anything
+changed, from the hottest path in the system, and it was 53 KB and being written seconds before the
+incident was investigated. It is corruptible by exactly the two-writer window that took the roster down.
+
+| Table | Key | Columns |
+|---|---|---|
+| `concurrency_peak` | `tenant` | `live_max` int, `live_max_at_utc` timestamp?, `working_max` int, `working_max_at_utc` timestamp? |
+| `concurrency_hour` | `(tenant, hour_utc)` | `max_live` int, `max_working` int, `distinct_sessions` int, `distinct_machines` int, `distinct_repos` int |
+| `concurrency_hour_member` | `(tenant, hour_utc, kind, member_id)` | none - the key is the row |
+
+Four things that must survive the port unchanged, because getting any of them wrong changes numbers
+the owner reads:
+
+1. **`LiveCurrent` and `WorkingCurrent` are NOT persisted today** and must not become persisted. They
+   are runtime-only and reset to zero on restart. `TenantStoreFile` has no field for them; that is
+   deliberate.
+2. **Every peak and every per-hour figure is a MAXIMUM, and all eleven of them are upsert paths.** Both
+   all-time peaks (with their timestamps, which move only when the peak moves) and all five per-hour
+   columns only ever grow. Under concurrent Postgres a read-modify-write on any of them is a lost
+   update. `ON CONFLICT DO UPDATE ... SET x = GREATEST(excluded.x, table.x)`, and the timestamp must
+   move only on the row where the maximum actually advanced.
+3. **The current-hour dedup sets stay in memory, with their existing comparers, and the table is only
+   how they survive a restart.** Sessions dedupe with `StringComparer.Ordinal`; machines and
+   repositories with `StringComparer.OrdinalIgnoreCase`. `concurrency_hour_member` stores the RAW
+   strings and they are rehydrated into those same HashSets on load - which is exactly what `Load` does
+   today. Consequence, and it must be written into the code as a comment so nobody "fixes" it: the
+   table's key is ordinal, so it can legally hold two spellings of one machine that differ only in
+   case, and that is harmless because the HashSet collapses them on rehydrate. **Do not reach for a
+   case-insensitive column or a citext type.** This is the same no-normalizer-equals-the-comparer
+   reasoning written out at length on `repo_identity` in `MigrateToVersion1`.
+4. **Retention is 90 days of hour buckets**, pruned on write. `concurrency_hour_member` prunes with
+   its hour or it becomes the biggest table in the store.
+
+Output parity on `Snapshot` is the bar: same weekly maximum, same hourly list, same ordinal sort by
+hour, and an unseen tenant still returns an all-zero snapshot with no hours.
+
 ## The self-host adoption problem - worker 2 must solve this, it is not optional
 
 An existing self-host `gateway-stats.db` is at `PRAGMA user_version = 5` and has **no**
