@@ -557,6 +557,33 @@ public sealed class GatewayHost : IAsyncDisposable
     /// the timer turns it red.
     /// </summary>
     internal static TimeSpan? VoiceTurnUploadSweepScheduleForTests;
+
+    // Dictation tombstone retention (issue #1111). Distinct from the voice-turn sweep above in BOTH numbers
+    // and in what it is allowed to touch: this one deletes only DELIVERED/ABANDONED records, never a PENDING
+    // one, and it exists solely to bound tombstones whose client acknowledgment will never arrive.
+    private System.Threading.Timer? _dictationTombstoneSweepTimer;
+    private static readonly TimeSpan DictationTombstoneSweepInterval = TimeSpan.FromHours(6);
+    // WHY THIRTY DAYS, and why so much longer than the four hours next door. These two roots hold opposite
+    // things. The voice-turn root holds RECORDED AUDIO that nothing else will ever remove, so its bound is a
+    // privacy ceiling and wants to be tight. A dictation tombstone holds no audio at all - the bytes are
+    // discarded when the record turns terminal - it is a few hundred bytes whose only job is to stop a
+    // client re-driving an upload id it already delivered. So the risk here is inverted: deleting too EARLY
+    // silently re-opens the door to a duplicate dictation, while keeping too long costs almost nothing.
+    //
+    // The number therefore comes from the client, not from the disk. A client holds its on-device copy until
+    // it sees a terminal outcome and acks; a phone that is offline, out of battery, or simply not opened
+    // might not come back for days. Thirty days is an order of magnitude beyond any plausible return, so no
+    // client that could still re-drive an id is affected, while a tombstone nobody will ever ack stops being
+    // immortal. The ack remains the real retirement path and retires records in seconds; this only catches
+    // what the ack has permanently lost.
+    private static readonly TimeSpan DictationTombstoneMaxAge = TimeSpan.FromDays(30);
+    /// <summary>
+    /// Test seam: overrides the dictation tombstone sweep schedule (first tick and period). Null in
+    /// production, assigned only by tests. It exists for the same reason its voice-turn sibling does - the
+    /// sweep method having its own unit test proves nothing about whether anything CALLS it, which is
+    /// precisely how this root grew unbounded while looking covered.
+    /// </summary>
+    internal static TimeSpan? DictationTombstoneSweepScheduleForTests;
     private readonly Running.WorkListRunnerManager _runnerManager = new();
     // Issue #218: Gateway-owned clock for when each session entered the red / NEEDS-YOU state.
     private readonly NeedsYouClock _needsYouClock = new();
@@ -618,8 +645,10 @@ public sealed class GatewayHost : IAsyncDisposable
     // Durable dictation upload staging (issue #1006): the phone streams recorded audio here in chunks;
     // the Gateway assembles, transcribes, and injects the turn itself. Each upload id carries a durable
     // delivery record (issue #1183): PENDING chunks are retained until delivered/abandoned, and the
-    // terminal tombstone de-dupes the upload id forever until the client acknowledges it - so there is no
-    // age sweep for dictation staging (only the unrelated voice-turn staging is age-swept).
+    // terminal tombstone de-dupes the upload id until the client acknowledges it. PENDING is never age-swept
+    // here - it holds a live session lock and audio still owed. Issue #1111 added the one bound that does
+    // apply: SweepResolvedTombstones retires TERMINAL records whose acknowledgment will never come, on a
+    // thirty-day backstop, because otherwise a client that never returns leaves its tombstone immortal.
     // The tenant is named here because the store REQUIRES one - there is no constructor that picks a
     // partition on the author's behalf. This is the BASE handle only: the dictation endpoint re-scopes it
     // with ForTenant to the tenant it resolved from the authenticated device key, and does its work solely
@@ -3065,6 +3094,32 @@ public sealed class GatewayHost : IAsyncDisposable
             $"{voiceTurnUploadSchedule.TotalMinutes:0.###}min, removing staging idle longer than " +
             $"{VoiceTurnUploadMaxAge.TotalHours:0.###}h");
 
+        // Dictation tombstone retention (issue #1111). The client ack is what normally retires a terminal
+        // record, and it does so within seconds; this only bounds the ones whose ack will NEVER arrive -
+        // a client that dropped its queue, was reinstalled, or never came back. Without it those records are
+        // immortal and the store grows forever, which is what was observed live (28 records, all DELIVERED,
+        // the oldest three weeks old). Per-tenant for the same reason the sweep above is: the pass does not
+        // descend into the partition container, so sweeping only the base handle would leave every hosted
+        // tenant's tombstones unbounded. Self-host runs exactly one Local pass over the base root.
+        var dictationTombstoneSchedule = DictationTombstoneSweepScheduleForTests ?? DictationTombstoneSweepInterval;
+        _dictationTombstoneSweepTimer = new System.Threading.Timer(
+            _ =>
+            {
+                try
+                {
+                    _tenantPass.ForEachTenant(() =>
+                    {
+                        if (_tenantPass.Current is not { } tenant) return; // deny: no scope -> sweep nothing
+                        _dictationUploads.ForTenant(tenant).SweepResolvedTombstones(DictationTombstoneMaxAge);
+                    });
+                }
+                catch (Exception ex) { FileLog.Write($"[GatewayHost] dictation tombstone sweep error: {ex.Message}"); }
+            },
+            null, dictationTombstoneSchedule, dictationTombstoneSchedule);
+        FileLog.Write($"[GatewayHost] dictation tombstone sweep started: every " +
+            $"{dictationTombstoneSchedule.TotalHours:0.###}h, retiring unacknowledged terminal records older " +
+            $"than {DictationTombstoneMaxAge.TotalDays:0.###} days (PENDING is never swept)");
+
         // Issue #640: start the Gateway-owned background token refresh. Start() returns immediately (the
         // first sweep runs after a short delay), so this never blocks startup. When the cached access
         // token has expired and a refresh endpoint is configured, the sweep exchanges the refresh token
@@ -3555,6 +3610,8 @@ public sealed class GatewayHost : IAsyncDisposable
         _displayStateSweepTimer = null;
         try { _voiceTurnUploadSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] voice-turn upload sweep timer dispose error: {ex.Message}"); }
         _voiceTurnUploadSweepTimer = null;
+        try { _dictationTombstoneSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] dictation tombstone sweep timer dispose error: {ex.Message}"); }
+        _dictationTombstoneSweepTimer = null;
 
 
         // Issue #640: stop the background token refresh timer.
