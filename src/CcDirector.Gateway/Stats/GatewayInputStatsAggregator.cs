@@ -340,16 +340,26 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                                  (s, i) => new { i.Tenant, s.AgentId, s.SessionId }))
                     _agentSessions.Add((new TenantId(row.Tenant), row.AgentId, row.SessionId));
             }
-            // agents_since is PER TENANT now (one row per tenant that has folded).
-            Read("SELECT tenant, value FROM meta WHERE name=$n",
-                r => _agentsSinceUtc[new TenantId(r.GetString(0))] = r.GetString(1), ("$n", AgentsSinceKey));
+            // The two since-stamps. AgentsSinceUtc serves the first of these straight out of the mirror, so
+            // this read IS its query path and it belongs on the same provider-neutral model as the other
+            // eleven projections - leaving it in raw SQL would make "every read is Entity Framework" a
+            // sentence with an asterisk on it.
+            using (var db = _contexts.CreateDbContext())
+            {
+                // agents_since is PER TENANT now (one row per tenant that has folded).
+                foreach (var row in db.Meta.Where(m => m.Name == AgentsSinceKey)
+                             .Select(m => new { m.Tenant, m.Value }))
+                    _agentsSinceUtc[new TenantId(row.Tenant)] = row.Value;
 
-            // Written by the version 2 migration, so it is present on every database this build can open -
-            // the migration runs before this does. A schema fact, not per-tenant, so it is read once with no
-            // tenant filter. Read into the mirror because the stats surface reports it on every request and it
-            // never changes at runtime.
-            _modelsSinceUtc = ReadScalarString("SELECT value FROM meta WHERE name=$n LIMIT 1",
-                ("$n", GatewayStatsDatabase.ModelsSinceKey)) ?? "";
+                // Written by the version 2 migration, so it is present on every database this build can open -
+                // the migration runs before this does. A schema fact, not per-tenant, so it is read once with
+                // no tenant filter. Read into the mirror because the stats surface reports it on every request
+                // and it never changes at runtime.
+                var modelsSinceKey = GatewayStatsDatabase.ModelsSinceKey;
+                _modelsSinceUtc = db.Meta.Where(m => m.Name == modelsSinceKey)
+                    .Select(m => m.Value)
+                    .FirstOrDefault() ?? "";
+            }
 
             FileLog.Write($"[GatewayInputStatsAggregator] LoadMirror: {_highWater.Count} live session(s), " +
                           $"{_wingmanSessions.Count} wingman session(s), {_repoDisplay.Count} repo(s), {_agentDisplay.Count} agent(s), " +
@@ -1496,15 +1506,6 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         using var reader = cmd.ExecuteReader();
         StatementsExecuted++;
         while (reader.Read()) onRow(reader);
-    }
-
-    private string? ReadScalarString(string sql, params (string Name, object Value)[] args)
-    {
-        using var cmd = _db.Connection.CreateCommand();
-        cmd.CommandText = sql;
-        foreach (var (n, v) in args) cmd.Parameters.AddWithValue(n, v);
-        StatementsExecuted++;
-        return cmd.ExecuteScalar() as string;
     }
 
     public void Dispose()
