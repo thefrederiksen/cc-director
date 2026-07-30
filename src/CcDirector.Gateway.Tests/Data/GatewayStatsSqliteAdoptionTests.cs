@@ -309,7 +309,20 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
         Assert.Equal(StatsStoreAdoptionOutcome.NotAdoptable, result.Outcome);
         Assert.Equal(StatsStoreUnavailableReason.NotAStatisticsStore, result.Reason);
         Assert.False(result.IsUsable);
-        Assert.Contains("stat_delta", result.Detail, StringComparison.Ordinal);
+
+        // The refusal names the FOREIGN object it found, not the statistics tables it did not find. That is
+        // the more useful message and it is also the safer check: this database is refused because it holds
+        // something that is not ours, which is decided before the version stamp is even read - so a foreign
+        // database can never reach the adoption path by carrying a version 5 stamp.
+        Assert.Contains("somebody_elses_table", result.Detail, StringComparison.Ordinal);
+
+        // And it is left exactly as it was found - this is the case that previously had sixteen statistics
+        // tables and a baseline row written into it.
+        using var check = new SqliteConnection(
+            new SqliteConnectionStringBuilder { DataSource = _path }.ToString());
+        check.Open();
+        Assert.Equal(0, ScalarInt(check,
+            "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('stat_delta', '__EFMigrationsHistory')"));
     }
 
     /// <summary>
