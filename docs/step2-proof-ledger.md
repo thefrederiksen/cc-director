@@ -176,7 +176,17 @@ UNOWNED.** |
 | 11 | The SQLite baseline is structurally equivalent to a real version 5 file, and the comparison is proven to detect | **CLOSED for the BASELINE, independently confirmed. The MODEL is a separate artefact and it still encodes the four rejected divergences - see row 20.** | Review 4 built one database by constructing `GatewayStatsDatabase` and another by running the migration, and compared `sqlite_master` unnormalised: only Entity Framework bookkeeping differed. It also read the normaliser and confirmed it changes only whitespace and does NOT hide quoting or casing. Detector proven by renaming `ix_stat_delta_hour`. **My claim that this diff "guards the model against the DDL" was WRONG and the reviewer said so - the test never compares model metadata to anything.** | **This is one of the two rows the authorised desktop release will be cut on. Do not read it as closed because the literal-DDL decision was made: that decision made equivalence ACHIEVABLE; only the diff makes it DEMONSTRATED.** Baseline being rewritten as the literal version 5 DDL so equivalence is true by construction; structural `sqlite_master` diff against a file built by RUNNING the existing code, table by table including index names, primary key column order, uniqueness, nullability and column order; detector proven by renaming an index on purpose and watching the failure name it. An independent reviewer already found four divergences here by probing - dropped `tenant` defaults on eight tables, rowid key nullability metadata, named primary key constraints, and `user_version` left at 0. |
 | 12 | Self-host adoption of an existing version 5 store, non-fatal, with the fixture built by running the real old code | **STILL OPEN after two review rounds. The FIX ROUND INTRODUCED TWO NEW DEFECTS, one of which reintroduces this mission's own failure mode.** | Worker 2.
 
-**NEW, and it is the worst thing found today by consequence:** the adoption path now takes Entity
+**ROUND 3: the replacement bound is not a bound.** `PRAGMA busy_timeout` does NOT govern
+`BeginTransaction` - the provider executes `BEGIN IMMEDIATE` through an internal command that retries
+according to the CONNECTION's default timeout (30 seconds), and the native busy handler and the managed
+retry loop COMPOUND rather than one replacing the other. Measured: **35.065 seconds** to return the
+named busy result; a seven-second configured timeout took 12.126. **The startup boundary gives up at 20
+seconds and reports UNREACHABLE** - so the exact operator-misdirection this work set out to remove is
+still there, a local writer lock surfaced as a database-or-network problem, because the inner bound is
+LONGER than the outer deadline. **The bound was believed rather than measured.** The pragma also leaks:
+still 5,000 on the connection after adoption and after `Migrate()`, never restored.
+
+**ROUND 2, now superseded:** the adoption path took Entity
 Framework's SQLite MIGRATION LOCK, and that lock is **UNBOUNDED**. Review 5 built a genuine version-5
 store carrying `__EFMigrationsLock` with a persisted lock row, called `Adopt`, watched it fail to
 complete within 2.5 seconds, then read the provider source and confirmed the synchronous acquisition
@@ -218,7 +228,20 @@ including the new interrupted-migration test.
 The message is the artefact. It does not report a failed assertion - it names the omission and then
 explains the CONSEQUENCE in plain words, so somebody hitting it in eighteen months needs no archaeology,
 and it explains the offset inside itself so the 4 cannot be mistaken for an off-by-one. |
-| 16 | A fresh statistics file stamps `PRAGMA user_version = 5`, so an OLDER build meeting a NEWER file refuses loudly instead of crashing | **STAMP half CLOSED; the REFUSAL half is OPEN and UNOWNED** - the stamp is the mechanism, the refusal is the property, and a live desktop downgrade has never been exercised end to end | **The second of the two rows the authorised desktop release will be cut on.** Found by an independent reviewer, and named by nobody before that: a file left at `user_version = 0` is not safely openable by the OLD build - it reads 0, tries to run migrations 1 through 5 against tables that already exist, and dies on a duplicate `ALTER TABLE`. A user rolling back a desktop build is a thing that will actually happen, so this is our regression arriving on their machine by a route none of us was looking at. Stamping 5 turns that crash into the loud refusal the original author already designed for, since the old code ALREADY fails correctly on a file whose version exceeds its build. Owed: the stamp, and a test that a downgrade gets the refusal rather than the crash. |
+| 16 | A fresh statistics file stamps `PRAGMA user_version = 5`, so an OLDER build meeting a NEWER file refuses loudly instead of crashing | **STAMP half CLOSED; the REFUSAL half is BROKEN, not merely unproven - PROVED BY RUNNING** - the stamp is the mechanism, the refusal is the property, and a live desktop downgrade has never been exercised end to end.
+
+**Review 9 proved the refusal does not happen for TRACKED stores.** The version gate runs ONLY on stores
+with no history table. Once history exists, the inspection asks only whether the current baseline id
+appears somewhere in the applied list and whether the model's required shape is present - it **never
+reads `user_version`**, never rejects applied migration ids unknown to this build, and tolerates extra
+objects. A store carrying the baseline plus a future migration, `user_version=6`, an extra table, an
+extra column and a future unique index came back **AlreadyTracked**; `Migrate()` was a no-op because
+this older chain had nothing pending; and a write valid for the current model then failed with SQLite
+error 19 **OUTSIDE the containment**.
+
+So the downgrade safety that the per-migration stamp test exists to PRESERVE is not present for the case
+that matters - a machine that ran a NEWER build and rolled back, which is precisely the desktop release
+scenario. It also contradicts the reason type's own promise that a newer file is refused. | **The second of the two rows the authorised desktop release will be cut on.** Found by an independent reviewer, and named by nobody before that: a file left at `user_version = 0` is not safely openable by the OLD build - it reads 0, tries to run migrations 1 through 5 against tables that already exist, and dies on a duplicate `ALTER TABLE`. A user rolling back a desktop build is a thing that will actually happen, so this is our regression arriving on their machine by a route none of us was looking at. Stamping 5 turns that crash into the loud refusal the original author already designed for, since the old code ALREADY fails correctly on a file whose version exceeds its build. Owed: the stamp, and a test that a downgrade gets the refusal rather than the crash. |
 | 18 | An interrupted first migration leaves a history table with NO baseline recorded, and adoption reports the store USABLE | **DETECTION CLOSED IN STEP 2 by worker 2; only REPAIR remains out of scope (issue 1132)** | Found by worker 2 in its own step and reported rather than quietly handled. `Adopt` treats the mere PRESENCE of `__EFMigrationsHistory` as meaning the store is tracked, and never inspects WHICH migrations it records. An interrupted first `Migrate` - history table created, baseline not yet recorded - comes back as an empty history beside tables that already exist; adoption reports it usable and the chain then dies on "table stat_delta already exists" **OUTSIDE the containment**. Adoption cannot create that state itself, because it stamps history and baseline in one transaction, and this is the ordinary interrupted-migration failure for anything on this layer rather than an adoption-specific defect - which is why worker 2 did NOT build partial-migration repair. It is named in the evidence document because "the store HAS a history table" and "the store is AT the baseline" are two different claims and only the first is checked.
 
 **Worker 2 then CLOSED the detection half rather than only documenting it** (`e43922319`): the step now
