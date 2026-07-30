@@ -423,6 +423,93 @@ public sealed class VoiceUploadStore
     }
 
     /// <summary>
+    /// Retire TERMINAL tombstones (DELIVERED / ABANDONED) that no client ever acknowledged and that are older
+    /// than <paramref name="maxAge"/> (issue #1111).
+    ///
+    /// WHY THIS EXISTS, GIVEN THE RULE RIGHT ABOVE IT. <see cref="Acknowledge"/> is the designed retirement
+    /// path and the record comment states the tombstone is retired "only on a real client ack, never by age".
+    /// That is correct for an ack that is merely LATE - a lost ack should not race a delete, and the client
+    /// re-acks after a re-complete. What it has no answer for is an ack that will NEVER come: a client that
+    /// dropped its queue, was reinstalled, or simply never returned. Those tombstones are unreachable by the
+    /// only mechanism that can retire them, so the store grows without any ceiling at all. Observed live: 28
+    /// records, every one DELIVERED, the oldest three weeks old, none of them acknowledgeable by anything.
+    /// This is the backstop for that case ONLY - it does not replace the ack, it bounds what the ack abandons.
+    ///
+    /// WHY IT IS NOT <see cref="SweepAbandoned"/>. That sweep deletes ANY canonical upload directory past the
+    /// age, without reading its state. On the voice-turn staging root that is right, because idle IS abandoned
+    /// there. On this root it would be wrong and dangerous: a PENDING record holds a live session lock and
+    /// guards audio still queued for delivery, so age-deleting one would silently unlock a session and drop a
+    /// dictation that was still owed. FAILED is likewise not terminal - <c>ClearFailed</c> can restore it to
+    /// PENDING. So this method admits ONLY the two genuinely-final states and leaves everything else alone
+    /// forever, however old. A stuck PENDING is a different bug and must stay visible rather than be tidied
+    /// away by a cleanup that was never asked to make that judgement.
+    ///
+    /// THE DE-DUPE GUARANTEE. A tombstone stops a delivered id re-injecting if a client re-drives it. Deleting
+    /// one after <paramref name="maxAge"/> only weakens that for a client returning after the whole window,
+    /// which is why the caller sets it far beyond any real retry (see the constant at the call site) rather
+    /// than to a tidy round number. Inside the window nothing changes.
+    ///
+    /// State and age are BOTH re-read inside the per-upload gate immediately before the delete, so a
+    /// concurrent ack, re-complete, or resurrection cannot be interleaved between the check and the delete.
+    /// Anything unreadable, half-written, or of an unrecognised shape SURVIVES - the same positive-admit
+    /// discipline as the sweep above, because a false delete here is unrecoverable audio state.
+    /// </summary>
+    public int SweepResolvedTombstones(TimeSpan maxAge)
+    {
+        var removed = 0;
+        var cutoff = DateTime.UtcNow - maxAge;
+        try
+        {
+            foreach (var dir in Directory.EnumerateDirectories(_root))
+            {
+                var name = Path.GetFileName(dir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+
+                // POSITIVELY ADMIT, exactly as SweepAbandoned does: only a canonical upload id is a candidate.
+                // The tenants container and the legacy quarantine are not canonical names, so both survive.
+                if (!IsCanonicalUploadDirName(name)) continue;
+
+                WithRecordLock(name, () =>
+                {
+                    try
+                    {
+                        if (!Directory.Exists(dir)) return;
+
+                        // Re-read INSIDE the gate: an ack may have retired it, or a re-complete rewritten it,
+                        // since the enumeration above.
+                        var record = ReadRecordFile(RecordPath(dir));
+                        if (record is null) return;                     // no marker, or unreadable: leave it
+                        if (!IsRetirableTombstone(record.State)) return; // PENDING / FAILED are never aged out
+                        if (Directory.GetLastWriteTimeUtc(dir) >= cutoff) return;
+
+                        Directory.Delete(dir, recursive: true);
+                        removed++;
+                        FileLog.Write($"[VoiceUploadStore] SweepResolvedTombstones retired uploadId={name} " +
+                            $"state={record.State} (never acknowledged, older than {maxAge})");
+                    }
+                    catch (Exception ex)
+                    {
+                        FileLog.Write($"[VoiceUploadStore] SweepResolvedTombstones dir={dir} failed: {ex.Message}");
+                    }
+                });
+            }
+            if (removed > 0)
+                FileLog.Write($"[VoiceUploadStore] SweepResolvedTombstones removed={removed} older than {maxAge}");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[VoiceUploadStore] SweepResolvedTombstones failed: {ex.Message}");
+        }
+        return removed;
+    }
+
+    /// <summary>
+    /// The only two states this cleanup may retire. Written as an explicit allow-list rather than "not
+    /// PENDING" so a state added later is NOT swept by default - it has to be admitted deliberately.
+    /// </summary>
+    private static bool IsRetirableTombstone(DictationDeliveryState state)
+        => state is DictationDeliveryState.Delivered or DictationDeliveryState.Abandoned;
+
+    /// <summary>
     /// Create the staging directory for an upload if it does not exist and stamp its last-activity signal to
     /// now, ATOMICALLY under the upload's gate. This is the one place activity is recorded, so every caller
     /// that represents a live client (register, a resume, a chunk, an assemble) refreshes the same signal the
