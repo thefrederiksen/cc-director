@@ -40,7 +40,12 @@ public sealed class StatisticsCannotFailTheFleetTests
     // is deliberately an order of magnitude longer, so a failure here means the ingress genuinely waited
     // on the store rather than that the machine was busy.
     private static readonly TimeSpan PushMustReturnWithin = TimeSpan.FromSeconds(2);
-    private static readonly TimeSpan StoreStallsFor = TimeSpan.FromSeconds(30);
+    // THE CEILING ON A STALL, NOT ITS DURATION. Every stalled write in this file is released by a gate the
+    // test sets, so the normal path costs milliseconds; this is only the backstop for a gate that never
+    // arrives. It is deliberately SHORT because a test that hangs on a build agent burns to the job timeout
+    // and produces NO RESULT - neither a pass nor a failure - which is worse than red, and it lands on the
+    // path that gates the deploy. A test that cannot finish cannot fail either.
+    private static readonly TimeSpan StoreStallsFor = TimeSpan.FromSeconds(2);
 
     // ---------------------------------------------------------------------------------------------
     // THE BLOCKING-STORE TEST. This is the convoy.
@@ -118,9 +123,10 @@ public sealed class StatisticsCannotFailTheFleetTests
                 return Task.CompletedTask;
             });
 
-        // Far longer than the 100ms bound: if the consumer abandoned the stalled write, a second one would
-        // have started by now.
-        Thread.Sleep(1500);
+        // Comfortably past the 100ms bound: if the consumer abandoned the stalled write, a second would have
+        // started. Kept short deliberately - the property is observable within a few multiples of the bound,
+        // and seconds of real sleep in a test buy nothing but build time.
+        Thread.Sleep(400);
         Assert.Equal(1, Volatile.Read(ref peakConcurrentWrites));
 
         release.Set();
@@ -248,7 +254,12 @@ public sealed class StatisticsCannotFailTheFleetTests
         var queue = new StatisticsObservationQueue(operationBound: TimeSpan.FromMilliseconds(200));
         var started = new ManualResetEventSlim(false);
         var wroteAfterShutdown = 0;
-        queue.Offer(StatisticsObservationQueue.InputStatsObserver, _ => { started.Set(); Thread.Sleep(3000); return Task.CompletedTask; });
+        // A GATE, NOT A SLEEP. The old version slept three seconds unconditionally, which cost real time on
+        // every run and told us nothing a gate does not - the point is that shutdown does not drain the
+        // backlog, and that is true whether the in-flight write takes three seconds or three milliseconds.
+        var releaseInFlight = new ManualResetEventSlim(false);
+        queue.Offer(StatisticsObservationQueue.InputStatsObserver,
+            _ => { started.Set(); releaseInFlight.Wait(StoreStallsFor); return Task.CompletedTask; });
         Assert.True(started.Wait(TimeSpan.FromSeconds(5)));
 
         for (var i = 0; i < 20; i++)
@@ -256,7 +267,9 @@ public sealed class StatisticsCannotFailTheFleetTests
                 _ => { Interlocked.Increment(ref wroteAfterShutdown); return Task.CompletedTask; });
 
         var clock = Stopwatch.StartNew();
-        await queue.DisposeAsync();
+        var dispose = queue.DisposeAsync().AsTask();
+        releaseInFlight.Set();   // let the in-flight write finish instead of waiting out the whole deadline
+        await dispose;
         clock.Stop();
 
         Assert.True(clock.Elapsed < TimeSpan.FromSeconds(10),

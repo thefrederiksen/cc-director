@@ -3681,7 +3681,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // on 2026-07-30, while the code claimed otherwise.
         try { _concurrencySampleTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] concurrency sample timer dispose error: {ex.Message}"); }
         _concurrencySampleTimer = null;
-        try { _statsQueue.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+        // AWAITED, NOT BLOCKED ON. StopAsync is async, and GetAwaiter().GetResult() here was
+        // sync-over-async on the shutdown path that EVERY host - and every test that starts one - runs. That
+        // is the classic way to turn a bounded wait into a stalled thread, and a shutdown that hangs does not
+        // fail, it burns to whatever timeout is outermost and produces no result at all.
+        try { await _statsQueue.DisposeAsync(); }
         catch (Exception ex) { FileLog.Write($"[GatewayHost] statistics queue shutdown error: {ex.Message}"); }
         try { _voiceTurnUploadSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] voice-turn upload sweep timer dispose error: {ex.Message}"); }
         _voiceTurnUploadSweepTimer = null;
