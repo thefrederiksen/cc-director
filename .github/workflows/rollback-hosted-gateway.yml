@@ -35,8 +35,19 @@ on:
 # statistics database and took GET /sessions down for 32 minutes on 2026-07-30.
 #
 # cancel-in-progress is FALSE: a swap-back that arrives while a deploy is mid-swap must WAIT, not
-# cut the deploy off half-finished. If the rollback is needed immediately, cancel the deploy run in
-# the Actions user interface - that releases the group and this run starts.
+# cut the deploy off half-finished. Cancelling a deploy mid-swap can leave an Azure swap completing
+# server-side while this workflow issues the reverse swap - two swap operations racing - and a
+# cancelled deploy can abandon the staging slot RUNNING, a permanent second writer on the shared file
+# share (2026-07-27). So do NOT cancel a running deploy to make this start sooner.
+#
+# The wait is now only as long as the deploy is actually MUTATING. deploy-hosted-gateway.yml declares
+# this group on its mutating job rather than on the whole workflow, so it holds the group through the
+# build, the staging warm-up, the swap and the settle step, and releases it there. Its ten-minute
+# post-swap watch runs in a separate job outside the group, so a swap-back started during that watch
+# begins immediately instead of queueing behind an observation that changes nothing.
+#
+# The group is declared at WORKFLOW level here on purpose: this workflow is short and every step of it
+# mutates, so there is nothing to hold the group for that is not dangerous.
 concurrency:
   group: hosted-gateway-production
   cancel-in-progress: false
