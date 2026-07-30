@@ -15,7 +15,8 @@ That is a change of state from every earlier version of this document, which sai
 History: the first worker 6 built the boundary and was parked when the mission cut to three concurrent
 workers; its one queued run produced no output against the fleet-wide test lock and was stopped, which is NO
 RESULT and closed nothing. The seat was re-seated on 2026-07-30, added the mid-chain answer, the
-`IncompleteSchema` reason and the abandon-not-cancel limitation, and then ran the proofs in a granted slot.
+half-built reason and the abandon-not-cancel limitation, ran the proofs in a granted slot, and then took part in the
+collapse that removed its own duplicate member.
 
 ---
 
@@ -67,12 +68,13 @@ marked it superseded in place. NOT CONFIGURED still exists and still matters; it
 
 ### The named reasons this branch added
 
-`StatsStoreUnavailableReason` gained `NotConfigured`, `Unreachable`, `IncompleteSchema` and `InternalError`
-beside worker 2's adoption reasons. One enum for the whole statistics availability surface, and a stable
-machine-readable code per reason (`not_configured`, `unreachable`, `incomplete_schema`, `internal_error`,
-...) written out by hand rather than derived from the enum member name, so renaming a member in C# cannot
-silently change a string an operator greps for. **That hand-written map is now guarded MECHANICALLY** - see
-the reason-code section below, which exists because the map silently fell behind the enum once already.
+`StatsStoreUnavailableReason` gained `NotConfigured`, `Unreachable` and `InternalError` beside worker 2's
+adoption reasons, and the half-built state is reported through worker 2's `StoreSchemaIncomplete`. One enum
+for the whole statistics availability surface, and a stable machine-readable code per reason
+(`not_configured`, `unreachable`, `store_schema_incomplete`, `internal_error`, ...) written out by hand
+rather than derived from the enum member name, so renaming a member in C# cannot silently change a string an
+operator greps for. **That hand-written map is now guarded MECHANICALLY** - see the reason-code section
+below, which exists because the map silently fell behind the enum once already.
 
 The rule they encode, written down so the next one is added on the same grounds rather than on taste:
 **a named reason exists to separate causes that are FIXED IN DIFFERENT PLACES.** NOT CONFIGURED is fixed by
@@ -80,17 +82,28 @@ editing a setting, UNREACHABLE by fixing a database or a network, INCOMPLETE SCH
 with both of those already healthy, and INTERNAL ERROR is not fixed by the operator at all because it is
 ours. Collapsing any pair costs an incident spent looking where the fault is not.
 
-`IncompleteSchema` is currently a DUPLICATE of worker 2's `MigrationHistoryIncomplete` and is to be dropped
-when worker 2 collapses them - see "what is still not proven".
+**The half-built reason was a DUPLICATE and has been COLLAPSED - resolved, not outstanding.** This branch
+introduced `IncompleteSchema` and worker 2 independently introduced `MigrationHistoryIncomplete` for the SAME
+state, found from opposite ends: worker 2 inside the adoption step, worker 6 inside the startup boundary. Two
+codes for one condition is the distinct-reasons ruling stood on its head - an operator would get a different
+string for the same fault depending on which path noticed it first, and neither string would be wrong, which
+is exactly what makes it hard to see. On the Manager's ruling both were dropped for one member naming the
+STATE: worker 2's `StoreSchemaIncomplete`. Worker 2 owned the collapse; this branch dropped its own member
+and repointed the boundary, the code map and three tests at the survivor.
 
-`IncompleteSchema` is the Manager's ruling of 2026-07-30, and it was made because the first version of this
-branch got it wrong in a way that mattered: a half-built store was contained as UNREACHABLE, whose sentence
-says "this is a database or network problem rather than a missing setting" - true of a refused connection and
-actively misleading here, where the database is up, the network is fine, the settings are right, and the
-fault is sitting on disk. A reason that sends the first responder to check three healthy things is worse than
-no reason at all. It is named for the STATE and not for its cause, because the state is what the person
-fixing it acts on, and because no code running afterwards can tell whether the process died of power loss, an
-eviction mid-deploy or an operator stopping the service - claiming one would be inventing detail.
+**BOTH DETECTORS SURVIVE, and that is deliberate rather than an oversight to tidy up later.** Adoption is
+SKIPPED ENTIRELY on PostgreSQL, so on the hosted path the boundary's check is the ONLY half-built detection
+there is. The Manager first called it a backstop and corrected that before worker 2 acted on the wording. Do
+not delete it as duplicate.
+
+The reason exists at all because the first version of this branch got it wrong in a way that mattered: a
+half-built store was contained as UNREACHABLE, whose sentence says "this is a database or network problem
+rather than a missing setting" - true of a refused connection and actively misleading here, where the
+database is up, the network is fine, the settings are right, and the fault is sitting on disk. A reason that
+sends the first responder to check three healthy things is worse than no reason at all. It names the STATE
+and not its cause, because the state is what the person fixing it acts on, and because no code running
+afterwards can tell whether the process died of power loss, an eviction mid-deploy or an operator stopping
+the service - claiming one would be inventing detail.
 
 ### The mid-chain question, answered: what containment can and cannot do
 
@@ -292,10 +305,49 @@ INCOMPLETE SCHEMA: incomplete_schema: ... has a HALF-BUILT SCHEMA ... this is NO
 
 Three different sentences sending a reader to three different places: a setting, a database, a disk.
 
-## THE SECOND RUN, after rebasing onto worker 2 - 26 passed, 4 failed, and THREE CLAIMS ARE UNPROVEN
+## THE THIRD RUN, after the collapse - the three reds are GREEN
+
+Run at head `c1953ce6e`, rebased onto worker 2 at `15bda2237`. **All five mid-chain tests pass**, and across
+all eight statistics classes: **61 passed, 1 failed.**
+
+The contained sentence now reads, verbatim:
+
+```
+CONTAINED: reason=store_schema_incomplete: The statistics store at '...\gateway-stats.db' has a migration
+  history table that does NOT record the baseline migration '20260730181222_InitialGatewayStats', but 16 of
+  its 16 tables already exist. A migration was interrupted partway. Running the chain would try to create
+  tables that are already there, so the store has NOT been changed and needs looking at by hand - restore it
+  from a backup, or move it aside to start a fresh one. Statistics are unavailable; the rest of the Gateway
+  is unaffected.
+UNCHANGED: tables=16 user_version=5 history_rows=0 stat_delta_rows=1
+```
+
+`ContainedOpen_ChangesNothingOnDisk` - the one that was proving NOTHING because its whole unchanged-on-disk
+section sat behind a failing assertion and never ran - now executes to the end. Nothing was skipped.
+
+**Two of the three reds were not the reason name; they were SENTENCE assertions, and they were changed in
+shape rather than weakened to fit.** They had pinned this branch's own phrase, "NOT a network". After the
+collapse the sentence comes from the adoption step, which points at the store on disk and says what to do
+without that clause. Pinning my phrase would have meant either a permanent red or rewriting another seat's
+operator text to satisfy my test - and the ruling was about WHERE THE READER IS SENT, not about a form of
+words. So the guard is now the ABSENCE of the misleading claim: the half-built sentence must not carry the
+"database or network problem" wording that UNREACHABLE carries, asserted as a CONTRAST against the
+unreachable sentence in the same test, because checking only that one sentence lacks a phrase would also
+pass if no sentence anywhere used it.
+
+**THE ONE RED IS WORKER 2'S, AND IT WAS PROVEN RATHER THAN ASSUMED.**
+`GatewayStatsSqliteAdoptionTests.Adopt_AHealthyVersion5StoreWithEveryTablePopulated_IsNeverRefused` fails
+with `Assert.Single() Failure: The collection contained 2 items` - two meta rows where it expects one. A
+throwaway worktree was cut at worker 2's head `15bda2237` with NONE of this branch's commits and that single
+test run there: it fails identically. This branch does not differ from worker 2 in that test file at all,
+and its only delta in the adoption area is additive enum members that cannot change what the meta table
+holds. Worktree removed and pruned.
+
+## THE SECOND RUN (SUPERSEDED by the third, kept because it records what was owed and why)
 
 Run at head `a668f2430` over six classes: **30 tests, 26 passed, 4 failed.** Recorded honestly rather than
-as "mostly green", because three of those failures leave real claims unproven right now.
+as "mostly green", because three of those failures left real claims unproven at that head. All three are
+green as of the third run above; this section is the record of the gap, not a live one.
 
 **Three failures are the Manager's collapse ruling taking effect at runtime, observed rather than predicted.**
 After rebasing onto worker 2's head, a half-built store is detected by worker 2's ADOPTION step and comes
@@ -452,17 +504,14 @@ Stated separately because collapsing them would hide an owed proof behind a sati
 
 The rows are the Manager's to close, not mine; what follows is what this run does NOT reach.
 
-- **Everything added after the run of 2026-07-30 is UNRUN.** The two refusal tests above, the reason-code
-  guard, and the rebase onto worker 2's head all postdate the run whose output is quoted in this document.
-  The quoted evidence in the first-run section belongs to the tree at `ed966b50c`; the second run above is at
-  `a668f2430`.
-- **The duplicate reason members are UNRESOLVED and awaiting the Manager.** Worker 2's
-  `MigrationHistoryIncomplete` and this branch's `IncompleteSchema` are the SAME STATE, found independently
-  from opposite ends - worker 2 inside adoption, worker 6 inside the startup boundary. Both are currently in
-  the enum, both have codes so nothing mis-reports meanwhile, and they must collapse into ONE before merge.
-  Two codes for one condition is the distinct-reasons ruling stood on its head: an operator would get a
-  different string for the same fault depending on which path noticed it first, and neither string would be
-  wrong, which is exactly what makes it hard to see.
+- **Which head each quoted run belongs to, because this document now carries three.** The first-run evidence
+  belongs to `ed966b50c`, the second to `a668f2430`, and the third - the current one - to `c1953ce6e`
+  rebased onto worker 2 at `15bda2237`. A quotation is only about the tree it was taken from; anything added
+  after a run is unrun until the next one names it.
+- **The duplicate reason members are RESOLVED** - collapsed to worker 2's `StoreSchemaIncomplete`, which
+  names the state rather than the route that noticed it. See "the named reasons this branch added". Left
+  here as a pointer rather than deleted, because a reader arriving at this list from an older message needs
+  to find the answer rather than a silence.
 
 - **Row 10's roster body is EMPTY, and this SPLIT THE ROW.** The route answered in roster shape with
   statistics dead; enumerating actual sessions needs a pushed snapshot over a tunnel and is a different rig.
