@@ -91,15 +91,11 @@ internal static class GatewayEndpoints
         // number so the in-use set survives a Gateway restart. Null (old callers, tests) maps nothing
         // and leaves each Director to number locally.
         Discovery.FleetSessionNumberAllocator? sessionNumbers = null,
-        // DevThrottle Stats: the always-available input-tally aggregator. Folded from the assembled
-        // /sessions roster (the path that carries SessionDto.InputStats whether stream mode is on or off),
-        // so "Your Throttle" is fed by the same roster the fleet already reads, not only by the SignalR
-        // push path (which is unmapped when stream mode is off). Null (old callers, tests) folds nothing.
-        Stats.GatewayInputStatsAggregator? inputStats = null,
-        // DevThrottle Stats: the durable fleet concurrency record. Observed from the same assembled roster
-        // (live count + actively-working count), so the peak is captured fleet-wide whether stream mode is
-        // on or off. Null (old callers, tests) records nothing.
-        Stats.GatewaySessionConcurrencyStats? concurrency = null,
+        // THE STATISTICS COLLABORATORS ARE DELIBERATELY ABSENT FROM THIS SIGNATURE. They used to be here
+        // (inputStats, concurrency) because the roster read folded them. GET /sessions is now a PURE READ
+        // and the observation happens ONCE, at the push ingress in DirectorHub - see the note above the
+        // fold in the /sessions handler for why. Do not add them back: a statistics collaborator reachable
+        // from a read handler is a statistics failure that can answer 500 to the whole fleet.
         // Snooze Length mission: the Gateway-owned snooze registry. POST /sessions/{sid}/hold REQUIRES it -
         // it records/clears a snooze-until here (the authoritative hold) and the /sessions fold reads it to
         // return an EXPIRED snooze to "needs you" (OnHold=false) on its own even if its Director has died.
@@ -1083,10 +1079,10 @@ internal static class GatewayEndpoints
                     // and still keeps its worker's red suppressed. See StampFleetRolesAndFold.
                     //
                     // The filters deliberately stay where they are rather than moving below the fold. Moving
-                    // them would silently widen four unrelated things that read the FILTERED set today:
-                    // owners?.Remember (ownership records), inputStats?.ObserveSnapshot, concurrency?.Observe
-                    // and sessionNumbers.Adopt. Those are second-order effects of a "simple" reorder and none
-                    // of them is part of this defect.
+                    // them would silently widen what reads the FILTERED set today: owners?.Remember
+                    // (ownership records). That is a second-order effect of a "simple" reorder and is not
+                    // part of this defect. (The statistics and session-number observers used to be on this
+                    // list too; they now run at the push ingress and no longer read this set at all.)
                     fleet.Add(s);
 
                     if (!string.IsNullOrEmpty(agent) && !string.Equals(s.Agent, agent, StringComparison.OrdinalIgnoreCase))
@@ -1242,37 +1238,43 @@ internal static class GatewayEndpoints
             // (`fleet`), not the response set (`all`). See defect 13 in StampFleetRolesAndFold.
             StampFleetRolesAndFold(fleet, all, needsYouStampFor, snoozeRegistry, reqTenant.Value);
 
-            // DevThrottle Stats: fold the assembled roster's per-session input tallies into the always-
-            // available aggregate that backs "Your Throttle". This is the ONE path that carries
-            // SessionDto.InputStats on the live Gateway regardless of stream mode (the SignalR DirectorHub
-            // fold only runs when stream mode is on, which it is not in production). The aggregator's
-            // per-session high-water logic makes folding the full roster on every read idempotent - only a
-            // genuine increase is added, so repeated /sessions polls never double-count.
-            // MTR-08: stamp the REQUEST TENANT. The roster assembled above is this tenant's own (the
-            // owned-Director gate filtered it), so its input tallies fold into this tenant's partition and can
-            // never coalesce with another account's.
-            inputStats?.ObserveSnapshot(all, DateTime.UtcNow, reqTenant.Value);
-
-            // DevThrottle Stats: record fleet concurrency and the hourly activity log from the same
-            // assembled roster - max concurrent loaded/running (live) and actively working, plus how many
-            // distinct sessions/machines/repositories ran each hour. Per-tenant with no per-Director
-            // instrumentation, since the roster already sees this tenant's sessions on every machine. The
-            // tracker keeps only the higher value per hour, so folding on every /sessions read never inflates.
-            concurrency?.Observe(all, DateTime.UtcNow, reqTenant.Value);
-
-            // Issue #1292: adopt every observed number into the allocator's in-use set. This is how the
-            // Gateway learns numbers it did not hand out - a number a Director assigned offline, or any
-            // number still live after a Gateway restart - so it never hands the same number to a new
-            // session. Adopt only ever marks a number in use (never frees one), so doing it from this
-            // possibly-filtered view is safe: a Director that is momentarily absent from the aggregation
-            // can never lose its numbers here.
-            // Audit H2: adopt into THIS REQUEST'S tenant partition. The roster assembled above is this
-            // tenant's own (the owned-Director gate filtered it), so its numbers belong to this tenant and
-            // can never mark another account's partition in use.
-            if (sessionNumbers is not null)
-                foreach (var s in all)
-                    if (s.Number is int num)
-                        sessionNumbers.Adopt(reqTenant.Value, s.SessionId, s.DirectorId, num);
+            // THE OPTIONAL ANALYTICS WRITES ARE GONE FROM THIS HANDLER. IT IS NOT YET A PURE READ.
+            //
+            // Being precise about that, because an earlier draft of this comment claimed the read WAS pure
+            // and it was not - which would have been a false record left behind for the next reader. Still
+            // writing, above this line: FleetRosterCache.RecordReachable / RecordUnreachable, the
+            // SessionOwnerCache retain and remember, SnoozeRegistry.PruneNotLive (a PERSISTENT delete), and
+            // the needs-you clock stamp. Those are not analytics - each one is part of how the roster
+            // answers correctly - but the snooze prune in particular is a durable store write, so a fault in
+            // that store can still turn this read into a 500. Closing that is tracked as its own work; what
+            // this change removes is the class of failure that actually took the fleet down.
+            //
+            // Three write side-effects used to run here, on every roster read, and one of them took the
+            // whole product down on 2026-07-30: a corrupted statistics database made
+            // GatewayInputStatsAggregator.ObserveSnapshot throw, the exception left this handler unhandled,
+            // and GET /sessions answered 500 for 32 minutes. The Cockpit, the phone and every command line
+            // verb that resolves a session by name were blind for the duration - because an OPTIONAL
+            // analytics write failed on the fleet's most important READ.
+            //
+            // The three have moved to the push ingress (DirectorHub.PushSnapshot / PushDelta), which is
+            // where a session fact ARRIVES and is therefore the honest place to observe it:
+            //
+            //   - inputStats  - was ALREADY observed at the ingress; the call here was pure duplication.
+            //                   Its justification ("the SignalR fold only runs when stream mode is on,
+            //                   which it is not in production") had gone stale: the pushed stream cache is
+            //                   now the ONLY roster source, so every session this handler can serve has
+            //                   already been through the ingress by definition.
+            //   - concurrency - had NO producer at the ingress, so it was MOVED there, not deleted.
+            //   - session numbers (Adopt) - likewise moved, not deleted.
+            //
+            // Observing at the ingress is also strictly better coverage than observing here: a fact is
+            // counted when it arrives, whether or not a client happens to poll the roster afterwards.
+            //
+            // IF YOU NEED THE ROSTER TO FEED SOMETHING NEW, FEED IT FROM THE INGRESS. Reaching a writable
+            // collaborator from this handler re-creates the outage, and it will not look dangerous when you
+            // write it - it did not look dangerous the first time either. The statistics collaborators are
+            // no longer even parameters of Map, so this is enforced by the signature rather than by this
+            // comment; keep it that way.
 
             if (envelope == true)
             {

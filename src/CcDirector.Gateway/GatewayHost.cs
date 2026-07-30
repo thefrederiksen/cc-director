@@ -2089,6 +2089,16 @@ public sealed class GatewayHost : IAsyncDisposable
         builder.Services.AddSingleton(_tenantBoundary);
         builder.Services.AddSingleton(_directorConnections);
         builder.Services.AddSingleton(SessionConcurrency);
+        // Issue #1292: the session-number allocator, so the SignalR-constructed DirectorHub adopts every
+        // number it sees arrive. This adoption used to run on the GET /sessions read; it moved to the push
+        // ingress when that read was made pure (see the note in GatewayEndpoints), and the hub can only be
+        // given it through the container.
+        builder.Services.AddSingleton(SessionNumbers);
+        // THE freshness window, registered so the container-built DirectorHub counts concurrency over the
+        // SAME fleet the roster read serves. Without this registration the hub silently used the 20-second
+        // default while the roster used this configured value, and the two disagreed on every Gateway whose
+        // configuration was not the default.
+        builder.Services.AddSingleton(new Streaming.StreamStaleWindow(_streamStaleAfter));
         builder.Services.AddSingleton(Registry);
         // launcher-persistent-join: the LauncherHub (constructed per-invocation by SignalR) and
         // SendLauncherCommandAsync share this one connection registry.
@@ -2462,13 +2472,11 @@ public sealed class GatewayHost : IAsyncDisposable
             // Issue #1292: the fleet-wide session-number authority backs POST /session-numbers/allocate
             // (Directors ask here at session creation) and the /sessions adopt-reconcile.
             sessionNumbers: SessionNumbers,
-            // DevThrottle Stats: feed the input-tally aggregator from the assembled /sessions roster, so
-            // "Your Throttle" is populated whether stream mode is on or off (the DirectorHub push fold only
-            // runs in stream mode, which is off in production).
-            inputStats: InputStats,
-            // DevThrottle Stats: record fleet concurrency (live + actively-working session counts) from the
-            // same assembled roster, so the peak is captured fleet-wide regardless of stream mode.
-            concurrency: SessionConcurrency,
+            // NO STATISTICS COLLABORATORS ARE PASSED HERE ANY MORE. They used to be (inputStats,
+            // concurrency), fed from the assembled roster on every read, and on 2026-07-30 a corrupt
+            // statistics database turned that into a 32-minute fleet-wide outage: the write threw, the
+            // roster read answered 500, and every client went blind. Statistics are now observed once, at
+            // the push ingress in DirectorHub, where a failure costs a count instead of the fleet.
             // Snooze Length mission: the Gateway-owned snooze registry. POST /sessions/{sid}/hold records
             // (or clears) a snooze-until here, and the /sessions fold overlays an EXPIRED snooze back into
             // "needs you" so the session returns on its own even after its Director dies.

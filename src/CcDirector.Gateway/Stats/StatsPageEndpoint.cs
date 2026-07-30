@@ -148,6 +148,8 @@ public static class StatsPageEndpoint
             var resolved = Api.GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
             if (resolved is null) return TenantRequired();
             var tenant = resolved.Value;
+            try
+            {
             var totals = aggregator.CurrentTotals(tenant);
             return Results.Json(new
             {
@@ -209,6 +211,34 @@ public static class StatsPageEndpoint
                 sessionOrigins = sessionHistory is null ? null : OriginBlock(sessionHistory),
                 notCaptured = NotCaptured,
             });
+            }
+            catch (Exception ex)
+            {
+                // THE STATISTICS STORE IS BROKEN, AND ONLY THIS PAGE MAY SUFFER FOR IT.
+                //
+                // On 2026-07-30 a corrupted statistics database threw from the GET /sessions roster read and
+                // answered 500 to the whole fleet for 32 minutes. The roster no longer touches this store at
+                // all, so that specific route is closed - but this route reads it by definition, and an
+                // unhandled throw here would still be a bare 500 with no explanation, on the surface whose
+                // whole job is to report.
+                //
+                // So the failure is NAMED instead: 503, with a sentence saying the statistics are
+                // unavailable and that nothing else is affected. That last clause matters - a reader seeing
+                // this page fail needs to know immediately whether their fleet is in trouble or just their
+                // numbers. It is a report of a real fault, not a fallback: no substitute figures are
+                // invented, no empty totals are served that could be mistaken for "you did nothing".
+                FileLog.Write($"[StatsPageEndpoint] GET /stats/data FAILED for tenant={tenant}: "
+                              + $"{ex.GetType().Name}: {ex.Message}");
+                return Results.Json(new
+                {
+                    error = "Your Throttle cannot be shown right now - the statistics store could not be "
+                            + "read. Your sessions and the rest of DevThrottle are unaffected.",
+                    // NOT retryable. The failure this route actually sees is a corrupted store, and a
+                    // corrupted store answers the same way however many times it is asked - telling a client
+                    // to retry would spin it against a wall and hide a fault that needs a human.
+                    retryable = false,
+                }, statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
         });
 
         // The standalone embedded dashboard is RETIRED (issue #587): it duplicated the Cockpit's
