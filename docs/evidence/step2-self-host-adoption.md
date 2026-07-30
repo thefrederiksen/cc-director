@@ -249,3 +249,9 @@ person able to see the gap in it:
 - **A live downgrade has not been exercised end to end.** The stamp is proven to be written and to equal what
   the shipped code writes; that an older BUILD then produces its refusal rests on that build's existing,
   already-shipped version check rather than on a test run here.
+- **THE WHOLE SOLUTION HAS NEVER BEEN BUILT OR TESTED FOR THIS WORK, and no automated check covers it.**
+  `.github/workflows/ci.yml` fires only on a push to `main` and on pull requests whose base is `main`. This
+  work sits on a worker branch merging into the mission branch `nosqlite-stats`, which matches neither, and
+  `gh run list` returns zero runs for either branch. The evidence above comes from targeted local runs of the
+  statistics classes only. Do not read "the tests pass" as "the suite is green" - that signal does not exist
+  yet for this mission, and it will not until a pull request against `main` makes the trigger fire.
