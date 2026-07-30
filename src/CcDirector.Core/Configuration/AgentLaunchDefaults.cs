@@ -47,9 +47,12 @@ public static class AgentLaunchDefaults
     /// <see cref="ResolveDefaultArgs"/> takes the preset and model from.
     ///
     /// A kind with no entry, or an entry with a blank path, falls through to the per-type path in
-    /// <see cref="AgentOptions"/> exactly as before - that is the documented default for a machine
-    /// with no agent library, not a fallback that hides a failure. Callers that let the USER pick an
-    /// entry (the desktop New Session dialog) pass that entry's path directly and do not come here.
+    /// <see cref="AgentOptions"/> - the documented default for a machine with no agent library, which
+    /// is a real configuration (a developer with the agent on PATH), not a guess standing in for a
+    /// missing value. It can no longer end the way #1050 did either: an executable that resolves to
+    /// nothing is refused by name in <c>SessionManager.CreateSession</c>, with a sentence, before
+    /// CreateProcess is asked to launch it. Callers that let the USER pick an entry (the desktop New
+    /// Session dialog) pass that entry's path directly and do not come here.
     /// </summary>
     public static IAgent CreateAgentForKind(AgentKind agentKind, AgentOptions options)
     {
