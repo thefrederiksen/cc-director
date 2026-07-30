@@ -400,17 +400,43 @@ internal static class ControlEndpoints
             return (answer, outcome);
         }
 
-        // GET /fleet/sessions - the fleet directory. With a Gateway, relay its aggregated list;
-        // standalone, serve this Director's own sessions (the no-Gateway acceptance criterion).
+        // GET /fleet/sessions - the fleet directory, and the roster EVERY cc-devthrottle verb resolves a
+        // target against before it sends anything. That makes it the reap floor: a session this roster
+        // omits cannot be named, so it cannot be interrupted, messaged or marked done. Issue #1019 - a card
+        // that no tool could remove, with restarting the Director as the only remedy - was two independent
+        // omissions from this one list.
         app.MapGet("/fleet/sessions", async (CancellationToken ct) =>
         {
+            // Omission one: EVERY session this Director is still holding belongs on the roster, including
+            // crashed and exited-pending-reap rows. This store is the same store the desktop rail renders,
+            // and a crashed session is deliberately KEPT in it (issue #959) so the user sees that work
+            // stopped - in ActivityState.Exited, because a crash was never modelled as its own state. The
+            // filter that used to sit here dropped exactly that state, so the one row the user could SEE
+            // and most needed to clear was the one row the CLI could not NAME. The reaper on the other
+            // side was always willing: /fleet/done finds a session in this store and ReapPendingDeletions
+            // removes an Exited one. Only the naming was impossible.
+            var own = sessionManager.ListSessions()
+                .Select(s => MapWithIdentity(s, turnSummaryCache))
+                .ToList();
+
             var gw = gatewayClientProvider?.Invoke();
             if (gw is { IsEnabled: true })
             {
                 try
                 {
                     var fleet = await gw.ListFleetSessionsAsync(ct);
-                    return Results.Json(fleet);
+                    // Omission two: the relayed list silently DROPS the sessions of a Director the Gateway
+                    // cannot reach while still returning 200 (see GatewayClient.ListFleetSessionsAsync).
+                    // A Director whose registration is failing therefore vanishes from its OWN fleet
+                    // listing, which is how three live local sessions came to be denied by the CLI and the
+                    // Control API at once while the rail still showed them. A Director is first-hand
+                    // authority on its own machine, so its rows go back in. The Gateway's copy WINS for any
+                    // session it already knows: the session numbers and identity stamping it hands out are
+                    // never overwritten here.
+                    var (roster, restored) = UnionOwnSessions(fleet, own);
+                    if (restored.Count > 0)
+                        FileLog.Write($"[ControlEndpoints] /fleet/sessions: the Gateway roster omitted {restored.Count} of this Director's own session(s); served from the local store: {string.Join(", ", restored)}");
+                    return Results.Json(roster);
                 }
                 catch (Exception ex)
                 {
@@ -420,11 +446,7 @@ internal static class ControlEndpoints
                 }
             }
 
-            var local = sessionManager.ListSessions()
-                .Where(s => s.ActivityState != ActivityState.Exited)
-                .Select(s => MapWithIdentity(s, turnSummaryCache))
-                .ToList();
-            return Results.Json(local);
+            return Results.Json(own);
         });
 
         // GET /fleet/repositories + /fleet/worktrees - the repository/worktree directory (#510 phase C).
@@ -1475,6 +1497,42 @@ internal static class ControlEndpoints
         => gatewayEnabled ? HoldRoute.Gateway
          : sessionIsLocal ? HoldRoute.LocalMirror
          : HoldRoute.NotFound;
+
+    /// <summary>
+    /// Fold this Director's OWN sessions into the fleet roster relayed from the Gateway (issue #1019), and
+    /// report which of them the relay had left out.
+    ///
+    /// The relay is authoritative for the fleet and STAYS authoritative for every session it knows: a row
+    /// already in <paramref name="fleet"/> is returned untouched, so the session numbers and identity
+    /// stamping the Gateway hands out are never overwritten by a local copy. This adds only the rows the
+    /// relay omitted - which it does silently, while still returning 200, for any Director it cannot reach.
+    /// A Director is first-hand authority on its own machine and must never deny a session it is itself
+    /// holding, because this roster is what the CLI resolves an id against before it can reap anything.
+    ///
+    /// A row with no session id cannot be addressed by any caller, so it is never restored on that basis.
+    /// </summary>
+    internal static (List<SessionDto> Roster, List<string> Restored) UnionOwnSessions(
+        IReadOnlyList<SessionDto> fleet, IReadOnlyList<SessionDto> own)
+    {
+        var roster = new List<SessionDto>(fleet);
+        var known = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var s in fleet)
+        {
+            if (!string.IsNullOrEmpty(s.SessionId))
+                known.Add(s.SessionId);
+        }
+
+        var restored = new List<string>();
+        foreach (var s in own)
+        {
+            if (string.IsNullOrEmpty(s.SessionId) || !known.Add(s.SessionId))
+                continue;
+            roster.Add(s);
+            restored.Add(s.SessionId);
+        }
+
+        return (roster, restored);
+    }
 
     /// <summary>Folder name of a repo path, for display fallback. Empty path -> "Unknown Project".</summary>
     // Gateway Cleanup Phase 0 (Worker R2): widened to internal so CatalogReadExecutor's claude-sessions core

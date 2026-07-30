@@ -752,7 +752,22 @@ public sealed class SessionManager : IDisposable
         catch (Exception ex)
         {
             session.MarkFailed();
+            // Issue #1019, defect 3: a create that fails must SAY SO somewhere a person can find it later.
+            // _log is optional - anything that constructs a SessionManager without one (the Control API's
+            // own host among them) failed completely silently, which is why the original report could not
+            // tell a failed spawn from a UI glitch after the fact. FileLog always lands in the Director log.
+            FileLog.Write($"[SessionManager] CreateSession FAILED: session={id}, repo={repoPath}, agent={agent.Kind}, backend={backendType}: {ex.Message}");
             _log?.Invoke($"Failed to create session for {repoPath}: {ex.Message}");
+
+            // Release the worktree reservation this create took out. It is reserved just BEFORE
+            // backend.Start, but the matching release is wired in WireSessionReaper, which runs only from
+            // RaiseSessionCreated - i.e. only once the session is already in the roster. A throw between
+            // those two points therefore left a PERMANENT reservation held by a session id that no longer
+            // exists anywhere, silently blocking the worktree reaper from ever cleaning that directory up.
+            // Release is idempotent and keyed by session id, so this is safe whether or not we got as far
+            // as reserving.
+            _reservations.Release(id.ToString());
+
             session.Dispose();
             throw;
         }
