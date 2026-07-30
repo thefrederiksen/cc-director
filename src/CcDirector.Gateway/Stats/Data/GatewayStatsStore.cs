@@ -57,10 +57,12 @@ public sealed record StatsStoreAvailability(
 /// existed to avoid, so it is worth saying plainly: this store must never be constructed inside the main
 /// database's try block, and its result must never be an input to whether the Gateway starts.
 ///
-/// THREE NAMED STATES, AND THE DISTINCTION IS AN ARCHITECT RULING. NOT CONFIGURED and UNREACHABLE are
-/// different reasons in the log, on the health surface and in the failure state, because a deploy that
-/// simply forgot a variable would otherwise present identically to a database outage - and the next incident
-/// would be spent hunting a network fault that is really a missing setting.
+/// THE NAMED STATES, AND THE DISTINCTION IS AN ARCHITECT RULING. NOT CONFIGURED, UNREACHABLE and INCOMPLETE
+/// SCHEMA are different reasons in the log, on the health surface and in the failure state, because they send
+/// the person fixing them to three different places: a setting, a database or network, and the store's own
+/// disk. A deploy that simply forgot a variable would otherwise present identically to a database outage, and
+/// a half-built schema would present as an outage while the database sits there perfectly healthy - either
+/// way the next incident is spent looking somewhere the fault is not.
 ///
 /// Threading: contexts come from a pooled factory (a fresh one per operation, never shared across threads),
 /// exactly as the main database hands them out.
@@ -357,6 +359,41 @@ public sealed class GatewayStatsStore : IDisposable
         // This is not a weakened contract: when there ARE migrations they are applied exactly as before, and
         // a failure is contained exactly as before. It only removes a lock acquisition with nothing to do.
         var pending = context.Database.GetPendingMigrations().ToList();
+
+        // A HALF-BUILT SCHEMA, DIAGNOSED BEFORE IT IS WALKED INTO. The history records nothing as applied
+        // while tables this store owns are already there, so the chain is about to create a table that
+        // exists and fail. That failure would be CONTAINED either way - the catch around this work is the
+        // boundary and it holds - but it would be contained as UNREACHABLE, whose sentence sends the
+        // operator to the database and the network while both are perfectly healthy and the fault is on the
+        // store's own disk. So the state is checked and NAMED rather than caught and mis-named.
+        //
+        // This is a diagnosis and not a second boundary: it changes which reason is reported and nothing
+        // else. If it ever fails to spot the state, the chain throws and the catch still contains it.
+        //
+        // Left exactly as found. Repair means deciding what to do about tables holding somebody's numbers,
+        // and a startup path that quietly reshapes a store is how numbers disappear without anybody knowing
+        // which build did it.
+        if (pending.Count > 0 && !context.Database.GetAppliedMigrations().Any())
+        {
+            var alreadyThere = ExistingModelTables(context, choice);
+            if (alreadyThere.Count > 0)
+            {
+                var detail =
+                    $"The statistics store ({choice.Target}) has a HALF-BUILT SCHEMA: its migration history " +
+                    $"records nothing as applied, yet {alreadyThere.Count} table(s) it owns already exist " +
+                    $"({string.Join(", ", alreadyThere)}). That is what a process stopped part-way through " +
+                    "its first migration leaves behind. The database is reachable and the settings are " +
+                    "correct, so this is NOT a network or connection problem - it is the store on disk, and " +
+                    "it has NOT been changed in any way. Statistics are unavailable; the Gateway is serving " +
+                    "normally and the rest of it is unaffected.";
+                FileLog.Write($"[GatewayStatsStore] Migrate: REFUSED, half-built schema: {detail}");
+                return new StatsStoreAdoptionResult(
+                    StatsStoreAdoptionOutcome.NotAdoptable,
+                    StatsStoreUnavailableReason.StoreSchemaIncomplete,
+                    detail);
+            }
+        }
+
         if (pending.Count == 0)
         {
             FileLog.Write("[GatewayStatsStore] Migrate: no pending statistics migrations - skipping " +
@@ -375,6 +412,59 @@ public sealed class GatewayStatsStore : IDisposable
             "The statistics store is open and its schema is up to date.");
     }
 
+    /// <summary>
+    /// Which of THIS MODEL'S tables already exist in the store, read from the provider's own catalog.
+    ///
+    /// The expected set comes from the MODEL rather than from a list written out here, so it cannot drift
+    /// from the schema the baseline migration actually creates - a hand-written list would go stale the first
+    /// time a table is added and would then report a half-built store as healthy.
+    ///
+    /// The catalog query is provider-specific because there is no portable one, and the PostgreSQL side is
+    /// scoped to this context's OWN schema deliberately: the statistics schema shares a database with the
+    /// Gateway's own, so a query that asked "does this database have tables" would answer yes on every
+    /// healthy hosted Gateway and report a half-built statistics store that does not exist.
+    /// </summary>
+    private static List<string> ExistingModelTables(GatewayStatsDbContext context, StatsConnectionChoice choice)
+    {
+        var expected = context.Model.GetEntityTypes()
+            .Select(t => t.GetTableName())
+            .Where(t => !string.IsNullOrEmpty(t))
+            .Select(t => t!)
+            .Distinct(StringComparer.Ordinal)
+            .ToHashSet(StringComparer.Ordinal);
+
+        var connection = context.Database.GetDbConnection();
+        if (connection.State != System.Data.ConnectionState.Open)
+            context.Database.OpenConnection();
+
+        using var command = connection.CreateCommand();
+        if (choice.IsPostgres)
+        {
+            command.CommandText =
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = @schema";
+            var schema = command.CreateParameter();
+            schema.ParameterName = "@schema";
+            schema.Value = GatewayStatsDbContext.PostgresSchema;
+            command.Parameters.Add(schema);
+        }
+        else
+        {
+            command.CommandText = "SELECT name FROM sqlite_master WHERE type='table'";
+        }
+
+        var present = new List<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var name = reader.GetString(0);
+            if (expected.Contains(name))
+                present.Add(name);
+        }
+
+        present.Sort(StringComparer.Ordinal);
+        return present;
+    }
+
     private static StatsStoreAvailability Unavailable(
         StatsStoreUnavailableReason reason, string detail, StatsConnectionSource source, string target) =>
         new(IsAvailable: false, reason, CodeFor(reason), detail, source, target);
@@ -390,6 +480,7 @@ public sealed class GatewayStatsStore : IDisposable
         StatsStoreUnavailableReason.None => "available",
         StatsStoreUnavailableReason.NotConfigured => "not_configured",
         StatsStoreUnavailableReason.Unreachable => "unreachable",
+        StatsStoreUnavailableReason.StoreSchemaIncomplete => "store_schema_incomplete",
         StatsStoreUnavailableReason.IncompatibleSchemaVersion => "incompatible_schema_version",
         StatsStoreUnavailableReason.NotAStatisticsStore => "not_a_statistics_store",
         StatsStoreUnavailableReason.StoreUnreadable => "store_unreadable",

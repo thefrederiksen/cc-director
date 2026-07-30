@@ -29,11 +29,16 @@ public enum StatsStoreAdoptionOutcome
 /// Why the statistics store is unavailable. A NAMED reason, never a bare failure: these cases present
 /// identically to an operator otherwise, and the next incident would be spent guessing which one it was.
 ///
-/// The first four are what the ADOPTION step can find in an existing self-host file. The last two are what
-/// the STARTUP BOUNDARY can find before there is a store at all, and the distinction between those two is an
-/// Architect ruling rather than a nicety: <see cref="NotConfigured"/> is fixed by editing a setting and
-/// <see cref="Unreachable"/> is fixed by fixing a database, and a deploy that simply forgot a variable would
-/// otherwise present identically to a database outage.
+/// The first four are what the ADOPTION step can find in an existing self-host file. The last three are what
+/// the STARTUP BOUNDARY can find, and the distinctions between those three are an Architect ruling rather
+/// than a nicety.
+///
+/// THE RULE THE THREE OF THEM ENCODE, so that a fourth is added on the same grounds rather than on taste: a
+/// named reason exists to separate causes that send a first responder to DIFFERENT PLACES. <see
+/// cref="NotConfigured"/> is fixed by editing a setting, <see cref="Unreachable"/> is fixed by fixing a
+/// database or a network, and <see cref="StoreSchemaIncomplete"/> is fixed on the store's own disk with both of
+/// those already healthy. Collapsing any pair costs an incident spent looking in the wrong place, which is
+/// the whole reason the distinction is worth a member.
 /// </summary>
 public enum StatsStoreUnavailableReason
 {

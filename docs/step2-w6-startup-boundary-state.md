@@ -1,10 +1,18 @@
-# Step 2, worker 6: the startup boundary - state at stand-down
+# Step 2, worker 6: the startup boundary - current state
 
-Branch `nosqlite-stats-w6-startup`, worktree `D:\ReposFred\dt-nosqlite-w6`, cut from worker 2's branch.
-Parked on the Manager's instruction when the mission cut to three concurrent workers. Rows 10 and 15 stay
-OPEN. This file records exactly what is built, what is NOT proven, and what the next seat picks up.
+Branch `nosqlite-stats-w6-startup`, worktree `D:\ReposFred\dt-nosqlite-w6`, cut from worker 2's branch. Rows
+10 and 15 stay OPEN. This file records exactly what is built, what is NOT proven, and what the next seat
+picks up.
 
 **Nothing in this file is a proof. Read the "what is not proven" section before quoting anything from it.**
+Every test named here is written and unrun; the only standing fact about this branch is that it compiles, and
+a compile is evidence about types and about nothing else.
+
+History: the first worker 6 built the boundary and was parked when the mission cut to three concurrent
+workers; its one queued run produced no output against the fleet-wide test lock and was stopped, which is NO
+RESULT and closed nothing. The seat was re-seated on 2026-07-30 to run the proofs. Since re-seating, this
+document has gained the mid-chain answer, the `IncompleteSchema` reason and the abandon-not-cancel
+limitation - all still unrun.
 
 ---
 
@@ -54,12 +62,74 @@ unset means UNAVAILABLE". That was superseded by the Architect's derivation ruli
 marked it superseded in place. NOT CONFIGURED still exists and still matters; it no longer covers
 "hosted and unset".
 
-### The two named reasons
+### The three named reasons
 
-`StatsStoreUnavailableReason` gained `NotConfigured` and `Unreachable` beside worker 2's four adoption
-reasons. One enum for the whole statistics availability surface, and a stable machine-readable code per
-reason (`not_configured`, `unreachable`, ...) written out by hand rather than derived from the enum member
-name, so renaming a member in C# cannot silently change a string an operator greps for.
+`StatsStoreUnavailableReason` gained `NotConfigured`, `Unreachable` and `IncompleteSchema` beside worker 2's
+four adoption reasons. One enum for the whole statistics availability surface, and a stable machine-readable
+code per reason (`not_configured`, `unreachable`, `incomplete_schema`, ...) written out by hand rather than
+derived from the enum member name, so renaming a member in C# cannot silently change a string an operator
+greps for.
+
+The rule the three of them encode, written down so a fourth is added on the same grounds rather than on
+taste: **a named reason exists to separate causes that are FIXED IN DIFFERENT PLACES.** NOT CONFIGURED is
+fixed by editing a setting, UNREACHABLE by fixing a database or a network, and INCOMPLETE SCHEMA on the
+store's own disk with both of those already healthy. Collapsing any pair costs an incident spent looking
+where the fault is not.
+
+`IncompleteSchema` is the Manager's ruling of 2026-07-30, and it was made because the first version of this
+branch got it wrong in a way that mattered: a half-built store was contained as UNREACHABLE, whose sentence
+says "this is a database or network problem rather than a missing setting" - true of a refused connection and
+actively misleading here, where the database is up, the network is fine, the settings are right, and the
+fault is sitting on disk. A reason that sends the first responder to check three healthy things is worse than
+no reason at all. It is named for the STATE and not for its cause, because the state is what the person
+fixing it acts on, and because no code running afterwards can tell whether the process died of power loss, an
+eviction mid-deploy or an operator stopping the service - claiming one would be inventing detail.
+
+### The mid-chain question, answered: what containment can and cannot do
+
+The Manager asked whether the containment can cover a `Migrate` that throws MID-CHAIN, part-applied, because
+ledger row 18 was held out of Step 2 conditional on exactly that answer. The answer has two halves and only
+the first one is comfortable.
+
+**It covers the THROW.** `Migrate()` is called inside `OpenAndMigrate`, which runs inside the `Task` the
+constructor awaits and unwraps with `GetAwaiter().GetResult()`, inside the `try` whose catch is the boundary.
+A throw from migration three of five arrives there exactly like a refused connection, and the Gateway starts
+with statistics unavailable and a named reason. There is no other place in the product that calls `Migrate`
+on the statistics context - every call site was checked, not assumed.
+
+**It CANNOT prevent the part-applied STATE, and that is the half that decides the row.** That state is made
+by a process that DIES mid-migration, and a try-catch catches nothing once the process is gone. No boundary
+placed anywhere inside this program can stop a machine losing power between two statements. What containment
+buys is that the NEXT startup over that state is SURVIVABLE: the Gateway starts, serves its roster, and names
+what is wrong. That is why row 18 stays out of Step 2 rather than blocking it - containment makes the state
+survivable, it does not make it impossible, and nothing here should be read as claiming otherwise.
+
+It is also not self-healing. Every subsequent startup takes the same path and reports the same thing, so a
+half-built store is a permanent statistics outage until a human acts. Repair is deliberately not attempted:
+it means deciding what to do about tables holding somebody's numbers, and a startup path that quietly
+reshapes a store is how numbers disappear without anybody knowing which build did it.
+
+The state is now DIAGNOSED before it is walked into, rather than caught afterwards and mis-named - see the
+three named reasons above. The diagnosis is not a second boundary: if it ever fails to spot the state, the
+chain throws and the catch still contains it. It only decides which reason is reported.
+
+### LIMITATION: at twenty seconds the attempt is ABANDONED, not cancelled
+
+Named here because it is deliberate and was undocumented, and undocumented is the part that is not fine.
+
+When the open exceeds `OpenDeadline` the Gateway stops WAITING for the attempt. It does not stop the
+attempt. The task keeps running against the database - a migration in flight must not be torn out from under
+itself, which is how you manufacture the half-built schema described above - and its provider is released by
+a continuation once it finally settles.
+
+**The consequence, spelled out.** A hung migration is still running against the database after the Gateway
+has declared statistics unreachable and begun serving. If that Gateway is then restarted, the restart's own
+migration attempt can be running ALONGSIDE the first one that never died. On PostgreSQL the migration lock
+serialises them, so the second waits rather than interleaving; the concern is not corruption so much as a
+second process holding a connection and a lock nobody knows is held, and an operator reading "unreachable"
+who has no way to see that a migration from the previous boot is still in progress. It is not measured and
+it is not tested. The Manager has this as a separate finding and will decide whether it becomes its own
+issue.
 
 ### The Step 1 shape, depended on and not rebuilt
 
@@ -104,12 +174,32 @@ So all three of the following are written and unexecuted:
 | 10 (failing direction) | `GatewayStatsStoreContainmentTests.TheSameFault_IsFatal_WhenItIsNotContained` | The SAME connection throws when nothing contains it, so the containment arm is not passing against a fault that never happened | **OPEN - written, never run. The Gateway has NOT been watched refusing to start.** |
 | 10 (the ruling) | `GatewayStatsStoreContainmentTests.NotConfiguredAndUnreachable_AreDifferentNamedReasons` | The two reasons are produced side by side and DIFFER - enum, code and sentence | **OPEN - written, never run** |
 | 15 | `GatewayStartsWithStatisticsUnreachableTests.ConcurrencyStatisticsFile_IsNeverWrittenOnTheHostedPath_AndIsWrittenOnSelfHost` | Nothing writes `gateway-concurrency-stats.json` on the hosted path, with the self-host control that DOES write it | **OPEN - written, never run** |
+| 18 | `GatewayStatsStoreMidChainContainmentTests.TheHalfBuiltStore_IsFatal_WhenItIsNotContained` | The half-built store really does kill an uncontained migration, naming the table | **OPEN - written, never run** |
+| 18 | `GatewayStatsStoreMidChainContainmentTests.HalfBuiltStore_IsContained_AndReportsIncompleteSchema` | The same store through the boundary does not throw and reports INCOMPLETE SCHEMA, pointing at the disk and explicitly not at the network | **OPEN - written, never run** |
+| 18 | `GatewayStatsStoreMidChainContainmentTests.ContainedOpen_ChangesNothingOnDisk` | A contained open is not a quiet repair - seeded row, table count, version stamp and empty history all unchanged | **OPEN - written, never run** |
+| 18 | `GatewayStatsStoreMidChainContainmentTests.TheThreeReasons_AreAllDifferentFromEachOther` | All three reasons produced side by side and different PAIRWISE - enum, code and sentence | **OPEN - written, never run** |
+| 18 | `GatewayStatsStoreMidChainContainmentTests.HealthyStores_AreNotReportedAsIncomplete` | The diagnosis's OTHER failure direction - a fresh store and a fully migrated one are not condemned | **OPEN - written, never run** |
 
 ### How these fixtures were built to be able to fail
 
 Recorded so the next seat can check the shape rather than re-deriving it, and so a green - when there is one
 - is worth something:
 
+- The half-built store is built by RUNNING THE REAL OLD CODE - a genuine `GatewayStatsDatabase` creates the
+  sixteen tables - and its empty history table comes from Entity Framework's OWN create script, so it is the
+  table an interrupted migration would actually have left rather than a hand-written guess at one. It then
+  asserts its own premises before using itself: sixteen or more tables present, a history table present, and
+  zero rows in it. Each of those is a way the fixture could quietly stop being half built, leaving tests that
+  pass for reasons unconnected to what they claim.
+- The half-built containment arm has its own uncontained twin, `TheHalfBuiltStore_IsFatal_WhenItIsNotContained`,
+  which watches the SAME file kill an ordinary migration and names the table (`agent_delta` - the baseline
+  creates the sixteen alphabetically and dies on the first, never reaching the fifteen behind it).
+- The no-repair test seeds a row FIRST. Without it, "nothing was lost" is a statement about an empty file and
+  would hold just as well against a startup path that dropped and recreated every table.
+- The half-built diagnosis has a test for its OTHER failure direction - a guard that reports a half-built
+  schema can be wrong by missing one or by condemning a healthy store, and the second would take the
+  statistics surface down on every self-host Gateway. A fresh store and a fully migrated reopened store are
+  both asserted available.
 - The unreachable arm asserts the store **attempted** the connection (reason UNREACHABLE, failure count one,
   last error non-null). A Gateway that skipped statistics entirely would report NOT CONFIGURED and these
   would fail. "It started" is not the claim; "it started having tried and failed" is.
