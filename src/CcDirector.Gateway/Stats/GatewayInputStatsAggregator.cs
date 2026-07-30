@@ -2,7 +2,9 @@ using CcDirector.Core.Storage;
 using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Stats.Data;
 using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 
 namespace CcDirector.Gateway.Stats;
 
@@ -61,6 +63,12 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     private readonly bool _ownsDatabase;
     private readonly object _lock = new();
 
+    // Every READ below goes through this - one provider-neutral Entity Framework model serving SQLite today
+    // and PostgreSQL when the hosted wiring lands, rather than a second hand-written dialect of each query.
+    // A fresh context per operation; the connection underneath is the one GatewayStatsDatabase owns, so a
+    // read sees exactly what the write path has committed to it.
+    private readonly IDbContextFactory<GatewayStatsDbContext> _contexts;
+
     // ---- The mirror. Membership and identity ONLY - never a tally (Decision 6). ----
     //
     // MTR-08: every map below is keyed by (tenant, ...) so one tenant's membership and identity can never be
@@ -105,11 +113,19 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     private readonly Dictionary<long, string> _modelDisplay = new();
     private readonly Dictionary<long, string> _checkoutDisplay = new();
 
-    // The distinct-session sets stay keyed by (surrogate id, session id): the id is already tenant-specific
-    // (minted per tenant above), so (idA, "s1") and (idB, "s1") are distinct entries for two tenants that
-    // happen to share a bare session id. No tenant is needed in the key.
-    private readonly HashSet<(long Id, string SessionId)> _repoSessions = new();
-    private readonly HashSet<(long Id, string SessionId)> _agentSessions = new();
+    // The distinct-session sets, keyed by (tenant, surrogate id, session id) - the same (tenant, ...) shape as
+    // every other mirror in this class.
+    //
+    // They used to be keyed by (id, session id) alone, on the argument that the id is already tenant-specific
+    // so the tenant adds nothing. That argument is TRUE about the values and WRONG about the safety it buys:
+    // it made this the one mirror that could be consulted, and populated, without naming a tenant, and the
+    // query that filled it read every tenant's rows. Nothing leaked, because both call sites only ever looked
+    // up an id they had already obtained from a tenant-filtered source - which is safety by every call site
+    // remembering, exactly the shape that produced the missions leak (devthrottle_internal#1039). Carrying the
+    // tenant in the key means the set cannot be consulted for a tenant that was not named, so there is nothing
+    // left to remember.
+    private readonly HashSet<(TenantId Tenant, long Id, string SessionId)> _repoSessions = new();
+    private readonly HashSet<(TenantId Tenant, long Id, string SessionId)> _agentSessions = new();
 
     // When the per-agent tally started counting, PER TENANT (MTR-08): each tenant's first fold stamps its own
     // start, so the Agents page states the window for THAT tenant rather than a fleet-global first observation.
@@ -118,10 +134,16 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     // not a per-tenant statistic, so it stays a single value read tenant-agnostically.
     private string _modelsSinceUtc = "";
 
-    /// <summary>Every statement executed against the database. The seam acceptance criterion 3 measures: an
-    /// IDLE poll must not move this at all, and a fold must move it by an amount bounded by what CHANGED,
-    /// never by how much history is stored.</summary>
-    internal long StatementsExecuted { get; private set; }
+    /// <summary>Statements executed through the RAW helpers at the bottom of this file - the fold path, and
+    /// the startup mirror load. The seam acceptance criterion 3 measures: an IDLE poll must not move this at
+    /// all, and a fold must move it by an amount bounded by what CHANGED, never by how much history is stored.
+    /// Both of those claims are about the fold, and both still hold.
+    ///
+    /// IT IS NOT A COUNT OF TOTAL DATABASE TRAFFIC, and the name says "raw" so that nobody reads it as one.
+    /// The twelve read projections, the two mirror joins and the two since-stamps now execute through Entity
+    /// Framework, which does not pass through these helpers and is not counted here. A counter documenting a
+    /// guarantee it does not provide is worse than no counter, so this one claims only the path it sees.</summary>
+    internal long RawStatementsExecuted { get; private set; }
 
     private sealed class Counters
     {
@@ -190,7 +212,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
 
     // The distinct-session sets exist for repositories and agents only. A model and a checkout have none,
     // deliberately, so asking for one is a programming error and says so rather than inventing an empty answer.
-    private HashSet<(long Id, string SessionId)> SessionsFor(IdentityKind kind) => kind switch
+    private HashSet<(TenantId Tenant, long Id, string SessionId)> SessionsFor(IdentityKind kind) => kind switch
     {
         IdentityKind.Repo => _repoSessions,
         IdentityKind.Agent => _agentSessions,
@@ -225,6 +247,10 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     {
         _db = database;
         _ownsDatabase = ownsDatabase;
+        // The reads run on Entity Framework over the SAME open connection this database owns. Provider
+        // selection is worker 6's; until it lands the only store handed to this type is the SQLite one, so
+        // that is what the reads are pointed at - one store, named once, never chosen at read time.
+        _contexts = new GatewayStatsSqliteContextFactory(database.Connection);
         RetireLegacyJsonStore();
         LoadMirror();
     }
@@ -293,19 +319,58 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                 var t = new TenantId(r.GetString(0)); var id = r.GetInt64(1); var d = r.GetString(2);
                 IdsFor(t, IdentityKind.Checkout)[d] = id; _checkoutDisplay[id] = d;
             });
-            // repo_session/agent_session need no tenant: repo_id/agent_id are already tenant-specific.
-            Read("SELECT repo_id, session_id FROM repo_session", r => _repoSessions.Add((r.GetInt64(0), r.GetString(1))));
-            Read("SELECT agent_id, session_id FROM agent_session", r => _agentSessions.Add((r.GetInt64(0), r.GetString(1))));
-            // agents_since is PER TENANT now (one row per tenant that has folded).
-            Read("SELECT tenant, value FROM meta WHERE name=$n",
-                r => _agentsSinceUtc[new TenantId(r.GetString(0))] = r.GetString(1), ("$n", AgentsSinceKey));
+            // repo_session and agent_session carry NO tenant column at schema version 5 - they are partitioned
+            // indirectly, through a surrogate id minted per tenant. So the tenant the mirror key needs comes
+            // from the identity table the id belongs to, by an explicit join: it is read FROM THE DATA, not
+            // supplied by a caller, which is why the absence of a request tenant at startup is irrelevant here.
+            //
+            // This IS a whole-table read across every tenant, and it has to be: the mirror is loaded once at
+            // startup, before any request has named a tenant, so there is no tenant available to filter by. The
+            // join does not narrow the read - it attaches the owning tenant to each key and drops orphans. Do
+            // not read it as a scaling measure and do not let it stop you looking: if startup work ever has to
+            // be bounded, that needs a different loading strategy, not this join.
+            //
+            // It is an explicit join rather than a navigation property or a configured relationship on purpose:
+            // version 5 has no foreign keys between these tables, and adding one would change insert and delete
+            // ordering - a semantic change, in a port that must carry semantics forward unchanged.
+            //
+            // An INNER join, which drops a membership row whose surrogate id names no identity row. There is no
+            // such row: both are written inside one transaction, the identity first, so the id a membership row
+            // carries always exists. If one ever did exist it could only be damage, and dropping it costs
+            // nothing - the mirror would simply not claim to have recorded it, and the next fold's
+            // insert-if-absent would write it again. Keeping it would be worse: an entry that names no tenant.
+            using (var db = _contexts.CreateDbContext())
+            {
+                foreach (var row in db.RepoSessions
+                             .Join(db.RepoIdentities, s => s.RepoId, i => i.RepoId,
+                                 (s, i) => new { i.Tenant, s.RepoId, s.SessionId }))
+                    _repoSessions.Add((new TenantId(row.Tenant), row.RepoId, row.SessionId));
 
-            // Written by the version 2 migration, so it is present on every database this build can open -
-            // the migration runs before this does. A schema fact, not per-tenant, so it is read once with no
-            // tenant filter. Read into the mirror because the stats surface reports it on every request and it
-            // never changes at runtime.
-            _modelsSinceUtc = ReadScalarString("SELECT value FROM meta WHERE name=$n LIMIT 1",
-                ("$n", GatewayStatsDatabase.ModelsSinceKey)) ?? "";
+                foreach (var row in db.AgentSessions
+                             .Join(db.AgentIdentities, s => s.AgentId, i => i.AgentId,
+                                 (s, i) => new { i.Tenant, s.AgentId, s.SessionId }))
+                    _agentSessions.Add((new TenantId(row.Tenant), row.AgentId, row.SessionId));
+            }
+            // The two since-stamps. AgentsSinceUtc serves the first of these straight out of the mirror, so
+            // this read IS its query path and it belongs on the same provider-neutral model as the other
+            // eleven projections - leaving it in raw SQL would make "every read is Entity Framework" a
+            // sentence with an asterisk on it.
+            using (var db = _contexts.CreateDbContext())
+            {
+                // agents_since is PER TENANT now (one row per tenant that has folded).
+                foreach (var row in db.Meta.Where(m => m.Name == AgentsSinceKey)
+                             .Select(m => new { m.Tenant, m.Value }))
+                    _agentsSinceUtc[new TenantId(row.Tenant)] = row.Value;
+
+                // Written by the version 2 migration, so it is present on every database this build can open -
+                // the migration runs before this does. A schema fact, not per-tenant, so it is read once with
+                // no tenant filter. Read into the mirror because the stats surface reports it on every request
+                // and it never changes at runtime.
+                var modelsSinceKey = GatewayStatsDatabase.ModelsSinceKey;
+                _modelsSinceUtc = db.Meta.Where(m => m.Name == modelsSinceKey)
+                    .Select(m => m.Value)
+                    .FirstOrDefault() ?? "";
+            }
 
             FileLog.Write($"[GatewayInputStatsAggregator] LoadMirror: {_highWater.Count} live session(s), " +
                           $"{_wingmanSessions.Count} wingman session(s), {_repoDisplay.Count} repo(s), {_agentDisplay.Count} agent(s), " +
@@ -661,9 +726,10 @@ public sealed class GatewayInputStatsAggregator : IDisposable
 
     private bool KnownIdentitySession(string display, string sessionId, IdentityKind kind, FoldBatch batch)
     {
-        // The display->id lookup is per tenant; the distinct-session set is keyed by the resolved (tenant-
-        // specific) id, so no tenant test is needed on it.
-        if (IdsFor(batch.Tenant, kind).TryGetValue(display, out var id) && SessionsFor(kind).Contains((id, sessionId)))
+        // Both the display->id lookup and the distinct-session set are consulted under THIS batch's tenant, so
+        // neither can answer with another tenant's membership.
+        if (IdsFor(batch.Tenant, kind).TryGetValue(display, out var id)
+            && SessionsFor(kind).Contains((batch.Tenant, id, sessionId)))
             return true;
         foreach (var (d, sid, k) in batch.NewIdentitySessions)
             if (k == kind && sid == sessionId && StringComparer.OrdinalIgnoreCase.Equals(d, display)) return true;
@@ -800,7 +866,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         foreach (var sid in batch.NewWingmanSessions) _wingmanSessions.Add((batch.Tenant, sid));
         foreach (var sid in batch.NewSeeded) _agentsSeeded.Add((batch.Tenant, sid));
         foreach (var (display, sessionId, kind) in batch.NewIdentitySessions)
-            SessionsFor(kind).Add((IdsFor(batch.Tenant, kind)[display], sessionId));
+            SessionsFor(kind).Add((batch.Tenant, IdsFor(batch.Tenant, kind)[display], sessionId));
     }
 
     /// <summary>
@@ -890,12 +956,19 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     public (long Turns, long Characters) AgentDrivenUsage(TenantId? tenant = null)
     {
         var t = RequireTenant(tenant);
+        var tenantValue = t.Value;
         lock (_lock)
         {
-            long turns = 0, chars = 0;
-            Read("SELECT COALESCE(SUM(turns),0), COALESCE(SUM(chars),0) FROM agent_driven_delta WHERE tenant=$tn",
-                r => { turns = r.GetInt64(0); chars = r.GetInt64(1); }, ("$tn", t.Value));
-            return (turns, chars);
+            using var db = _contexts.CreateDbContext();
+            // GroupBy over a constant is the whole-table aggregate: one group, one round trip. An EMPTY table
+            // produces no group at all, which is the null this reads as zero - the same answer the COALESCE
+            // around each SUM gave.
+            var totals = db.AgentDrivenDeltas
+                .Where(d => d.Tenant == tenantValue)
+                .GroupBy(_ => 1)
+                .Select(g => new { Turns = g.Sum(x => x.Turns), Chars = g.Sum(x => x.Chars) })
+                .FirstOrDefault();
+            return (totals?.Turns ?? 0, totals?.Chars ?? 0);
         }
     }
 
@@ -903,19 +976,23 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     public InputStatsDto CurrentTotals(TenantId? tenant = null)
     {
         var t = RequireTenant(tenant);
+        var tenantValue = t.Value;
         lock (_lock)
         {
-            var rows = new List<InputStatBucketDto>();
+            using var db = _contexts.CreateDbContext();
             // ARCHIVE rows are INCLUDED - that is the point of archiving: an all-time total must not shrink
             // when the hourly detail behind it is pruned. Scoped to the request tenant (MTR-08).
-            Read(@"SELECT modality, surface, SUM(turns), SUM(chars) FROM stat_delta WHERE tenant=$tn GROUP BY modality, surface", r =>
-                rows.Add(new InputStatBucketDto
+            var rows = db.StatDeltas
+                .Where(d => d.Tenant == tenantValue)
+                .GroupBy(d => new { d.Modality, d.Surface })
+                .Select(g => new InputStatBucketDto
                 {
-                    Modality = r.GetString(0),
-                    Surface = r.GetString(1),
-                    Turns = r.GetInt64(2),
-                    Characters = r.GetInt64(3),
-                }), ("$tn", t.Value));
+                    Modality = g.Key.Modality,
+                    Surface = g.Key.Surface,
+                    Turns = g.Sum(x => x.Turns),
+                    Characters = g.Sum(x => x.Chars),
+                })
+                .ToList();
 
             var dto = new InputStatsDto();
             // Ordered in C#, ordinal - the comparer the original projection used.
@@ -931,13 +1008,21 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     public WingmanUsageDto WingmanUsage(TenantId? tenant = null)
     {
         var t = RequireTenant(tenant);
+        var tenantValue = t.Value;
         lock (_lock)
         {
-            // SUM(turns) WHERE wingman=1 - never anything keyed on modality. A turn TYPED while voice mode
+            using var db = _contexts.CreateDbContext();
+            // SUM(turns) WHERE wingman - never anything keyed on modality. A turn TYPED while voice mode
             // was on is a wingman turn. Both halves scoped to the request tenant (MTR-08).
-            var turns = ExecuteScalarLong("SELECT COALESCE(SUM(turns),0) FROM stat_delta WHERE tenant=$tn AND wingman=1", null, ("$tn", t.Value));
-            var sessions = ExecuteScalarLong("SELECT COUNT(*) FROM wingman_session WHERE tenant=$tn", null, ("$tn", t.Value));
-            return new WingmanUsageDto { Turns = turns, Sessions = (int)sessions };
+            //
+            // The (long?) cast is what makes the empty case read as zero on BOTH providers: SUM over no rows
+            // is SQL NULL, and asking for a non-nullable long back would leave that to the provider's own
+            // COALESCE habit rather than saying it here.
+            var turns = db.StatDeltas
+                .Where(d => d.Tenant == tenantValue && d.Wingman)
+                .Sum(d => (long?)d.Turns) ?? 0;
+            var sessions = db.WingmanSessions.Count(w => w.Tenant == tenantValue);
+            return new WingmanUsageDto { Turns = turns, Sessions = sessions };
         }
     }
 
@@ -946,31 +1031,38 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     public IReadOnlyList<InputHourDto> HourlyTurns(TenantId? tenant = null)
     {
         var t = RequireTenant(tenant);
+        var tenantValue = t.Value;
+        var marker = GatewayStatsDatabase.ArchiveMarker;
         lock (_lock)
         {
-            var list = new List<InputHourDto>();
+            using var db = _contexts.CreateDbContext();
             // ARCHIVE rows are EXCLUDED: they are real all-time data with no real hour, so letting them
             // through would invent a bucket in this series that was never an hour of the working day. Scoped
             // to the request tenant (MTR-08).
-            Read(@"SELECT hour_utc,
-                          COALESCE(SUM(CASE WHEN is_voice = 1 THEN turns ELSE 0 END), 0),
-                          COALESCE(SUM(CASE WHEN is_voice = 0 THEN turns ELSE 0 END), 0),
-                          SUM(chars)
-                     FROM stat_delta
-                    WHERE tenant = $tn AND hour_utc <> $marker
-                    GROUP BY hour_utc", r =>
-            {
-                var voice = r.GetInt64(1);
-                var typed = r.GetInt64(2);
+            var rows = db.StatDeltas
+                .Where(d => d.Tenant == tenantValue && d.HourUtc != marker)
+                .GroupBy(d => d.HourUtc)
+                .Select(g => new
+                {
+                    Hour = g.Key,
+                    Voice = g.Sum(x => x.IsVoice ? x.Turns : 0),
+                    Typed = g.Sum(x => x.IsVoice ? 0 : x.Turns),
+                    Chars = g.Sum(x => x.Chars),
+                })
+                .ToList();
+
+            var list = new List<InputHourDto>();
+            foreach (var r in rows)
                 list.Add(new InputHourDto
                 {
-                    Hour = r.GetString(0),
-                    VoiceTurns = voice,
-                    TypedTurns = typed,
-                    Turns = voice + typed,
-                    Characters = r.GetInt64(3),
+                    Hour = r.Hour,
+                    VoiceTurns = r.Voice,
+                    TypedTurns = r.Typed,
+                    Turns = r.Voice + r.Typed,
+                    Characters = r.Chars,
                 });
-            }, ("$tn", t.Value), ("$marker", GatewayStatsDatabase.ArchiveMarker));
+            // Ordered in C#, ORDINAL. Deliberately not an ORDER BY: an ordinal compare in C# and a
+            // collation-dependent sort in the database are different functions, and the hour keys are text.
             list.Sort((a, b) => string.CompareOrdinal(a.Hour, b.Hour));
             return list;
         }
@@ -981,55 +1073,68 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     public IReadOnlyList<RepoStatBucketDto> RepoTotals(TenantId? tenant = null)
     {
         var t = RequireTenant(tenant);
+        var tenantValue = t.Value;
         lock (_lock)
         {
-            // SessionCounts groups by repo_id, which is tenant-specific, so only this tenant's repo ids (read
-            // from the tenant-filtered stat_delta below) are ever looked up out of it (MTR-08).
-            var sessions = SessionCounts("repo_session", "repo_id");
+            // Scoped to the request tenant, which this method already holds. The accessor CANNOT return
+            // another tenant's repository, so the caller has nothing to remember (MTR-08).
+            var sessions = RepoSessionCounts(t);
+
+            using var db = _contexts.CreateDbContext();
 
             // The local checkouts (worktrees, per-machine clones) that rolled up into each repository, kept so
             // the page can still show which working directories a repo's turns came from - the path is not
             // lost when the repo name collapses them. Display spellings come from the identity mirror, never from a
             // SQL join; sorted here so the retained list is stable rather than in row-insert order.
             var checkoutsByRepo = new Dictionary<long, List<string>>();
-            Read("SELECT DISTINCT repo_id, checkout_id FROM stat_delta WHERE tenant=$tn AND checkout_id IS NOT NULL", r =>
+            var pairs = db.StatDeltas
+                .Where(d => d.Tenant == tenantValue && d.CheckoutId != null)
+                .Select(d => new { d.RepoId, CheckoutId = d.CheckoutId!.Value })
+                .Distinct()
+                .ToList();
+            foreach (var pair in pairs)
             {
-                var repoId = r.GetInt64(0);
-                var checkoutId = r.GetInt64(1);
-                if (!_checkoutDisplay.TryGetValue(checkoutId, out var path)) return;
-                if (!checkoutsByRepo.TryGetValue(repoId, out var paths))
-                    checkoutsByRepo[repoId] = paths = new List<string>();
+                if (!_checkoutDisplay.TryGetValue(pair.CheckoutId, out var path)) continue;
+                if (!checkoutsByRepo.TryGetValue(pair.RepoId, out var paths))
+                    checkoutsByRepo[pair.RepoId] = paths = new List<string>();
                 paths.Add(path);
-            }, ("$tn", t.Value));
+            }
             foreach (var paths in checkoutsByRepo.Values)
                 paths.Sort(StringComparer.OrdinalIgnoreCase);
 
+            var totals = db.StatDeltas
+                .Where(d => d.Tenant == tenantValue)
+                .GroupBy(d => d.RepoId)
+                .Select(g => new
+                {
+                    RepoId = g.Key,
+                    Voice = g.Sum(x => x.IsVoice ? x.Turns : 0),
+                    Typed = g.Sum(x => x.IsVoice ? 0 : x.Turns),
+                    Chars = g.Sum(x => x.Chars),
+                })
+                .ToList();
+
             var list = new List<RepoStatBucketDto>();
-            Read(@"SELECT repo_id,
-                          COALESCE(SUM(CASE WHEN is_voice = 1 THEN turns ELSE 0 END), 0),
-                          COALESCE(SUM(CASE WHEN is_voice = 0 THEN turns ELSE 0 END), 0),
-                          SUM(chars)
-                     FROM stat_delta WHERE tenant=$tn GROUP BY repo_id", r =>
+            foreach (var row in totals)
             {
-                var id = r.GetInt64(0);
-                var voice = r.GetInt64(1);
-                var typed = r.GetInt64(2);
                 // The display spelling comes from the identity mirror, never from a SQL join that might be
                 // tempted to group or order by the string.
-                var display = _repoDisplay.TryGetValue(id, out var d) ? d : "";
+                var display = _repoDisplay.TryGetValue(row.RepoId, out var d) ? d : "";
                 list.Add(new RepoStatBucketDto
                 {
                     Repo = display,
                     RepoName = RepoLeaf(display),
-                    Turns = voice + typed,
-                    VoiceTurns = voice,
-                    TypedTurns = typed,
-                    Characters = r.GetInt64(3),
-                    Sessions = sessions.TryGetValue(id, out var n) ? n : 0,
-                    Checkouts = checkoutsByRepo.TryGetValue(id, out var cks) ? cks : new List<string>(),
+                    Turns = row.Voice + row.Typed,
+                    VoiceTurns = row.Voice,
+                    TypedTurns = row.Typed,
+                    Characters = row.Chars,
+                    Sessions = sessions.TryGetValue(row.RepoId, out var n) ? n : 0,
+                    Checkouts = checkoutsByRepo.TryGetValue(row.RepoId, out var cks) ? cks : new List<string>(),
                 });
-            }, ("$tn", t.Value));
-            // Ranked in C#, matching the original ordering exactly.
+            }
+            // Ranked in C#, matching the original ordering exactly. The last tie-break is an ORDINAL string
+            // compare and stays in C# on purpose: the equivalent ORDER BY would be a collation-dependent sort,
+            // which is a different function and would rank two providers differently on the same rows.
             list.Sort((a, b) =>
             {
                 var byTurns = b.Turns.CompareTo(a.Turns);
@@ -1046,21 +1151,31 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     public IReadOnlyList<AgentStatBucketDto> AgentTotals(TenantId? tenant = null)
     {
         var t = RequireTenant(tenant);
+        var tenantValue = t.Value;
         lock (_lock)
         {
-            var sessions = SessionCounts("agent_session", "agent_id");
+            // Scoped to the request tenant, which this method already holds - see RepoTotals (MTR-08).
+            var sessions = AgentSessionCounts(t);
 
-            var human = new Dictionary<long, (long Voice, long Typed, long Chars)>();
-            Read(@"SELECT agent_id,
-                          COALESCE(SUM(CASE WHEN is_voice = 1 THEN turns ELSE 0 END), 0),
-                          COALESCE(SUM(CASE WHEN is_voice = 0 THEN turns ELSE 0 END), 0),
-                          SUM(chars)
-                     FROM agent_delta WHERE tenant=$tn GROUP BY agent_id",
-                r => human[r.GetInt64(0)] = (r.GetInt64(1), r.GetInt64(2), r.GetInt64(3)), ("$tn", t.Value));
+            using var db = _contexts.CreateDbContext();
 
-            var driven = new Dictionary<long, (long Turns, long Chars)>();
-            Read("SELECT agent_id, SUM(turns), SUM(chars) FROM agent_driven_delta WHERE tenant=$tn GROUP BY agent_id",
-                r => driven[r.GetInt64(0)] = (r.GetInt64(1), r.GetInt64(2)), ("$tn", t.Value));
+            var human = db.AgentDeltas
+                .Where(d => d.Tenant == tenantValue)
+                .GroupBy(d => d.AgentId)
+                .Select(g => new
+                {
+                    AgentId = g.Key,
+                    Voice = g.Sum(x => x.IsVoice ? x.Turns : 0),
+                    Typed = g.Sum(x => x.IsVoice ? 0 : x.Turns),
+                    Chars = g.Sum(x => x.Chars),
+                })
+                .ToDictionary(x => x.AgentId, x => (x.Voice, x.Typed, x.Chars));
+
+            var driven = db.AgentDrivenDeltas
+                .Where(d => d.Tenant == tenantValue)
+                .GroupBy(d => d.AgentId)
+                .Select(g => new { AgentId = g.Key, Turns = g.Sum(x => x.Turns), Chars = g.Sum(x => x.Chars) })
+                .ToDictionary(x => x.AgentId, x => (x.Turns, x.Chars));
 
             // Every agent EVER attributed appears, including one registered with no turns - the original
             // creates the tally entry on attribution regardless, so the page describes the agents actually
@@ -1087,6 +1202,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                     Sessions = sessions.TryGetValue(id, out var n) ? n : 0,
                 });
             }
+            // The last tie-break is an ORDINAL string compare and stays in C# - see RepoTotals.
             list.Sort((a, b) =>
             {
                 var byTurns = b.Turns.CompareTo(a.Turns);
@@ -1098,11 +1214,45 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         }
     }
 
-    private Dictionary<long, int> SessionCounts(string table, string column)
+    /// <summary>
+    /// Distinct sessions per repository, for ONE tenant. <c>repo_session</c> carries no tenant column at
+    /// schema version 5 (it is partitioned indirectly, through a surrogate id minted per tenant), so the
+    /// scope comes from an explicit join to <c>repo_identity</c>, which does carry it.
+    ///
+    /// The join is the point. Reading <c>repo_session</c> alone would return every tenant's counts and be
+    /// safe only while every call site remembered to look up ids it had already obtained from a
+    /// tenant-filtered source - safety by remembering, which is the shape that produced the missions leak
+    /// (devthrottle_internal#1039). This accessor cannot return a foreign row, so there is nothing to
+    /// remember. It also stops the Repos page reading the whole table across every tenant on every render,
+    /// which on a hosted store is a network round trip that grows with the fleet.
+    ///
+    /// Explicitly a JOIN, not a navigation property and not a configured relationship: schema version 5 has
+    /// no foreign keys between these tables and adding one would change insert and delete ordering.
+    /// </summary>
+    internal Dictionary<long, int> RepoSessionCounts(TenantId tenant)
     {
-        var counts = new Dictionary<long, int>();
-        Read($"SELECT {column}, COUNT(*) FROM {table} GROUP BY {column}", r => counts[r.GetInt64(0)] = r.GetInt32(1));
-        return counts;
+        var tenantValue = tenant.Value;
+        using var db = _contexts.CreateDbContext();
+        return db.RepoSessions
+            .Join(db.RepoIdentities.Where(i => i.Tenant == tenantValue),
+                s => s.RepoId, i => i.RepoId, (s, i) => s.RepoId)
+            .GroupBy(id => id)
+            .Select(g => new { RepoId = g.Key, Sessions = g.Count() })
+            .ToDictionary(x => x.RepoId, x => x.Sessions);
+    }
+
+    /// <summary>Distinct sessions per agent, for ONE tenant. Same shape and the same reasoning as
+    /// <see cref="RepoSessionCounts"/>, one table over.</summary>
+    internal Dictionary<long, int> AgentSessionCounts(TenantId tenant)
+    {
+        var tenantValue = tenant.Value;
+        using var db = _contexts.CreateDbContext();
+        return db.AgentSessions
+            .Join(db.AgentIdentities.Where(i => i.Tenant == tenantValue),
+                s => s.AgentId, i => i.AgentId, (s, i) => s.AgentId)
+            .GroupBy(id => id)
+            .Select(g => new { AgentId = g.Key, Sessions = g.Count() })
+            .ToDictionary(x => x.AgentId, x => x.Sessions);
     }
 
     /// <summary>When the per-agent tally started counting for <paramref name="tenant"/> (round-trip UTC), or
@@ -1138,35 +1288,46 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     public IReadOnlyList<ModelStatBucketDto> ModelTotals(TenantId? tenant = null)
     {
         var t = RequireTenant(tenant);
+        var tenantValue = t.Value;
         lock (_lock)
         {
-            var list = new List<ModelStatBucketDto>();
+            using var db = _contexts.CreateDbContext();
             // Archive rows are INCLUDED - the marker convention only excludes them from hourly and
             // working-day series, and an all-time tally that dropped them would shrink as history is pruned.
             // Scoped to the request tenant (MTR-08).
-            Read(@"SELECT model_id,
-                          COALESCE(SUM(CASE WHEN is_voice = 1 THEN turns ELSE 0 END), 0),
-                          COALESCE(SUM(CASE WHEN is_voice = 0 THEN turns ELSE 0 END), 0),
-                          SUM(chars)
-                     FROM stat_delta WHERE tenant=$tn GROUP BY model_id", r =>
+            //
+            // Grouping on a NULLABLE key: every unknown-model row lands in ONE group on both providers, which
+            // is what makes the null bucket a single honest row rather than one row per unrecorded turn.
+            var rows = db.StatDeltas
+                .Where(d => d.Tenant == tenantValue)
+                .GroupBy(d => d.ModelId)
+                .Select(g => new
+                {
+                    ModelId = g.Key,
+                    Voice = g.Sum(x => x.IsVoice ? x.Turns : 0),
+                    Typed = g.Sum(x => x.IsVoice ? 0 : x.Turns),
+                    Chars = g.Sum(x => x.Chars),
+                })
+                .ToList();
+
+            var list = new List<ModelStatBucketDto>();
+            foreach (var row in rows)
             {
-                var voice = r.GetInt64(1);
-                var typed = r.GetInt64(2);
                 // A null model_id is the "not recorded" bucket and stays null all the way to the page. The
                 // display spelling comes from the identity mirror, never from a SQL join that might be
                 // tempted to group or order by the string.
-                string? display = r.IsDBNull(0)
+                string? display = row.ModelId is not { } id
                     ? null
-                    : (_modelDisplay.TryGetValue(r.GetInt64(0), out var d) ? d : "");
+                    : (_modelDisplay.TryGetValue(id, out var d) ? d : "");
                 list.Add(new ModelStatBucketDto
                 {
                     Model = display,
-                    Turns = voice + typed,
-                    VoiceTurns = voice,
-                    TypedTurns = typed,
-                    Characters = r.GetInt64(3),
+                    Turns = row.Voice + row.Typed,
+                    VoiceTurns = row.Voice,
+                    TypedTurns = row.Typed,
+                    Characters = row.Chars,
                 });
-            }, ("$tn", t.Value));
+            }
             // Ranked in C#, matching the repository and agent tallies. The null bucket sorts by its numbers
             // like any other and is deliberately not pinned anywhere: it is a bucket, not a footnote.
             list.Sort((a, b) =>
@@ -1189,19 +1350,30 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     public TokenSpendDto TokenSpend(TenantId? tenant = null)
     {
         var t = RequireTenant(tenant);
+        var tenantValue = t.Value;
         lock (_lock)
         {
-            var dto = new TokenSpendDto();
-            Read(@"SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
-                          COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_creation_tokens),0)
-                     FROM token_delta WHERE tenant=$tn", r =>
+            using var db = _contexts.CreateDbContext();
+            // One group over the whole partition - see AgentDrivenUsage for why an empty table reads as zero.
+            var totals = db.TokenDeltas
+                .Where(d => d.Tenant == tenantValue)
+                .GroupBy(_ => 1)
+                .Select(g => new
+                {
+                    Input = g.Sum(x => x.InputTokens),
+                    Output = g.Sum(x => x.OutputTokens),
+                    CacheRead = g.Sum(x => x.CacheReadTokens),
+                    CacheCreation = g.Sum(x => x.CacheCreationTokens),
+                })
+                .FirstOrDefault();
+
+            return new TokenSpendDto
             {
-                dto.InputTokens = r.GetInt64(0);
-                dto.OutputTokens = r.GetInt64(1);
-                dto.CacheReadTokens = r.GetInt64(2);
-                dto.CacheCreationTokens = r.GetInt64(3);
-            }, ("$tn", t.Value));
-            return dto;
+                InputTokens = totals?.Input ?? 0,
+                OutputTokens = totals?.Output ?? 0,
+                CacheReadTokens = totals?.CacheRead ?? 0,
+                CacheCreationTokens = totals?.CacheCreation ?? 0,
+            };
         }
     }
 
@@ -1213,22 +1385,24 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     public IReadOnlyList<TokenHourDto> TokenSpendByHour(TenantId? tenant = null)
     {
         var t = RequireTenant(tenant);
+        var tenantValue = t.Value;
+        var marker = GatewayStatsDatabase.ArchiveMarker;
         lock (_lock)
         {
-            var list = new List<TokenHourDto>();
-            Read(@"SELECT hour_utc,
-                          COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
-                          COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_creation_tokens),0)
-                     FROM token_delta
-                    WHERE tenant=$tn AND hour_utc <> $marker
-                    GROUP BY hour_utc", r => list.Add(new TokenHourDto
-            {
-                Hour = r.GetString(0),
-                InputTokens = r.GetInt64(1),
-                OutputTokens = r.GetInt64(2),
-                CacheReadTokens = r.GetInt64(3),
-                CacheCreationTokens = r.GetInt64(4),
-            }), ("$tn", t.Value), ("$marker", GatewayStatsDatabase.ArchiveMarker));
+            using var db = _contexts.CreateDbContext();
+            var list = db.TokenDeltas
+                .Where(d => d.Tenant == tenantValue && d.HourUtc != marker)
+                .GroupBy(d => d.HourUtc)
+                .Select(g => new TokenHourDto
+                {
+                    Hour = g.Key,
+                    InputTokens = g.Sum(x => x.InputTokens),
+                    OutputTokens = g.Sum(x => x.OutputTokens),
+                    CacheReadTokens = g.Sum(x => x.CacheReadTokens),
+                    CacheCreationTokens = g.Sum(x => x.CacheCreationTokens),
+                })
+                .ToList();
+            // Ordered in C#, ORDINAL - see HourlyTurns.
             list.Sort((a, b) => string.CompareOrdinal(a.Hour, b.Hour));
             return list;
         }
@@ -1242,28 +1416,41 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     public IReadOnlyList<ModelSpendDto> TokenSpendByModel(TenantId? tenant = null)
     {
         var t = RequireTenant(tenant);
+        var tenantValue = t.Value;
         lock (_lock)
         {
+            using var db = _contexts.CreateDbContext();
+            var rows = db.TokenDeltas
+                .Where(d => d.Tenant == tenantValue)
+                .GroupBy(d => d.ModelId)
+                .Select(g => new
+                {
+                    ModelId = g.Key,
+                    Input = g.Sum(x => x.InputTokens),
+                    Output = g.Sum(x => x.OutputTokens),
+                    CacheRead = g.Sum(x => x.CacheReadTokens),
+                    CacheCreation = g.Sum(x => x.CacheCreationTokens),
+                })
+                .ToList();
+
             var list = new List<ModelSpendDto>();
-            Read(@"SELECT model_id,
-                          COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
-                          COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_creation_tokens),0)
-                     FROM token_delta WHERE tenant=$tn GROUP BY model_id", r =>
+            foreach (var row in rows)
             {
                 // A null model_id is the "not recorded" bucket and stays null to the page; the display
                 // spelling comes from the identity mirror, never a SQL join over the string.
-                string? display = r.IsDBNull(0)
+                string? display = row.ModelId is not { } id
                     ? null
-                    : (_modelDisplay.TryGetValue(r.GetInt64(0), out var d) ? d : "");
+                    : (_modelDisplay.TryGetValue(id, out var d) ? d : "");
                 list.Add(new ModelSpendDto
                 {
                     Model = display,
-                    InputTokens = r.GetInt64(1),
-                    OutputTokens = r.GetInt64(2),
-                    CacheReadTokens = r.GetInt64(3),
-                    CacheCreationTokens = r.GetInt64(4),
+                    InputTokens = row.Input,
+                    OutputTokens = row.Output,
+                    CacheReadTokens = row.CacheRead,
+                    CacheCreationTokens = row.CacheCreation,
                 });
-            }, ("$tn", t.Value));
+            }
+            // The tie-break is an ORDINAL string compare and stays in C# - see RepoTotals.
             list.Sort((a, b) =>
             {
                 var byTotal = b.TotalTokens.CompareTo(a.TotalTokens);
@@ -1299,7 +1486,8 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     private static string HourKey(DateTime utc) =>
         utc.ToUniversalTime().ToString(HourFormat, System.Globalization.CultureInfo.InvariantCulture);
 
-    // ---- Plumbing. Every statement passes through here so StatementsExecuted is honest. ----
+    // ---- Plumbing. Every statement on the RAW path passes through here, which is what makes
+    // RawStatementsExecuted honest about that path - see the property for what it does NOT count. ----
 
     private void Execute(string sql, SqliteTransaction? tx, params (string Name, object Value)[] args)
     {
@@ -1308,7 +1496,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         cmd.CommandText = sql;
         foreach (var (n, v) in args) cmd.Parameters.AddWithValue(n, v);
         cmd.ExecuteNonQuery();
-        StatementsExecuted++;
+        RawStatementsExecuted++;
     }
 
     private long ExecuteScalarLong(string sql, SqliteTransaction? tx, params (string Name, object Value)[] args)
@@ -1318,7 +1506,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         cmd.CommandText = sql;
         foreach (var (n, v) in args) cmd.Parameters.AddWithValue(n, v);
         var result = cmd.ExecuteScalar();
-        StatementsExecuted++;
+        RawStatementsExecuted++;
         return result is null or DBNull ? 0 : Convert.ToInt64(result);
     }
 
@@ -1328,17 +1516,8 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         cmd.CommandText = sql;
         foreach (var (n, v) in args) cmd.Parameters.AddWithValue(n, v);
         using var reader = cmd.ExecuteReader();
-        StatementsExecuted++;
+        RawStatementsExecuted++;
         while (reader.Read()) onRow(reader);
-    }
-
-    private string? ReadScalarString(string sql, params (string Name, object Value)[] args)
-    {
-        using var cmd = _db.Connection.CreateCommand();
-        cmd.CommandText = sql;
-        foreach (var (n, v) in args) cmd.Parameters.AddWithValue(n, v);
-        StatementsExecuted++;
-        return cmd.ExecuteScalar() as string;
     }
 
     public void Dispose()
