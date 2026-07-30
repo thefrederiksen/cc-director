@@ -1061,13 +1061,19 @@ internal static class GatewayEndpoints
                                      && !string.Equals(x.ActivityState, "Exited", StringComparison.OrdinalIgnoreCase))
                             .Select(x => x.SessionId),
                         StringComparer.Ordinal);
+                    // In-memory only: a ConcurrentDictionary with no store behind it, so it cannot fail this
+                    // read the way a database write can.
                     owners?.RetainForDirector(reqTenant.Value, d.DirectorId, liveIds);
-                    // Snooze Length mission: a reachable Director's returned list is authoritative, so a
-                    // snoozed session that has permanently exited is no longer live here - drop its
-                    // snooze entry so the registry does not accumulate stale entries on disk. Runs only
-                    // for a Director that actually answered (!stale), so a transient miss never loses a
-                    // pending snooze.
-                    snoozeRegistry?.PruneNotLive(d.DirectorId, liveIds);
+                    // THE SNOOZE PRUNE USED TO RUN HERE AND HAS MOVED TO THE INGRESS. It opens an Entity
+                    // Framework context and does RemoveRange plus SaveChanges - on hosted, a POSTGRES WRITE
+                    // on the fleet's primary read path. That is the same mechanism that caused the
+                    // 2026-07-30 outage (an optional write failing a mandatory read), merely in a second
+                    // store: pool exhaustion or a connection timeout during a deploy would reproduce it with
+                    // a different exception name.
+                    //
+                    // Its own documentation said it "runs only for a Director that actually answered" - and
+                    // a Director answering is an INGRESS event, not a read event. It was only here because
+                    // the read happened to be where the answer was noticed. See DirectorHub.PushSnapshot.
                 }
 
                 var baseUrl = DeriveDirectorBaseUrl(ctx, d);
@@ -1238,16 +1244,15 @@ internal static class GatewayEndpoints
             // (`fleet`), not the response set (`all`). See defect 13 in StampFleetRolesAndFold.
             StampFleetRolesAndFold(fleet, all, needsYouStampFor, snoozeRegistry, reqTenant.Value);
 
-            // THE OPTIONAL ANALYTICS WRITES ARE GONE FROM THIS HANDLER. IT IS NOT YET A PURE READ.
+            // NO STORE WRITE REMAINS ON THIS HANDLER. DO NOT ADD ONE.
             //
-            // Being precise about that, because an earlier draft of this comment claimed the read WAS pure
-            // and it was not - which would have been a false record left behind for the next reader. Still
-            // writing, above this line: FleetRosterCache.RecordReachable / RecordUnreachable, the
-            // SessionOwnerCache retain and remember, SnoozeRegistry.PruneNotLive (a PERSISTENT delete), and
-            // the needs-you clock stamp. Those are not analytics - each one is part of how the roster
-            // answers correctly - but the snooze prune in particular is a durable store write, so a fault in
-            // that store can still turn this read into a 500. Closing that is tracked as its own work; what
-            // this change removes is the class of failure that actually took the fleet down.
+            // Stated carefully, because an earlier draft of this comment claimed the read was pure while a
+            // database write still sat above it - a false record is worse than no comment, since it tells
+            // the next reader to stop looking. What is left on this path now writes only to MEMORY:
+            // FleetRosterCache.RecordReachable / RecordUnreachable, the SessionOwnerCache retain and
+            // remember (a ConcurrentDictionary with no store behind it), and the needs-you clock stamp.
+            // None of them can fail this read the way a database or a file can. The snooze prune, which was
+            // the last durable write here, now runs at the ingress - see DirectorHub.PushSnapshot.
             //
             // Three write side-effects used to run here, on every roster read, and one of them took the
             // whole product down on 2026-07-30: a corrupted statistics database made

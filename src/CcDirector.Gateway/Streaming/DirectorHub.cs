@@ -56,6 +56,10 @@ public sealed class DirectorHub : Hub
     // share or raise a storage error, and a DROPPED adoption would let the allocator re-issue a number that
     // is still live (issue #1292 returning as duplicate session numbers). It stays inline and loud.
     private readonly Discovery.FleetSessionNumberAllocator? _sessionNumbers;
+    // The snooze registry, so entries whose session is no longer live are pruned where the Director ANSWERS
+    // rather than on the roster read - where it was an Entity Framework RemoveRange plus SaveChanges, on
+    // hosted a Postgres write, sitting on the fleet's primary read path.
+    private readonly Snooze.SnoozeRegistry? _snoozeRegistry;
 
     public DirectorHub(PushedSessionStore store, DirectorRegistry registry, GatewayInputStatsAggregator inputStats,
         GatewayStreamRegistry streamRegistry, Snooze.SnoozeLandingObserver? snoozeLandings = null,
@@ -64,7 +68,8 @@ public sealed class DirectorHub : Hub
         PushedRepositoryStore? repositoryStore = null, RepoHistoryStore? repoHistory = null,
         History.SessionHistoryRecorder? sessionHistory = null,
         Discovery.FleetSessionNumberAllocator? sessionNumbers = null,
-        Stats.StatisticsObservationQueue? statsQueue = null)
+        Stats.StatisticsObservationQueue? statsQueue = null,
+        Snooze.SnoozeRegistry? snoozeRegistry = null)
     {
         _store = store;
         _registry = registry;
@@ -80,6 +85,7 @@ public sealed class DirectorHub : Hub
         _sessionHistory = sessionHistory;
         _sessionNumbers = sessionNumbers;
         _statsQueue = statsQueue;
+        _snoozeRegistry = snoozeRegistry;
     }
 
     /// <summary>
@@ -252,6 +258,24 @@ public sealed class DirectorHub : Hub
         // holds, permanently, because nothing here can ever give it back.
         if (accepted)
             AdoptNumbers(directorId, set);
+        // The snooze prune, moved off the GET /sessions read path. A snapshot from an accepted connection IS
+        // the authoritative live set for this Director, which is exactly the condition the prune always
+        // required - it just used to be noticed during a read instead of when the Director actually answered.
+        //
+        // OFFERED, not called: it opens a database context and does RemoveRange plus SaveChanges, so on
+        // hosted it is a Postgres write, and a write must never decide whether a push succeeds. Dropping one
+        // is safe by construction - the next snapshot from this Director prunes the same entries again, so a
+        // missed prune costs a delay, never a wrong answer.
+        if (accepted && _snoozeRegistry is not null)
+        {
+            var liveIds = new HashSet<string>(
+                set.Where(x => !string.IsNullOrEmpty(x.SessionId)
+                            && !string.Equals(x.ActivityState, "Exited", StringComparison.OrdinalIgnoreCase))
+                   .Select(x => x.SessionId),
+                StringComparer.Ordinal);
+            _statsQueue?.Offer(Stats.StatisticsObservationQueue.SnoozePruneObserver,
+                _ => { _snoozeRegistry.PruneNotLive(directorId, liveIds); return Task.CompletedTask; });
+        }
         // A push the store REJECTED (from a superseded connection, or a stale sequence) is NOT authoritative,
         // so it must not drive the snooze observer - whose edges MUTATE the authoritative registry
         // (ClearIfArmed deletes an armed snooze, Land converts a deferral). A rejected stale Working push

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
@@ -59,6 +59,9 @@ public sealed class StatisticsObservationQueue : IAsyncDisposable
     /// <summary>Named observers, so health is reported per writer rather than as one opaque total.</summary>
     public const string InputStatsObserver = "inputStats";
     public const string ConcurrencyObserver = "concurrency";
+    /// <summary>The snooze prune. Not a statistic, but it is a deferred STORE WRITE off a hot path, which is
+    /// what this queue is for - and dropping one is safe because the next snapshot prunes the same rows.</summary>
+    public const string SnoozePruneObserver = "snoozePrune";
 
     private const int DefaultCapacity = 512;
 

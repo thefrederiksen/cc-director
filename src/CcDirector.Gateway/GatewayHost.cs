@@ -2110,6 +2110,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // writing them on the hub thread. Without this registration the hub would receive null and silently
         // record nothing - which is why the queue is also the thing the health counters report on.
         builder.Services.AddSingleton(_statsQueue);
+        // The snooze registry, so the hub can prune entries whose session is no longer live at the moment
+        // the Director answers - the job that used to be a database write on the GET /sessions read path.
+        builder.Services.AddSingleton(_snoozeRegistry);
         builder.Services.AddSingleton(Registry);
         // launcher-persistent-join: the LauncherHub (constructed per-invocation by SignalR) and
         // SendLauncherCommandAsync share this one connection registry.
