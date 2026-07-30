@@ -1009,6 +1009,11 @@ public sealed class WingmanVoiceService
         // actually took is in the log next to transcription's transcribeMs. A healthy call is a second
         // or two; the per-attempt deadline caps it at <=108s, so any elapsedMs over ~108s means the
         // deadline bound itself failed (the >3-minute tripwire). Milliseconds, matching transcription.
+        // READ THE LANGUAGE BEFORE SPEAKING (audit finding C1): this sink consumed only the text, the voice and
+        // the length, so a fabricated utterance with no language was still speakable here. Now it fails loud
+        // before a provider call is billed, and the log carries which language was spoken - a code is ASCII and
+        // log-safe where the words are not.
+        var spokenLanguage = spoken.LanguageCode;
         var sw = Stopwatch.StartNew();
         try
         {
@@ -1060,7 +1065,7 @@ public sealed class WingmanVoiceService
             // The request -> done span for this narration, in the log for the speed watch (the proxy also
             // returns X-DevThrottle-Elapsed-Ms, its own view one hop out). elapsedMs over ~108s = the
             // deadline bound broke; over 180000 = the three-minute alarm.
-            FileLog.Write($"[WingmanVoiceService] tts ok sid={sid}: elapsedMs={sw.ElapsedMilliseconds}, chars={spoken.Length}, served={(servedViaFallback ? "backup" : "primary")}");
+            FileLog.Write($"[WingmanVoiceService] tts ok sid={sid}: elapsedMs={sw.ElapsedMilliseconds}, chars={spoken.Length}, lang={spokenLanguage}, served={(servedViaFallback ? "backup" : "primary")}");
             return new TtsResult(audio, contentType, null, servedViaFallback);
         }
         // A timeout (TtsSynthesis exhausted its attempts) or a transport failure is the same story from

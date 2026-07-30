@@ -414,8 +414,24 @@ internal static class GatewayWingmanVoiceEndpoint
             // in an utterance this route cannot have built without a language; a caller-supplied voice is an
             // AUDITION (the Language tab offering a voice before it is chosen) and rides through the same
             // factory. Nothing here reads a language setting or picks a voice - that is the whole point.
-            var spoken = Wingman.NarrationText.LimitForSpeech(
-                tenantSettings.Utterance(reqTenant.Value, mode, req.Text, req.Voice), out var wasCut);
+            //
+            // AND THE CALLER'S VOICE IS NO LONGER TAKEN ON TRUST (Gateway audit, finding C2). This route forwards
+            // req.Voice into that factory, which is how a French account could be handed af_bella by a stale or
+            // hand-written caller and be obeyed - French words in an American voice, audio playing, nothing
+            // failing. The factory now refuses a voice belonging to another language, and a refusal is the
+            // CALLER'S mistake, so it comes back as a 400 saying which language the voice belongs to rather than
+            // as a 500.
+            SpokenUtterance requested;
+            try
+            {
+                requested = tenantSettings.Utterance(reqTenant.Value, mode, req.Text, req.Voice);
+            }
+            catch (ArgumentException ex)
+            {
+                FileLog.Write($"[GatewayWingmanVoice] tts REFUSED: {ex.Message}");
+                return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status400BadRequest);
+            }
+            var spoken = Wingman.NarrationText.LimitForSpeech(requested, out var wasCut);
             if (wasCut)
                 FileLog.Write($"[GatewayWingmanVoice] tts text EXCEEDED {Wingman.NarrationText.MaxChars} chars " +
                               $"({req.Text.Length}) - spoken text cut and the listener told");
@@ -428,6 +444,12 @@ internal static class GatewayWingmanVoiceEndpoint
             // Time the read-aloud call (request -> done) so its speed is in the log, matching the
             // narration path (WingmanVoiceService) and transcription's transcribeMs.
             var sw = System.Diagnostics.Stopwatch.StartNew();
+            // READ THE LANGUAGE BEFORE SPEAKING (audit finding C1). This sink consumed only the text, the voice
+            // and the length, so an utterance whose language had been forced to null by a route that bypassed the
+            // factory still reached synthesis as ordinary audio - the invariant was claimed and never checked
+            // where it mattered. Reading it here makes a missing language a loud failure at the sink, before a
+            // provider call is billed, and gives the log an ASCII fact about which language was spoken.
+            var spokenLanguage = spoken.LanguageCode;
             try
             {
                 // Per-attempt deadline derived from the text length + one retry (TtsSynthesis), so a
@@ -490,7 +512,7 @@ internal static class GatewayWingmanVoiceEndpoint
                 // may return audio/wav for some models - the browser must be told which so it can play it.
                 var contentType = resp.Content.Headers.ContentType?.MediaType ?? "audio/mpeg";
                 sw.Stop();
-                FileLog.Write($"[GatewayWingmanVoice] tts ok: elapsedMs={sw.ElapsedMilliseconds}, provider={mode.ToConfigString()}, chars={spoken.Length}, bytes={bytes.Length}, model={model}, voice={spoken.Voice}, type={contentType}");
+                FileLog.Write($"[GatewayWingmanVoice] tts ok: elapsedMs={sw.ElapsedMilliseconds}, provider={mode.ToConfigString()}, chars={spoken.Length}, lang={spokenLanguage}, bytes={bytes.Length}, model={model}, voice={spoken.Voice}, type={contentType}");
                 return Results.Bytes(bytes, contentType);
             }
             // TtsSynthesis exhausted its attempts: the worker never answered inside the per-attempt cap.

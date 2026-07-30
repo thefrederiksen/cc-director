@@ -50,6 +50,27 @@ public sealed class SpokenUtterance
     ///  resolver that builds these decides both together.</summary>
     public string Voice { get; }
 
+    /// <summary>
+    /// The language code, for the sink that is about to speak these words - and the reason a sink READS the
+    /// language at all (audit finding C1).
+    ///
+    /// Both hosted sinks used to consume only Text, Voice and Length, so an utterance whose language had been
+    /// forced to null by reflection still reached synthesis as ordinary audio: the invariant was claimed by the
+    /// factory and never depended on downstream. Now every sink asks for this on its way to the provider, so a
+    /// language that is not there fails LOUD at the sink instead of being quietly irrelevant.
+    ///
+    /// It is also the log-safe fact a synthesis log line should carry beside the length: a language code is ASCII
+    /// and says which language was spoken, where the words themselves must never reach an output channel.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The language is absent, which cannot happen through
+    ///  <see cref="For"/> and therefore means this object was fabricated by a route that bypassed it.</exception>
+    public string LanguageCode => Language is null
+        ? throw new InvalidOperationException(
+            "This spoken utterance has no language, so it was not built by SpokenUtterance.For. Nothing may be "
+            + "spoken without a language (issue #1031): a sink that spoke it anyway would pronounce the words "
+            + "with whatever voice it was handed, which is the silent failure this type exists to prevent.")
+        : Language.Code;
+
     /// <summary>How long the text is. THE log-safe fact about an utterance: a length in a log line tells you
     ///  what you need for a length bug without putting spoken content on an output channel.</summary>
     public int Length => Text.Length;
@@ -84,6 +105,23 @@ public sealed class SpokenUtterance
             throw new ArgumentException(
                 "A spoken utterance needs words. Synthesizing an empty string is billed and returns silence, "
                 + "which reaches the listener as a voice that failed.", nameof(text));
+
+        // THE VOICE MUST NOT BELONG TO A DIFFERENT LANGUAGE (audit finding C2). The read-aloud route forwards a
+        // CALLER-SUPPLIED voice into this factory - that is how the Language tab auditions one - so a stale or
+        // hand-written caller could hand a French account an English voice and be obeyed. French words in an
+        // American voice is the mission's own failure shape: the audio plays and only the sound is wrong.
+        //
+        // A voice belonging to NO language we know is allowed through, deliberately. A self-hosted operator may
+        // have configured a voice of their own against their own engine, and refusing it would take speech away
+        // from an account that works today. What is refused is a voice we know belongs to a DIFFERENT language,
+        // which is the only case where we can be certain it is wrong.
+        var owner = SpokenVoices.LanguageOf(spokenVoice);
+        if (owner is not null && owner != language)
+            throw new ArgumentException(
+                $"'{spokenVoice}' is a {owner.EnglishName} voice and this utterance is in {language.EnglishName}. "
+                + "A voice from another language reads the words with the wrong sounds, and nothing fails - which "
+                + "is why this is refused here rather than at the speech engine.", nameof(voice));
+
         return new SpokenUtterance(text, language, spokenVoice);
     }
 

@@ -170,7 +170,7 @@ public sealed class SpokenLanguageContractTests
         var chat = new RecordingChat("Trois sessions vous attendent.");
         var brain = new CarModeBrain(
             chat, _ => new UnusedFleet(), new CarModeConversationStore(), new CarModePendingStore(_ => { }),
-            new CarModeSubjectStore(_ => { }), _ => SpokenLanguages.French, _ => "over and out", _ => { });
+            new CarModeSubjectStore(_ => { }), _ => SpokenLanguages.French, _ => { });
 
         await brain.RunTurnAsync(TenantId.Local, "device-a", "who needs me", CancellationToken.None);
 
@@ -213,7 +213,7 @@ public sealed class SpokenLanguageContractTests
         var chat = new RecordingChat("**Three sessions** need you.\n- the first one\n## Next steps");
         var brain = new CarModeBrain(
             chat, _ => new UnusedFleet(), new CarModeConversationStore(), new CarModePendingStore(_ => { }),
-            new CarModeSubjectStore(_ => { }), _ => SpokenLanguages.English, _ => "over and out", _ => { });
+            new CarModeSubjectStore(_ => { }), _ => SpokenLanguages.English, _ => { });
 
         var result = await brain.RunTurnAsync(TenantId.Local, "device-a", "who needs me", CancellationToken.None);
 
@@ -507,6 +507,16 @@ public sealed class SpokenLanguageContractTests
             }
         }
 
+        // Every method's direct callees, so reachability can be walked to any depth.
+        var callGraph = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var method in methods)
+        {
+            var callees = new List<string>();
+            foreach (var instruction in method.Body.Instructions)
+                if (instruction.Operand is MethodReference called) callees.Add(called.FullName);
+            callGraph[Key(method)] = callees;
+        }
+
         // The scan must SEE model selection at all, or an empty offender list proves nothing.
         Assert.True(selectors.Count > 0,
             "The scan found no method that selects a speech model, so it is not looking where it thinks it is.");
@@ -524,16 +534,12 @@ public sealed class SpokenLanguageContractTests
                 offenders.Add($"{Key(method)} (selects a model itself)");
                 continue;
             }
-            // One hop: this method reads a language and calls something that selects a model. Model selection is
-            // rare, so the reachable set stays tiny and this cannot flood with false positives.
-            foreach (var instruction in method.Body.Instructions)
-            {
-                if (instruction.Operand is MethodReference called && selectors.Contains(called.FullName))
-                {
-                    offenders.Add($"{Key(method)} -> {called.Name} (selects a model)");
-                    break;
-                }
-            }
+            // TRANSITIVE, not one hop (audit finding C3). The first version of this walked exactly one call, and
+            // the auditor defeated it by putting a single neutral helper between the language read and the model
+            // selector: both guards went green while French could pick an engine. Model selection is rare, so the
+            // reachable set stays small and this cannot flood with false positives.
+            var reached = ReachesSelector(method, selectors, callGraph);
+            if (reached is not null) offenders.Add($"{Key(method)} -> {reached} (selects a model)");
         }
 
         Assert.True(sawLanguage >= 3,
@@ -547,6 +553,24 @@ public sealed class SpokenLanguageContractTests
             + string.Join(", ", offenders));
 
         static string Key(MethodDefinition m) => m.FullName;
+
+        // The first model selector reachable from this method by any number of calls, or null when none is.
+        // Breadth-first with a visited set, so a cycle - and recursion is ordinary in a call graph - terminates.
+        static string? ReachesSelector(MethodDefinition from, HashSet<string> selectors,
+            Dictionary<string, List<string>> callGraph)
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal) { from.FullName };
+            var queue = new Queue<string>(callGraph.TryGetValue(from.FullName, out var direct) ? direct : new List<string>());
+            while (queue.Count > 0)
+            {
+                var next = queue.Dequeue();
+                if (!seen.Add(next)) continue;
+                if (selectors.Contains(next)) return next;
+                if (callGraph.TryGetValue(next, out var deeper))
+                    foreach (var callee in deeper) queue.Enqueue(callee);
+            }
+            return null;
+        }
 
         static IEnumerable<string> OperandNames(MethodDefinition m)
         {
