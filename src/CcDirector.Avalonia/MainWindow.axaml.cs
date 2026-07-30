@@ -1095,6 +1095,7 @@ public partial class MainWindow : Window
         {
             _repairingTools = false;
             _lastToolHealth = null; // the tools changed - re-run the health check on the next refresh
+            CcDirector.Core.Tools.ToolHealthProbe.Invalidate(); // and let every surface re-read it
             await RefreshHomeAsync();
         }
     }
@@ -1137,36 +1138,24 @@ public partial class MainWindow : Window
         _toolHealthRunning = true;
         try
         {
+            // ONE health check, shared with the first-run wizard (issue #1045): ToolHealthProbe runs the
+            // checks, publishes the snapshot, and logs each failure WITH its reason, so no surface has to
+            // invent an answer and no failure arrives without one.
             var (summary, basePythonBroken) = await Task.Run(async () =>
             {
-                var catalog = new ToolCatalogService().GetCatalog();
-                var runner = new ToolTestRunner();
-                using var gate = new System.Threading.SemaphoreSlim(Math.Max(1, Environment.ProcessorCount - 1));
-                var inputs = await Task.WhenAll(catalog.Select(async d =>
-                {
-                    // Availability (PATH or bundled bin), not bin-only IsBuilt, decides whether the tool
-                    // can run its checks (issue #448). A PATH-only tool's BinaryPath is its PATH-resolved exe.
-                    if (!d.IsAvailable)
-                        return new CcDirector.Core.Tools.ToolHealthInput(d.Name, false, d.IsExpected, false);
-                    await gate.WaitAsync();
-                    try
-                    {
-                        var results = await runner.RunAllForToolAsync(d);
-                        return new CcDirector.Core.Tools.ToolHealthInput(d.Name, true, d.IsExpected, results.All(r => r.Passed));
-                    }
-                    finally { gate.Release(); }
-                }));
+                var snapshot = await CcDirector.Core.Tools.ToolHealthProbe.RunAsync();
                 // Probe the shared base Python directly. Every Python cc-* tool delegates to it, so if it is
                 // hollow (present but cannot import its standard library) they ALL fail at once - a single,
                 // repairable runtime failure the per-tool breakdown would otherwise show as N unrelated fails.
                 var pyBroken = !CcDirector.Setup.Engine.PythonRuntimeProbe.IsBasePythonHealthy(
                     CcDirector.Setup.Engine.InstallLayout.Default());
-                return (summary: CcDirector.Core.Tools.ToolHealthSummary.From(inputs), basePythonBroken: pyBroken);
+                return (summary: snapshot.Summary, basePythonBroken: pyBroken);
             });
 
             _lastToolHealth = summary;
             _lastBasePythonBroken = basePythonBroken;
-            FileLog.Write($"[MainWindow] tool health: pass={summary.Pass}, fail={summary.Fail}, notBuilt={summary.NotBuilt}, broken={summary.Broken}, basePythonBroken={basePythonBroken}");
+            FileLog.Write($"[MainWindow] tool health: pass={summary.Pass}, fail={summary.Fail}, notBuilt={summary.NotBuilt}, broken={summary.Broken}, basePythonBroken={basePythonBroken}" +
+                          (summary.Failures.Count == 0 ? "" : $", failing: {string.Join("; ", summary.Failures)}"));
 
             // Same rule as the fast path: a broken runtime that the automatic self-heal below is about
             // to repair is unfinished setup, not a fault, and is painted as progress rather than red.
@@ -1208,33 +1197,23 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Evaluate the active cc-* tools indicator (issue #829) against the latest health snapshot and, when
-    /// warranted, start an automatic reconcile. "Drift" is the existing warning condition (the tools row is
-    /// not green) OR - when auto-update is on - reconcile-detectable drift (a missing shim, an orphaned legacy
-    /// alias shim, a broken venv) that the row alone would not show. When auto-update is OFF the indicator
-    /// behaves exactly as it did before this issue: a passive warning on the row, no auto-reconcile. Starting
-    /// a reconcile is debounced (one in flight) and cooldown-gated (backoff between attempts) so the badge
-    /// never thrashes the reconcile engine.
+    /// warranted, start an automatic reconcile. What counts as a problem, and which kind, is decided by
+    /// <see cref="ClassifyToolsProblemAsync"/>: only drift a reconcile can actually correct starts one, and
+    /// a tool that is installed but failing is reported rather than looped on (issue #1045). When
+    /// auto-update is OFF the indicator behaves exactly as it did before issue #829: a passive warning on
+    /// the row, no auto-reconcile. Starting a reconcile is debounced (one in flight) and cooldown-gated
+    /// (backoff between attempts) so the badge never thrashes the reconcile engine.
     /// </summary>
     private async Task DriveToolsSyncAsync()
     {
-        var toolsCheck = _lastHomeStatus?.Checks.FirstOrDefault(c => c.Title == HomeStatusBuilder.ToolsRowTitle);
-        var healthDrift = toolsCheck is not null && toolsCheck.Level != HomeCheckLevel.Ok;
         var enabled = ToolAutoUpdateSetting.Get();
-
-        // Probe the reconciler only when auto-update is on and the row itself is green - that is the only case
-        // where reconcile-detectable drift would otherwise go unseen. The probe is pure reads, run off the UI
-        // thread. When auto-update is off we use ONLY the row signal, preserving the pre-issue passive behavior.
-        var hasDrift = healthDrift;
-        if (enabled && !healthDrift && !_toolsReconcileInFlight)
-        {
-            hasDrift = await Task.Run(() =>
-                new CcDirector.Setup.Engine.ToolReconciler(CcDirector.Setup.Engine.InstallLayout.Default()).HasDrift());
-        }
+        var (reconcilableDrift, unreconcilableFault) = await ClassifyToolsProblemAsync(probeReconciler: enabled);
 
         var previousState = _toolsSync.State;
-        var decision = _toolsSync.Evaluate(hasDrift, enabled, _toolsReconcileInFlight);
+        var decision = _toolsSync.Evaluate(reconcilableDrift, unreconcilableFault, enabled, _toolsReconcileInFlight);
         if (decision.State != previousState)
-            FileLog.Write($"[MainWindow] tools indicator state: {previousState} -> {decision.State} (drift={hasDrift}, autoUpdate={enabled})");
+            FileLog.Write($"[MainWindow] tools indicator state: {previousState} -> {decision.State} " +
+                          $"(reconcilableDrift={reconcilableDrift}, toolFault={unreconcilableFault}, autoUpdate={enabled})");
 
         UpdateToolsIndicator();
 
@@ -1247,6 +1226,47 @@ public partial class MainWindow : Window
         {
             StartToolsReconcile();
         }
+    }
+
+    /// <summary>
+    /// Split the tools problem into the two things it can be, because they want opposite responses
+    /// (issue #1045):
+    ///
+    ///   reconcilable drift - a missing shim, an orphaned legacy alias, a broken or absent shared venv, a
+    ///     tool the install was meant to provide but did not. <c>ToolReconciler</c> has a mechanism for
+    ///     each of these, so an automatic attempt is warranted.
+    ///   an unreconcilable tool fault - the tool IS installed, its shim is there, the venv is healthy, and
+    ///     it still fails its own check. No reconcile touches this. Feeding it to one anyway is how a clean
+    ///     install came to run three reconciles that each correctly reported in-sync, count all three as
+    ///     ineffective, and land on a red badge that named no reason.
+    ///
+    /// <paramref name="probeReconciler"/> gates the extra read-only <c>HasDrift</c> probe: it is worth
+    /// running when we would act on the answer (auto-update on, or judging a reconcile that just finished)
+    /// and not otherwise. It is skipped while a reconcile is in flight - it would be reading a moving target.
+    /// </summary>
+    private async Task<(bool ReconcilableDrift, bool UnreconcilableFault)> ClassifyToolsProblemAsync(bool probeReconciler)
+    {
+        var health = _lastToolHealth;
+
+        // A tool missing from the install is repairable drift; a tool present-but-failing is not. Before the
+        // first health run there is no verdict, so fall back to the tools row: unjudged is not a pass, and
+        // whatever it reports is treated as reconcilable so the existing self-heal still fires.
+        var toolsCheck = _lastHomeStatus?.Checks.FirstOrDefault(c => c.Title == HomeStatusBuilder.ToolsRowTitle);
+        var rowNotOk = toolsCheck is not null && toolsCheck.Level != HomeCheckLevel.Ok;
+        var reconcilableDrift = health is { } h ? h.HasMissingTool : rowNotOk;
+        var unreconcilableFault = health is { } h2 && h2.HasFailingTool;
+
+        // The shared base Python being hollow takes every Python tool down at once and IS repairable, so it
+        // counts as drift rather than a per-tool fault.
+        if (_lastBasePythonBroken) reconcilableDrift = true;
+
+        if (probeReconciler && !reconcilableDrift && !_toolsReconcileInFlight)
+        {
+            reconcilableDrift = await Task.Run(() =>
+                new CcDirector.Setup.Engine.ToolReconciler(CcDirector.Setup.Engine.InstallLayout.Default()).HasDrift());
+        }
+
+        return (reconcilableDrift, unreconcilableFault);
     }
 
     /// <summary>
@@ -1292,30 +1312,38 @@ public partial class MainWindow : Window
         // Re-probe health so we judge against the post-reconcile reality (driveSync:false - we record the
         // outcome here rather than letting the snapshot path start another reconcile).
         _lastToolHealth = null;
+        CcDirector.Core.Tools.ToolHealthProbe.Invalidate();
         await RefreshToolHealthAsync(force: true, driveSync: false);
 
-        var toolsCheck = _lastHomeStatus?.Checks.FirstOrDefault(c => c.Title == HomeStatusBuilder.ToolsRowTitle);
-        var healthDrift = toolsCheck is not null && toolsCheck.Level != HomeCheckLevel.Ok;
-        var reconcilerDrift = await Task.Run(() =>
-            new CcDirector.Setup.Engine.ToolReconciler(CcDirector.Setup.Engine.InstallLayout.Default()).HasDrift());
-        var driftRemains = healthDrift || reconcilerDrift;
+        // Judge the reconcile against the drift a reconcile is FOR. A tool that is installed and still
+        // fails its own check was never this pass's job (see ClassifyToolsProblemAsync), so counting it
+        // against the attempt made the reconcile look ineffective when it had nothing left to do.
+        var (reconcilableDrift, unreconcilableFault) = await ClassifyToolsProblemAsync(probeReconciler: true);
+        var reconcileFailed = outcome == CcDirector.Setup.Engine.ReconcileOutcome.Failed;
 
         var previousState = _toolsSync.State;
-        if (outcome != CcDirector.Setup.Engine.ReconcileOutcome.Failed && !driftRemains)
-        {
-            _toolsSync.OnReconcileSucceeded();
-            _toolsReconcileCooldownUntil = DateTime.MinValue;
-            FileLog.Write($"[MainWindow] tools indicator state: {previousState} -> {_toolsSync.State} (reconcile resolved drift)");
-        }
-        else
-        {
-            _toolsSync.OnReconcileFailed();
-            FileLog.Write($"[MainWindow] tools indicator state: {previousState} -> {_toolsSync.State} " +
-                          $"(reconcile ineffective; failures={_toolsSync.ConsecutiveFailures}, outcome={outcome}, driftRemains={driftRemains})");
+        // One entry point, and it takes the drift verdict - so there is no way to record success while the
+        // drift this pass was reconciling is still standing (issue #1045).
+        _toolsSync.OnReconcileFinished(reconcileFailed, reconcilableDrift);
 
-            if (_toolsSync.State == ToolsIndicatorState.Syncing)
-                ScheduleToolsReconcileRetry();
+        if (_toolsSync.State == ToolsIndicatorState.InSync && unreconcilableFault)
+        {
+            // The layout is now correct and a tool still does not work. That is a real to-do, not a sync
+            // problem: say so once, rather than retrying a reconcile that has nothing left to correct.
+            _toolsSync.OnUnreconcilableFault();
         }
+
+        var failing = _lastToolHealth is { } h && h.Failures.Count > 0
+            ? $", failing: {string.Join("; ", h.Failures)}"
+            : "";
+        FileLog.Write($"[MainWindow] tools indicator state: {previousState} -> {_toolsSync.State} " +
+                      $"(reconcile outcome={outcome}, reconcilableDrift={reconcilableDrift}, toolFault={unreconcilableFault}, " +
+                      $"ineffectiveAttempts={_toolsSync.ConsecutiveFailures}/{ToolsSyncStateMachine.MaxReconcileAttempts}{failing})");
+
+        if (_toolsSync.State == ToolsIndicatorState.InSync)
+            _toolsReconcileCooldownUntil = DateTime.MinValue;
+        else if (_toolsSync.State == ToolsIndicatorState.Syncing)
+            ScheduleToolsReconcileRetry();
 
         UpdateToolsIndicator();
     }
@@ -1443,8 +1471,11 @@ public partial class MainWindow : Window
                 ToolsIndicatorSub.Text = string.IsNullOrEmpty(detail) ? "click to open Settings and repair" : detail;
                 ToolsIndicatorSub.Foreground = AttentionRedSub;
                 ToolsIndicatorSpinner.IsVisible = false;
+                // Not "automatic sync did not resolve it": red is now also reached for a tool that is
+                // installed and simply does not work, where no sync was ever the right answer and none
+                // was attempted. The sub-label above carries the specific reason (issue #1045).
                 ToolTip.SetTip(ToolsIndicator,
-                    "Automatic tool sync did not resolve the problem.\nClick to open Settings and repair the tools.");
+                    "The DevThrottle tools are not all working.\nClick to open Settings and repair the tools.");
                 break;
 
             case ToolsIndicatorState.Warning:

@@ -111,6 +111,9 @@ public partial class FirstRunWizardDialog : Window
     private bool _toolsRepairing;
     private bool _toolsStalled;
     private const int ToolsStallSeconds = 45;
+    // Guards the one-at-a-time shared health run this screen starts (issue #1045). The Director's board
+    // may already have run it; if so the snapshot is there and this screen just renders it.
+    private bool _toolsHealthRunInFlight;
 
     // Code step: the ROOT DIRECTORY store - the registered base folders the repository model scans.
     // It is NOT what New Session reads; New Session reads the repository registry and, since this
@@ -908,10 +911,17 @@ public partial class FirstRunWizardDialog : Window
     // ---- Tools step (the toolbelt, maintained automatically) ---------------------------------------
 
     /// <summary>
-    /// Render the toolbelt from the embedded manifest catalog: every shipped tool with its one-line
-    /// description and a Ready / Installing pill. All ready ends the story in one glance; anything
-    /// still installing starts a light poll so the rows flip to Ready live while the user watches -
-    /// the promise ("maintenance is our job now") demonstrated, not described.
+    /// Render the toolbelt: every shipped tool with its one-line description and a pill saying what is
+    /// actually known about it. All working ends the story in one glance; anything still installing starts
+    /// a light poll so the rows flip live while the user watches - the promise ("maintenance is our job
+    /// now") demonstrated, not described.
+    ///
+    /// The pill reports the SAME check the Director's board reports (<see cref="ToolHealthProbe"/>), and
+    /// says "Checking" until that check has an answer. It used to read the catalog - a presence check -
+    /// and render "Ready" under "All 9 tools are installed and up to date", while the board, minutes
+    /// later and from the same install, named cc-pdf as failing. Both were true about the question each
+    /// had asked; neither said which question that was, so the pair simply contradicted each other in
+    /// front of a new user (issue #1045). A screen with no verdict yet says so.
     /// </summary>
     private async Task RefreshToolsScreenAsync()
     {
@@ -941,43 +951,36 @@ public partial class FirstRunWizardDialog : Window
             // Recorded so the Done receipt reports the same three states this screen does.
             _toolsStalled = stalled;
 
+            // Everything this screen says is decided once, in ToolsScreenFold - rows and status line
+            // together, from the catalog and the shared verdict. The view below only paints it.
+            if (missingCount == 0) StartToolsHealthRunIfNeeded();
+            var view = ToolsScreenFold.Fold(
+                catalog.Select(t => new ToolsScreenInput(t.Name, t.Description, t.IsAvailable)).ToList(),
+                stalled,
+                ToolHealthProbe.Last); // null is "not judged yet", never "fine"
+
             ToolsListPanel.Children.Clear();
-            foreach (var tool in catalog)
+            foreach (var row in view.Rows)
             {
-                var state = tool.IsAvailable ? RowState.Ready
-                    : stalled ? RowState.NeedsYou
-                    : RowState.Working;
-                var detail = tool.IsAvailable || !stalled
-                    ? tool.Description
-                    : $"{tool.Description} - this one did not install";
-                ToolsListPanel.Children.Add(AgentRow(tool.Name, detail, state));
+                var state = row.Verdict switch
+                {
+                    ToolRowVerdict.Working => RowState.Ready,
+                    ToolRowVerdict.NotWorking or ToolRowVerdict.NotInstalled => RowState.NeedsYou,
+                    _ => RowState.Working, // Installing / Checking - both are work in progress
+                };
+                ToolsListPanel.Children.Add(AgentRow(row.Name, row.Detail, state));
             }
 
-            ToolsFixPanel.IsVisible = stalled;
-
-            if (missingCount == 0)
+            ToolsFixPanel.IsVisible = view.OfferRepair;
+            ToolsStatusText.Text = view.StatusText;
+            ToolsStatusText.Foreground = view.Tone switch
             {
-                ToolsStatusText.Text = $"All {_toolsTotalCount} tools are installed and up to date.";
-                ToolsStatusText.Foreground = Brush("#1A7F37");
-                _toolsWaitStartedUtc = null;
-                StopToolsPoll();
-            }
-            else if (stalled)
-            {
-                ToolsStatusText.Text = missingCount == 1
-                    ? "1 tool did not install. Repairing takes about a minute - you can continue while it runs."
-                    : $"{missingCount} tools did not install. Repairing takes about a minute - you can continue while it runs.";
-                ToolsStatusText.Foreground = Brush("#DC2626");
-                StopToolsPoll();
-            }
-            else
-            {
-                // Both halves of the trade, so continuing is an informed choice rather than a guess.
-                ToolsStatusText.Text =
-                    $"{_toolsReadyCount} of {_toolsTotalCount} ready. Wait here and all of them will be working before you finish. Continue and DevThrottle finishes the rest in the background on its own.";
-                ToolsStatusText.Foreground = Brush("#0066B8");
-                StartToolsPoll();
-            }
+                ToolsScreenTone.Good => Brush("#1A7F37"),
+                ToolsScreenTone.Bad => Brush("#DC2626"),
+                _ => Brush("#0066B8"),
+            };
+            if (missingCount == 0) _toolsWaitStartedUtc = null;
+            if (view.KeepPolling) StartToolsPoll(); else StopToolsPoll();
         }
         catch (Exception ex)
         {
@@ -985,6 +988,33 @@ public partial class FirstRunWizardDialog : Window
             ToolsStatusText.Text = $"Could not read the tool catalog: {ex.Message}";
             ToolsStatusText.Foreground = Brush("#DC2626");
         }
+    }
+
+    /// <summary>
+    /// Start the shared health run once, in the background, if nothing has judged the tools yet. The
+    /// screen stays responsive: the rows say "Checking" meanwhile and the existing poll redraws them the
+    /// moment a verdict lands. Whichever surface gets there first, both then read the same answer.
+    /// </summary>
+    private void StartToolsHealthRunIfNeeded()
+    {
+        if (_toolsHealthRunInFlight || ToolHealthProbe.Last is not null) return;
+        _toolsHealthRunInFlight = true;
+        FileLog.Write("[FirstRunWizardDialog] starting the shared tool health run");
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await ToolHealthProbe.RunAsync();
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[FirstRunWizardDialog] tool health run FAILED: {ex.Message}");
+            }
+            finally
+            {
+                _toolsHealthRunInFlight = false;
+            }
+        });
     }
 
     /// <summary>
@@ -1010,6 +1040,9 @@ public partial class FirstRunWizardDialog : Window
             FileLog.Write($"[FirstRunWizardDialog] BtnFixTools_Click: success={result.Success}, msg={result.Message}");
 
             _toolsRepairing = false;
+            // The tools on disk just changed, so the shared verdict is stale by definition - drop it and
+            // let the next render re-judge rather than showing a pre-repair answer as a post-repair one.
+            ToolHealthProbe.Invalidate();
             // A repair takes about a minute. The user may well have closed the wizard in the meantime;
             // the repair still ran and still mattered, but there is no screen left to report it on.
             if (_closed) return;
@@ -1020,10 +1053,14 @@ public partial class FirstRunWizardDialog : Window
                 _toolsWaitStartedUtc = null;
                 ToolsFixProgress.Text = "Repair finished. Checking the tools again...";
                 await RefreshToolsScreenAsync();
-                if (_toolsReadyCount == _toolsTotalCount)
-                    ToolsFixProgress.IsVisible = false;
-                else
+                // "All present" is not "all working", and this line used to treat them as the same thing -
+                // it hid itself the moment every tool was back on disk, even if one still did not run
+                // (issue #1045). The status line the fold just wrote carries the real outcome, so the only
+                // honest thing to do here is stand down when there is nothing left to add.
+                if (_toolsReadyCount < _toolsTotalCount)
                     ToolsFixProgress.Text = "The repair ran but some tools are still missing. Continue - DevThrottle keeps retrying in the background - or see the tools documentation below.";
+                else
+                    ToolsFixProgress.IsVisible = false;
             }
             else
             {
@@ -2451,11 +2488,26 @@ public partial class FirstRunWizardDialog : Window
         // Tools row (only when the Tools screen was seen, so the numbers are real).
         if (_toolsTotalCount > 0)
         {
-            // Three states here, not two, because the Tools screen has three. Reducing a tool that
+            // Four states here, not two, because the Tools screen has four. Reducing a tool that
             // FAILED to install back to "installing - finishes on its own" would repeat on the last
             // screen the exact false promise the third state was added to remove, and would contradict
-            // the screen the user saw two steps earlier.
-            if (_toolsReadyCount == _toolsTotalCount)
+            // the screen the user saw two steps earlier. The fourth is the one this receipt used to get
+            // wrong in the other direction: it read the same presence count the Tools step read and
+            // called it "tools ready", so a tool that was installed and did not work was signed off as
+            // ready on the final screen of onboarding (issue #1045).
+            var doneFailures = ToolHealthProbe.Last?.Summary.Failures ?? Array.Empty<ToolFailure>();
+            if (_toolsReadyCount == _toolsTotalCount && doneFailures.Count > 0)
+            {
+                var shown = string.Join(", ", doneFailures.Take(2).Select(f => f.ToString()));
+                if (doneFailures.Count > 2) shown += $", +{doneFailures.Count - 2} more";
+                DoneReceiptPanel.Children.Add(ReceiptRow(
+                    doneFailures.Count == 1
+                        ? $"{_toolsTotalCount} tools installed, 1 not working"
+                        : $"{_toolsTotalCount} tools installed, {doneFailures.Count} not working",
+                    $"{shown} - repair from Settings > Tools",
+                    RowState.NeedsYou));
+            }
+            else if (_toolsReadyCount == _toolsTotalCount)
                 DoneReceiptPanel.Children.Add(ReceiptRow(
                     $"{_toolsTotalCount} tools ready", "Installed and kept current automatically", done: true));
             else if (_toolsStalled)

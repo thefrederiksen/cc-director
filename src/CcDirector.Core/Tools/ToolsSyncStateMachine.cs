@@ -9,11 +9,11 @@ namespace CcDirector.Core.Tools;
 ///   InSync   -> tools are healthy; the badge hides (the green / all-clear case).
 ///   Syncing  -> drift was found and a reconcile is running to fix it (orange "Syncing tools...").
 ///   Warning  -> drift exists but auto-update is OFF; the legacy passive amber warning, click = Settings.
-///   NeedsAttention -> reconcile failed repeatedly; red "Tools need attention", a real clickable to-do.
+///   NeedsAttention -> red "Tools need attention", a real clickable to-do.
 ///
-/// The normal cycle is Green -> Orange (syncing) -> Green (resolved). Red is only reached after a
-/// bounded number of failed/ineffective reconcile attempts; it is the single case that stays a
-/// user-facing to-do.
+/// The normal cycle is Green -> Orange (syncing) -> Green (resolved). Red is reached two ways: after a
+/// bounded number of failed or ineffective reconcile attempts, or immediately for a tool fault no
+/// reconcile can repair (issue #1045). It is the single case that stays a user-facing to-do.
 /// </summary>
 public enum ToolsIndicatorState
 {
@@ -26,7 +26,10 @@ public enum ToolsIndicatorState
     /// <summary>Drift exists but auto-update is off. The legacy passive amber warning (click opens Settings).</summary>
     Warning,
 
-    /// <summary>Reconcile failed repeatedly. Red "Tools need attention" (a real, clickable to-do).</summary>
+    /// <summary>
+    /// Red "Tools need attention" (a real, clickable to-do): reconcile failed repeatedly, or a tool is
+    /// installed and failing its own check, which no reconcile can repair.
+    /// </summary>
     NeedsAttention,
 }
 
@@ -68,13 +71,23 @@ public sealed class ToolsSyncStateMachine
 
     /// <summary>
     /// Decide the indicator state for a fresh health snapshot and whether a reconcile should start now.
+    ///
+    /// The two problem inputs are deliberately separate, because they call for opposite responses and
+    /// were previously collapsed into one "hasDrift" flag (issue #1045). Feeding a tool's failing smoke
+    /// check into the reconciler asked a layout repair to fix something it has no mechanism for: the
+    /// reconcile correctly reported in-sync, the tool went on failing, and the ineffective-attempt count
+    /// climbed to the ceiling - three no-op reconciles ending in a red badge that named no reason.
     /// </summary>
-    /// <param name="hasDrift">True when the cc-* tools row is not green (the today-warning condition).</param>
+    /// <param name="reconcilableDrift">Drift a reconcile can actually correct: a missing shim, an orphaned
+    /// legacy alias, a broken or absent shared venv, a half-installed tool.</param>
+    /// <param name="unreconcilableFault">A tool that is installed and backed by a healthy venv but whose own
+    /// check fails. No reconcile will move this; it is a to-do for the user, reported with its reason.</param>
     /// <param name="autoUpdateEnabled">The effective <c>tools.autoUpdate.enabled</c> value.</param>
     /// <param name="reconcileInFlight">True when a reconcile this machine started has not finished yet.</param>
-    public ToolsSyncDecision Evaluate(bool hasDrift, bool autoUpdateEnabled, bool reconcileInFlight)
+    public ToolsSyncDecision Evaluate(
+        bool reconcilableDrift, bool unreconcilableFault, bool autoUpdateEnabled, bool reconcileInFlight)
     {
-        if (!hasDrift)
+        if (!reconcilableDrift && !unreconcilableFault)
         {
             // Resolved (or never drifted): back to green and forget past failures so the next drift
             // starts a fresh attempt budget.
@@ -92,7 +105,15 @@ public sealed class ToolsSyncStateMachine
             return new ToolsSyncDecision(State, ShouldReconcile: false);
         }
 
-        // Drift + auto-update on.
+        if (!reconcilableDrift)
+        {
+            // A tool fault with nothing to reconcile. Do not spend the attempt budget on reconciles that
+            // are each a guaranteed no-op - go straight to the red to-do, which names the tool and why.
+            OnUnreconcilableFault();
+            return new ToolsSyncDecision(State, ShouldReconcile: false);
+        }
+
+        // Reconcilable drift + auto-update on.
         if (ConsecutiveFailures >= MaxReconcileAttempts)
         {
             // Retry ceiling hit: stay red and stop auto-retrying. The user can still click to open Settings.
@@ -107,25 +128,45 @@ public sealed class ToolsSyncStateMachine
     }
 
     /// <summary>
-    /// Record that a reconcile attempt resolved the drift: clear the failure count and return to green.
+    /// Record the outcome of one reconcile attempt. This is the ONLY way to report an attempt, and it
+    /// takes the post-reconcile drift verdict as an argument, so "the reconcile succeeded" is not a thing
+    /// a caller can assert on its own - success means the reconcile did not fail AND the drift it was
+    /// reconciling is gone. Anything else is an ineffective attempt: the failure count rises and the badge
+    /// stays orange for a retry after <see cref="NextBackoff"/>, or falls to red once the ceiling is hit.
+    ///
+    /// The split matters (issue #1045). The old shape had a bare <c>OnReconcileSucceeded()</c> beside a
+    /// bare <c>OnReconcileFailed()</c> and left it to the caller to check drift before choosing - so the
+    /// rule that decides the whole indicator lived outside the thing that owns the indicator's state, and
+    /// a caller that forgot the check could report green over standing drift. Here it cannot: there is no
+    /// argument list that says in-sync while <paramref name="driftRemains"/> is true.
     /// </summary>
-    public void OnReconcileSucceeded()
+    /// <param name="reconcileFailed">True when the reconcile itself errored or reported failure.</param>
+    /// <param name="driftRemains">True when drift is STILL present after the reconcile ran.</param>
+    public void OnReconcileFinished(bool reconcileFailed, bool driftRemains)
     {
-        ConsecutiveFailures = 0;
-        State = ToolsIndicatorState.InSync;
-    }
+        if (!reconcileFailed && !driftRemains)
+        {
+            ConsecutiveFailures = 0;
+            State = ToolsIndicatorState.InSync;
+            return;
+        }
 
-    /// <summary>
-    /// Record a failed/ineffective reconcile attempt (it errored, or it ran but drift still remains).
-    /// Increments the failure count and escalates to red once the ceiling is reached; otherwise it stays
-    /// orange so the caller can retry after <see cref="NextBackoff"/>.
-    /// </summary>
-    public void OnReconcileFailed()
-    {
         ConsecutiveFailures++;
         State = ConsecutiveFailures >= MaxReconcileAttempts
             ? ToolsIndicatorState.NeedsAttention
             : ToolsIndicatorState.Syncing;
+    }
+
+    /// <summary>
+    /// Record a fault that a reconcile cannot repair: a tool that is installed, shimmed, and backed by a
+    /// healthy venv, but whose own check fails. There is no drift for the reconciler to correct, so
+    /// retrying it is pure noise - the machine goes straight to the red, user-facing to-do instead of
+    /// spending the attempt budget on three reconciles that are each a guaranteed no-op (issue #1045).
+    /// </summary>
+    public void OnUnreconcilableFault()
+    {
+        ConsecutiveFailures = MaxReconcileAttempts; // the budget is spent: retrying cannot help
+        State = ToolsIndicatorState.NeedsAttention;
     }
 
     /// <summary>

@@ -185,7 +185,7 @@ public class HomeStatusBuilderTests
     [Fact]
     public void Build_ToolHealthWithFailure_ShowsBreakdownWarnsAndOffersRepair()
     {
-        var health = new ToolHealthSummary(24, 1, 4,0, new[] { "cc-foo" });
+        var health = new ToolHealthSummary(24, 1, 4, 0, new[] { new ToolFailure("cc-foo", "smoke check: exit 1") });
         var status = HomeStatusBuilder.Build(new[] { Cli("Claude Code", true, "2.1") }, 0, 0, null, health);
 
         var tools = Row(status, HomeStatusBuilder.ToolsRowTitle);
@@ -203,7 +203,7 @@ public class HomeStatusBuilderTests
     {
         // The home must show the true picture: any not-built tool warns and routes to the Tools page,
         // rather than reading "all systems go" while tools are missing.
-        var health = new ToolHealthSummary(24, 0, 4, 0, Array.Empty<string>());
+        var health = new ToolHealthSummary(24, 0, 4, 0, Array.Empty<ToolFailure>());
         var status = HomeStatusBuilder.Build(new[] { Cli("Claude Code", true, "2.1") }, 0, 0, null, health);
 
         var tools = Row(status, HomeStatusBuilder.ToolsRowTitle);
@@ -215,7 +215,7 @@ public class HomeStatusBuilderTests
     [Fact]
     public void Build_ToolHealthAllPassing_IsGreen()
     {
-        var health = new ToolHealthSummary(28, 0, 0, 0, Array.Empty<string>());
+        var health = new ToolHealthSummary(28, 0, 0, 0, Array.Empty<ToolFailure>());
         var status = HomeStatusBuilder.Build(new[] { Cli("Claude Code", true, "2.1") }, 0, 0, null, health);
 
         var tools = Row(status, HomeStatusBuilder.ToolsRowTitle);
@@ -226,7 +226,7 @@ public class HomeStatusBuilderTests
     [Fact]
     public void Build_ToolHealthBroken_OffersRepair()
     {
-        var health = new ToolHealthSummary(24, 0, 1,1, Array.Empty<string>());
+        var health = new ToolHealthSummary(24, 0, 1,1, Array.Empty<ToolFailure>());
         var status = HomeStatusBuilder.Build(new[] { Cli("Claude Code", true, "2.1") }, 0, 0, null, health);
 
         var tools = Row(status, HomeStatusBuilder.ToolsRowTitle);
@@ -240,7 +240,7 @@ public class HomeStatusBuilderTests
         // The shared base Python is hollow - present but unable to import its standard library - so every
         // Python cc-* tool fails at once. The row must be red, name the runtime problem, and offer a real
         // repair (not a navigate-to-Tools) so one click re-provisions the runtime (issue #995).
-        var health = new ToolHealthSummary(0, 9, 0, 0, new[] { "cc-vault", "cc-html", "cc-pdf" });
+        var health = new ToolHealthSummary(0, 9, 0, 0, new[] { new ToolFailure("cc-vault", "version check: exit 1"), new ToolFailure("cc-html", "version check: exit 1"), new ToolFailure("cc-pdf", "version check: exit 1") });
         var status = HomeStatusBuilder.Build(
             new[] { Cli("Claude Code", true, "2.1") }, 0, 0, null, health, basePythonBroken: true);
 
@@ -255,7 +255,7 @@ public class HomeStatusBuilderTests
     {
         // Regression guard for the routing change: a not-built-ONLY state (no failing built tool, nothing
         // broken) is optional tools, not a repairable failure - it must still route to the Tools page.
-        var health = new ToolHealthSummary(24, 0, 4, 0, Array.Empty<string>());
+        var health = new ToolHealthSummary(24, 0, 4, 0, Array.Empty<ToolFailure>());
         var status = HomeStatusBuilder.Build(new[] { Cli("Claude Code", true, "2.1") }, 0, 0, null, health);
 
         var tools = Row(status, HomeStatusBuilder.ToolsRowTitle);

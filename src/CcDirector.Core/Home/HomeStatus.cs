@@ -138,10 +138,13 @@ public static class HomeStatusBuilder
         if (!h.HasProblem)
             return new HomeCheck(ToolsRowTitle, HomeCheckLevel.Ok, detail, HomeCheckAction.None);
 
-        if (h.Failing.Count > 0)
+        // Name the failing tools WITH the reason each one gave. "1 fail - failing: cc-pdf" sends the reader
+        // to a log that kept no record of why; "failing: cc-pdf (smoke check: timed out after 90s)" is a
+        // fact they can act on, and it is free - the runner already knows it (issue #1045).
+        if (h.Failures.Count > 0)
         {
-            var shown = string.Join(", ", h.Failing.Take(3));
-            if (h.Failing.Count > 3) shown += $", +{h.Failing.Count - 3} more";
+            var shown = string.Join(", ", h.Failures.Take(2).Select(f => f.ToString()));
+            if (h.Failures.Count > 2) shown += $", +{h.Failures.Count - 2} more";
             detail += $" - failing: {shown}";
         }
 

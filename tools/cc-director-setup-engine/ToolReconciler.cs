@@ -263,39 +263,76 @@ public sealed class ToolReconciler
     /// holder. <paramref name="logReason"/> and <paramref name="successAction"/> tailor the wording so the log
     /// and the reported action distinguish a repair from a first-run provision.
     /// </summary>
-    private async Task<ReconcileResult?> EscalateHeavyRepairAsync(
+    private Task<ReconcileResult?> EscalateHeavyRepairAsync(
         List<string> actions, CancellationToken ct, string logReason, string successAction)
     {
-        using var mutex = new Mutex(initiallyOwned: false, HeavyRepairMutexName, out _);
-        var held = false;
-        try
+        // A Windows named mutex has THREAD AFFINITY: only the thread that took it may release it. The
+        // guarded work is asynchronous, and an await resumes on whatever thread the runtime picks - so
+        // taking the mutex, awaiting, and releasing inline meant ReleaseMutex ran on a different thread
+        // and threw "Object synchronization method was called from an unsynchronized block of code".
+        // ReconcileAsync's catch turned that into ReconcileOutcome.Failed, so a clean install reported
+        // its own SUCCESSFUL first-run provision as a failure and burned a reconcile attempt on it
+        // (issue #1045). Owning the mutex for the whole critical section on ONE dedicated thread is the
+        // fix: the release is guaranteed to run where the acquire did, and the abandonment recovery a
+        // named mutex gives us across Directors is preserved.
+        return RunOwningOneThreadAsync<ReconcileResult?>(() =>
         {
-            try { held = mutex.WaitOne(TimeSpan.Zero); }
-            catch (AbandonedMutexException) { held = true; } // a prior holder died; we now own it
-
-            if (!held)
+            using var mutex = new Mutex(initiallyOwned: false, HeavyRepairMutexName, out _);
+            var held = false;
+            try
             {
-                FileLog.Write("[ToolReconciler] reconcile skipped - another Director is reconciling");
-                actions.Add("heavy venv work skipped - another Director is reconciling");
+                try { held = mutex.WaitOne(TimeSpan.Zero); }
+                catch (AbandonedMutexException) { held = true; } // a prior holder died; we now own it
+
+                if (!held)
+                {
+                    FileLog.Write("[ToolReconciler] reconcile skipped - another Director is reconciling");
+                    actions.Add("heavy venv work skipped - another Director is reconciling");
+                    return null;
+                }
+
+                FileLog.Write($"[ToolReconciler] {logReason}");
+                // Blocking is correct here and cannot deadlock: this dedicated thread exists only to own
+                // the mutex, it belongs to no pool, and it holds no other lock.
+                var repair = _heavyRepairAsync(ct).GetAwaiter().GetResult();
+                if (!repair.Success)
+                {
+                    FileLog.Write($"[ToolReconciler] heavy venv work FAILED: {repair.Message}");
+                    return new ReconcileResult(ReconcileOutcome.Failed, actions, repair.Message);
+                }
+
+                FileLog.Write($"[ToolReconciler] heavy venv work succeeded: {repair.Message}");
+                actions.Add($"{successAction} ({repair.Message})");
                 return null;
             }
-
-            FileLog.Write($"[ToolReconciler] {logReason}");
-            var repair = await _heavyRepairAsync(ct);
-            if (!repair.Success)
+            finally
             {
-                FileLog.Write($"[ToolReconciler] heavy venv work FAILED: {repair.Message}");
-                return new ReconcileResult(ReconcileOutcome.Failed, actions, repair.Message);
+                if (held) mutex.ReleaseMutex();
             }
+        });
+    }
 
-            FileLog.Write($"[ToolReconciler] heavy venv work succeeded: {repair.Message}");
-            actions.Add($"{successAction} ({repair.Message})");
-            return null;
-        }
-        finally
+    /// <summary>
+    /// Run <paramref name="work"/> start-to-finish on one dedicated thread and surface its result (or its
+    /// exception) as a task. Used for the named-mutex critical section, which must be acquired and released
+    /// by the same thread; a thread-pool thread will not do, because the pool is free to run the work's
+    /// continuations elsewhere. The thread is created per call and is background, so it never keeps the
+    /// process alive.
+    /// </summary>
+    private static Task<T> RunOwningOneThreadAsync<T>(Func<T> work)
+    {
+        var completion = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
         {
-            if (held) mutex.ReleaseMutex();
-        }
+            try { completion.SetResult(work()); }
+            catch (Exception ex) { completion.SetException(ex); }
+        })
+        {
+            IsBackground = true,
+            Name = "cc-director-tool-reconcile",
+        };
+        thread.Start();
+        return completion.Task;
     }
 
     /// <summary>
