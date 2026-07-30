@@ -7,7 +7,7 @@ Decisions made mid-mission. Durable, so a re-seated Manager does not re-ask.
 ## Ruling 1 - Accented characters in spoken content: ALLOWED, and required
 
 **Asked by the Manager, Phase 2 (#1009).** Correct French and Spanish need accents
-(`Désolé`, `¿Qué pasó?`), which appears to collide with the repo-wide ASCII-only output rule.
+(`De[acute]sole[acute]`, `[inverted-question-mark]Que[acute] paso[acute]?`), which appears to collide with the repo-wide ASCII-only output rule.
 
 **Ruling: spoken CONTENT carries correct accents. Everything else stays ASCII.**
 
@@ -15,8 +15,8 @@ This is not a relaxation of the rule; it is the rule applied to the right target
 
 ### Why it is not merely a style preference
 
-Kokoro phonemizes the text it is given. `Desole` and `Désolé` do not phonemize the same way -
-`e` and `é` are different vowels, and the model will pronounce the stripped form wrong. Stripping
+Kokoro phonemizes the text it is given. `Desole` and `De[acute]sole[acute]` do not phonemize the same way -
+`e` and `e[acute]` are different vowels, and the model will pronounce the stripped form wrong. Stripping
 accents does not produce slightly-off French; it produces a voice mispronouncing words.
 
 Every measurement this mission rests on used properly accented text. The ~500-character French
@@ -53,7 +53,7 @@ purpose is untouched by letting them carry accents.
 1. **Never write spoken content raw to a log or console.** If a log line must reference a spoken
    string, log its resource key, its length, or a hash - never the text. This is what keeps the
    original rule's purpose intact rather than merely arguing around it.
-2. **Pin the encoding with a test.** A resource file read as cp1252 instead of UTF-8 turns `é` into
+2. **Pin the encoding with a test.** A resource file read as cp1252 instead of UTF-8 turns `e[acute]` into
    mojibake, and it fails silently - the audio just comes out wrong. There must be a test that reads
    a known accented string through the real loading path and asserts the characters survive
    byte-for-byte. This is the exact class of bug that hides until a customer hears it.

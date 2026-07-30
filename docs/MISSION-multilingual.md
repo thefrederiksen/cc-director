@@ -24,7 +24,7 @@ and the UI must cope with it.
 
 ## What this mission builds
 
-**#1008 speech contract → #1009 translate strings → #1010 Language tab.** In that order. #1010
+**#1008 speech contract -> #1009 translate strings -> #1010 Language tab.** In that order. #1010
 ships last.
 
 ---
@@ -39,8 +39,24 @@ could not speak real narration lengths - French returned silence at 155 characte
 60-second deadline at 208, and the wingman writes ~500.
 
 **This mission never switches engines.** French and Spanish are VOICES inside the same Kokoro model
-already serving English. Measured 2026-07-29, ~500-char narration, warm: English 1.29s, French
-1.31s, Spanish 1.24s, zero near-silent returns across 45 calls up to 800 chars.
+already serving English.
+
+What is MEASURED, and nothing beyond it: on 2026-07-29 the Architect ran the three registered default
+voices through the real engine at production narration length (~340 characters) and transcribed the
+audio back. Each returned its own language's words, accents intact through the round trip, from ONE
+engine and three voices - word error rates 0.016 (`af_bella`, English), 0.056 (`ff_siwis`, French) and
+0.053 (`ef_dora`, Spanish). So the language-picks-a-voice-and-never-an-engine design is measured, not
+assumed.
+
+A latency figure used to sit here - "about 1.3 seconds in all three languages" - and it has been
+deleted rather than corrected. The data behind it does not support a per-language claim, and a
+confident number nobody can trace is worse than no number: it gets cited, and by the third citation it
+is a fact. If a latency budget is needed, measure it and say what was measured.
+
+A NOTE FOR ANYONE WRITING A TEST THAT TRANSCRIBES AUDIO, because it cost a run: asked with no pinned
+language, whisper-large-v3 returns an ENGLISH TRANSLATION of French audio. It scores about 0.87
+against the French source and looks exactly like a broken voice. Pin `task=transcribe` AND
+`language=<code>` or you will chase a phantom.
 
 **If anyone proposes switching the speech model based on language, that is the reverted failure
 returning. Do not do it.**
@@ -92,7 +108,7 @@ Decided behaviour - do not redesign these:
 
 - **Voice dropdown filtered by language, remembered PER LANGUAGE.** Store e.g.
   `{ en: bm_george, fr: ff_siwis, es: ef_dora }`. This removes restore logic entirely: nothing is
-  ever overwritten, so nothing needs restoring. English → French → English gets George back.
+  ever overwritten, so nothing needs restoring. English -> French -> English gets George back.
 - **Control stays visible even in French** (one voice). A control that vanishes between languages
   reads as a glitch.
 - **Scope: per account**, matching the existing `ACCOUNT_SCOPE` on the AI and Car Mode tabs.

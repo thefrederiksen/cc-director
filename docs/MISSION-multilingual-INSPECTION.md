@@ -60,7 +60,7 @@ So the questions that matter most:
 Ruling 1 (`docs/MISSION-multilingual-RULINGS.md`) allows accents in spoken content. Verify:
 
 - Accented strings survive the **real loading path** byte-for-byte. This machine defaults to cp1252;
-  a resource file read with the wrong encoding turns `é` into mojibake and **fails silently**,
+  a resource file read with the wrong encoding turns `e[acute]` into mojibake and **fails silently**,
   because the audio still plays.
 - No spoken content is written raw to a log or console anywhere.
 - ASCII still holds for identifiers, resource keys, comments, log text, and test names.
