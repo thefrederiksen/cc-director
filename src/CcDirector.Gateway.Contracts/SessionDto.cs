@@ -335,9 +335,15 @@ public sealed class SessionDto
     public string MachineName { get; set; } = "";
 
     /// <summary>
-    /// Epic #1159 step A: whether the machine that owns this session is reachable RIGHT NOW - its tunnel is
-    /// up and its last push is current. Stamped by the Gateway's roster read; null in Director-local
-    /// responses, where the question is meaningless because the answering Director is the machine.
+    /// Epic #1159 step A: whether the machine that owns this session is reachable RIGHT NOW - meaning its
+    /// tunnel is up. Stamped by the Gateway's roster read; null in Director-local responses, where the
+    /// question is meaningless because the answering Director is the machine.
+    ///
+    /// It is the TUNNEL, not staleness. A machine whose push is merely late is still reachable: a command
+    /// sent to it lands. Keying this to staleness instead would make the badge blink off whenever a push ran
+    /// a few seconds behind - the same transient-staleness-destroys-information defect this step exists to
+    /// end, just wearing a third disguise. Whether data is current enough to be ACTED on is a different and
+    /// stricter question, answered separately inside the roster read and never exposed here.
     ///
     /// This is the Gateway's answer to "may this session nag the human", and it is a Gateway answer on
     /// purpose. The roster now serves the sessions of a machine nobody can reach - dimmed and dated instead

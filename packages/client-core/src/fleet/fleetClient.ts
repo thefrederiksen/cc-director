@@ -67,19 +67,28 @@ export async function getFleetDirectors(signal?: AbortSignal): Promise<FleetDire
 
 // ===== Roster envelope (GET /sessions?envelope=true) =====
 
-// One machine the Gateway could not reach on the last roster fan-out (the envelope's machineErrors).
-// Its sessions are missing from the roster; the Fleet and Directors pages surface it as unreachable.
+// One machine the Gateway could not reach on the last roster read (the envelope's machineErrors), which
+// the Fleet and Directors pages surface as unreachable. It is a statement about the LINK, not about the
+// roster: the machine's sessions are still served (dimmed and dated), so this no longer means "its
+// sessions are missing".
 export interface MachineError {
   directorId?: string;
   machineName?: string;
   error?: string;
 }
 
-// The three fleet-sweep presentation states (issue #1215, Cockpit plan phase 6). A Director reads as:
-//  - "online": its last poll succeeded.
-//  - "wobbly": a recent poll failed but is absorbed by the Gateway's grace window - its last-known-good
-//    sessions are STILL in the roster (served stale), shown dimmed with a "last seen N seconds ago" age.
-//  - "offline": the grace window is exhausted; its sessions are dropped from the roster.
+// The three machine states in the roster envelope (issue #1215; re-based on the tunnel by Epic #1159
+// step A). A Director reads as:
+//  - "online": its tunnel is up and its last push is current - this is live data.
+//  - "wobbly": its tunnel is up but nothing recent has arrived - real data, going stale, machine still
+//    there. Its sessions are in the roster, shown dimmed with a "last seen N seconds ago" age.
+//  - "offline": its tunnel is down - real data, dated, and the machine cannot be acted on.
+//
+// OFFLINE NO LONGER MEANS DELETED. It used to: the Gateway dropped an offline machine's sessions from
+// the envelope once a grace window expired, which is why the phone's roster blanked. The Gateway now
+// serves every session it last knew about, whatever its age, so all three states carry sessions and the
+// state decides only how they are RENDERED. A session leaves the roster when its Director says so or
+// when the machine passes the Gateway's eviction horizon - never because a display timer ran out.
 export const REACHABILITY_ONLINE = "online";
 export const REACHABILITY_WOBBLY = "wobbly";
 export const REACHABILITY_OFFLINE = "offline";
@@ -96,9 +105,14 @@ export interface DirectorReachability {
   machineName?: string;
   /** "online" | "wobbly" | "offline". */
   state: ReachabilityState;
-  /** When the Gateway last read this Director's sessions (ISO 8601 UTC), or null if never. */
+  /** When the Gateway last HEARD this machine - the arrival stamp of its newest push (ISO 8601 UTC), or
+   * null if it has never pushed. */
   lastSeenUtc?: string | null;
-  /** Seconds since last seen, computed by the Gateway at serve time (0 when online, null when never). */
+  /**
+   * Seconds since that stamp. A REAL age in every state, including online (where a healthy machine reads
+   * a few seconds, not zero - the old Gateway wrote "now" here, which measured when the response was
+   * assembled rather than when anything was heard). Null when the machine has never pushed.
+   */
   lastSeenAgeSeconds?: number | null;
   /** The last poll's failure reason for wobbly/offline; null while online. */
   error?: string | null;
@@ -149,7 +163,9 @@ export function reachabilityFor(
   return directors.find((d) => d.directorId === directorId);
 }
 
-// The "last seen N ago" age label for a Wobbly/Offline card. Empty while Online (age 0 or missing).
+// The "last seen N ago" age label for a Wobbly/Offline card. Empty for a missing or non-positive age.
+// The age is real in every state now, so the CALLER decides when to show it: every caller renders it
+// only on a wobbly/offline row, because "last seen 4s ago" beside a healthy machine is noise.
 export function reachabilityLastSeen(ageSeconds: number | null | undefined): string {
   if (ageSeconds === null || ageSeconds === undefined || ageSeconds <= 0) return "";
   if (ageSeconds < 60) return `last seen ${Math.round(ageSeconds)}s ago`;

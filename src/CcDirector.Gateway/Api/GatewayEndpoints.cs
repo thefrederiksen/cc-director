@@ -70,9 +70,11 @@ internal static class GatewayEndpoints
         // client speed-test results into (home/away split on the measured path). The monitor folds into the
         // same instance. Null in tests / when diagnostics are off.
         NetDiagRollupStore? netDiagRollup = null,
-        // Issue #1176 (Phase 1a): when non-null, /sessions serves a Director from this push cache instead
-        // of pulling it, whenever that Director's stream is connected and its last push is within
-        // streamStaleAfter. Null (stream mode off) keeps the pull-only behaviour byte-identical to today.
+        // Issue #1176 (Phase 1a): the roster source. Epic #1159 step A: /sessions serves a Director's LAST
+        // KNOWN sessions from this store unconditionally - age no longer decides whether a machine is served,
+        // only what the roster says about it. streamStaleAfter still decides which serves count as confirmed
+        // live, which is what the destructive consumers are gated on. Null leaves the endpoint with no roster
+        // source at all, and every registered Director surfaces as a machine error with nothing served.
         Streaming.PushedSessionStore? pushedSessions = null,
         Streaming.PushedRepositoryStore? pushedRepositories = null,
         Streaming.RepoHistoryStore? repoHistory = null,
@@ -938,6 +940,8 @@ internal static class GatewayEndpoints
             // needs its own decision. Recorded in docs/new_architecture/session-state.html.
             var fleet = new List<SessionDto>();
             var machineErrors = new List<MachineErrorDto>();
+            // Session ids drawn from a serve the owning machine confirmed - see where it is filled below.
+            var confirmedLive = new HashSet<string>(StringComparer.Ordinal);
             var reachability = new List<DirectorReachabilityDto>();
 
             // Epic #1159 step A - THE ROSTER SERVES WHAT THE GATEWAY LAST KNEW, ALWAYS.
@@ -969,7 +973,7 @@ internal static class GatewayEndpoints
             // Sessions now leave the roster for exactly two reasons, neither of them a display timeout: the
             // Director said so (its snapshot pruned them, or it sent a remove), or the machine passed
             // DirectorRegistry.EvictionHorizon and was swept out of the registry entirely.
-            var served = new List<(DirectorDto Director, List<SessionDto> Sessions, bool Stale)>();
+            var served = new List<(DirectorDto Director, List<SessionDto> Sessions, bool Stale, bool Reachable)>();
             var rosterNow = DateTime.UtcNow;
             foreach (var d in directors)
             {
@@ -1042,10 +1046,17 @@ internal static class GatewayEndpoints
                 }
 
                 FileLog.Write($"[GatewayEndpoints] /sessions director={d.DirectorId} state={linkState} sessions={known.Sessions.Count} asOfAgeSeconds={(ageSeconds is double s ? s.ToString("F0") : "never")}");
-                served.Add((d, known.Sessions.ToList(), Stale: !fresh));
+                // TWO DIFFERENT QUESTIONS, and they are deliberately not the same flag.
+                //   Stale     - is this data confirmed current? Governs what may be ACTED on, and a merely
+                //               late push is enough to withhold that.
+                //   Reachable - is the machine there at all? Governs whether its sessions may NAG, and only
+                //               the tunnel answers it.
+                // Collapsing them into one would make the badge flicker off every time a push ran a few
+                // seconds late, which is this mission's own defect in a third disguise.
+                served.Add((d, known.Sessions.ToList(), Stale: !fresh, Reachable: known.Connected));
             }
 
-            foreach (var (d, sessions, stale) in served)
+            foreach (var (d, sessions, stale, reachable) in served)
             {
                 // Issue #291: a reachable Director's returned list is the authoritative live set for it.
                 // Prune any session the cache still attributes to this Director that is no longer live here
@@ -1113,10 +1124,17 @@ internal static class GatewayEndpoints
                     // of them is part of this defect.
                     // Epic #1159 step A: the Gateway's own answer to "may this session nag the human". Stamped
                     // before the filters so every instance carries it, in the role universe as well as the
-                    // response set. False means the owning machine is not answering: the session is still
-                    // shown, dimmed and dated, but it is out of the "needs you" badge and out of the voice
-                    // queue, because nobody can act on it. See SessionDto.MachineReachable.
-                    s.MachineReachable = !stale;
+                    // response set. False means the machine's TUNNEL IS DOWN: the session is still shown,
+                    // dimmed and dated, but it is out of the "needs you" badge and out of the voice queue,
+                    // because nobody can act on it.
+                    //
+                    // It is keyed on the tunnel and NOT on staleness, which is the narrower and correct test.
+                    // A wobbly machine - tunnel up, push merely late - can still be acted on: a command sent
+                    // to it lands. Suppressing its badge would make the count blink off whenever a push ran a
+                    // few seconds late, which is exactly the transient-staleness-deletes-information defect
+                    // this mission exists to end. Only a machine that is genuinely gone stops nagging.
+                    // See SessionDto.MachineReachable.
+                    s.MachineReachable = reachable;
                     fleet.Add(s);
 
                     if (!string.IsNullOrEmpty(agent) && !string.Equals(s.Agent, agent, StringComparison.OrdinalIgnoreCase))
@@ -1263,6 +1281,11 @@ internal static class GatewayEndpoints
                     if (string.IsNullOrEmpty(s.ViewUrl))
                         s.ViewUrl = $"{baseUrl}/sessions/{s.SessionId}/view?gw={Uri.EscapeDataString(gatewayBaseUrl)}";
                     all.Add(s);
+                    // The statistics subset: sessions from a serve that was CONFIRMED CURRENT. Narrower than
+                    // MachineReachable on purpose - a wobbly machine may nag, but its months-old numbers must
+                    // not be re-folded as though they were this minute's activity.
+                    if (!stale)
+                        confirmedLive.Add(s.SessionId);
                 }
             }
 
@@ -1287,7 +1310,7 @@ internal static class GatewayEndpoints
             // and, worse, would keep reporting it on every poll for as long as the machine stayed away. The
             // stamp is the Gateway's own, set from the same freshness decision that produced the reachability
             // state above, so there is one rule and not a second staleness test here.
-            var live = all.Where(s => s.MachineReachable == true).ToList();
+            var live = all.Where(s => confirmedLive.Contains(s.SessionId)).ToList();
             inputStats?.ObserveSnapshot(live, DateTime.UtcNow, reqTenant.Value);
 
             // DevThrottle Stats: record fleet concurrency and the hourly activity log from the same

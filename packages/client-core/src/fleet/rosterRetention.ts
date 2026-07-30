@@ -6,13 +6,28 @@
 // them in place. This generalizes the shipped voice rule (#1334): unreachable is a state you SHOW, not
 // data you DELETE.
 //
-// Why a client-side retention cache is needed on top of the Gateway envelope: the Gateway's
-// FleetRosterCache (#1215) serves a failing Director's last-known-good sessions for only a few poll
-// cycles (state "wobbly"), then declares it "offline" and DROPS its sessions from the envelope's
-// sessions[] - keeping only a per-Director "offline" entry in directors[]. So to keep showing those
-// cards past the grace window, this module retains the last-known sessions per Director and re-injects
-// them, marked, using the envelope's per-Director state as the honest signal. It invents no shrink
-// heuristic (decision 4): removal is driven only by an Online Director's authoritative answer.
+// THE GATEWAY IS NOW THE PRIMARY SOURCE FOR AN UNREACHABLE MACHINE; THIS CACHE IS THE FALLBACK.
+//
+// This module was written against a Gateway that DELETED: its FleetRosterCache (#1215) served a failing
+// Director's last-known-good sessions for a few poll cycles (state "wobbly"), then declared it "offline"
+// and dropped its sessions from the envelope's sessions[], keeping only a per-Director "offline" entry
+// in directors[]. Past the grace window there was nothing to render, so this module kept its own copy
+// and re-injected it.
+//
+// Epic #1159 step A changed that: GET /sessions now serves every session of a machine it cannot reach,
+// unconditionally, marked with how old the information is. So for an offline Director the envelope
+// usually carries REAL, current-as-of-the-last-push rows - and they must win. The offline branch used to
+// ignore the live rows entirely and re-inject the cache, which after the Gateway change would have
+// thrown away Gateway-served data in favour of a client copy, and on a COLD START (an empty cache) would
+// have shown nothing at all for a machine that was already offline when the app opened.
+//
+// The cache survives because the Gateway can still legitimately carry no rows for a Director - it was
+// swept past the eviction horizon, the tenant read returned it with an empty set, or an older Gateway is
+// on the other end - and a card must not vanish for that. Live rows are the answer when they exist; the
+// cache answers only when they do not. Either way the rows are MARKED, so they render dimmed and dated.
+//
+// It invents no shrink heuristic (decision 4): removal is driven only by an Online Director's
+// authoritative answer.
 //
 // The merge is a PURE function - it takes the previous cache and the new envelope and returns a fresh
 // cache plus the display roster, mutating nothing - so the mobile page can hold the cache in a ref and
@@ -93,12 +108,14 @@ function markFor(state: SessionReachability, machineName: string, reach: Directo
 //    - a fully-online Director the Gateway omits from directors[]): the Director answered. Its live
 //    session set is authoritative - it REPLACES the cache for that Director, so a session genuinely
 //    killed while the machine was reachable disappears. These render normally (no mark).
-//  - WOBBLY: the Gateway is still serving this Director's last-known sessions (within its grace window).
-//    They are present in the envelope; refresh the cache with them and mark them wobbly. Never pruned -
-//    the Director did not answer, so its absence of a session is not authority to remove it.
-//  - OFFLINE / vanished: the Gateway dropped this Director's sessions from the envelope (grace exhausted)
-//    or forgot the Director entirely. Re-inject the retained cache sessions, marked offline, and keep the
-//    cache untouched - the cards stay until the machine answers again (decision 5).
+//  - WOBBLY or OFFLINE **with rows in the envelope**: the Gateway is serving this machine's last-known
+//    sessions (it does so unconditionally now, for both states). Those rows are the answer - they are
+//    Gateway data and they are newer than anything held here - so refresh the cache with them and mark
+//    them with the machine's state. Never pruned: the Director did not answer, so the absence of a
+//    session from the set is not authority to remove it.
+//  - WOBBLY or OFFLINE **with no rows**, or a Director the Gateway forgot entirely: nothing was served,
+//    so re-inject the retained cache sessions, marked, and keep the cache untouched - the cards stay
+//    until the machine answers again (decision 5).
 export function mergeRosterRetention(prev: RetentionCache, envelope: SessionsEnvelope): { cache: RetentionCache; roster: RetainedRoster } {
   const liveByDir = groupByDirector(envelope.sessions);
   const reachByDir = new Map<string, DirectorReachability>();
@@ -135,21 +152,29 @@ export function mergeRosterRetention(prev: RetentionCache, envelope: SessionsEnv
       continue;
     }
 
-    if (state === REACHABILITY_WOBBLY && live && live.length > 0) {
-      // Still served stale within the Gateway's grace window: refresh the cache, mark wobbly, never prune.
+    // Not online. The mark is the machine's own state - wobbly reads as "reconnecting", anything else as
+    // "unreachable" - and it is applied whether the rows came from the Gateway or from this cache.
+    const markState: SessionReachability = state === REACHABILITY_WOBBLY ? REACHABILITY_WOBBLY : REACHABILITY_OFFLINE;
+
+    if (live && live.length > 0) {
+      // THE GATEWAY SERVED ROWS FOR AN UNREACHABLE MACHINE, so those rows are the answer - for offline
+      // exactly as for wobbly. Refresh the cache with them and mark them; never prune, because the
+      // Director did not answer and its silence is not authority to remove anything. Preferring the cache
+      // here would discard current Gateway data for a stale client copy, and would show NOTHING at all on
+      // a cold start (empty cache) for a machine that was already unreachable when the app opened.
       nextCache.byDirector.set(id, live);
       for (const s of live) {
         sessions.push(s);
-        marks.set(s.sessionId ?? "", markFor(REACHABILITY_WOBBLY, machineLabel(s, reach), reach));
+        marks.set(s.sessionId ?? "", markFor(markState, machineLabel(s, reach), reach));
       }
       continue;
     }
 
-    // Offline (or wobbly with nothing served this poll, or a Director the Gateway forgot): re-inject the
-    // retained cache, marked unreachable, and leave the cache untouched so the cards persist.
+    // Nothing served this poll (an older Gateway that still drops an offline machine's sessions, a
+    // Director swept past the eviction horizon, or one the Gateway forgot): re-inject the retained cache,
+    // marked, and leave the cache untouched so the cards persist.
     const retained = prev.byDirector.get(id);
     if (retained && retained.length > 0) {
-      const markState: SessionReachability = state === REACHABILITY_WOBBLY ? REACHABILITY_WOBBLY : REACHABILITY_OFFLINE;
       for (const s of retained) {
         sessions.push(s);
         marks.set(s.sessionId ?? "", markFor(markState, machineLabel(s, reach), reach));

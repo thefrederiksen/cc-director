@@ -5,7 +5,7 @@ import { getAutoSpeak, inVoiceQueueOrder, queueTouchMs, setAutoSpeak } from "@de
 import { useVoiceModeAll } from "@devthrottle/client-core/voice/useVoiceModeAll";
 import { getSessionsEnvelope } from "@devthrottle/client-core/fleet/fleetClient";
 import { emptyRetentionCache, mergeRosterRetention, type RosterSessionMark } from "@devthrottle/client-core/fleet/rosterRetention";
-import { classify, contextLine, deletionReason, dotHex, inBucket, inDesktopOrder, inWaitingOrder, isWorking, pendingDeletion, repoLeaf, snoozeCountdown, snoozeExpired } from "@devthrottle/client-core/sessions/ordering";
+import { classify, contextLine, deletionReason, dotHex, inDesktopOrder, inWaitingOrder, isWorking, needsYouBadgeCount, pendingDeletion, repoLeaf, snoozeCountdown, snoozeExpired } from "@devthrottle/client-core/sessions/ordering";
 import { DELIVERY_BADGE_TEXT, hasUndeliveredPrompt, promptDeliveryTitle } from "@devthrottle/client-core/sessions/delivery";
 import { applyFilter, filterIsActive, filterSummary, machineName, pruneFilter } from "@devthrottle/client-core/sessions/filter";
 import { useDictationStatusFor } from "@devthrottle/client-core/dictation/status";
@@ -121,10 +121,15 @@ export function Home() {
       setSessions(merged.roster.sessions);
       setMarks(merged.roster.marks);
       setError(null);
-      // The app-icon "needs you" dot and the voice-clip sync read the LIVE sessions only (never the
-      // retained-and-marked ones): the badge must reflect what genuinely needs you right now, and only a
-      // reachable session can have a phone-ready voice clip.
-      void reconcileBadge(inBucket(envelope.sessions, "needsYou").length);
+      // The app-icon "needs you" dot and the voice-clip sync read what the GATEWAY served this poll
+      // (never the client-retained rows): the badge must reflect what genuinely needs you right now, and
+      // only a reachable session can have a phone-ready voice clip.
+      //
+      // The Gateway now serves the sessions of a machine nobody can reach, so "served" no longer implies
+      // "actionable" and the count is taken through the shared badge rule: a needs-you session whose
+      // machine is unreachable stays VISIBLE in the group below and stays OUT of this number. A laptop
+      // asleep overnight with three red sessions must not leave the badge lit until morning.
+      void reconcileBadge(needsYouBadgeCount(envelope.sessions));
       // Pull each gateway-ready voice session's clip down to the phone so the triangle can appear
       // (phone-ready, the issue #850 rule). Fire-and-forget; it updates the clip store as bytes land.
       void syncVoiceSessions(envelope.sessions);

@@ -49,6 +49,43 @@ describe("roster keep-and-mark retention merge", () => {
     expect(mark?.lastSeenLabel).toBe("last seen 12s ago");
   });
 
+  // Epic #1159 step A: the Gateway now SERVES an unreachable machine's sessions instead of dropping them.
+  // Those rows are real Gateway data and must win over anything held here - the offline branch used to
+  // ignore them and re-inject the cache, which would have thrown away current data for a stale copy.
+  it("prefers the Gateway's live rows over the cache for an OFFLINE Director, and still marks them", () => {
+    // Poll 1: d1 online with s1 - cached.
+    const first = mergeRosterRetention(emptyRetentionCache(), envelope([session("s1", "d1")], [director("d1", REACHABILITY_ONLINE)]));
+    // Poll 2: d1 offline, but the Gateway serves its sessions anyway - and it now reports s2 as well,
+    // which the client cache has never seen. The served set is what renders.
+    const second = mergeRosterRetention(
+      first.cache,
+      envelope([session("s1", "d1"), session("s2", "d1")], [director("d1", REACHABILITY_OFFLINE, { lastSeenAgeSeconds: 90 })]),
+    );
+    expect(second.roster.sessions.map((s) => s.sessionId)).toEqual(["s1", "s2"]);
+    // Served, not live: both rows are marked, so they render dimmed and dated rather than as normal rows.
+    expect(second.roster.marks.get("s1")?.reachability).toBe(REACHABILITY_OFFLINE);
+    expect(second.roster.marks.get("s2")?.reachability).toBe(REACHABILITY_OFFLINE);
+    expect(second.roster.marks.get("s2")?.lastSeenLabel).toBe("last seen 1m ago");
+    // The cache takes the served set, so a later poll that serves nothing still shows both.
+    expect(second.cache.byDirector.get("d1")?.map((s) => s.sessionId)).toEqual(["s1", "s2"]);
+  });
+
+  // THE COLD START - the case that showed NOTHING before. The phone's retention cache lives in memory for
+  // as long as the roster page is mounted: a relaunch, a reload, or simply opening a session and coming
+  // back starts it empty. With a machine already unreachable at that moment there was nothing to retain
+  // and no rows in the envelope either, so the roster came up blank. Now the Gateway serves the rows and
+  // an empty cache costs nothing.
+  it("shows an offline Director's Gateway-served rows on a COLD START, with an empty cache", () => {
+    const { roster, cache } = mergeRosterRetention(
+      emptyRetentionCache(),
+      envelope([session("s1", "d1"), session("s2", "d1")], [director("d1", REACHABILITY_OFFLINE, { lastSeenAgeSeconds: 3600 })]),
+    );
+    expect(roster.sessions.map((s) => s.sessionId)).toEqual(["s1", "s2"]);
+    expect(roster.marks.get("s1")?.reachability).toBe(REACHABILITY_OFFLINE);
+    expect(roster.marks.get("s1")?.lastSeenLabel).toBe("last seen 1h ago");
+    expect(cache.byDirector.get("d1")?.map((s) => s.sessionId)).toEqual(["s1", "s2"]);
+  });
+
   it("keeps an offline Director's sessions from the cache after the Gateway drops them, marked offline", () => {
     // First poll: d1 online with s1 - cached.
     const first = mergeRosterRetention(emptyRetentionCache(), envelope([session("s1", "d1")], [director("d1", REACHABILITY_ONLINE)]));

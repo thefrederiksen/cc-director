@@ -1,5 +1,5 @@
 import type { SessionDto } from "@devthrottle/client-core/api/client";
-import { REACHABILITY_OFFLINE, type DirectorReachability } from "@devthrottle/client-core/fleet/fleetClient";
+import { type DirectorReachability } from "@devthrottle/client-core/fleet/fleetClient";
 
 /**
  * Pure helpers for the Fleet Map's card rendering, kept out of FleetMapView.tsx so they can be unit
@@ -140,16 +140,22 @@ export interface MachineDirectors {
 }
 
 /**
- * The reachable Directors (Online or Wobbly) grouped by machine, keyed EXACTLY as the machine pivot's
- * lanes are (machineKeyOf), so a machine that has a Director but no sessions still resolves to a lane and
- * shows as a free slot the owner can start a session on. An OFFLINE Director is excluded on purpose: it
- * cannot host a session, so it is not a free slot - the roster already surfaces it in the
- * unreachable-machines banner (machineErrors), and showing it here as available would be a lie.
+ * EVERY Director the Gateway reports, grouped by machine, keyed EXACTLY as the machine pivot's lanes are
+ * (machineKeyOf), so a machine that has a Director but no sessions still resolves to a lane.
+ *
+ * An offline Director used to be dropped here, on the argument that it cannot host a session so it is not
+ * a free slot. That argument deleted the machine from the map entirely - lane, sessions and all - which is
+ * the same delete-instead-of-dim defect the Gateway has now stopped committing: it serves an unreachable
+ * machine's sessions, dimmed and dated, and a map that throws them away puts the hole straight back. A
+ * machine you cannot reach is a fact the owner needs on the map, not an absence.
+ *
+ * The "free slot" claim is what actually had to go, and it went where it belongs - at the point of
+ * rendering. Each group carries its Director's state so the panel can dim it, date it, and offer no
+ * "start a session here" action it could not honour.
  */
-export function reachableDirectorsByMachine(directors: DirectorReachability[]): MachineDirectors[] {
+export function directorsByMachine(directors: DirectorReachability[]): MachineDirectors[] {
   const byKey = new Map<string, MachineDirectors>();
   for (const d of directors) {
-    if (d.state === REACHABILITY_OFFLINE) continue;
     const { key, title } = machineKeyOf(d.machineName);
     let g = byKey.get(key);
     if (g === undefined) {
@@ -166,15 +172,23 @@ export interface DirectorGroup {
   key: string;
   label: string;
   sessions: SessionDto[];
+  /**
+   * This Director's state, when the envelope reported one - so the panel can dim an unreachable slot,
+   * date it, and withhold an action it could not honour. Undefined when the envelope carries no entry
+   * for this Director (an older Gateway, or a session whose owner is not in the list); the panel then
+   * renders the group exactly as it always did.
+   */
+  reachability?: DirectorReachability;
 }
 
 /**
- * Group a machine lane's sessions by their owning Director, then FOLD IN every reachable Director on the
- * machine that currently has no sessions, so an idle Director renders as an empty group - a free slot.
- * This is what makes "By machine" show capacity (machine -> Director -> session) rather than only the
- * Directors that happen to be busy. `directors` is the machine's reachable-Director list; a Director
- * already present via a session is never duplicated, and an unidentified Director (no id) is skipped
- * because it is not an addressable slot. Groups are ordered by Director id so a lane never reflows.
+ * Group a machine lane's sessions by their owning Director, then FOLD IN every Director on the machine
+ * that currently has no sessions, so an idle Director renders as an empty group - a free slot - and an
+ * unreachable one still renders as a machine that exists. This is what makes "By machine" show capacity
+ * (machine -> Director -> session) rather than only the Directors that happen to be busy. `directors` is
+ * the machine's Director list; a Director already present via a session is never duplicated (it does pick
+ * up that Director's state), and an unidentified Director (no id) is skipped because it is not an
+ * addressable slot. Groups are ordered by Director id so a lane never reflows.
  */
 export function groupByDirector(
   sessions: SessionDto[],
@@ -188,16 +202,19 @@ export function groupByDirector(
     if (arr === undefined) byDir.set(key, [s]);
     else arr.push(s);
   }
+  const reachByDir = new Map<string, DirectorReachability>();
   for (const d of directors) {
     const key = (d.directorId ?? "").trim();
     if (key.length === 0) continue; // an unidentified Director is not an addressable slot
-    if (!byDir.has(key)) byDir.set(key, []); // idle Director -> empty group -> free slot
+    reachByDir.set(key, d);
+    if (!byDir.has(key)) byDir.set(key, []); // Director with no sessions -> empty group
   }
   return [...byDir.entries()]
     .map(([key, arr]) => ({
       key: key.length === 0 ? "(unknown)" : key,
       label: `Director ${key.length === 0 ? "(unknown)" : shortDir(key)}`,
       sessions: [...arr].sort(sort),
+      reachability: reachByDir.get(key),
     }))
     .sort((a, b) => a.key.localeCompare(b.key));
 }
