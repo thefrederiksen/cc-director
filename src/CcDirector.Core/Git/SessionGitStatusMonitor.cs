@@ -96,24 +96,52 @@ public sealed class SessionGitStatusMonitor : IDisposable
         var sessions = _sessionManager.ListSessions();
         if (sessions.Count == 0) return 0;
 
+        // ONE PROBE PER REPOSITORY, NOT ONE PER SESSION (issue #1111, item 2). Sessions cluster hard on
+        // repositories - two dozen of them routinely sit on half a dozen trees - so probing per session ran
+        // `git status` ten times over on one working tree to answer a question with one answer. Measured on
+        // this repository's own harness against the distribution in the issue: 23 sessions, 6 repositories,
+        // 23 probes. Grouped, that is 6.
+        //
+        // The grouping key is CANONICAL, not the raw RepoPath. The same directory is stored under several
+        // spellings (D:/x and D:\x), so grouping on the raw string would have counted one tree as two and
+        // quietly kept most of the duplication - the trap item 3 of the issue warns about.
+        //
+        // This is not the same saving as GitStatusProvider's ten-second cache, and does not rely on it. That
+        // cache is keyed on the raw path so the two spellings never share an entry; it is populated on
+        // completion, so probes issued together all miss together; and its ten seconds are shorter than this
+        // fifteen-second poll, so it is cold at the top of every cycle. Deduplicating here is what actually
+        // collapses the work, and it happens before a single process is spawned.
+        var byRepo = sessions
+            .Where(s => !string.IsNullOrWhiteSpace(s.RepoPath))
+            .GroupBy(s => RepoPathKey.For(s.RepoPath))
+            .ToList();
+
         var published = 0;
         using var gate = new SemaphoreSlim(MaxConcurrentProbes);
 
-        var probes = sessions.Select(async session =>
+        var probes = byRepo.Select(async group =>
         {
             await gate.WaitAsync(ct).ConfigureAwait(false);
             try
             {
-                var repoPath = session.RepoPath;
+                // Probe the path as one of these sessions actually spells it - git is handed a real path,
+                // never the lowercased comparison key.
+                var repoPath = group.First().RepoPath;
+
                 // A session whose folder has been deleted or moved is not "clean" - it is unreadable. Leave
                 // whatever the last successful probe said and move on.
-                if (string.IsNullOrWhiteSpace(repoPath) || !_directoryExists(repoPath)) return;
+                if (!_directoryExists(repoPath)) return;
 
                 var count = await _probe(repoPath, ct).ConfigureAwait(false);
                 if (!count.Success) return;   // unknown, not zero - see the class summary
 
-                session.UncommittedCount = count.Count;
-                Interlocked.Increment(ref published);
+                // Fan the one answer out to every session on this tree. They share a working directory, so
+                // they share its uncommitted count by definition.
+                foreach (var session in group)
+                {
+                    session.UncommittedCount = count.Count;
+                    Interlocked.Increment(ref published);
+                }
             }
             catch (OperationCanceledException)
             {
@@ -121,9 +149,9 @@ public sealed class SessionGitStatusMonitor : IDisposable
             }
             catch (Exception ex)
             {
-                // One unreadable repository must never stop the other sessions being probed.
-                FileLog.Write($"[SessionGitStatusMonitor] probe FAILED for session {session.Id}, "
-                    + $"leaving the last known count in place: {ex.Message}");
+                // One unreadable repository must never stop the other repositories being probed.
+                FileLog.Write($"[SessionGitStatusMonitor] probe FAILED for repository {group.Key}, "
+                    + $"leaving the last known count in place for its {group.Count()} session(s): {ex.Message}");
             }
             finally
             {
@@ -132,7 +160,8 @@ public sealed class SessionGitStatusMonitor : IDisposable
         });
 
         await Task.WhenAll(probes).ConfigureAwait(false);
-        FileLog.Write($"[SessionGitStatusMonitor] RefreshOnceAsync: published {published} of {sessions.Count} session counts");
+        FileLog.Write($"[SessionGitStatusMonitor] RefreshOnceAsync: published {published} of {sessions.Count} "
+            + $"session counts from {byRepo.Count} repository probe(s)");
         return published;
     }
 

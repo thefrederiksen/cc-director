@@ -151,6 +151,104 @@ public sealed class SessionGitStatusMonitorTests
         Assert.Equal(2, raised);
     }
 
+    [Fact]
+    public async Task RefreshOnce_ProbesEachRepositoryOnce_NotEachSession()
+    {
+        using var manager = new SessionManager(new AgentOptions());
+        var sessions = new List<Session>();
+        // Ten sessions, two trees - the shape a Director actually holds (issue #1111, item 2).
+        for (var i = 0; i < 7; i++) sessions.Add(NewSession(@"C:\test\alpha"));
+        for (var i = 0; i < 3; i++) sessions.Add(NewSession(@"C:\test\beta"));
+        foreach (var s in sessions) manager.AdoptSession(s);
+
+        try
+        {
+            var asked = new List<string>();
+            var monitor = Monitor(manager, probe: path =>
+            {
+                lock (asked) asked.Add(path);
+                return new GitCountResult(Success: true, Count: 4);
+            });
+
+            var published = await monitor.RefreshOnceAsync();
+
+            // Two questions, two probes - not ten. Each probe is a `git status` against a tree that live
+            // agents are writing to, so the duplicates were not merely wasted, they were contended.
+            Assert.Equal(2, asked.Count);
+
+            // And every session still gets its number: deduplicating the PROBE must not deduplicate the ANSWER.
+            Assert.Equal(10, published);
+            Assert.All(sessions, s => Assert.Equal(4, s.UncommittedCount));
+        }
+        finally
+        {
+            foreach (var s in sessions) s.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task RefreshOnce_TreatsTheSameDirectorySpelledTwoWaysAsOneRepository()
+    {
+        using var manager = new SessionManager(new AgentOptions());
+        // The exact defect from item 3 of the issue: RepoPath is stored however it arrived, so one tree
+        // shows up under several spellings. Grouping on the raw string would silently keep the duplication -
+        // this is the test that fails if the grouping key stops being canonical.
+        using var forward = NewSession("C:/test/alpha");
+        using var backward = NewSession(@"C:\test\alpha");
+        using var trailing = NewSession(@"C:\test\alpha\");
+        using var cased = NewSession(@"C:\Test\Alpha");
+        manager.AdoptSession(forward);
+        manager.AdoptSession(backward);
+        manager.AdoptSession(trailing);
+        manager.AdoptSession(cased);
+
+        var asked = new List<string>();
+        var monitor = Monitor(manager, probe: path =>
+        {
+            lock (asked) asked.Add(path);
+            return new GitCountResult(Success: true, Count: 9);
+        });
+
+        var published = await monitor.RefreshOnceAsync();
+
+        Assert.Single(asked);
+        Assert.Equal(4, published);
+        Assert.Equal(9, forward.UncommittedCount);
+        Assert.Equal(9, backward.UncommittedCount);
+        Assert.Equal(9, trailing.UncommittedCount);
+        Assert.Equal(9, cased.UncommittedCount);
+
+        // git is handed a real path, never the lowercased comparison key - that key exists to compare with,
+        // not to run a process against.
+        Assert.DoesNotContain(asked, p => p == RepoPathKey.For(p) && p != p.ToLowerInvariant());
+    }
+
+    [Fact]
+    public async Task RefreshOnce_OneUnreadableRepositoryStillLeavesItsOwnSessionsAlone()
+    {
+        using var manager = new SessionManager(new AgentOptions());
+        using var goodA = NewSession(@"C:\test\good");
+        using var goodB = NewSession(@"C:\test\good");
+        using var bad = NewSession(@"C:\test\bad");
+        manager.AdoptSession(goodA);
+        manager.AdoptSession(goodB);
+        manager.AdoptSession(bad);
+        bad.UncommittedCount = 2;
+
+        var monitor = Monitor(manager, probe: path => path.EndsWith("bad", StringComparison.Ordinal)
+            ? throw new InvalidOperationException("git exploded")
+            : new GitCountResult(Success: true, Count: 6));
+
+        var published = await monitor.RefreshOnceAsync();
+
+        // Grouping must not let one failing tree take its neighbours down with it, nor overwrite the last
+        // known count for the sessions that share the failing one.
+        Assert.Equal(2, published);
+        Assert.Equal(6, goodA.UncommittedCount);
+        Assert.Equal(6, goodB.UncommittedCount);
+        Assert.Equal(2, bad.UncommittedCount);
+    }
+
     private static SessionGitStatusMonitor Monitor(
         SessionManager manager,
         Func<string, GitCountResult> probe,

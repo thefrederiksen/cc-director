@@ -20,6 +20,12 @@ public sealed class DictationLockReaderTests : IDisposable
         catch { /* best-effort temp cleanup */ }
     }
 
+    /// <summary>
+    /// A settled marker is read once and skipped thereafter (issue #1111, item c), and the memo is static -
+    /// so it is cleared between tests, or one test's store would answer for another's.
+    /// </summary>
+    private static void ResetMemo() => DictationLockReader.ResetSettledMemo();
+
     private void WriteMarker(string uploadId, string state, string sessionId)
     {
         var dir = Path.Combine(_root, uploadId);
@@ -186,5 +192,91 @@ public sealed class DictationLockReaderTests : IDisposable
         {
             Assert.Equal(DictationLockReader.IsSessionLocked(_root, sid), locked.Contains(sid));
         }
+    }
+
+    // ---- the settled-marker memo (issue #1111, item c) -------------------------------------------------
+
+    [Fact]
+    public void LockedSessionIds_AFailedMarkerThatGoesBackToPending_IsStillSeen()
+    {
+        // THE correctness question behind the memo, and the reason it is not simply "skip anything that is
+        // not Pending". DictationDeliveryRecord says in terms that a state can transition FAILED back to
+        // PENDING - a retried dictation does exactly that. A memo that settled every non-Pending marker
+        // would pin that session unlocked for the life of the process, and the phone's retry would be
+        // accepted into a session the Director believed was free.
+        ResetMemo();
+        var sid = Guid.NewGuid().ToString();
+        var uploadId = Guid.NewGuid().ToString("N");
+
+        WriteMarker(uploadId, "Failed", sid);
+        Assert.DoesNotContain(sid, DictationLockReader.LockedSessionIds(_root));
+
+        WriteMarker(uploadId, "Pending", sid);
+        Assert.Contains(sid, DictationLockReader.LockedSessionIds(_root));
+    }
+
+    [Fact]
+    public void LockedSessionIds_ASettledMarkerRewrittenOnDisk_IsReadAgain()
+    {
+        // The second, independent guard. Delivered and Abandoned are the two states the store itself calls
+        // terminal, so in practice they never change again - but the memo does not TRUST that, it carries
+        // the file's last-write time and re-reads anything whose stamp has moved. This is what keeps the
+        // memo safe if the terminal set is ever widened without anyone re-reading the comment.
+        ResetMemo();
+        var sid = Guid.NewGuid().ToString();
+        var uploadId = Guid.NewGuid().ToString("N");
+
+        WriteMarker(uploadId, "Delivered", sid);
+        Assert.DoesNotContain(sid, DictationLockReader.LockedSessionIds(_root));   // read, and settled
+
+        // Move the stamp forward: on a fast machine two writes can land inside one file-time tick, which
+        // would make this test pass for the wrong reason.
+        var marker = Path.Combine(_root, uploadId, "record.json");
+        WriteMarker(uploadId, "Pending", sid);
+        File.SetLastWriteTimeUtc(marker, File.GetLastWriteTimeUtc(marker).AddSeconds(1));
+
+        Assert.Contains(sid, DictationLockReader.LockedSessionIds(_root));
+    }
+
+    [Fact]
+    public void LockedSessionIds_SettlingAMarkerDoesNotChangeTheAnswerForAnyone()
+    {
+        // The memo is an optimisation, so the property that matters is that it is INVISIBLE: reading the
+        // same store twice must give the same answer, and it must still agree with the single-session read
+        // on the second pass - when every terminal marker is being skipped rather than parsed.
+        ResetMemo();
+        var pending = Guid.NewGuid().ToString();
+        var settled = Guid.NewGuid().ToString();
+
+        WriteMarker(Guid.NewGuid().ToString("N"), "Pending", pending);
+        WriteMarker(Guid.NewGuid().ToString("N"), "Delivered", settled);
+        WriteMarker(Guid.NewGuid().ToString("N"), "Abandoned", settled);
+
+        var first = DictationLockReader.LockedSessionIds(_root);
+        var second = DictationLockReader.LockedSessionIds(_root);
+
+        Assert.Equal(first.OrderBy(x => x), second.OrderBy(x => x));
+        foreach (var sid in new[] { pending, settled })
+        {
+            Assert.Equal(DictationLockReader.IsSessionLocked(_root, sid), second.Contains(sid));
+        }
+    }
+
+    [Fact]
+    public void LockedSessionIds_ForgetsMarkersThatHaveLeftTheStore()
+    {
+        // The memo must be bounded by what the store HOLDS, not by everything it has ever held - otherwise
+        // the fix for a leak that grows per marker introduces a smaller leak that grows per marker.
+        ResetMemo();
+        var sid = Guid.NewGuid().ToString();
+        var uploadId = Guid.NewGuid().ToString("N");
+        WriteMarker(uploadId, "Delivered", sid);
+
+        DictationLockReader.LockedSessionIds(_root);
+        Assert.Equal(1, DictationLockReader.SettledMemoCount);
+
+        Directory.Delete(Path.Combine(_root, uploadId), recursive: true);
+        DictationLockReader.LockedSessionIds(_root);
+        Assert.Equal(0, DictationLockReader.SettledMemoCount);
     }
 }
