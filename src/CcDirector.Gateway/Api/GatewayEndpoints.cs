@@ -92,10 +92,16 @@ internal static class GatewayEndpoints
         // and leaves each Director to number locally.
         Discovery.FleetSessionNumberAllocator? sessionNumbers = null,
         // THE STATISTICS COLLABORATORS ARE DELIBERATELY ABSENT FROM THIS SIGNATURE. They used to be here
-        // (inputStats, concurrency) because the roster read folded them. GET /sessions is now a PURE READ
-        // and the observation happens ONCE, at the push ingress in DirectorHub - see the note above the
-        // fold in the /sessions handler for why. Do not add them back: a statistics collaborator reachable
-        // from a read handler is a statistics failure that can answer 500 to the whole fleet.
+        // (inputStats, concurrency) because the roster read folded them. GET /sessions is now PURE OF
+        // STATISTICS WRITES - that qualifier is load-bearing and is not a hedge: the handler is NOT free of
+        // the database generally, because the snooze registry is still read from the fold and each of those
+        // reads opens a context, so this route can still answer 500 if that store is unhealthy (issue
+        // #2323). The banner above the fold in the /sessions handler is the full account; read it before
+        // concluding anything about what this route depends on.
+        //
+        // Observation of statistics happens ONCE, at the push ingress in DirectorHub. Do not add these back:
+        // a statistics collaborator reachable from a read handler is a statistics failure that can answer
+        // 500 to the whole fleet, which is exactly what happened on 2026-07-30.
         // Snooze Length mission: the Gateway-owned snooze registry. POST /sessions/{sid}/hold REQUIRES it -
         // it records/clears a snooze-until here (the authoritative hold) and the /sessions fold reads it to
         // return an EXPIRED snooze to "needs you" (OnHold=false) on its own even if its Director has died.
