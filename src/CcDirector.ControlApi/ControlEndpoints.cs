@@ -405,7 +405,14 @@ internal static class ControlEndpoints
         // omits cannot be named, so it cannot be interrupted, messaged or marked done. Issue #1019 - a card
         // that no tool could remove, with restarting the Director as the only remedy - was two independent
         // omissions from this one list.
-        app.MapGet("/fleet/sessions", async (CancellationToken ct) =>
+        //
+        // Issue #1051 - the other end of the same defect. The relayed roster DROPS an unreachable Director's
+        // sessions and still answers 200, so a caller cannot tell "that Director has no sessions" from "I
+        // could not reach it": absent reads identical to empty. `?envelope=true` answers with the roster AND
+        // a finished completeness verdict, so a caller that must not mistake a partial list for a whole one
+        // can say so. The bare array stays the default, because a Director that has not restarted yet still
+        // serves the old shape and the tools must keep working against it.
+        app.MapGet("/fleet/sessions", async (bool? envelope, CancellationToken ct) =>
         {
             // Omission one: EVERY session this Director is still holding belongs on the roster, including
             // crashed and exited-pending-reap rows. This store is the same store the desktop rail renders,
@@ -424,7 +431,6 @@ internal static class ControlEndpoints
             {
                 try
                 {
-                    var fleet = await gw.ListFleetSessionsAsync(ct);
                     // Omission two: the relayed list silently DROPS the sessions of a Director the Gateway
                     // cannot reach while still returning 200 (see GatewayClient.ListFleetSessionsAsync).
                     // A Director whose registration is failing therefore vanishes from its OWN fleet
@@ -433,10 +439,47 @@ internal static class ControlEndpoints
                     // authority on its own machine, so its rows go back in. The Gateway's copy WINS for any
                     // session it already knows: the session numbers and identity stamping it hands out are
                     // never overwritten here.
+                    //
+                    // Read posture, NOT the reaper's. The strict ListFleetSessionsWithReachabilityAsync throws
+                    // when the Gateway cannot vouch for completeness, which is correct for something that
+                    // deletes directories and wrong here: it would take `session list`, every target resolve,
+                    // cc-status and cc-history down against a version-skewed Gateway. This one returns null
+                    // reachability for "the Gateway did not say" and still serves the rows.
+                    var (fleet, reachability) = await gw.ReadFleetSessionsWithOptionalReachabilityAsync(ct);
                     var (roster, restored) = UnionOwnSessions(fleet, own);
                     if (restored.Count > 0)
                         FileLog.Write($"[ControlEndpoints] /fleet/sessions: the Gateway roster omitted {restored.Count} of this Director's own session(s); served from the local store: {string.Join(", ", restored)}");
-                    return Results.Json(roster);
+
+                    if (envelope != true)
+                        return Results.Json(roster);
+
+                    // The verdict is FOLDED HERE, not in the client. A caller must never have to decide what
+                    // "offline" means for completeness - that is the Gateway-owns-ruling rule, and the reason
+                    // the desktop rail renders pushed display state verbatim. The tools print these strings.
+                    //
+                    // Null reachability means the Gateway would not say, so rosterComplete is reported as NULL
+                    // - explicitly UNKNOWN, never true. Coalescing unknown to complete here would rebuild the
+                    // exact defect this issue is about, one layer up: absent reading identical to empty.
+                    bool? complete = null;
+                    string? incompleteReason = null;
+                    if (reachability is not null)
+                    {
+                        var folded = RosterCompleteness.Fold(reachability);
+                        complete = folded.Complete;
+                        incompleteReason = folded.Reason;
+                    }
+                    else
+                    {
+                        FileLog.Write("[ControlEndpoints] /fleet/sessions?envelope=true: the Gateway supplied no reachability; reporting completeness as UNKNOWN");
+                    }
+
+                    return Results.Json(new
+                    {
+                        sessions = roster,
+                        directors = reachability,
+                        rosterComplete = complete,
+                        rosterIncompleteReason = incompleteReason,
+                    });
                 }
                 catch (Exception ex)
                 {
@@ -446,7 +489,19 @@ internal static class ControlEndpoints
                 }
             }
 
-            return Results.Json(own);
+            if (envelope != true)
+                return Results.Json(own);
+
+            // Standalone: this Director is the whole fleet and it can see all of itself, so the roster is
+            // complete by construction. Saying so positively matters - a caller that treats "no reachability
+            // reported" as "might be incomplete" would otherwise warn forever on a single-machine setup.
+            return Results.Json(new
+            {
+                sessions = own,
+                directors = Array.Empty<DirectorReachabilityDto>(),
+                rosterComplete = true,
+                rosterIncompleteReason = (string?)null,
+            });
         });
 
         // GET /fleet/repositories + /fleet/worktrees - the repository/worktree directory (#510 phase C).

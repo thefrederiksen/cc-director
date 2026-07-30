@@ -21,7 +21,7 @@ import os
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class DirectorError(RuntimeError):
@@ -113,8 +113,52 @@ def delete(path: str, timeout: float = 30) -> Any:
     return _request("DELETE", path, None, timeout=timeout)
 
 
+def get_fleet() -> Tuple[List[Dict[str, Any]], Optional[bool], Optional[str]]:
+    """The fleet roster, plus whether the Director could vouch that it is COMPLETE (issue #1051).
+
+    The Gateway drops an unreachable Director's sessions and still answers 200, so a short roster is
+    indistinguishable from a whole one. Asking for the envelope returns the Director's folded verdict
+    alongside the rows; the verdict is computed there, never here, because deciding what a
+    reachability state MEANS is ruling and a client only renders.
+
+    Returns (sessions, complete, reason). `complete` is None for "the Director did not say" - and
+    None is NOT True: a Director that has not restarted since this was added still serves the bare
+    array, and reading its silence as a guarantee would reinstate the very defect this closes.
+
+    Lives here, not in one tool, because three tools resolve a target against this roster and each
+    used to print "No session matches" with no idea the list might be short. Three copies of that
+    judgement would drift; one cannot.
+    """
+    body = get_json("fleet/sessions?envelope=true") or []
+    if isinstance(body, list):
+        return body, None, None
+    sessions = body.get("sessions") or []
+    complete = body.get("rosterComplete")
+    reason = body.get("rosterIncompleteReason")
+    return sessions, (complete if isinstance(complete, bool) else None), reason
+
+
+def roster_caveat(complete: Optional[bool], reason: Optional[str]) -> str:
+    """The sentence to add when the roster might not be the whole fleet. Empty when it is (#1051)."""
+    if complete is True:
+        return ""
+    if complete is False:
+        return reason or "Part of the fleet could not be reached, so this list may be incomplete."
+    return "This Director cannot confirm the roster is complete, so a session may be missing from it."
+
+
+def no_match_message(target: str) -> str:
+    """The shared 'no session matches' line, so the three tools cannot drift on the wording."""
+    return (f"[red]No session matches '{target}'.[/red] "
+            "Run cc-devthrottle session list to see the fleet.")
+
+
 def field(dto: Dict[str, Any], *keys: str, default: str = "") -> str:
-    """Read the first present key from a session DTO, tolerating camelCase or PascalCase."""
+    """Read the first present key from a session DTO, tolerating camelCase or PascalCase.
+
+    Returns a STRING always - so never use it to read a boolean: `str(False)` is `"False"`, which is
+    truthy, and every row would test true. Read booleans straight off the dict instead.
+    """
     for key in keys:
         if key in dto and dto[key] is not None:
             return str(dto[key])
