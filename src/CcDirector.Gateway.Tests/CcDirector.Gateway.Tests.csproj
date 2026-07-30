@@ -38,6 +38,12 @@
          the provider-agnostic model runs on real Postgres. The test is gated behind an env var, so this
          reference does not change the default (SQLite) test run. -->
     <ProjectReference Include="..\CcDirector.Gateway.Migrations.Postgres\CcDirector.Gateway.Migrations.Postgres.csproj" />
+    <!-- The no-SQLite-on-hosted guard (NoSqliteOnHostedArchitectureTests, DT-SQL-1) scans the assemblies that
+         ARE the hosted Gateway service, and the container entry point is one of them. Referenced so its DLL
+         lands in the test output where the metadata scan can read it; a missing assembly is a red test rather
+         than a quietly smaller scan, so this reference is load-bearing. Nothing in the test code calls into
+         it, so do NOT remove it as an unused reference. -->
+    <ProjectReference Include="..\CcDirector.Gateway.Host\CcDirector.Gateway.Host.csproj" />
   </ItemGroup>
 
   <ItemGroup>
