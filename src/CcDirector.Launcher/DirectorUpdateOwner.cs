@@ -1,0 +1,357 @@
+using CcDirector.Core.Storage;
+using CcDirector.Core.Update;
+using CcDirector.Core.Utilities;
+using CcDirector.Setup.Engine;
+
+namespace CcDirector.Launcher;
+
+/// <summary>A staged Director update the launcher found, and the state file it was recorded in.</summary>
+/// <param name="Version">The version waiting to be installed.</param>
+/// <param name="StagedBuild">
+/// What has to become the install: the downloaded executable on Windows, the downloaded application
+/// bundle on macOS. The Director records the binary INSIDE the bundle, because that is what it used to
+/// run in its own swap mode; the enclosing bundle is what actually gets installed, so it is resolved
+/// here rather than left for each caller to remember.
+/// </param>
+/// <param name="InstallTarget">The path the staged build must become.</param>
+/// <param name="StateFilePath">The exact file this was read from, and the file any answer is written back to.</param>
+public sealed record StagedDirectorUpdate(string Version, string StagedBuild, string InstallTarget, string StateFilePath);
+
+/// <summary>Why a staged update was not applied on this pass, or that one was.</summary>
+public enum DirectorUpdateDecision
+{
+    /// <summary>No update is staged for the installed Director.</summary>
+    NothingStaged,
+    /// <summary>An update is staged but the Director is busy, so it waits. Nothing was touched.</summary>
+    HeldBecauseBusy,
+    /// <summary>An update is staged but the Director could not be asked whether it is busy, so it waits.</summary>
+    HeldBecauseUnknown,
+    /// <summary>An update is staged but the Director is not running, and it is not this loop's business to start one.</summary>
+    HeldBecauseDirectorNotRunning,
+    /// <summary>The staged update is one that already failed to start and was pinned away from.</summary>
+    SkippedPinnedBadVersion,
+    /// <summary>The update was applied and the new version answered.</summary>
+    Applied,
+    /// <summary>The update was applied, did not come up, and the previous build was put back.</summary>
+    RolledBack,
+    /// <summary>The attempt failed before or during the swap; see the log for what was left where.</summary>
+    Failed,
+}
+
+/// <summary>
+/// The launcher's ownership of the Director's update (issue #1033).
+///
+/// THE RULE, applied without asking anybody: if a Director update is staged and the Director has no
+/// sessions running, install it. Nothing is lost and nothing is interrupted, so there is nothing to
+/// wait for and no reason to prompt. The gate on running sessions is the policy the Director already
+/// had and it was the right policy - a Director with live work is never restarted out from under it -
+/// it simply belonged here, in the process that can act on it safely.
+///
+/// One thing this does NOT do is start a Director that is not running. Updating a closed Director would
+/// mean reopening an application somebody deliberately closed, and installing a build with nothing
+/// running to witness whether it works; a closed Director picks the update up on its next start, which
+/// is a start somebody asked for.
+///
+/// WHY IT MOVED. The Director cannot honestly apply its own update: whatever replaces the binary has to
+/// outlive the process being replaced, so the only witness to the relaunch is the process that just
+/// exited. The launcher is still running afterwards, so it can stop, swap, start, and then keep asking
+/// until the NEW VERSION answers - and put the previous build back when it never does.
+///
+/// TWO THINGS HERE ARE EASY TO GET WRONG AND BOTH WOULD FAIL SILENTLY:
+///
+/// First, WHERE the staged update is recorded. The state file resolves against the calling process's
+/// own storage home, and the installed Director keeps its whole home one level in, under its instance
+/// folder. A launcher that simply asked for "the" updater state would read an absent file at the
+/// storage root and conclude every single time that nothing was staged - wired, logged, and never once
+/// firing. Every candidate location is scanned, the same way instance registrations are.
+///
+/// Second, WHEN the staged record is cleared. It is cleared BEFORE the new build is started, not after
+/// it is certified. If it were still set when a Director came up, that Director's own startup path
+/// would see a staged update newer than itself and hand itself to the swap again - and after a rollback
+/// that means the restored build immediately reinstalls the build that just failed, on a loop, with the
+/// machine ending on the broken version. Losing the record of a download is cheap; that loop is not
+/// recoverable in the field.
+/// </summary>
+public sealed class DirectorUpdateOwner
+{
+    private readonly DirectorSupervisor _supervisor;
+    private readonly DirectorUpdateApply _apply;
+    private readonly TimeSpan _healthTimeout;
+    private readonly SemaphoreSlim _oneAtATime = new(1, 1);
+
+    public DirectorUpdateOwner(DirectorSupervisor supervisor, DirectorUpdateApply? apply = null, TimeSpan? healthTimeout = null)
+    {
+        _supervisor = supervisor ?? throw new ArgumentNullException(nameof(supervisor));
+        _apply = apply ?? new DirectorUpdateApply();
+        // A cold Director start walks a splash screen, the engine and the control interface before it
+        // answers anything, and this has to be long enough that a slow machine is not called a failure.
+        _healthTimeout = healthTimeout ?? TimeSpan.FromMinutes(3);
+    }
+
+    /// <summary>
+    /// Decide whether a staged update may be installed right now: only when one is staged AND the
+    /// Director holds no sessions, so restarting into the new build cannot interrupt live work.
+    ///
+    /// Pure decision, unit-tested. This is the gate that used to sit inside the Director; the rule is
+    /// unchanged, only the process that acts on it.
+    /// </summary>
+    public static bool ShouldApply(bool hasStagedUpdate, int runningSessionCount)
+        => hasStagedUpdate && runningSessionCount == 0;
+
+    /// <summary>
+    /// One pass of the launcher's ownership: look for a staged Director update, and install it if the
+    /// Director is idle. Never throws - this runs on a background loop, so every failure is reported
+    /// through the returned decision and the log.
+    /// </summary>
+    public async Task<DirectorUpdateDecision> RunOnceAsync(CancellationToken ct = default)
+    {
+        if (!await _oneAtATime.WaitAsync(TimeSpan.Zero, ct))
+        {
+            FileLog.Write("[DirectorUpdateOwner] a previous pass is still running; skipping this one.");
+            return DirectorUpdateDecision.HeldBecauseUnknown;
+        }
+
+        try
+        {
+            return await RunOnceCoreAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DirectorUpdateOwner] RunOnceAsync FAILED: {ex}");
+            return DirectorUpdateDecision.Failed;
+        }
+        finally
+        {
+            _oneAtATime.Release();
+        }
+    }
+
+    private async Task<DirectorUpdateDecision> RunOnceCoreAsync(CancellationToken ct)
+    {
+        var staged = FindStagedUpdate();
+        if (staged is null)
+            return DirectorUpdateDecision.NothingStaged;
+
+        // A Director that is not running is left alone. It is tempting to treat "no process" as the
+        // emptiest possible idle case and update it, but that would mean starting an application the
+        // person at this machine had deliberately closed - and it would install a build with nothing
+        // running to witness whether it works. A closed Director picks the update up the next time it is
+        // opened, which is a start somebody asked for.
+        if (!_supervisor.IsRunning)
+        {
+            FileLog.Write($"[DirectorUpdateOwner] {staged.Version} is staged but the Director is not running. Leaving both "
+                          + "alone: it will be applied on the next start, and nothing here reopens a closed Director.");
+            return DirectorUpdateDecision.HeldBecauseDirectorNotRunning;
+        }
+
+        // How busy is it? A Director that cannot be asked must NOT be read as idle: it may well be
+        // holding sessions, and acting without the evidence is exactly the guess this change exists to
+        // remove.
+        var health = await _supervisor.ReadHealthAsync(ct);
+        if (health is null)
+        {
+            FileLog.Write($"[DirectorUpdateOwner] {staged.Version} is staged but the running Director did not answer, "
+                          + "so whether it is idle is unknown; holding the update rather than guessing.");
+            return DirectorUpdateDecision.HeldBecauseUnknown;
+        }
+
+        if (health.Sessions is null)
+        {
+            FileLog.Write($"[DirectorUpdateOwner] {staged.Version} is staged but the Director answered without a session "
+                          + "count; holding the update rather than guessing.");
+            return DirectorUpdateDecision.HeldBecauseUnknown;
+        }
+
+        // The Director is already the staged version - it was installed by a route other than this one,
+        // or the record simply outlived the install. Clear the record instead of reinstalling.
+        if (health.Version is { } reportedVersion && DirectorUpdateApply.VersionsMatch(staged.Version, reportedVersion))
+        {
+            FileLog.Write($"[DirectorUpdateOwner] the running Director already reports {reportedVersion}; "
+                          + "clearing the staged record without installing anything.");
+            ClearStagedRecord(staged);
+            return DirectorUpdateDecision.NothingStaged;
+        }
+
+        var sessions = health.Sessions.Value;
+        if (!ShouldApply(hasStagedUpdate: true, runningSessionCount: sessions))
+        {
+            FileLog.Write($"[DirectorUpdateOwner] {staged.Version} is staged but {sessions} session(s) are running; "
+                          + "holding it until the Director is idle. No session is ever interrupted to update.");
+            return DirectorUpdateDecision.HeldBecauseBusy;
+        }
+
+        FileLog.Write($"[DirectorUpdateOwner] installing {staged.Version}: staged={staged.StagedBuild}, "
+                      + $"target={staged.InstallTarget}, sessions=0, currentVersion={health.Version ?? "unknown"}");
+
+        // Claim it BEFORE anything is started, so no Director that comes up during this can hand itself
+        // to its own swap. See the class comment - the alternative is a rollback loop into a dead build.
+        ClearStagedRecord(staged);
+
+        var result = await _apply.ApplyAsync(
+            staged.InstallTarget,
+            staged.StagedBuild,
+            staged.Version,
+            stopDirector: token => _supervisor.StopAsync(token),
+            startDirector: () => _supervisor.Start(),
+            readRunningVersion: async token => (await _supervisor.ReadHealthAsync(token))?.Version,
+            healthTimeout: _healthTimeout,
+            ct: ct);
+
+        FileLog.Write($"[DirectorUpdateOwner] {staged.Version}: {result.Outcome} - {result.Message}");
+        foreach (var step in result.Steps)
+            FileLog.Write($"[DirectorUpdateOwner]   step: {step}");
+
+        if (result.Outcome == SelfUpdateOutcome.Updated)
+            return DirectorUpdateDecision.Applied;
+
+        // The build did not come up. Pin it so neither the launcher nor the Director tries it again when
+        // it is offered a second time - the Director re-downloads on its own schedule and would
+        // otherwise present the same dead build every hour, for ever.
+        PinBadVersion(staged);
+        return result.Outcome == SelfUpdateOutcome.RolledBack
+            ? DirectorUpdateDecision.RolledBack
+            : DirectorUpdateDecision.Failed;
+    }
+
+    /// <summary>
+    /// Find a staged update that belongs to the INSTALLED Director, across every place the record can
+    /// live. Returns null when there is nothing to do, having said in the log why.
+    /// </summary>
+    public StagedDirectorUpdate? FindStagedUpdate()
+    {
+        foreach (var stateFile in UpdaterStateFiles())
+        {
+            if (!File.Exists(stateFile)) continue;
+
+            var state = UpdaterState.LoadFrom(stateFile);
+            if (string.IsNullOrEmpty(state.StagedVersion)
+                || string.IsNullOrEmpty(state.StagedExecutable)
+                || string.IsNullOrEmpty(state.InstallTarget))
+                continue;
+
+            // Only ever install over the Director this launcher manages. A development slot build
+            // records its own path here, and installing that over the shipped install would replace the
+            // user's Director with somebody's test build.
+            if (!PathsEqual(state.InstallTarget, _supervisor.DirectorExePath))
+            {
+                FileLog.Write($"[DirectorUpdateOwner] ignoring a staged update in {stateFile}: it targets "
+                              + $"{state.InstallTarget}, which is not the installed Director ({_supervisor.DirectorExePath}).");
+                continue;
+            }
+
+            if (!string.IsNullOrEmpty(state.PinnedBadVersion)
+                && string.Equals(state.PinnedBadVersion, state.StagedVersion, StringComparison.Ordinal))
+            {
+                FileLog.Write($"[DirectorUpdateOwner] ignoring staged {state.StagedVersion}: it is pinned as a build that "
+                              + "already failed to start.");
+                continue;
+            }
+
+            var stagedBuild = ResolveStagedBuild(state.StagedExecutable);
+            if (!BuildExists(stagedBuild))
+            {
+                FileLog.Write($"[DirectorUpdateOwner] ignoring staged {state.StagedVersion}: the downloaded build is no "
+                              + $"longer at {stagedBuild}.");
+                continue;
+            }
+
+            return new StagedDirectorUpdate(state.StagedVersion, stagedBuild, state.InstallTarget, stateFile);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// What actually has to be installed, given what the Director recorded. On macOS it records the
+    /// binary inside the downloaded application bundle, and the bundle is the thing that becomes the
+    /// install; on Windows the recorded executable IS the build.
+    /// </summary>
+    public static string ResolveStagedBuild(string stagedExecutable)
+        => UpdateInstaller.AppBundleOf(stagedExecutable) ?? stagedExecutable;
+
+    private static bool BuildExists(string path) => File.Exists(path) || Directory.Exists(path);
+
+    /// <summary>
+    /// Every file a Director could have recorded a staged update in: this process's own storage home,
+    /// plus one per named instance home. Mirrors the instance-registration scan in
+    /// <see cref="DirectorSupervisor.InstanceRegistrationDirectories"/> and exists for the same reason -
+    /// the launcher runs at the storage root while the installed Director lives one level in.
+    /// </summary>
+    public static IEnumerable<string> UpdaterStateFiles()
+    {
+        yield return UpdaterState.FilePath;
+
+        var instancesRoot = Path.Combine(CcStorage.Root(), "instances");
+        string[] instanceHomes;
+        try
+        {
+            if (!Directory.Exists(instancesRoot)) yield break;
+            instanceHomes = Directory.GetDirectories(instancesRoot);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DirectorUpdateOwner] cannot list {instancesRoot}: {ex.Message}");
+            yield break;
+        }
+
+        foreach (var home in instanceHomes)
+            yield return Path.Combine(home, "config", "director", "updater-state.json");
+    }
+
+    /// <summary>
+    /// Clear the staged record in the file it was read from, leaving every other field alone. Read again
+    /// before writing, because the Director owns this file too and may have touched it since.
+    /// </summary>
+    private static void ClearStagedRecord(StagedDirectorUpdate staged)
+    {
+        try
+        {
+            var state = UpdaterState.LoadFrom(staged.StateFilePath);
+            state.StagedVersion = null;
+            state.StagedExecutable = null;
+            state.InstallTarget = null;
+            state.ApplyAttempts = 0;
+            state.ApplyAttemptVersion = null;
+            state.SaveTo(staged.StateFilePath);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DirectorUpdateOwner] could not clear the staged record in {staged.StateFilePath}: {ex.Message}");
+        }
+    }
+
+    /// <summary>Record that this version does not start, so it is never offered again.</summary>
+    private static void PinBadVersion(StagedDirectorUpdate staged)
+    {
+        try
+        {
+            var state = UpdaterState.LoadFrom(staged.StateFilePath);
+            state.PinnedBadVersion = staged.Version;
+            state.SaveTo(staged.StateFilePath);
+            FileLog.Write($"[DirectorUpdateOwner] pinned {staged.Version} as a build that does not start.");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DirectorUpdateOwner] could not pin {staged.Version} in {staged.StateFilePath}: {ex.Message}");
+        }
+    }
+
+    private static bool PathsEqual(string a, string b)
+    {
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        try
+        {
+            return string.Equals(
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(a)),
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(b)),
+                comparison);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DirectorUpdateOwner] cannot compare paths '{a}' and '{b}': {ex.Message}");
+            return false;
+        }
+    }
+}

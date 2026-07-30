@@ -211,13 +211,26 @@ public sealed class LauncherCore : IAsyncDisposable
     }
 
     /// <summary>
-    /// Periodic machine-tier auto-update (managed mode only): check for a newer Launcher and, if
-    /// found, launch the detached self-update helper (it POSTs /shutdown -> swap -> relaunch ->
-    /// health -> auto-rollback). Mirrors the Gateway's update loop. Failures only log.
+    /// Periodic machine-tier auto-update (managed mode only). Two separate jobs, in this order:
+    ///
+    ///   1. The LAUNCHER's own update: check for a newer Launcher and, if found, launch the detached
+    ///      self-update helper (it POSTs /shutdown -> swap -> relaunch -> health -> auto-rollback).
+    ///      Windows only, as it has always been.
+    ///   2. The DIRECTOR's update, which the launcher now owns (issue #1033): if one is staged and the
+    ///      Director has no sessions running, stop it, swap the build, start it, and confirm the new
+    ///      version answers - rolling back if it does not. On BOTH platforms, because the reason the
+    ///      Director cannot do this for itself has nothing to do with which operating system it is on.
+    ///
+    /// The Director's job is deliberately outside the Windows-only branch above it. Putting it inside
+    /// would have quietly left every Mac exactly where it was: staging updates that nothing ever
+    /// installed. Both jobs are governed by the same auto-update switch the Director used to read, so a
+    /// machine with auto-update turned off is still left alone. Failures only log.
     /// </summary>
     public static async Task RunUpdateLoopAsync(CancellationToken ct)
     {
         var layout = InstallLayout.Default();
+        var directorUpdates = new DirectorUpdateOwner(new DirectorSupervisor());
+
         // Let the launcher settle before the first check; never compete with startup.
         try { await Task.Delay(TimeSpan.FromMinutes(2), ct); } catch (OperationCanceledException) { return; }
 
@@ -242,6 +255,23 @@ public sealed class LauncherCore : IAsyncDisposable
                     FileLog.Write($"[LauncherCore] update check failed: {ex.Message}");
                 }
             }
+
+            if (cfg.Enabled)
+            {
+                // RunOnceAsync never throws; the catch is here only so a future change to it cannot take
+                // the whole loop down and leave the machine with no update path at all.
+                try
+                {
+                    var decision = await directorUpdates.RunOnceAsync(ct);
+                    if (decision != DirectorUpdateDecision.NothingStaged)
+                        FileLog.Write($"[LauncherCore] Director update pass: {decision}");
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[LauncherCore] Director update pass FAILED: {ex.Message}");
+                }
+            }
+
             try { await Task.Delay(cfg.Enabled ? cfg.Interval : TimeSpan.FromHours(1), ct); }
             catch (OperationCanceledException) { break; }
         }

@@ -3,9 +3,16 @@ using System.Diagnostics;
 using System.Net.Http;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Contracts;
 using CcDirector.Setup.Engine;
 
 namespace CcDirector.Launcher;
+
+/// <summary>
+/// One answer from a running Director's own control interface: the version it reports being, the number
+/// of sessions it holds (null when it declined to say), and where the answer came from.
+/// </summary>
+public sealed record DirectorHealth(string? Version, int? Sessions, int Pid, int Port);
 
 /// <summary>
 /// Supervises the installed CC Director app.
@@ -184,8 +191,65 @@ public sealed class DirectorSupervisor
     }
 
     /// <summary>
+    /// What the running Director says about itself when asked from outside: the version it IS and how
+    /// many sessions it currently holds, straight off its own control interface.
+    ///
+    /// This is the witness the update path needs, and it has to come from outside the Director for the
+    /// answer to mean anything (issue #1033). The version is what certifies a swap: a staged update is
+    /// newer than what was running, so an answer carrying the new version cannot have come from the old
+    /// build - where a liveness check ("something answered") could. The session count is what decides
+    /// whether updating now would interrupt live work, and reading it live is stronger than reading a
+    /// file the Director wrote at some earlier moment.
+    /// </summary>
+    public async Task<DirectorHealth?> ReadHealthAsync(CancellationToken ct = default)
+    {
+        var process = FindDirectorProcess();
+        if (process is null)
+            return null;
+
+        var port = FindDirectorPort(process.Id);
+        if (port <= 0)
+        {
+            FileLog.Write($"[DirectorSupervisor] ReadHealthAsync: the Director is running (pid={process.Id}) but no "
+                          + "instance registration names its control port, so it cannot be asked anything.");
+            return null;
+        }
+
+        try
+        {
+            using var response = await _http.GetAsync($"http://127.0.0.1:{port}/healthz", ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                FileLog.Write($"[DirectorSupervisor] ReadHealthAsync: /healthz on {port} answered {(int)response.StatusCode}");
+                return null;
+            }
+
+            var body = await response.Content.ReadAsStringAsync(ct);
+            var health = System.Text.Json.JsonSerializer.Deserialize<HealthDto>(body, HealthJsonOptions);
+            if (health is null)
+            {
+                FileLog.Write($"[DirectorSupervisor] ReadHealthAsync: /healthz on {port} returned a body that is not a health answer.");
+                return null;
+            }
+
+            return new DirectorHealth(health.Version, health.Sessions, process.Id, port);
+        }
+        catch (Exception ex)
+        {
+            // A Director that is starting, stopping, or already gone refuses the connection. That is a
+            // normal answer during an update rather than a fault, so it is recorded and returned as
+            // "nothing answered" instead of thrown.
+            FileLog.Write($"[DirectorSupervisor] ReadHealthAsync: /healthz on {port} could not be read: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static readonly System.Text.Json.JsonSerializerOptions HealthJsonOptions =
+        new(System.Text.Json.JsonSerializerDefaults.Web);
+
+    /// <summary>
     /// Restart the Director: stop gracefully, wait, then start fresh.
-    /// A staged update is applied automatically by the Director on the next startup.
+    /// A staged update is applied by the launcher's update loop, not by the Director itself.
     /// </summary>
     public async Task RestartAsync(CancellationToken ct = default)
     {

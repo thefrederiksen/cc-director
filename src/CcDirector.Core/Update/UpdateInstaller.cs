@@ -7,12 +7,27 @@ using CcDirector.Core.Utilities;
 namespace CcDirector.Core.Update;
 
 /// <summary>
-/// Applies a staged update by swapping the installed build with a downloaded one.
+/// Applies a staged update by swapping the installed build with a downloaded one, on a start a
+/// person or the launcher already asked for.
 ///
 /// A running single-file executable cannot overwrite itself (Windows holds a
 /// file lock; macOS keeps the live inode), so the swap is performed by the
 /// freshly downloaded build running in a hidden "<c>--apply-update</c>" mode: it
 /// waits for the old process to exit, replaces the install, and relaunches.
+///
+/// WHAT THIS NO LONGER DOES, AND WHY (issue #1033). A running Director never decides to replace
+/// itself any more. It stages an update, says so, and stops there; the launcher - which outlives the
+/// swap and can therefore witness the result - stops it, swaps the build, starts it and confirms the
+/// new version answers. The Director used to make that decision itself the moment it went idle, and
+/// the shape of doing it from inside is what made it unsafe: the only process that could have checked
+/// whether the relaunch came up was the one that had just exited, so a relaunch that never appeared
+/// was recorded as a success with nobody left to notice.
+///
+/// The path below survives for the start a HUMAN initiates - the "Restart now" banner, or simply
+/// opening the app - because that is a different event with a person present, and because removing it
+/// would permanently strand any install whose launcher is missing: the thing that fetches every future
+/// fix would be gone, and no later release could repair it. It now proves the relaunch instead of
+/// assuming it (see <see cref="ApplyUpdate"/>), and its recovery works on macOS as well as Windows.
 /// </summary>
 public static class UpdateInstaller
 {
@@ -72,22 +87,18 @@ public static class UpdateInstaller
            && oldExists && oldLength > 0;
 
     /// <summary>
-    /// Decide whether a staged update may be auto-applied right now WITHOUT waiting for a human
-    /// to restart (issue #2047): only when a verified update is staged AND the Director has zero
-    /// running sessions, so restarting into the new build can never interrupt live work. This is
-    /// the same principle as the Gateway shutdown gate -- a Director with any live session is never
-    /// restarted out from under it. Pure decision, unit-tested.
-    /// </summary>
-    public static bool ShouldAutoApplyWhenIdle(bool hasStagedUpdate, int runningSessionCount)
-        => hasStagedUpdate && runningSessionCount == 0;
-
-    /// <summary>
     /// If a verified, newer update has been staged for THIS install path, launch the
     /// relauncher to apply it and return true (the caller must then exit so the swap can
-    /// proceed). Called at startup, before any session exists, so applying an update never
-    /// loses running work. Returns false when nothing is pending or we boot the current
+    /// proceed). Returns false when nothing is pending or we boot the current
     /// build instead; in the latter "gave up" case <paramref name="failureNotice"/> is set
     /// to a user-facing message the caller should surface (issue #242 -- never fail silently).
+    ///
+    /// CALLED FROM STARTUP ONLY, and startup is the whole safety argument: no session exists yet, so
+    /// applying an update here cannot lose running work, and a person or the launcher has already asked
+    /// for this start. A RUNNING Director never calls this any more (issue #1033) - it used to, the
+    /// moment it noticed it was idle, and that is what made an unwitnessed relaunch possible. The
+    /// launcher owns the unattended route now, and it does the swap from outside so it can confirm the
+    /// result.
     /// </summary>
     public static bool TryApplyStagedUpdateAtStartup(out string? failureNotice)
     {
@@ -219,12 +230,9 @@ public static class UpdateInstaller
         // (and the running version unchanged) and rolls back to the .old backup.
         var versionBeingInstalled = UpdaterState.Load().StagedVersion;
 
-        if (OperatingSystem.IsWindows())
-            SwapWindows(targetPath);
-        else if (OperatingSystem.IsMacOS())
-            SwapMac(targetPath);
-        else
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS())
             throw new PlatformNotSupportedException("Auto-update is only supported on Windows and macOS.");
+        Swap(targetPath);
 
         // Clear the staged marker BEFORE relaunching so the freshly-installed build
         // doesn't see itself as a pending update and loop. Arm the post-update health
@@ -233,24 +241,81 @@ public static class UpdateInstaller
         ArmHealthCheck(versionBeingInstalled);
         Relaunch(targetPath, instanceSlug);
 
-        FileLog.Write("[UpdateInstaller] ApplyUpdate: complete");
+        // WAIT FOR A WITNESS. This used to log "complete" here, having proved nothing beyond
+        // Process.Start returning - so a relaunch that never came up was written down as a success and
+        // then logging stopped, leaving no record that anything was wrong (issue #1033). The relaunched
+        // build clears the pending health marker only once it reaches its main window, so watching that
+        // marker is a real answer about the new build rather than a statement about this helper.
+        var cameUp = WaitForRelaunchedBuildToReportHealthy(versionBeingInstalled, RelaunchHealthTimeout);
+        if (cameUp)
+            FileLog.Write($"[UpdateInstaller] ApplyUpdate: verified - {versionBeingInstalled} came up and reported healthy.");
+        else
+            FileLog.Write($"[UpdateInstaller] ApplyUpdate: NOT VERIFIED - {versionBeingInstalled} did not report healthy "
+                          + $"within {RelaunchHealthTimeout.TotalSeconds:F0}s. The rollback to the previous build is armed and "
+                          + "runs on the next startup; the backup is kept until a build proves healthy.");
+
         FileLog.Stop();
-        return 0;
+        return cameUp ? 0 : 1;
     }
 
     /// <summary>
-    /// Startup housekeeping: delete the leftover "<c>.old</c>" file from a previous
-    /// Windows swap and prune staging directories older than 7 days. Safe to call
-    /// unconditionally; never throws.
+    /// How long the relauncher waits for the build it just started to report that it reached its main
+    /// window. Generous on purpose: a cold start on a slow machine walks a splash screen, the engine
+    /// and the control API before the window appears, and calling a slow start a failure would be as
+    /// wrong as calling a dead start a success.
+    /// </summary>
+    public static readonly TimeSpan RelaunchHealthTimeout = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// Watch for the freshly relaunched build to clear its pending health marker, which it does when it
+    /// reaches its main window (<see cref="MarkCurrentBuildHealthy"/>). Returns true when it did within
+    /// the timeout. Returns true immediately when no version was being installed, because there is then
+    /// no marker to wait on and no claim being made.
+    /// </summary>
+    private static bool WaitForRelaunchedBuildToReportHealthy(string? versionBeingInstalled, TimeSpan timeout)
+    {
+        if (string.IsNullOrEmpty(versionBeingInstalled))
+            return true;
+
+        var stopwatch = Stopwatch.StartNew();
+        while (stopwatch.Elapsed < timeout)
+        {
+            // Every read of the state file writes a line to this helper's log, so the interval is a
+            // readability choice as much as a timing one: often enough to exit promptly on a good start,
+            // rare enough that the log of a failed one is still readable.
+            Thread.Sleep(2000);
+            if (string.IsNullOrEmpty(UpdaterState.Load().PendingHealthCheckVersion))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Startup housekeeping: delete the leftover backup from a previous swap and prune staging
+    /// directories older than 7 days. Safe to call unconditionally; never throws.
+    ///
+    /// The backup is KEPT while a post-update health check is still pending (issue #1033). This runs
+    /// before the new build reaches its main window, so deleting the backup unconditionally opened a
+    /// window in which a build could start, delete the only way back, and then die before proving
+    /// itself - leaving a broken install with nothing to restore and no later release able to reach the
+    /// machine. A build that has proved healthy deletes its predecessor's backup itself, the moment it
+    /// clears the marker; see <see cref="MarkCurrentBuildHealthy"/>.
     /// </summary>
     public static void CleanupAfterUpdate()
     {
         try
         {
-            // Remove leftovers from a prior swap: ".old" backup and any ".new" that
-            // an interrupted swap left behind (a file on Windows, a dir on macOS).
+            // Remove leftovers from a prior swap: the backup, and any ".new" that
+            // an interrupted swap left behind (a file on Windows, a directory on macOS).
             var target = InstallTarget();
-            foreach (var leftover in new[] { target + ".old", target + ".new" })
+            var healthPending = !string.IsNullOrEmpty(UpdaterState.Load().PendingHealthCheckVersion);
+            var leftovers = healthPending
+                ? new[] { target + ".new" }
+                : new[] { target + ".old", target + ".new" };
+            if (healthPending)
+                FileLog.Write("[UpdateInstaller] CleanupAfterUpdate: a health check is still pending, so the backup is kept.");
+
+            foreach (var leftover in leftovers)
             {
                 if (File.Exists(leftover)) File.Delete(leftover);
                 else if (Directory.Exists(leftover)) Directory.Delete(leftover, recursive: true);
@@ -289,30 +354,29 @@ public static class UpdateInstaller
     {
         try
         {
-            // Windows-only: the .old backup is produced by SwapWindows. On macOS the bundle
-            // swap is a single atomic rename with no zero-length intermediate to recover from.
-            if (!OperatingSystem.IsWindows())
-                return null;
-
+            // Runs on every platform. It used to begin "if this is not Windows, return null", on the
+            // reasoning that the macOS bundle swap is one atomic rename with no half-written state to
+            // find. That reasoning covered the swap and not the failure: a bundle copy interrupted part
+            // way leaves a directory that exists and holds no executable, which is indistinguishable
+            // from a healthy install to anything that only asks whether the path is there. The shape of
+            // the install is handled by DirectorBuildSwapper; the decision below is one rule for both.
             var target = InstallTarget();
-            var old = target + ".old";
+            var old = DirectorBuildSwapper.BackupPathFor(target);
 
-            var installInfo = new FileInfo(target);
-            var oldInfo = new FileInfo(old);
-            var installExists = installInfo.Exists;
-            var installLength = installExists ? installInfo.Length : 0;
-            var oldExists = oldInfo.Exists;
-            var oldLength = oldExists ? oldInfo.Length : 0;
+            var install = DirectorBuildSwapper.Inspect(target);
+            var backup = DirectorBuildSwapper.Inspect(old);
 
-            if (!NeedsHalfSwapRecovery(installExists, installLength, oldExists, oldLength))
+            if (!NeedsHalfSwapRecovery(install.Exists, install.Length, backup.Exists, backup.Length))
                 return null;
 
             FileLog.Start();
-            FileLog.Write($"[UpdateInstaller] RecoverHalfAppliedSwap: install exe is " +
-                $"{(installExists ? $"zero-length ({installLength} bytes)" : "missing")}; restoring from {old} ({oldLength} bytes).");
+            FileLog.Write($"[UpdateInstaller] RecoverHalfAppliedSwap: the installed build is " +
+                $"{(install.Exists ? $"zero-length ({install.Length} bytes)" : "missing or incomplete")}; restoring from {old} ({backup.Length} bytes).");
 
-            if (installExists) File.Delete(target);
-            File.Copy(old, target);
+            // Keep the backup: the cleanup step deletes it a moment later anyway, and consuming it here
+            // would leave nothing behind if the restored build also failed to start.
+            if (!DirectorBuildSwapper.RestoreBackup(target, keepBackup: true))
+                return null;
             FileLog.Write($"[UpdateInstaller] RecoverHalfAppliedSwap: restored {target} from backup.");
 
             return "Director detected a half-finished update and restored the previous working " +
@@ -338,9 +402,10 @@ public static class UpdateInstaller
     {
         try
         {
-            if (!OperatingSystem.IsWindows())
-                return null;
-
+            // Runs on every platform (issue #1033). This was the macOS hole: a Mac whose update produced
+            // a build that could not start had no route back at all, because the whole method returned
+            // early off-Windows. The rule about WHEN to roll back was never platform-specific - only the
+            // file operations were, and those now live in DirectorBuildSwapper for both shapes.
             var state = UpdaterState.Load();
             var pending = state.PendingHealthCheckVersion;
             if (string.IsNullOrEmpty(pending))
@@ -348,24 +413,20 @@ public static class UpdateInstaller
 
             var running = (Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(0, 0, 0)).ToString(3);
             var target = InstallTarget();
-            var old = target + ".old";
-            var oldInfo = new FileInfo(old);
-            var oldExists = oldInfo.Exists;
-            var oldLength = oldExists ? oldInfo.Length : 0;
+            var old = DirectorBuildSwapper.BackupPathFor(target);
+            var backup = DirectorBuildSwapper.Inspect(old);
 
-            if (!NeedsHealthRollback(pending, running, oldExists, oldLength))
+            if (!NeedsHealthRollback(pending, running, backup.Exists, backup.Length))
                 return null;
 
             FileLog.Start();
             FileLog.Write($"[UpdateInstaller] TryRollBackFailedUpdate: update {pending} never became healthy " +
-                $"(running {running}); rolling back to backup {old} ({oldLength} bytes) and pinning the bad version.");
+                $"(running {running}); rolling back to backup {old} ({backup.Length} bytes) and pinning the bad version.");
 
-            // Restore the previous build over the failing one.
-            var newPath = target + ".new";
-            if (File.Exists(newPath)) File.Delete(newPath);
-            File.Copy(old, newPath);
-            if (File.Exists(target)) File.Replace(newPath, target, null);
-            else File.Move(newPath, target);
+            // Restore the previous build over the failing one, keeping the backup so a restored build
+            // that ALSO fails to start still has something to fall back on.
+            if (!DirectorBuildSwapper.RestoreBackup(target, keepBackup: true))
+                return null;
 
             // Pin the bad version and clear the health marker so we do not loop.
             state.PinnedBadVersion = pending;
@@ -407,6 +468,12 @@ public static class UpdateInstaller
             FileLog.Write($"[UpdateInstaller] MarkCurrentBuildHealthy: clearing pending health check for {state.PendingHealthCheckVersion}.");
             state.PendingHealthCheckVersion = null;
             state.Save();
+
+            // This build has now proved itself, so its predecessor's backup has no further purpose and
+            // is deleted here rather than being left for the next startup. The startup cleanup keeps the
+            // backup precisely while this marker is set (issue #1033), so the one place that knows the
+            // backup is finished with is the one place that clears the marker.
+            DirectorBuildSwapper.DeleteBackup(InstallTarget());
             return true;
         }
         catch (Exception ex)
@@ -442,45 +509,28 @@ public static class UpdateInstaller
         return null;
     }
 
-    private static void SwapWindows(string targetExe)
+    /// <summary>
+    /// Install this (staged) build over <paramref name="target"/>, keeping the previous build as a
+    /// backup on BOTH platforms.
+    ///
+    /// The macOS swap used to delete the installed bundle outright and move the new one in, so no
+    /// backup existed at all - which meant the roll-back-a-bad-update path could never have worked on a
+    /// Mac even with its platform guard removed, because there was never anything to roll back to
+    /// (issue #1032). Keeping the backup is what makes one recovery rule serve both platforms.
+    /// </summary>
+    private static void Swap(string target)
     {
-        var staged = Environment.ProcessPath
+        var self = Environment.ProcessPath
             ?? throw new InvalidOperationException("Environment.ProcessPath is null; cannot locate the staged build.");
 
-        // Copy the new build onto the target volume FIRST, so the install is never
-        // left without an exe if the copy fails. Then atomically replace, keeping
-        // the old exe as a ".old" backup (cleaned up on the next normal startup).
-        var newPath = targetExe + ".new";
-        var old = targetExe + ".old";
-        if (File.Exists(newPath)) File.Delete(newPath);
-        File.Copy(staged, newPath);
+        // On macOS the thing that becomes the install is the whole enclosing bundle, not the binary
+        // inside it that this process happens to be running as.
+        var stagedSource = OperatingSystem.IsMacOS()
+            ? AppBundleOf(self) ?? throw new InvalidOperationException("Staged build is not inside an .app bundle; cannot swap.")
+            : self;
 
-        if (File.Exists(old)) File.Delete(old);
-        if (File.Exists(targetExe))
-            File.Replace(newPath, targetExe, old); // target <- new, old <- previous target
-        else
-            File.Move(newPath, targetExe);
-        FileLog.Write($"[UpdateInstaller] SwapWindows: installed staged build at {targetExe}");
-    }
-
-    private static void SwapMac(string targetApp)
-    {
-        var stagedApp = AppBundleOf(Environment.ProcessPath ?? "")
-            ?? throw new InvalidOperationException("Staged build is not inside an .app bundle; cannot swap.");
-
-        // Build the replacement bundle fully BESIDE the target first (de-quarantined
-        // and executable), then swap with a fast rename so the install is never left
-        // half-written. macOS keeps this process's running binary alive via its inode
-        // even after the old bundle is unlinked, so replacing it underfoot is safe.
-        var newApp = targetApp + ".new";
-        Run("/bin/rm", "-rf", newApp);
-        Run("/usr/bin/ditto", stagedApp, newApp);
-        Run("/usr/bin/xattr", "-dr", "com.apple.quarantine", newApp);
-        Run("/bin/chmod", "+x", Path.Combine(newApp, "Contents", "MacOS", ExecutableName));
-
-        Run("/bin/rm", "-rf", targetApp);
-        Run("/bin/mv", newApp, targetApp);
-        FileLog.Write($"[UpdateInstaller] SwapMac: installed staged bundle at {targetApp}");
+        var backup = DirectorBuildSwapper.Place(target, stagedSource);
+        FileLog.Write($"[UpdateInstaller] Swap: installed staged build at {target} (backup: {backup ?? "none - nothing was there"})");
     }
 
     private static void Relaunch(string targetPath, string? instanceSlug)
@@ -566,17 +616,6 @@ public static class UpdateInstaller
             Path.TrimEndingDirectorySeparator(Path.GetFullPath(a)),
             Path.TrimEndingDirectorySeparator(Path.GetFullPath(b)),
             comparison);
-    }
-
-    private static void Run(string file, params string[] args)
-    {
-        var psi = new ProcessStartInfo { FileName = file, UseShellExecute = false };
-        foreach (var a in args) psi.ArgumentList.Add(a);
-        using var p = Process.Start(psi)
-            ?? throw new InvalidOperationException($"Failed to start {file}");
-        p.WaitForExit();
-        if (p.ExitCode != 0)
-            FileLog.Write($"[UpdateInstaller] Run non-zero exit ({p.ExitCode}): {file} {string.Join(' ', args)}");
     }
 
     private static void WaitForProcessExit(int pid, TimeSpan timeout)

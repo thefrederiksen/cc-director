@@ -60,13 +60,6 @@ public partial class App : Application
     public ControlApiHost? ControlApiHost { get; private set; }
     public UpdateService? Updater { get; private set; }
 
-    /// <summary>
-    /// One-shot guard so a staged update is auto-applied exactly once (issue #2047). Both the
-    /// "update staged" and "session ended" triggers can race; the first to flip this from 0 to 1
-    /// launches the relauncher and requests shutdown, the rest no-op. 0 = not started, 1 = started.
-    /// </summary>
-    private int _autoUpdateApplyStarted;
-
     public bool SandboxMode { get; private set; }
 
     public override void Initialize()
@@ -444,22 +437,19 @@ public partial class App : Application
             Updater = new UpdateService(options);
             Updater.UpdateStaged += staged =>
             {
-                // Always surface the "Restart now" banner so a person can still restart by hand
-                // (and can do so even while sessions are running). Then try to apply automatically:
-                // if this Director is idle it restarts into the new build with no human step, and if
-                // it is busy the update is simply held until the last session ends (issue #2047).
+                // Surface the "Restart now" banner so a person can restart by hand whenever they like.
+                // Installing it without being asked is NOT done here any more (issue #1033): the launcher
+                // watches for a staged update, waits until this Director holds no sessions, and then
+                // stops it, swaps the build, starts it and confirms the new version answers. A Director
+                // that swapped itself could never confirm anything - the only process able to check
+                // whether the relaunch came up was the one that had just exited - so a relaunch that
+                // never appeared was written down as a success.
                 global::Avalonia.Threading.Dispatcher.UIThread.Post(
                     () => mainWindow.ShowUpdateReady(staged.Version));
-                TryAutoApplyStagedUpdateWhenIdle("update-staged");
             };
             Updater.ProgressChanged += progress =>
                 global::Avalonia.Threading.Dispatcher.UIThread.Post(
                     () => mainWindow.OnUpdateProgress(progress));
-
-            // When a machine was busy at stage time, apply the held update as soon as it goes idle:
-            // OnSessionRemoved fires AFTER the session leaves tracking, so the count we read reflects
-            // the post-removal state (issue #2047). Handler is idempotent and never throws.
-            SessionManager.OnSessionRemoved += _ => TryAutoApplyStagedUpdateWhenIdle("session-ended");
 
             FileLog.Write($"[App] StartUpdateService: enabled={enabled}, current={current}, target={options.InstallTarget}");
 
@@ -507,85 +497,6 @@ public partial class App : Application
         {
             FileLog.Write($"[App] StartUpdateService FAILED: {ex.Message}");
         }
-    }
-
-    /// <summary>
-    /// Auto-apply a staged update, but ONLY when it is safe: a verified update must be staged and
-    /// this Director must have zero running sessions (issue #2047). When safe, it reuses the exact
-    /// startup apply path (<see cref="UpdateInstaller.TryApplyStagedUpdateAtStartup"/>) so it inherits
-    /// every existing safety check unchanged -- bounded apply attempts, pinned-bad-version, and the
-    /// post-restart health check with automatic rollback -- then requests a normal shutdown so the
-    /// relauncher can swap the build and bring the Director back up. When sessions are running the
-    /// staged update is left untouched (the "Restart now" banner stays); it is retried the next time
-    /// a session ends and on every periodic update cycle. Called from background threads (the update
-    /// loop and the session-removed event); catches and logs everything and never throws.
-    /// </summary>
-    private void TryAutoApplyStagedUpdateWhenIdle(string reason)
-    {
-        try
-        {
-            var state = UpdaterState.Load();
-            var hasStaged = !string.IsNullOrEmpty(state.StagedVersion)
-                            && !string.IsNullOrEmpty(state.StagedExecutable)
-                            && !string.IsNullOrEmpty(state.InstallTarget);
-
-            var runningSessions = SessionManager?.ListSessions().Count ?? 0;
-            if (!UpdateInstaller.ShouldAutoApplyWhenIdle(hasStaged, runningSessions))
-            {
-                if (hasStaged)
-                    FileLog.Write($"[App] Auto-update held ({reason}): {runningSessions} session(s) running; staged {state.StagedVersion} will apply when the Director is idle.");
-                return;
-            }
-
-            // One-shot: the update-staged and session-ended triggers can fire together. Only the
-            // first caller past this gate launches the relauncher; a second would spawn a second
-            // relauncher racing for the same install path.
-            if (System.Threading.Interlocked.CompareExchange(ref _autoUpdateApplyStarted, 1, 0) != 0)
-            {
-                FileLog.Write($"[App] Auto-update already in progress; ignoring duplicate trigger ({reason}).");
-                return;
-            }
-
-            FileLog.Write($"[App] Auto-update ({reason}): no sessions running; applying staged {state.StagedVersion}.");
-            if (UpdateInstaller.TryApplyStagedUpdateAtStartup(out var failureNotice))
-            {
-                // The relauncher is running and waiting for us to exit before it swaps the build.
-                RequestShutdownForUpdate();
-                return;
-            }
-
-            // Nothing was applied (e.g. the staged build was pinned as bad, or apply attempts were
-            // exhausted). Release the one-shot so a later, healthy stage can still auto-apply.
-            System.Threading.Interlocked.Exchange(ref _autoUpdateApplyStarted, 0);
-            if (!string.IsNullOrEmpty(failureNotice))
-                FileLog.Write($"[App] Auto-update did not apply ({reason}): {failureNotice}");
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[App] TryAutoApplyStagedUpdateWhenIdle FAILED: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Request the normal graceful application shutdown so a launched update relauncher can swap the
-    /// build and relaunch (issue #2047). Posts to the UI thread; the classic desktop lifetime's
-    /// Shutdown runs <see cref="OnShutdown"/> (stop sessions -- none, engine, control API) and the
-    /// process exits, at which point the waiting relauncher applies the staged build.
-    /// </summary>
-    private void RequestShutdownForUpdate()
-    {
-        // Same programmatic-shutdown rule as the Control API's requestShutdown delegate: a
-        // programmatic lifetime.Shutdown() does not raise ShutdownRequested, so run the shutdown
-        // routine explicitly first (idempotent - the guard makes any double-fire a no-op).
-        _ = Task.Run(() =>
-        {
-            OnShutdown(msg => FileLog.Write($"[CcDirector] {msg}"));
-            global::Avalonia.Threading.Dispatcher.UIThread.Post(() =>
-            {
-                if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime lifetime)
-                    lifetime.Shutdown();
-            });
-        });
     }
 
     /// <summary>
