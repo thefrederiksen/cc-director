@@ -34,6 +34,10 @@ namespace CcDirector.Gateway.Tests.Architecture;
 /// The rules:
 ///  - DT-SQL-1: no type in the hosted Gateway assemblies touches SQLite unless it is named on
 ///    <see cref="SqliteTouchingTypes"/>.
+///  - DT-SQL-5: no exemption outlives its justification. Every allowlist entry carries a MACHINE-CHECKABLE
+///    condition rather than only a reason, and the guard fails when a transitional one expires or a
+///    structural one's property stops holding. A reason nobody checks is how a temporary accommodation
+///    becomes a permanent hole.
 ///  - DT-SQL-2: every name on <see cref="SqliteTouchingTypes"/> still exists AND still touches SQLite, so the
 ///    allowlist cannot rot into ghosts that permit things nobody checked. It tightens itself: when the
 ///    remediation takes SQLite out of the statistics store, that entry goes RED and must be DELETED.
@@ -66,38 +70,76 @@ public sealed class NoSqliteOnHostedArchitectureTests
     };
 
     /// <summary>
-    /// The types permitted to touch SQLite inside the hosted Gateway assemblies, each with the reason it
-    /// cannot hand a hosted Gateway a SQLite file. This list is the guard. A type that is not here and touches
-    /// SQLite fails DT-SQL-1 by name.
-    ///
-    /// ADDING A NAME HERE IS THE ONLY WAY PAST THE GUARD, AND IT IS MEANT TO BE UNCOMFORTABLE. Before adding
-    /// one, the question to answer is not "does my store work" but "what makes it unreachable on hosted". The
-    /// three answers that have ever been good enough are below: the site is branch-gated on the very variable
-    /// that means hosted; the site never runs in the Gateway process at all; or the site calls
-    /// <see cref="HostedSqliteGuard.EnsureNotHosted"/> before it opens anything. "It is only a small file" is
-    /// not one of them - the 32-minute outage was a small file.
+    /// How an exemption is bound to a fact a machine can check, instead of to prose.
     /// </summary>
-    private static readonly Dictionary<string, string> SqliteTouchingTypes = new(StringComparer.Ordinal)
+    private enum ConditionKind
     {
-        [nameof(GatewayDatabase)] =
+        /// <summary>TRANSITIONAL. The exemption is a temporary accommodation and the condition describes the
+        /// world in which it is no longer justified. The guard FAILS when the condition becomes TRUE.</summary>
+        ExpiresWhenTrue,
+
+        /// <summary>STRUCTURAL. The exemption rests on a property of the code that must keep holding. The
+        /// condition IS that property, and the guard FAILS when it stops being true.</summary>
+        RequiresToStayTrue,
+    }
+
+    /// <summary>An allowlist entry. The condition is not optional and there is no constructor without one, so
+    /// an entry justified only in words cannot be written.</summary>
+    private sealed record Exemption(string Reason, ConditionKind Kind, string Condition, Func<ScanFacts, bool> Evaluate);
+
+    /// <summary>
+    /// The types permitted to touch SQLite inside the hosted Gateway assemblies. This list is the guard: a type
+    /// that is not here and touches SQLite fails DT-SQL-1 by name.
+    ///
+    /// EVERY ENTRY CARRIES A MACHINE-CHECKABLE CONDITION, NOT ONLY A REASON. A written reason is unfalsifiable
+    /// - nothing checks whether it is true, and this list already proves it can be false: GatewayStatsDatabase
+    /// sits here today with a reason that is NOT true, accepted so the guard could land ahead of the port. An
+    /// exemption that cannot expire is a permanent hole wearing a temporary label, and it would be a permanent
+    /// hole in the exact place this mission is about. So each entry also names a condition the scan evaluates,
+    /// and DT-SQL-5 fails the moment a transitional exemption's justification lapses or a structural one's
+    /// property stops holding. Nobody has to remember; the failure arrives when the justification does.
+    ///
+    /// ADDING A NAME HERE IS THE ONLY WAY PAST THE GUARD AND IS MEANT TO BE UNCOMFORTABLE. The question is not
+    /// "does my store work" but "what makes it unreachable on hosted, and what fact would show that has
+    /// stopped being true".
+    /// </summary>
+    private static readonly Dictionary<string, Exemption> SqliteTouchingTypes = new(StringComparer.Ordinal)
+    {
+        [nameof(GatewayDatabase)] = new(
             "BRANCH-GATED on the hosted marker itself: every SQLite statement in it sits behind the same " +
             "CC_GATEWAY_DB_CONNECTION test that means hosted, so a hosted Gateway takes the PostgreSQL branch " +
             "and cannot reach the file. This is the shape every other entry is measured against.",
+            ConditionKind.RequiresToStayTrue,
+            "GatewayDatabase still consults CC_GATEWAY_DB_CONNECTION - its own code carries that literal AND " +
+            "calls Environment.GetEnvironmentVariable. Strip the provider branch and this stops holding.",
+            f => f.Literals(nameof(GatewayDatabase)).Contains(HostedSqliteGuard.HostedMarkerEnvVar)
+                 && f.Calls(nameof(GatewayDatabase)).Any(c => c.Contains("GetEnvironmentVariable", StringComparison.Ordinal))),
 
-        [nameof(GatewayDbContextDesignTimeFactory)] =
+        [nameof(GatewayDbContextDesignTimeFactory)] = new(
             "DESIGN-TIME ONLY: constructed by the 'dotnet ef' tooling to scaffold migrations, never by the " +
             "Gateway process. It serves no request and holds no data.",
+            ConditionKind.RequiresToStayTrue,
+            "It still implements IDesignTimeDbContextFactory, which is what makes it tooling-only. Give it any " +
+            "other role - a runtime factory, a store - and that interface goes, and with it the justification.",
+            f => f.Interfaces(nameof(GatewayDbContextDesignTimeFactory))
+                  .Any(i => i.Contains("IDesignTimeDbContextFactory", StringComparison.Ordinal))),
 
-        ["GatewayStatsDatabase"] =
-            "THE SUBJECT OF THE REMEDIATION, not an exemption. This is the store whose file on the Azure Files " +
-            "share caused the 2026-07-30 outage; it is UNGATED today and does open SQLite on hosted. It is " +
-            "named here so this guard passes against the CURRENT tree while the port is in flight. DELETE this " +
-            "entry when the port lands - DT-SQL-2 will go red and tell you to.",
+        ["GatewayStatsDatabase"] = new(
+            "THE SUBJECT OF THE REMEDIATION, NOT AN EXEMPTION, and its reason is FALSE TODAY: this store is " +
+            "ungated and really does open SQLite on hosted - it is the file on the Azure Files share that " +
+            "caused the 2026-07-30 outage. It is listed only so the guard could land ahead of the port.",
+            ConditionKind.ExpiresWhenTrue,
+            "A statistics DbContext exists in the hosted Gateway assemblies. Its presence is the machine-" +
+            "checkable signal that the port HAS happened, so this accommodation has expired and must be deleted.",
+            f => f.StatisticsDbContextExists),
 
-        ["GatewayInputStatsAggregator"] =
+        ["GatewayInputStatsAggregator"] = new(
             "Reads and writes through the connection GatewayStatsDatabase already opened; it opens none of its " +
-            "own. It is gated exactly as well as that store is, and it goes away with it. DELETE this entry " +
-            "with the one above.",
+            "own. It is gated exactly as well as that store is, and it goes away with it.",
+            ConditionKind.ExpiresWhenTrue,
+            "The same signal as the store above - a statistics DbContext exists, so the port has landed and " +
+            "this entry expires with it.",
+            f => f.StatisticsDbContextExists),
     };
 
     // ----------------------------------------------------------------------------------------------------
@@ -192,6 +234,58 @@ public sealed class NoSqliteOnHostedArchitectureTests
             "DT-SQL-2: these types are allowlisted for SQLite but no longer touch it - which is GOOD NEWS. " +
             "Delete their entries from SqliteTouchingTypes so the allowlist shrinks to what is really still " +
             "there, and the guard tightens around it: " + string.Join(", ", cleaned));
+    }
+
+    // ----------------------------------------------------------------------------------------------------
+    // DT-SQL-5: every exemption expires MECHANICALLY.
+    // ----------------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// DT-SQL-5: no exemption outlives its justification. Each entry on <see cref="SqliteTouchingTypes"/> names
+    /// a condition the scan EVALUATES rather than a reason a reader has to believe:
+    ///
+    ///  - a TRANSITIONAL entry (<see cref="ConditionKind.ExpiresWhenTrue"/>) names the world in which it is no
+    ///    longer justified, and this test fails the moment that world arrives;
+    ///  - a STRUCTURAL entry (<see cref="ConditionKind.RequiresToStayTrue"/>) names the property it rests on,
+    ///    and this test fails the moment that property stops holding.
+    ///
+    /// WHY THIS RULE EXISTS RATHER THAN A NOTE IN A DOCUMENT. GatewayStatsDatabase is on the allowlist today
+    /// with a reason that is FALSE - it really does open SQLite on hosted - accepted so the guard could land
+    /// ahead of the port. Everything else that keeps such an accommodation honest is keyed to somebody
+    /// REMEMBERING to remove it, guarding the exact hole this mission exists to close. A memory is not a
+    /// mechanism. The presence of a statistics DbContext is a fact a machine can check, and it is the fact
+    /// that means the port has happened - so the entry dies on the day it stops being true, named, whether or
+    /// not anyone is reading this file.
+    ///
+    /// Revert-proof: land the statistics context and this goes red naming the stale exemption. Watched
+    /// tripping - see docs/step2-nosqlite-guard-proof.md.
+    /// </summary>
+    [Fact]
+    public void DT_SQL_5_no_exemption_outlives_the_condition_that_justifies_it()
+    {
+        var facts = GatherScanFacts();
+        var stale = new List<string>();
+
+        foreach (var (name, exemption) in SqliteTouchingTypes)
+        {
+            var holds = exemption.Evaluate(facts);
+
+            if (exemption.Kind == ConditionKind.ExpiresWhenTrue && holds)
+                stale.Add($"{name}: EXPIRED. Its accommodation was temporary and the condition that ends it is " +
+                          $"now TRUE - \"{exemption.Condition}\" Delete the entry; if the type still touches " +
+                          "SQLite after the port, that is the finding, not a reason to keep the exemption.");
+
+            if (exemption.Kind == ConditionKind.RequiresToStayTrue && !holds)
+                stale.Add($"{name}: JUSTIFICATION BROKEN. It is exempt because \"{exemption.Condition}\" and " +
+                          "that is no longer true, so the reason it was allowed SQLite has gone. Restore the " +
+                          "property or remove the exemption and move the data to PostgreSQL.");
+        }
+
+        Assert.True(stale.Count == 0,
+            "DT-SQL-5: an exemption has outlived its justification. An exemption that cannot expire is a " +
+            "permanent hole wearing a temporary label, so every entry is bound to a fact a machine checks " +
+            "rather than to a reason someone wrote down:" + Environment.NewLine + "  " +
+            string.Join(Environment.NewLine + "  ", stale));
     }
 
     // ----------------------------------------------------------------------------------------------------
@@ -296,6 +390,80 @@ public sealed class NoSqliteOnHostedArchitectureTests
     /// failure, never a quietly smaller scan: the whole value of an allowlist is that it covers everything it
     /// claims to, and an assembly silently skipped would make DT-SQL-1 pass by not having looked.
     /// </summary>
+    /// <summary>
+    /// The facts DT-SQL-5's conditions are evaluated against, read off the same compiled assemblies the rest of
+    /// the guard scans - so a condition is checked against the real build output, not against a description of
+    /// it. Per top-level type: the string literals its code carries, the methods it calls, and the interfaces
+    /// it implements. Plus the one whole-assembly fact the transitional entries turn on.
+    /// </summary>
+    private sealed class ScanFacts
+    {
+        private readonly Dictionary<string, HashSet<string>> _literals = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, HashSet<string>> _calls = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, HashSet<string>> _interfaces = new(StringComparer.Ordinal);
+
+        /// <summary>
+        /// True when the hosted Gateway assemblies contain a STATISTICS Entity Framework context - the
+        /// machine-checkable signal that the SQLite statistics store has been ported. Deliberately not pinned
+        /// to one exact spelling: any direct DbContext subclass whose name mentions statistics counts, so the
+        /// signal does not miss because the port chose "StatisticsDbContext" over "GatewayStatsDbContext".
+        /// </summary>
+        public bool StatisticsDbContextExists { get; private set; }
+
+        public IReadOnlyCollection<string> Literals(string type) => Get(_literals, type);
+        public IReadOnlyCollection<string> Calls(string type) => Get(_calls, type);
+        public IReadOnlyCollection<string> Interfaces(string type) => Get(_interfaces, type);
+
+        private static IReadOnlyCollection<string> Get(Dictionary<string, HashSet<string>> map, string type)
+            => map.TryGetValue(type, out var set) ? set : Array.Empty<string>();
+
+        public void Observe(TypeDefinition type)
+        {
+            var owner = TopLevel(type).Name;
+
+            if (type.BaseType?.FullName == "Microsoft.EntityFrameworkCore.DbContext"
+                && type.Name.Contains("Stat", StringComparison.OrdinalIgnoreCase))
+                StatisticsDbContextExists = true;
+
+            foreach (var i in type.Interfaces)
+                Add(_interfaces, owner, i.InterfaceType.FullName);
+
+            foreach (var method in type.Methods)
+            {
+                if (!method.HasBody) continue;
+                foreach (var instr in method.Body.Instructions)
+                {
+                    if (instr.OpCode.Code == Mono.Cecil.Cil.Code.Ldstr && instr.Operand is string literal)
+                        Add(_literals, owner, literal);
+                    else if (instr.Operand is MethodReference called)
+                        Add(_calls, owner, called.FullName);
+                }
+            }
+        }
+
+        private static void Add(Dictionary<string, HashSet<string>> map, string owner, string value)
+        {
+            if (!map.TryGetValue(owner, out var set))
+                map[owner] = set = new HashSet<string>(StringComparer.Ordinal);
+            set.Add(value);
+        }
+    }
+
+    /// <summary>Read <see cref="ScanFacts"/> off every hosted Gateway assembly.</summary>
+    private static ScanFacts GatherScanFacts()
+    {
+        var facts = new ScanFacts();
+        foreach (var (_, module) in LoadHostedGatewayModules())
+        {
+            using (module)
+            {
+                foreach (var type in AllTypes(module))
+                    facts.Observe(type);
+            }
+        }
+        return facts;
+    }
+
     private static IEnumerable<(string File, ModuleDefinition Module)> LoadHostedGatewayModules()
     {
         var baseDir = Path.GetDirectoryName(typeof(GatewayDatabase).Assembly.Location)!;
