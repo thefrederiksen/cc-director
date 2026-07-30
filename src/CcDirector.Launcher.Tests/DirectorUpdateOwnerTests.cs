@@ -124,4 +124,54 @@ public class DirectorUpdateOwnerTests
             try { Directory.Delete(dir, true); } catch { /* best effort */ }
         }
     }
+
+    // ---- What the pass decided, written where something other than the log can read it -----------
+
+    [Fact]
+    public void Record_WritesTheDecisionIntoTheDirectorsOwnStateFile()
+    {
+        // Issue #1030. Before this, every one of these decisions existed only as a line in the
+        // launcher's log on that machine. HeldBecauseBusy - "waiting for your sessions to finish" -
+        // looked exactly like a stall from outside, and a rollback could not be learned at all.
+        var dir = Path.Combine(Path.GetTempPath(), "cc-duo-record-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var path = Path.Combine(dir, "updater-state.json");
+            new UpdaterState { StagedVersion = "1.9.1", StagedExecutable = "x", InstallTarget = "y" }.SaveTo(path);
+            var staged = new StagedDirectorUpdate("1.9.1", "x", "y", path);
+
+            var returned = DirectorUpdateOwner.Record(staged, DirectorUpdateDecision.HeldBecauseBusy,
+                "2 session(s) were running.");
+
+            // The decision is passed straight back, so recording can never change what the launcher did.
+            Assert.Equal(DirectorUpdateDecision.HeldBecauseBusy, returned);
+
+            var reloaded = UpdaterState.LoadFrom(path);
+            Assert.Equal("HeldBecauseBusy", reloaded.LastApplyDecision);
+            Assert.Equal("1.9.1", reloaded.LastApplyVersion);
+            Assert.Equal("2 session(s) were running.", reloaded.LastApplyDetail);
+            Assert.NotNull(reloaded.LastApplyDecisionAt);
+
+            // Everything else in the file is left exactly as it was - the launcher owns four fields
+            // here and the Director owns the rest.
+            Assert.Equal("1.9.1", reloaded.StagedVersion);
+            Assert.Equal("x", reloaded.StagedExecutable);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); } catch { /* best effort */ }
+        }
+    }
+
+    [Fact]
+    public void Record_OnAnUnwritableFile_StillReturnsTheDecision()
+    {
+        // Failing to write down what happened must never change what happened.
+        var staged = new StagedDirectorUpdate("1.9.1", "x", "y",
+            Path.Combine(Path.GetTempPath(), "cc-duo-missing-" + Guid.NewGuid().ToString("N"), "nested", "..", "?", "s.json"));
+
+        Assert.Equal(DirectorUpdateDecision.RolledBack,
+            DirectorUpdateOwner.Record(staged, DirectorUpdateDecision.RolledBack, "it never came up"));
+    }
 }

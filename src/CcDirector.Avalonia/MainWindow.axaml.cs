@@ -295,6 +295,10 @@ public partial class MainWindow : Window
         PromptInput.GotFocus += PromptInput_GotFocus;
 
         SetBuildInfo();
+        // The update status paints from the first frame and keeps itself current. It is deliberately
+        // started here, beside the version footer, because the two answer the same question and only
+        // one of them used to have an answer (issue #1030).
+        StartUpdateStatusDisplay();
         _ = InitializeScreenshotsPanelAsync();
         // No automatic workspace picker on startup (like VS Code). Use File | Open Workspace.
 
@@ -4961,127 +4965,134 @@ public partial class MainWindow : Window
         PasteCard.IsVisible = false;
     }
 
-    // ==================== AUTO-UPDATE NOTICE ====================
+    // ==================== AUTO-UPDATE STATUS ====================
+    //
+    // Issue #1030. This panel used to hide itself whenever there was "nothing to report", and it only
+    // ever knew what the update service had just told it. The result was that up to date, has not
+    // checked yet, downloading, downloaded and waiting for a restart, and a check that failed because
+    // a release's downloads had not been attached yet all looked like the same thing: a version number
+    // that did not change. The owner concluded auto-update was broken while it was carrying his machine
+    // from 1.8.0 to 1.8.6, and nothing in the product could have told him otherwise.
+    //
+    // So the panel is now ALWAYS VISIBLE and says which of those it is, and none of the code here
+    // decides what any of it means. UpdateStatusFold computes the words, the colors and the one action
+    // that is actually available; this renders them. That is critical rule 7, and it is not a style
+    // preference: a client that works out for itself what a state means will, the first time it meets a
+    // combination nobody thought of, draw something plausible instead of something true.
 
-    /// <summary>True once a verified build is staged, so the sidebar indicator stays green.</summary>
-    private bool _updateStaged;
-
-    // Icons reused from the Gateway indicator: a ring while busy, a check when ready,
-    // a cross on failure.
+    /// <summary>Icons: a ring while busy, a check when settled, a cross on a problem, a dot when idle.</summary>
     private const string UpdateIconRing = GatewayIconRing;
     private const string UpdateIconCheck = GatewayIconCheck;
     private const string UpdateIconCross = GatewayIconCross;
+    private const string UpdateIconDot = "M8,1 A7,7 0 1 0 8,15 A7,7 0 1 0 8,1 Z M8,3 A5,5 0 1 1 8,13 A5,5 0 1 1 8,3 Z";
+
+    /// <summary>The status last painted, so a click knows which action the panel was offering.</summary>
+    private CcDirector.Core.Update.UpdateStatusView? _updateStatus;
 
     /// <summary>
-    /// Passively note that an update has been downloaded. It installs
-    /// automatically the next time CC Director is launched -- the running app is
-    /// never interrupted, so no active sessions are lost. Called by App after
-    /// UpdateService stages a verified build (marshalled to the UI thread).
+    /// Repaints the panel on a slow tick. Most of what it says is only true relative to NOW - "checked
+    /// 4 minutes ago" - and the launcher writes its decisions into the shared record from another
+    /// process entirely, so nothing here would otherwise learn that an install was held or rolled back.
+    /// </summary>
+    private DispatcherTimer? _updateStatusTimer;
+
+    /// <summary>Start painting the update status, and keep it current. Called once from startup.</summary>
+    private void StartUpdateStatusDisplay()
+    {
+        RefreshUpdateStatus();
+        _updateStatusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(20) };
+        _updateStatusTimer.Tick += (_, _) => RefreshUpdateStatus();
+        _updateStatusTimer.Start();
+    }
+
+    /// <summary>
+    /// Ask for the current status and render it, field for field. The only judgement here is layout.
+    /// </summary>
+    public void RefreshUpdateStatus()
+    {
+        try
+        {
+            var status = CcDirector.Core.Update.UpdateStatusBoard.Current();
+            if (status is null)
+            {
+                // The updater has not been constructed yet - a window or two of startup. Say nothing
+                // rather than inventing a status; this is the only moment the panel is not shown.
+                UpdateIndicator.IsVisible = false;
+                return;
+            }
+
+            _updateStatus = status;
+
+            UpdateIndicatorIcon.Data = Geometry.Parse(IconFor(status.Icon));
+            UpdateIndicatorIcon.Fill = Brush.Parse(status.Accent);
+            UpdateIndicator.Background = Brush.Parse(status.Background);
+            UpdateIndicator.BorderBrush = Brush.Parse(status.Border);
+            UpdateIndicatorLabel.Text = status.Headline;
+            UpdateIndicatorLabel.Foreground = Brush.Parse(status.Accent);
+            UpdateIndicatorSub.Text = status.Detail;
+
+            var action = status.CanInstallNow ? status.InstallNowLabel
+                       : status.CanCheckNow ? status.CheckNowLabel
+                       : null;
+            UpdateIndicatorAction.Text = action ?? "";
+            UpdateIndicatorAction.IsVisible = action is not null;
+            UpdateIndicatorAction.Foreground = Brush.Parse(status.Accent);
+
+            ToolTip.SetTip(UpdateIndicator, status.Tooltip);
+            UpdateIndicator.Cursor = new Cursor(action is null ? StandardCursorType.Arrow : StandardCursorType.Hand);
+            UpdateIndicator.IsVisible = true;
+
+            if (status.Busy && status.PercentComplete is { } percent)
+                ShowUpdateDownloadProgress(status, percent);
+            else
+                HideDownloadProgress();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] RefreshUpdateStatus FAILED: {ex.Message}");
+        }
+    }
+
+    private static string IconFor(string icon) => icon switch
+    {
+        "ring" => UpdateIconRing,
+        "check" => UpdateIconCheck,
+        "cross" => UpdateIconCross,
+        _ => UpdateIconDot,
+    };
+
+    /// <summary>
+    /// Note that a build has finished downloading. What happens NEXT is the launcher's to decide, so
+    /// this says only what is certainly true and points at the panel for the rest. It used to promise
+    /// "installs next time you open the app", which stopped being how it works when the launcher took
+    /// ownership of the install (issue #1033) - it now happens without anyone opening anything, as soon
+    /// as this Director is idle.
     /// </summary>
     public void ShowUpdateReady(string version)
     {
         FileLog.Write($"[MainWindow] ShowUpdateReady: {version}");
-        ShowNotification($"Director {version} downloaded -- installs next time you open the app.");
+        ShowNotification($"Director {version} downloaded. It installs on its own once no sessions are running.");
+        RefreshUpdateStatus();
     }
 
     /// <summary>
-    /// Drive the sidebar update indicator and the notification-bar progress bar from
-    /// UpdateService phase/byte events (already marshalled to the UI thread by App).
-    /// Makes the otherwise-silent check + download visible.
+    /// A phase event from the update service. The board has already been told; this only makes the
+    /// panel repaint immediately rather than at the next tick, so a check a person just asked for
+    /// visibly starts.
     /// </summary>
     public void OnUpdateProgress(CcDirector.Core.Update.UpdateProgress p)
     {
-        try
-        {
-            switch (p.Phase)
-            {
-                case CcDirector.Core.Update.UpdatePhase.Checking:
-                    SetUpdateIndicator(UpdateIconRing, "#3B82F6", "#1B2A3A", "#3B82F6",
-                        "CHECKING FOR UPDATES", "contacting GitHub...");
-                    HideDownloadProgress();
-                    break;
-
-                case CcDirector.Core.Update.UpdatePhase.Downloading:
-                    var pct = p.Fraction is { } f ? (int)Math.Round(f * 100) : 0;
-                    SetUpdateIndicator(UpdateIconRing, "#3B82F6", "#1B2A3A", "#3B82F6",
-                        "DOWNLOADING UPDATE",
-                        p.Fraction is null ? $"{p.Version}" : $"{p.Version} - {pct}%");
-                    ShowDownloadProgress(p, pct);
-                    break;
-
-                case CcDirector.Core.Update.UpdatePhase.Verifying:
-                    SetUpdateIndicator(UpdateIconRing, "#3B82F6", "#1B2A3A", "#3B82F6",
-                        "VERIFYING UPDATE", $"{p.Version} - checking integrity");
-                    NotificationProgress.IsVisible = true;
-                    NotificationProgress.IsIndeterminate = false;
-                    NotificationProgress.Value = 100;
-                    NotificationProgressMeta.IsVisible = true;
-                    NotificationProgressMeta.Text = "verifying...";
-                    break;
-
-                case CcDirector.Core.Update.UpdatePhase.Staged:
-                    _updateStaged = true;
-                    SetUpdateIndicator(UpdateIconCheck, "#22C55E", "#1B3A2A", "#22C55E",
-                        "UPDATE READY", $"{p.Version} - installs on restart",
-                        "Restarting Director will install this update.");
-                    HideDownloadProgress();
-                    break;
-
-                case CcDirector.Core.Update.UpdatePhase.UpToDate:
-                    // Nothing to do: keep the indicator hidden unless an update is already staged.
-                    if (!_updateStaged) UpdateIndicator.IsVisible = false;
-                    HideDownloadProgress();
-                    break;
-
-                case CcDirector.Core.Update.UpdatePhase.Failed:
-                    SetUpdateIndicator(UpdateIconCross, "#F59E0B", "#3A2A1B", "#F59E0B",
-                        "UPDATE CHECK FAILED", "click to retry");
-                    HideDownloadProgress();
-                    break;
-            }
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[MainWindow] OnUpdateProgress FAILED: {ex.Message}");
-        }
+        RefreshUpdateStatus();
     }
 
-    /// <summary>
-    /// Update the sidebar indicator. When <paramref name="hint"/> is null the indicator is
-    /// clickable to run a manual check now; pass a hint to make it purely informational (used
-    /// once an update is staged, where there is nothing left to check for).
-    /// </summary>
-    private void SetUpdateIndicator(string icon, string accent, string bg, string border, string label, string sub, string? hint = null)
-    {
-        UpdateIndicatorIcon.Data = Geometry.Parse(icon);
-        UpdateIndicatorIcon.Fill = Brush.Parse(accent);
-        UpdateIndicator.Background = Brush.Parse(bg);
-        UpdateIndicator.BorderBrush = Brush.Parse(border);
-        UpdateIndicatorLabel.Text = label;
-        UpdateIndicatorLabel.Foreground = Brush.Parse(accent);
-        UpdateIndicatorSub.Text = sub;
-        ToolTip.SetTip(UpdateIndicator, $"{label}\n{sub}\n{hint ?? "Click to check for updates now."}");
-        // A staged update is informational only (hint set), so drop the clickable hand cursor.
-        UpdateIndicator.Cursor = new Cursor(hint is null ? StandardCursorType.Hand : StandardCursorType.Arrow);
-        UpdateIndicator.IsVisible = true;
-    }
-
-    private void ShowDownloadProgress(CcDirector.Core.Update.UpdateProgress p, int pct)
+    private void ShowUpdateDownloadProgress(CcDirector.Core.Update.UpdateStatusView status, int percent)
     {
         NotificationIcon.IsVisible = false;
-        NotificationText.Text = $"Downloading Director {p.Version}...";
+        NotificationText.Text = status.Detail;
         NotificationProgress.IsVisible = true;
-        if (p.Fraction is not null)
-        {
-            NotificationProgress.IsIndeterminate = false;
-            NotificationProgress.Value = pct;
-            NotificationProgressMeta.Text = $"{pct}%   {FormatMb(p.Downloaded)} / {FormatMb(p.Total)}";
-        }
-        else
-        {
-            NotificationProgress.IsIndeterminate = true;
-            NotificationProgressMeta.Text = $"{FormatMb(p.Downloaded)} downloaded";
-        }
+        NotificationProgress.IsIndeterminate = false;
+        NotificationProgress.Value = percent;
+        NotificationProgressMeta.Text = $"{percent}%";
         NotificationProgressMeta.IsVisible = true;
         NotificationBar.IsVisible = true;
     }
@@ -5093,28 +5104,46 @@ public partial class MainWindow : Window
         NotificationProgressMeta.IsVisible = false;
     }
 
-    private static string FormatMb(long bytes) => $"{bytes / 1048576.0:0.0} MB";
-
-    /// <summary>Click the sidebar indicator to run a check now (off the UI thread).</summary>
+    /// <summary>
+    /// Take whichever action the fold offered. The panel never chooses between them and never invents
+    /// one: if the fold offered nothing, a click does nothing, because there was nothing that could be
+    /// done. That is the difference between this and a button that sits there looking available.
+    /// </summary>
     private void UpdateIndicator_PointerPressed(object? sender, PointerPressedEventArgs e)
     {
         try
         {
-            // Once an update is staged there is nothing left to check for -- the indicator is
-            // purely informational and a click must not kick off another check.
-            if (_updateStaged)
+            var status = _updateStatus;
+            if (status is null) return;
+
+            if (status.CanInstallNow)
             {
-                FileLog.Write("[MainWindow] UpdateIndicator clicked while update staged - ignoring (informational only)");
+                FileLog.Write("[MainWindow] update panel clicked - asking the launcher to install now");
+                ShowNotification("Asking the launcher to install the update and restart the Director...");
+                _ = Task.Run(async () =>
+                {
+                    var result = await CcDirector.Core.Update.LauncherRestartClient.RequestRestartAsync();
+                    Dispatcher.UIThread.Post(() =>
+                    {
+                        ShowNotification(result.Message);
+                        RefreshUpdateStatus();
+                    });
+                });
                 return;
             }
-            var updater = (global::Avalonia.Application.Current as App)?.Updater;
-            if (updater is null)
+
+            if (status.CanCheckNow)
             {
-                FileLog.Write("[MainWindow] UpdateIndicator_PointerPressed: no updater available");
+                FileLog.Write("[MainWindow] update panel clicked - on-demand check");
+                _ = Task.Run(async () =>
+                {
+                    await CcDirector.Core.Update.UpdateStatusBoard.CheckNowAsync();
+                    Dispatcher.UIThread.Post(RefreshUpdateStatus);
+                });
                 return;
             }
-            FileLog.Write("[MainWindow] UpdateIndicator clicked - manual update check");
-            _ = Task.Run(() => updater.CheckAndStageAsync());
+
+            FileLog.Write($"[MainWindow] update panel clicked in state {status.State}, which offers no action - ignoring");
         }
         catch (Exception ex)
         {
@@ -5671,6 +5700,9 @@ public partial class MainWindow : Window
 
         // Stop git status polling
         _sessionGitTimer?.Stop();
+
+        // Stop repainting the update status
+        _updateStatusTimer?.Stop();
 
         // Cleanup screenshot watcher
         _screenshotDebounceTimer?.Stop();
