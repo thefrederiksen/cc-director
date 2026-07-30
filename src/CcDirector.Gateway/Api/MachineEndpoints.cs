@@ -331,7 +331,11 @@ internal static class MachineEndpoints
             // here rather than forwarding it to a Director that no longer owns mission validation.
             if (req.MissionId is Guid spawnMissionId && missions is not null)
             {
-                var mission = missions.Get(spawnMissionId);
+                // #1039: resolve the mission in the CALLING tenant. This lookup was by bare id, so naming
+                // another account's mission id here stamped that account's mission NAME - free text a person
+                // typed - onto the caller's own session. It is the same disclosure GET /missions/{mid} was,
+                // reached through the spawn route instead, and the issue does not name it.
+                var mission = missions.Get(tenant, spawnMissionId);
                 if (mission is null)
                 {
                     FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/sessions: unknown mission {spawnMissionId}");

@@ -31,8 +31,10 @@ public sealed class MissionCommandTests
         return (sm, session);
     }
 
+    // The Director's store is single-tenant - one machine, one owner - so every record is Local's (#1039).
     private static MissionStore NewMissionStore() =>
-        new(Path.Combine(Path.GetTempPath(), $"test_missions_{Guid.NewGuid()}.json"));
+        new(Path.Combine(Path.GetTempPath(), $"test_missions_{Guid.NewGuid()}.json"),
+            adoptUnattributedAs: Core.Tenancy.TenantId.Local);
 
     private static DirectorCommand AttachCommand(string sid, Guid? missionId) => new()
     {
@@ -57,7 +59,7 @@ public sealed class MissionCommandTests
         try
         {
             var store = NewMissionStore();
-            var mission = store.Create("Session Lifecycle");
+            var mission = store.Create(Core.Tenancy.TenantId.Local, "Session Lifecycle");
             var services = new SessionCommandServices { MissionStore = store };
 
             var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", AttachCommand(session.Id.ToString(), mission.MissionId), services);
@@ -98,7 +100,7 @@ public sealed class MissionCommandTests
         try
         {
             var store = NewMissionStore();
-            var mission = store.Create("Session Lifecycle");
+            var mission = store.Create(Core.Tenancy.TenantId.Local, "Session Lifecycle");
             var services = new SessionCommandServices { MissionStore = store };
 
             await SessionCommandExecutor.DispatchAsync(sm, "dir-A", AttachCommand(session.Id.ToString(), mission.MissionId), services);
@@ -120,7 +122,7 @@ public sealed class MissionCommandTests
         try
         {
             var store = NewMissionStore();
-            var mission = store.Create("Session Lifecycle");
+            var mission = store.Create(Core.Tenancy.TenantId.Local, "Session Lifecycle");
             var services = new SessionCommandServices { MissionStore = store };
 
             var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", AttachCommand(Guid.NewGuid().ToString(), mission.MissionId), services);
@@ -152,7 +154,7 @@ public sealed class MissionCommandTests
         try
         {
             var store = NewMissionStore();
-            var mission = store.Create("Session Lifecycle");
+            var mission = store.Create(Core.Tenancy.TenantId.Local, "Session Lifecycle");
             var services = new SessionCommandServices { MissionStore = store };
 
             var command = CreateCommand(new NewSessionRequest
@@ -233,7 +235,7 @@ public sealed class MissionCommandTests
         try
         {
             var store = NewMissionStore();
-            var mission = store.Create("Name From Director Store");
+            var mission = store.Create(Core.Tenancy.TenantId.Local, "Name From Director Store");
             var services = new SessionCommandServices { MissionStore = store };
 
             var command = CreateCommand(new NewSessionRequest

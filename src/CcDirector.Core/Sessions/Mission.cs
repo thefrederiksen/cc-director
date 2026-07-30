@@ -22,4 +22,16 @@ public sealed class Mission
 
     /// <summary>UTC timestamp the Mission was created. Used for stable list ordering.</summary>
     public DateTimeOffset CreatedAt { get; set; }
+
+    /// <summary>
+    /// The tenant that owns this Mission, stamped at creation from the CALLER's authenticated identity -
+    /// never from anything a client sends. Every read is filtered on it, so a mission is only ever served to
+    /// the tenant that wrote it.
+    ///
+    /// Null means UNATTRIBUTED: a record written before missions carried an owner. On a single-tenant
+    /// install there is exactly one tenant by construction, so <see cref="MissionStore"/> may be told to
+    /// adopt those rows as that tenant; where more than one tenant shares the store, an unattributed row
+    /// belongs to nobody and is served to nobody. See <see cref="MissionStore"/> for the rule.
+    /// </summary>
+    public string? TenantId { get; set; }
 }

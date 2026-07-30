@@ -503,7 +503,7 @@ internal static class SessionCommandExecutor
             {
                 // Transitional bridge: resolve the name from the local Director MissionStore. Removed with
                 // the Director MissionStore in Phase 1.
-                var mission = services?.MissionStore?.Get(createMissionId);
+                var mission = services?.MissionStore?.Get(Core.Tenancy.TenantId.Local, createMissionId);
                 if (mission is null)
                     return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest,
                         $"unknown mission '{createMissionId}'. Create it first with POST /missions.");
@@ -781,7 +781,8 @@ internal static class SessionCommandExecutor
             return DirectorCommandResult.Success(Serialize(ControlEndpoints.Map(session, directorId)));
         }
 
-        var mission = services?.MissionStore?.Get(missionId);
+        // The Director's store is single-tenant - one machine, one owner - so Local is its whole world.
+        var mission = services?.MissionStore?.Get(Core.Tenancy.TenantId.Local, missionId);
         if (mission is null)
             return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest,
                 $"unknown mission '{missionId}'. Create it first with POST /missions.");

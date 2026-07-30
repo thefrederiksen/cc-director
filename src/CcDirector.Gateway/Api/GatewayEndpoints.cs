@@ -231,11 +231,24 @@ internal static class GatewayEndpoints
         //   GET  /missions/{mid}  -> MissionDto | 404
         if (missions is not null)
         {
-            app.MapPost("/missions", (NewMissionRequest req) =>
+            app.MapPost("/missions", (NewMissionRequest req, HttpContext ctx) =>
             {
                 FileLog.Write($"[GatewayEndpoints] POST /missions: name=\"{req?.MissionName}\"");
                 if (req is null || string.IsNullOrWhiteSpace(req.MissionName))
                     return Results.BadRequest(new { error = "missionName is required" });
+
+                // #1039: stamp the CALLER's own tenant on the record at write time. A read-side filter
+                // alone would be a deferred leak - unattributed rows would keep accumulating behind it,
+                // which is exactly how the shared store came to hold several accounts' missions.
+                var tenant = ResolveReadTenant(ctx, tenantBoundary);
+                if (tenant is null)
+                    return Results.Json(new { error = "no tenant is bound to this request" },
+                        statusCode: StatusCodes.Status403Forbidden);
+
+                // A parent is a reference INTO the mission set, so it resolves under the same scope as any
+                // other read: naming another tenant's mission as a parent is not a way to reach it.
+                if (req.ParentMissionId is Guid parentId && missions.Get(tenant.Value, parentId) is null)
+                    return Results.BadRequest(new { error = $"unknown parent mission '{parentId}'" });
 
                 // Workflows mission (phase 4, issue #1771): a mission IS a run of the built-in
                 // "mission" workflow. The EXPECTED failure (mission workflow unrunnable) is checked
@@ -264,7 +277,7 @@ internal static class GatewayEndpoints
                     }
                 }
 
-                var mission = missions.Create(req.MissionName, req.ParentMissionId);
+                var mission = missions.Create(tenant.Value, req.MissionName, req.ParentMissionId);
                 var dto = ToMissionDto(mission);
                 if (workflowRuns is not null && missionWorkflowEnabled != false)
                 {
@@ -293,15 +306,33 @@ internal static class GatewayEndpoints
                 return Results.Json(dto, statusCode: StatusCodes.Status201Created);
             });
 
-            app.MapGet("/missions", () =>
-                Results.Json(missions.List().Select(ToMissionDto).ToList()));
+            // #1039: the list is the caller's OWN missions. It used to be missions.List() - every account's
+            // missions, served to every account, on one shared hosted store. A request that resolves to no
+            // tenant is DENIED (403), never served the Local partition.
+            app.MapGet("/missions", (HttpContext ctx) =>
+            {
+                var tenant = ResolveReadTenant(ctx, tenantBoundary);
+                if (tenant is null)
+                    return Results.Json(new { error = "no tenant is bound to this request" },
+                        statusCode: StatusCodes.Status403Forbidden);
 
-            app.MapGet("/missions/{mid}", (string mid) =>
+                return Results.Json(missions.List(tenant.Value).Select(ToMissionDto).ToList());
+            });
+
+            // #1039: resolve INSIDE the caller's own tenant. A mission id that belongs to another account
+            // answers 404 - the same answer as an id that does not exist - so an id cannot be probed for
+            // existence, let alone read.
+            app.MapGet("/missions/{mid}", (string mid, HttpContext ctx) =>
             {
                 if (!Guid.TryParse(mid, out var missionId))
                     return Results.BadRequest(new { error = "invalid mission id format" });
 
-                var mission = missions.Get(missionId);
+                var tenant = ResolveReadTenant(ctx, tenantBoundary);
+                if (tenant is null)
+                    return Results.Json(new { error = "no tenant is bound to this request" },
+                        statusCode: StatusCodes.Status403Forbidden);
+
+                var mission = missions.Get(tenant.Value, missionId);
                 return mission is null
                     ? Results.NotFound(new { error = "mission not found" })
                     : Results.Json(ToMissionDto(mission));
