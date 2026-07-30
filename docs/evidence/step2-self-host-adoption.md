@@ -249,6 +249,20 @@ person able to see the gap in it:
 - **A live downgrade has not been exercised end to end.** The stamp is proven to be written and to equal what
   the shipped code writes; that an older BUILD then produces its refusal rests on that build's existing,
   already-shipped version check rather than on a test run here.
+- **An INTERRUPTED first migration is not recovered, and is not contained by the adoption step.** The step
+  treats the presence of `__EFMigrationsHistory` as meaning the store is tracked, and returns `AlreadyTracked`
+  without inspecting which migrations that table records. If a first `Migrate()` ever died partway - after
+  Entity Framework created the history table but before the baseline was recorded - the store would come back
+  with an empty history beside tables that already exist, this step would report it usable, and the chain
+  would then fail on `table "stat_delta" already exists` OUTSIDE the step's containment.
+
+  Adoption itself cannot produce that state: it creates the history table and stamps the baseline in ONE
+  transaction, so the pair is all-or-nothing. The state is reachable only through an interrupted Entity
+  Framework migration, which is the ordinary interrupted-migration failure for any database on this layer
+  rather than anything specific to adoption, and recovering from it would mean partial-migration repair -
+  well outside this work. It is named here rather than left silent because "the store has a history table"
+  and "the store is at the baseline" are not the same claim, and this step currently only checks the first.
+
 - **THE WHOLE SOLUTION HAS NEVER BEEN BUILT OR TESTED FOR THIS WORK, and no automated check covers it.**
   `.github/workflows/ci.yml` fires only on a push to `main` and on pull requests whose base is `main`. This
   work sits on a worker branch merging into the mission branch `nosqlite-stats`, which matches neither, and
