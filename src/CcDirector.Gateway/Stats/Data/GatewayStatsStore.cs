@@ -398,20 +398,27 @@ public sealed class GatewayStatsStore : IDisposable
         // Left exactly as found. Repair means deciding what to do about tables holding somebody's numbers,
         // and a startup path that quietly reshapes a store is how numbers disappear without anybody knowing
         // which build did it.
-        if (pending.Count > 0 && !context.Database.GetAppliedMigrations().Any())
+        // THE CONDITION IS "THE BASELINE IS NOT RECORDED", not "nothing is recorded". It used to be the
+        // second, which was accidentally correct only because the chain has exactly ONE migration today: with
+        // one migration the applied set is either empty or holds the baseline, so the two conditions agree.
+        // They stop agreeing the moment a second migration joins the chain, and then a store whose history
+        // records something OTHER than the baseline walks straight past this check. A condition that is right
+        // for a reason unrelated to what it means is a defect waiting for an ordinary commit to arm it.
+        var baseline = context.Database.GetMigrations().FirstOrDefault();
+        var applied = context.Database.GetAppliedMigrations().ToList();
+        var baselineRecorded =
+            !string.IsNullOrEmpty(baseline) && applied.Contains(baseline!, StringComparer.Ordinal);
+
+        if (pending.Count > 0 && !baselineRecorded)
         {
             var alreadyThere = ExistingModelTables(context, choice);
             if (alreadyThere.Count > 0)
             {
-                var detail =
-                    $"The statistics store ({choice.Target}) has a HALF-BUILT SCHEMA: its migration history " +
-                    $"records nothing as applied, yet {alreadyThere.Count} table(s) it owns already exist " +
-                    $"({string.Join(", ", alreadyThere)}). That is what a process stopped part-way through " +
-                    "its first migration leaves behind. The database is reachable and the settings are " +
-                    "correct, so this is NOT a network or connection problem - it is the store on disk, and " +
-                    "it has NOT been changed in any way. Statistics are unavailable; the Gateway is serving " +
-                    "normally and the rest of it is unaffected.";
-                FileLog.Write($"[GatewayStatsStore] Migrate: REFUSED, half-built schema: {detail}");
+                var detail = HalfBuiltDetail(choice, alreadyThere,
+                    $"its migration history records {applied.Count} migration(s) and NOT the baseline " +
+                    $"'{baseline}', yet {alreadyThere.Count} table(s) it owns already exist " +
+                    $"({string.Join(", ", alreadyThere)})");
+                FileLog.Write($"[GatewayStatsStore] Migrate: REFUSED, half-built schema (pre-check): {detail}");
                 return new StatsStoreAdoptionResult(
                     StatsStoreAdoptionOutcome.NotAdoptable,
                     StatsStoreUnavailableReason.StoreSchemaIncomplete,
@@ -428,7 +435,40 @@ public sealed class GatewayStatsStore : IDisposable
         {
             FileLog.Write($"[GatewayStatsStore] Migrate: {pending.Count} pending statistics migration(s), " +
                           $"applying: {string.Join(", ", pending)}");
-            context.Database.Migrate();
+            try
+            {
+                context.Database.Migrate();
+            }
+            catch (Exception ex)
+            {
+                // RECOGNISE IT RATHER THAN ONLY PREDICT IT. The pre-check above can never be COMPLETE about a
+                // state left by a process that DIED: being complete would mean enumerating every object each
+                // pending migration would create, and the next unusual death produces a shape nobody
+                // enumerated. So the half-built store is also recognised WHEN IT HAPPENS.
+                //
+                // A duplicate-object failure is definitionally "the schema already contains what this
+                // migration is creating", which IS a half-built store. And it is the dangerous case for the
+                // fault classifier, because the classifier is CORRECT about it and still wrong about the
+                // world: a duplicate-table error genuinely is a provider exception, so the rule calls it the
+                // operator's fault and reports UNREACHABLE - sending somebody to check a network over a
+                // schema that is sitting half-built on their disk. Recognised here, before the boundary ever
+                // sees it.
+                if (!IsDuplicateObjectFailure(ex, choice, context, out var duplicateSignal))
+                    throw;
+
+                var alreadyThere = ExistingModelTables(context, choice);
+                var detail = HalfBuiltDetail(choice, alreadyThere,
+                    $"applying migration(s) {string.Join(", ", pending)} failed because the schema already " +
+                    $"contains what they create ({duplicateSignal})");
+                FileLog.Write(
+                    $"[GatewayStatsStore] Migrate: REFUSED, half-built schema (recognised on failure, " +
+                    $"{duplicateSignal}): {detail}");
+                return new StatsStoreAdoptionResult(
+                    StatsStoreAdoptionOutcome.NotAdoptable,
+                    StatsStoreUnavailableReason.IncompleteSchema,
+                    detail);
+            }
+
             FileLog.Write($"[GatewayStatsStore] Migrate: applied {pending.Count} statistics migration(s)");
         }
 
@@ -436,6 +476,105 @@ public sealed class GatewayStatsStore : IDisposable
             StatsStoreAdoptionOutcome.AlreadyTracked, StatsStoreUnavailableReason.None,
             "The statistics store is open and its schema is up to date.");
     }
+
+    /// <summary>
+    /// PostgreSQL SQLSTATEs that mean "the thing this statement is creating is already there".
+    ///
+    /// CODES AND NOT MESSAGE TEXT. A message is localised, reworded between server versions and different per
+    /// object kind; a SQLSTATE is part of the PostgreSQL protocol contract and does not move. Matching on the
+    /// words "already exists" would be the message sniffing this class deliberately avoids everywhere else.
+    /// </summary>
+    private static readonly Dictionary<string, string> PostgresDuplicateObjectStates = new(StringComparer.Ordinal)
+    {
+        ["42P07"] = "duplicate_table",     // also index, view, sequence - Postgres calls them all relations
+        ["42701"] = "duplicate_column",
+        ["42710"] = "duplicate_object",    // constraints, types, and the rest
+        ["42P06"] = "duplicate_schema",
+        ["42723"] = "duplicate_function",
+        ["42P04"] = "duplicate_database",
+    };
+
+    /// <summary>
+    /// Whether a PostgreSQL failure carries a duplicate-object SQLSTATE anywhere in its chain.
+    ///
+    /// Separated from the provider-aware method so it is reachable by a test WITHOUT a PostgreSQL server:
+    /// the whole point of keying off SQLSTATE rather than message text is that the code can be asserted
+    /// directly, and a recogniser nothing can exercise until someone stands up a server is a recogniser
+    /// nobody has watched work.
+    ///
+    /// The inner chain is walked because Entity Framework wraps provider exceptions during migration.
+    /// </summary>
+    public static bool IsPostgresDuplicateObjectFailure(Exception? exception, out string signal)
+    {
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is Npgsql.PostgresException pg
+                && PostgresDuplicateObjectStates.TryGetValue(pg.SqlState, out var name))
+            {
+                signal = $"SQLSTATE {pg.SqlState} {name}";
+                return true;
+            }
+        }
+
+        signal = string.Empty;
+        return false;
+    }
+
+    /// <summary>
+    /// Whether a failed migration failed BECAUSE the schema already holds what it was creating - the
+    /// signature of a half-built store, recognised after the fact rather than predicted in advance.
+    /// </summary>
+    /// <param name="signal">What identified it, for the log: the SQLSTATE on PostgreSQL, or the observed
+    /// state on SQLite.</param>
+    /// <remarks>
+    /// THE TWO PROVIDERS ARE NOT SYMMETRIC AND THE DIFFERENCE IS STATED RATHER THAN PAPERED OVER.
+    ///
+    /// PostgreSQL answers precisely: <c>PostgresException.SqlState</c> carries a dedicated code per duplicate
+    /// object kind, so the recognition is exact and is protocol contract rather than inference.
+    ///
+    /// SQLITE HAS NO SUCH CODE, and that is a finding rather than an inconvenience. "table x already exists"
+    /// is plain <c>SQLITE_ERROR</c> (result code 1) - the same code SQLite returns for most statement
+    /// failures - and no extended result code distinguishes it. The ONLY thing in a SQLite exception that
+    /// identifies a duplicate object is the message text, which is exactly what must not be relied on.
+    ///
+    /// So the SQLite arm does not read the exception at all: it RE-OBSERVES THE STORE. If a migration failed
+    /// and this model's tables are already present, the store is half built - which is a statement about
+    /// what is on disk rather than an inference from an error string, and it is checkable by looking. It is
+    /// deliberately NOT presented as an equivalent of the SQLSTATE: it is weaker (a migration that failed for
+    /// an unrelated reason against a store whose tables happen to exist reads as half-built), and it is
+    /// narrower than the PostgreSQL arm on purpose, since on SQLite the adoption step ahead of it has already
+    /// refused the ordinary shapes of this state.
+    /// </remarks>
+    private static bool IsDuplicateObjectFailure(
+        Exception exception, StatsConnectionChoice choice, GatewayStatsDbContext context, out string signal)
+    {
+        signal = string.Empty;
+
+        if (choice.IsPostgres)
+            return IsPostgresDuplicateObjectFailure(exception, out signal);
+
+        // SQLite: no distinguishing code exists, so the STORE is re-read instead of the exception.
+        var present = ExistingModelTables(context, choice);
+        if (present.Count == 0)
+            return false;
+
+        signal = $"SQLite reports no duplicate-object code, so the store was re-read: {present.Count} " +
+                 "table(s) this model owns are already present";
+        return true;
+    }
+
+    /// <summary>
+    /// The operator-facing sentence for a half-built store. One place, so the pre-check and the
+    /// recognise-on-failure path cannot drift into describing the same state two different ways.
+    /// </summary>
+    private static string HalfBuiltDetail(
+        StatsConnectionChoice choice, List<string> alreadyThere, string finding) =>
+        $"The statistics store ({choice.Target}) has a HALF-BUILT SCHEMA: {finding}. That is what a process " +
+        "stopped part-way through a migration leaves behind. The database is reachable and the settings are " +
+        "correct, so this is NOT a network or connection problem - it is the store on disk, and it has NOT " +
+        "been changed in any way. Statistics are unavailable; the Gateway is serving normally and the rest " +
+        "of it is unaffected." +
+        (alreadyThere.Count > 0 ? $" Tables already present: {string.Join(", ", alreadyThere)}." : string.Empty);
 
     /// <summary>
     /// Whether a failure caught by the boundary is a STORAGE failure - the operator's database, network or
