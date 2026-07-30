@@ -1,21 +1,40 @@
 <!--
-  SCREENSHOTS ARE MISSING FROM THIS PAGE. Tracked: thefrederiksen/devthrottle_internal#1053.
+  SCREENSHOTS ARE PARTIAL. Tracked: thefrederiksen/devthrottle_internal#1053.
 
-  Sixteen images were deleted in thefrederiksen/devthrottle#2287 because every one showed a screen
-  that no longer exists (the Workstation/Gateway role picker, the Prerequisites screen, the Gateway
-  role). The text was rewritten against the shipping wizard; the pictures were not recaptured,
-  because the capture belongs to the clean-machine QA run rather than to a separate walk.
+  Present: all three installer screens, and setup wizard steps 2, 3, 4, 5, 6 and 7.
+  Missing: only steps 1 (Welcome) and 8 (Done). Both were captured and both are CLIPPED - their
+  content is cut off at the bottom by the window's own scrollbar - so neither is used. They need a
+  capture in a taller window; nothing else is outstanding.
+  Step 3 is the FOUND state (one agent present) and is captioned as such. The zero-agent frame was
+  lost in run one and would be a useful addition, but the prose describes that state in full and
+  the caption says which state the picture shows, so it is not misleading as it stands.
 
-  If you are adding them, read #1053 first. Three things matter more than the images:
+  RESOLUTION, stated plainly because it was reported to me wrongly once: every frame on this page
+  came from a 916x679 window (a 1024x768 desktop), NOT from a larger re-shoot. The larger re-shoot
+  was reported as delivered and had not happened - the capture wrote into a directory that still
+  held the previous run's files, skipped each shot it would have overwritten, and left the old file
+  in place, so fetching by filename returned run one's image. Verify by HASH against the run you
+  think you are taking from, not by filename or by a report.
+
+  These two are still correct as illustrations at that size - "Step 2 of 8" is legible, so
+  gateway-at-step-2 is provable from the pixel. Nothing on this page claims a resolution.
+
+  Step 1 was captured but is NOT used: its list of what the wizard covers is cut off at the bottom.
+  Do not repeat the claim that the window size causes that - #1046 is being corrected, and whether
+  size is the cause was never measured. It is not used because the frame is a poor illustration,
+  which stands on its own.
+
+  Every image here was opened and looked at before use, never trusted from its filename. Three
+  files in that run are byte-identical, so a filename is not evidence of what a frame shows.
+
+  If you are adding the rest, read #1053 first. Two things matter more than the images:
 
     1. Caption every image with its step number from FirstRunWizardModel.CanonicalOrder.
        Gateway is step 2, NOT 7. Browsers is step 7, NOT 6. Three briefs got that wrong before the
-       prose was fixed, and a caption is where the error comes back.
+       prose was fixed, and a caption is where the error comes back. The wizard renders
+       "Step N of 8" next to its dots, so a wrong caption is checkable against the pixel.
     2. The Agents step needs the ZERO-AGENT frame. A found-state picture under this page's
        zero-state prose is the same failure that got the original sixteen deleted.
-    3. Capture at a roomy resolution. At 1024x768 the Welcome and Done steps clip (#1046), and a
-       screenshot taken where a defect does not appear must not become the reason that defect is
-       closed.
 -->
 
 # Setup Wizard Walkthrough
@@ -67,6 +86,10 @@ any point.
 
 ### The three screens
 
+![DevThrottle Setup, screen 1 of 3: Welcome](assets/installer-1-welcome.png)
+
+*Installer screen 1 of 3 - Welcome. The rail shows the whole path: Welcome, Install, Complete. "No account is needed to install it."*
+
 | Step | What happens |
 |------|--------------|
 | **1. Welcome** | Says what is about to be installed. On a machine that already has DevThrottle, this becomes the Update screen and is also where an uninstall starts. |
@@ -84,6 +107,14 @@ The installer places the **Director** and the **Launcher**. The `cc-*` tools are
 up the first time you open the Director."* That is why you need a new terminal before they are on
 your `PATH`. Every file placed is verified against the release manifest's SHA-256 before it lands,
 though the screen does not say so while it works.
+
+![DevThrottle Setup, screen 2 of 3: Installing, with a progress row per component](assets/installer-2-install.png)
+
+*Installer screen 2 of 3 - Install. Director and Launcher download; Tools reads "Sets up on first launch".*
+
+![DevThrottle Setup, screen 3 of 3: Complete](assets/installer-3-complete.png)
+
+*Installer screen 3 of 3 - Complete. "2 components installed" - the Director and the Launcher. On a machine with no coding agent it says so here, rather than letting you find out later.*
 
 > **This used to be different.** Older versions of this page walked you through a **Workstation or
 > Gateway** role picker, a **Prerequisites** screen, and a **Skills** screen. All three are gone:
@@ -159,6 +190,10 @@ actually be seen rather than five screens in.
 > The gateway is what lets you check on your agents from your phone, use voice, and get your morning
 > report.
 
+![The setup wizard on step 2 of 8, Your gateway, showing three cards with Hosted pre-selected](assets/setup-02-gateway.png)
+
+*Setup wizard, **step 2 of 8** - Your gateway. The counter beside the dots reads "Step 2 of 8": the gateway is the second screen, not the seventh. Hosted is pre-selected, marked RECOMMENDED, and priced as "Part of Pro" with no figure.*
+
 Three cards:
 
 | Card | What it means |
@@ -201,6 +236,10 @@ product is.
 
 ### 3. Your agents
 
+![The setup wizard on step 3 of 8, Your agents, having found one agent](assets/setup-03-agents.png)
+
+*Setup wizard, **step 3 of 8** - Your agents. This machine already had Claude Code, so it shows the found state: the agent, its version and its path, marked Ready, with the seven it did not find listed below as "Not set up". A clean machine sees the empty state described below instead.*
+
 Scans the machine for coding agents -- Claude Code, Codex, Gemini, Copilot, Cursor, Grok, opencode,
 Pi -- and lists what it found.
 
@@ -217,6 +256,10 @@ you three ways forward:
 
 ### 4. Tools
 
+![The setup wizard on step 4 of 8, showing nine tools each marked Ready](assets/setup-04-tools.png)
+
+*Setup wizard, **step 4 of 8** - Tools. The heading carries the count, and each tool has its own row and state.*
+
 The `cc-*` command line tools, which DevThrottle installs and keeps current itself -- you never run
 an updater. The heading carries the count, so it reads **"9 tools, maintained for you"**, and each
 tool has its own row and state.
@@ -228,6 +271,10 @@ If a tool has not arrived, the step offers **Fix this now** -- the same repair t
 > [`status --json`](#verifying-the-install) below if it matters.
 
 ### 5. Your code
+
+![The setup wizard on step 5 of 8, Your code, with no repositories found](assets/setup-05-code.png)
+
+*Setup wizard, **step 5 of 8** - Your code, on a machine with none yet: "No repositories found in the usual places." Neither **Browse...** nor **I don't have code on this machine yet** blocks you.*
 
 Finds your git repositories and adds them, so DevThrottle can offer them when you start an agent.
 Remove any you would rather it left alone.
@@ -241,6 +288,10 @@ Neither one blocks you.
 > required](02-installation.md#recommended-not-required).
 
 ### 6. Screenshots
+
+![The setup wizard on step 6 of 8, Screenshots, reporting no folder found](assets/setup-06-screenshots.png)
+
+*Setup wizard, **step 6 of 8** - Screenshots, on a new machine: "No screenshots folder found". This is the normal first-run state, not an error.*
 
 Snap a screen, drag the image straight onto an agent -- the fastest way to show it exactly what you
 mean. DevThrottle watches one folder for new screenshots.
@@ -256,6 +307,10 @@ does the work for you: press your normal screenshot shortcut and the wizard watc
 lands.
 
 ### 7. Browsers
+
+![The setup wizard on step 7 of 8, Browsers, with both items not set up](assets/setup-07-browsers.png)
+
+*Setup wizard, **step 7 of 8** - Browsers. Two things to set up, and it names who makes the tool before you accept it. The way out sits right there: "Set up browsers later - I want to get going."*
 
 An agent can drive a real browser that is already signed in to your accounts -- reading a dashboard,
 filling in a form, checking a page for you.
