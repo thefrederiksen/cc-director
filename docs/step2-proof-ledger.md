@@ -397,6 +397,43 @@ three SQLite classes, **all green together on the rebased tree**.
 
 A green belongs to the tree it was run against. Nobody asked it to check.
 
+## A WINDOW ON THE OBSERVATION IS NOT A WINDOW ON THE CONSEQUENCE
+
+The cross-incarnation error was offered in good faith as "bounded to one poll interval". It is
+PERMANENT. One poll interval describes how long both readings are AVAILABLE - it says nothing about how
+long the resulting error LASTS, and the two were conflated.
+
+The reasoning error is worth more than the instance, because it is reusable: when bounding a defect, ask
+what the bound is a bound ON. A short window in which a mistake can be MADE does not make the mistake
+short-lived, and a durable ledger turns a momentary collision into a permanent number. Here one
+collision left 210 against an honest 115 - overcounted by 95, forever, with the magnitude scaling with
+the pre-reset watermark.
+
+**Ruling: this is not an acceptable residual.** Statistics wrong forever for anyone whose Director
+restarts after a counter reset is an ORDINARY event, not an edge. Fix it, or the row stays open and it
+is declared in plain words on the release.
+
+## A WITNESS CAN BE STRENGTHENED IN EVERY DIMENSION AND STILL WITNESS THE WRONG EVENT
+
+The race witness was tightened three times - naming the blocked backend, requiring not-granted,
+restricting the lock type, requiring the blocker in the blocking set - and each tightening was correct.
+It still certified a race that never touched the row it claimed to exercise, because identity upserts
+run BEFORE any watermark raise, so the second writer blocks on an IDENTITY row and satisfies every
+clause HONESTLY. With its watermark work removed entirely, the fact still passed.
+
+**The fix is to change the KIND, not the strength: CAUSE the interleave rather than OBSERVE it.** Force
+the second writer to read, hold it, let the first commit, then release it - the race is then guaranteed
+by construction and needs no witness at all, and it CANNOT pass when the race did not happen. Any
+observational check that survives must bind to the WATERMARK RELATION AND KEY, because binding to the
+backend and the lock type is exactly what an identity block satisfied.
+
+## A RETRY HIDES A CYCLE; A CANONICAL ORDER REMOVES IT
+
+Deadlock needs a cycle; a cycle needs two writers taking the same locks in opposite order. Sorting by a
+stable key before locking removes the cycle. **A retry is not the fix** - it makes the deadlock less
+visible while leaving the cycle intact, so the first thing it costs is the ability to notice. Any retry
+kept for what ordering cannot cover is BOUNDED and COUNTED, with the count on the health surface.
+
 ## A STATUS FILE ANSWERS WHAT WAS; ONLY THE OPERATION ANSWERS WHAT IS
 
 The general form of the two mistakes below, and of the classifier being right by the rule and wrong
