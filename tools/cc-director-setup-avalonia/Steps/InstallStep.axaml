@@ -8,19 +8,27 @@
                        Foreground="White"
                        FontSize="22"
                        FontWeight="SemiBold" />
-            <StackPanel Orientation="Horizontal" Margin="0,8,0,20">
+            <!-- The status line WRAPS, for the same reason it does on Windows (issue #1152): inside a
+                 horizontal StackPanel the text is measured with infinite width and then clipped at the
+                 window edge, so a failure message loses its tail - the log path - exactly when the user
+                 needs it. Fixed on both wizards, because one screen set means one correction. -->
+            <Grid ColumnDefinitions="*,Auto" Margin="0,8,0,20">
                 <TextBlock x:Name="StatusText"
+                           Grid.Column="0"
                            Text="Preparing..."
                            Foreground="#CCCCCC"
                            FontSize="13"
+                           TextWrapping="Wrap"
                            VerticalAlignment="Center" />
                 <Button x:Name="RepairButton"
+                        Grid.Column="1"
                         Content="Repair"
                         Classes="primary"
                         Width="90" Margin="16,0,0,0"
+                        VerticalAlignment="Center"
                         Click="RepairButton_Click"
                         IsVisible="False" />
-            </StackPanel>
+            </Grid>
         </StackPanel>
 
         <!-- Log location + report (visible DURING install, so a stuck/hung run can still be reported). -->

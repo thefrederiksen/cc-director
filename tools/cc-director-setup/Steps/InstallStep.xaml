@@ -8,19 +8,32 @@
                        Foreground="White"
                        FontSize="22"
                        FontWeight="SemiBold" />
-            <StackPanel Orientation="Horizontal" Margin="0,8,0,20">
+            <!-- The status line WRAPS. It used to be a horizontal StackPanel, which gives its children
+                 infinite width and then clips them at the window edge, so the launcher failure read
+                 "...did not answer on 7900. Check C:" - cut off exactly where the log path, the only
+                 actionable part of the sentence, began (issue #1152). A Grid with a starred column
+                 gives the text the width it actually has, and it wraps instead of disappearing. -->
+            <Grid Margin="0,8,0,20">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
                 <TextBlock x:Name="StatusText"
+                           Grid.Column="0"
                            Text="Preparing..."
                            Foreground="{StaticResource TextForeground}"
                            FontSize="13"
+                           TextWrapping="Wrap"
                            VerticalAlignment="Center" />
                 <Button x:Name="RepairButton"
+                        Grid.Column="1"
                         Content="Repair"
                         Width="90" Margin="16,0,0,0"
+                        VerticalAlignment="Center"
                         Style="{StaticResource PrimaryButton}"
                         Click="RepairButton_Click"
                         Visibility="Collapsed" />
-            </StackPanel>
+            </Grid>
         </StackPanel>
 
         <!-- Log location + report (visible DURING install, so a stuck/hung run can still be reported). -->
