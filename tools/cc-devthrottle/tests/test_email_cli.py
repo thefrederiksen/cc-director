@@ -37,13 +37,16 @@ def test_owner_send_passes_subject_and_body():
     assert "Sent" in result.output
 
 
-def test_owner_has_no_recipient_option():
+def test_owner_has_no_recipient_option(plain):
     result = runner.invoke(app, ["email", "owner", "--help"])
     assert result.exit_code == 0
-    assert "--subject" in result.output
-    assert "--attach" in result.output
-    assert "--to" not in result.output
-    assert "--recipient" not in result.output
+    # Asserted against the text, not the rendering: Rich styles the help panel, so the raw capture
+    # threads escape sequences through the option names (see tests/conftest.py).
+    help_text = plain(result.output)
+    assert "--subject" in help_text
+    assert "--attach" in help_text
+    assert "--to" not in help_text
+    assert "--recipient" not in help_text
 
 
 def test_owner_requires_a_body_or_attachment():

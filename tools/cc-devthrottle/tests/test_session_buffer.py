@@ -76,7 +76,7 @@ def test_a_style_shaped_token_is_not_eaten(buffer_text, capsys):
     assert capsys.readouterr().out == text + "\n"
 
 
-def test_the_error_branch_does_not_crash_on_the_servers_error_text(buffer_text, monkeypatch, capsys):
+def test_the_error_branch_does_not_crash_on_the_servers_error_text(buffer_text, monkeypatch, capsys, plain):
     # The failure branch had the SAME defect as the success branch it reports on: the error text comes
     # from the server and can quote a path or a fragment of the session's own output, and it was
     # interpolated straight into Rich markup. A closing-tag-shaped token in it raised MarkupError - a
@@ -91,7 +91,7 @@ def test_the_error_branch_does_not_crash_on_the_servers_error_text(buffer_text, 
     with pytest.raises(typer.Exit):
         session_ops.read_session_buffer(None)
 
-    out = capsys.readouterr().out
+    out = plain(capsys.readouterr().out)
     assert "no session at [/tmp/x] on that Director" in out   # reported literally, not swallowed
     assert "Error:" in out                                     # and still human-readable
 

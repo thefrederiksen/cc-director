@@ -82,7 +82,7 @@ def test_apps_reports_an_incomplete_catalogue_rather_than_a_short_one(stub_get):
     assert "incomplete" in result.output
 
 
-def test_files_shows_the_hits_and_where_it_searched(stub_get):
+def test_files_shows_the_hits_and_where_it_searched(stub_get, plain):
     stub_get["payload"] = {
         "files": [{"name": "deck.pptx", "path": r"D:\Work\deck.pptx", "sizeBytes": 2048,
                    "modifiedUtc": "2026-07-01T10:00:00Z"}],
@@ -94,8 +94,10 @@ def test_files_shows_the_hits_and_where_it_searched(stub_get):
     result = runner.invoke(app, ["machine", "files", "SOREN_NORTH", "*.pptx"])
 
     assert result.exit_code == 0
-    assert "deck.pptx" in result.output
-    assert "900 directories" in result.output
+    # Rich styles the results table, so assert on the text rather than the rendering (conftest.py).
+    output = plain(result.output)
+    assert "deck.pptx" in output
+    assert "900 directories" in output
 
 
 def test_files_stopped_at_the_result_limit_says_so_and_says_what_to_change(stub_get):
@@ -129,7 +131,7 @@ def test_files_stopped_at_the_time_limit_advises_more_time_not_a_narrower_search
     assert "--seconds" in result.output
 
 
-def test_files_reports_directories_it_could_not_read(stub_get):
+def test_files_reports_directories_it_could_not_read(stub_get, plain):
     stub_get["payload"] = {
         "files": [], "truncated": False, "directoriesVisited": 5,
         "elapsedMilliseconds": 10, "unreadableDirectories": 42,
@@ -137,7 +139,7 @@ def test_files_reports_directories_it_could_not_read(stub_get):
 
     result = runner.invoke(app, ["machine", "files", "SOREN_NORTH", "*.txt"])
 
-    assert "42 directories could not be read" in result.output
+    assert "42 directories could not be read" in plain(result.output)
 
 
 def test_files_passes_the_time_limit_through_as_milliseconds(stub_get):
