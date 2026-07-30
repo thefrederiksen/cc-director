@@ -89,6 +89,36 @@ plus 80 SQLite facts green.
 other three token columns, agent-driven chars, and the highest-value readback in `ManyConcurrentWriters`.
 All four executed and passed in the green.
 
+**REVIEW 8 (the fix round): four of five FIXED and proved by running - the delta invariant holds under
+a four-writer probe including a no-change and a stale-lower observation, a mid-transaction failure rolls
+back both halves, concurrent pruners archive only what their own delete removed, and the load-bearing
+mutation reproduced EXACTLY at 10 passed 2 failed, failing on the LEDGER with every watermark assertion
+green. BUT THE FIXES INTRODUCED A PRODUCTION DEADLOCK AND FINDING 5 IS STILL NOT FIXED.**
+
+**NEW - identity upserts DEADLOCK.** `ResolveIdentities` takes row locks in the INSERTION order of the
+batch, which the aggregator builds in OBSERVATION order - no canonical sort, no retry. Two writers
+minting the same two repositories in opposite order produced a real `40P01 deadlock_detected` that
+aborted an actual `Commit`. The unique-index upsert that fixed the duplicate-identity race is what
+created the conflicting row locks. **A dual-container fold seeing novel repositories in different roster
+order can now fail a live request.**
+
+**NOT FIXED - the race witness still certifies the wrong lock.** It is stronger now (names writer B,
+requires not-granted, restricts lock type, requires A in the blocking set) but it never binds that lock
+to the CONTESTED WATERMARK ROW. Identity upserts run BEFORE any raise, so writer B blocks on A's
+IDENTITY row and satisfies every clause. The reviewer made writer B's watermark operation a NO-OP - **no
+watermark work at all - and the fact still PASSED.**
+
+**REMAINING - case-variant mints still split one identity.** The unique index is exact-spelling; the
+documented invariant is case-INSENSITIVE. Two mirrors minting `Owner/Repo` and `owner/repo` produced two
+rows and two ids.
+
+**THE RESIDUAL WAS UNDERSTATED AND IS NOW CORRECTED.** Worker 4 bounded the cross-incarnation error to
+"one poll interval". Review 8 proved it is **PERMANENT and NOT poll-bounded**: seeded 100 banked turns,
+a new-incarnation reset of 5, then a delayed old-incarnation observation of 110 left the ledger at 210
+against honest activity of 115. **One collision overcounted by 95, forever, and the magnitude scales
+with the pre-reset watermark.** One poll interval describes how long both readings are normally
+available - it does not bound the durable error.
+
 **REVIEW 7 REOPENED THIS ROW, PROVED BY RUNNING.** The explicit upserts do stop the watermark
 regressing - that was audited, not sampled, and every named high-water and membership write uses the
 right conflict clause. But **concurrent writers APPEND THE SAME LOGICAL GROWTH TWICE**: each computes
