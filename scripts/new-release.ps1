@@ -85,6 +85,38 @@ if ($strayVersions) {
     exit 1
 }
 
+# --- Guard: the written release notes MUST exist before the tag does ---
+#
+# The release workflow publishes docs/public/release-notes/<tag>.md verbatim and FAILS when it is
+# absent - it will not generate a substitute, because a page of internal pull-request titles looks
+# like release notes and therefore ships unread. This guard is the same rule applied a minute
+# earlier, where it costs nothing: a tag that is already pushed cannot be un-pushed, and the
+# workflow's copy of the check can only fail AFTER the whole build has run.
+#
+# The working tree is clean by this point, so the notes file has to be committed already.
+$notesPath = Join-Path $repoRoot "docs\public\release-notes\$tagName.md"
+if (-not (Test-Path $notesPath)) {
+    Write-Host ""
+    Write-Host "ERROR: No written release notes for $tagName." -ForegroundColor Red
+    Write-Host "  Expected: $notesPath" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Write the notes, commit them, then run this script again. The release workflow" -ForegroundColor Yellow
+    Write-Host "publishes that file and refuses to invent a substitute." -ForegroundColor Yellow
+    Write-Host ""
+    exit 1
+}
+
+$notesChars = ((Get-Content $notesPath -Raw) -replace '\s', '').Length
+if ($notesChars -lt 200) {
+    Write-Host ""
+    Write-Host "ERROR: $notesPath has only $notesChars non-whitespace characters." -ForegroundColor Red
+    Write-Host "That is a placeholder, not release notes. The workflow applies the same floor." -ForegroundColor Red
+    Write-Host ""
+    exit 1
+}
+Write-Host ""
+Write-Host "Release notes: $notesPath ($notesChars characters)" -ForegroundColor Gray
+
 # --- Update the one file ---
 Write-Host ""
 Write-Host "Updating version to $newVersion..." -ForegroundColor Cyan

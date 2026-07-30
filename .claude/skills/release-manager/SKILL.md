@@ -194,13 +194,28 @@ interface flow, but it is out of date in two ways that will cost you time:
 The version-bump commit therefore reaches `main` like any other change - through a
 pull request. That is how v1.1.0 shipped (pull request #1489).
 
-1. Open a pull request that bumps `Directory.Build.props` to the new version, titled
+1. Make sure `docs/public/release-notes/v<version>.md` is already merged to `main`.
+   The workflow publishes that file verbatim and FAILS if it is missing, so a tag
+   pushed without it burns a whole build and cannot be un-pushed.
+2. Open a pull request that bumps `Directory.Build.props` to the new version, titled
    `release: v<version> - <one-line summary>`. Merge it once it is green.
-2. Draft a GitHub release; create the tag `v<version>` on `main` at the merged bump
-   commit. Paste the canonical release notes as the body.
-3. The human clicks Publish. Pushing the tag triggers the Release workflow, which
-   builds the executable and attaches `cc-director.exe` to the release. Monitor the
-   Actions run.
+3. Create the tag `v<version>` on `main` at the merged bump commit and push it. That
+   is the last manual act. Monitor the Actions run.
+
+**Do NOT create or publish a GitHub release by hand, and do NOT paste the notes into
+the release body.** The workflow does both: it creates the release as a DRAFT, attaches
+every asset, and publishes it only once `release-manifest.json` is provably attached.
+
+Two defects live in the habit of doing it by hand, and both produce something that
+looks right to whoever reads it:
+
+- A release published before its assets exist is "latest" while being uninstallable.
+  Measured on v1.8.8: published 10:48:48Z, assets attached 10:54:11Z, and a launcher
+  that checked at 10:54:05Z failed. A failed update check renders exactly like being up
+  to date, so nobody notices (issue #1079). If you pre-create a published release, the
+  workflow attaches its assets to yours and the window comes straight back.
+- Pasting or generating the body by hand is why the page was right by accident rather
+  than by design; v1.8.7 shipped a list of internal pull-request titles (issue #1106).
 
 If you ever cut a tag before the bump commit is on `main`, reconcile it: push the
 tagged commit to a `release/v<version>` branch, open a pull request into `main`, and
