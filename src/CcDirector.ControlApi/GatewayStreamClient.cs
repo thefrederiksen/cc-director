@@ -172,22 +172,39 @@ public sealed class GatewayStreamClient : IAsyncDisposable
     {
         var startedUtc = DateTime.UtcNow;
         _rePushStartedUtc = startedUtc;
+        var report = ReseedReport.NotConnected;
         try
         {
             // ReseedAsync sends Hello + a full PushSnapshot with an incrementing sequence (the same path used
             // on connect/reconnect) and already swallows its own send faults, so a re-push is best-effort.
-            await ReseedAsync();
+            report = await ReseedAsync();
         }
         finally
         {
             // Report a SLOW push, not only a failed one. A push that succeeds but takes a whole cadence has
             // already eaten the following tick, which is the observed path to the cache going stale - and it
             // is otherwise indistinguishable from a healthy push in the log.
+            //
+            // WHAT CHANGED AND WHY IT MATTERS (issue #1153): this used to report one elapsed number for every
+            // outcome, including a push the connection's own server-timeout had CANCELLED - so an abandoned
+            // wait was logged in the same words as a slow Gateway, and the two are not the same event and do
+            // not have the same fix. The outcome now decides the wording, and a wait that never finished
+            // says so in the line rather than being counted as a duration the Gateway is answerable for.
             var elapsed = DateTime.UtcNow - startedUtc;
-            if (elapsed >= SlowRePushThreshold)
+            if (!report.Completed)
+            {
+                // NOT called slow. Nobody can say how long the push would have taken, because it did not
+                // finish - all that is known is how long we waited before it was abandoned.
+                FileLog.Write($"[GatewayStreamClient] re-push DID NOT COMPLETE after {elapsed.TotalSeconds:F1}s: "
+                    + $"{report.Failure ?? "no reason recorded"} - this is how long the WAIT lasted, "
+                    + "NOT how long the Gateway took");
+            }
+            else if (elapsed >= SlowRePushThreshold)
             {
                 FileLog.Write($"[GatewayStreamClient] re-push SLOW: took {elapsed.TotalSeconds:F1}s "
-                    + $"(cadence {SlowRePushThreshold.TotalSeconds:F0}s) - the next tick was likely skipped");
+                    + $"(cadence {SlowRePushThreshold.TotalSeconds:F0}s) - the next tick was likely skipped. "
+                    + $"Of that, building the snapshot here took {report.BuildSnapshot.TotalSeconds:F1}s and "
+                    + $"waiting for the Gateway to accept it took {report.AwaitGateway.TotalSeconds:F1}s");
             }
             _rePushStartedUtc = DateTime.MinValue;
             Interlocked.Exchange(ref _rePushInFlight, 0);
@@ -223,6 +240,14 @@ public sealed class GatewayStreamClient : IAsyncDisposable
             // is safe to roll out per-Director.
             .AddMessagePackProtocol()
             .Build();
+
+        // Tunnel liveness (issue #1153) - the client half of the pair the hub sets in GatewayHost, read from
+        // the SAME shared constants so the two can never drift. ServerTimeout is what actually decides whether
+        // this Director hangs up: it fires on SILENCE from the Gateway, not on a slow call, so the fix for a
+        // Gateway that is alive but busy is a more frequent ping and an UNCHANGED tolerance. Both must be set
+        // before StartAsync.
+        _connection.ServerTimeout = DirectorStreamLimits.SilenceTolerance;
+        _connection.KeepAliveInterval = DirectorStreamLimits.KeepAlivePing;
 
         _connection.Reconnecting += ex =>
         {
@@ -376,13 +401,44 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         }
     }
 
-    private async Task ReseedAsync()
+    /// <summary>
+    /// What one reseed's SESSION leg actually did, so a duration can never be reported as something it did
+    /// not measure.
+    ///
+    /// THE DEFECT THIS TYPE EXISTS TO KILL (issue #1153). The re-push timing used to sit in a
+    /// <c>finally</c> wrapped around the whole send, so when the connection's own server-timeout cancelled an
+    /// in-flight push, the length of the WAIT was written to the log as <c>re-push SLOW: took 83.4s</c>. That
+    /// number is perfectly true about how long the wait lasted and says NOTHING about how long the push took -
+    /// a true record of the wrong thing - and it sent a day's investigation after the Gateway's speed when
+    /// what had actually happened was that the tunnel went silent and the client hung up. The tell, only
+    /// visible once someone looked, was that the slow-push line and the server-timeout line carried IDENTICAL
+    /// timestamps.
+    ///
+    /// So the phases are separated and the outcome is named: how long WE spent building the snapshot on this
+    /// machine, how long the GATEWAY took to accept it, and whether the wait finished at all. They fail for
+    /// different reasons and have different fixes, and one combined number cannot tell them apart.
+    /// </summary>
+    private readonly record struct ReseedReport(TimeSpan BuildSnapshot, TimeSpan AwaitGateway, bool Completed, string? Failure)
+    {
+        /// <summary>Nothing was attempted: there was no connected tunnel to reseed down.</summary>
+        public static ReseedReport NotConnected { get; } =
+            new(TimeSpan.Zero, TimeSpan.Zero, Completed: false, Failure: "the tunnel was not connected");
+    }
+
+    private async Task<ReseedReport> ReseedAsync()
     {
         var conn = _connection;
-        if (conn is null || conn.State != HubConnectionState.Connected) return;
+        if (conn is null || conn.State != HubConnectionState.Connected) return ReseedReport.NotConnected;
+
+        var build = TimeSpan.Zero;
+        var awaitGateway = TimeSpan.Zero;
+        var completed = false;
+        string? failure = null;
         try
         {
             var seq = Interlocked.Increment(ref _sequence);
+
+            var helloStarted = DateTime.UtcNow;
             await conn.InvokeAsync("Hello", new DirectorStreamHello
             {
                 DirectorId = _directorId,
@@ -392,11 +448,31 @@ public sealed class GatewayStreamClient : IAsyncDisposable
                 Pid = Environment.ProcessId,
                 StartedAt = _startedAt,
             });
-            await conn.InvokeAsync("PushSnapshot", seq, _snapshot().ToArray());
-            FileLog.Write($"[GatewayStreamClient] reseeded full snapshot seq={seq}");
+            awaitGateway += DateTime.UtcNow - helloStarted;
+
+            // OUR work, on this machine: assembling the roster. Timed apart from the send because a slow build
+            // is a local problem (a starved machine, a lock held too long) and a slow send is the Gateway's -
+            // opposite diagnoses, opposite owners, and the single combined number could name neither.
+            var buildStarted = DateTime.UtcNow;
+            var snapshot = _snapshot().ToArray();
+            build = DateTime.UtcNow - buildStarted;
+
+            // The Gateway's work: InvokeAsync does not return when the frame is written, it returns when the
+            // hub method has FINISHED, so this measures the Gateway's own per-push processing.
+            var sendStarted = DateTime.UtcNow;
+            await conn.InvokeAsync("PushSnapshot", seq, snapshot);
+            awaitGateway += DateTime.UtcNow - sendStarted;
+
+            completed = true;
+            FileLog.Write($"[GatewayStreamClient] reseeded full snapshot seq={seq} "
+                + $"(built in {build.TotalMilliseconds:F0}ms, Gateway accepted it in {awaitGateway.TotalMilliseconds:F0}ms)");
         }
         catch (Exception ex)
         {
+            // Kept LOUD and kept here. This catch is the only place a hub-side throw becomes visible to the
+            // Director, and it is the one thing the Director would lose if this ever moved to a
+            // fire-and-forget send - so if that change is made, the surfacing has to be replaced, not dropped.
+            failure = ex.Message;
             FileLog.Write($"[GatewayStreamClient] reseed failed (auto-reconnect will retry): {ex.Message}");
         }
 
@@ -416,6 +492,8 @@ public sealed class GatewayStreamClient : IAsyncDisposable
                 FileLog.Write($"[GatewayStreamClient] repository reseed skipped (older Gateway?): {ex.Message}");
             }
         }
+
+        return new ReseedReport(build, awaitGateway, completed, failure);
     }
 
     /// <summary>

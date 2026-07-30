@@ -103,6 +103,36 @@ public static class DirectorStreamLimits
     public const int UploadChunkRawBytes = 20 * 1024;
 
     /// <summary>
+    /// How often each side sends a keep-alive ping down an otherwise idle tunnel.
+    ///
+    /// DELIBERATELY SHORTER THAN THE SIGNALR DEFAULT of 15 seconds, and the reason is an outage rather than a
+    /// preference. A peer hangs up when it has heard NOTHING for <see cref="SilenceTolerance"/>, so on the
+    /// default pair (15s ping, 30s tolerance) exactly TWO late pings end the tunnel - and the keep-alive is a
+    /// timer callback on the same thread pool the hub's own handlers run on, so a busy Gateway delays the
+    /// pings FIRST. That is not hypothetical: on 2026-07-30 one Director hung up 35 times in a day on
+    /// "Server timeout (30000.00ms) elapsed without receiving a message from the server" while the Gateway was
+    /// alive and answering other work in the same second (devthrottle_internal issue #1153).
+    ///
+    /// At 5 seconds the SAME tolerance absorbs six missed pings instead of two, so a momentarily busy Gateway
+    /// is no longer mistaken for a dead one. The robustness is bought with cheap empty frames, NOT by waiting
+    /// longer to notice a genuinely dead peer - see <see cref="SilenceTolerance"/>, which does not move.
+    /// </summary>
+    public static readonly TimeSpan KeepAlivePing = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// How long each side tolerates COMPLETE SILENCE from the other before declaring the connection dead.
+    ///
+    /// Held at the SignalR default of 30 seconds ON PURPOSE, and it is worth saying why it is not being tuned
+    /// in either direction. Shortening it makes a Director hang up on a merely busy Gateway sooner, which is
+    /// the exact failure this pair exists to prevent. Lengthening it delays noticing a genuinely dead peer,
+    /// which costs the fleet real recovery time. Neither is the fix; pinging more often is.
+    ///
+    /// INVARIANT: this must stay at least twice <see cref="KeepAlivePing"/> - the framework's own rule - or a
+    /// single late ping ends the connection. At 5s against 30s there is six times the room.
+    /// </summary>
+    public static readonly TimeSpan SilenceTolerance = TimeSpan.FromSeconds(30);
+
+    /// <summary>
     /// The maximum bytes in a single unary command REPLY (a <see cref="DirectorCommandResult"/> carried back
     /// over the tunnel as a SignalR client result via InvokeAsync). Unlike the up-stream - which is chunked at
     /// <see cref="MaxBinaryFrameBytes"/> - a command reply is ONE message: some read verbs (turns, full
