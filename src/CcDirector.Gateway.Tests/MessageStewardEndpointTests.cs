@@ -50,7 +50,7 @@ public sealed class MessageStewardEndpointTests : IAsyncLifetime
         var host = new ControlApiHost(sm, "test", () => Task.CompletedTask,
             useEphemeralPort: true, authEnabled: false, directorId: "dir-A", instancesDirectory: _instances);
         var port = await host.StartAsync();
-        var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
+        var http = DirectorTestClient.Admin(port);
         return (host, sm, http, target.Id);
     }
 

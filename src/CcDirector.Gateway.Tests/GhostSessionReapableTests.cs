@@ -63,7 +63,7 @@ public sealed class GhostSessionReapableTests : IAsyncLifetime
         };
         _host = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true);
         var port = await _host.StartAsync();
-        _client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
+        _client = DirectorTestClient.Admin(port);
         _client.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", DirectorAuth.LoadOrCreateToken());
     }

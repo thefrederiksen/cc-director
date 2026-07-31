@@ -217,15 +217,24 @@ function Stop-OwnLaunchedDirector([int]$DirectorPid, [string]$ExePath) {
     Stop-Process -Id $DirectorPid -Force -Confirm:$false
 }
 
-# Read the configured gateway token so a shutdown call is accepted if the Director enforces
-# auth (issue #916). Best effort - empty when unavailable.
+# The secret a Director accepts, resolved the way the Director resolves it: the SHARED fleet token
+# from config.json when this machine is attached to a Gateway, otherwise the Director's own persisted
+# token. Every route but /healthz requires it now, so reading only the gateway token - which is what
+# this did - left a standalone machine unable to shut its own test Director down, and every teardown
+# silently falling through to the force-kill that leaves a phantom crash-journal entry.
 function Get-ShutdownToken {
     $cfg = Join-Path $env:LOCALAPPDATA 'cc-director\config\config.json'
-    if (-not (Test-Path $cfg)) { return '' }
-    try {
-        $j = Get-Content $cfg -Raw | ConvertFrom-Json
-        if ($j.gateway -and $j.gateway.token) { return [string]$j.gateway.token }
-    } catch {}
+    if (Test-Path $cfg) {
+        try {
+            $j = Get-Content $cfg -Raw | ConvertFrom-Json
+            if ($j.gateway -and $j.gateway.token) { return [string]$j.gateway.token }
+        } catch {}
+    }
+
+    $tokenFile = Join-Path $env:LOCALAPPDATA 'cc-director\config\director\gateway-token.txt'
+    if (Test-Path $tokenFile) {
+        try { return (Get-Content $tokenFile -Raw).Trim() } catch {}
+    }
     return ''
 }
 

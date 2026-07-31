@@ -222,10 +222,27 @@ give-up is logged with the `[TransientErrorAutoResume]` prefix and the session i
 
 ## 6. The session recorder (corpus for offline learning)
 
-`TerminalSessionRecorder` (observe-only, on by default; `CC_DIRECTOR_RECORD_SESSIONS=0` to
-disable) logs every session's resolved terminal grid - one JSONL frame per change, each with
-the activity state and the raw rows - to `%LOCALAPPDATA%/cc-director/session-recordings/`,
-capped per session. A general-purpose corpus of what sessions actually looked like.
+`TerminalSessionRecorder` (observe-only, **OFF by default**) logs every session's resolved
+terminal grid - one JSONL frame per change, each with the activity state and the raw rows - to
+`%LOCALAPPDATA%/cc-director/session-recordings/`, capped per session. A general-purpose corpus
+of what sessions actually looked like.
+
+Switch it on with a visible setting in `config.json`:
+
+```json
+"session_recording": { "enabled": true }
+```
+
+`CC_DIRECTOR_RECORD_SESSIONS=1` / `=0` overrides that setting in either direction for one run.
+
+It used to be ON for everyone, switchable off only through an environment variable named in a
+source comment. That made an internal engineering corpus - every screen every agent has drawn,
+secrets included, with no age limit - an invisible default on every install. What we collect
+for our own benefit has to be something the user can see they turned on.
+
+When a session is removed, its recording directory is deleted. Before that, removal closed the
+writer and left the file, so an install with recording on accumulated the screens of sessions
+that no longer existed in a directory nothing ever swept.
 
 ## 6b. State-change log + the Desktop Wingman tab (observability)
 

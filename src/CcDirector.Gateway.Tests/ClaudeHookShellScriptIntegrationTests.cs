@@ -3,6 +3,7 @@ using CcDirector.ControlApi;
 using CcDirector.Core.Backends;
 using CcDirector.Core.Claude;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Security;
 using CcDirector.Core.Memory;
 using CcDirector.Core.Sessions;
 using Xunit;
@@ -18,11 +19,29 @@ namespace CcDirector.Gateway.Tests;
 /// as ready-made hookSpecificOutput JSON on stdout. This chain is what keeps session
 /// history (and everything built on it, like Gateway voice mode) alive on macOS.
 /// </summary>
+[Collection("DirectorRoot")]
 public sealed class ClaudeHookShellScriptIntegrationTests : IAsyncLifetime
 {
     private SessionManager _sm = null!;
     private ControlApiHost _host = null!;
     private int _port;
+    private readonly string _root;
+    private readonly string? _prevRoot;
+
+    public ClaudeHookShellScriptIntegrationTests()
+    {
+        // The hook now presents a credential, so this test has to know which secret the host accepts.
+        // A fresh temp root gives an empty config, so that secret is this root's own token file rather
+        // than whatever fleet token the machine running the suite happens to carry.
+        _prevRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
+        _root = Path.Combine(Path.GetTempPath(), "ccd-hook-e2e-root-" + Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _root);
+    }
+
+    /// <summary>The credential the Director injects into a session, for the hook to present.</summary>
+    private static string ChildTokenFor(Guid sessionId)
+        => DirectorScopedToken.Mint(
+            DirectorAuth.ResolveAcceptedToken(GatewayConfig.Load().Token), ScopeNames.SessionChild, sessionId);
 
     public async Task InitializeAsync()
     {
@@ -35,6 +54,8 @@ public sealed class ClaudeHookShellScriptIntegrationTests : IAsyncLifetime
     {
         await _host.StopAsync();
         _sm.Dispose();
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _prevRoot);
+        try { if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
 
         try
         {
@@ -76,6 +97,8 @@ public sealed class ClaudeHookShellScriptIntegrationTests : IAsyncLifetime
             };
             psi.Environment["CC_DIRECTOR_API"] = $"http://127.0.0.1:{_port}";
             psi.Environment["CC_SESSION_ID"] = session.Id.ToString();
+            // Exactly what SessionManager stamps into a real session's environment.
+            psi.Environment["CC_DIRECTOR_TOKEN"] = ChildTokenFor(session.Id);
 
             using var proc = Process.Start(psi)!;
             await proc.StandardInput.WriteAsync(rawEvent);
