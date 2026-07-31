@@ -95,7 +95,9 @@ internal static class ClientErrorEndpoints
             // The durable record: one greppable line in the same log every Gateway error goes to. The
             // stack is deliberately excluded from the line (it is multi-line noise in a line-oriented
             // log) - it stays readable on the ring.
-            FileLog.Write($"[ClientError] tenant={tenant.Value} device={record.DeviceHash} surface={record.Surface} "
+            // ToLogString, never Value: on hosted the raw account tenant id must not reach a log (the data
+            // map promises hashed tenant ids in service logs, and this line was one of two that broke it).
+            FileLog.Write($"[ClientError] tenant={tenant.Value.ToLogString()} device={record.DeviceHash} surface={record.Surface} "
                 + $"page={record.Page} message={record.Message}"
                 + (record.Detail.Length > 0 ? $" detail={record.Detail}" : ""));
 

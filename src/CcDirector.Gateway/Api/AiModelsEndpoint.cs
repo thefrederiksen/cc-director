@@ -240,7 +240,9 @@ internal static class AiModelsEndpoint
                 // turn): the resolver CLEARS the tenant override on blank so the read falls back to the default.
                 resolver.SetCarModeEndPhrase(t.Value, body?.Phrase ?? string.Empty, DateTime.UtcNow);
                 var phrase = resolver.CarModeEndPhrase(t.Value);
-                FileLog.Write($"[AiModelsEndpoint] car mode end phrase set: {phrase} for tenant={t.Value.ToLogString()}");
+                // The phrase is something the member SAYS out loud - spoken customer content - so it
+                // stays out of the log (data-map promise); the length is enough to see a set happened.
+                FileLog.Write($"[AiModelsEndpoint] car mode end phrase set: length={phrase.Length} for tenant={t.Value.ToLogString()}");
                 return Results.Json(new { phrase });
             }
             catch (JsonException) { return Results.BadRequest(new { error = "invalid JSON" }); }

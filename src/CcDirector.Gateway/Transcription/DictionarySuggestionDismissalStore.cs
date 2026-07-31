@@ -78,7 +78,8 @@ public sealed class DictionarySuggestionDismissalStore
                 existing.DismissedAtUtc = nowUtc.ToUniversalTime();
             }
             ctx.SaveChanges();
-            FileLog.Write($"[DismissalStore] Dismiss: tenant={tenant.ToLogString()} term={norm} wrong={suggestion.WrongCount}/{suggestion.TotalCount}");
+            // The term is dictation-derived customer content and stays out of the log (data-map promise).
+            FileLog.Write($"[DismissalStore] Dismiss: tenant={tenant.ToLogString()} termLength={norm.Length} wrong={suggestion.WrongCount}/{suggestion.TotalCount}");
         }
     }
 
@@ -99,7 +100,8 @@ public sealed class DictionarySuggestionDismissalStore
             if (existing is null) return false;
             ctx.DictationSuggestionDismissals.Remove(existing);
             ctx.SaveChanges();
-            FileLog.Write($"[DismissalStore] Restore: tenant={tenant.ToLogString()} term={norm}");
+            // Same rule as Dismiss: the term is dictation-derived customer content, log its length only.
+            FileLog.Write($"[DismissalStore] Restore: tenant={tenant.ToLogString()} termLength={norm.Length}");
             return true;
         }
     }
