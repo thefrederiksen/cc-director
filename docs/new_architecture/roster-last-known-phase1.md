@@ -45,7 +45,14 @@ a two-second response cache. Checked before deleting.)
 **The eviction horizon replaced the sixty-second registry sweep.** Passing it is now the ONE elapsed-time
 event allowed to remove a session, and it is the single point the whole removal cascade hangs off - session
 numbers, snooze rows, and a new `PushedSessionStore.Forget` so entries that survive a disconnect cannot
-survive forever. Default twenty-four hours, settable per registry.
+survive forever.
+
+The default is twenty-four hours, confirmed by the owner, and it is read from
+`gateway.directorEvictionHorizonHours` in `config.json`. It started as a compile-time constant that only a
+test could move; that would have made the word "configurable" untrue the moment this went live, since
+changing it would have needed a release. A zero or negative value is refused and the default stands - a zero
+horizon would evict every machine on the next thirty-second sweep, which is the deleting roster this read
+model exists to end, and it would arrive as a silent typo rather than as a decision anybody made.
 
 **Every serve that is not confirmed current is marked stale**, and the destructive consumers stay behind that
 guard.
@@ -113,6 +120,19 @@ start**: the cache lives in a reference inside the home page, and that page is a
 session and coming back discards it - as does any reload or relaunch. With an empty cache and a Gateway
 serving nothing, the roster came up blank. Recorded because the brief's version is written down and someone
 will otherwise believe it.
+
+**A live worktree was deleted twice, and the cause is NOT established.** Mid-mission, this branch's
+worktree was emptied at 20:08 and again about seven minutes after it was rebuilt - `.git`, the solution file
+and most top-level directories gone, and the worktree's admin record removed from the shared checkout, with
+the branch neither merged nor carrying a pull request. Nothing was lost: every commit was already pushed, and
+the one uncommitted change was salvaged. Work moved to `dt-roster-asof2`.
+
+A tempting reading is that the thing deciding a worktree is safe to remove asks the roster whether a live
+session is using it - the same roster this mission is fixing - which would make the incident evidence for the
+mission. **That reading is unverified and should not be repeated as fact.** Every Director log on the machine
+was searched for reap and worktree-removal activity and for the path itself, and there was nothing. So the
+mechanism is unobserved, and a plausible cause written down without observation is precisely the failure this
+repository has laws about. Someone should establish it properly before it is cited.
 
 **A test run was killed that was not stuck.** The Gateway suite serialises fleet-wide behind a lock, because
 concurrent runs destroy it. A queued run looked like a hang and was killed, even though its own log said, in
