@@ -1,23 +1,37 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { SessionDto } from "../api/client";
-import { voiceQueueFor } from "./voiceQueue";
+import type { VoiceRowInputs } from "./voiceRowState";
 
-/**
- * Inspection 1, finding 2.
- *
- * These tests feed WHOLE SESSIONS carrying the Gateway's own reachability stamp, not a hand-built
- * `reachable` boolean. That distinction is the entire point: the tests that missed this defect passed
- * `isVoiceReady` a boolean the caller had already computed wrongly, so they could never have caught the
- * caller computing it wrongly. Here the reachability decision is inside the function under test.
- *
- * WHAT IS STILL NOT PROVEN BY THIS FILE: that the mobile Home page CALLS voiceQueueFor. There is no test
- * harness in apps/mobile at all - no vitest dependency, no configuration, no test file - so no rendered
- * wiring test exists for the phone. What the extraction buys instead is that the call site no longer has
- * a reachability argument to substitute: it passes sessions and nothing else. That is a smaller claim
- * than "the wire is pinned" and it is deliberately not written as if it were the larger one.
- */
+// WHAT IS REAL HERE AND WHAT IS STUBBED, because getting this wrong is how a test proves nothing.
+//
+// REAL: voiceQueueFor itself - which sessions it selects, what it passes as the reachability input,
+// and the order it returns them in. That composition is the thing inspection 1 finding 2 was about.
+//
+// STUBBED: the readiness RULE (voiceRowState/isVoiceReady). It is stubbed to return the reachability
+// input it was handed, which turns this file into a test of "what does the queue ASK about each
+// session" rather than "what does the rule ANSWER". That is deliberate and necessary:
+//
+//   - the rule already has a thorough suite of its own in voiceRowState.test.ts, and the adapter that
+//     feeds it has one in rowVoiceInputs.test.ts;
+//   - and the real rule can NEVER return "ready" in this environment. Readiness requires
+//     phoneReadyForCurrentTurn, which reads the clip store's in-memory map, which is written only by
+//     ensureClip, which downloads. rowVoiceInputs.test.ts records the same limitation in its own
+//     header. A test written against the real rule here would assert against a permanently empty
+//     queue and would pass just as happily if the queue were hard-coded to return nothing.
+//
+// So the stub is what makes the queue observable at all. What it costs is that this file says nothing
+// about whether a genuinely ready session plays - and that is not its question.
 
-const BASE: SessionDto = {
+vi.mock("./voiceRowState", () => ({
+  // The reachability input, returned verbatim. Every assertion below is therefore about which value
+  // voiceQueueFor CHOSE to pass - and the defect was that it chose a retention mark instead of the
+  // Gateway's stamp.
+  isVoiceReady: (i: VoiceRowInputs) => i.reachable,
+}));
+
+const { voiceQueueFor } = await import("./voiceQueue");
+
+const BASE = {
   sessionId: "s-1",
   name: "Architect",
   activityState: "Waiting",
@@ -34,49 +48,42 @@ function session(over: Partial<SessionDto>): SessionDto {
   return { ...BASE, ...over } as SessionDto;
 }
 
-describe("the voice queue reads reachability from the Gateway, not from push freshness", () => {
-  it("keeps a session on a machine the Gateway says can be acted on", () => {
-    const queue = voiceQueueFor([session({ sessionId: "s-1", machineReachable: true })]);
-    expect(queue.map((s) => s.sessionId)).toEqual(["s-1"]);
-  });
-
-  // THE DEFECT. A wobbly machine - tunnel up, pushes merely late - was excluded from the hands-free lens,
-  // so the owner was not told about work he could have acted on straight away. The Gateway stamps wobbly as
-  // reachable; the queue must honour that.
-  it("KEEPS a wobbly session, whose tunnel is up even though its pushes are late", () => {
+describe("the voice queue asks the Gateway about reachability, not the retention mark", () => {
+  // THE DEFECT. A wobbly machine - tunnel up, pushes merely late - is stamped reachable by the Gateway
+  // but carries a retention mark on the phone. The queue used to read the mark, so this session
+  // silently left the hands-free lens and the owner stopped being told about work he could act on.
+  it("KEEPS a session the Gateway stamped reachable", () => {
     const queue = voiceQueueFor([session({ sessionId: "wobbly", machineReachable: true })]);
     expect(queue.map((s) => s.sessionId)).toEqual(["wobbly"]);
   });
 
-  // The other half, and without it "return everything" would pass the tests above. A machine nobody can
-  // reach kept its last-known voiceAudioReady and its already-downloaded clip, so it would otherwise sit in
-  // this tab claiming it can speak - and this is the one surface where a false "ready" is read out loud.
-  it("DROPS a session whose machine the Gateway says cannot be reached", () => {
+  // The other half. Without it, passing `true` unconditionally would satisfy the test above - and
+  // "promise a dead machine can speak" is the defect on the other side of this same rule.
+  it("DROPS a session the Gateway stamped unreachable", () => {
     const queue = voiceQueueFor([session({ sessionId: "gone", machineReachable: false })]);
     expect(queue).toEqual([]);
   });
 
   it("still includes a session an older Gateway never stamped at all", () => {
-    // machineReachable absent means the Gateway did not say. Treating silence as unreachable would empty
-    // the queue against an older Gateway; machineCanBeActedOn is `!== false` for exactly this reason.
+    // Absent means the Gateway did not say, and silence is not "unreachable" - machineCanBeActedOn is
+    // `!== false` precisely so an older Gateway does not empty the queue.
     const queue = voiceQueueFor([session({ sessionId: "unstamped", machineReachable: undefined })]);
     expect(queue.map((s) => s.sessionId)).toEqual(["unstamped"]);
   });
 
-  it("sorts the queue oldest-waiting first, so it can be worked top to bottom by ear", () => {
+  it("drops a session that is not waiting on the owner, however reachable its machine", () => {
+    const queue = voiceQueueFor([
+      session({ sessionId: "waiting", machineReachable: true }),
+      session({ sessionId: "busy", machineReachable: true, triageBucket: "active", effectiveColor: "blue" }),
+    ]);
+    expect(queue.map((s) => s.sessionId)).toEqual(["waiting"]);
+  });
+
+  it("returns the queue oldest-waiting first, so it can be worked top to bottom by ear", () => {
     const queue = voiceQueueFor([
       session({ sessionId: "newer", machineReachable: true, needsYouSince: "2026-07-30T21:00:00Z", createdAt: "2026-07-30T21:00:00Z" }),
       session({ sessionId: "older", machineReachable: true, needsYouSince: "2026-07-30T18:00:00Z", createdAt: "2026-07-30T18:00:00Z" }),
     ]);
     expect(queue.map((s) => s.sessionId)).toEqual(["older", "newer"]);
-  });
-
-  it("mixes the two rules: only reachable, waiting sessions survive", () => {
-    const queue = voiceQueueFor([
-      session({ sessionId: "reachable-waiting", machineReachable: true }),
-      session({ sessionId: "unreachable-waiting", machineReachable: false }),
-      session({ sessionId: "reachable-not-waiting", machineReachable: true, triageBucket: "active", effectiveColor: "blue" }),
-    ]);
-    expect(queue.map((s) => s.sessionId)).toEqual(["reachable-waiting"]);
   });
 });

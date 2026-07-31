@@ -215,7 +215,7 @@ public sealed class RosterServesLastKnownTests
 
                 // ...and not one of them was recorded as activity, because the machine never confirmed them.
                 var snapshot = concurrency.Snapshot(DateTime.UtcNow, TenantId.Local);
-                Assert.Empty(snapshot.CurrentSessions);
+                Assert.Equal(0, snapshot.Live.Current);
             }, concurrency: concurrency);
         }
         finally
@@ -246,7 +246,7 @@ public sealed class RosterServesLastKnownTests
                 Assert.Equal(2, body.RootElement.GetProperty("sessions").EnumerateArray().Count());
 
                 var snapshot = concurrency.Snapshot(DateTime.UtcNow, TenantId.Local);
-                Assert.Equal(2, snapshot.CurrentSessions.Count);
+                Assert.Equal(2, snapshot.Live.Current);
             }, concurrency: concurrency);
         }
         finally
