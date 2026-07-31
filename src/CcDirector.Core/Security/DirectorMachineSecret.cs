@@ -36,6 +36,61 @@ public static class DirectorMachineSecret
     public static string Resolve(string? fleetToken)
         => string.IsNullOrWhiteSpace(fleetToken) ? LoadOrCreate() : fleetToken.Trim();
 
+    /// <summary>
+    /// The secret a SPECIFIC Director instance accepts, read from that instance's storage root - for
+    /// out-of-process callers (the launcher, admin tooling) addressing one Director on a machine that
+    /// may hold several, each with its whole storage under <c>instances/&lt;slug&gt;</c>. Same order
+    /// as <see cref="Resolve"/>: the shared fleet token configured in that root's
+    /// <c>config/config.json</c> wins, otherwise that root's own persisted token file.
+    ///
+    /// READ-ONLY on purpose, unlike <see cref="LoadOrCreate"/>: a client must never mint the
+    /// server's secret file into existence - a token file the Director did not write verifies
+    /// nothing, and creating one plants exactly the kind of stale stray that used to mask this bug.
+    /// An instance with no readable secret answers null and the caller sends no credential.
+    /// </summary>
+    public static string? TryReadFrom(string storageRoot)
+    {
+        try
+        {
+            var configJson = Path.Combine(storageRoot, "config", "config.json");
+            if (File.Exists(configJson))
+            {
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(configJson));
+                    if (doc.RootElement.TryGetProperty("gateway", out var gateway)
+                        && gateway.ValueKind == System.Text.Json.JsonValueKind.Object
+                        && gateway.TryGetProperty("token", out var token)
+                        && token.ValueKind == System.Text.Json.JsonValueKind.String
+                        && !string.IsNullOrWhiteSpace(token.GetString()))
+                    {
+                        return token.GetString()!.Trim();
+                    }
+                }
+                catch (System.Text.Json.JsonException ex)
+                {
+                    // A malformed config.json is not the answer to "what is the secret" - the token
+                    // file below is where a standalone Director keeps it. Same order Resolve applies.
+                    FileLog.Write($"[DirectorMachineSecret] TryReadFrom: {configJson} is not readable JSON ({ex.Message}); reading the token file instead");
+                }
+            }
+
+            var tokenFile = Path.Combine(storageRoot, "config", "director", "gateway-token.txt");
+            if (File.Exists(tokenFile))
+            {
+                var value = File.ReadAllText(tokenFile).Trim();
+                if (value.Length > 0)
+                    return value;
+            }
+            return null;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DirectorMachineSecret] TryReadFrom({storageRoot}) FAILED: {ex.Message}");
+            return null;
+        }
+    }
+
     /// <summary>Read this machine's secret from disk; generate and persist one if absent.</summary>
     public static string LoadOrCreate()
     {
