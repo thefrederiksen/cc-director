@@ -2333,6 +2333,11 @@ public sealed class GatewayHost : IAsyncDisposable
             {
                 sw.Stop();
                 var path = ctx.Request.Path.Value ?? "";
+                // Load-test Stage 0 (issue #1173): the server-side roster latency, recorded beside the
+                // access log so the load driver's outside view has an inside twin.
+                if (path.Equals("/sessions", StringComparison.OrdinalIgnoreCase)
+                    && HttpMethods.IsGet(ctx.Request.Method))
+                    Diagnostics.LoadTestMetrics.RosterRequestObserved(sw.Elapsed, ctx.Response.StatusCode);
                 if (!path.Equals("/healthz", StringComparison.OrdinalIgnoreCase)
                     && !path.Equals("/favicon.ico", StringComparison.OrdinalIgnoreCase)
                     // The keep-warm heartbeat (P2) hits /diag/ping every ~25s per client - warming traffic,
@@ -3255,7 +3260,16 @@ public sealed class GatewayHost : IAsyncDisposable
             // ambient snapshot and per-tenant gate resolve to each tenant in turn. The try/catch is OUTSIDE the
             // per-tenant loop only as a backstop - ForEachTenant itself does not isolate a throwing tenant here,
             // but Sweep is fire-and-forget internally and does not throw on a single bad send.
-            _ => { try { _tenantPass.ForEachTenant(() => FleetDisplayState.Sweep()); } catch (Exception ex) { FileLog.Write($"[GatewayHost] display-state sweep error: {ex.Message}"); } },
+            // Load-test Stage 0 (issue #1173): measure each tick's duration and COUNT overlapping ticks -
+            // the read-model review names the missing overlap guard as a suspect, and this proves or
+            // refutes it with a number. Measurement only: no guard is added here (that fix is #1159's).
+            _ =>
+            {
+                var sweepStart = Diagnostics.LoadTestMetrics.SweepStarting();
+                try { _tenantPass.ForEachTenant(() => FleetDisplayState.Sweep()); }
+                catch (Exception ex) { FileLog.Write($"[GatewayHost] display-state sweep error: {ex.Message}"); }
+                finally { Diagnostics.LoadTestMetrics.SweepFinished(sweepStart); }
+            },
             null, DisplayStateSweepInterval, DisplayStateSweepInterval);
         FileLog.Write($"[GatewayHost] display-state sweep started: every {DisplayStateSweepInterval.TotalSeconds:0}s");
 
@@ -3674,14 +3688,40 @@ public sealed class GatewayHost : IAsyncDisposable
         var periodEnd = currentPeriodEnd ?? DateTime.UtcNow.AddYears(1);
         var tierValue = tier ?? Tenancy.EntitlementRegistry.TierHosted;
         using var ctx = _gatewayDb.CreateUnscopedContext();
-        ctx.Database.ExecuteSqlRaw(
-            "CREATE TABLE IF NOT EXISTS entitlements (" +
-            "subject TEXT NOT NULL PRIMARY KEY, status TEXT NOT NULL, " +
-            "current_period_end TEXT NULL, stripe_subscription_id TEXT NULL, updated_at TEXT NULL, " +
-            "livemode INTEGER NULL, tier TEXT NULL)");
-        ctx.Database.ExecuteSqlRaw(
-            "INSERT OR REPLACE INTO entitlements (subject, status, current_period_end, livemode, tier) VALUES ({0}, {1}, {2}, {3}, {4})",
-            subject, status, periodEnd, livemode, tierValue);
+        // Provider CONDITIONAL, same signal the model shape uses (issue #1173 made this seam run on
+        // Postgres for the first time - the load-test rig seeds synthetic tenants through it against a
+        // throwaway Postgres, and the SQLite-only SQL below was a hard syntax error there). On Postgres
+        // the table is the website-owned shape the model maps: gateway.entitlements with a uuid subject,
+        // upserted with the Postgres conflict clause. SQLite keeps its original SQL, byte-identical.
+        if (ctx.Database.IsNpgsql())
+        {
+            ctx.Database.ExecuteSqlRaw("CREATE SCHEMA IF NOT EXISTS gateway");
+            ctx.Database.ExecuteSqlRaw(
+                "CREATE TABLE IF NOT EXISTS gateway.entitlements (" +
+                "subject uuid NOT NULL PRIMARY KEY, status text NOT NULL, " +
+                "current_period_end timestamptz NULL, stripe_subscription_id text NULL, updated_at timestamptz NULL, " +
+                "livemode boolean NULL, tier text NULL)");
+            // Guid.Parse is the same demand the model's subject-to-uuid value converter makes of every
+            // read: on Postgres a subject that is not a uuid could never be entitled anyway, so a bad
+            // test subject fails HERE, loudly, not later as a mysterious 402.
+            ctx.Database.ExecuteSqlRaw(
+                "INSERT INTO gateway.entitlements (subject, status, current_period_end, livemode, tier) " +
+                "VALUES ({0}, {1}, {2}, {3}, {4}) " +
+                "ON CONFLICT (subject) DO UPDATE SET status = EXCLUDED.status, " +
+                "current_period_end = EXCLUDED.current_period_end, livemode = EXCLUDED.livemode, tier = EXCLUDED.tier",
+                Guid.Parse(subject), status, periodEnd, livemode, tierValue);
+        }
+        else
+        {
+            ctx.Database.ExecuteSqlRaw(
+                "CREATE TABLE IF NOT EXISTS entitlements (" +
+                "subject TEXT NOT NULL PRIMARY KEY, status TEXT NOT NULL, " +
+                "current_period_end TEXT NULL, stripe_subscription_id TEXT NULL, updated_at TEXT NULL, " +
+                "livemode INTEGER NULL, tier TEXT NULL)");
+            ctx.Database.ExecuteSqlRaw(
+                "INSERT OR REPLACE INTO entitlements (subject, status, current_period_end, livemode, tier) VALUES ({0}, {1}, {2}, {3}, {4})",
+                subject, status, periodEnd, livemode, tierValue);
+        }
     }
 
     /// <summary>
