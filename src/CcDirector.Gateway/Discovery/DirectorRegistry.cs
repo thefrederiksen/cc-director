@@ -106,6 +106,31 @@ public sealed class DirectorRegistry : IDisposable
     private bool _disposed;
 
     /// <summary>
+    /// Cancelled at the START of <see cref="Dispose"/>, before anything is torn down (issue #1156).
+    ///
+    /// A file-system event used to launch a retry loop with a bare <c>Task.Run</c> that nothing owned: it
+    /// was not tracked, could not be cancelled, and slept between attempts, so it could still be running
+    /// several hundred milliseconds after this registry - and the database it writes through - had been
+    /// disposed. When it then touched a disposed dependency the failure landed on a background thread with
+    /// no test frame around it, which is how it killed the whole test host and left a run with no summary
+    /// line. Four tests already worked around it by deliberately never deleting their instances directory,
+    /// with comments saying a late delete event can "kill the whole test process".
+    /// </summary>
+    private readonly CancellationTokenSource _shutdown = new();
+
+    /// <summary>
+    /// Watcher-launched work that is still in flight, so <see cref="Dispose"/> can WAIT for it rather than
+    /// walk away and let it reach disposed services. Cancellation alone is not enough: a loop already past
+    /// its cancellation check still has to finish the attempt it is on.
+    /// </summary>
+    private readonly ConcurrentDictionary<Task, byte> _watcherWork = new();
+
+    /// <summary>How long <see cref="Dispose"/> waits for in-flight watcher work before giving up and saying
+    /// so. Bounded because a hung drain would turn a teardown defect into a teardown hang, which is not an
+    /// improvement; the retry loop it waits on is itself bounded to about half a second.</summary>
+    private static readonly TimeSpan DrainTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>
     /// Raised when a Director appears (file created, local registration, or tunnel registration). The payload
     /// carries the owning tenant because a Director identifier is unique only within a tenant.
     /// </summary>
@@ -431,21 +456,70 @@ public sealed class DirectorRegistry : IDisposable
 
     private void OnFileCreatedOrChanged(object sender, FileSystemEventArgs e)
     {
-        FileLog.Write($"[DirectorRegistry] File created/changed: {e.Name}");
-        // FileSystemWatcher fires before write is complete on some systems - retry briefly.
-        _ = Task.Run(async () =>
+        // Refuse to START new work once teardown has begun. The watcher is disabled in Dispose, but an
+        // event already dispatched can still arrive here, and work launched at that point would be racing
+        // the disposal of the services it writes through (issue #1156).
+        if (_disposed || _shutdown.IsCancellationRequested) return;
+
+        // Take the token INSIDE a guard rather than after the check above: teardown can complete between the
+        // two, and reading Token from a disposed source throws on this threadpool thread with nothing to
+        // catch it. Belt and braces alongside never disposing the source at all.
+        CancellationToken token;
+        try
         {
-            for (int attempt = 0; attempt < 5; attempt++)
+            token = _shutdown.Token;
+        }
+        catch (ObjectDisposedException)
+        {
+            return; // torn down while this callback was arriving
+        }
+
+        FileLog.Write($"[DirectorRegistry] File created/changed: {e.Name}");
+        // FileSystemWatcher fires before write is complete on some systems - retry briefly. The loop is now
+        // cancellable AND tracked, so Dispose can both stop it starting another attempt and wait for the
+        // attempt it is on.
+        var work = Task.Run(async () =>
+        {
+            for (int attempt = 0; attempt < 5 && !token.IsCancellationRequested; attempt++)
             {
                 if (TryParseAndAdd(e.FullPath)) return;
-                await Task.Delay(100);
+                try
+                {
+                    await Task.Delay(100, token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return; // teardown began while we were waiting to retry
+                }
             }
-            FileLog.Write($"[DirectorRegistry] Could not parse {e.Name} after retries");
-        });
+            if (!token.IsCancellationRequested)
+                FileLog.Write($"[DirectorRegistry] Could not parse {e.Name} after retries");
+        }, token);
+
+        TrackWatcherWork(work);
+    }
+
+    /// <summary>
+    /// Remember a watcher-launched task until it finishes, so <see cref="Dispose"/> can drain it. The
+    /// continuation removes it again, so a long-lived registry does not accumulate completed tasks.
+    /// </summary>
+    private void TrackWatcherWork(Task work)
+    {
+        _watcherWork.TryAdd(work, 0);
+        _ = work.ContinueWith(
+            static (t, state) => ((ConcurrentDictionary<Task, byte>)state!).TryRemove(t, out _),
+            _watcherWork,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private void OnFileDeleted(object sender, FileSystemEventArgs e)
     {
+        // A delete event dispatched just before the watcher was disabled must not mutate the registry or
+        // raise removal events into services that are already going away (issue #1156).
+        if (_disposed || _shutdown.IsCancellationRequested) return;
+
         FileLog.Write($"[DirectorRegistry] File deleted: {e.Name}");
         var id = Path.GetFileNameWithoutExtension(e.Name ?? "");
         if (string.IsNullOrEmpty(id)) return;
@@ -463,6 +537,8 @@ public sealed class DirectorRegistry : IDisposable
 
     private void OnFileRenamed(object sender, RenamedEventArgs e)
     {
+        if (_disposed || _shutdown.IsCancellationRequested) return;
+
         var oldId = Path.GetFileNameWithoutExtension(e.OldName ?? "");
         var oldKey = new DirectorKey(TenantId.Local, oldId);
         if (!string.IsNullOrEmpty(oldId)
@@ -680,15 +756,66 @@ public sealed class DirectorRegistry : IDisposable
         catch { return false; }
     }
 
+    /// <summary>
+    /// Tear down in the one order that is safe: stop new work being ACCEPTED, stop the sources that create
+    /// it, then WAIT for what is already running, and only then let the caller proceed to dispose the
+    /// services this registry writes through (issue #1156).
+    ///
+    /// The old order stopped the sources and returned immediately, which left watcher retry loops running
+    /// against dependencies the caller was about to dispose. Cancelling without draining would not fix it
+    /// either - a loop that has already passed its cancellation check still has an attempt to finish.
+    /// </summary>
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
+
+        // 1. Refuse new work first, so nothing further is queued while we are stopping the sources.
+        try { _shutdown.Cancel(); } catch (Exception ex) { FileLog.Write($"[DirectorRegistry] Dispose cancel failed: {ex.Message}"); }
+
+        // 2. Stop the sources.
         _sweeper?.Dispose();
         if (_watcher is not null)
         {
             _watcher.EnableRaisingEvents = false;
             _watcher.Dispose();
+        }
+
+        // 3. Wait for work already in flight. This is the step that was missing.
+        DrainWatcherWork();
+
+        // DELIBERATELY NOT DISPOSED. A FileSystemWatcher callback can still be in flight on a threadpool
+        // thread when we get here; it reads this source's Token, and Token on a DISPOSED
+        // CancellationTokenSource throws ObjectDisposedException. That throw would land on a thread with no
+        // handler and kill the process - the exact failure this whole change exists to stop, reintroduced by
+        // the cleanup. Measured, not theorised: disposing it here truncated a full suite run from 4,659 tests
+        // to 3,319 while the console still printed "Passed!". An undisposed CancellationTokenSource costs a
+        // little memory until the process ends; a disposed one costs the process.
+    }
+
+    /// <summary>
+    /// Wait for outstanding watcher work, bounded. A timeout is reported rather than thrown: the caller is
+    /// already shutting down, and a teardown that hangs is worse than one that says what it could not wait
+    /// for. Faulted work is swallowed here for the same reason - observing it also stops an unobserved task
+    /// exception surfacing later on a background thread, which is one of the ways this defect killed the
+    /// whole process.
+    /// </summary>
+    private void DrainWatcherWork()
+    {
+        var pending = _watcherWork.Keys.ToArray();
+        if (pending.Length == 0) return;
+
+        try
+        {
+            if (!Task.WaitAll(pending, DrainTimeout))
+            {
+                FileLog.Write($"[DirectorRegistry] Dispose: {pending.Length} watcher task(s) did not finish " +
+                    $"within {DrainTimeout.TotalSeconds:0}s; continuing teardown");
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DirectorRegistry] Dispose: watcher work ended faulted (observed, not rethrown): {ex.Message}");
         }
     }
 }
