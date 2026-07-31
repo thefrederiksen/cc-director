@@ -50,9 +50,7 @@ public sealed class ToolRunEndpointTests : IAsyncLifetime
         _host = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask,
             useEphemeralPort: true, authEnabled: true, instancesDirectory: _instancesDir);
         var port = await _host.StartAsync();
-        _client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
-        var token = DirectorAuth.LoadOrCreateToken();
-        _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        _client = DirectorTestClient.Admin(port);
     }
 
     public async Task DisposeAsync()

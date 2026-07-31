@@ -19,9 +19,21 @@ namespace CcDirector.Gateway.Tests;
 [Collection("DirectorRoot")]
 public sealed class DirectorSurfaceEndpointTests : IAsyncLifetime
 {
+    private readonly string _root;
+    private readonly string? _prevRoot;
     private ControlApiHost _host = null!;
     private SessionManager _sm = null!;
     private HttpClient _client = null!;
+
+    public DirectorSurfaceEndpointTests()
+    {
+        // Isolate the machine-global director root so the host resolves its accepted token from a
+        // fresh empty config (no fleet token) and writes its registration file into a temp root -
+        // independent of whatever gateway the test machine happens to have configured.
+        _prevRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
+        _root = Path.Combine(Path.GetTempPath(), "ccd-surface-root-" + Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _root);
+    }
 
     public async Task InitializeAsync()
     {
@@ -29,8 +41,6 @@ public sealed class DirectorSurfaceEndpointTests : IAsyncLifetime
         _host = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true);
         var port = await _host.StartAsync();
         _client = DirectorTestClient.Admin(port);
-        _client.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", DirectorAuth.LoadOrCreateToken());
     }
 
     public async Task DisposeAsync()
@@ -44,6 +54,8 @@ public sealed class DirectorSurfaceEndpointTests : IAsyncLifetime
             if (File.Exists(f)) File.Delete(f);
         }
         catch { /* test cleanup */ }
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _prevRoot);
+        try { if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
     }
 
     // ---- #5 resize ----
