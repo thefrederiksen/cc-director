@@ -186,4 +186,44 @@ public sealed class GatewayConfigTests : IDisposable
 
         Assert.Equal(GatewayConfig.DefaultStreamStaleAfterSeconds, cfg.StreamStaleAfterSeconds);
     }
+
+    // ===== Epic #1159 step A: the director eviction horizon =====
+    //
+    // This is the ONE elapsed-time rule left that removes a session from the roster, so both directions
+    // matter. It has to be genuinely settable - the value was a compile-time constant that only a test could
+    // move, and shipping that while calling it configurable would have been untrue. And it has to REFUSE a
+    // nonsense value rather than honour it, because a zero horizon evicts every machine on the next
+    // thirty-second sweep, which is the deleting roster this whole read model exists to end. A typo must not
+    // be able to reinstate the defect silently.
+
+    [Fact]
+    public void Load_directorEvictionHorizonHours_reads_positive_value()
+    {
+        SeedConfig("""{ "gateway": { "url": "http://gw:7878", "directorEvictionHorizonHours": 6 } }""");
+
+        var cfg = GatewayConfig.Load();
+
+        Assert.Equal(6, cfg.DirectorEvictionHorizonHours);
+    }
+
+    [Fact]
+    public void Load_directorEvictionHorizonHours_ignores_non_positive_value()
+    {
+        SeedConfig("""{ "gateway": { "url": "http://gw:7878", "directorEvictionHorizonHours": 0 } }""");
+
+        var cfg = GatewayConfig.Load();
+
+        Assert.Equal(GatewayConfig.DefaultDirectorEvictionHorizonHours, cfg.DirectorEvictionHorizonHours);
+    }
+
+    [Fact]
+    public void Load_directorEvictionHorizonHours_defaults_to_a_day_when_absent()
+    {
+        SeedConfig("""{ "gateway": { "url": "http://gw:7878" } }""");
+
+        var cfg = GatewayConfig.Load();
+
+        // The owner's ruling. It replaced sixty seconds, and sixty seconds reinstates the defect.
+        Assert.Equal(24, cfg.DirectorEvictionHorizonHours);
+    }
 }

@@ -61,7 +61,7 @@ def _run(
 ) -> None:
     """Show the last N conversation messages of TARGET (works for Claude, Codex, and Pi sessions)."""
     try:
-        sessions, complete, roster_reason = director.get_fleet()
+        sessions, complete, roster_reason, stale_caution = director.get_fleet()
     except director.DirectorError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)
@@ -69,12 +69,19 @@ def _run(
     matches = director.resolve_target(sessions, target)
     if not matches:
         console.print(director.no_match_message(target))
-        # Issue #1051: an unreachable Director's sessions are dropped from the roster under a 200, so
-        # "no session matches" can mean "the list we searched never had it". Do not imply otherwise -
-        # "it does not exist" and "I could not see that machine" call for opposite next steps.
+        # Issue #1051, reworded for #1159 step A: an unreachable Director's sessions are now LISTED rather
+        # than dropped, but they are the last thing that machine reported, so "no session matches" can still
+        # mean "the list we searched was not current". Do not imply otherwise - "it does not exist" and "I
+        # could not see that machine" call for opposite next steps.
         caveat = director.roster_caveat(complete, roster_reason)
         if caveat:
             console.print(f"[yellow]The fleet list searched may be incomplete.[/yellow] {caveat}")
+        # THE negative answer this caution exists for. A machine that is connected but has not reported
+        # recently can be hiding the very thing that was asked for, and this is the only place that
+        # matters - a lookup that FOUND its target was plainly not hidden from. Printed here and not on
+        # the success path, so it stays rare enough to be read.
+        if stale_caution:
+            console.print(f"[yellow]{stale_caution}[/yellow]")
         raise typer.Exit(1)
     if len(matches) > 1:
         console.print(f"[yellow]'{target}' is ambiguous - {len(matches)} matches.[/yellow] Use a longer id prefix.")

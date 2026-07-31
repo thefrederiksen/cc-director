@@ -3,30 +3,43 @@ using System.IO;
 using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
+using CcDirector.Gateway.Streaming;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// Removing one tenant's Director must not destroy another tenant's cached roster.
+/// Removing one tenant's Director must not destroy another tenant's roster.
 ///
 /// WHAT THESE PIN. The registry keys entries by (tenant, id), and an id is unique only WITHIN a tenant, so
 /// the same id may be held in two tenants at once. The registry's removal was already tenant-correct, but
 /// <c>OnDirectorRemoved</c> was typed <c>Action&lt;string&gt;</c>, which dropped the tenant the removal path
-/// had in hand; the roster cache's forget was correspondingly unscoped and cleared every partition whose id
+/// had in hand; the subscriber's forget was correspondingly unscoped and cleared every partition whose id
 /// matched case-insensitively. A removal in one tenant could therefore clear a cached roster in another,
-/// dropping the last-known-good sessions the grace window existed to keep serving.
+/// dropping the last-known sessions that cache existed to keep serving.
+///
+/// Epic #1159 step A moved the subscriber. The last-known-good grace-window cache these tests used to
+/// observe is deleted - it was the second staleness authority in the roster path, and the one that declared
+/// a machine offline and dropped its sessions. The roster is now served straight from
+/// <see cref="PushedSessionStore"/>, whose entries deliberately survive a disconnect, so IT is what a
+/// removal must forget and IT is where the isolation property now has to hold. The property under test is
+/// unchanged; only the object holding the sessions moved.
+///
+/// There is no removal CASCADE to speak of any more - an earlier version of this paragraph said there was.
+/// Eviction runs exactly one operation, <c>PushedSessionStore.ForgetIfDisconnected</c>; the session-number
+/// release and the snooze clear were deleted (inspection 2, finding 1). That makes this store the only
+/// place the per-tenant isolation of a removal can be observed, which is why these tests matter more now
+/// than when they were written, not less.
 ///
 /// WHAT EACH TEST HOLDS DOWN, and why both halves are needed. Survival alone proves nothing - a forget that
 /// removed nothing at all would also leave the other tenant intact - so every test here asserts the
 /// DESTRUCTIBILITY CONTROL beside it: the owner's own entry really is cleared by the same call.
 ///
-/// REVERT-PROOF. Make <see cref="FleetRosterCache.Forget"/> ignore its tenant argument and enumerate every
-/// partition again (the pre-fix body) and both survival assertions go RED while both destructibility
-/// controls stay GREEN. Separately, make <c>DirectorRegistry.RaiseDirectorRemoved</c> stamp a fixed tenant
-/// onto the event instead of the removed key's own, and
-/// <see cref="Stale_sweep_forgets_only_the_swept_tenants_cached_roster"/> goes RED on its destructibility
-/// control - the owner's entry survives a removal that should have cleared it.
+/// REVERT-PROOF. Make <see cref="PushedSessionStore.Forget"/> ignore its tenant argument and enumerate every
+/// partition, and both survival assertions go RED while both destructibility controls stay GREEN. Separately,
+/// make <c>DirectorRegistry.RaiseDirectorRemoved</c> stamp a fixed tenant onto the event instead of the
+/// removed key's own, and <see cref="Stale_sweep_forgets_only_the_swept_tenants_sessions"/> goes RED on its
+/// destructibility control - the owner's entry survives a removal that should have cleared it.
 /// </summary>
 public sealed class DirectorRemovalTenantScopeTests
 {
@@ -43,34 +56,42 @@ public sealed class DirectorRemovalTenantScopeTests
         LastActivityAt = DateTime.UtcNow,
     };
 
-    [Fact]
-    public void Forget_clears_only_the_named_tenants_entry()
+    /// <summary>Seed one tenant's partition with a connected Director holding one pushed session.</summary>
+    private static void Seed(PushedSessionStore store, TenantId tenant, string sessionId)
     {
-        // Arrange - both tenants have a last-known-good roster cached under the SAME director id.
-        var cache = new FleetRosterCache();
-        cache.RecordReachable(TenantA, SharedId, new[] { Session("a-only") });
-        cache.RecordReachable(TenantB, SharedId, new[] { Session("b-only") });
-
-        // Act - tenant A's Director is removed.
-        cache.Forget(TenantA, SharedId);
-
-        // Assert (DESTRUCTIBILITY CONTROL) - A's own entry really is gone: with no snapshot left, A's next
-        // failed read is Offline rather than a grace-window serve. Without this, "B survived" would be
-        // satisfied by a Forget that removed nothing whatsoever.
-        var forA = cache.RecordUnreachable(TenantA, SharedId, "gone");
-        Assert.Equal(FleetReachabilityState.Offline, forA.State);
-        Assert.Null(forA.StaleSessions);
-
-        // Assert (THE PROPERTY) - B's cached roster is untouched: still inside its grace window, still
-        // serving B's OWN session, never A's.
-        var forB = cache.RecordUnreachable(TenantB, SharedId, "transient");
-        Assert.Equal(FleetReachabilityState.Wobbly, forB.State);
-        Assert.NotNull(forB.StaleSessions);
-        Assert.Equal("b-only", Assert.Single(forB.StaleSessions!).SessionId);
+        var conn = $"conn-{tenant.Value}";
+        store.RegisterConnection(tenant, SharedId, conn);
+        store.ApplySnapshot(tenant, SharedId, conn, 1, new[] { Session(sessionId) });
     }
 
     [Fact]
-    public void Stale_sweep_forgets_only_the_swept_tenants_cached_roster()
+    public void Forget_clears_only_the_named_tenants_entry()
+    {
+        // Arrange - both tenants have a roster held under the SAME director id.
+        var store = new PushedSessionStore();
+        Seed(store, TenantA, "a-only");
+        Seed(store, TenantB, "b-only");
+
+        // Act - tenant A's Director is removed.
+        store.Forget(TenantA, SharedId);
+
+        // Assert (DESTRUCTIBILITY CONTROL) - A's own entry really is gone: the store no longer knows the
+        // Director at all, so it reports no sessions and has never heard from it. Without this, "B survived"
+        // would be satisfied by a Forget that removed nothing whatsoever.
+        var forA = store.GetLastKnown(TenantA, SharedId);
+        Assert.Empty(forA.Sessions);
+        Assert.Null(forA.AsOfUtc);
+        Assert.False(forA.Connected);
+
+        // Assert (THE PROPERTY) - B's roster is untouched: still connected, still serving B's OWN session,
+        // never A's.
+        var forB = store.GetLastKnown(TenantB, SharedId);
+        Assert.True(forB.Connected);
+        Assert.Equal("b-only", Assert.Single(forB.Sessions).SessionId);
+    }
+
+    [Fact]
+    public void Stale_sweep_forgets_only_the_swept_tenants_sessions()
     {
         // End to end, through the real registry, the real event, and the real subscriber wiring.
         var dir = Path.Combine(Path.GetTempPath(), "cc-drt-" + Guid.NewGuid().ToString("N"));
@@ -78,36 +99,39 @@ public sealed class DirectorRemovalTenantScopeTests
         var registry = new DirectorRegistry(dir);
         try
         {
-            var cache = new FleetRosterCache();
+            var store = new PushedSessionStore();
             // Wired exactly as GatewayHost wires it.
-            registry.OnDirectorRemoved += removal => cache.Forget(removal.Tenant, removal.DirectorId);
+            registry.OnDirectorRemoved += removal => store.ForgetIfDisconnected(removal.Tenant, removal.DirectorId);
 
-            // Arrange - both tenants register a Director under the SAME id, and both have a last-known-good
-            // roster cached. Tenant B is the one that must be left completely undisturbed.
+            // Arrange - both tenants register a Director under the SAME id, and both have pushed a session.
+            // Tenant B is the one that must be left completely undisturbed.
             var a = registry.RegisterFromStream(SharedId, "machine-a", "alice", "1.0", 111, DateTime.UtcNow, TenantA);
             registry.RegisterFromStream(SharedId, "machine-b", "bob", "1.0", 222, DateTime.UtcNow, TenantB);
-            cache.RecordReachable(TenantA, SharedId, new[] { Session("a-only") });
-            cache.RecordReachable(TenantB, SharedId, new[] { Session("b-only") });
+            Seed(store, TenantA, "a-only");
+            Seed(store, TenantB, "b-only");
 
-            // Act - tenant A's Director stops being refreshed and ages past the heartbeat timeout, then the
-            // stale sweep runs. This is the ordinary removal path a departed Director travels.
-            a.LastSeen = DateTime.UtcNow - DirectorRegistry.HttpHeartbeatTimeout - TimeSpan.FromSeconds(30);
+            // Act - tenant A's Director DEPARTS: its tunnel closes, and then it ages past the eviction
+            // horizon without being refreshed. Both halves are now required, and the tunnel close is new
+            // (inspection 2, finding 1). Eviction no longer forgets a Director that still holds a live
+            // stream - that is the whole point of ForgetIfDisconnected - so a fixture that ages a machine
+            // out while leaving its tunnel UP is describing something that cannot happen to a live
+            // Director: a connected machine re-Hellos every few seconds and never ages. Leaving the
+            // connection open here made this test fail, which is the guard working rather than a
+            // regression, and the fix is to model a departure properly instead of weakening the assertion
+            // below - A's sessions must still be gone.
+            Assert.True(store.UnregisterConnection(TenantA, SharedId, $"conn-{TenantA.Value}"));
+            a.LastSeen = DateTime.UtcNow - DirectorRegistry.DefaultEvictionHorizon - TimeSpan.FromSeconds(30);
             registry.SweepStale();
 
             // Assert (DESTRUCTIBILITY CONTROL) - the sweep really did remove A's entry AND really did reach
-            // the subscriber for A: A's registry entry is gone and A's cached roster was forgotten.
+            // the subscriber for A: A's registry entry is gone and A's pushed sessions were forgotten.
             Assert.Null(registry.Get(TenantA, SharedId));
-            var forA = cache.RecordUnreachable(TenantA, SharedId, "swept");
-            Assert.Equal(FleetReachabilityState.Offline, forA.State);
+            Assert.Empty(store.GetLastKnown(TenantA, SharedId).Sessions);
 
-            // Assert (THE PROPERTY) - tenant B is untouched. Its registry entry survives, and its cached
-            // roster survives: a failed read still serves B's last-known-good session from the grace window
-            // rather than dropping it. This is the assertion the bare-string event could not satisfy.
+            // Assert (THE PROPERTY) - tenant B is untouched. Its registry entry survives, and its sessions
+            // survive. This is the assertion the bare-string event could not satisfy.
             Assert.NotNull(registry.Get(TenantB, SharedId));
-            var forB = cache.RecordUnreachable(TenantB, SharedId, "transient");
-            Assert.Equal(FleetReachabilityState.Wobbly, forB.State);
-            Assert.NotNull(forB.StaleSessions);
-            Assert.Equal("b-only", Assert.Single(forB.StaleSessions!).SessionId);
+            Assert.Equal("b-only", Assert.Single(store.GetLastKnown(TenantB, SharedId).Sessions).SessionId);
         }
         finally
         {
@@ -132,7 +156,7 @@ public sealed class DirectorRemovalTenantScopeTests
             var a = registry.RegisterFromStream(SharedId, "machine-a", "alice", "1.0", 111, DateTime.UtcNow, TenantA);
             registry.RegisterFromStream(SharedId, "machine-b", "bob", "1.0", 222, DateTime.UtcNow, TenantB);
 
-            a.LastSeen = DateTime.UtcNow - DirectorRegistry.HttpHeartbeatTimeout - TimeSpan.FromSeconds(30);
+            a.LastSeen = DateTime.UtcNow - DirectorRegistry.DefaultEvictionHorizon - TimeSpan.FromSeconds(30);
             registry.SweepStale();
 
             var removal = Assert.Single(seen);

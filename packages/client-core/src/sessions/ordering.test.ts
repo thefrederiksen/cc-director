@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionDto } from "../api/client";
-import { classify, contextLine, deletionReason, dotColor, dotHex, effectiveColor, groupByDirector, inBucket, inWaitingOrder, isDeferredHold, isWorking, pendingDeletion, snoozeCountdown, stateLabel } from "./ordering";
+import { classify, contextLine, deletionReason, dotColor, dotHex, effectiveColor, groupByDirector, inBucket, inWaitingOrder, isDeferredHold, isWorking, machineCanBeActedOn, needsYouBadgeCount, pendingDeletion, snoozeCountdown, stateLabel } from "./ordering";
 
 function session(fields: Partial<SessionDto> & { sessionId?: string } = {}): SessionDto {
   return {
@@ -301,5 +301,55 @@ describe("winding-down (pendingDeletion) - a badge, never a colour", () => {
     const flagged = session({ pendingDeletion: true, deletionReason: "jobs-auto: nothing to report" } as Partial<SessionDto>);
     expect(pendingDeletion(flagged)).toBe(true);
     expect(deletionReason(flagged)).toBe("jobs-auto: nothing to report");
+  });
+});
+
+describe("the needs-you BADGE count - visible is not the same question as nag", () => {
+  const needsYou = (sessionId: string, fields: Partial<SessionDto> = {}): SessionDto =>
+    session({ sessionId, effectiveColor: "red", triageBucket: "needsYou", ...fields });
+
+  it("counts a needs-you session on a reachable machine", () => {
+    expect(needsYouBadgeCount([needsYou("a", { machineReachable: true })])).toBe(1);
+  });
+
+  it("does NOT count a needs-you session whose machine the Gateway says is unreachable", () => {
+    // The ruling: a laptop asleep overnight with red sessions must not leave the badge lit until morning.
+    // The rows stay on the roster - this is only the badge.
+    const sessions = [
+      needsYou("awake", { machineReachable: true }),
+      needsYou("asleep-1", { machineReachable: false }),
+      needsYou("asleep-2", { machineReachable: false }),
+    ];
+    expect(needsYouBadgeCount(sessions)).toBe(1);
+  });
+
+  it("goes to zero when every waiting session is on an unreachable machine", () => {
+    expect(needsYouBadgeCount([needsYou("a", { machineReachable: false })])).toBe(0);
+  });
+
+  it("COUNTS a session that carries no reachability stamp at all (older Gateway)", () => {
+    // Back-compat, and it is deliberate: an unstamped field means "I was not told", not "unreachable".
+    // Reading the absence as unreachable would switch the badge off for everyone on a mixed-version
+    // deploy, and a missing nag is invisible - the owner would never learn the phone had gone quiet.
+    expect(needsYouBadgeCount([needsYou("a")])).toBe(1);
+  });
+
+  it("COUNTS a session stamped null (a Director-local response, where the question is meaningless)", () => {
+    expect(needsYouBadgeCount([needsYou("a", { machineReachable: null } as Partial<SessionDto>)])).toBe(1);
+  });
+
+  it("ignores sessions in other buckets, reachable or not", () => {
+    const sessions = [
+      needsYou("a", { machineReachable: true }),
+      session({ sessionId: "b", effectiveColor: "blue", triageBucket: "active", machineReachable: true }),
+      session({ sessionId: "c", effectiveColor: "grey", triageBucket: "onHold", machineReachable: false }),
+    ];
+    expect(needsYouBadgeCount(sessions)).toBe(1);
+  });
+
+  it("machineCanBeActedOn is the single rule the count is built from", () => {
+    expect(machineCanBeActedOn(session({ machineReachable: true }))).toBe(true);
+    expect(machineCanBeActedOn(session())).toBe(true);
+    expect(machineCanBeActedOn(session({ machineReachable: false }))).toBe(false);
   });
 });

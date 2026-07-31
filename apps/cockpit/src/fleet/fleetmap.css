@@ -363,6 +363,27 @@
   outline-offset: 1px;
 }
 
+/* A Director whose machine is not answering (machine pivot). The sub-header is dimmed and carries the
+   state + how long ago the Gateway last heard the machine, in the same warn colour the node cards use
+   for their "last seen" line. The machine is SHOWN, dimmed and dated - it is never dropped from the map,
+   and its cards dim themselves (.fmap-card-wobbly / .fmap-card-offline), so the group is not dimmed as a
+   whole or the cards would be faded twice. */
+.fmap-subhead-wobbly .fmap-subhead-label {
+  opacity: 0.72;
+}
+
+.fmap-subhead-offline .fmap-subhead-label {
+  opacity: 0.52;
+}
+
+.fmap-subhead-state {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--warn);
+}
+
 /* An idle Director on the machine pivot: no sessions, so the sub-group renders this "free slot" line
    instead of cards. A dashed, muted placeholder so it reads as available capacity, not a real node. */
 .fmap-freeslot {

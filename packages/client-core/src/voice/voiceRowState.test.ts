@@ -185,4 +185,28 @@ describe("isVoiceReady", () => {
     expect(isVoiceReady({ ...READY_FOR_THIS_TURN, hasSpokenText: false })).toBe(false);
     expect(isVoiceReady({ ...READY_FOR_THIS_TURN, reachable: false })).toBe(false);
   });
+
+  // THE VOICE QUEUE ITSELF, pinned as a queue and not only as a single row (Epic #1159 step A). The
+  // Gateway now SERVES the sessions of a machine nobody can reach - dimmed and dated instead of deleted -
+  // so unreachable rows are on the roster in normal operation rather than only after a client-side
+  // retention. The queue is built by filtering on isVoiceReady, and the hands-free lens is the one place
+  // a false "ready" is read ALOUD rather than looked at, so this pins the whole filter: a session on a
+  // machine nobody can act on never enters the queue, however healthy its last-known state looks.
+  it("excludes an unreachable session from the voice queue, keeping the reachable ones in order", () => {
+    const rows = [
+      { id: "awake-1", inputs: READY_FOR_THIS_TURN },
+      { id: "asleep", inputs: { ...READY_FOR_THIS_TURN, reachable: false } },
+      { id: "awake-2", inputs: READY_FOR_THIS_TURN },
+    ];
+    const queue = rows.filter((r) => isVoiceReady(r.inputs)).map((r) => r.id);
+    expect(queue).toEqual(["awake-1", "awake-2"]);
+  });
+
+  it("empties the voice queue when every waiting session is on an unreachable machine", () => {
+    const rows = [
+      { id: "asleep-1", inputs: { ...READY_FOR_THIS_TURN, reachable: false } },
+      { id: "asleep-2", inputs: { ...READY_FOR_THIS_TURN, reachable: false } },
+    ];
+    expect(rows.filter((r) => isVoiceReady(r.inputs))).toEqual([]);
+  });
 });

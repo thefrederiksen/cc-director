@@ -48,8 +48,33 @@ public sealed class DirectorRegistry : IDisposable
         WatchDirectory = instancesDirectory ?? InstancesDirectory;
     }
 
-    /// <summary>If an HTTP-registered Director has not heartbeat for this long, it gets swept.</summary>
-    public static TimeSpan HttpHeartbeatTimeout { get; } = TimeSpan.FromSeconds(60);
+    /// <summary>
+    /// Epic #1159 step A: the eviction horizon - how long a machine may be gone before its registry entry
+    /// is swept and its sessions leave the roster. This is THE ONLY elapsed-time rule in the Gateway that
+    /// removes a session, and it is deliberately measured in hours.
+    ///
+    /// IT USED TO BE SIXTY SECONDS, and that was the second half of this step's defect. The roster refused
+    /// to SERVE a machine after twenty seconds of silence, and sixty seconds later the registry DELETED it
+    /// outright - taking its cached sessions, its snoozes (self-host <c>ClearForDirector</c>) and its
+    /// session numbers with them. Restoring the roster read alone would therefore have bought about a
+    /// minute; the acceptance for this step is five. A short timeout is the right instrument for "may I
+    /// route a command at this machine" - which is the tunnel connection, and is answered elsewhere - and
+    /// the wrong one for "does this machine exist".
+    ///
+    /// The snooze and session-number destruction described above is HISTORY, not current behaviour: both
+    /// were deleted (inspection 2, finding 1) because their liveness guard could not be atomic with the
+    /// destruction. Passing this horizon now drops a machine from the READ MODEL and does nothing else.
+    /// </summary>
+    public static TimeSpan DefaultEvictionHorizon { get; } =
+        TimeSpan.FromHours(Core.Configuration.GatewayConfig.DefaultDirectorEvictionHorizonHours);
+
+    /// <summary>
+    /// This registry's eviction horizon. Settable so a test can drive a REAL eviction in milliseconds
+    /// rather than asserting a constant - the destructibility control the roster tests need, since a
+    /// serve-everything bug and a correct fix are indistinguishable without proving something still
+    /// removes sessions eventually.
+    /// </summary>
+    public TimeSpan EvictionHorizon { get; init; } = DefaultEvictionHorizon;
 
     // Gateway Cleanup mission (post-cut): the reachability circuit-breaker (consecutive-failure counting,
     // cooldown, unreachable-evict) and the advertised-endpoint re-verification state machine are DELETED.
@@ -101,6 +126,40 @@ public sealed class DirectorRegistry : IDisposable
     /// done, it is never served to a client, and keeping it bare leaves its lifecycle exactly as it was.
     private readonly ConcurrentDictionary<string, bool> _everReachable = new();
 
+    /// <summary>
+    /// Serialises the stale sweep's REMOVAL DECISION against the two writes that make a Director live again.
+    ///
+    /// Inspection 1, finding 1: the sweep used to judge a snapshot taken by <c>ToArray()</c> and then remove
+    /// BY KEY, so a Director that reconnected between the judgement and the removal was destroyed anyway -
+    /// its session numbers released, its pushed entry forgotten, its snoozes deleted on self-host.
+    ///
+    /// An atomic compare-and-remove on the VALUE does not fix this and is the trap worth naming:
+    /// <see cref="Heartbeat"/> mutates <c>LastSeen</c> IN PLACE on the live object, so the same instance
+    /// simply carries a newer timestamp, a reference comparison still matches, and the removal still happens.
+    /// The decision has to re-READ and re-JUDGE the current entry, which is what this gate makes possible.
+    ///
+    /// The removal EVENT is raised outside the gate on purpose - a subscriber that called back into the
+    /// registry while it was held would deadlock.
+    /// </summary>
+    private readonly object _livenessGate = new();
+
+    /// <summary>
+    /// Test-only seam, fired by <see cref="SweepStale"/> after it has judged an entry stale and BEFORE it
+    /// takes <see cref="_livenessGate"/> to re-judge and remove - that is, inside the exact window finding 1
+    /// describes. A test reconnects the Director from inside this callback and asserts it survives.
+    ///
+    /// It proves the ORDERING window exists and is closed. It proves NOTHING about the concurrent race under
+    /// real thread scheduling, and it must not be described as if it did. Null and inert in production.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately parameterless. It carried the <c>DirectorKey</c> being judged until the compiler
+    /// pointed out that the key type is PRIVATE, so an internal field of that type is more accessible
+    /// than its own type. Rather than widen a private type to suit a test seam - which would let test
+    /// scaffolding dictate production visibility - the seam drops the argument it never needed: a test
+    /// already knows which Director it registered.
+    /// </remarks>
+    internal Action? OnSweepJudgedForTest;
+
     private FileSystemWatcher? _watcher;
     private Timer? _sweeper;
     private bool _disposed;
@@ -133,16 +192,25 @@ public sealed class DirectorRegistry : IDisposable
     /// thread-pool threads with NO enclosing try/catch. An exception thrown by a subscriber there is
     /// UNHANDLED, so it does not merely fail the removal - it terminates the whole Gateway process.
     ///
-    /// Not hypothetical: a subscriber writes the tenant-scoped snooze store, and when that store's database
-    /// was unavailable the throw came straight up this path and took the process down - observed as a test
-    /// run that ABORTED partway through while still reporting exit code 0. Failing to clear one removed
-    /// Director's snoozes is a bounded, cosmetic loss; losing the Gateway is not. The failure is logged
-    /// LOUD - this catches to keep the process alive, not to hide the fault.
+    /// Not hypothetical, though it is now HISTORY: a subscriber used to write the tenant-scoped snooze
+    /// store, and when that store's database was unavailable the throw came straight up this path and took
+    /// the process down - observed as a test run that ABORTED partway through while still reporting exit
+    /// code 0. That subscriber is deleted (see below), so this particular fault cannot recur; the guard
+    /// stays because the hazard is structural and belongs to the event, not to any one subscriber. The
+    /// failure is logged LOUD - this catches to keep the process alive, not to hide the fault.
     ///
     /// Each subscriber is invoked INDEPENDENTLY. A plain Invoke on a multicast delegate stops at the first
     /// handler that throws, so one faulting subscriber would silently deprive every later one of the event
-    /// (the session-number release and the roster-cache forget are on this list) - trading a process crash
-    /// for a quiet partial removal, which is harder to notice and just as wrong.
+    /// - trading a process crash for a quiet partial removal, which is harder to notice and just as wrong.
+    /// That matters even though there is currently only ONE permanent subscriber, because the next one
+    /// added must not be able to suppress it.
+    ///
+    /// WHAT SUBSCRIBES TODAY, so this document cannot be read as a list of cleanups to maintain: exactly
+    /// one permanent subscriber, <c>PushedSessionStore.ForgetIfDisconnected</c>, plus a transient listener
+    /// on the fleet event stream that only enqueues a notification and destroys nothing. The session-number
+    /// release and the snooze clear that used to be here are DELETED (epic #1159 step A, inspection 2
+    /// finding 1) - their liveness check could not be made atomic with their destruction, so a Director
+    /// reconnecting in between was destroyed while live. Do not add them back.
     /// </summary>
     /// <remarks>
     /// Takes the <see cref="DirectorKey"/> the removal already resolved, so the tenant reaches the
@@ -209,8 +277,15 @@ public sealed class DirectorRegistry : IDisposable
         // its entries belong to the single Local tenant. On hosted, where a request's tenant is a real
         // account, a Local-keyed entry is therefore served to no account - which is the correct answer.
         var key = new DirectorKey(TenantId.Local, req.DirectorId);
-        var existed = _directors.TryGetValue(key, out _);
-        _directors[key] = dto;
+        // Under the liveness gate for the same reason as RegisterFromStream: the sweep evicts "http" entries on
+        // exactly the same staleness rule, so this refresh has to be visible to the sweep's re-judge or the
+        // HTTP path keeps the hole the stream path just closed.
+        bool existed;
+        lock (_livenessGate)
+        {
+            existed = _directors.TryGetValue(key, out _);
+            _directors[key] = dto;
+        }
         FileLog.Write(dto.EndpointUnreachableReason is null
             ? $"[DirectorRegistry] Upsert (http): id={dto.DirectorId}, endpoint={dto.TailnetEndpoint}, existed={existed}"
             : $"[DirectorRegistry] Upsert (http, FLAGGED no reachable endpoint): id={dto.DirectorId}, existed={existed}, reason={dto.EndpointUnreachableReason}");
@@ -245,23 +320,32 @@ public sealed class DirectorRegistry : IDisposable
         // arrives empty must not wipe a value the entry already carries (e.g. a file-discovered entry's machine
         // name). Production Hellos always carry the full identity; this just makes re-registration and
         // mixed-source ordering safe.
-        _directors.TryGetValue(key, out var existing);
-        var dto = new DirectorDto
+        //
+        // The merge-and-replace runs under the liveness gate (see _livenessGate): this is the write that makes
+        // a reconnecting Director live again, and the stale sweep must either see it or not have decided yet.
+        // Without the gate the sweep can judge the OLD entry stale and then remove the new one by key.
+        DirectorDto dto;
+        bool existed;
+        lock (_livenessGate)
         {
-            DirectorId = directorId,
-            Pid = pid > 0 ? pid : (existing?.Pid ?? 0),
-            StartedAt = startedAt != default ? startedAt : (existing?.StartedAt ?? now),
-            ControlEndpoint = "",     // tunnel-only: the Gateway never dials this Director
-            TailnetEndpoint = null,
-            MachineName = !string.IsNullOrEmpty(machineName) ? machineName : (existing?.MachineName ?? ""),
-            User = !string.IsNullOrEmpty(user) ? user : (existing?.User ?? ""),
-            Version = !string.IsNullOrEmpty(version) ? version : (existing?.Version ?? ""),
-            SchemaVersion = 1,
-            LastSeen = now,
-            Source = "stream",
-        };
-        var existed = existing is not null;
-        _directors[key] = dto;
+            _directors.TryGetValue(key, out var existing);
+            dto = new DirectorDto
+            {
+                DirectorId = directorId,
+                Pid = pid > 0 ? pid : (existing?.Pid ?? 0),
+                StartedAt = startedAt != default ? startedAt : (existing?.StartedAt ?? now),
+                ControlEndpoint = "",     // tunnel-only: the Gateway never dials this Director
+                TailnetEndpoint = null,
+                MachineName = !string.IsNullOrEmpty(machineName) ? machineName : (existing?.MachineName ?? ""),
+                User = !string.IsNullOrEmpty(user) ? user : (existing?.User ?? ""),
+                Version = !string.IsNullOrEmpty(version) ? version : (existing?.Version ?? ""),
+                SchemaVersion = 1,
+                LastSeen = now,
+                Source = "stream",
+            };
+            existed = existing is not null;
+            _directors[key] = dto;
+        }
         _stateReporting.TryAdd(directorId, true);
         if (!existed)
         {
@@ -278,8 +362,14 @@ public sealed class DirectorRegistry : IDisposable
     public bool Heartbeat(string directorId)
     {
         if (!TryResolveLocalKey(directorId, out var key)) return false;
-        if (!_directors.TryGetValue(key, out var existing)) return false;
-        existing.LastSeen = DateTime.UtcNow;
+        // Under the liveness gate: this is an IN-PLACE write to the live object, which is precisely why the
+        // sweep cannot judge a captured reference (see _livenessGate). Taking the same gate is what makes the
+        // sweep's re-read see this heartbeat rather than race it.
+        lock (_livenessGate)
+        {
+            if (!_directors.TryGetValue(key, out var existing)) return false;
+            existing.LastSeen = DateTime.UtcNow;
+        }
         return true;
     }
 
@@ -534,21 +624,62 @@ public sealed class DirectorRegistry : IDisposable
             {
                 // Gateway Cleanup mission (tunnel-only): "stream" entries are aged out exactly like "http" -
                 // by staleness. A connected Director refreshes LastSeen on every Hello + the ~10s periodic
-                // re-push, so it never ages; a Director whose tunnel closed stops refreshing and is swept after
-                // HttpHeartbeatTimeout. This is why the DirectorHub does NOT drop the entry the instant the
-                // stream closes: a dead Director's cached roster must survive the sweep window so a Gateway-owned
+                // re-push, so it never ages; a Director whose tunnel closed stops refreshing and is swept once
+                // it passes the eviction horizon. This is why the DirectorHub does NOT drop the entry the
+                // instant the stream closes: a dead Director's cached roster must survive so a Gateway-owned
                 // snooze can still fire it back to "needs you" from the cache, and a brief reconnect blip never
                 // flaps the roster.
+                //
+                // Epic #1159 step A: the horizon is a DAY, not a minute. Passing it is the one elapsed-time
+                // event allowed to remove a session - and it removes the machine from the READ MODEL and
+                // nothing else. There is no removal cascade: the session-number release and the snooze clear
+                // that once hung here are DELETED (inspection 2, finding 1), because a liveness check followed
+                // by a destructive action is two operations and a Director reconnecting between them was
+                // destroyed anyway. The single subscriber is PushedSessionStore.ForgetIfDisconnected, which is
+                // one atomic operation under the store's membership gate - whose atomicity is REASONED from
+                // the source and NOT proven by any test. Do not restore the others here.
                 if (kv.Value.Source == "http" || kv.Value.Source == "stream")
                 {
                     var lastSeen = kv.Value.LastSeen ?? DateTime.MinValue;
-                    if (now - lastSeen > HttpHeartbeatTimeout)
+                    if (now - lastSeen > EvictionHorizon)
                     {
-                        if (TryRemoveEntry(kv.Key, out _))
+                        // The snapshot says stale. That is a CANDIDATE, not a verdict: the entry may have been
+                        // refreshed since ToArray() captured it. Inspection 1 finding 1 - re-read and re-judge
+                        // the CURRENT entry under the gate the refresh paths take, so a Director that came back
+                        // in this window is not destroyed on the strength of a timestamp it has already beaten.
+                        OnSweepJudgedForTest?.Invoke();
+
+                        DirectorDto? removed = null;
+                        TimeSpan age = default;
+                        var spared = false;
+                        lock (_livenessGate)
                         {
-                            _everReachable.TryRemove(kv.Key.DirectorId, out _);
-                            FileLog.Write($"[DirectorRegistry] Sweeper removed stale {kv.Value.Source} entry: {kv.Key.DirectorId} (last seen {(now - lastSeen).TotalSeconds:F0}s ago)");
+                            if (_directors.TryGetValue(kv.Key, out var current))
+                            {
+                                var currentLastSeen = current.LastSeen ?? DateTime.MinValue;
+                                age = DateTime.UtcNow - currentLastSeen;
+                                if (age > EvictionHorizon)
+                                {
+                                    if (TryRemoveEntry(kv.Key, out removed))
+                                        _everReachable.TryRemove(kv.Key.DirectorId, out _);
+                                }
+                                else
+                                {
+                                    spared = true;
+                                }
+                            }
+                        }
+
+                        // Raised OUTSIDE the gate: subscribers run arbitrary code and one of them calling back
+                        // into the registry while the gate was held would deadlock.
+                        if (removed is not null)
+                        {
+                            FileLog.Write($"[DirectorRegistry] Sweeper removed stale {removed.Source} entry: {kv.Key.DirectorId} (last seen {age.TotalSeconds:F0}s ago)");
                             RaiseDirectorRemoved(kv.Key);
+                        }
+                        else if (spared)
+                        {
+                            FileLog.Write($"[DirectorRegistry] Sweeper SPARED {kv.Key.DirectorId}: judged stale on the swept snapshot, but the live entry is current again");
                         }
                     }
                     continue;

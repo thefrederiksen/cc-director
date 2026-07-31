@@ -24,9 +24,15 @@ namespace CcDirector.Gateway.Tests;
 ///
 /// REVERT-PROOF. Collapse the allocator back to one global pool (drop the per-tenant partition so every
 /// method shares one BySession/InUse) and every isolation assertion here goes RED while its destructibility
-/// control stays GREEN. Separately, restore the removal subscriber to
-/// <c>ReleaseForDirector(removal.DirectorId)</c> without the tenant and
-/// <see cref="Removal_in_one_tenant_keeps_the_other_tenants_numbers"/> reddens.
+/// control stays GREEN.
+///
+/// This used to add a second revert-proof: restore the removal subscriber to
+/// <c>ReleaseForDirector(removal.DirectorId)</c> without the tenant, and watch
+/// <see cref="Removal_in_one_tenant_keeps_the_other_tenants_numbers"/> redden. THAT SUBSCRIBER NO LONGER
+/// EXISTS - it was deleted with the eviction cascade (epic #1159 step A, inspection 2 finding 1), so the
+/// instruction is not merely unperformable, it reads as a request to reinstate the race. Do not follow it.
+/// These tests call <c>ReleaseForDirector</c> directly, as a primitive, which is the only way it is reached
+/// now; the tenancy property they pin is a property of that primitive and is unaffected by the deletion.
 /// </summary>
 public sealed class FleetSessionNumberAllocatorTenancyTests
 {

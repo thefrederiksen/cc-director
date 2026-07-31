@@ -43,8 +43,14 @@ namespace CcDirector.Gateway.Discovery;
 /// number still in use after a Gateway restart - via <see cref="Adopt"/>, called as the fleet is
 /// aggregated. Adopt only ever marks a number in use; it never frees one, so a momentarily-unreachable
 /// Director (whose sessions drop out of the aggregation) can never have its numbers reclaimed and
-/// re-handed. Numbers are freed only by an explicit <see cref="Release"/> when a session ends, or by
-/// <see cref="ReleaseForDirector"/> when a whole Director is swept from the registry.
+/// re-handed. Numbers are freed only by an explicit <see cref="Release"/> when a session ends.
+///
+/// <see cref="ReleaseForDirector"/> USED TO free them when a whole Director was swept from the registry, and
+/// that wiring is DELETED (epic #1159 step A, inspection 2 finding 1): the liveness check in front of it was
+/// a separate operation from the release, so a Director reconnecting in between had numbers freed while it
+/// was live - and a freed number can then be handed to a NEW session while the old one still holds it. The
+/// cost of removing it is that a permanently retired machine keeps every number it held, one per session it
+/// was running, out of the nine hundred, with nothing to reclaim them.
 ///
 /// Thread-safe, and PARTITIONED for concurrency as well as correctness (audit H2). The tenant map is a
 /// <see cref="ConcurrentDictionary{TKey,TValue}"/>, and each tenant's partition carries its OWN lock. A
@@ -164,8 +170,10 @@ public sealed class FleetSessionNumberAllocator
             if (pool.InUse.Contains(number))
             {
                 FileLog.Write($"[FleetSessionNumberAllocator] Adopt: {number} already held by another session; {sessionId} keeps its offline number (pre-existing collision, tenant={tenant.ToLogString()})");
-                // Still record ownership so a later Allocate for this session is idempotent and a
-                // ReleaseForDirector can clean it up; the number simply is not exclusively ours.
+                // Still record ownership so a later Allocate for this session is idempotent; the number
+                // simply is not exclusively ours. (It used to say a ReleaseForDirector would clean this up.
+                // Nothing calls that any more - see its remarks - so the ownership record is what a future
+                // reclaim would read, not something that gets tidied on eviction today.)
                 pool.BySession[sessionId] = new Assignment(number, directorId ?? "");
                 return;
             }
@@ -199,16 +207,23 @@ public sealed class FleetSessionNumberAllocator
 
     /// <summary>
     /// Free every number owned by <paramref name="directorId"/> IN <paramref name="tenant"/>'s partition.
-    /// Called when a Director is removed from the registry (graceful unregister, or swept after its heartbeat
-    /// went stale / its endpoint stayed unreachable past the evict window) - a Director that died without
-    /// releasing its sessions' numbers. This is tied to the registry's own liveness decision, so it never
-    /// fires for a Director that is merely momentarily unreachable.
+    ///
+    /// NOT CALLED FROM ANYWHERE IN PRODUCTION - see the remarks. It USED TO be called when a Director was
+    /// removed from the registry, and that wiring is deleted; this summary said so in the present tense
+    /// long after it stopped being true, which is precisely how a deleted cleanup gets restored.
     ///
     /// TENANT-SCOPED (audit H2). A director id is unique only within its tenant, so the tenant MUST be
-    /// supplied - <see cref="DirectorRegistry.OnDirectorRemoved"/> carries the owning tenant in its
-    /// <see cref="DirectorRemoval"/> payload, and the subscriber threads it straight through here. Only the
-    /// named tenant's partition is touched, so one tenant's removal can never free another tenant's numbers.
+    /// supplied. Only the named tenant's partition is touched, so one tenant's removal can never free
+    /// another tenant's numbers.
     /// </summary>
+    /// <remarks>
+    /// NO PRODUCTION CALLER. The <see cref="DirectorRegistry.OnDirectorRemoved"/> subscriber that called this
+    /// is DELETED (epic #1159 step A, inspection 2 finding 1) - the connection check and this release were
+    /// two operations, and a Director reconnecting between them had its live sessions' numbers freed and
+    /// re-handable. Kept as a primitive for a future reclaim that establishes the machine is gone FIRST. Do
+    /// not wire it back to <c>OnDirectorRemoved</c>; the session-number assertion in
+    /// <c>EvictionRaceAndCompositionTests.EvictionLeavesSnoozesAndNumbersAlone_OnTheRealHost</c> will redden.
+    /// </remarks>
     public void ReleaseForDirector(TenantId tenant, string directorId)
     {
         if (string.IsNullOrEmpty(directorId)) return;

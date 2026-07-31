@@ -4,7 +4,7 @@ import { getDirectors, type SessionDto } from "@devthrottle/client-core/api/clie
 import { type DirectorReachability } from "@devthrottle/client-core/fleet/fleetClient";
 import { directorPort } from "@devthrottle/client-core/fleet/directorEndpoint";
 import { useSharedRoster } from "@devthrottle/client-core/fleet/rosterStore";
-import { inBucket } from "@devthrottle/client-core/sessions/ordering";
+import { needsYouBadgeCount } from "@devthrottle/client-core/sessions/ordering";
 import { reconcileBadge } from "@devthrottle/client-core/push/register";
 import { SessionRoster, type RosterView } from "./SessionRoster";
 import { NewSessionDialog } from "./NewSessionDialog";
@@ -80,8 +80,13 @@ export function SessionsView() {
   // app badge. The Gateway pushes a single zero on the falling edge too, but this clears it the
   // instant the user resolves the last session in the foreground, without waiting for that push.
   // The shared roster store (issue #1239) owns the poll now; this effect reacts to each roster update.
+  //
+  // The count goes through the SHARED badge rule, the same one the phone calls: the Gateway now serves
+  // the sessions of a machine nobody can reach, and those are shown but never nagged about. The two
+  // surfaces used to compute this number separately and would have disagreed the moment one of them
+  // learned the rule and the other did not.
   useEffect(() => {
-    if (sessions) void reconcileBadge(inBucket(sessions, "needsYou").length);
+    if (sessions) void reconcileBadge(needsYouBadgeCount(sessions));
   }, [sessions]);
 
 

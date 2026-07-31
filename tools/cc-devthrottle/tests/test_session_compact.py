@@ -32,7 +32,7 @@ def posted(monkeypatch):
         # Patch the ONE fetch every resolve goes through. It reports the roster as complete, so these
         # tests assert the compact verb and never trip over the incomplete-roster caveat (issue #1051).
         monkeypatch.setattr(session_ops, "_get_fleet",
-                            lambda: ([{"sessionId": SESSION_ID, "name": "stuck", "machineName": "M", "number": 114}], True, None))
+                            lambda: ([{"sessionId": SESSION_ID, "name": "stuck", "machineName": "M", "number": 114}], True, None, None))
 
         def post_json(path, body, timeout=30):
             calls.append({"path": path, "body": body, "timeout": timeout})

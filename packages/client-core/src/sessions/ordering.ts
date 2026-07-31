@@ -197,6 +197,36 @@ export function inBucket(sessions: SessionDto[], bucket: TriageBucket): SessionD
   return inDesktopOrder(sessions.filter((s) => classify(s) === bucket));
 }
 
+// MAY THIS SESSION NAG THE HUMAN? The Gateway's own answer, read verbatim (SessionDto.MachineReachable).
+//
+// The roster now serves the sessions of a machine nobody can reach - dimmed and dated instead of deleted
+// - and the moment it does, "needs you" splits into two questions that used to be one: SHOW it (yes, the
+// work is real and the owner should see it) and NAG about it (no, there is nothing anybody can do about
+// a laptop that is asleep). A badge lit all night over three red sessions on a machine nobody can act on
+// is not information, it is noise the owner cannot switch off.
+//
+// ONLY AN EXPLICIT false SUPPRESSES. Undefined and null are NOT unreachable: an older Gateway does not
+// stamp the field at all, and a Director-local response leaves it null because the question is
+// meaningless there (the answering Director IS the machine). Treating "I was not told" as "unreachable"
+// would silently switch the badge off for everyone on a mixed-version deploy, which is a worse failure
+// than a badge that counts one session too many - a missing nag is invisible, and the owner would never
+// learn the phone had stopped telling them.
+//
+// It is NEVER re-derived. The same fact also rides on the roster envelope's per-machine reachability
+// list, and a client could join the two itself - one of them already did, for the voice queue - but a
+// join is a rule, and a rule computed in two clients is two rules that drift.
+export function machineCanBeActedOn(s: SessionDto): boolean {
+  return s.machineReachable !== false;
+}
+
+// The count behind the app-icon "needs you" dot, on every surface. Needs-you sessions whose owning
+// machine is unreachable are counted OUT: they stay visible on the roster (the "Needs you" group still
+// lists them, dimmed and dated) but they do not light the badge. The badge and the group are two
+// different questions, and this function answers only the badge's.
+export function needsYouBadgeCount(sessions: SessionDto[]): number {
+  return sessions.filter((s) => classify(s) === "needsYou" && machineCanBeActedOn(s)).length;
+}
+
 // The "waiting line" order for the needs-you group (the mobile roster's top group). The session that
 // has been asking for you the LONGEST sits at the top; a session that only just started needing you
 // drops in at the BOTTOM. This keeps the list from reshuffling under you as new work arrives and

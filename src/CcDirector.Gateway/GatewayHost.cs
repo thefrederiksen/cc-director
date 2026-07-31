@@ -182,14 +182,6 @@ public sealed class GatewayHost : IAsyncDisposable
     public Stats.Data.GatewayStatsStore StatsStore { get; }
 
     /// <summary>
-    /// Issue #1215 (Cockpit plan phase 6): the last-known-good roster cache. The <c>/sessions</c>
-    /// aggregation uses it so a single failed Director poll no longer drops that Director's sessions -
-    /// they are served stale (Wobbly) through a short grace window and only dropped (Offline) once the
-    /// grace window is exhausted. Presentation only; it never touches discovery or the registry constants.
-    /// </summary>
-    public Discovery.FleetRosterCache RosterCache { get; }
-
-    /// <summary>
     /// launcher-persistent-join: the map of which machine's cc-launcher is currently joined over a
     /// persistent stream. When a launcher is stream-connected, the machine lifecycle relay pushes a command
     /// DOWN the open stream instead of dialing the launcher's REST API. Empty until launchers connect and
@@ -873,16 +865,41 @@ public sealed class GatewayHost : IAsyncDisposable
 
         Port = port;
         Token = token ?? _gatewayAuth.LoadOrCreate();
-        Registry = new DirectorRegistry(instancesDirectory);
-        // Issue #1292: free a removed Director's session numbers so a Director that died without releasing
-        // them does not leak the pool. OnDirectorRemoved fires on graceful unregister and on the registry's
-        // own stale/unreachable sweep, so this never fires for a merely momentarily-unreachable Director.
-        // Audit H2: the allocator is partitioned by tenant and a director id is unique only within its
-        // tenant, so the removal's OWNING tenant is threaded straight through - dropping it would let one
-        // account's disconnect free another account's numbers. The removal carries its owner (DirectorRemoval),
-        // so the release only ever touches the departed Director's own tenant partition.
-        Registry.OnDirectorRemoved += removal => SessionNumbers.ReleaseForDirector(removal.Tenant, removal.DirectorId);
+        // Epic #1159 step A: the eviction horizon is the ONE elapsed-time rule that removes a session, so it
+        // is read from configuration here rather than left as a constant only a test can move. Default is a
+        // day; a zero or negative value in config.json is refused by the loader and the default stands, so a
+        // typo cannot quietly restore the deleting roster.
+        var gatewayConfig = Core.Configuration.GatewayConfig.Load();
+        Registry = new DirectorRegistry(instancesDirectory)
+        {
+            EvictionHorizon = TimeSpan.FromHours(gatewayConfig.DirectorEvictionHorizonHours),
+        };
         PushedSessions = new Streaming.PushedSessionStore();
+        //
+        // THE SESSION-NUMBER RELEASE ON EVICTION IS DELETED, and this comment is the record of why, because a
+        // deletion with no explanation is the kind of thing a later tidy-up quietly restores.
+        //
+        // Issue #1292 released a removed Director's session numbers here so a Director that died without
+        // releasing them did not leak the pool. Inspection 2 (finding 1) showed the guard protecting it could
+        // not work: a connection check followed by a destructive action is two operations, so a Director
+        // reconnecting between them had its numbers freed while it was live - and a freed number can be handed
+        // to a NEW session while the old one still holds it. Rather than build a cleverer guard around a
+        // cleanup, the cleanup goes. Eviction drops a long-dead machine from the READ MODEL and does nothing
+        // else; see PushedSessionStore.ForgetIfDisconnected.
+        //
+        // The cost, stated plainly and NOT understated - an earlier version of this comment said the pool
+        // shrinks by the count of retired MACHINES, which is wrong and flatteringly small. The deleted
+        // release freed every number a machine owned, one per session it had running, so the pool shrinks by
+        // the count of those NUMBERS. Adopt is additive and never frees one, so nothing reclaims them: a
+        // retired machine that had eight sessions costs eight of the nine hundred, permanently, and every
+        // subsequent retirement costs its own again. On a personal fleet that is small and slow; it is not
+        // nothing, and at hosted scale it is the number to watch. Reclaiming them is a separate piece of
+        // work needing its own proof, not a rider on an eviction path where getting it wrong reallocates a
+        // live session's number.
+        //
+        // The primitive itself (FleetSessionNumberAllocator.ReleaseForDirector) still exists and now has NO
+        // production caller - only tests. It is kept as a primitive for a future reclaim that establishes
+        // the machine is gone first. Do not wire it back to OnDirectorRemoved.
         // Repositories mission (#510 phase C): the sibling store for pushed repository/worktree snapshots.
         PushedRepositories = new Streaming.PushedRepositoryStore();
         // Repositories mission (#510 phase D): the daily repository history behind the weekly report.
@@ -924,15 +941,37 @@ public sealed class GatewayHost : IAsyncDisposable
         SessionConcurrency = GatewayHostedMode.IsHosted || GatewayHostedMode.IsHostedImage
             ? null
             : new Stats.GatewaySessionConcurrencyStats();
-        RosterCache = new Discovery.FleetRosterCache();
-        // Issue #1215: when a Director is unregistered or evicted from the registry, forget its cached
-        // roster too so the cache does not grow without bound; a re-registering Director starts clean.
-        // Scoped to the tenant the removal names. The cache is partitioned by (tenant, director) and the
-        // removal now carries its owner, so forgetting one account's Director cannot reach another's - which
-        // it could when this event was a bare string and the forget swept every matching partition.
-        Registry.OnDirectorRemoved += removal => RosterCache.Forget(removal.Tenant, removal.DirectorId);
+        // Epic #1159 step A: when a machine passes the eviction horizon (or unregisters gracefully), forget
+        // what it pushed. The pushed store keeps a Director's sessions across a disconnect on purpose - that
+        // is what lets the roster serve a machine whose tunnel is down - so this is the one place those
+        // entries are ever released, and without it "keep the sessions" would be an unbounded leak keyed by
+        // every Director that ever connected. Scoped to the tenant the removal names, so forgetting one
+        // account's Director cannot reach another's.
+        //
+        // The last-known-good roster cache that used to be forgotten here is DELETED. It was the second
+        // staleness authority in the roster path and the one that declared a machine Offline and dropped its
+        // sessions; the roster read now serves last-known state unconditionally and reports its age instead.
+        //
+        // THE ENTIRETY of what eviction destroys, and it is one atomic operation rather than a cascade
+        // (inspection 2, finding 1). ForgetIfDisconnected checks liveness and removes the entry inside the
+        // store's own membership gate, which RegisterConnection also takes - so a reconnect should either
+        // complete before this call, and the entry survives because a connection is active, or after it, and
+        // re-creates the entry. There is no window between a check and an act for it to land in, because
+        // there is no longer a check and an act: there is one operation.
+        //
+        // That last step is REASONED, NOT PROVEN. Removing the gate leaves the whole suite green and no test
+        // exercises the interleaving, so the argument rests on reading the source. It is the strongest claim
+        // available, and it is not a demonstration - do not quote it as one.
+        //
+        // Without this the roster would keep every machine that ever connected, which is the unbounded leak
+        // the horizon exists to stop. With it, and with the other two steps deleted, the worst an eviction can
+        // do to a machine that is quietly back is nothing at all.
+        //
+        // THIS LINE IS THE WHOLE OF IT. One permanent subscriber. If you are here to add a second, read the
+        // deletion records above it first - the two that were removed were removed because their guard could
+        // not be made atomic with their destruction, and the tests will redden if they come back.
+        Registry.OnDirectorRemoved += removal => PushedSessions.ForgetIfDisconnected(removal.Tenant, removal.DirectorId);
         LauncherConnections = new Streaming.LauncherConnectionRegistry();
-        var gatewayConfig = Core.Configuration.GatewayConfig.Load();
         // Gateway Cleanup: the tunnel is mandatory; the streamMode parameter is ignored and retained only for existing test call sites (removed with the test rewrite).
         _streamStaleAfter = TimeSpan.FromSeconds(gatewayConfig.StreamStaleAfterSeconds);
         AuthEnabled = ResolveAuthEnabled(authEnabled);
@@ -1098,8 +1137,8 @@ public sealed class GatewayHost : IAsyncDisposable
         // snoozes table of the EF data layer - a Gateway restart re-arms every pending snooze from the
         // database; an entry already past its time simply fires on the first sweep. The path argument is the
         // LEGACY snooze.json, imported once on first upgrade then renamed aside. Tests MUST pass an isolated
-        // path so they never touch the real legacy file. The registry is bounded by dropping a removed
-        // Director's entries so they do not accumulate.
+        // path so they never touch the real legacy file. The registry is NO LONGER bounded by eviction - see
+        // the deletion record below, and the cost it carries.
         // The durable activity ledger (docs/PLAN-trustworthy-working-start-2026-07-24.md): tenant-scoped
         // evidence of why sessions enter/leave Working and why snoozes end, retained 30 days. Constructed
         // before the snooze registry because the registry appends its lifecycle decisions to it.
@@ -1109,13 +1148,32 @@ public sealed class GatewayHost : IAsyncDisposable
         // of the EF data layer. The path argument is the LEGACY wingman-instructions.json, imported once on
         // first upgrade then renamed aside. Tests MUST pass an isolated path so they never touch the real file.
         _instructionsStore = new Wingman.WingmanInstructionsStore(_gatewayDb, wingmanInstructionsPath ?? Path.Combine(CcStorage.Root(), "wingman-instructions.json"));
-        // Skipped when HOSTED (Hosted Multi-Tenancy): this cleanup writes the tenant-scoped snoozes store, but
-        // it fires from the DirectorRegistry stale sweep (a background thread with no ambient tenant), so on
-        // hosted it would fail closed. It is also a per-director-across-tenants operation, which the
-        // session-serving increment makes per-tenant. The other OnDirectorRemoved subscribers (session-number
-        // release, roster-cache forget) are in-memory and stay wired. Skipping it only leaves a removed
-        // Director's snoozes as durable tombstones, bounded by the live-session prune paths.
-        Registry.OnDirectorRemoved += removal => { if (!GatewayHostedMode.IsHosted) _snoozeRegistry.ClearForDirector(removal.DirectorId); };
+        // THE SNOOZE CLEAR ON EVICTION IS DELETED, and of the three deletions this is the one that mattered
+        // most (inspection 2, finding 1).
+        //
+        // It was the only IRRECOVERABLE loss in the eviction cascade. A released session number can be
+        // re-adopted and a forgotten pushed entry is repopulated by the next Hello, but a deleted snooze is
+        // simply gone - the owner set a machine aside until a particular time, and nothing anywhere can
+        // reconstruct that intention. Guarding it with a connection check could not work, because a check and
+        // a delete are two operations and a Director reconnecting between them lost its snoozes anyway.
+        //
+        // So the deletion is not performed at all, and the cost is REAL - an earlier version of this comment
+        // called the leftover rows "bounded" by PruneNotLive, and that is exactly backwards. PruneNotLive
+        // clears a Director's rows when that Director ANSWERS, and a permanently retired machine is precisely
+        // the one that never answers again. Its rows are therefore never reached by any prune, and each
+        // retirement adds its own set. They accumulate, durably, in the database, for as long as the Gateway
+        // lives - not many rows on a personal fleet, but growing without a ceiling and with nothing that
+        // removes them.
+        //
+        // That is accepted here rather than hidden, because the alternative was a race that destroyed a live
+        // owner's snoozes irrecoverably, and a slowly growing table of dead rows is recoverable by any future
+        // cleanup that first establishes the machine is gone. Reclaiming them is that separate piece of work.
+        //
+        // The primitive (SnoozeRegistry.ClearForDirector) still exists and now has NO production caller, only
+        // tests. Do not wire it back to OnDirectorRemoved: that is the race, and the snooze assertion in
+        // EvictionRaceAndCompositionTests.EvictionLeavesSnoozesAndNumbersAlone_OnTheRealHost will redden.
+        //
+        // (It was already skipped entirely on hosted, for tenancy reasons. Now it is not performed anywhere.)
         // THE PUSH SEAM where this Gateway drives the hold machine off the facts Directors report. The
         // DirectorHub (constructed per-invocation by SignalR) folds every pushed session through this one
         // instance, exactly as it does the input-stats aggregator.
@@ -1172,8 +1230,16 @@ public sealed class GatewayHost : IAsyncDisposable
         // rail received no stamp and rendered grey while the roster - which resolves the request tenant - folded
         // blue. The gate partitioning is what unblocks the per-tenant pass (see FleetDisplayStateObserver): a
         // flat gate pruned against one tenant's pass would delete the others and stamp-storm every 5s.
+        //
+        // Inspection 1, finding 2: this snapshot is CONNECTION-scoped, not freshness-scoped, and the change is
+        // deliberate. WebPushNeedsYouNotifier counts this fold to drive the phone's app-icon badge - the one
+        // nag that persists when the app is closed - so a thirty-second push horizon meant a Director whose
+        // tunnel was up but quiet dropped out of the fold and the badge cleared itself, telling the owner
+        // nothing needed him on a machine he could have acted on immediately. The auto-dismiss sweeper still
+        // takes AmbientSnapshotFresh and must: acting ON a session needs recent data, whereas TELLING THE
+        // OWNER about one needs a reachable machine. Two questions, two snapshots.
         FleetDisplayState = new Fleet.FleetDisplayStateObserver(
-            () => AmbientSnapshotFresh(AutoDismissStaleAfter),
+            AmbientSnapshotConnected,
             sessions => EnrichVoiceThenFoldForPush(
                 sessions,
                 // MTR-10 Gap D: read the AMBIENT tenant of this per-tenant display pass, byte-identical to the
@@ -1661,6 +1727,18 @@ public sealed class GatewayHost : IAsyncDisposable
     private IReadOnlyList<(string DirectorId, SessionDto Session)> AmbientSnapshotFresh(TimeSpan staleAfter)
         => _tenantPass.Current is { } tenant
             ? PushedSessions.SnapshotFresh(tenant, staleAfter)
+            : Array.Empty<(string DirectorId, SessionDto Session)>();
+
+    /// <summary>
+    /// The CONNECTION-scoped fleet snapshot for the tenant of the current unit of work - the same tenant
+    /// resolution and the same hosted deny as <see cref="AmbientSnapshotFresh"/>, but without the freshness
+    /// horizon. Feeds the display-state fold, which decides whether the owner is told about work, and that
+    /// question is answered by whether the machine can be reached and not by how long ago it last spoke
+    /// (inspection 1, finding 2).
+    /// </summary>
+    private IReadOnlyList<(string DirectorId, SessionDto Session)> AmbientSnapshotConnected()
+        => _tenantPass.Current is { } tenant
+            ? PushedSessions.SnapshotConnected(tenant)
             : Array.Empty<(string DirectorId, SessionDto Session)>();
 
     /// <summary>
@@ -2577,7 +2655,6 @@ public sealed class GatewayHost : IAsyncDisposable
             // Issue #1215 (Cockpit plan phase 6): the last-known-good roster cache absorbs a transient poll
             // failure as Wobbly (served stale through a short grace window) instead of blinking the
             // Director's sessions out of the roster; only a sustained failure reads as Offline.
-            rosterCache: RosterCache,
             // Issue #1292: the fleet-wide session-number authority backs POST /session-numbers/allocate
             // (Directors ask here at session creation) and the /sessions adopt-reconcile.
             sessionNumbers: SessionNumbers,

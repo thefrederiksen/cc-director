@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { setVoiceModeAllSessions, type SessionDto } from "@devthrottle/client-core/api/client";
-import { getAutoSpeak, inVoiceQueueOrder, queueTouchMs, setAutoSpeak } from "@devthrottle/client-core/voice/queueTouch";
+import { getAutoSpeak, queueTouchMs, setAutoSpeak } from "@devthrottle/client-core/voice/queueTouch";
 import { useVoiceModeAll } from "@devthrottle/client-core/voice/useVoiceModeAll";
 import { getSessionsEnvelope } from "@devthrottle/client-core/fleet/fleetClient";
 import { emptyRetentionCache, mergeRosterRetention, type RosterSessionMark } from "@devthrottle/client-core/fleet/rosterRetention";
-import { classify, contextLine, deletionReason, dotHex, inBucket, inDesktopOrder, inWaitingOrder, isWorking, pendingDeletion, repoLeaf, snoozeCountdown, snoozeExpired } from "@devthrottle/client-core/sessions/ordering";
+import { classify, contextLine, deletionReason, dotHex, inDesktopOrder, inWaitingOrder, isWorking, machineCanBeActedOn, needsYouBadgeCount, pendingDeletion, repoLeaf, snoozeCountdown, snoozeExpired } from "@devthrottle/client-core/sessions/ordering";
 import { DELIVERY_BADGE_TEXT, hasUndeliveredPrompt, promptDeliveryTitle } from "@devthrottle/client-core/sessions/delivery";
 import { applyFilter, filterIsActive, filterSummary, machineName, pruneFilter } from "@devthrottle/client-core/sessions/filter";
 import { useDictationStatusFor } from "@devthrottle/client-core/dictation/status";
@@ -13,7 +13,8 @@ import { useNow, waitingLabel } from "@devthrottle/client-core/sessions/waiting"
 import { supervisionStats } from "@devthrottle/client-core/sessions/supervision";
 import { useNow as useSharedNow } from "@devthrottle/client-core/polling/useNow";
 import { playClip, playingSid, rowVoiceInputs, stopPlayback, syncVoiceSessions, useVoiceClips } from "@devthrottle/client-core/voice/clips";
-import { isVoiceReady, voiceRowState } from "@devthrottle/client-core/voice/voiceRowState";
+import { voiceRowState } from "@devthrottle/client-core/voice/voiceRowState";
+import { voiceQueueFor } from "@devthrottle/client-core/voice/voiceQueue";
 import { NavDrawer } from "../components/NavDrawer";
 import { SessionFilterPanel } from "../components/SessionFilterPanel";
 import { useSessionFilter } from "../hooks/useSessionFilter";
@@ -32,9 +33,12 @@ import {
 //
 // The roster reads the /sessions ENVELOPE (per-Director reachability), not the flat list, and runs it
 // through the keep-and-mark merge (mobile-resilience mission, Phase 2): a session whose owning machine
-// is unreachable STAYS on the roster, grayed and marked, and leaves only when its Director answers
-// without it. The retention cache is held in a ref so it survives across polls (and navigating into a
-// session and back) without churning React state.
+// is unreachable STAYS on the roster, grayed and marked. It leaves for one of TWO reasons - its Director
+// answered ONLINE without it, or the envelope stopped naming that Director at all and the client
+// retention horizon then elapsed. This comment claimed the first reason was the only one, which
+// contradicted the merge's own contract; see rosterRetention.ts, which owns the rule. The retention cache
+// is held in a ref so it survives across polls (and navigating into a session and back) without churning
+// React state.
 const POLL_INTERVAL_MS = 5000;
 
 // Voice-mode queue flow: how long the roster sits still before auto-speak jumps into the next
@@ -114,19 +118,30 @@ export function Home() {
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
       const envelope = await getSessionsEnvelope(signal);
-      // Keep-and-mark: retained sessions of unreachable machines stay on the roster, marked; a session
-      // leaves only when its owning Director answered without it (mergeRosterRetention owns the rule).
+      // Keep-and-mark: retained sessions of unreachable machines stay on the roster, marked. A session
+      // leaves when its owning Director answered ONLINE without it, or when the envelope has stopped
+      // naming that Director and the client retention horizon elapses (mergeRosterRetention owns both).
       const merged = mergeRosterRetention(retentionCache.current, envelope);
       retentionCache.current = merged.cache;
       setSessions(merged.roster.sessions);
       setMarks(merged.roster.marks);
       setError(null);
-      // The app-icon "needs you" dot and the voice-clip sync read the LIVE sessions only (never the
-      // retained-and-marked ones): the badge must reflect what genuinely needs you right now, and only a
-      // reachable session can have a phone-ready voice clip.
-      void reconcileBadge(inBucket(envelope.sessions, "needsYou").length);
-      // Pull each gateway-ready voice session's clip down to the phone so the triangle can appear
-      // (phone-ready, the issue #850 rule). Fire-and-forget; it updates the clip store as bytes land.
+      // The app-icon "needs you" dot is counted over the MERGED roster - the same sessions this page
+      // renders and builds the voice queue from. It used to be counted from the RAW envelope, and in a
+      // wobbly fallback - a connected-but-quiet Director the Gateway names but serves no rows for - the
+      // merged roster held the retained, still-reachable card while the envelope held nothing, so the
+      // card nagged and could enter the voice queue while the badge was cleared (inspection 3, finding 3).
+      // If these three ever read different lists again, that is the bug, not a tuning choice.
+      //
+      // The badge RULE is unchanged and still lives in client-core: a needs-you session whose machine
+      // cannot be acted on stays VISIBLE in the group below and stays OUT of this number, so a laptop
+      // asleep overnight with three red sessions does not leave the badge lit until morning.
+      void reconcileBadge(needsYouBadgeCount(merged.roster.sessions));
+      // The clip sync DOES read the envelope, and that is not the same mistake: it fetches bytes the
+      // Gateway is serving this poll. A retained card has no new clip to pull - if its audio was already
+      // downloaded it plays, and if it was not, the session is not phone-ready and the voice queue
+      // excludes it, so nothing promises playback it cannot deliver.
+      // Fire-and-forget; it updates the clip store as bytes land (phone-ready, the issue #850 rule).
       void syncVoiceSessions(envelope.sessions);
     } catch (err) {
       if (signal?.aborted) return;
@@ -177,15 +192,12 @@ export function Home() {
   // arrivals at the bottom - and a session you listened to but did not respond to or snooze drops to
   // the BOTTOM (the device-local listened-touch counts as re-entering the line), so everything not
   // yet heard is read first and the unhandled one comes around again.
-  const voiceReady = filtered
-    ? inVoiceQueueOrder(
-        filtered.filter(
-          (s) =>
-            classify(s) === "needsYou" &&
-            isVoiceReady(rowVoiceInputs(s, isWorking(s), !marks.has(s.sessionId ?? ""))),
-        ),
-      )
-    : [];
+  // Inspection 1, finding 2: the whole selection lives in client-core now. This used to be assembled here,
+  // and the reachability argument it assembled asked "is there a retention mark on this row?" - a question
+  // about PUSH FRESHNESS, not about whether the machine can be reached - so a wobbly machine with its tunnel
+  // UP silently left the queue and the owner stopped being told about work he could still act on. Passing
+  // sessions and nothing else means there is no longer an argument here to get wrong.
+  const voiceReady = filtered ? voiceQueueFor(filtered) : [];
   // The "Needs you" group is a waiting line: the session that has been waiting for you the longest
   // sits at the top, and a session that only just started needing you drops in at the bottom
   // (inWaitingOrder). This keeps the list from reshuffling under you as sessions change state, and
@@ -565,11 +577,21 @@ function SessionRow({ session, mark, fromTab = "all" }: { session: SessionDto; m
   const name = session.name && session.name.trim().length > 0 ? session.name : "(unnamed session)";
   const repo = repoLeaf(session);
   const machine = machineName(session);
-  // An unreachable card (its owning machine is wobbly/offline, mobile-resilience Phase 2): grayed, its
-  // stale attention state and live waiting timer suppressed, and a note naming the machine. It KEEPS its
-  // last-known content and position - unreachable is shown, never deleted.
-  const unreachable = mark !== undefined;
-  const attention = classify(session) === "needsYou" && !unreachable;
+  // TWO different questions, which this row used to answer with one flag - inspection 1, finding 2.
+  //
+  //  - DIMMED is display: "is this row's content last-known rather than current?" The retention mark is
+  //    exactly that signal, so the graying, the dashed border and the dated note stay keyed to it. A
+  //    wobbly machine's card SHOULD look stale, because it is.
+  //  - ACTIONABLE is the nag rule: "can the owner actually do anything about this?" That is the Gateway's
+  //    stamp and nothing else. Keying it to the mark meant a machine whose tunnel was UP, merely late with
+  //    its pushes, stopped raising its hand - no attention treatment, no waiting clock, no voice - which
+  //    is the opposite of what the branch claims and hid work the owner could have acted on immediately.
+  //
+  // The rule the whole branch rests on is two flags, not one: SHOW last-known work, but only NAG about
+  // work on a machine that can be reached.
+  const dimmed = mark !== undefined;
+  const actionable = machineCanBeActedOn(session);
+  const attention = classify(session) === "needsYou" && actionable;
   // Issue #844: the session's short three-digit number (SessionDto.Number, #820) read from the
   // regenerated typed client. Null on sessions/Directors without a number - then no prefix shows.
   const num = session.number;
@@ -583,7 +605,7 @@ function SessionRow({ session, mark, fromTab = "all" }: { session: SessionDto; m
   const sid = encodeURIComponent(session.sessionId ?? "");
   const to = session.voiceMode ? `/session/${sid}/voice` : `/session/${sid}`;
   return (
-    <li className={`row${attention ? " row-attention" : ""}${unreachable ? " row-unreachable" : ""}`}>
+    <li className={`row${attention ? " row-attention" : ""}${dimmed ? " row-unreachable" : ""}`}>
       {/* Hand the known voice-mode state to the destination (issue #1015) so the Voice screen paints
           the right state on the first render instead of flashing OFF while its first poll resolves. */}
       <Link className="row-link" to={to} state={{ voiceMode: Boolean(session.voiceMode), fromTab }}>
@@ -652,11 +674,12 @@ function SessionRow({ session, mark, fromTab = "all" }: { session: SessionDto; m
               failed - so a dropped transcription is visible from the list, never silent. */}
           <DictationRowBadge sessionId={session.sessionId} />
         </span>
-        {/* The voice control reads reachability for the same reason the dot, the attention state and
-            the waiting timer above it do: on a retained card from an unreachable machine every one of
-            those facts is last-known, and voice is no exception - it kept its clip and its
-            last-known voiceAudioReady, so it was the one element still promising something live. */}
-        <VoiceIndicator session={session} reachable={!unreachable} />
+        {/* The voice control reads REACHABILITY - the Gateway's stamp - and not the retention mark. A
+            retained card from a machine nobody can reach kept its clip and its last-known voiceAudioReady,
+            so it was the one element still promising something live, and it must not. But a wobbly machine
+            can still be spoken to, so it keeps its triangle: the promise the triangle makes is "tapping
+            this will speak", and that promise holds whenever the tunnel is up. */}
+        <VoiceIndicator session={session} reachable={actionable} />
       </Link>
     </li>
   );

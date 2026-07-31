@@ -45,6 +45,37 @@ public sealed class PushedSessionStore
     private readonly Func<DateTime> _utcNow;
 
     /// <summary>
+    /// Serialises MEMBERSHIP changes - a Director entering the store (<see cref="RegisterConnection"/>) against
+    /// a Director being dropped from it (<see cref="ForgetIfDisconnected"/>). It is NOT taken by the read paths.
+    ///
+    /// Inspection 2, finding 1. The eviction cascade used to check whether a Director was connected and then,
+    /// as a SECOND operation, destroy its state. A check followed by an action is two operations however
+    /// carefully they are written, so a reconnect lands between them and the live machine is destroyed anyway.
+    /// No guard fixes that; only making it ONE operation does, which is what this gate is for.
+    ///
+    /// It has to cover <see cref="RegisterConnection"/>'s <c>GetOrAdd</c> and not merely the removal, and that
+    /// is the subtle half: without it a reconnect can be handed - by GetOrAdd - the very entry that is about to
+    /// be removed, and would then write its sessions into a detached object that no read can ever reach. That
+    /// failure is worse than the one being fixed, because the Director looks connected, reports success, and is
+    /// invisible to every reader.
+    ///
+    /// Lock ORDER is this gate first, then <c>entry.Gate</c>, in both paths. Never the other way round.
+    ///
+    /// REASONED BUT NOT PROVEN, and that is stated here rather than left to be assumed. Deleting this gate
+    /// from <see cref="RegisterConnection"/> leaves every test in this repository GREEN - it was tried - so
+    /// nothing currently pins it. A two-threaded proof was written and then DELETED rather than shipped:
+    /// its assertion was "the reconnect had not completed while the gate was held", which also passes when
+    /// the second thread was merely slow to arrive, so it would have reported success whether or not the
+    /// gate existed. A timing test whose failure direction is "pass" is not a proof; it is a future false
+    /// green. Proving mutual exclusion here needs a rendezvous that can distinguish BLOCKED from ABSENT,
+    /// and that was not something to invent at the end of a long night.
+    ///
+    /// So: the argument above is the justification, and there is no test behind it. Anyone removing this
+    /// gate will see a green suite, and the green will mean nothing.
+    /// </summary>
+    private readonly object _membershipGate = new();
+
+    /// <summary>
     /// Create the store. <paramref name="utcNow"/> is a test seam for the staleness and idle-clock logic;
     /// production passes null and the store reads <see cref="DateTime.UtcNow"/>.
     /// </summary>
@@ -97,6 +128,10 @@ public sealed class PushedSessionStore
         if (string.IsNullOrWhiteSpace(connectionId))
             throw new ArgumentException("connectionId is required", nameof(connectionId));
 
+        // MEMBERSHIP gate first, then the entry gate - see _membershipGate for why GetOrAdd itself must be
+        // inside it and not merely the writes below. Never take these in the other order.
+        lock (_membershipGate)
+        {
         var entry = DirectorsFor(tenant).GetOrAdd(directorId, _ => new DirectorEntry());
         lock (entry.Gate)
         {
@@ -135,6 +170,71 @@ public sealed class PushedSessionStore
             entry.ReceivedAtUtc = DateTime.MinValue;
         }
         FileLog.Write($"[PushedSessionStore] RegisterConnection: tenant={tenant.ToLogString()}, director={directorId}, conn={Short(connectionId)} is now the active connection");
+        }
+    }
+
+    /// <summary>
+    /// Drop <paramref name="directorId"/> from the read model IF it currently holds no stream connection.
+    /// Returns true when the entry was removed, false when the Director is live (or was already gone).
+    ///
+    /// THIS IS THE WHOLE OF EVICTION'S DESTRUCTIVE WORK, and the narrowness is the point (inspection 2,
+    /// finding 1). The eviction cascade used to also release the Director's session numbers and delete its
+    /// snoozes, each guarded by a separate connection check - and a check followed by an action is two
+    /// operations, so a reconnect between them destroyed a live machine anyway. Rather than build a cleverer
+    /// guard, those two steps were DELETED: eviction's job is to drop a long-dead machine from the READ
+    /// MODEL, and nothing else.
+    ///
+    /// Here the check and the removal are ONE operation under <see cref="_membershipGate"/>, which
+    /// <see cref="RegisterConnection"/> also takes, so a reconnect should either happen entirely before this
+    /// call (and the entry survives, because a connection is active) or entirely after it (and re-creates
+    /// the entry through GetOrAdd), leaving no in-between for it to land in.
+    ///
+    /// REASONED, NOT PROVEN - and the difference matters here more than anywhere else on this branch. That
+    /// is an argument from reading the source, not a demonstrated property: no test exercises the
+    /// interleaving, and deleting the gate leaves the entire suite green (see the gate's own declaration).
+    /// Do not upgrade this sentence to a guarantee in any document that quotes it; a previous version of the
+    /// phase record did exactly that.
+    ///
+    /// What the deletions cost, recorded here because a silent cost is worse than a named one - and stated
+    /// at its real size, because the first version of this paragraph called both costs "bounded" and one of
+    /// them is not:
+    ///
+    /// A machine that never returns keeps every session number it held marked in use, one per session it was
+    /// running, and nothing reclaims them (Adopt only ever marks in use). And it keeps its snooze rows in the
+    /// database FOREVER: the snooze prune clears a Director's rows when that Director ANSWERS, and a
+    /// permanently retired machine is exactly the one that never answers, so no prune ever reaches them.
+    /// Each retirement adds its own set, with no ceiling and nothing that removes them.
+    ///
+    /// Both are accepted anyway, and the reason is worth more than the tidiness: the alternative was a race
+    /// that could free a LIVE machine's numbers and delete a live owner's snoozes, and a deleted snooze is
+    /// irrecoverable - nothing anywhere can reconstruct the intention behind it. Dead rows can be cleaned up
+    /// later by something that establishes the machine is gone first. A destroyed snooze cannot be anything
+    /// later at all.
+    /// </summary>
+    public bool ForgetIfDisconnected(TenantId tenant, string directorId)
+    {
+        if (string.IsNullOrEmpty(directorId))
+            return false;
+
+        lock (_membershipGate)
+        {
+            var directors = DirectorsFor(tenant);
+            if (!directors.TryGetValue(directorId, out var entry))
+                return false;
+
+            lock (entry.Gate)
+            {
+                if (entry.ActiveConnectionId is not null)
+                {
+                    FileLog.Write($"[PushedSessionStore] ForgetIfDisconnected DECLINED: tenant={tenant.ToLogString()}, director={directorId} holds a live stream - the read model keeps it");
+                    return false;
+                }
+            }
+
+            directors.TryRemove(directorId, out _);
+            FileLog.Write($"[PushedSessionStore] ForgetIfDisconnected: tenant={tenant.ToLogString()}, director={directorId} passed the eviction horizon with no connection; its sessions leave the roster");
+            return true;
+        }
     }
 
     /// <summary>
@@ -299,6 +399,88 @@ public sealed class PushedSessionStore
     }
 
     /// <summary>
+    /// How the Gateway's knowledge of one Director stands RIGHT NOW: what it last said, when it said it, and
+    /// whether its tunnel is currently up. Never null-for-stale - staleness is a property reported here, not a
+    /// reason to withhold the answer.
+    /// </summary>
+    /// <param name="Sessions">Deep copies of the last sessions this Director pushed, with idle clocks
+    /// recomputed. Empty only when it has genuinely never pushed any.</param>
+    /// <param name="AsOfUtc">When the Gateway last received a push from it, or null if it never has.</param>
+    /// <param name="Connected">Whether its tunnel is up at this instant. This is the ground truth for whether
+    /// a machine is reachable - NOT a countdown since the last push, which only ever measured chattiness.</param>
+    public readonly record struct DirectorKnowledge(IReadOnlyList<SessionDto> Sessions, DateTime? AsOfUtc, bool Connected);
+
+    /// <summary>
+    /// What the Gateway last knew about a Director, WHATEVER ITS AGE (epic #1159, step A).
+    ///
+    /// THIS IS A SECOND METHOD BESIDE <see cref="TryGetFresh"/>, NOT A RELAXATION OF IT, and that distinction
+    /// is the whole point. TryGetFresh has many callers - session location for command routing, the gate
+    /// checks, the repository reads - and several of them are right to refuse a stale answer, because acting
+    /// on one could route a command at a Director that is no longer there. Loosening it would hand every one
+    /// of those callers a weaker guarantee they never asked for and could not see change. It stays exactly as
+    /// strict as it is.
+    ///
+    /// WHAT THIS EXISTS TO FIX. The roster used to be served through the strict method, so a Director whose
+    /// last push was older than the staleness window had its sessions DROPPED from the roster - not dimmed,
+    /// not dated, gone, colours and all. The window is 20 seconds and the Director re-pushes every 10, so two
+    /// missed ticks blanked a machine; with the tunnel dropping 35 times in a day (issue #1153) the owner's
+    /// roster emptied several times an hour while the Gateway sat holding the very data it had just refused to
+    /// show. Deleting good information to avoid admitting it is a few seconds old is never the right trade for
+    /// a READ - the caller can say "updated 40s ago" perfectly well, and cannot say anything at all about an
+    /// empty list.
+    ///
+    /// So: reads that DISPLAY use this and report the age. Reads that ACT keep using TryGetFresh.
+    /// </summary>
+    public DirectorKnowledge GetLastKnown(TenantId tenant, string directorId)
+    {
+        if (!DirectorsFor(tenant).TryGetValue(directorId, out var entry))
+            return new DirectorKnowledge(Array.Empty<SessionDto>(), null, Connected: false);
+
+        lock (entry.Gate)
+        {
+            var now = _utcNow();
+            var copies = new List<SessionDto>(entry.Sessions.Count);
+            foreach (var s in entry.Sessions.Values)
+                copies.Add(RecomputeClocks(s.Clone(), now));
+            return new DirectorKnowledge(
+                copies,
+                entry.ReceivedAtUtc == DateTime.MinValue ? null : entry.ReceivedAtUtc,
+                entry.ActiveConnectionId is not null);
+        }
+    }
+
+    /// <summary>
+    /// Drop everything this store holds for one Director in one tenant (epic #1159 step A).
+    ///
+    /// Entries deliberately survive a disconnect - that is what lets the roster keep serving a machine whose
+    /// tunnel has closed - so something must eventually release them, or "keep the sessions" would quietly
+    /// become an unbounded memory leak keyed by every Director that ever connected. The eviction horizon is
+    /// the event that ends a machine's life in the Gateway.
+    ///
+    /// THERE IS NO REMOVAL CASCADE ANY MORE, and this summary used to say there was - that eviction called
+    /// this alongside a session-number release and a snooze clear. Both of those are DELETED (inspection 2,
+    /// finding 1): a liveness check followed by a destructive action is two operations, and a Director
+    /// reconnecting between them was destroyed anyway. Eviction now performs exactly one operation, and it
+    /// is <see cref="ForgetIfDisconnected"/> below, not this method.
+    ///
+    /// Scoped to one (tenant, director) pair, so forgetting a machine in one account cannot reach another's.
+    /// </summary>
+    /// <remarks>
+    /// UNCONDITIONAL. It does not look at whether the Director is connected, and it is deliberately NOT the
+    /// eviction path - inspection 2 found that wiring a liveness check in front of a call like this cannot be
+    /// made safe, because the check and the call are two operations. Eviction uses
+    /// <see cref="ForgetIfDisconnected"/>, which is one. This remains only as a primitive for callers that
+    /// have already established the Director is gone. Do not wire it to <c>OnDirectorRemoved</c>.
+    /// </remarks>
+    public void Forget(TenantId tenant, string directorId)
+    {
+        if (string.IsNullOrEmpty(directorId))
+            return;
+        if (DirectorsFor(tenant).TryRemove(directorId, out _))
+            FileLog.Write($"[PushedSessionStore] Forget: tenant={tenant.ToLogString()}, director={directorId} passed the eviction horizon; its sessions leave the roster");
+    }
+
+    /// <summary>
     /// Issue #1177 (Phase 4a): find the Director that currently owns <paramref name="sessionId"/> in a FRESH
     /// pushed cache, without any HTTP pull. Scans <paramref name="tenant"/>'s Directors only (each under its
     /// own lock) and returns the first fresh match as (directorId, deep-copied session). Returns null when no
@@ -408,9 +590,59 @@ public sealed class PushedSessionStore
         return result;
     }
 
-    /// <summary>True when this Director currently has an active stream connection (used for diagnostics).</summary>
-    public bool IsStreamConnected(TenantId tenant, string directorId) =>
-        DirectorsFor(tenant).TryGetValue(directorId, out var entry) && entry.ActiveConnectionId is not null;
+    /// <summary>
+    /// Every pushed session across <paramref name="tenant"/>'s STREAM-CONNECTED Directors, regardless of how
+    /// long ago the last push arrived. Same shape and same deep-copy/idle-recompute rules as
+    /// <see cref="SnapshotFresh"/>; the ONLY difference is that it does not require the push to be recent.
+    ///
+    /// Inspection 1, finding 2. This exists because "may I nag about this?" and "is this data recent?" are
+    /// different questions, and the display fold behind the phone's app-icon badge was asking the second one.
+    /// It read SnapshotFresh with a THIRTY SECOND horizon, so a Director whose tunnel was up but whose pushes
+    /// had merely gone quiet for half a minute fell out of the fold entirely and the persistent badge cleared
+    /// itself - telling the owner there was nothing needing him on a machine he could have acted on at once.
+    /// Connection, not freshness, is what decides whether a machine can be reached.
+    ///
+    /// A Director that has connected but not yet pushed under THIS connection still contributes nothing: its
+    /// cached sessions belong to the previous connection and <see cref="RegisterConnection"/> deliberately
+    /// resets the received stamp so they cannot be served as current. That check is kept for exactly the
+    /// reason it was added, and only the AGE test is dropped here.
+    /// </summary>
+    public IReadOnlyList<(string DirectorId, SessionDto Session)> SnapshotConnected(TenantId tenant)
+    {
+        var now = _utcNow();
+        var result = new List<(string, SessionDto)>();
+        foreach (var kvp in DirectorsFor(tenant))
+        {
+            var entry = kvp.Value;
+            lock (entry.Gate)
+            {
+                if (entry.ActiveConnectionId is null)
+                    continue;
+                if (entry.ReceivedAtUtc == DateTime.MinValue)
+                    continue;
+                foreach (var s in entry.Sessions.Values)
+                    result.Add((kvp.Key, RecomputeClocks(s.Clone(), now)));
+            }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// True when this Director currently has an active stream connection.
+    ///
+    /// Reads under the entry gate. It used to read <c>ActiveConnectionId</c> without it, which inspection 2
+    /// pointed out means even the OBSERVATION was unsynchronised with the register/unregister writes. That is
+    /// no longer load-bearing for eviction - <see cref="ForgetIfDisconnected"/> makes its own decision inside
+    /// the membership gate rather than calling this - but a liveness answer that can be read mid-write is a
+    /// trap for the next caller, so it is fixed rather than left because the current callers happen to cope.
+    /// </summary>
+    public bool IsStreamConnected(TenantId tenant, string directorId)
+    {
+        if (!DirectorsFor(tenant).TryGetValue(directorId, out var entry))
+            return false;
+        lock (entry.Gate)
+            return entry.ActiveConnectionId is not null;
+    }
 
     /// <summary>
     /// The active stream connection id for a Director, or null when none. The Gateway uses it to address a

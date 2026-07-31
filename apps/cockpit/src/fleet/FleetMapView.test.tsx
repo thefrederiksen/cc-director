@@ -5,11 +5,12 @@ import type { SessionDto } from "@devthrottle/client-core/api/client";
 import type { DirectorReachability } from "@devthrottle/client-core/fleet/fleetClient";
 import type { SharedRoster } from "@devthrottle/client-core/fleet/rosterStore";
 
-// Rendered proof for the "By machine" free-slots fix: a machine that has a reachable Director but no
-// sessions must still appear as a lane (available capacity), and an idle Director inside a machine must
-// render as a "free slot" rather than vanishing. Only the machine pivot does this - repository / working
-// tree / agent still group real sessions only. The pure folding is unit tested in fleetMapFormat.test;
-// this test proves the view actually paints the lane and the placeholder.
+// Rendered proof for the "By machine" pivot's machine fold: a machine that has a Director but no sessions
+// must still appear as a lane, an idle Director inside a machine must render as a "free slot" rather than
+// vanishing, and an UNREACHABLE machine must render dimmed and dated rather than being dropped. Only the
+// machine pivot does this - repository / working tree / agent still group real sessions only. The pure
+// folding is unit tested in fleetMapFormat.test; this test proves the view actually paints the lane, the
+// placeholder, and the unreachable sub-header.
 
 // The Fleet Map reads the ONE shared roster store; mock it so the test drives an exact fleet without a
 // Gateway. Canvas measures the DOM with ResizeObserver, which jsdom lacks - stub it so layout runs.
@@ -125,13 +126,20 @@ describe("FleetMapView - By machine free slots", () => {
     expect(screen.getByText("thefrederiksen/devthrottle")).toBeTruthy();
   });
 
-  it("excludes an offline Director - offline is not a free slot", () => {
+  // An offline machine used to be EXCLUDED here, on the argument that it is not available capacity. That
+  // argument deleted the machine from the map altogether - which is the delete-instead-of-dim defect the
+  // Gateway has stopped committing (it now serves an unreachable machine's sessions with their age). The
+  // machine is shown, dimmed and dated; what it must NOT do is claim to be a free slot or offer an action
+  // that cannot be honoured.
+  it("shows an offline machine, dated and with no new-session action - dimmed, never dropped", () => {
     rosterValue.current = {
-      sessions: [session()],
+      // Director ids whose last segment differs, because the sub-header shortens a Director to that
+      // segment ("Director alpha"), and two ids ending in the same segment would be indistinguishable.
+      sessions: [session({ directorId: "north-alpha" })],
       machineErrors: [],
       directors: [
-        director({ directorId: "north-1", machineName: "SOREN_NORTH", state: "online" }),
-        director({ directorId: "dead-1", machineName: "DEAD_MACHINE", state: "offline" }),
+        director({ directorId: "north-alpha", machineName: "SOREN_NORTH", state: "online" }),
+        director({ directorId: "dead-beta", machineName: "DEAD_MACHINE", state: "offline", lastSeenAgeSeconds: 420 }),
       ],
       error: null,
       refreshNow: () => {},
@@ -139,10 +147,17 @@ describe("FleetMapView - By machine free slots", () => {
 
     render(<FleetMapView />);
 
-    expect(screen.queryByText("DEAD_MACHINE")).toBeNull();
+    // The lane exists, and it says what state the machine is in and how old that answer is.
+    expect(screen.getByText("DEAD_MACHINE")).toBeTruthy();
+    expect(screen.getByText(/Offline - last seen 7m ago/)).toBeTruthy();
+    // It is not offered as capacity: no "free slot" line, and no button that could not be honoured.
     expect(screen.queryByText(/free slot/i)).toBeNull();
-    // Only the one reachable machine is counted; the offline one is not "available capacity".
-    expect(screen.getAllByText(/\b1 machine\b/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/machine unreachable/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Start a new session on Director beta/ })).toBeNull();
+    // The reachable machine keeps its own action.
+    expect(screen.getByRole("button", { name: /Start a new session on Director alpha/ })).toBeTruthy();
+    // Both machines are counted, so the header agrees with the lanes below it.
+    expect(screen.getAllByText(/\b2 machines\b/).length).toBeGreaterThan(0);
   });
 });
 

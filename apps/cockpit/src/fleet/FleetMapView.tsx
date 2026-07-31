@@ -14,10 +14,11 @@ import { repoBasename, repoIdentity, relativeTime } from "./format";
 import {
   agentBadgeText,
   buildControllerTree,
+  directorsByMachine,
   groupByDirector,
   machineKeyOf,
-  reachableDirectorsByMachine,
   shortDir,
+  type DirectorGroup as FormatDirectorGroup,
 } from "./fleetMapFormat";
 import { MissionsBoard, missionCounts } from "../missions/MissionsBoard";
 import { NewSessionDialog } from "../sessions/NewSessionDialog";
@@ -171,14 +172,15 @@ export function FleetMapView() {
   );
 
   // Distinct machines in the fleet - counted by the SAME machine key the "By machine" lanes use, and
-  // including a machine that has a reachable Director but no sessions (an available, empty machine). This
-  // is why the header can read "3 machines" while only one is running sessions: the other two are free
-  // capacity, and the machine pivot now shows them as such. Offline Directors are excluded (they surface
-  // in the unreachable-machines banner, not as available machines).
+  // including a machine that has a Director but no sessions (an empty machine). This is why the header
+  // can read "3 machines" while only one is running sessions: the other two are capacity, and the machine
+  // pivot shows them as such. An unreachable machine counts too - it is still a machine in this fleet,
+  // and the lane says so in words - so this number matches the lanes below it rather than quietly
+  // disagreeing with them.
   const machineCount = useMemo(() => {
     const set = new Set<string>();
     for (const s of list) set.add(machineKeyOf(s.machineName).key);
-    for (const m of reachableDirectorsByMachine(directors)) set.add(m.key);
+    for (const m of directorsByMachine(directors)) set.add(m.key);
     return set.size;
   }, [list, directors]);
   // "N repos" counts distinct GitHub repositories, not checkouts: two worktrees of one repository are one
@@ -467,8 +469,9 @@ function LanePanel({ lane, pivot, onOpen, onNewSession, headRef }: LanePanelProp
   const agg = aggregateColors(lane.sessions);
 
   // Machine pivot: sub-group the lane's sessions by Director so the panel reads machine -> Director ->
-  // session, folding in the machine's idle Directors so an empty Director shows as a free slot. Other
-  // pivots render a flat list (each card still tags its machine/Director).
+  // session, folding in the machine's session-less Directors so an empty Director shows as a free slot
+  // (or, when its tunnel is down, as an unreachable one). Other pivots render a flat list (each card
+  // still tags its machine/Director).
   const directorGroups = pivot === "machine" ? groupByDirector(lane.sessions, sessionSort, lane.directors) : null;
 
   return (
@@ -486,35 +489,75 @@ function LanePanel({ lane, pivot, onOpen, onNewSession, headRef }: LanePanelProp
 
       <div className="fmap-lane-body">
         {directorGroups !== null
-          ? directorGroups.map((dg) => (
-              <div key={dg.key} className="fmap-dgroup">
-                <div className="fmap-subhead">
-                  <span className="fmap-subhead-label">{dg.label}</span>
-                  {/* Start a new session on THIS Director, using the same dialog the Sessions tab opens
-                      (only pre-targeted here). Hidden for an unidentified Director - it is not an
-                      addressable slot, so there is nothing to start a session on. */}
-                  {dg.key !== "(unknown)" && (
-                    <button
-                      type="button"
-                      className="fmap-subhead-new"
-                      title="Start a new session on this Director"
-                      aria-label={`Start a new session on ${dg.label}`}
-                      onClick={() => onNewSession(dg.key)}
-                    >
-                      + New session
-                    </button>
-                  )}
-                </div>
-                {dg.sessions.length > 0 ? (
-                  <LaneCards sessions={dg.sessions} pivot={pivot} onOpen={onOpen} />
-                ) : (
-                  <div className="fmap-freeslot">No sessions - free slot</div>
-                )}
-              </div>
-            ))
+          ? directorGroups.map((dg) => <DirectorSubGroup key={dg.key} group={dg} pivot={pivot} onOpen={onOpen} onNewSession={onNewSession} />)
           : <LaneCards sessions={lane.sessions} pivot={pivot} onOpen={onOpen} />}
       </div>
     </section>
+  );
+}
+
+// One Director sub-group inside a machine lane (machine pivot): its sessions, or the placeholder line
+// that says why there are none.
+//
+// AN UNREACHABLE MACHINE IS DIMMED AND DATED, NEVER DROPPED. Its Directors used to be filtered out of
+// the lane fold entirely, so a machine whose tunnel went down disappeared from the map - which is the
+// delete-instead-of-dim defect the Gateway has stopped committing (it now serves that machine's sessions
+// with their age). The sub-header therefore states the machine's state and when it was last heard, the
+// cards below it already dim themselves (NodeCard), and the placeholder says "unreachable" rather than
+// claiming free capacity.
+//
+// The "+ New session" action is WITHHELD while the tunnel is down, and only then. Starting a session is
+// routed to the Director over that tunnel, so the button could not be honoured - and a button that
+// cannot do what it says reads as the app being broken. A wobbly Director keeps it: its tunnel is up,
+// only its last push is late, so the command still lands.
+function DirectorSubGroup({
+  group,
+  pivot,
+  onOpen,
+  onNewSession,
+}: {
+  group: FormatDirectorGroup;
+  pivot: Pivot;
+  onOpen: (sid: string) => void;
+  onNewSession: (directorId: string) => void;
+}) {
+  const state = group.reachability?.state;
+  const offline = state === REACHABILITY_OFFLINE;
+  const wobbly = state === REACHABILITY_WOBBLY;
+  const lastSeen = offline || wobbly ? reachabilityLastSeen(group.reachability?.lastSeenAgeSeconds) : "";
+  const stateWord = offline ? "Offline" : "Wobbly";
+  return (
+    <div className="fmap-dgroup">
+      <div className={`fmap-subhead${offline ? " fmap-subhead-offline" : ""}${wobbly ? " fmap-subhead-wobbly" : ""}`}>
+        <span className="fmap-subhead-label">{group.label}</span>
+        {(offline || wobbly) && (
+          <span className="fmap-subhead-state">
+            {lastSeen.length > 0 ? `${stateWord} - ${lastSeen}` : stateWord}
+          </span>
+        )}
+        {/* Start a new session on THIS Director, using the same dialog the Sessions tab opens (only
+            pre-targeted here). Hidden for an unidentified Director - it is not an addressable slot, so
+            there is nothing to start a session on - and for an offline one, whose tunnel is down. */}
+        {group.key !== "(unknown)" && !offline && (
+          <button
+            type="button"
+            className="fmap-subhead-new"
+            title="Start a new session on this Director"
+            aria-label={`Start a new session on ${group.label}`}
+            onClick={() => onNewSession(group.key)}
+          >
+            + New session
+          </button>
+        )}
+      </div>
+      {group.sessions.length > 0 ? (
+        <LaneCards sessions={group.sessions} pivot={pivot} onOpen={onOpen} />
+      ) : (
+        <div className="fmap-freeslot">
+          {offline ? "No sessions - machine unreachable" : "No sessions - free slot"}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -682,12 +725,13 @@ function buildLanes(sessions: SessionDto[], pivot: Pivot, directors: DirectorRea
     g.list.push(s);
   }
 
-  // Machine pivot only: fold in every reachable Director so a machine that has a Director but no sessions
-  // still gets a lane (a free, available machine), and a machine's idle Directors ride on the lane so the
-  // panel can render them as free slots. Other pivots group only real sessions - a repository or an agent
-  // with no session is not a thing to show. Offline Directors are already filtered out upstream.
+  // Machine pivot only: fold in every Director so a machine that has a Director but no sessions still
+  // gets a lane, and a machine's Directors ride on the lane so the panel can render each one as a free
+  // slot or as an unreachable one. Other pivots group only real sessions - a repository or an agent with
+  // no session is not a thing to show. Offline Directors are INCLUDED (they used to be filtered out
+  // upstream, which deleted an unreachable machine from the map instead of dimming it).
   if (pivot === "machine") {
-    for (const m of reachableDirectorsByMachine(directors)) {
+    for (const m of directorsByMachine(directors)) {
       let g = byKey.get(m.key);
       if (g === undefined) {
         g = { title: m.title, list: [], directors: [] };

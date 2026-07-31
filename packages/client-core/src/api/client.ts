@@ -13,7 +13,28 @@ import { getDeviceKey, clearDeviceKey } from "../auth/deviceKey";
 import { publishDictationStatus } from "../dictation/status";
 import { reportGatewayReachable, reportGatewayUnreachable } from "../connection/health";
 
-export type SessionDto = components["schemas"]["SessionDto"];
+export type SessionDto = components["schemas"]["SessionDto"] & {
+  /** Epic #1159 step A: whether the machine owning this session is reachable right now - its tunnel is up.
+   *  Stamped by the Gateway's roster read and rendered verbatim; the client never re-derives it. It is the
+   *  Gateway's answer to "may this session nag the human", which stopped being the same question as "should
+   *  this session be shown" the moment the roster began serving machines nobody can reach. Optional because
+   *  an older Gateway does not stamp it and a Director-local response leaves it null - see
+   *  machineCanBeActedOn, which treats only an explicit false as unreachable. */
+  machineReachable?: boolean | null;
+};
+
+// WHY THIS FIELD IS DECLARED HERE AND NOT IN THE GENERATED SCHEMA. `schema.ts` is produced by
+// openapi-typescript from a live Gateway's OpenAPI document, and regenerating it today does not produce a
+// clean addition: the committed copy is weeks behind, and a fresh dump taken from a test-booted Gateway
+// omits about twenty routes that are still very much mapped - /shutdown and the whole /ingest/recording
+// family among them, the latter used by this package's own recorder upload. Those routes are registered
+// conditionally, so a Gateway booted without their dependencies never advertises them, and taking that dump
+// as truth would silently delete live routes from the typed client contract.
+//
+// So the regeneration is left for someone who can boot a fully-wired Gateway and verify the diff, and this
+// one additive field rides in the hand-written layer instead. When the schema is next regenerated properly
+// it will carry `machineReachable` itself and this intersection becomes redundant - harmlessly so, since the
+// two declarations agree. Delete it then, not before.
 /** The Gateway-computed voice display verdict (see the C# VoiceDisplay). Rendered verbatim by the Voice
  *  screen; the client never re-derives it - all voice-screen ruling lives on the Gateway. */
 export type VoiceDisplay = components["schemas"]["VoiceDisplay"];

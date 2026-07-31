@@ -9,9 +9,9 @@ import {
 import {
   agentBadgeText,
   buildControllerTree,
+  directorsByMachine,
   groupByDirector,
   machineKeyOf,
-  reachableDirectorsByMachine,
 } from "./fleetMapFormat";
 
 function session(overrides: Partial<SessionDto> = {}): SessionDto {
@@ -127,9 +127,9 @@ describe("machineKeyOf", () => {
   });
 });
 
-describe("reachableDirectorsByMachine", () => {
-  it("groups reachable Directors by their machine key", () => {
-    const out = reachableDirectorsByMachine([
+describe("directorsByMachine", () => {
+  it("groups Directors by their machine key", () => {
+    const out = directorsByMachine([
       director({ directorId: "a", machineName: "SOREN" }),
       director({ directorId: "b", machineName: "SOREN" }),
       director({ directorId: "c", machineName: "MAC" }),
@@ -140,14 +140,24 @@ describe("reachableDirectorsByMachine", () => {
     expect(mac?.directors.map((d) => d.directorId)).toEqual(["c"]);
   });
 
-  it("keeps a wobbly Director but drops an offline one - offline is not a free slot", () => {
-    const out = reachableDirectorsByMachine([
+  it("INCLUDES an offline Director - an unreachable machine is dimmed on the map, never dropped from it", () => {
+    // This used to drop the offline entry, which deleted the machine from the Fleet Map entirely once its
+    // tunnel went down. The Gateway now serves that machine's sessions with their age, so the map has to
+    // show it: the state and the last-seen line are what the sub-header renders instead of a free slot.
+    const out = directorsByMachine([
       director({ directorId: "on", machineName: "M", state: REACHABILITY_ONLINE }),
       director({ directorId: "wob", machineName: "M", state: REACHABILITY_WOBBLY }),
       director({ directorId: "off", machineName: "M", state: REACHABILITY_OFFLINE }),
     ]);
     const m = out.find((x) => x.key === "m");
-    expect(m?.directors.map((d) => d.directorId)).toEqual(["on", "wob"]);
+    expect(m?.directors.map((d) => d.directorId)).toEqual(["on", "wob", "off"]);
+  });
+
+  it("gives an offline-only machine a lane of its own, so the machine still appears", () => {
+    const out = directorsByMachine([
+      director({ directorId: "off", machineName: "ASLEEP", state: REACHABILITY_OFFLINE }),
+    ]);
+    expect(out.map((m) => m.title)).toEqual(["ASLEEP"]);
   });
 });
 
@@ -174,6 +184,23 @@ describe("groupByDirector", () => {
   it("skips a Director with no id - it is not an addressable slot", () => {
     const out = groupByDirector([], byId, [director({ directorId: "" })]);
     expect(out).toEqual([]);
+  });
+
+  it("folds in an OFFLINE Director and carries its state, so the panel can dim and date it", () => {
+    const out = groupByDirector([], byId, [
+      director({ directorId: "off", state: REACHABILITY_OFFLINE, lastSeenAgeSeconds: 400 }),
+    ]);
+    expect(out.map((g) => g.key)).toEqual(["off"]);
+    expect(out[0].reachability?.state).toBe(REACHABILITY_OFFLINE);
+    expect(out[0].reachability?.lastSeenAgeSeconds).toBe(400);
+  });
+
+  it("carries the state onto a group that already has sessions, without duplicating it", () => {
+    const sessions = [session({ sessionId: "s1", directorId: "d1" })];
+    const out = groupByDirector(sessions, byId, [director({ directorId: "d1", state: REACHABILITY_OFFLINE })]);
+    expect(out).toHaveLength(1);
+    expect(out[0].sessions.map((s) => s.sessionId)).toEqual(["s1"]);
+    expect(out[0].reachability?.state).toBe(REACHABILITY_OFFLINE);
   });
 
   it("groups sessions by Director when no idle list is given", () => {

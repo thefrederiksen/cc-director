@@ -13,10 +13,16 @@ namespace CcDirector.Gateway.Tests;
 /// Every raise of that event happens on a thread-pool thread with NO enclosing try/catch - a
 /// FileSystemWatcher callback (file deleted / renamed) or the stale-sweep timer. An exception thrown by a
 /// subscriber there is UNHANDLED, so it does not merely fail the removal: it terminates the whole Gateway
-/// process. One subscriber writes the tenant-scoped snooze store, and when that store's database was
+/// process. A subscriber ONCE WROTE the tenant-scoped snooze store, and when that store's database was
 /// unavailable the throw came up exactly this path and killed the process - observed as a test run that
 /// ABORTED partway through while still reporting exit code 0, which is also why it is worth a guard rather
 /// than a comment.
+///
+/// THAT SUBSCRIBER IS GONE. The snooze clear and the session-number release were deleted from eviction
+/// (epic #1159 step A, inspection 2 finding 1), so today there is exactly ONE permanent subscriber,
+/// <c>PushedSessionStore.ForgetIfDisconnected</c>, and it touches no database. This guard is therefore
+/// protecting against the NEXT subscriber, not a current one - which is the whole reason it stays. Nothing
+/// here is a reason to re-add a database-writing subscriber to this event.
 ///
 /// Revert-prove: change <c>DirectorRegistry.RaiseDirectorRemoved</c> back to a bare
 /// <c>OnDirectorRemoved?.Invoke(...)</c> and <see cref="A_throwing_subscriber_does_not_escape_the_removal"/>
@@ -33,8 +39,9 @@ public sealed class DirectorRemovedSubscriberFaultTests
         try
         {
             var good = 0;
-            // Two subscribers: the first throws (the snooze-store shape), the second must still be reached -
-            // containing a fault must not silently drop the remaining subscribers along with it.
+            // Two subscribers: the first throws, the second must still be reached - containing a fault must
+            // not silently drop the remaining subscribers along with it. The thrower stands in for the
+            // database-writing subscriber that USED TO be on this event; no such subscriber exists now.
             registry.OnDirectorRemoved += _ => throw new InvalidOperationException("subscriber blew up");
             registry.OnDirectorRemoved += _ => good++;
 
