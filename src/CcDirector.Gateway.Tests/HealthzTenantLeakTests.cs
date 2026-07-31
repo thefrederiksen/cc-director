@@ -25,9 +25,12 @@ namespace CcDirector.Gateway.Tests;
 /// which is what proves the hosted assertion is about the tenancy branch and not about a Gateway that simply
 /// has no Directors registered.
 ///
-/// Revert-prove: delete the <c>tenantBoundary?.IsHosted == true</c> branch from the <c>/healthz</c> handler in
+/// Revert-prove: delete the <c>GatewayHostedMode.IsHosted</c> branch from the <c>/healthz</c> handler in
 /// <c>GatewayEndpoints.Map</c> and <see cref="Hosted_healthz_reports_no_fleet_counts"/> goes RED - the hosted
-/// probe reports the registered Director again.
+/// probe reports the registered Director again. (The branch gated on the nullable <c>tenantBoundary</c>
+/// argument until the 2026-07-31 tenant-boundary hardening; it now gates on the process-level hosted flag so
+/// a null! boundary cannot reopen the aggregate - <see cref="NullBoundaryHostedGateFailClosedTests"/> pins
+/// that direction.)
 ///
 /// The assembly runs sequentially (TestParallelization), so toggling CC_GATEWAY_HOSTED here is safe.
 /// </summary>

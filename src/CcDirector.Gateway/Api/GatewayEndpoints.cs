@@ -435,7 +435,10 @@ internal static class GatewayEndpoints
             //
             // Self-host is untouched: one tenant, one owner, and the counts are what the Director's own
             // connectivity self-test and the settings gateway probe read.
-            if (tenantBoundary?.IsHosted == true)
+            //
+            // Gated on the PROCESS-level hosted flag, never on the nullable boundary argument: a caller
+            // passing a literal null! boundary on a hosted process must not reopen the aggregate.
+            if (GatewayHostedMode.IsHosted)
             {
                 // Directors/Sessions left NULL, which OMITS them from the JSON (HealthDto). Leaving them to
                 // serialize as 0 would state a fleet of zero to every probe on hosted - false rather than
@@ -694,8 +697,10 @@ internal static class GatewayEndpoints
             // tenant. Left open on hosted, POST /directors/register is exactly the Local-shadow path: a hosted
             // caller could fabricate a Local registration for an arbitrary director id and then read that id's
             // Local event ring. Make the whole plane explicitly UNAVAILABLE on hosted (403) so the shadow can
-            // never be created; self-host is unchanged.
-            if (tenantBoundary?.IsHosted == true)
+            // never be created; self-host is unchanged. Gated on the PROCESS-level hosted flag, never on
+            // the nullable boundary argument, so a null! boundary on a hosted process cannot reopen the
+            // plane (the same discipline as HostedRouteDeny).
+            if (GatewayHostedMode.IsHosted)
                 return LegacyDiscoveryPlaneUnavailable();
             if (req is null || string.IsNullOrEmpty(req.DirectorId))
                 return Results.BadRequest(new { error = "directorId is required" });
@@ -714,8 +719,9 @@ internal static class GatewayEndpoints
         {
             // MTR-01 (Codex round 1): part of the legacy same-machine discovery plane - unavailable on hosted
             // (see /directors/register). This also replaces the pre-fix 410 that an unbound hosted request got
-            // here with the correct 403 for a plane that does not serve hosted accounts.
-            if (tenantBoundary?.IsHosted == true)
+            // here with the correct 403 for a plane that does not serve hosted accounts. Gated on the
+            // process-level hosted flag so a null! boundary cannot reopen it (see /directors/register).
+            if (GatewayHostedMode.IsHosted)
                 return LegacyDiscoveryPlaneUnavailable();
             var ok = registry.Heartbeat(id);
             if (!ok)
@@ -760,8 +766,9 @@ internal static class GatewayEndpoints
             // MTR-01 (Codex round 1): the doorbell is a leg of the legacy same-machine HTTP discovery plane -
             // unavailable on hosted (see /directors/register), where leaving it open would let a hosted caller
             // inject into a bare-id event ring. On self-host its entries are always keyed to the Local tenant
-            // (see DirectorRegistry.Upsert), so it resolves within Local and records under Local.
-            if (tenantBoundary?.IsHosted == true)
+            // (see DirectorRegistry.Upsert), so it resolves within Local and records under Local. Gated on
+            // the process-level hosted flag so a null! boundary cannot reopen it (see /directors/register).
+            if (GatewayHostedMode.IsHosted)
                 return LegacyDiscoveryPlaneUnavailable();
             if (registry.Get(TenantId.Local, id) is null)
                 return Results.StatusCode(StatusCodes.Status410Gone);
@@ -805,8 +812,9 @@ internal static class GatewayEndpoints
         {
             // MTR-01 (Codex round 1): part of the legacy same-machine discovery plane - unavailable on hosted
             // (see /directors/register). Left open, an unbound hosted caller holding the shared machine token
-            // could remove a Local registration; on hosted there is no such plane to unregister from.
-            if (tenantBoundary?.IsHosted == true)
+            // could remove a Local registration; on hosted there is no such plane to unregister from. Gated
+            // on the process-level hosted flag so a null! boundary cannot reopen it (see /directors/register).
+            if (GatewayHostedMode.IsHosted)
                 return LegacyDiscoveryPlaneUnavailable();
             FileLog.Write($"[GatewayEndpoints] DELETE /directors/{id}/registration");
             var removed = registry.Remove(id);
@@ -937,7 +945,9 @@ internal static class GatewayEndpoints
             // above is confined to this tenant's partition (every id here belongs to reqTenant); it is a
             // pushed-vs-registered filter, not the tenant boundary. On self-host it is skipped, so a
             // registered-but-unpushed Director still surfaces (unchanged).
-            if (tenantBoundary?.IsHosted == true && pushedSessions is not null)
+            // Gated on the process-level hosted flag (never the nullable boundary argument): with a null!
+            // boundary on a hosted process this filter must still apply.
+            if (GatewayHostedMode.IsHosted && pushedSessions is not null)
             {
                 var mine = new HashSet<string>(pushedSessions.DirectorIdsFor(reqTenant.Value), StringComparer.OrdinalIgnoreCase);
                 directors = directors.Where(d => mine.Contains(d.DirectorId)).ToList();
