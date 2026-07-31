@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Fleet;
 using CcDirector.Core.Security;
