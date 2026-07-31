@@ -217,6 +217,11 @@ internal sealed class SimDirector : IAsyncDisposable
     private readonly HubConnection _connection;
     private readonly SessionDto[] _sessions;
     private readonly DirectorKey _key;
+    // ONE send at a time per connection. Sequence assignment and the send must be one atomic step:
+    // two concurrent sends on the same connection could otherwise reach the wire in the opposite
+    // order to their sequences, and PushedSessionStore would drop the lower one as stale - the
+    // simulator would be load-testing the reject path and counting it as success (review finding).
+    private readonly SemaphoreSlim _sendGate = new(1, 1);
     private long _sequence;
     private int _deltaIndex;
 
@@ -232,8 +237,16 @@ internal sealed class SimDirector : IAsyncDisposable
         // and treats the cache as stale until this sim pushes again: re-Hello + full snapshot, next sequence.
         _connection.Reconnected += async _ =>
         {
-            await _connection.InvokeAsync("Hello", BuildHello());
-            await _connection.InvokeAsync("PushSnapshot", Interlocked.Increment(ref _sequence), _sessions);
+            await _sendGate.WaitAsync();
+            try
+            {
+                await _connection.InvokeAsync("Hello", BuildHello());
+                await _connection.InvokeAsync("PushSnapshot", Interlocked.Increment(ref _sequence), _sessions);
+            }
+            finally
+            {
+                _sendGate.Release();
+            }
         };
     }
 
@@ -246,24 +259,30 @@ internal sealed class SimDirector : IAsyncDisposable
         await _connection.InvokeAsync("PushSnapshot", Interlocked.Increment(ref _sequence), _sessions, cancellation);
     }
 
-    /// <summary>Mutate one session (round-robin) and push it as a delta. Returns false on failure.</summary>
+    /// <summary>Mutate one session (round-robin) and push it as a delta, serialized with every other
+    /// send on this connection so sequences reach the wire in order. Returns false on failure.</summary>
     public async Task<bool> SendOneDeltaAsync()
     {
         if (_connection.State != HubConnectionState.Connected)
             return false;
-        var session = _sessions[_deltaIndex = (_deltaIndex + 1) % _sessions.Length];
-        var now = DateTime.UtcNow;
-        session.LastActivityAt = now;
-        session.ActivityState = session.ActivityState == "working" ? "waiting" : "working";
-        session.StatusColor = session.ActivityState == "working" ? "blue" : "green";
+        await _sendGate.WaitAsync();
         try
         {
+            var session = _sessions[_deltaIndex = (_deltaIndex + 1) % _sessions.Length];
+            var now = DateTime.UtcNow;
+            session.LastActivityAt = now;
+            session.ActivityState = session.ActivityState == "working" ? "waiting" : "working";
+            session.StatusColor = session.ActivityState == "working" ? "blue" : "green";
             await _connection.InvokeAsync("PushDelta", Interlocked.Increment(ref _sequence), session);
             return true;
         }
         catch
         {
             return false;
+        }
+        finally
+        {
+            _sendGate.Release();
         }
     }
 

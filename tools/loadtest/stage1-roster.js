@@ -26,7 +26,10 @@ if (!BASE) throw new Error('GATEWAY_URL is required (e.g. http://127.0.0.1:7891)
 // named in LOADTEST_ALLOW_HOST. Mirrors tools/loadtest/Shared/LoadTargetGuard.cs.
 const hostMatch = BASE.match(/^https?:\/\/\[?([^\/\]:]+)\]?(?::\d+)?$/);
 if (!hostMatch) throw new Error(`GATEWAY_URL is not a plain base URL: ${BASE}`);
-const host = hostMatch[1].toLowerCase();
+// Strip trailing dots before ruling: 'gw.azurewebsites.net.' is the same DNS name as without the
+// dot, and an endsWith check that misses it would let the absolute-form spelling of a production
+// host through (the C# guard trims the same way).
+const host = hostMatch[1].toLowerCase().replace(/\.+$/, '');
 if (host.endsWith('azurewebsites.net') || host.includes('devthrottle'))
   throw new Error(`REFUSED: ${BASE} matches the production deny list. The harness NEVER runs against production; there is no override.`);
 const LOCAL_HOSTS = ['localhost', '127.0.0.1', '::1', 'host.docker.internal'];
