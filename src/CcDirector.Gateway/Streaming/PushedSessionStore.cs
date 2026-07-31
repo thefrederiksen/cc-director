@@ -479,6 +479,43 @@ public sealed class PushedSessionStore
         return result;
     }
 
+    /// <summary>
+    /// Every pushed session across <paramref name="tenant"/>'s STREAM-CONNECTED Directors, regardless of how
+    /// long ago the last push arrived. Same shape and same deep-copy/idle-recompute rules as
+    /// <see cref="SnapshotFresh"/>; the ONLY difference is that it does not require the push to be recent.
+    ///
+    /// Inspection 1, finding 2. This exists because "may I nag about this?" and "is this data recent?" are
+    /// different questions, and the display fold behind the phone's app-icon badge was asking the second one.
+    /// It read SnapshotFresh with a THIRTY SECOND horizon, so a Director whose tunnel was up but whose pushes
+    /// had merely gone quiet for half a minute fell out of the fold entirely and the persistent badge cleared
+    /// itself - telling the owner there was nothing needing him on a machine he could have acted on at once.
+    /// Connection, not freshness, is what decides whether a machine can be reached.
+    ///
+    /// A Director that has connected but not yet pushed under THIS connection still contributes nothing: its
+    /// cached sessions belong to the previous connection and <see cref="RegisterConnection"/> deliberately
+    /// resets the received stamp so they cannot be served as current. That check is kept for exactly the
+    /// reason it was added, and only the AGE test is dropped here.
+    /// </summary>
+    public IReadOnlyList<(string DirectorId, SessionDto Session)> SnapshotConnected(TenantId tenant)
+    {
+        var now = _utcNow();
+        var result = new List<(string, SessionDto)>();
+        foreach (var kvp in DirectorsFor(tenant))
+        {
+            var entry = kvp.Value;
+            lock (entry.Gate)
+            {
+                if (entry.ActiveConnectionId is null)
+                    continue;
+                if (entry.ReceivedAtUtc == DateTime.MinValue)
+                    continue;
+                foreach (var s in entry.Sessions.Values)
+                    result.Add((kvp.Key, RecomputeClocks(s.Clone(), now)));
+            }
+        }
+        return result;
+    }
+
     /// <summary>True when this Director currently has an active stream connection (used for diagnostics).</summary>
     public bool IsStreamConnected(TenantId tenant, string directorId) =>
         DirectorsFor(tenant).TryGetValue(directorId, out var entry) && entry.ActiveConnectionId is not null;

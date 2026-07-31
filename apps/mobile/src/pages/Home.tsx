@@ -5,7 +5,7 @@ import { getAutoSpeak, inVoiceQueueOrder, queueTouchMs, setAutoSpeak } from "@de
 import { useVoiceModeAll } from "@devthrottle/client-core/voice/useVoiceModeAll";
 import { getSessionsEnvelope } from "@devthrottle/client-core/fleet/fleetClient";
 import { emptyRetentionCache, mergeRosterRetention, type RosterSessionMark } from "@devthrottle/client-core/fleet/rosterRetention";
-import { classify, contextLine, deletionReason, dotHex, inDesktopOrder, inWaitingOrder, isWorking, needsYouBadgeCount, pendingDeletion, repoLeaf, snoozeCountdown, snoozeExpired } from "@devthrottle/client-core/sessions/ordering";
+import { classify, contextLine, deletionReason, dotHex, inDesktopOrder, inWaitingOrder, isWorking, machineCanBeActedOn, needsYouBadgeCount, pendingDeletion, repoLeaf, snoozeCountdown, snoozeExpired } from "@devthrottle/client-core/sessions/ordering";
 import { DELIVERY_BADGE_TEXT, hasUndeliveredPrompt, promptDeliveryTitle } from "@devthrottle/client-core/sessions/delivery";
 import { applyFilter, filterIsActive, filterSummary, machineName, pruneFilter } from "@devthrottle/client-core/sessions/filter";
 import { useDictationStatusFor } from "@devthrottle/client-core/dictation/status";
@@ -187,7 +187,12 @@ export function Home() {
         filtered.filter(
           (s) =>
             classify(s) === "needsYou" &&
-            isVoiceReady(rowVoiceInputs(s, isWorking(s), !marks.has(s.sessionId ?? ""))),
+            // Inspection 1, finding 2: this used to ask "is there a retention mark on this row?", which is a
+            // question about PUSH FRESHNESS, not about whether the machine can be reached. A wobbly machine -
+            // tunnel UP, pushes merely late - carries a mark, so it silently left the voice queue and the
+            // owner stopped being told about work he could still act on. The Gateway already stamps the
+            // answer; read that instead of inferring a different one here.
+            isVoiceReady(rowVoiceInputs(s, isWorking(s), machineCanBeActedOn(s))),
         ),
       )
     : [];
@@ -570,11 +575,21 @@ function SessionRow({ session, mark, fromTab = "all" }: { session: SessionDto; m
   const name = session.name && session.name.trim().length > 0 ? session.name : "(unnamed session)";
   const repo = repoLeaf(session);
   const machine = machineName(session);
-  // An unreachable card (its owning machine is wobbly/offline, mobile-resilience Phase 2): grayed, its
-  // stale attention state and live waiting timer suppressed, and a note naming the machine. It KEEPS its
-  // last-known content and position - unreachable is shown, never deleted.
-  const unreachable = mark !== undefined;
-  const attention = classify(session) === "needsYou" && !unreachable;
+  // TWO different questions, which this row used to answer with one flag - inspection 1, finding 2.
+  //
+  //  - DIMMED is display: "is this row's content last-known rather than current?" The retention mark is
+  //    exactly that signal, so the graying, the dashed border and the dated note stay keyed to it. A
+  //    wobbly machine's card SHOULD look stale, because it is.
+  //  - ACTIONABLE is the nag rule: "can the owner actually do anything about this?" That is the Gateway's
+  //    stamp and nothing else. Keying it to the mark meant a machine whose tunnel was UP, merely late with
+  //    its pushes, stopped raising its hand - no attention treatment, no waiting clock, no voice - which
+  //    is the opposite of what the branch claims and hid work the owner could have acted on immediately.
+  //
+  // The rule the whole branch rests on is two flags, not one: SHOW last-known work, but only NAG about
+  // work on a machine that can be reached.
+  const dimmed = mark !== undefined;
+  const actionable = machineCanBeActedOn(session);
+  const attention = classify(session) === "needsYou" && actionable;
   // Issue #844: the session's short three-digit number (SessionDto.Number, #820) read from the
   // regenerated typed client. Null on sessions/Directors without a number - then no prefix shows.
   const num = session.number;
@@ -588,7 +603,7 @@ function SessionRow({ session, mark, fromTab = "all" }: { session: SessionDto; m
   const sid = encodeURIComponent(session.sessionId ?? "");
   const to = session.voiceMode ? `/session/${sid}/voice` : `/session/${sid}`;
   return (
-    <li className={`row${attention ? " row-attention" : ""}${unreachable ? " row-unreachable" : ""}`}>
+    <li className={`row${attention ? " row-attention" : ""}${dimmed ? " row-unreachable" : ""}`}>
       {/* Hand the known voice-mode state to the destination (issue #1015) so the Voice screen paints
           the right state on the first render instead of flashing OFF while its first poll resolves. */}
       <Link className="row-link" to={to} state={{ voiceMode: Boolean(session.voiceMode), fromTab }}>
@@ -657,11 +672,12 @@ function SessionRow({ session, mark, fromTab = "all" }: { session: SessionDto; m
               failed - so a dropped transcription is visible from the list, never silent. */}
           <DictationRowBadge sessionId={session.sessionId} />
         </span>
-        {/* The voice control reads reachability for the same reason the dot, the attention state and
-            the waiting timer above it do: on a retained card from an unreachable machine every one of
-            those facts is last-known, and voice is no exception - it kept its clip and its
-            last-known voiceAudioReady, so it was the one element still promising something live. */}
-        <VoiceIndicator session={session} reachable={!unreachable} />
+        {/* The voice control reads REACHABILITY - the Gateway's stamp - and not the retention mark. A
+            retained card from a machine nobody can reach kept its clip and its last-known voiceAudioReady,
+            so it was the one element still promising something live, and it must not. But a wobbly machine
+            can still be spoken to, so it keeps its triangle: the promise the triangle makes is "tapping
+            this will speak", and that promise holds whenever the tunnel is up. */}
+        <VoiceIndicator session={session} reachable={actionable} />
       </Link>
     </li>
   );

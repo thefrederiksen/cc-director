@@ -1220,8 +1220,16 @@ public sealed class GatewayHost : IAsyncDisposable
         // rail received no stamp and rendered grey while the roster - which resolves the request tenant - folded
         // blue. The gate partitioning is what unblocks the per-tenant pass (see FleetDisplayStateObserver): a
         // flat gate pruned against one tenant's pass would delete the others and stamp-storm every 5s.
+        //
+        // Inspection 1, finding 2: this snapshot is CONNECTION-scoped, not freshness-scoped, and the change is
+        // deliberate. WebPushNeedsYouNotifier counts this fold to drive the phone's app-icon badge - the one
+        // nag that persists when the app is closed - so a thirty-second push horizon meant a Director whose
+        // tunnel was up but quiet dropped out of the fold and the badge cleared itself, telling the owner
+        // nothing needed him on a machine he could have acted on immediately. The auto-dismiss sweeper still
+        // takes AmbientSnapshotFresh and must: acting ON a session needs recent data, whereas TELLING THE
+        // OWNER about one needs a reachable machine. Two questions, two snapshots.
         FleetDisplayState = new Fleet.FleetDisplayStateObserver(
-            () => AmbientSnapshotFresh(AutoDismissStaleAfter),
+            AmbientSnapshotConnected,
             sessions => EnrichVoiceThenFoldForPush(
                 sessions,
                 // MTR-10 Gap D: read the AMBIENT tenant of this per-tenant display pass, byte-identical to the
@@ -1709,6 +1717,18 @@ public sealed class GatewayHost : IAsyncDisposable
     private IReadOnlyList<(string DirectorId, SessionDto Session)> AmbientSnapshotFresh(TimeSpan staleAfter)
         => _tenantPass.Current is { } tenant
             ? PushedSessions.SnapshotFresh(tenant, staleAfter)
+            : Array.Empty<(string DirectorId, SessionDto Session)>();
+
+    /// <summary>
+    /// The CONNECTION-scoped fleet snapshot for the tenant of the current unit of work - the same tenant
+    /// resolution and the same hosted deny as <see cref="AmbientSnapshotFresh"/>, but without the freshness
+    /// horizon. Feeds the display-state fold, which decides whether the owner is told about work, and that
+    /// question is answered by whether the machine can be reached and not by how long ago it last spoke
+    /// (inspection 1, finding 2).
+    /// </summary>
+    private IReadOnlyList<(string DirectorId, SessionDto Session)> AmbientSnapshotConnected()
+        => _tenantPass.Current is { } tenant
+            ? PushedSessions.SnapshotConnected(tenant)
             : Array.Empty<(string DirectorId, SessionDto Session)>();
 
     /// <summary>
