@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Text;
 using CcDirector.ControlApi;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Security;
 using CcDirector.Core.Sessions;
 using Xunit;
 

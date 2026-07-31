@@ -75,6 +75,20 @@ public sealed class SessionManager : IDisposable
     public string? DirectorId { get; set; }
 
     /// <summary>
+    /// Mints the credential a session's own agent presents to this Director, bound to that session's
+    /// id, or returns null when there is no machine secret to derive one from. Set by
+    /// ControlApiHost.StartAsync alongside <see cref="ControlApiBaseUrl"/> - the address and the
+    /// credential that goes with it are stamped together, because either alone is useless.
+    ///
+    /// The Control API used to require nothing, so the address was enough and the comment below said
+    /// plainly that no token entered the session. That was the right call for a secret which is the
+    /// whole fleet's authority. This is a DIFFERENT credential: it is derived, it is bound to one
+    /// session id, and it grants only that session's own reads plus the safe discovery set - so the
+    /// agent can fetch its preamble and report its transcript pointer, and can do nothing else.
+    /// </summary>
+    public Func<Guid, string?>? SessionCredentialSource { get; set; }
+
+    /// <summary>
     /// Issue #1357: returns the signed-in DevThrottle user (email + nickname) to name in a Pi session's
     /// launch-time preamble, or null when no one is signed in. Set by ControlApiHost.StartAsync to read
     /// the host's cached snapshot SYNCHRONOUSLY (no network) so session creation never blocks. Null
@@ -561,6 +575,15 @@ public sealed class SessionManager : IDisposable
                 envVars["CC_DIRECTOR_API"] = ControlApiBaseUrl;
             if (!string.IsNullOrEmpty(DirectorId))
                 envVars["CC_DIRECTOR_ID"] = DirectorId;
+
+            // The credential that goes with the address above. Bound to THIS session's id and
+            // least-privilege: it reads this session and the safe discovery set, and it is refused on
+            // spawn, shutdown, prompting another session, another session's terminal, and settings.
+            // The fleet secret itself still never enters a session - this is derived from it, and
+            // knowing it tells you nothing about the secret it came from.
+            var sessionCredential = SessionCredentialSource?.Invoke(id);
+            if (!string.IsNullOrEmpty(sessionCredential))
+                envVars["CC_DIRECTOR_TOKEN"] = sessionCredential;
 
             // Issue #705: make session-to-session messaging discoverable to the agent. This is a
             // one-line reminder, NOT a credential - the tools reach the fleet through CC_DIRECTOR_API

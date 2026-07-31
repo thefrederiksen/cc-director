@@ -18,9 +18,10 @@ Usage:
         --advertised http://this-host:7879 [--token TOKEN]
     python configure_settings.py set <dotted.key> <value>
 
-Auth is OFF by default (single-user trust boundary), so no token is needed. If a Director
-has auth enabled you'll get a 401 - pass --director-token, or the script reads it from
-config/director/gateway-token.txt.
+Every route but /healthz requires a credential. This script reads this machine's Director
+secret itself - gateway.token from config/config.json when the machine is attached to a
+Gateway, otherwise config/director/gateway-token.txt - so no token normally has to be passed.
+Use --director-token to override it.
 
 ASCII-only output. No Unicode.
 """
@@ -141,10 +142,38 @@ def _request(method: str, url: str, token: str | None, body: dict | None = None)
         raise RuntimeError(f"{method} {url} failed: {e.reason}") from e
 
 
+def _config_json() -> Path:
+    return _local_app_data() / "config" / "config.json"
+
+
 def _resolve_token(explicit: str | None) -> str | None:
+    """This machine's Director secret.
+
+    The Control API requires a credential on every route now, so this is no longer an optional read.
+    It has to resolve the secret the way the Director does or every call is answered 401: the SHARED
+    fleet token from config.json when this machine is attached to a Gateway, and the Director's own
+    persisted token otherwise. Reading only the token file was right on a standalone machine and
+    wrong on every machine with a Gateway configured - which nothing noticed while authentication was
+    switched off.
+
+    The raw machine secret is what is presented, deliberately. It is full authority, which is what
+    reading and writing settings needs, and the Director accepts it as the root it is.
+    """
     if explicit:
         return explicit
-    # Only used if a Director happens to have auth on; harmless to read if present.
+
+    cfg = _config_json()
+    if cfg.is_file():
+        try:
+            data = json.loads(cfg.read_text(encoding="utf-8"))
+            gateway = data.get("gateway") if isinstance(data, dict) else None
+            if isinstance(gateway, dict):
+                token = gateway.get("token")
+                if isinstance(token, str) and token.strip():
+                    return token.strip()
+        except (OSError, ValueError):
+            pass
+
     tf = _token_file()
     if tf.is_file():
         return tf.read_text(encoding="utf-8").strip() or None

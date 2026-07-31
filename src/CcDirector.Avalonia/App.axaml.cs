@@ -582,7 +582,12 @@ public partial class App : Application
                 });
             };
 
-            ControlApiHost = new ControlApiHost(SessionManager, version, requestShutdown, repositoryRegistry: RepositoryRegistry,
+            ControlApiHost = new ControlApiHost(SessionManager, version, requestShutdown,
+                // Authentication is required, stated here rather than left to the constructor default,
+                // because this is the line that decides what a shipped desktop install exposes. It read
+                // as "no argument, so whatever the default is" for as long as the default was open.
+                authEnabled: true,
+                repositoryRegistry: RepositoryRegistry,
                 // Repositories mission (#510 phase C): the monitor feeds the Gateway push and the
                 // /fleet/repositories - /fleet/worktrees standalone fallback.
                 repositoryMonitor: RepositoryMonitor);

@@ -1,6 +1,9 @@
+using CcDirector.Core.Configuration;
+using CcDirector.Core.Security;
 using CcDirector.Core.Network;
 using System.Diagnostics;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
@@ -163,11 +166,30 @@ public sealed class DirectorSupervisor
             try
             {
                 FileLog.Write($"[DirectorSupervisor] StopAsync: POST http://127.0.0.1:{port}/shutdown");
-                using var resp = await _http.PostAsync($"http://127.0.0.1:{port}/shutdown", content: null, ct);
+                using var request = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/shutdown");
+                AttachDirectorCredential(request);
+                using var resp = await _http.SendAsync(request, ct);
                 FileLog.Write($"[DirectorSupervisor] StopAsync: /shutdown -> {(int)resp.StatusCode}");
-                // Wait for the process to exit after the graceful shutdown.
-                await WaitForExitAsync(proc, TimeSpan.FromSeconds(10), ct);
-                return;
+
+                // A REFUSAL is not a graceful stop, and treating it as one is how this call quietly
+                // became a force-kill. The Director is up and answering - it simply did not accept the
+                // credential - so falling through to Kill() gives it no chance to clean up and leaves a
+                // phantom "interrupted" entry in its crash journal, degrading the very signal used to
+                // tell a real crash from a deliberate stop. Say so loudly; the kill below is still the
+                // last resort, because a Director that cannot be stopped at all would be worse.
+                if (!resp.IsSuccessStatusCode)
+                {
+                    FileLog.Write($"[DirectorSupervisor] StopAsync: /shutdown was REFUSED with {(int)resp.StatusCode}. "
+                                  + "The Director is running and answering, so this is a credential problem, not an "
+                                  + "unreachable Control API. Expect a phantom crash-journal entry from the force-kill "
+                                  + $"that follows. The machine secret is read from {DirectorMachineSecret.TokenFile}.");
+                }
+                else
+                {
+                    // Wait for the process to exit after the graceful shutdown.
+                    await WaitForExitAsync(proc, TimeSpan.FromSeconds(10), ct);
+                    return;
+                }
             }
             catch (Exception ex)
             {
@@ -217,7 +239,15 @@ public sealed class DirectorSupervisor
 
         try
         {
-            using var response = await _http.GetAsync($"http://127.0.0.1:{port}/healthz", ct);
+            // Authenticated on purpose. /healthz answers an anonymous caller with liveness and nothing
+            // else, and what this method needs is the version and the session count - the version is
+            // what certifies that a swap actually happened, and the session count is what decides
+            // whether updating now would interrupt live work. Both are configuration, so both are
+            // behind the credential; a token-less probe here would read a healthy Director as one with
+            // nothing to say.
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{port}/healthz");
+            AttachDirectorCredential(request);
+            using var response = await _http.SendAsync(request, ct);
             if (!response.IsSuccessStatusCode)
             {
                 FileLog.Write($"[DirectorSupervisor] ReadHealthAsync: /healthz on {port} answered {(int)response.StatusCode}");
@@ -246,6 +276,30 @@ public sealed class DirectorSupervisor
 
     private static readonly System.Text.Json.JsonSerializerOptions HealthJsonOptions =
         new(System.Text.Json.JsonSerializerDefaults.Web);
+
+    /// <summary>
+    /// Present this machine's Director credential. The launcher is a full-authority local caller -
+    /// stopping the Director and reading its version are exactly the operations that need to be - so
+    /// it derives an admin token from the same machine secret the Director accepts.
+    ///
+    /// A machine with no readable secret gets no header rather than an exception: the caller then
+    /// sees a refusal it can report, which is a better failure than the launcher throwing on a path
+    /// whose whole job is to stop something.
+    /// </summary>
+    private static void AttachDirectorCredential(HttpRequestMessage request)
+    {
+        try
+        {
+            var secret = DirectorMachineSecret.Resolve(GatewayConfig.Load().Token);
+            request.Headers.Authorization = new AuthenticationHeaderValue(
+                "Bearer", DirectorScopedToken.Mint(secret, ScopeNames.Admin));
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DirectorSupervisor] cannot read this machine's Director secret, so the call will go "
+                          + $"unauthenticated and be refused: {ex.Message}");
+        }
+    }
 
     /// <summary>
     /// Restart the Director: stop gracefully, wait, then start fresh.

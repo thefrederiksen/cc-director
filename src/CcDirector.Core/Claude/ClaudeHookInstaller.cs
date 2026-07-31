@@ -37,6 +37,12 @@ public static class ClaudeHookInstaller
         "    $raw = [Console]::In.ReadToEnd()\r\n" +
         "    $api = $env:CC_DIRECTOR_API\r\n" +
         "    $sid = $env:CC_SESSION_ID\r\n" +
+        // The session's own credential, injected beside CC_DIRECTOR_API at launch. The Control API
+        // requires one on every route but /healthz, so a hook that sent none would be answered 401 -
+        // silently, because this script swallows everything and exits 0, which is exactly how it
+        // would have taken session history and the preamble down without a visible failure.
+        "    $hdr = @{}\r\n" +
+        "    if ($env:CC_DIRECTOR_TOKEN) { $hdr['Authorization'] = \"Bearer $env:CC_DIRECTOR_TOKEN\" }\r\n" +
         "    if ($raw) {\r\n" +
         "        $evt = $raw | ConvertFrom-Json\r\n" +
         "        if ($api -and $sid -and $evt.session_id) {\r\n" +
@@ -46,7 +52,7 @@ public static class ClaudeHookInstaller
         "                hookEvent       = $evt.hook_event_name\r\n" +
         "                source          = $evt.source\r\n" +
         "            } | ConvertTo-Json -Compress\r\n" +
-        "            Invoke-RestMethod -Uri \"$api/sessions/$sid/claude-hook\" -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 3 | Out-Null\r\n" +
+        "            Invoke-RestMethod -Uri \"$api/sessions/$sid/claude-hook\" -Method Post -Body $body -ContentType 'application/json' -Headers $hdr -TimeoutSec 3 | Out-Null\r\n" +
         "        }\r\n" +
         "    }\r\n" +
         // Surface the launch-time fleet preamble into the session's context. SessionStart's
@@ -55,7 +61,7 @@ public static class ClaudeHookInstaller
         // and the cc-* commands instantly, with no skill lookup and zero turn cost. The text is
         // owned by the Director (GET /fleet-preamble); the script just relays it.
         "    if ($api -and $sid) {\r\n" +
-        "        $preamble = Invoke-RestMethod -Uri \"$api/sessions/$sid/fleet-preamble\" -TimeoutSec 3\r\n" +
+        "        $preamble = Invoke-RestMethod -Uri \"$api/sessions/$sid/fleet-preamble\" -Headers $hdr -TimeoutSec 3\r\n" +
         "        if ($preamble) {\r\n" +
         "            $out = @{ hookSpecificOutput = @{ hookEventName = 'SessionStart'; additionalContext = [string]$preamble } } | ConvertTo-Json -Compress\r\n" +
         "            [Console]::Out.Write($out)\r\n" +
@@ -79,17 +85,31 @@ public static class ClaudeHookInstaller
         "api=\"$CC_DIRECTOR_API\"\n" +
         "sid=\"$CC_SESSION_ID\"\n" +
         "[ -n \"$api\" ] && [ -n \"$sid\" ] || exit 0\n" +
+        // The session's own credential, injected beside CC_DIRECTOR_API at launch. Built as a shell
+        // ARRAY-free pair of words held in one variable and expanded unquoted only where it is empty
+        // or a complete -H argument pair, so an unset token adds nothing rather than an empty header.
+        "auth=\"\"\n" +
+        "[ -n \"$CC_DIRECTOR_TOKEN\" ] && auth=\"Authorization: Bearer $CC_DIRECTOR_TOKEN\"\n" +
         "raw=\"$(cat 2>/dev/null || true)\"\n" +
         "if [ -n \"$raw\" ]; then\n" +
-        "    printf '%s' \"$raw\" | curl -s -m 3 -X POST -H \"Content-Type: application/json\" \\\n" +
-        "        --data-binary @- \"$api/sessions/$sid/claude-hook\" >/dev/null 2>&1 || true\n" +
+        "    if [ -n \"$auth\" ]; then\n" +
+        "        printf '%s' \"$raw\" | curl -s -m 3 -X POST -H \"Content-Type: application/json\" \\\n" +
+        "            -H \"$auth\" --data-binary @- \"$api/sessions/$sid/claude-hook\" >/dev/null 2>&1 || true\n" +
+        "    else\n" +
+        "        printf '%s' \"$raw\" | curl -s -m 3 -X POST -H \"Content-Type: application/json\" \\\n" +
+        "            --data-binary @- \"$api/sessions/$sid/claude-hook\" >/dev/null 2>&1 || true\n" +
+        "    fi\n" +
         "fi\n" +
         // -f (--fail) so an HTTP error prints NOTHING. Without it curl writes the error body to
         // stdout, and this script's stdout IS the hook output - so a server error page would be
         // handed to Claude dressed as the preamble. The Director is careful to return an empty body
         // rather than an error, and this is the belt to that pair of braces: the cost of being wrong
         // here is arbitrary text entering the user's session as instructions.
-        "curl -sf -m 3 \"$api/sessions/$sid/fleet-preamble-hook-output\" 2>/dev/null || true\n" +
+        "if [ -n \"$auth\" ]; then\n" +
+        "    curl -sf -m 3 -H \"$auth\" \"$api/sessions/$sid/fleet-preamble-hook-output\" 2>/dev/null || true\n" +
+        "else\n" +
+        "    curl -sf -m 3 \"$api/sessions/$sid/fleet-preamble-hook-output\" 2>/dev/null || true\n" +
+        "fi\n" +
         "exit 0\n";
 
     /// <summary>The hook event sources we register a SessionStart hook for. These are the

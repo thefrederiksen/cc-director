@@ -31,8 +31,13 @@ public static class CodexHookInstaller
         "try {\r\n" +
         "    $api = $env:CC_DIRECTOR_API\r\n" +
         "    $sid = $env:CC_SESSION_ID\r\n" +
+        // The session's own credential, injected beside CC_DIRECTOR_API at launch. The preamble read
+        // is authenticated now, and this script swallows every error and exits 0 - so without the
+        // header the only symptom would be an agent that quietly knows nothing about the fleet.
+        "    $hdr = @{}\r\n" +
+        "    if ($env:CC_DIRECTOR_TOKEN) { $hdr['Authorization'] = \"Bearer $env:CC_DIRECTOR_TOKEN\" }\r\n" +
         "    if ($api -and $sid) {\r\n" +
-        "        $preamble = Invoke-RestMethod -Uri \"$api/sessions/$sid/fleet-preamble\" -TimeoutSec 5\r\n" +
+        "        $preamble = Invoke-RestMethod -Uri \"$api/sessions/$sid/fleet-preamble\" -Headers $hdr -TimeoutSec 5\r\n" +
         "        if ($preamble) {\r\n" +
         "            $out = @{ hookSpecificOutput = @{ hookEventName = 'SessionStart'; additionalContext = [string]$preamble } } | ConvertTo-Json -Compress\r\n" +
         "            [Console]::Out.Write($out)\r\n" +

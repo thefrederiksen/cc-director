@@ -1,6 +1,7 @@
-﻿using System.Net;
+using System.Net;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Fleet;
+using CcDirector.Core.Security;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Wingman;
 using CcDirector.Core.Utilities;
@@ -43,6 +44,10 @@ public sealed class ControlApiHost : IAsyncDisposable
     // Not readonly: LAN addressing mode (issue #457) auto-enables auth at StartAsync, because
     // binding the Control API to the LAN without auth would expose it to the whole network.
     private bool _authEnabled;
+    // The machine secret this host accepts, resolved once at StartAsync. Held because things other
+    // than the middleware need to present a credential to their OWN Director: the startup self-probe
+    // calls /healthz over real HTTP, and every session launch mints a child token from it.
+    private string? _acceptedSecret;
 
     public string DirectorId { get; }
     public int Port { get; private set; }
@@ -224,10 +229,19 @@ public sealed class ControlApiHost : IAsyncDisposable
     /// If false (production), PortAllocator picks a stable port in [7879..7898] and we bind to loopback (Tailscale Serve fronts it).
     /// </param>
     /// <param name="authEnabled">
-    /// If true, bearer-token or cookie auth is required for all routes except /healthz/login/logout.
-    /// If false (default), the Director is completely open. The Tailscale tailnet is the trust boundary.
+    /// If true (the DEFAULT), every route except <c>/healthz</c> requires a credential - the machine
+    /// secret or a token derived from it. Pass false only to embed the surface somewhere the caller
+    /// has already established who it is talking to.
+    ///
+    /// This defaulted to FALSE until the local trust boundary work, and the production desktop took
+    /// that default: the comment here said the Director was "completely open" and named the Tailscale
+    /// tailnet as the trust boundary, which had stopped being true - the inbound port is closed and
+    /// the callers are all on this machine. Loopback tells you the peer is local; it cannot tell the
+    /// desktop from the command line from a coding agent's child process from a browser that followed
+    /// a rebound name to 127.0.0.1. Those need different authority, so they need different
+    /// credentials.
     /// </param>
-    public ControlApiHost(SessionManager sessionManager, string version, Func<Task> requestShutdownAsync, bool useEphemeralPort = false, bool authEnabled = false, RepositoryRegistry? repositoryRegistry = null, string? directorId = null, string? instancesDirectory = null, Core.Git.RepositoryMonitor? repositoryMonitor = null)
+    public ControlApiHost(SessionManager sessionManager, string version, Func<Task> requestShutdownAsync, bool useEphemeralPort = false, bool authEnabled = true, RepositoryRegistry? repositoryRegistry = null, string? directorId = null, string? instancesDirectory = null, Core.Git.RepositoryMonitor? repositoryMonitor = null)
     {
         _repositoryMonitor = repositoryMonitor;
         _sessionManager = sessionManager ?? throw new ArgumentNullException(nameof(sessionManager));
@@ -516,12 +530,47 @@ public sealed class ControlApiHost : IAsyncDisposable
             }
         });
 
+        // The Host allowlist and the cross-site gate run BEFORE authentication and apply on every
+        // route including /healthz, because both answer a question that comes first: is this request
+        // addressed to this Director at all, and did a browser on somebody else's page initiate it.
+        // A caller that fails either is refused whether or not it holds a valid credential - a token
+        // that has leaked into a page must not buy the page a route.
+        //
+        // These are installed unconditionally, even when authentication is switched off for an
+        // embedded host, because they are not about who the caller is.
+        _app.Use(async (ctx, next) =>
+        {
+            var host = ControlApiGuard.CheckHost(ctx.Request.Headers.Host.ToString(), Port);
+            if (!host.Allowed)
+            {
+                FileLog.Write($"[ControlApiHost] 403 {ctx.Request.Method} {ctx.Request.Path}: {host.Reason}");
+                await DirectorAuth.WriteRefusal(ctx, StatusCodes.Status403Forbidden, host.Reason);
+                return;
+            }
+
+            var crossSite = ControlApiGuard.CheckCrossSiteMutation(
+                ctx.Request.Method,
+                ctx.Request.Headers["Sec-Fetch-Site"].ToString(),
+                ctx.Request.Headers["Origin"].ToString(),
+                Port);
+            if (!crossSite.Allowed)
+            {
+                FileLog.Write($"[ControlApiHost] 403 {ctx.Request.Method} {ctx.Request.Path}: {crossSite.Reason}");
+                await DirectorAuth.WriteRefusal(ctx, StatusCodes.Status403Forbidden, crossSite.Reason);
+                return;
+            }
+
+            await next(ctx);
+        });
+
         if (_authEnabled)
         {
             // Accept the shared fleet token (gateway.token) when attached to a Gateway, so the
             // Gateway authenticates across machines in LAN mode (issue #457); else the local token.
-            var token = DirectorAuth.ResolveAcceptedToken(gatewayConfig.Token);
-            _app.Use((ctx, next) => DirectorAuth.Run(ctx, token, next));
+            // Scoped tokens derived from whichever of those is in force are accepted too.
+            _acceptedSecret = DirectorAuth.ResolveAcceptedToken(gatewayConfig.Token);
+            var secret = _acceptedSecret;
+            _app.Use((ctx, next) => DirectorAuth.Run(ctx, secret, next));
         }
 
         // Enable WebSocket support for /dictate and any future streaming endpoints.
@@ -659,6 +708,21 @@ public sealed class ControlApiHost : IAsyncDisposable
         // (e.g. GET $CC_DIRECTOR_API/sessions/$CC_SESSION_ID to find themselves).
         _sessionManager.ControlApiBaseUrl = $"http://127.0.0.1:{Port}";
         _sessionManager.DirectorId = DirectorId;
+
+        // ...and the credential that goes with it. Every session gets a token bound to ITS OWN id,
+        // so the agent inside it can fetch its preamble and report its transcript pointer, and can do
+        // nothing else - it cannot spawn, shut down, prompt another session, read another session's
+        // terminal, or touch settings. Before this, children were given the address with no
+        // credential at all, which was safe only because the surface asked for none.
+        //
+        // This is a real boundary against a browser or any caller that does not go looking for the
+        // machine secret. It is NOT an operating-system sandbox: a process running as this user can
+        // read the secret off disk and mint itself full authority, and closing that needs a transport
+        // where the operating system asserts the caller's identity.
+        _sessionManager.SessionCredentialSource = sessionId =>
+            _acceptedSecret is { Length: > 0 } secret
+                ? DirectorScopedToken.Mint(secret, ScopeNames.SessionChild, sessionId)
+                : null;
 
         // Named instances: record the ACTUAL bound port (fixed or ephemeral-fallback) back to the
         // named-instance registry so the picker/switcher shows and probes the right port. Best-effort;
@@ -806,15 +870,21 @@ public sealed class ControlApiHost : IAsyncDisposable
         _transientErrorAutoResume = new TransientErrorAutoResume(_sessionManager);
         _transientErrorAutoResume.Start();
 
-        // Always-on terminal recorder: logs every session's resolved grid (on change, with the
-        // activity state) to build the ground-truth corpus for offline analysis/learning.
-        // Turn detection itself is the trigger + LLM judge in TerminalStateDetector above - no
-        // regex screen parsing. Observe-only, capped per session. On by default; set
-        // CC_DIRECTOR_RECORD_SESSIONS=0 to disable. See docs/wingman/WINGMAN.md.
-        if (Environment.GetEnvironmentVariable("CC_DIRECTOR_RECORD_SESSIONS") != "0")
+        // The terminal recorder: logs every session's resolved grid (on change, with the activity
+        // state) to build the ground-truth corpus for offline analysis/learning. Observe-only and
+        // capped per session. See docs/wingman/WINGMAN.md.
+        //
+        // OFF by default, and switched on by a visible setting - session_recording.enabled in
+        // config.json, or the CC_DIRECTOR_RECORD_SESSIONS override. It used to run on every install
+        // unless someone found an environment variable mentioned only in a source comment, which made
+        // an internal engineering corpus - every screen every agent has drawn, secrets included, with
+        // no age limit - an invisible product default. What we collect for our own benefit has to be
+        // something the user can see they turned on.
+        if (Core.Configuration.SessionRecordingConfig.IsEnabled())
         {
             _sessionRecorder = new TerminalSessionRecorder(_sessionManager);
             _sessionRecorder.Start();
+            FileLog.Write("[ControlApiHost] Terminal session recording is ON (session_recording.enabled)");
         }
 
         // Per-turn review log: one record each time a session flips Working -> needs-you
@@ -1177,7 +1247,20 @@ public sealed class ControlApiHost : IAsyncDisposable
         try
         {
             using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(3) };
-            using var resp = await http.GetAsync($"http://127.0.0.1:{port}/healthz");
+            using var request = new System.Net.Http.HttpRequestMessage(
+                System.Net.Http.HttpMethod.Get, $"http://127.0.0.1:{port}/healthz");
+            // The probe reads the Director's OWN identifier out of the answer, and /healthz only
+            // names it to a caller that authenticated - its public answer is liveness and nothing
+            // else. So the probe presents an admin credential. Without one it would get the public
+            // body, fail to find the identifier, and report a healthy Director as shadowed: the
+            // check would fire on the very machines it is meant to certify.
+            if (_acceptedSecret is { Length: > 0 } secret)
+            {
+                request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+                    "Bearer", DirectorScopedToken.Mint(secret, ScopeNames.Admin));
+            }
+
+            using var resp = await http.SendAsync(request);
             if (!resp.IsSuccessStatusCode) return false;
             var body = await resp.Content.ReadAsStringAsync();
             return body.Contains(DirectorId, StringComparison.Ordinal);

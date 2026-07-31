@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 
-namespace CcDirector.ControlApi;
+namespace CcDirector.Core.Security;
 
 /// <summary>
 /// The authority a caller of the Director's Control API holds. There are two real levels on a

@@ -20,8 +20,9 @@ import json
 import os
 import urllib.error
 import urllib.request
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from . import director_token
 
 
 class DirectorError(RuntimeError):
@@ -43,20 +44,14 @@ def session_id() -> Optional[str]:
 
 
 def _token() -> Optional[str]:
-    # The loopback Control API needs NO token in the default configuration. In LAN mode the
-    # Director's own standalone token (gateway-token.txt) is accepted; send it best-effort if
-    # present. The fleet token is deliberately never read here - it stays on the Director.
-    local = os.environ.get("LOCALAPPDATA", "")
-    if not local:
-        return None
-    token_file = Path(local) / "cc-director" / "config" / "director" / "gateway-token.txt"
-    try:
-        if token_file.is_file():
-            value = token_file.read_text(encoding="utf-8").strip()
-            return value or None
-    except OSError:
-        return None
-    return None
+    """The command line's credential for its own Director.
+
+    The loopback Control API now requires one on every route but /healthz, so this is no longer
+    best-effort decoration: a machine where the secret cannot be read cannot drive its Director, and
+    saying so plainly beats a 401 the user has to decode. The value sent is the DERIVED "cli" token
+    rather than the machine secret itself, so the raw secret never travels even on loopback.
+    """
+    return director_token.cli_token()
 
 
 def _error_message(body: str, code: int) -> str:
@@ -103,8 +98,13 @@ def _request(method: str, path: str, body: Optional[dict] = None, timeout: float
     if data is not None:
         req.add_header("Content-Type", "application/json")
     token = _token()
-    if token:
-        req.add_header("Authorization", f"Bearer {token}")
+    if not token:
+        raise DirectorError(
+            "Cannot read this machine's Director secret, so no command can be authorized. "
+            f"Expected it at {director_token._token_file()}, or as gateway.token in "
+            f"{director_token._config_json()}. Start the Director once to have it written."
+        )
+    req.add_header("Authorization", f"Bearer {token}")
 
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:

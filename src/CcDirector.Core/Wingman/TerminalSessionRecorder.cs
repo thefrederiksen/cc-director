@@ -58,12 +58,50 @@ public sealed class TerminalSessionRecorder : IDisposable
 
     private void OnSessionCreated(Session session) => Wire(session);
 
-    /// <summary>Stop recording and release the buffer subscription when a session
-    /// is removed, so closed sessions do not leak per-session recorders.</summary>
+    /// <summary>
+    /// Stop recording when a session is removed, and DELETE what was recorded for it.
+    ///
+    /// Disposing the writer was all this did, so every removed session left its recording behind
+    /// forever: the file has no age limit, and the session that owned it - the only thing that made
+    /// it meaningful, and the only thing anyone would think to remove - was gone. An install that
+    /// had recording switched on accumulated the screens of sessions that no longer existed, in a
+    /// directory nothing ever swept. The recording exists to study a session; when the session is
+    /// gone, so is the reason to keep it.
+    ///
+    /// Best-effort by necessity: a file still held open by an antivirus scanner or a reader must not
+    /// take down the session-removal path, which does the real work of closing a session down. A
+    /// failure is logged loudly rather than swallowed, because a purge that quietly did nothing is
+    /// the same as no purge at all.
+    /// </summary>
     private void OnSessionRemoved(Session session)
     {
         if (_recorders.TryRemove(session.Id, out var r))
             r.Dispose();
+
+        PurgeRecording(session.Id);
+    }
+
+    /// <summary>Delete one session's recording directory. Exposed for the regression test that
+    /// proves a removed session leaves nothing behind.</summary>
+    internal void PurgeRecording(Guid sessionId)
+    {
+        // "N" - the same format the Recorder writes with. A guid has more than one spelling and only
+        // one of them is the directory that exists; the default spelling would have deleted nothing,
+        // logged nothing, and left a purge that could never fail because it never found anything.
+        var dir = Path.Combine(_root, sessionId.ToString("N"));
+        try
+        {
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+                FileLog.Write($"[TerminalSessionRecorder] purged the recording for removed session {sessionId}");
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[TerminalSessionRecorder] could NOT purge {dir}: {ex.Message}. "
+                          + "That session's recorded screens are still on disk.");
+        }
     }
 
     private void Wire(Session session)
