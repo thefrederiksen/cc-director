@@ -101,13 +101,18 @@ if (!string.IsNullOrEmpty(metricsKey))
 var reporter = Task.Run(async () =>
 {
     long lastOk = 0, lastFailed = 0;
+    var lastReportAt = DateTime.UtcNow;
     while (!stopRequested.IsCancellationRequested && DateTime.UtcNow < runUntil)
     {
         try { await Task.Delay(TimeSpan.FromSeconds(reportSeconds), stopRequested.Token); }
         catch (OperationCanceledException) { break; }
         var ok = Interlocked.Read(ref deltasOk);
         var failed = Interlocked.Read(ref deltasFailed);
-        var okRate = (ok - lastOk) / (double)reportSeconds;
+        // Rate over the MEASURED interval, not the nominal one - under load the delay drifts, and a
+        // rate divided by the nominal interval understates or overstates accordingly (review finding).
+        var reportElapsed = (DateTime.UtcNow - lastReportAt).TotalSeconds;
+        lastReportAt = DateTime.UtcNow;
+        var okRate = (ok - lastOk) / Math.Max(1.0, reportElapsed);
         var connected = sims.Count(s => s.IsConnected);
         Console.WriteLine($"[DirectorSim] connected={connected}/{sims.Count} deltasOk={ok} (+{okRate:F0}/s) deltasFailed={failed} (+{failed - lastFailed})");
 
@@ -146,13 +151,14 @@ var reporter = Task.Run(async () =>
     }
 });
 
+var deltaWindowStart = DateTime.UtcNow;
 if (eventsPerSecond > 0)
 {
     // The delta stream: a token-bucket paced loop distributing PushDelta round-robin across all
     // connections. InvokeAsync (not fire-and-forget Send) so a server that stops keeping up shows as
     // rising in-flight here, bounded by the semaphore, instead of unbounded queueing hiding the ceiling.
     var inFlight = new SemaphoreSlim(2000);
-    var scheduleStart = DateTime.UtcNow;
+    var scheduleStart = deltaWindowStart;
     long scheduled = 0;
     var simIndex = 0;
     while (!stopRequested.IsCancellationRequested && DateTime.UtcNow < runUntil)
@@ -169,7 +175,7 @@ if (eventsPerSecond > 0)
             simIndex = (simIndex + 1) % sims.Count;
             scheduled++;
             try { await inFlight.WaitAsync(stopRequested.Token); } catch (OperationCanceledException) { break; }
-            _ = sim.SendOneDeltaAsync().ContinueWith(t =>
+            _ = sim.SendOneDeltaAsync(stopRequested.Token).ContinueWith(t =>
             {
                 inFlight.Release();
                 if (t.IsCompletedSuccessfully && t.Result) Interlocked.Increment(ref deltasOk);
@@ -185,13 +191,19 @@ else
     catch (OperationCanceledException) { }
 }
 
+// The measurement WINDOW ends here. Cancelling also cancels every queued and in-flight send, so
+// completions that would otherwise trickle in during teardown cannot inflate the run's numbers -
+// the first baseline's totals included exactly that drain, and read as double the true rate
+// (review finding). The window numbers are printed before teardown so they are unambiguous.
+var windowSeconds = (DateTime.UtcNow - deltaWindowStart).TotalSeconds;
+Console.WriteLine($"[DirectorSim] WINDOW END: deltasOk={Interlocked.Read(ref deltasOk)} deltasFailed={Interlocked.Read(ref deltasFailed)} over {windowSeconds:F0}s (configured duration {durationSeconds}s)");
 stopRequested.Cancel();
 await reporter;
 
 Console.WriteLine("[DirectorSim] closing connections...");
 await Parallel.ForEachAsync(sims, new ParallelOptions { MaxDegreeOfParallelism = 64 },
     async (sim, _) => await sim.DisposeAsync());
-Console.WriteLine($"SIM DONE connected={sims.Count} deltasOk={Interlocked.Read(ref deltasOk)} deltasFailed={Interlocked.Read(ref deltasFailed)} connectFailures={connectFailures}");
+Console.WriteLine($"SIM DONE connected={sims.Count} deltasOk={Interlocked.Read(ref deltasOk)} deltasFailed={Interlocked.Read(ref deltasFailed)} connectFailures={connectFailures} windowSeconds={windowSeconds:F0}");
 return 0;
 
 static int ReadInt(string variable, int fallback)
@@ -260,12 +272,13 @@ internal sealed class SimDirector : IAsyncDisposable
     }
 
     /// <summary>Mutate one session (round-robin) and push it as a delta, serialized with every other
-    /// send on this connection so sequences reach the wire in order. Returns false on failure.</summary>
-    public async Task<bool> SendOneDeltaAsync()
+    /// send on this connection so sequences reach the wire in order. Cancelled sends (the window
+    /// ended) count as failures, never as completions. Returns false on failure.</summary>
+    public async Task<bool> SendOneDeltaAsync(CancellationToken cancellation)
     {
         if (_connection.State != HubConnectionState.Connected)
             return false;
-        await _sendGate.WaitAsync();
+        await _sendGate.WaitAsync(cancellation);
         try
         {
             var session = _sessions[_deltaIndex = (_deltaIndex + 1) % _sessions.Length];
@@ -273,7 +286,7 @@ internal sealed class SimDirector : IAsyncDisposable
             session.LastActivityAt = now;
             session.ActivityState = session.ActivityState == "working" ? "waiting" : "working";
             session.StatusColor = session.ActivityState == "working" ? "blue" : "green";
-            await _connection.InvokeAsync("PushDelta", Interlocked.Increment(ref _sequence), session);
+            await _connection.InvokeAsync("PushDelta", Interlocked.Increment(ref _sequence), session, cancellation);
             return true;
         }
         catch

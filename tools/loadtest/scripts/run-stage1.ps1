@@ -26,9 +26,11 @@ if (-not (Test-Path $viewersFile)) {
     throw "No viewers.json in $OutDir. Start the LoadRig first (tools/loadtest/README.md) - it writes the key files there."
 }
 
-# The same production guard the tools carry, applied before anything is sent.
+# The same production guard the tools carry, applied before anything is sent - including the
+# metrics reset below, which carries a bearer key. Trailing dots are trimmed first, exactly as in
+# LoadTargetGuard.cs: the absolute-DNS spelling of a production host must not slip past endsWith.
 $uri = [Uri]$GatewayUrl
-$hostName = $uri.Host.ToLowerInvariant()
+$hostName = $uri.Host.ToLowerInvariant().TrimEnd('.')
 if ($hostName.EndsWith("azurewebsites.net") -or $hostName.Contains("devthrottle")) {
     throw "REFUSED: $GatewayUrl matches the production deny list. The harness never runs against production."
 }
