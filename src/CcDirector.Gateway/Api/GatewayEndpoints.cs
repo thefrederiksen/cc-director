@@ -391,6 +391,9 @@ internal static class GatewayEndpoints
 
         // Read-only view of the Communication Manager approval queue (see the phone's
         // pending drafts remotely). Step 1 of centralizing the comm queue on the Gateway.
+        // HOSTED DENY (CR-6): the queue is one process-global SQLite with no tenant anywhere, so on
+        // hosted the whole /comm-queue family is refused through the shared refusal primitive
+        // (HostedRouteDeny.ExclusiveGroup, inside CommQueueEndpoints.Map); self-host is untouched.
         CommQueueEndpoints.Map(app);
 
         // Local-machine exe/slot management (the "Exes" page). Defect 6: it gets the snooze registry so its
