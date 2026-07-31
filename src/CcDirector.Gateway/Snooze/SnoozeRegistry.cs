@@ -397,8 +397,13 @@ public sealed class SnoozeRegistry
     public bool IsExpired(string sessionId, DateTime nowUtc)
     {
         if (string.IsNullOrWhiteSpace(sessionId)) return false;
+        // Load-test Stage 0 (issue #1173): measure the WAIT to enter the process-wide gate, and count the
+        // read - this method is one leg of the fold's per-session N+1 the read-model review names.
+        var gateWaitStart = System.Diagnostics.Stopwatch.GetTimestamp();
         lock (_gate)
         {
+            Diagnostics.LoadTestMetrics.SnoozeLockWaitMs.RecordSince(gateWaitStart);
+            Diagnostics.LoadTestMetrics.SnoozeDbReadObserved();
             using var ctx = _db.CreateContext();
             var e = Find(ctx, sessionId, tracking: false);
             return e is not null
@@ -426,8 +431,12 @@ public sealed class SnoozeRegistry
     public string HoldStateFor(string sessionId, DateTime nowUtc)
     {
         if (string.IsNullOrWhiteSpace(sessionId)) return HoldStates.None;
+        // Load-test Stage 0 (issue #1173): same wait-and-count measurement as IsExpired above.
+        var gateWaitStart = System.Diagnostics.Stopwatch.GetTimestamp();
         lock (_gate)
         {
+            Diagnostics.LoadTestMetrics.SnoozeLockWaitMs.RecordSince(gateWaitStart);
+            Diagnostics.LoadTestMetrics.SnoozeDbReadObserved();
             using var ctx = _db.CreateContext();
             var e = Find(ctx, sessionId, tracking: false);
             if (e is null)
@@ -449,8 +458,12 @@ public sealed class SnoozeRegistry
     public DateTime? SnoozeUntilFor(string sessionId)
     {
         if (string.IsNullOrWhiteSpace(sessionId)) return null;
+        // Load-test Stage 0 (issue #1173): same wait-and-count measurement as IsExpired above.
+        var gateWaitStart = System.Diagnostics.Stopwatch.GetTimestamp();
         lock (_gate)
         {
+            Diagnostics.LoadTestMetrics.SnoozeLockWaitMs.RecordSince(gateWaitStart);
+            Diagnostics.LoadTestMetrics.SnoozeDbReadObserved();
             using var ctx = _db.CreateContext();
             return Find(ctx, sessionId, tracking: false)?.SnoozeUntilUtc;
         }

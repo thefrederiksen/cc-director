@@ -183,6 +183,22 @@ public sealed class DirectorHub : Hub
     /// <summary>A full snapshot: replaces the bound Director's session set (pruning anything absent).</summary>
     public void PushSnapshot(long sequence, SessionDto[] sessions)
     {
+        // Load-test Stage 0 (issue #1173): count and time every push handler - the store apply AND the
+        // synchronous fold observers below run inline on this hub invocation, so this duration is the
+        // real ingress cost. The in-flight gauge is the push-pressure number the plan requires.
+        var pushStart = Diagnostics.LoadTestMetrics.HubPushStarting();
+        try
+        {
+            PushSnapshotCore(sequence, sessions);
+        }
+        finally
+        {
+            Diagnostics.LoadTestMetrics.HubPushFinished(pushStart);
+        }
+    }
+
+    private void PushSnapshotCore(long sequence, SessionDto[] sessions)
+    {
         var directorId = RequireBoundDirector();
         // Hosted Multi-Tenancy increment 1: run the whole handler in the bound tenant's scope, so the
         // EF-writing observers below (snooze landings, spend) stamp and filter by this connection's tenant.
@@ -221,6 +237,20 @@ public sealed class DirectorHub : Hub
 
     /// <summary>A single-session delta: upserts one session for the bound Director.</summary>
     public void PushDelta(long sequence, SessionDto session)
+    {
+        // Load-test Stage 0 (issue #1173): same count-and-time as PushSnapshot above.
+        var pushStart = Diagnostics.LoadTestMetrics.HubPushStarting();
+        try
+        {
+            PushDeltaCore(sequence, session);
+        }
+        finally
+        {
+            Diagnostics.LoadTestMetrics.HubPushFinished(pushStart);
+        }
+    }
+
+    private void PushDeltaCore(long sequence, SessionDto session)
     {
         var directorId = RequireBoundDirector();
         if (session is null || string.IsNullOrEmpty(session.SessionId))
@@ -307,12 +337,15 @@ public sealed class DirectorHub : Hub
 
     public override Task OnConnectedAsync()
     {
+        // Load-test Stage 0 (issue #1173): the held-socket count, one of the numbers the plan requires.
+        Diagnostics.LoadTestMetrics.HubConnectionOpened();
         FileLog.Write($"[DirectorHub] connected: conn={Short(Context.ConnectionId)}");
         return base.OnConnectedAsync();
     }
 
     public override Task OnDisconnectedAsync(Exception? exception)
     {
+        Diagnostics.LoadTestMetrics.HubConnectionClosed();
         var directorId = BoundDirectorId();
         var tenant = BoundTenant();
         if (directorId is not null && tenant is { } t)
