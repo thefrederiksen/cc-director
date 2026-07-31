@@ -27,31 +27,51 @@ namespace CcDirector.Core.Wingman;
 /// OBSERVE-ONLY: it never changes session behavior. Capped per session so it cannot grow
 /// unbounded; once the cap is hit, recording for that session stops (the early/most-varied
 /// part of a session is the interesting part).
+///
+/// CAPTURE and PURGE are two different lifecycles, deliberately. Capture - writing new frames -
+/// is what the visible setting switches. Purge - deleting a removed session's recording directory -
+/// is not optional and does not follow the setting: recordings made while capture WAS on (the old
+/// default-on release, or a setting since switched off) must not outlive their session just because
+/// nothing is capturing today. So the host constructs and starts this recorder unconditionally, the
+/// removal subscription is always live, and only the capture side is gated.
 /// </summary>
 public sealed class TerminalSessionRecorder : IDisposable
 {
     private readonly SessionManager _sessionManager;
     private readonly string _root;
     private readonly long _maxBytesPerSession;
+    private readonly bool _captureEnabled;
     private readonly ConcurrentDictionary<Guid, Recorder> _recorders = new();
     private bool _started;
     private bool _disposed;
 
-    public TerminalSessionRecorder(SessionManager sessionManager, string? root = null, long maxBytesPerSession = 8L * 1024 * 1024)
+    public TerminalSessionRecorder(SessionManager sessionManager, string? root = null, long maxBytesPerSession = 8L * 1024 * 1024, bool captureEnabled = true)
     {
         _sessionManager = sessionManager;
         _root = root ?? CcStorage.SessionRecordings();
         _maxBytesPerSession = maxBytesPerSession;
+        _captureEnabled = captureEnabled;
     }
 
     public void Start()
     {
         if (_started) return;
         _started = true;
+
+        // Purge is subscribed before anything else and regardless of the capture setting - see the
+        // class note: a pre-existing recording must be deleted with its session even on an install
+        // where capture is off.
+        _sessionManager.OnSessionRemoved += OnSessionRemoved;
+
+        if (!_captureEnabled)
+        {
+            FileLog.Write($"[TerminalSessionRecorder] capture is OFF; purge-on-removal stays active (root={_root})");
+            return;
+        }
+
         try { Directory.CreateDirectory(_root); } catch (Exception ex) { FileLog.Write($"[TerminalSessionRecorder] cannot create {_root}: {ex.Message}"); }
         FileLog.Write($"[TerminalSessionRecorder] Start (root={_root}, capPerSession={_maxBytesPerSession / (1024 * 1024)}MB)");
         _sessionManager.OnSessionCreated += OnSessionCreated;
-        _sessionManager.OnSessionRemoved += OnSessionRemoved;
         foreach (var s in _sessionManager.ListSessions())
             Wire(s);
     }

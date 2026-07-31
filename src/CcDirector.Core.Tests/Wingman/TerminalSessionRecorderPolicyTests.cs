@@ -115,4 +115,36 @@ public sealed class TerminalSessionRecorderPolicyTests : IDisposable
         }
         finally { manager.Dispose(); }
     }
+
+    /// <summary>
+    /// Capture and purge are two different lifecycles: switching capture OFF must not switch the
+    /// purge off with it. A recording made while capture WAS on (the old default-on release) still
+    /// belongs to its session, and is deleted with it - while the capture-off recorder writes
+    /// nothing new for the session that lived and died here.
+    /// </summary>
+    [Fact]
+    public void Capture_off_still_purges_a_preexisting_recording_and_records_nothing_new()
+    {
+        var recordings = Path.Combine(_root, "recordings-capture-off");
+        var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
+        using var recorder = new TerminalSessionRecorder(manager, root: recordings, captureEnabled: false);
+        try
+        {
+            recorder.Start();
+            var session = manager.CreateSession(Path.GetTempPath());
+
+            var sessionDir = Path.Combine(recordings, session.Id.ToString("N"));
+            Directory.CreateDirectory(sessionDir);
+            File.WriteAllText(Path.Combine(sessionDir, "grid.jsonl"), "{\"rows\":[\"left by the default-on release\"]}\n");
+
+            manager.RemoveSession(session.Id);
+
+            Assert.False(Directory.Exists(sessionDir),
+                "capture is off, but the purge must still delete a removed session's recording");
+            // And nothing NEW was recorded: the only entry ever under the root was the arranged one.
+            Assert.False(Directory.Exists(recordings) && Directory.EnumerateFileSystemEntries(recordings).Any(),
+                "capture is off, so the recorder must not have written anything of its own");
+        }
+        finally { manager.Dispose(); }
+    }
 }

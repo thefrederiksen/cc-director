@@ -881,18 +881,22 @@ public sealed class ControlApiHost : IAsyncDisposable
         // state) to build the ground-truth corpus for offline analysis/learning. Observe-only and
         // capped per session. See docs/wingman/WINGMAN.md.
         //
-        // OFF by default, and switched on by a visible setting - session_recording.enabled in
-        // config.json, or the CC_DIRECTOR_RECORD_SESSIONS override. It used to run on every install
+        // Capture is OFF by default, and switched on by a visible setting - session_recording.enabled
+        // in config.json, or the CC_DIRECTOR_RECORD_SESSIONS override. It used to run on every install
         // unless someone found an environment variable mentioned only in a source comment, which made
         // an internal engineering corpus - every screen every agent has drawn, secrets included, with
         // no age limit - an invisible product default. What we collect for our own benefit has to be
         // something the user can see they turned on.
-        if (Core.Configuration.SessionRecordingConfig.IsEnabled())
-        {
-            _sessionRecorder = new TerminalSessionRecorder(_sessionManager);
-            _sessionRecorder.Start();
+        //
+        // The recorder itself is constructed and started UNCONDITIONALLY, because purge-on-removal
+        // must not follow the capture setting: when this host was only created with capture on, an
+        // install that upgraded from the default-on release kept every pre-existing recording forever -
+        // the sessions that owned them were removed while no purge handler existed to notice.
+        var captureEnabled = Core.Configuration.SessionRecordingConfig.IsEnabled();
+        _sessionRecorder = new TerminalSessionRecorder(_sessionManager, captureEnabled: captureEnabled);
+        _sessionRecorder.Start();
+        if (captureEnabled)
             FileLog.Write("[ControlApiHost] Terminal session recording is ON (session_recording.enabled)");
-        }
 
         // Per-turn review log: one record each time a session flips Working -> needs-you
         // (our detector's transition, no hooks). Terminal + what the Wingman said/did, 7-day
