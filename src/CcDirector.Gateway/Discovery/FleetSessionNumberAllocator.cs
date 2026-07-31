@@ -170,8 +170,10 @@ public sealed class FleetSessionNumberAllocator
             if (pool.InUse.Contains(number))
             {
                 FileLog.Write($"[FleetSessionNumberAllocator] Adopt: {number} already held by another session; {sessionId} keeps its offline number (pre-existing collision, tenant={tenant.ToLogString()})");
-                // Still record ownership so a later Allocate for this session is idempotent and a
-                // ReleaseForDirector can clean it up; the number simply is not exclusively ours.
+                // Still record ownership so a later Allocate for this session is idempotent; the number
+                // simply is not exclusively ours. (It used to say a ReleaseForDirector would clean this up.
+                // Nothing calls that any more - see its remarks - so the ownership record is what a future
+                // reclaim would read, not something that gets tidied on eviction today.)
                 pool.BySession[sessionId] = new Assignment(number, directorId ?? "");
                 return;
             }
@@ -205,10 +207,10 @@ public sealed class FleetSessionNumberAllocator
 
     /// <summary>
     /// Free every number owned by <paramref name="directorId"/> IN <paramref name="tenant"/>'s partition.
-    /// Called when a Director is removed from the registry (graceful unregister, or swept after its heartbeat
-    /// went stale / its endpoint stayed unreachable past the evict window) - a Director that died without
-    /// releasing its sessions' numbers. This is tied to the registry's own liveness decision, so it never
-    /// fires for a Director that is merely momentarily unreachable.
+    ///
+    /// NOT CALLED FROM ANYWHERE IN PRODUCTION - see the remarks. It USED TO be called when a Director was
+    /// removed from the registry, and that wiring is deleted; this summary said so in the present tense
+    /// long after it stopped being true, which is precisely how a deleted cleanup gets restored.
     ///
     /// TENANT-SCOPED (audit H2). A director id is unique only within its tenant, so the tenant MUST be
     /// supplied. Only the named tenant's partition is touched, so one tenant's removal can never free

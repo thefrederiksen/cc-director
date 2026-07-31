@@ -192,16 +192,25 @@ public sealed class DirectorRegistry : IDisposable
     /// thread-pool threads with NO enclosing try/catch. An exception thrown by a subscriber there is
     /// UNHANDLED, so it does not merely fail the removal - it terminates the whole Gateway process.
     ///
-    /// Not hypothetical: a subscriber writes the tenant-scoped snooze store, and when that store's database
-    /// was unavailable the throw came straight up this path and took the process down - observed as a test
-    /// run that ABORTED partway through while still reporting exit code 0. Failing to clear one removed
-    /// Director's snoozes is a bounded, cosmetic loss; losing the Gateway is not. The failure is logged
-    /// LOUD - this catches to keep the process alive, not to hide the fault.
+    /// Not hypothetical, though it is now HISTORY: a subscriber used to write the tenant-scoped snooze
+    /// store, and when that store's database was unavailable the throw came straight up this path and took
+    /// the process down - observed as a test run that ABORTED partway through while still reporting exit
+    /// code 0. That subscriber is deleted (see below), so this particular fault cannot recur; the guard
+    /// stays because the hazard is structural and belongs to the event, not to any one subscriber. The
+    /// failure is logged LOUD - this catches to keep the process alive, not to hide the fault.
     ///
     /// Each subscriber is invoked INDEPENDENTLY. A plain Invoke on a multicast delegate stops at the first
     /// handler that throws, so one faulting subscriber would silently deprive every later one of the event
-    /// (the session-number release and the roster-cache forget are on this list) - trading a process crash
-    /// for a quiet partial removal, which is harder to notice and just as wrong.
+    /// - trading a process crash for a quiet partial removal, which is harder to notice and just as wrong.
+    /// That matters even though there is currently only ONE permanent subscriber, because the next one
+    /// added must not be able to suppress it.
+    ///
+    /// WHAT SUBSCRIBES TODAY, so this document cannot be read as a list of cleanups to maintain: exactly
+    /// one permanent subscriber, <c>PushedSessionStore.ForgetIfDisconnected</c>, plus a transient listener
+    /// on the fleet event stream that only enqueues a notification and destroys nothing. The session-number
+    /// release and the snooze clear that used to be here are DELETED (epic #1159 step A, inspection 2
+    /// finding 1) - their liveness check could not be made atomic with their destruction, so a Director
+    /// reconnecting in between was destroyed while live. Do not add them back.
     /// </summary>
     /// <remarks>
     /// Takes the <see cref="DirectorKey"/> the removal already resolved, so the tenant reaches the
@@ -622,8 +631,12 @@ public sealed class DirectorRegistry : IDisposable
                 // flaps the roster.
                 //
                 // Epic #1159 step A: the horizon is a DAY, not a minute. Passing it is the one elapsed-time
-                // event allowed to remove a session, and it is the event this whole removal cascade hangs off -
-                // session numbers, the snooze rows and the pushed cache are all released here.
+                // event allowed to remove a session - and it removes the machine from the READ MODEL and
+                // nothing else. There is no removal cascade: the session-number release and the snooze clear
+                // that once hung here are DELETED (inspection 2, finding 1), because a liveness check followed
+                // by a destructive action is two operations and a Director reconnecting between them was
+                // destroyed anyway. The single subscriber is PushedSessionStore.ForgetIfDisconnected, which is
+                // one atomic operation under the store's membership gate. Do not restore the others here.
                 if (kv.Value.Source == "http" || kv.Value.Source == "stream")
                 {
                     var lastSeen = kv.Value.LastSeen ?? DateTime.MinValue;

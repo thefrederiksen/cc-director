@@ -113,9 +113,13 @@ describe("roster keep-and-mark retention merge", () => {
   // it past the horizon and the first successful empty envelope after a restart would delete everything
   // at once. The five-second test was green for both the working design and the broken one.
   //
-  // What is true: the bound is the phone's own clock, and it counts OBSERVED ABSENCE. The first envelope
-  // that omits a Director starts the clock and can never delete; deletion needs a second one, a horizon
-  // later, still omitting it. The long-gap test below is the one that separates the two designs.
+  // What is true, stated at exactly its real strength (inspection 4, finding 1 corrected the version of
+  // this paragraph that said "counts OBSERVED ABSENCE" - it does not): the first envelope that omits a
+  // Director starts the clock and can never delete, and deletion needs a second one, a horizon later,
+  // still omitting it. After that first omission the clock is plain elapsed wall time, so a suspended
+  // page still ages it. That is accepted because the deletion is recoverable, which the last test in this
+  // group pins rather than assumes. The long-gap test below separates this design from the previous one;
+  // it does not claim the suspension hole is gone.
   it("keeps the cards through a Gateway restart, when the envelope suddenly names nobody", () => {
     const t0 = 1_000_000;
     const first = mergeRosterRetention(emptyRetentionCache(), envelope([session("s1", "d1")], [director("d1", REACHABILITY_ONLINE)]), t0);
@@ -123,6 +127,20 @@ describe("roster keep-and-mark retention merge", () => {
     const second = mergeRosterRetention(first.cache, envelope([], []), t0 + 5_000);
     expect(second.roster.sessions.map((s) => s.sessionId)).toEqual(["s1"]);
     expect(second.cache.byDirector.get("d1")?.map((s) => s.sessionId)).toEqual(["s1"]);
+  });
+
+  // Inspection 4, finding 2. This clock does not START until the Gateway has already stopped naming the
+  // Director - which is after the Gateway's own twenty-four-hour horizon - so whatever is set here runs
+  // AFTER that day, not alongside it. Mirroring the Gateway's day therefore gave the phone nearly
+  // forty-eight hours while every record promised twenty-four.
+  //
+  // The only job this clock has is telling a Gateway RESTART from a real eviction, and a restart's
+  // pre-Hello window is seconds. So it must stay small enough that the total is the configured day plus a
+  // rounding error. This pins the SIZE, not the exact value: ten minutes may become five or fifteen, but
+  // anything approaching a day is the defect coming back and this reddens before it ships.
+  it("keeps the client horizon far below the Gateway's day, so the two do not stack into two days", () => {
+    expect(RETENTION_HORIZON_MS).toBeLessThanOrEqual(15 * 60 * 1000);
+    expect(RETENTION_HORIZON_MS).toBeGreaterThan(60 * 1000);   // still long enough to outlast a restart
   });
 
   // THE TEST THAT SEPARATES THE TWO DESIGNS (inspection 3, finding 2). The phone was suspended, or its
@@ -147,6 +165,34 @@ describe("roster keep-and-mark retention merge", () => {
     const later = mergeRosterRetention(observedMissing.cache, envelope([], []), t0 + 60_000 + RETENTION_HORIZON_MS + 1);
     expect(later.roster.sessions).toEqual([]);
     expect(later.cache.byDirector.has("d1")).toBe(false);
+  });
+
+  // THE PROPERTY THE WHOLE DESIGN RESTS ON (inspection 4, finding 1). The client clock is allowed to be a
+  // crude wall-clock timer - and to delete on time the phone did not observe - only because deleting a
+  // retained card loses NOTHING. The cache is a display convenience, not a store of record: the sessions
+  // are on the Gateway, and the next envelope that names the machine restores them from Gateway data,
+  // which is fresher than the copy that was dropped.
+  //
+  // That claim was made in a comment before it was checked. It is checked here, because a recovery
+  // property nobody exercises is exactly the kind of reassurance this mission keeps finding to be false.
+  it("restores a deleted card from the Gateway as soon as the machine is named again", () => {
+    const t0 = 1_000_000;
+    const first = mergeRosterRetention(emptyRetentionCache(), envelope([session("s1", "d1")], [director("d1", REACHABILITY_ONLINE)]), t0);
+    const observedMissing = mergeRosterRetention(first.cache, envelope([], []), t0 + 1_000);
+    const deleted = mergeRosterRetention(observedMissing.cache, envelope([], []), t0 + 1_000 + RETENTION_HORIZON_MS + 1);
+    expect(deleted.roster.sessions).toEqual([]);
+    expect(deleted.cache.byDirector.has("d1")).toBe(false);
+
+    // The machine comes back. The Gateway serves its rows and the card returns - from Gateway data, with
+    // no help from the cache that was just emptied.
+    const back = mergeRosterRetention(deleted.cache, envelope([session("s1", "d1")], [director("d1", REACHABILITY_ONLINE)]), t0 + 1_000 + RETENTION_HORIZON_MS + 2);
+    expect(back.roster.sessions.map((s) => s.sessionId)).toEqual(["s1"]);
+    expect(back.roster.marks.size).toBe(0);   // a live row, not a retained one
+
+    // ...and it works from a genuinely empty cache too, which is what makes it a recovery property of the
+    // MERGE rather than an accident of what happened to survive in this particular cache.
+    const coldStart = mergeRosterRetention(emptyRetentionCache(), envelope([session("s1", "d1")], [director("d1", REACHABILITY_ONLINE)]), t0);
+    expect(coldStart.roster.sessions.map((s) => s.sessionId)).toEqual(["s1"]);
   });
 
   // Coming back resets the clock. A machine that reappears and goes away again is starting a NEW absence,

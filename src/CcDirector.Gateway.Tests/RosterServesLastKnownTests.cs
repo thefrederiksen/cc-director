@@ -362,8 +362,13 @@ public sealed class RosterServesLastKnownTests
 
     /// <summary>
     /// Hosts the real Gateway routes over HTTP with the given push store - the same production
-    /// <see cref="GatewayEndpoints.Map"/> the shipped Gateway runs - and wires the removal cascade exactly as
+    /// <see cref="GatewayEndpoints.Map"/> the shipped Gateway runs - and wires removal exactly as
     /// <c>GatewayHost</c> does, so an eviction really does travel from the registry sweep into the store.
+    ///
+    /// "Exactly as GatewayHost does" is now ONE subscriber, <c>ForgetIfDisconnected</c>, not a cascade; this
+    /// summary called it a cascade after the other two were deleted (inspection 2, finding 1). If a second
+    /// subscriber is ever added to <c>GatewayHost</c>, it must be added here too or this harness silently
+    /// stops matching the shipped composition - which is the whole reason it wires the real thing.
     /// </summary>
     private static async Task WithGateway(
         PushedSessionStore store,

@@ -132,6 +132,12 @@ public sealed class SnoozeLifecycleLedgerTests : IDisposable
         Assert.Equal(ActivityCauses.SessionExit, ended.Cause);
     }
 
+    // NOTE THE NAME, WHICH NO LONGER DESCRIBES A PRODUCTION EVENT. Nothing calls ClearForDirector on a
+    // director removal any more - that subscriber was deleted with the eviction cascade (epic #1159 step A,
+    // inspection 2 finding 1), so the DirectorRemoved ledger cause below is reachable only by calling the
+    // primitive directly, as this test does. The ledger behaviour is still worth pinning for whatever
+    // future cleanup calls it; it is NOT evidence that an eviction clears snoozes, and it must not be read
+    // as a reason to re-wire it.
     [Fact]
     public void A_director_removal_records_one_ended_event_per_entry()
     {

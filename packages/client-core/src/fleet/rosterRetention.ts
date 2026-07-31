@@ -81,26 +81,56 @@ export interface RetentionCache {
    * over the horizon and delete every card at once: precisely the failure the client clock was introduced
    * to prevent.
    *
-   * The stamp therefore measures the thing it is used for. It STARTS on the first successful envelope
-   * that omits the Director and is CLEARED the moment one names it again, so a card can only be dropped
-   * after the phone has actually watched that Director be absent across the horizon. No observations
-   * means no stamp means no deletion - a phone that saw nothing has learned nothing.
+   * So the stamp STARTS on the first successful envelope that omits the Director, and is CLEARED the
+   * moment one names it again. One response can therefore never delete anything, which was the whole of
+   * inspection 3's finding.
    *
-   * The residual, stated rather than argued away: two observed omissions a horizon apart with the page
-   * suspended in between will still delete, even though the machine may have been present for most of
-   * that gap. That is narrower than what it replaces (it needs two successful envelopes, so no single
-   * response can ever empty the phone) and it fails recoverably - the card returns as soon as the
-   * machine does. Closing it entirely needs an eviction tombstone on the wire, which does not exist.
+   * WHAT THIS MEASURES, SAID PLAINLY, BECAUSE AN EARLIER VERSION OF THIS COMMENT OVERCLAIMED IT
+   * (inspection 4, finding 1). It measures ELAPSED WALL TIME SINCE THE FIRST OBSERVED ABSENCE. It does
+   * NOT measure observed absence, and it does not count observations or require continuous polling. Once
+   * the stamp is set, a suspended page or a dead network ages it exactly as fast as real absence does,
+   * and the first successful envelope after resuming can delete on the strength of time in which the
+   * phone learned nothing. The earlier wording claimed the phone had "watched that Director be absent
+   * across the horizon", and that is simply not what the code does. The fix moved the suspension hole
+   * from "after the last named response" to "after the first omitted response"; it did not remove it.
+   *
+   * THE REASON THAT IS ACCEPTABLE, and the reason no observation-counting scheme is built here: deleting
+   * a retained card is NOT DESTRUCTIVE. This cache is a display convenience, not a store of record.
+   * Nothing is lost with it - the sessions live on the Gateway, and the very next envelope that names
+   * that machine restores every one of its rows from Gateway data, which is better data than the copy
+   * that was dropped. The worst case is a phone briefly showing fewer sessions after a resume until the
+   * Directors re-Hello, which is seconds. Weigh that against an observation counter, which is real state,
+   * on the client, that can itself be wrong in ways nothing here would notice.
+   *
+   * A test beside this file pins that recovery property, so "not destructive" is checked rather than
+   * asserted in a comment.
    */
   missingSince: Map<string, number>;
 }
 
 /**
- * How long the phone keeps a Director's cards after the envelope stops naming it. Mirrors the Gateway's
- * own default eviction horizon so the two agree about how long a machine may be gone, while remaining an
- * independent clock - deliberately, since the phone cannot observe the Gateway's.
+ * How long the phone keeps a Director's cards after the envelope stops naming it AT ALL.
+ *
+ * TEN MINUTES, NOT A DAY, and the size is the whole point (inspection 4, finding 2). This used to mirror
+ * the Gateway's twenty-four-hour eviction horizon, on the reasoning that the two clocks should "agree
+ * about how long a machine may be gone". They do not stack that way. While a machine is merely offline
+ * the Gateway KEEPS NAMING it in the envelope, which clears this stamp on every poll, so this clock does
+ * not even start until the Gateway's own horizon has already expired and it has stopped naming the
+ * machine. A day here therefore ran a day AFTER the Gateway's day: a machine that left at midday was
+ * still on the phone nearly forty-eight hours later, while the record promised the configured
+ * twenty-four. The bound was real but it was not the documented one.
+ *
+ * What this clock is actually for is much smaller: telling a Gateway RESTART apart from a real eviction.
+ * Both produce an envelope that names nobody, and the wire carries no eviction tombstone to distinguish
+ * them, so the phone waits a little before believing the silence. A restart's pre-Hello window is
+ * SECONDS - the Directors reconnect and reseed almost immediately - so ten minutes is already generous by
+ * two orders of magnitude, and every extra minute buys nothing while pushing the real bound further past
+ * what the record says.
+ *
+ * The total the owner sees is therefore the configured Gateway horizon plus ten minutes: the documented
+ * day plus a rounding error, instead of a second day.
  */
-export const RETENTION_HORIZON_MS = 24 * 60 * 60 * 1000;
+export const RETENTION_HORIZON_MS = 10 * 60 * 1000;
 
 export function emptyRetentionCache(): RetentionCache {
   return { byDirector: new Map<string, SessionDto[]>(), missingSince: new Map<string, number>() };
@@ -265,16 +295,21 @@ export function mergeRosterRetention(
     // have deleted every card on the first successful poll after a restart, instantly and silently. That is
     // worse than the unbounded retention it was fixing.
     //
-    // CORRECTED AGAIN after inspection 3, finding 2. The bound is this device's own clock, but it must
-    // count OBSERVED ABSENCE, not elapsed time. A last-named stamp counted both, so a suspended page or a
-    // long outage aged it while the phone was watching nothing, and the first successful empty envelope
-    // after a restart could arrive already past the horizon and delete everything at once - the very
-    // failure the client clock was added to prevent, arriving by a different road.
+    // CORRECTED AGAIN after inspection 3, finding 2. The stamp is taken on the first OMISSION rather than
+    // on the last naming, so no single response can delete: the first omission only starts the clock, and
+    // a deletion needs a second successful envelope, still not naming the Director, a horizon later.
     //
-    // A Director is stamped when an envelope is successfully received and does NOT name it, and the stamp
-    // is cleared above the moment one does. So the first omission only STARTS the clock - it can never
-    // delete - and a deletion requires a second successful envelope, still not naming it, a horizon
-    // later. A phone that received nothing has learned nothing and drops nothing.
+    // WHAT IT MEASURES, WITHOUT THE FLATTERY (inspection 4, finding 1). Elapsed wall time since that first
+    // observed absence - NOT observed absence. Once the stamp is set, suspension and network loss age it
+    // just as fast as real absence, so a resume can delete on time nobody watched. That hole is not
+    // closed, it is moved: from "after the last named response" to "after the first omitted one".
+    //
+    // It is left open ON PURPOSE rather than fixed with an observation counter, because the deletion is
+    // not a loss. This cache is a display convenience; the sessions live on the Gateway, and the next
+    // envelope naming that machine restores every row from Gateway data. The cost of being wrong here is
+    // a phone showing fewer cards for the seconds it takes Directors to re-Hello. An observation counter
+    // would be new client state that can be wrong in ways nothing here would catch - a worse trade for a
+    // recoverable symptom.
     //
     // A Director the envelope DOES name but serves no rows for is not missing at all: the Gateway still
     // knows the machine and is simply saying nothing about it. It is never stamped, so it retains until

@@ -21,9 +21,15 @@ namespace CcDirector.Gateway.Tests;
 /// Epic #1159 step A moved the subscriber. The last-known-good grace-window cache these tests used to
 /// observe is deleted - it was the second staleness authority in the roster path, and the one that declared
 /// a machine offline and dropped its sessions. The roster is now served straight from
-/// <see cref="PushedSessionStore"/>, whose entries deliberately survive a disconnect, so IT is what the
-/// removal cascade must forget and IT is where the isolation property now has to hold. The property under
-/// test is unchanged; only the object holding the sessions moved.
+/// <see cref="PushedSessionStore"/>, whose entries deliberately survive a disconnect, so IT is what a
+/// removal must forget and IT is where the isolation property now has to hold. The property under test is
+/// unchanged; only the object holding the sessions moved.
+///
+/// There is no removal CASCADE to speak of any more - an earlier version of this paragraph said there was.
+/// Eviction runs exactly one operation, <c>PushedSessionStore.ForgetIfDisconnected</c>; the session-number
+/// release and the snooze clear were deleted (inspection 2, finding 1). That makes this store the only
+/// place the per-tenant isolation of a removal can be observed, which is why these tests matter more now
+/// than when they were written, not less.
 ///
 /// WHAT EACH TEST HOLDS DOWN, and why both halves are needed. Survival alone proves nothing - a forget that
 /// removed nothing at all would also leave the other tenant intact - so every test here asserts the

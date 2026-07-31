@@ -962,6 +962,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // Without this the roster would keep every machine that ever connected, which is the unbounded leak
         // the horizon exists to stop. With it, and with the other two steps deleted, the worst an eviction can
         // do to a machine that is quietly back is nothing at all.
+        //
+        // THIS LINE IS THE WHOLE OF IT. One permanent subscriber. If you are here to add a second, read the
+        // deletion records above it first - the two that were removed were removed because their guard could
+        // not be made atomic with their destruction, and the tests will redden if they come back.
         Registry.OnDirectorRemoved += removal => PushedSessions.ForgetIfDisconnected(removal.Tenant, removal.DirectorId);
         LauncherConnections = new Streaming.LauncherConnectionRegistry();
         // Gateway Cleanup: the tunnel is mandatory; the streamMode parameter is ignored and retained only for existing test call sites (removed with the test rewrite).

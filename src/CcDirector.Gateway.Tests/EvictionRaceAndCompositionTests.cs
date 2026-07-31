@@ -11,9 +11,17 @@ namespace CcDirector.Gateway.Tests;
 /// and the horizon the owner configures must be the one the SHIPPED Gateway uses.
 ///
 /// WHY THESE ARE ONE FILE. Both are about the same gap between a decision and its consequences. The sweep
-/// decides a machine is gone; three destructive subscribers then act on that decision - releasing session
-/// numbers, forgetting the pushed cache, deleting snoozes. Everything here is about that interval, and about
-/// whether the thing being decided is even the thing the owner configured.
+/// decides a machine is gone, and something then acts on that decision. Everything here is about that
+/// interval, and about whether the thing being decided is even the thing the owner configured.
+///
+/// THAT GAP IS NOW CLOSED BY REMOVING THE WORK, NOT BY GUARDING IT. When this file was written the sweep
+/// fed THREE destructive subscribers - releasing session numbers, forgetting the pushed cache, deleting
+/// snoozes - and this summary described them in the present tense long after two were deleted. Today
+/// exactly one thing acts on the decision, <c>PushedSessionStore.ForgetIfDisconnected</c>, and it is a
+/// single atomic operation under the store's membership gate rather than a check followed by an act. The
+/// other two are gone for good (inspection 2, finding 1), and
+/// <see cref="EvictionLeavesSnoozesAndNumbersAlone_OnTheRealHost"/> below exists to redden if anyone
+/// restores either one.
 ///
 /// WHAT THE SEAM TEST DOES AND DOES NOT PROVE. <see cref="DirectorRegistry.OnSweepJudgedForTest"/> fires
 /// inside the exact window finding 1 describes, and a reconnect driven from it proves the ORDERING window
@@ -149,9 +157,11 @@ public sealed class EvictionRaceAndCompositionTests : IDisposable
     }
 
     // ---------------------------------------------------------------------------------------------------
-    // Finding 1b: the window between the removal DECISION and the destructive subscribers running.
-    // These drive the REAL GatewayHost, so the subscribers under test are the shipped ones. A hand-wired
-    // harness would have proved only that a guard works when a test remembers to wire it.
+    // Finding 1b: the window between the removal DECISION and the destruction acting on it. That window is
+    // now closed by there BEING no separate act - eviction runs one atomic operation rather than the three
+    // destructive subscribers this comment used to name. These drive the REAL GatewayHost, so what is under
+    // test is the shipped composition. A hand-wired harness would have proved only that a guard works when
+    // a test remembers to wire it.
     // ---------------------------------------------------------------------------------------------------
 
     [Fact]
