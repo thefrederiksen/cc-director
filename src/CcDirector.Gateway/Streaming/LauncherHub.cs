@@ -73,7 +73,9 @@ public sealed class LauncherHub : Hub
         Context.Items[MachineNameItemKey] = machine;
         Context.Items[TenantIdItemKey] = tenant;
         _registry.RegisterConnection(tenant, machine, Context.ConnectionId);
-        FileLog.Write($"[LauncherHub] Hello: tenant={tenant.Value}, machine={machine} bound to conn={Short(Context.ConnectionId)} (port={hello.Port}, version={hello.Version})");
+        // ToLogString, never Value: on hosted the raw account tenant id must not reach a log (the data
+        // map promises hashed tenant ids in service logs, and this line was one of two that broke it).
+        FileLog.Write($"[LauncherHub] Hello: tenant={tenant.ToLogString()}, machine={machine} bound to conn={Short(Context.ConnectionId)} (port={hello.Port}, version={hello.Version})");
     }
 
     /// <summary>The tenant that owns this connection, from the authenticated device key (never the payload).

@@ -129,6 +129,65 @@ public sealed class PromptEndpointsTests : IAsyncLifetime
         Assert.Equal(new[] { "SOREN_NORTH", "SOREN_LAPTOP" }, body.Records.Select(r => r.Machine));
     }
 
+    // ---- Export and delete: the account data rights (CR-3b) ----------------------------------------
+
+    [Fact]
+    public async Task Export_downloads_the_whole_history_regardless_of_age()
+    {
+        var now = DateTime.UtcNow;
+        await _client.PostAsJsonAsync("/prompts", new PromptIngestRequest
+        {
+            Records = new[] { Rec(now.AddDays(-200), "long ago"), Rec(now, "just now") },
+        });
+
+        var resp = await _client.GetAsync("/prompts/export");
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal("application/json", resp.Content.Headers.ContentType!.MediaType);
+        Assert.Contains("prompt-history-", resp.Content.Headers.ContentDisposition!.FileName);
+        var body = await resp.Content.ReadFromJsonAsync<ExportResponse>();
+        Assert.Equal(2, body!.Count);
+        Assert.Equal(new[] { "long ago", "just now" }, body.Records.Select(r => r.Text));
+        Assert.True(body.ExportedAtUtc > now.AddMinutes(-1));
+    }
+
+    [Fact]
+    public async Task Delete_erases_the_history_and_a_read_afterwards_finds_nothing()
+    {
+        var now = DateTime.UtcNow;
+        await _client.PostAsJsonAsync("/prompts", new PromptIngestRequest
+        {
+            Records = new[] { Rec(now.AddDays(-3), "old"), Rec(now, "new") },
+        });
+
+        var del = await _client.DeleteAsync("/prompts");
+
+        Assert.Equal(HttpStatusCode.OK, del.StatusCode);
+        var ack = await del.Content.ReadFromJsonAsync<DeleteResponse>();
+        Assert.Equal(2, ack!.DeletedFiles);
+
+        // The proof the exit row asks for: the rows are GONE, from both the ranged read and the export.
+        var after = await _client.GetFromJsonAsync<PromptsResponse>($"/prompts?from={Day(now.AddDays(-3))}&to={Day(now)}");
+        Assert.Equal(0, after!.Count);
+        var export = await (await _client.GetAsync("/prompts/export")).Content.ReadFromJsonAsync<ExportResponse>();
+        Assert.Equal(0, export!.Count);
+    }
+
+    [Fact]
+    public async Task Deleting_an_empty_history_succeeds_with_nothing_to_do()
+    {
+        var del = await _client.DeleteAsync("/prompts");
+
+        Assert.Equal(HttpStatusCode.OK, del.StatusCode);
+        Assert.Equal(0, (await del.Content.ReadFromJsonAsync<DeleteResponse>())!.DeletedFiles);
+    }
+
     /// <summary>The GET /prompts body shape.</summary>
     private sealed record PromptsResponse(int Count, IReadOnlyList<PromptRecord> Records);
+
+    /// <summary>The GET /prompts/export body shape.</summary>
+    private sealed record ExportResponse(DateTime ExportedAtUtc, int Count, IReadOnlyList<PromptRecord> Records);
+
+    /// <summary>The DELETE /prompts body shape.</summary>
+    private sealed record DeleteResponse(int DeletedFiles);
 }

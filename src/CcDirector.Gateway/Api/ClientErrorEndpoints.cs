@@ -42,7 +42,8 @@ internal static class ClientErrorEndpoints
     ///  logged once), so a render-loop error cannot flood the Gateway log.</summary>
     private const int MaxReportsPerDevicePerMinute = 30;
 
-    private sealed record ClientErrorRecord(
+    // Internal (not private) so the durable-line regression test can build hostile records directly.
+    internal sealed record ClientErrorRecord(
         DateTime AtUtc, string DeviceHash, string Surface, string Page, string Message, string Detail, string Stack);
 
     private sealed class TenantRing
@@ -52,6 +53,30 @@ internal static class ClientErrorEndpoints
     }
 
     private static readonly ConcurrentDictionary<TenantId, TenantRing> Rings = new();
+
+    /// <summary>
+    /// The one durable log line for a report. Internal so the regression test can post hostile content
+    /// into every client-controlled field and assert none of it reaches this line. NOTHING
+    /// client-supplied is ever interpolated verbatim - not even values that look like identifiers,
+    /// because a character filter cannot tell a route token from a pasted secret that happens to fit
+    /// the same alphabet (the review's fifth pass: "hunter2" passes any structural shape test).
+    /// Surface and page are logged as one-way hash tags: the same value always produces the same tag,
+    /// so durable lines still correlate with each other and with the ring entry the account can read,
+    /// while the log itself carries no content.
+    /// </summary>
+    internal static string DurableLine(TenantId tenant, ClientErrorRecord record)
+        => $"[ClientError] tenant={tenant.ToLogString()} device={record.DeviceHash} "
+            + $"surface={HashTag(record.Surface)} page={HashTag(record.Page)} "
+            + $"messageLength={record.Message.Length} detailLength={record.Detail.Length}";
+
+    /// <summary>A content-free, correlatable rendering of one client-supplied value: its length and a
+    /// short one-way hash (the same form <see cref="TenantId.ToLogString"/> uses). Never the value.</summary>
+    internal static string HashTag(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return "(empty)";
+        var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(value));
+        return $"h#{Convert.ToHexString(hash, 0, 4).ToLowerInvariant()}:{value.Length}";
+    }
 
     // The per-device rate window: device hash -> (window start, count in window). Pruned lazily.
     private static readonly ConcurrentDictionary<string, (DateTime WindowStartUtc, int Count)> RateWindows = new();
@@ -92,12 +117,15 @@ internal static class ClientErrorEndpoints
                 Detail: Cap(req.Detail ?? "", 2000),
                 Stack: Cap(req.Stack ?? "", 4000));
 
-            // The durable record: one greppable line in the same log every Gateway error goes to. The
-            // stack is deliberately excluded from the line (it is multi-line noise in a line-oriented
-            // log) - it stays readable on the ring.
-            FileLog.Write($"[ClientError] tenant={tenant.Value} device={record.DeviceHash} surface={record.Surface} "
-                + $"page={record.Page} message={record.Message}"
-                + (record.Detail.Length > 0 ? $" detail={record.Detail}" : ""));
+            // The durable line is STRUCTURAL ONLY - who, where, when, and how big. EVERY client-supplied
+            // field is either validated against a closed structural format or reduced to its length,
+            // because a browser error payload can carry anything on the page - including prompt or
+            // dictation content - and writing any free-text field verbatim would falsify the data map's
+            // promise that service logs never carry customer content (CR-3b review, third and fourth
+            // passes: first Message/Detail, then Surface/Page). The full text stays readable on the
+            // per-tenant ring below, which is served only back to the account that reported it.
+            // ToLogString, never Value, for the same promise.
+            FileLog.Write(DurableLine(tenant.Value, record));
 
             var ring = Rings.GetOrAdd(tenant.Value, static _ => new TenantRing());
             lock (ring.Lock)
