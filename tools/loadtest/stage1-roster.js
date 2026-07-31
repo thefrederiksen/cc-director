@@ -24,7 +24,8 @@ if (!BASE) throw new Error('GATEWAY_URL is required (e.g. http://127.0.0.1:7891)
 
 // The one hard safety rule, in JavaScript: never production, loopback is free, anything else must be
 // named in LOADTEST_ALLOW_HOST. Mirrors tools/loadtest/Shared/LoadTargetGuard.cs.
-const hostMatch = BASE.match(/^https?:\/\/\[?([^\/\]:]+)\]?(?::\d+)?$/);
+const v6Match = BASE.match(/^https?:\/\/\[([0-9a-fA-F:]+)\](?::\d+)?$/);
+const hostMatch = v6Match || BASE.match(/^https?:\/\/([^/\]:]+)(?::\d+)?$/);
 if (!hostMatch) throw new Error(`GATEWAY_URL is not a plain base URL: ${BASE}`);
 // Strip trailing dots before ruling: 'gw.azurewebsites.net.' is the same DNS name as without the
 // dot, and an endsWith check that misses it would let the absolute-form spelling of a production
@@ -32,7 +33,10 @@ if (!hostMatch) throw new Error(`GATEWAY_URL is not a plain base URL: ${BASE}`);
 const host = hostMatch[1].toLowerCase().replace(/\.+$/, '');
 if (host.endsWith('azurewebsites.net') || host.includes('devthrottle'))
   throw new Error(`REFUSED: ${BASE} matches the production deny list. The harness NEVER runs against production; there is no override.`);
-const LOCAL_HOSTS = ['localhost', '127.0.0.1', '::1', 'host.docker.internal'];
+// IPv6 loopback in its compressed, expanded, and zero-padded spellings - k6 has no address parser,
+// so the known spellings are listed; anything else IPv6 falls through to the allow-host rule.
+const LOCAL_HOSTS = ['localhost', '127.0.0.1', 'host.docker.internal',
+  '::1', '0:0:0:0:0:0:0:1', '0000:0000:0000:0000:0000:0000:0000:0001'];
 if (!LOCAL_HOSTS.includes(host) && (__ENV.LOADTEST_ALLOW_HOST || '').toLowerCase() !== host)
   throw new Error(`REFUSED: non-local host '${host}'. If this is a dedicated staging rig, set LOADTEST_ALLOW_HOST=${host}.`);
 

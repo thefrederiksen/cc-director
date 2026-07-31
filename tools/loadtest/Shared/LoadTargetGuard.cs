@@ -32,7 +32,7 @@ public static class LoadTargetGuard
         if (string.IsNullOrWhiteSpace(host))
             throw new InvalidOperationException($"No host could be read from {what}.");
 
-        var normalized = host.Trim().TrimEnd('.').ToLowerInvariant();
+        var normalized = host.Trim().TrimEnd('.').Trim('[', ']').ToLowerInvariant();
 
         // Rule 1: production shapes are refused outright, before any allow rule is consulted.
         if (normalized.EndsWith("azurewebsites.net", StringComparison.Ordinal)
@@ -43,8 +43,12 @@ public static class LoadTargetGuard
                 "and there is no override for this rule. Use the local rig (tools/loadtest/README.md) or a " +
                 "dedicated staging host.");
 
-        // Rule 2: the local rig.
-        if (normalized is "localhost" or "127.0.0.1" or "::1" or "[::1]" or "host.docker.internal")
+        // Rule 2: the local rig. Loopback is ruled by PARSING (127.0.0.0/8 and ::1 in every
+        // spelling - some hosts expand ::1 to the full zero-padded form), never by string-matching
+        // one spelling of it.
+        if (normalized is "localhost" or "host.docker.internal")
+            return;
+        if (System.Net.IPAddress.TryParse(normalized, out var parsed) && System.Net.IPAddress.IsLoopback(parsed))
             return;
 
         // Rule 3: a named, deliberate staging target.
