@@ -28,7 +28,7 @@ from cc_shared import director  # noqa: E402
 from src import session_ops  # noqa: E402
 
 SESSION_ID = "11111111-2222-3333-4444-555555555555"
-OFFLINE_REASON = "1 Director could not be reached, so its sessions are missing from this list - MACHINE_B, last seen 4m ago"
+OFFLINE_REASON = "1 Director could not be reached, so its sessions below are the last it reported and may be out of date - MACHINE_B, last seen 4m ago"
 
 
 @pytest.fixture

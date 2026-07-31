@@ -69,9 +69,10 @@ def _run(
     matches = director.resolve_target(sessions, target)
     if not matches:
         console.print(director.no_match_message(target))
-        # Issue #1051: an unreachable Director's sessions are dropped from the roster under a 200, so
-        # "no session matches" can mean "the list we searched never had it". Do not imply otherwise -
-        # "it does not exist" and "I could not see that machine" call for opposite next steps.
+        # Issue #1051, reworded for #1159 step A: an unreachable Director's sessions are now LISTED rather
+        # than dropped, but they are the last thing that machine reported, so "no session matches" can still
+        # mean "the list we searched was not current". Do not imply otherwise - "it does not exist" and "I
+        # could not see that machine" call for opposite next steps.
         caveat = director.roster_caveat(complete, roster_reason)
         if caveat:
             console.print(f"[yellow]The fleet list searched may be incomplete.[/yellow] {caveat}")

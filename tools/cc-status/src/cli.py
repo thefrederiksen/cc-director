@@ -45,9 +45,10 @@ def _run(
     except director.DirectorError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)
-    # Issue #1051: an unreachable Director's sessions are dropped from the roster under a 200, so a
-    # short list looks exactly like a whole one. Everything below reports on what came back; this is
-    # what says whether that was the whole fleet.
+    # Issue #1051, reworded for #1159 step A: an unreachable Director's sessions are now LISTED rather than
+    # dropped, so the list is no longer short - but those rows are the last that machine reported, not a
+    # confirmed present state. Everything below reports on what came back; this is what says how far it can
+    # be trusted.
     caveat = director.roster_caveat(complete, roster_reason)
 
     if target.strip().lower() != "all":

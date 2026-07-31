@@ -20,13 +20,21 @@ public static class RosterCompleteness
     /// <summary>
     /// Whether the roster is the whole fleet, and if not, why - as a finished sentence.
     ///
-    /// ONLY <see cref="DirectorReachabilityDto.StateOffline"/> counts as incomplete, and that distinction
-    /// carries the whole design. An offline Director has had its sessions DROPPED, so rows really are
-    /// missing. A <see cref="DirectorReachabilityDto.StateWobbly"/> one is inside the grace window and its
-    /// last-known-good sessions are STILL SERVED, so the roster is whole and merely part-stale. Reporting
-    /// wobbly as incomplete would put a caveat on the most frequently run command in the tool for a case
-    /// where nothing is missing - which teaches the reader to skip it, and then it is not read on the day
-    /// offline finally happens.
+    /// ONLY <see cref="DirectorReachabilityDto.StateOffline"/> counts as incomplete. A
+    /// <see cref="DirectorReachabilityDto.StateWobbly"/> Director is inside the grace window and its machine
+    /// is still reachable, so the roster is whole and merely part-stale. Reporting wobbly as incomplete would
+    /// put a caveat on the most frequently run command in the tool for a case where nothing is doubtful -
+    /// which teaches the reader to skip it, and then it is not read on the day offline finally happens.
+    ///
+    /// WHAT "INCOMPLETE" MEANS HERE CHANGED with epic #1159 step A, and the wording had to change with it
+    /// (inspection 1, finding 4). It used to mean an offline Director's sessions had been DROPPED from the
+    /// response, and the sentence said so. The roster now serves that machine's last-known rows instead of
+    /// deleting them, so the old sentence was handed to every command line caller alongside the very rows it
+    /// claimed were missing - a contract stating an implementation that no longer exists.
+    ///
+    /// The caution is still worth printing, for a different and still-true reason: an offline Director did
+    /// not answer, so what is listed for it is the last thing it said and not a confirmed present state.
+    /// Sessions may have started or ended since. That is a caveat about AUTHORITY, not about absence.
     ///
     /// An empty or absent list is COMPLETE, not unknown: that is the standalone floor, where there is no
     /// Gateway and no other Director that could be hiding anything.
@@ -57,9 +65,9 @@ public static class RosterCompleteness
         });
 
         var count = offline.Count == 1
-            ? "1 Director could not be reached"
-            : $"{offline.Count} Directors could not be reached";
-        return (false, $"{count}, so its sessions are missing from this list - {string.Join("; ", named)}");
+            ? "1 Director could not be reached, so its sessions below are the last it reported and may be out of date"
+            : $"{offline.Count} Directors could not be reached, so their sessions below are the last they reported and may be out of date";
+        return (false, $"{count} - {string.Join("; ", named)}");
     }
 
     /// <summary>A coarse, human age for a last-seen gap. Deliberately vague - the precision is not the point.</summary>

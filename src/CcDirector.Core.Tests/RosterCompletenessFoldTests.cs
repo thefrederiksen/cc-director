@@ -64,7 +64,12 @@ public sealed class RosterCompletenessFoldTests
         Assert.False(complete);
         Assert.NotNull(reason);
         Assert.Contains("MACHINE_B", reason);
-        Assert.Contains("missing from this list", reason);
+        // Inspection 1, finding 4: this used to demand the words "missing from this list", which pinned a
+        // sentence that had stopped being true - step A serves those rows. The caution that survives is about
+        // AUTHORITY, so that is what is asserted, and the old words are asserted ABSENT so the false claim
+        // cannot quietly come back.
+        Assert.Contains("may be out of date", reason);
+        Assert.DoesNotContain("missing from this list", reason);
         Assert.Contains("director not connected to the tunnel", reason);
         Assert.Contains("4m", reason);                        // the age, so "how stale" is answerable
         Assert.DoesNotContain("MACHINE_A", reason);           // a reachable Director is never blamed
@@ -73,9 +78,10 @@ public sealed class RosterCompletenessFoldTests
     [Fact]
     public void AWobblyDirector_isNOTreportedIncomplete_becauseItsSessionsAreStillServed()
     {
-        // The load-bearing distinction. Wobbly keeps serving last-known-good rows, so nothing is missing
-        // and there is nothing to warn about. If this ever flips to incomplete, `session list` grows a
-        // permanent caveat on a healthy fleet and the warning stops meaning anything.
+        // The load-bearing distinction. A wobbly Director's machine is still reachable, so its rows carry
+        // the Gateway's usual confidence and there is nothing to warn about. If this ever flips to
+        // incomplete, the session list grows a permanent caveat on a healthy fleet and the warning stops
+        // meaning anything.
         var (complete, reason) = RosterCompleteness.Fold(new[]
         {
             R(DirectorReachabilityDto.StateWobbly, "MACHINE_B", "d2", ageSeconds: 12, error: "one poll missed"),

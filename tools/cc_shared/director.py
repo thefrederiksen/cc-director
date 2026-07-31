@@ -142,10 +142,12 @@ def delete(path: str, timeout: float = 30) -> Any:
 def get_fleet() -> Tuple[List[Dict[str, Any]], Optional[bool], Optional[str]]:
     """The fleet roster, plus whether the Director could vouch that it is COMPLETE (issue #1051).
 
-    The Gateway drops an unreachable Director's sessions and still answers 200, so a short roster is
-    indistinguishable from a whole one. Asking for the envelope returns the Director's folded verdict
-    alongside the rows; the verdict is computed there, never here, because deciding what a
-    reachability state MEANS is ruling and a client only renders.
+    The Gateway used to drop an unreachable Director's sessions and still answer 200, so a short roster
+    was indistinguishable from a whole one. Since epic #1159 step A it SERVES those rows instead, dimmed
+    and dated, so the doubt has moved rather than gone: the list is no longer short, but an unreachable
+    Director's rows are the last thing it said rather than a confirmed present state. Asking for the
+    envelope returns the Director's folded verdict alongside the rows; the verdict is computed there,
+    never here, because deciding what a reachability state MEANS is ruling and a client only renders.
 
     Returns (sessions, complete, reason). `complete` is None for "the Director did not say" - and
     None is NOT True: a Director that has not restarted since this was added still serves the bare
@@ -165,11 +167,17 @@ def get_fleet() -> Tuple[List[Dict[str, Any]], Optional[bool], Optional[str]]:
 
 
 def roster_caveat(complete: Optional[bool], reason: Optional[str]) -> str:
-    """The sentence to add when the roster might not be the whole fleet. Empty when it is (#1051)."""
+    """The sentence to add when the roster may not be trustworthy end to end. Empty when it is (#1051).
+
+    The fallback wordings below are only reached when the Gateway supplied no sentence of its own, and
+    they must not out-live the Gateway's behaviour: since #1159 step A an unreachable machine's sessions
+    are LISTED rather than dropped, so the caution is about how much the rows can be relied on, not
+    about rows being absent.
+    """
     if complete is True:
         return ""
     if complete is False:
-        return reason or "Part of the fleet could not be reached, so this list may be incomplete."
+        return reason or "Part of the fleet could not be reached, so some of these sessions may be out of date."
     return "This Director cannot confirm the roster is complete, so a session may be missing from it."
 
 
