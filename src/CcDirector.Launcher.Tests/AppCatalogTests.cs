@@ -160,14 +160,47 @@ public sealed class AppCatalogTests : IDisposable
     }
 
     [Fact]
-    public void ResolveLaunchPath_PathGiven_WinsOverTheApplicationName()
+    public void ResolveLaunchPath_CataloguedPath_WinsOverTheApplicationName()
     {
+        // Tenant-boundary hardening (CR-5): the path form is an allowlist lookup now. A path that IS a
+        // catalogue entry still wins over the name beside it, exactly as the free path form used to.
         CreateApp("Chrome");
+        var edge = CreateApp("Edge");
 
-        var (path, error) = CatalogOverRoot().ResolveLaunchPath(@"C:\explicit\thing.exe", "Chrome");
+        var (path, error) = CatalogOverRoot().ResolveLaunchPath(edge, "Chrome");
 
         Assert.Null(error);
-        Assert.Equal(@"C:\explicit\thing.exe", path);
+        Assert.Equal(edge, path);
+    }
+
+    /// <summary>
+    /// The CR-5 refusal: a path that is not an entry of this machine's installed-applications catalogue is
+    /// refused, whatever it points at. This is what stops a stolen key being remote code execution - the
+    /// caller can no longer start an executable it dropped or found on the machine.
+    /// </summary>
+    [Fact]
+    public void ResolveLaunchPath_UncataloguedPath_IsRefusedWithAReason()
+    {
+        CreateApp("Chrome");
+        var dropped = Path.Combine(_root, "dropped-payload.exe");
+        File.WriteAllText(dropped, "");
+
+        var (path, error) = CatalogOverRoot().ResolveLaunchPath(dropped, null);
+
+        Assert.Null(path);
+        Assert.Contains("not in the installed-applications catalogue", error);
+        Assert.Contains(Environment.MachineName, error);
+    }
+
+    [Fact]
+    public void ResolveLaunchPath_CataloguedPath_IsAcceptedCaseInsensitively()
+    {
+        var chrome = CreateApp("Chrome");
+
+        var (path, error) = CatalogOverRoot().ResolveLaunchPath(chrome.ToUpperInvariant(), null);
+
+        Assert.Null(error);
+        Assert.Equal(chrome, path);
     }
 
     [Fact]

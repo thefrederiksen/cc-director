@@ -719,7 +719,8 @@ internal static class ControlEndpoints
             try
             {
                 var (status, body) = await gw.LaunchOnMachineAsync(
-                    machine, req?.Path, req?.App, req?.Args, req?.Cwd, req?.Headless ?? false, ct);
+                    machine, req?.Path, req?.App, req?.Args, req?.Cwd, req?.Headless ?? false,
+                    req?.ConfirmProtected ?? false, ct);
                 return Results.Content(body, "application/json; charset=utf-8", statusCode: status);
             }
             catch (Exception ex)
@@ -2272,4 +2273,11 @@ internal sealed class MachineLaunchRequest
     public string? Args { get; init; }
     public string? Cwd { get; init; }
     public bool Headless { get; init; }
+
+    /// <summary>
+    /// Tenant-boundary hardening (CR-5): the explicit confirmation the Gateway's launch relay now requires
+    /// on every launch (the restart/stop slot-guard flag, applied to program starts). Forwarded through this
+    /// Director hop verbatim, so a caller that wants a program started must say so explicitly end to end.
+    /// </summary>
+    public bool ConfirmProtected { get; init; }
 }

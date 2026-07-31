@@ -151,7 +151,9 @@ public sealed class HostedLauncherHubTenantTests : IAsyncLifetime
     {
         var request = new HttpRequestMessage(HttpMethod.Post, $"machines/{SharedMachine}/launch")
         {
-            Content = JsonContent.Create(new { app }),
+            // confirmProtected: CR-5 gates every launch behind explicit confirmation; these tests are about
+            // TENANT scoping of the relay, so they confirm and let the partition be the thing under test.
+            Content = JsonContent.Create(new { app, confirmProtected = true }),
         };
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", deviceKey);
         return _http.SendAsync(request);

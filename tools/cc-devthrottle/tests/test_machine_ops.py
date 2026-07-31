@@ -178,3 +178,6 @@ def test_launch_by_name_posts_the_application_to_the_right_machine(monkeypatch):
     assert captured["path"] == "fleet/machines/SOREN_NORTH/launch"
     assert captured["body"]["app"] == "Google Chrome"
     assert captured["body"]["path"] is None
+    # The Gateway refuses any launch without this explicit confirmation (tenant-boundary hardening,
+    # CR-5); the typed command carries it, so the capability keeps working end to end.
+    assert captured["body"]["confirmProtected"] is True

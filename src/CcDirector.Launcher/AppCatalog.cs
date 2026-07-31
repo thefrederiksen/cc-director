@@ -153,13 +153,39 @@ public sealed class AppCatalog
     /// call it, so the two ways of asking this launcher to start something cannot come to different answers -
     /// the same rule the lifecycle verbs already follow by sharing <see cref="DirectorSupervisor"/>.
     ///
-    /// A path wins when both are given, because a path is unambiguous and a name is a lookup.
+    /// A path wins when both are given, because a path is unambiguous and a name is a lookup - but the path
+    /// is an ALLOWLIST LOOKUP, not a free launch. Tenant-boundary hardening (release 2026-07-31, finding
+    /// CR-5): the launch target must be an entry of this machine's installed-applications catalogue - the
+    /// same list GET /apps reports - so a caller holding a key cannot start an arbitrary executable it
+    /// dropped or found on the machine. The check lives here, in the launcher process that actually starts
+    /// the program, so neither relay arm (the loopback route or the Gateway command stream) can bypass it.
     /// </summary>
     /// <returns>The path to start, or an error naming why nothing could be started.</returns>
     public (string? Path, string? Error) ResolveLaunchPath(string? path, string? app)
     {
         if (!string.IsNullOrWhiteSpace(path))
-            return (path, null);
+        {
+            string full;
+            try
+            {
+                full = System.IO.Path.GetFullPath(path.Trim());
+            }
+            catch (ArgumentException)
+            {
+                return (null, $"'{path}' is not a valid path");
+            }
+
+            var match = Enumerate(new List<string>())
+                .FirstOrDefault(a => string.Equals(a.Path, full, StringComparison.OrdinalIgnoreCase));
+            if (match is null)
+            {
+                FileLog.Write($"[AppCatalog] ResolveLaunchPath REFUSED uncatalogued path: {full}");
+                return (null, $"'{path}' is not in the installed-applications catalogue on " +
+                              $"{Environment.MachineName}. Only catalogued applications can be started; " +
+                              "pick one from the apps list by name, or by its catalogued path.");
+            }
+            return (match.Path, null);
+        }
 
         if (string.IsNullOrWhiteSpace(app))
             return (null, "either path or app is required");

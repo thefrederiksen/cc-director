@@ -457,6 +457,26 @@ internal static class MachineEndpoints
             try { body = await ctx.Request.ReadFromJsonAsync<LaunchRelayBody>(ct); }
             catch { /* treat as null -> launcher will 400 */ }
 
+            // Tenant-boundary hardening (release 2026-07-31, finding CR-5): starting a program on a machine is
+            // always a protected action, so EVERY launch requires the same explicit confirmation the sibling
+            // restart/stop slot guard demands - it used to relay on key possession alone, which made a stolen
+            // key remote code execution across the account. This is the accident guard; the authorization half
+            // is the launcher's installed-applications allowlist (AppCatalog.ResolveLaunchPath), enforced in
+            // the launcher process itself so no relay arm can bypass it.
+            if (body?.ConfirmProtected != true)
+            {
+                var reason = "launch guard: refusing to start a program without confirmProtected=true";
+                FileLog.Write($"[MachineEndpoints] RELAY_REFUSED machine={machine} verb=launch reason={reason}");
+                return Results.Json(new
+                {
+                    error = "launch_guard",
+                    detail = reason,
+                    machine,
+                    verb = "launch",
+                    hint = "Set confirmProtected=true to confirm starting a program on this machine.",
+                }, statusCode: 403);
+            }
+
             var outcome = await LauncherLifecycleRelay.SendLaunchAsync(
                 tenant, machine, body, launchers, sendLauncherCommand, ct);
             return ToResult(machine, "launch", outcome);
@@ -665,6 +685,12 @@ internal sealed class LaunchRelayBody
     public string? Args { get; init; }
     public string? Cwd { get; init; }
     public bool Headless { get; init; }
+
+    /// <summary>
+    /// Tenant-boundary hardening (CR-5): the explicit confirmation every launch requires, the same flag the
+    /// restart/stop slot guard reads. Without it the route refuses with 403 before any relay arm runs.
+    /// </summary>
+    public bool ConfirmProtected { get; init; }
 }
 
 /// <summary>Response body returned by the Gateway for relay calls.</summary>

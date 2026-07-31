@@ -252,7 +252,7 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
         RegisterAliceLauncher();
 
         var resp = await Send("POST", $"machines/{AliceMachine}/launch", _aliceKey,
-            new { path = @"C:\Windows\System32\cmd.exe", args = "/c echo hi" });
+            new { path = @"C:\Windows\System32\cmd.exe", args = "/c echo hi", confirmProtected = true });
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
@@ -324,8 +324,9 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
         // arguments and working directory to the launcher, which runs them.
         RegisterAliceLauncher();
 
+        // Bob CONFIRMS (CR-5's accident guard is not aimed at him) - the tenant partition alone must refuse.
         var resp = await Send("POST", $"machines/{AliceMachine}/launch", _bobKey,
-            new { path = @"C:\Windows\System32\cmd.exe", args = "/c whoami", cwd = @"C:\" });
+            new { path = @"C:\Windows\System32\cmd.exe", args = "/c whoami", cwd = @"C:\", confirmProtected = true });
 
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
         Assert.Empty(AliceLauncherHits());
@@ -506,7 +507,7 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
             : path.EndsWith("launchers/register", StringComparison.Ordinal)
                 ? new { machineName = AliceMachine, port = 7788, token = "tok", pid = 11, version = "1.0.0" }
                 : path.EndsWith("/launch", StringComparison.Ordinal)
-                    ? new { path = @"C:\Windows\System32\cmd.exe", args = "/c whoami", cwd = @"C:\" }
+                    ? new { path = @"C:\Windows\System32\cmd.exe", args = "/c whoami", cwd = @"C:\", confirmProtected = true }
                     : null;
 
     internal static HttpContent JsonBody(object value) =>
@@ -758,7 +759,7 @@ public sealed class SelfHostMachineControlTests : IDisposable
         probe.SeedStubLauncher(Machine);
 
         var resp = await probe.Http.PostAsync($"/machines/{Machine}/launch",
-            HostedTenantMachineControlTests.JsonBody(new { path = @"C:\Windows\System32\cmd.exe", args = "/c echo hi" }));
+            HostedTenantMachineControlTests.JsonBody(new { path = @"C:\Windows\System32\cmd.exe", args = "/c echo hi", confirmProtected = true }));
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
