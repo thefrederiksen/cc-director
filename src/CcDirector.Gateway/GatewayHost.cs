@@ -881,7 +881,23 @@ public sealed class GatewayHost : IAsyncDisposable
         // tenant, so the removal's OWNING tenant is threaded straight through - dropping it would let one
         // account's disconnect free another account's numbers. The removal carries its owner (DirectorRemoval),
         // so the release only ever touches the departed Director's own tenant partition.
-        Registry.OnDirectorRemoved += removal => SessionNumbers.ReleaseForDirector(removal.Tenant, removal.DirectorId);
+        //
+        // Inspection 1 finding 1b: closing the sweep's judge-then-remove window is not enough on its own. A
+        // Director can reconnect between the removal DECISION and this subscriber running, and the cascade
+        // would then destroy a machine that is already back. So every DESTRUCTIVE subscriber re-checks, at the
+        // moment it acts, whether that Director currently holds a live stream, and abandons its own part if it
+        // does. It fails in the safe direction: a genuinely dead machine may leak a little state, a live one is
+        // never destroyed. PushedSessions is constructed just below and captured by the closure, which only
+        // runs long after the constructor.
+        Registry.OnDirectorRemoved += removal =>
+        {
+            if (PushedSessions.IsStreamConnected(removal.Tenant, removal.DirectorId))
+            {
+                FileLog.Write($"[GatewayHost] eviction cascade SKIPPED session-number release for {removal.DirectorId}: it holds a live stream again");
+                return;
+            }
+            SessionNumbers.ReleaseForDirector(removal.Tenant, removal.DirectorId);
+        };
         PushedSessions = new Streaming.PushedSessionStore();
         // Repositories mission (#510 phase C): the sibling store for pushed repository/worktree snapshots.
         PushedRepositories = new Streaming.PushedRepositoryStore();
@@ -934,7 +950,22 @@ public sealed class GatewayHost : IAsyncDisposable
         // The last-known-good roster cache that used to be forgotten here is DELETED. It was the second
         // staleness authority in the roster path and the one that declared a machine Offline and dropped its
         // sessions; the roster read now serves last-known state unconditionally and reports its age instead.
-        Registry.OnDirectorRemoved += removal => PushedSessions.Forget(removal.Tenant, removal.DirectorId);
+        //
+        // Finding 1b guard, as above. This one reads the store it is about to write, so state the ordering
+        // that makes the guard sound across all three subscribers: Forget REMOVES the entry IsStreamConnected
+        // reads, but it only ever does so while the Director is disconnected, and RegisterConnection re-adds
+        // the entry with GetOrAdd on reconnect. So a later subscriber either sees the surviving entry (nobody
+        // forgot it, because the machine was live) or sees the entry a reconnect re-created. There is no
+        // ordering in which Forget makes a LIVE Director look dead to the subscribers that follow it.
+        Registry.OnDirectorRemoved += removal =>
+        {
+            if (PushedSessions.IsStreamConnected(removal.Tenant, removal.DirectorId))
+            {
+                FileLog.Write($"[GatewayHost] eviction cascade SKIPPED pushed-session forget for {removal.DirectorId}: it holds a live stream again");
+                return;
+            }
+            PushedSessions.Forget(removal.Tenant, removal.DirectorId);
+        };
         LauncherConnections = new Streaming.LauncherConnectionRegistry();
         // Gateway Cleanup: the tunnel is mandatory; the streamMode parameter is ignored and retained only for existing test call sites (removed with the test rewrite).
         _streamStaleAfter = TimeSpan.FromSeconds(gatewayConfig.StreamStaleAfterSeconds);
@@ -1118,7 +1149,21 @@ public sealed class GatewayHost : IAsyncDisposable
         // session-serving increment makes per-tenant. The other OnDirectorRemoved subscribers (session-number
         // release, roster-cache forget) are in-memory and stay wired. Skipping it only leaves a removed
         // Director's snoozes as durable tombstones, bounded by the live-session prune paths.
-        Registry.OnDirectorRemoved += removal => { if (!GatewayHostedMode.IsHosted) _snoozeRegistry.ClearForDirector(removal.DirectorId); };
+        // Finding 1b guard, as on the other two destructive subscribers. This is the one whose loss does not
+        // recover - released session numbers can be reallocated and a forgotten pushed entry is repopulated by
+        // the next Hello, but deleted snoozes are simply gone - so it is the one that most needs the machine to
+        // be genuinely absent at the moment of deletion, not merely to have been absent when the sweep decided.
+        Registry.OnDirectorRemoved += removal =>
+        {
+            if (GatewayHostedMode.IsHosted)
+                return;
+            if (PushedSessions.IsStreamConnected(removal.Tenant, removal.DirectorId))
+            {
+                FileLog.Write($"[GatewayHost] eviction cascade SKIPPED snooze clear for {removal.DirectorId}: it holds a live stream again");
+                return;
+            }
+            _snoozeRegistry.ClearForDirector(removal.DirectorId);
+        };
         // THE PUSH SEAM where this Gateway drives the hold machine off the facts Directors report. The
         // DirectorHub (constructed per-invocation by SignalR) folds every pushed session through this one
         // instance, exactly as it does the input-stats aggregator.

@@ -122,6 +122,33 @@ public sealed class DirectorRegistry : IDisposable
     /// done, it is never served to a client, and keeping it bare leaves its lifecycle exactly as it was.
     private readonly ConcurrentDictionary<string, bool> _everReachable = new();
 
+    /// <summary>
+    /// Serialises the stale sweep's REMOVAL DECISION against the two writes that make a Director live again.
+    ///
+    /// Inspection 1, finding 1: the sweep used to judge a snapshot taken by <c>ToArray()</c> and then remove
+    /// BY KEY, so a Director that reconnected between the judgement and the removal was destroyed anyway -
+    /// its session numbers released, its pushed entry forgotten, its snoozes deleted on self-host.
+    ///
+    /// An atomic compare-and-remove on the VALUE does not fix this and is the trap worth naming:
+    /// <see cref="Heartbeat"/> mutates <c>LastSeen</c> IN PLACE on the live object, so the same instance
+    /// simply carries a newer timestamp, a reference comparison still matches, and the removal still happens.
+    /// The decision has to re-READ and re-JUDGE the current entry, which is what this gate makes possible.
+    ///
+    /// The removal EVENT is raised outside the gate on purpose - a subscriber that called back into the
+    /// registry while it was held would deadlock.
+    /// </summary>
+    private readonly object _livenessGate = new();
+
+    /// <summary>
+    /// Test-only seam, fired by <see cref="SweepStale"/> after it has judged an entry stale and BEFORE it
+    /// takes <see cref="_livenessGate"/> to re-judge and remove - that is, inside the exact window finding 1
+    /// describes. A test reconnects the Director from inside this callback and asserts it survives.
+    ///
+    /// It proves the ORDERING window exists and is closed. It proves NOTHING about the concurrent race under
+    /// real thread scheduling, and it must not be described as if it did. Null and inert in production.
+    /// </summary>
+    internal Action<DirectorKey>? OnSweepJudgedForTest;
+
     private FileSystemWatcher? _watcher;
     private Timer? _sweeper;
     private bool _disposed;
@@ -230,8 +257,15 @@ public sealed class DirectorRegistry : IDisposable
         // its entries belong to the single Local tenant. On hosted, where a request's tenant is a real
         // account, a Local-keyed entry is therefore served to no account - which is the correct answer.
         var key = new DirectorKey(TenantId.Local, req.DirectorId);
-        var existed = _directors.TryGetValue(key, out _);
-        _directors[key] = dto;
+        // Under the liveness gate for the same reason as RegisterFromStream: the sweep evicts "http" entries on
+        // exactly the same staleness rule, so this refresh has to be visible to the sweep's re-judge or the
+        // HTTP path keeps the hole the stream path just closed.
+        bool existed;
+        lock (_livenessGate)
+        {
+            existed = _directors.TryGetValue(key, out _);
+            _directors[key] = dto;
+        }
         FileLog.Write(dto.EndpointUnreachableReason is null
             ? $"[DirectorRegistry] Upsert (http): id={dto.DirectorId}, endpoint={dto.TailnetEndpoint}, existed={existed}"
             : $"[DirectorRegistry] Upsert (http, FLAGGED no reachable endpoint): id={dto.DirectorId}, existed={existed}, reason={dto.EndpointUnreachableReason}");
@@ -266,23 +300,32 @@ public sealed class DirectorRegistry : IDisposable
         // arrives empty must not wipe a value the entry already carries (e.g. a file-discovered entry's machine
         // name). Production Hellos always carry the full identity; this just makes re-registration and
         // mixed-source ordering safe.
-        _directors.TryGetValue(key, out var existing);
-        var dto = new DirectorDto
+        //
+        // The merge-and-replace runs under the liveness gate (see _livenessGate): this is the write that makes
+        // a reconnecting Director live again, and the stale sweep must either see it or not have decided yet.
+        // Without the gate the sweep can judge the OLD entry stale and then remove the new one by key.
+        DirectorDto dto;
+        bool existed;
+        lock (_livenessGate)
         {
-            DirectorId = directorId,
-            Pid = pid > 0 ? pid : (existing?.Pid ?? 0),
-            StartedAt = startedAt != default ? startedAt : (existing?.StartedAt ?? now),
-            ControlEndpoint = "",     // tunnel-only: the Gateway never dials this Director
-            TailnetEndpoint = null,
-            MachineName = !string.IsNullOrEmpty(machineName) ? machineName : (existing?.MachineName ?? ""),
-            User = !string.IsNullOrEmpty(user) ? user : (existing?.User ?? ""),
-            Version = !string.IsNullOrEmpty(version) ? version : (existing?.Version ?? ""),
-            SchemaVersion = 1,
-            LastSeen = now,
-            Source = "stream",
-        };
-        var existed = existing is not null;
-        _directors[key] = dto;
+            _directors.TryGetValue(key, out var existing);
+            dto = new DirectorDto
+            {
+                DirectorId = directorId,
+                Pid = pid > 0 ? pid : (existing?.Pid ?? 0),
+                StartedAt = startedAt != default ? startedAt : (existing?.StartedAt ?? now),
+                ControlEndpoint = "",     // tunnel-only: the Gateway never dials this Director
+                TailnetEndpoint = null,
+                MachineName = !string.IsNullOrEmpty(machineName) ? machineName : (existing?.MachineName ?? ""),
+                User = !string.IsNullOrEmpty(user) ? user : (existing?.User ?? ""),
+                Version = !string.IsNullOrEmpty(version) ? version : (existing?.Version ?? ""),
+                SchemaVersion = 1,
+                LastSeen = now,
+                Source = "stream",
+            };
+            existed = existing is not null;
+            _directors[key] = dto;
+        }
         _stateReporting.TryAdd(directorId, true);
         if (!existed)
         {
@@ -299,8 +342,14 @@ public sealed class DirectorRegistry : IDisposable
     public bool Heartbeat(string directorId)
     {
         if (!TryResolveLocalKey(directorId, out var key)) return false;
-        if (!_directors.TryGetValue(key, out var existing)) return false;
-        existing.LastSeen = DateTime.UtcNow;
+        // Under the liveness gate: this is an IN-PLACE write to the live object, which is precisely why the
+        // sweep cannot judge a captured reference (see _livenessGate). Taking the same gate is what makes the
+        // sweep's re-read see this heartbeat rather than race it.
+        lock (_livenessGate)
+        {
+            if (!_directors.TryGetValue(key, out var existing)) return false;
+            existing.LastSeen = DateTime.UtcNow;
+        }
         return true;
     }
 
@@ -569,11 +618,43 @@ public sealed class DirectorRegistry : IDisposable
                     var lastSeen = kv.Value.LastSeen ?? DateTime.MinValue;
                     if (now - lastSeen > EvictionHorizon)
                     {
-                        if (TryRemoveEntry(kv.Key, out _))
+                        // The snapshot says stale. That is a CANDIDATE, not a verdict: the entry may have been
+                        // refreshed since ToArray() captured it. Inspection 1 finding 1 - re-read and re-judge
+                        // the CURRENT entry under the gate the refresh paths take, so a Director that came back
+                        // in this window is not destroyed on the strength of a timestamp it has already beaten.
+                        OnSweepJudgedForTest?.Invoke(kv.Key);
+
+                        DirectorDto? removed = null;
+                        TimeSpan age = default;
+                        var spared = false;
+                        lock (_livenessGate)
                         {
-                            _everReachable.TryRemove(kv.Key.DirectorId, out _);
-                            FileLog.Write($"[DirectorRegistry] Sweeper removed stale {kv.Value.Source} entry: {kv.Key.DirectorId} (last seen {(now - lastSeen).TotalSeconds:F0}s ago)");
+                            if (_directors.TryGetValue(kv.Key, out var current))
+                            {
+                                var currentLastSeen = current.LastSeen ?? DateTime.MinValue;
+                                age = DateTime.UtcNow - currentLastSeen;
+                                if (age > EvictionHorizon)
+                                {
+                                    if (TryRemoveEntry(kv.Key, out removed))
+                                        _everReachable.TryRemove(kv.Key.DirectorId, out _);
+                                }
+                                else
+                                {
+                                    spared = true;
+                                }
+                            }
+                        }
+
+                        // Raised OUTSIDE the gate: subscribers run arbitrary code and one of them calling back
+                        // into the registry while the gate was held would deadlock.
+                        if (removed is not null)
+                        {
+                            FileLog.Write($"[DirectorRegistry] Sweeper removed stale {removed.Source} entry: {kv.Key.DirectorId} (last seen {age.TotalSeconds:F0}s ago)");
                             RaiseDirectorRemoved(kv.Key);
+                        }
+                        else if (spared)
+                        {
+                            FileLog.Write($"[DirectorRegistry] Sweeper SPARED {kv.Key.DirectorId}: judged stale on the swept snapshot, but the live entry is current again");
                         }
                     }
                     continue;
