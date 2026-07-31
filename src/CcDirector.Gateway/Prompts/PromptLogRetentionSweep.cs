@@ -20,13 +20,12 @@ namespace CcDirector.Gateway.Prompts;
 public sealed class PromptLogRetentionSweep
 {
     /// <summary>
-    /// THE default retention window for prompt/reply history. PROVISIONAL: the owner's decision between
-    /// 30 and 90 days is still open (release plan, "Owner decisions that block work"); 30 is built as the
-    /// conservative interim per the release coordinator's ruling of 2026-07-31, and this ONE constant is
-    /// where the settled number lands. The customer-facing data map
-    /// (devthrottle_internal/docs/architecture/data-map.md) states the same number and must change with it.
+    /// THE default retention window for prompt/reply history: 90 days, the owner's ruling of 2026-07-31
+    /// (chosen over 30 so month-over-month comparison across history is possible). The customer-facing
+    /// data map (devthrottle_internal/docs/architecture/data-map.md) states the same number and must
+    /// change with it - one constant, one table row, together.
     /// </summary>
-    public static readonly TimeSpan DefaultRetention = TimeSpan.FromDays(30);
+    public static readonly TimeSpan DefaultRetention = TimeSpan.FromDays(90);
 
     /// <summary>
     /// Self-host override: a positive whole number of days. Self-host is the operator's own machine and

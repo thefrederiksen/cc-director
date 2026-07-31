@@ -42,7 +42,8 @@ internal static class ClientErrorEndpoints
     ///  logged once), so a render-loop error cannot flood the Gateway log.</summary>
     private const int MaxReportsPerDevicePerMinute = 30;
 
-    private sealed record ClientErrorRecord(
+    // Internal (not private) so the durable-line regression test can build hostile records directly.
+    internal sealed record ClientErrorRecord(
         DateTime AtUtc, string DeviceHash, string Surface, string Page, string Message, string Detail, string Stack);
 
     private sealed class TenantRing
@@ -52,6 +53,37 @@ internal static class ClientErrorEndpoints
     }
 
     private static readonly ConcurrentDictionary<TenantId, TenantRing> Rings = new();
+
+    /// <summary>
+    /// The one durable log line for a report. Internal so the regression test can post hostile content
+    /// into every client-controlled field and assert none of it reaches this line: each field is either
+    /// validated against a closed structural format (<see cref="StructuralToken"/>) or reduced to its
+    /// length. Nothing client-supplied is ever interpolated verbatim.
+    /// </summary>
+    internal static string DurableLine(TenantId tenant, ClientErrorRecord record)
+        => $"[ClientError] tenant={tenant.ToLogString()} device={record.DeviceHash} "
+            + $"surface={StructuralToken(record.Surface, 40)} page={StructuralToken(record.Page, 200)} "
+            + $"messageLength={record.Message.Length} detailLength={record.Detail.Length}";
+
+    /// <summary>
+    /// Admit a client-supplied identifier into the durable log ONLY if it has the shape of a code
+    /// identifier or route path: letters, digits, and the separator characters routes use. Anything
+    /// else - a space, a quote, a colon, any character free prose needs - is replaced by a placeholder
+    /// carrying just the length. A closed allowed-set, not a denylist: the field must PROVE it is
+    /// structural to be logged, so prose can never sneak through a gap nobody predicted.
+    /// </summary>
+    internal static string StructuralToken(string value, int maxLength)
+    {
+        if (string.IsNullOrEmpty(value)) return "(empty)";
+        if (value.Length > maxLength) return $"(overlong:{value.Length})";
+        foreach (var c in value)
+        {
+            var ok = c is (>= 'a' and <= 'z') or (>= 'A' and <= 'Z') or (>= '0' and <= '9')
+                or '/' or '-' or '_' or '.' or '~';
+            if (!ok) return $"(nonstructural:{value.Length})";
+        }
+        return value;
+    }
 
     // The per-device rate window: device hash -> (window start, count in window). Pruned lazily.
     private static readonly ConcurrentDictionary<string, (DateTime WindowStartUtc, int Count)> RateWindows = new();
@@ -92,14 +124,15 @@ internal static class ClientErrorEndpoints
                 Detail: Cap(req.Detail ?? "", 2000),
                 Stack: Cap(req.Stack ?? "", 4000));
 
-            // The durable line is STRUCTURAL ONLY - who, where, when, and how big. Message and Detail are
-            // client-supplied free text: a browser error payload can carry anything on the page, including
-            // prompt or dictation content, so writing them verbatim here would falsify the data map's
-            // promise that service logs never carry customer content (the review that caught it: CR-3b,
-            // third pass). The full text stays readable on the per-tenant ring below, which is served only
-            // back to the account that reported it. ToLogString, never Value, for the same promise.
-            FileLog.Write($"[ClientError] tenant={tenant.Value.ToLogString()} device={record.DeviceHash} surface={record.Surface} "
-                + $"page={record.Page} messageLength={record.Message.Length} detailLength={record.Detail.Length}");
+            // The durable line is STRUCTURAL ONLY - who, where, when, and how big. EVERY client-supplied
+            // field is either validated against a closed structural format or reduced to its length,
+            // because a browser error payload can carry anything on the page - including prompt or
+            // dictation content - and writing any free-text field verbatim would falsify the data map's
+            // promise that service logs never carry customer content (CR-3b review, third and fourth
+            // passes: first Message/Detail, then Surface/Page). The full text stays readable on the
+            // per-tenant ring below, which is served only back to the account that reported it.
+            // ToLogString, never Value, for the same promise.
+            FileLog.Write(DurableLine(tenant.Value, record));
 
             var ring = Rings.GetOrAdd(tenant.Value, static _ => new TenantRing());
             lock (ring.Lock)
