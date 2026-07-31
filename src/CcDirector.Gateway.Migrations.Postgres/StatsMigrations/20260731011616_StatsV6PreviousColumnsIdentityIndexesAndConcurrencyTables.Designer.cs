@@ -3,6 +3,7 @@ using System;
 using CcDirector.Gateway.Stats.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 {
     [DbContext(typeof(GatewayStatsDbContext))]
-    partial class GatewayStatsDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260731011616_StatsV6PreviousColumnsIdentityIndexesAndConcurrencyTables")]
+    partial class StatsV6PreviousColumnsIdentityIndexesAndConcurrencyTables
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
