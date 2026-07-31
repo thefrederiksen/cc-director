@@ -189,7 +189,7 @@ def _http_error(code: int, body: str) -> urllib.error.HTTPError:
 def test_request_surfaces_the_sentence_from_a_problem_details_response(monkeypatch):
     """End to end through _request: this is the path every cc-devthrottle command takes."""
     monkeypatch.setenv("CC_DIRECTOR_API", "http://127.0.0.1:1")
-    monkeypatch.setattr(director, "_token", lambda: None)
+    monkeypatch.setattr(director, "_token", lambda: "v1.cli..signature")
     monkeypatch.setattr(director.urllib.request, "urlopen",
                         lambda *a, **k: (_ for _ in ()).throw(_http_error(500, PROBLEM_DETAILS)))
 
@@ -202,7 +202,7 @@ def test_request_surfaces_the_sentence_from_a_problem_details_response(monkeypat
 
 def test_request_still_reports_the_status_when_the_body_carries_no_sentence(monkeypatch):
     monkeypatch.setenv("CC_DIRECTOR_API", "http://127.0.0.1:1")
-    monkeypatch.setattr(director, "_token", lambda: None)
+    monkeypatch.setattr(director, "_token", lambda: "v1.cli..signature")
     monkeypatch.setattr(director.urllib.request, "urlopen",
                         lambda *a, **k: (_ for _ in ()).throw(_http_error(502, "")))
 

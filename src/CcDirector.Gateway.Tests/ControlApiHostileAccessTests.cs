@@ -163,6 +163,26 @@ public sealed class ControlApiHostileAccessTests : IAsyncLifetime
         Assert.DoesNotContain("machineName", body, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// The other half of trimming /healthz, and the one that would have broken production quietly.
+    /// The Director's own startup self-probe calls /healthz over real HTTP and looks for its OWN
+    /// identifier in the answer - that is how it proves no other service is shadowing the port it
+    /// just bound. If the authenticated answer stopped naming it, the probe would fail on a
+    /// perfectly healthy Director, log SELF-PROBE FAILED, and release its port reservation. Same for
+    /// the launcher's update check, which reads the version and the session count from here to decide
+    /// whether a swap would interrupt live work.
+    /// </summary>
+    [Fact]
+    public async Task AnAuthenticatedHealthz_StillNamesTheDirectorAndItsVersion()
+    {
+        using var client = WithToken(DirectorScopedToken.Mint(RootSecret, ScopeNames.Admin));
+        var body = await client.GetStringAsync("healthz");
+
+        Assert.Contains(_host.DirectorId, body, StringComparison.Ordinal);
+        Assert.Contains("1.0.0-test", body, StringComparison.Ordinal);
+        Assert.Contains("\"sessions\"", body, StringComparison.OrdinalIgnoreCase);
+    }
+
     // =====================================================================================
     // 2. A hostile Host header is refused - the DNS-rebinding defence
     // =====================================================================================

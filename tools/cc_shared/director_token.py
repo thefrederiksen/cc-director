@@ -62,7 +62,7 @@ def root_secret() -> Optional[str]:
     otherwise the Director's own persisted token.
     """
     try:
-        path = _config_json()
+        path = config_json_path()
         if path.is_file():
             config = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(config, dict):
@@ -77,7 +77,7 @@ def root_secret() -> Optional[str]:
         pass
 
     try:
-        path = _token_file()
+        path = token_file_path()
         if path.is_file():
             value = path.read_text(encoding="utf-8").strip()
             return value or None
