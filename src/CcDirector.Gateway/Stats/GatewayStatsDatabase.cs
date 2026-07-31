@@ -65,6 +65,12 @@ public sealed class GatewayStatsDatabase : IDisposable
 
     private readonly string _path;
     private readonly SqliteConnection _connection;
+
+    /// <summary>The version <see cref="Migrate"/> runs to and stamps. <see cref="SchemaVersion"/> on every
+    /// production path; lower only through the internal test-seam constructor, which exists so the adoption
+    /// fixtures can build a genuine version 5 file by running the real steps.</summary>
+    private readonly int _targetVersion;
+
     private bool _disposed;
 
     /// <summary>The open connection. Callers hold the owning aggregator's lock.</summary>
@@ -76,7 +82,31 @@ public sealed class GatewayStatsDatabase : IDisposable
     /// <param name="path">The database file. Defaults to gateway-stats.db under the cc-director storage
     /// root, beside the stores it replaces.</param>
     public GatewayStatsDatabase(string? path = null)
+        : this(path, SchemaVersion)
     {
+    }
+
+    /// <summary>
+    /// TEST SEAM: open (or create) the store and migrate it only as far as <paramref name="targetVersion"/>,
+    /// running the REAL migration steps and stamping the version they reach.
+    ///
+    /// It exists for one purpose: the adoption fixtures must produce a GENUINE version 5 file - the state
+    /// every real self-host machine that predates the Entity Framework chain is in - and no public code path
+    /// can produce one any more, because the public constructor migrates every file to
+    /// <see cref="SchemaVersion"/>. The fixture rule those tests live by is that a fixture is built by
+    /// RUNNING shipped code, never hand-written and never synthesised from the new model's idea of the old
+    /// schema; stopping the real chain at 5 is the only way to satisfy that rule once the shipped version has
+    /// moved on. Internal, reached from the tests through InternalsVisibleTo, and never called in production:
+    /// every production caller uses the public constructor and therefore the current version.
+    /// </summary>
+    internal GatewayStatsDatabase(string? path, int targetVersion)
+    {
+        if (targetVersion is < 1 or > SchemaVersion)
+            throw new ArgumentOutOfRangeException(nameof(targetVersion),
+                $"A statistics store can only be built at versions 1 through {SchemaVersion}; " +
+                $"{targetVersion} is not a version this build's migration steps can produce.");
+
+        _targetVersion = targetVersion;
         _path = string.IsNullOrWhiteSpace(path)
             ? System.IO.Path.Combine(CcStorage.Root(), "gateway-stats.db")
             : path!;
@@ -108,7 +138,7 @@ public sealed class GatewayStatsDatabase : IDisposable
 
             Migrate();
 
-            FileLog.Write($"[GatewayStatsDatabase] Open: ready at version {SchemaVersion}, path={_path}");
+            FileLog.Write($"[GatewayStatsDatabase] Open: ready at version {_targetVersion}, path={_path}");
         }
         catch (Exception ex)
         {
@@ -126,50 +156,53 @@ public sealed class GatewayStatsDatabase : IDisposable
     private void Migrate()
     {
         var current = QueryUserVersion();
-        FileLog.Write($"[GatewayStatsDatabase] Migrate: file version={current}, build version={SchemaVersion}");
+        FileLog.Write($"[GatewayStatsDatabase] Migrate: file version={current}, target version={_targetVersion}");
 
-        if (current == SchemaVersion)
+        if (current == _targetVersion)
             return;
 
-        if (current > SchemaVersion)
+        if (current > _targetVersion)
         {
             // A file written by a newer build. Opening it anyway would be a downgrade against a shape this
             // build does not know - the fastest way to lose the owner's numbers.
             throw new InvalidOperationException(
                 $"The Gateway statistics database at '{_path}' is at schema version {current}, but this " +
-                $"build only understands version {SchemaVersion}. This database was written by a newer " +
+                $"build only understands version {_targetVersion}. This database was written by a newer " +
                 "build of DevThrottle. Upgrade the Gateway rather than running an older build against it.");
         }
 
         // Every migration step runs inside one transaction together with its version stamp, so a crash
-        // mid-migration can never leave a half-migrated file claiming to be fully migrated.
+        // mid-migration can never leave a half-migrated file claiming to be fully migrated. Each step is
+        // gated on the TARGET as well as the current version: on every production path the target is
+        // SchemaVersion and the gates are inert, and the internal test seam stops the same real steps at an
+        // earlier version so the adoption fixtures can build a genuine version 5 file.
         using var tx = _connection.BeginTransaction();
 
-        if (current < 1)
+        if (current < 1 && _targetVersion >= 1)
             MigrateToVersion1(tx);
 
-        if (current < 2)
+        if (current < 2 && _targetVersion >= 2)
             MigrateToVersion2(tx);
 
-        if (current < 3)
+        if (current < 3 && _targetVersion >= 3)
             MigrateToVersion3(tx);
 
-        if (current < 4)
+        if (current < 4 && _targetVersion >= 4)
             MigrateToVersion4(tx);
 
-        if (current < 5)
+        if (current < 5 && _targetVersion >= 5)
             MigrateToVersion5(tx);
 
-        if (current < 6)
+        if (current < 6 && _targetVersion >= 6)
             MigrateToVersion6(tx);
 
-        if (current < 7)
+        if (current < 7 && _targetVersion >= 7)
             MigrateToVersion7(tx);
 
-        Execute($"PRAGMA user_version={SchemaVersion}", tx);
+        Execute($"PRAGMA user_version={_targetVersion}", tx);
         tx.Commit();
 
-        FileLog.Write($"[GatewayStatsDatabase] Migrate: {current} -> {SchemaVersion} applied");
+        FileLog.Write($"[GatewayStatsDatabase] Migrate: {current} -> {_targetVersion} applied");
     }
 
     // Version 1: the input-store schema (mission Phase 1).

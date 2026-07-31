@@ -88,19 +88,47 @@ public sealed class GatewayStatsSqliteBaselineEquivalenceTests : IDisposable
 
     private void BuildHandRolledDatabase()
     {
-        using (var db = new GatewayStatsDatabase(_handRolledPath))
+        // At VERSION 5, through the hand-rolled code's internal target-version seam: the baseline this class
+        // compares against is the version 5 shape, and the public constructor now migrates every file past
+        // it. The seam runs the same real migration steps and stops, which keeps the fixture rule - built by
+        // running shipped code, never synthesised. (There used to be an
+        // Assert.Equal(5, GatewayStatsDatabase.SchemaVersion) here - a literal copy of a constant, which can
+        // only ever fail when somebody legitimately moves the constant. Raising the schema version to 7 did
+        // exactly that and reddened five files at once for no defect - issue #1156.)
+        using (var db = new GatewayStatsDatabase(
+                   _handRolledPath, GatewayStatsSqliteAdoption.LegacyBaselineSchemaVersion))
         {
-            // The fixture is the FILE this block just created by running the real shipped code; what it
-            // must look like is pinned by the assertions that follow. There used to be an
-            // Assert.Equal(5, GatewayStatsDatabase.SchemaVersion) here - a literal copy of a constant,
-            // which can only ever fail when somebody legitimately moves the constant. Raising the
-            // schema version to 7 did exactly that and reddened five files at once for no defect
-            // (issue #1156). A pin that fires on correct changes is noise, not a guard.
         }
         SqliteConnection.ClearAllPools();
     }
 
+    /// <summary>A CURRENT-version hand-rolled store, for the tests whose subject is the whole chain rather
+    /// than the baseline.</summary>
+    private void BuildHandRolledCurrentDatabase()
+    {
+        using (var db = new GatewayStatsDatabase(_handRolledPath))
+        {
+        }
+        SqliteConnection.ClearAllPools();
+    }
+
+    /// <summary>Run the chain UP TO THE BASELINE ONLY. The strict equivalence claims below are about what
+    /// the BASELINE builds versus what version 5 of the hand-rolled code builds; migrating further would
+    /// compare version 5 against a later schema and fail on differences that are not defects.</summary>
     private void BuildBaselineDatabase()
+    {
+        var options = new DbContextOptionsBuilder<GatewayStatsDbContext>()
+            .UseSqlite(new SqliteConnectionStringBuilder { DataSource = _baselinePath }.ToString())
+            .Options;
+        using (var context = new GatewayStatsDbContext(options))
+        {
+            context.GetService<IMigrator>().Migrate(context.Database.GetMigrations().First());
+        }
+        SqliteConnection.ClearAllPools();
+    }
+
+    /// <summary>Run the WHOLE chain, for the tests whose subject is the chain's end state.</summary>
+    private void BuildFullChainDatabase()
     {
         var options = new DbContextOptionsBuilder<GatewayStatsDbContext>()
             .UseSqlite(new SqliteConnectionStringBuilder { DataSource = _baselinePath }.ToString())
@@ -425,7 +453,7 @@ public sealed class GatewayStatsSqliteBaselineEquivalenceTests : IDisposable
         // 2. Every one of the sixteen tables still holds every column it should, compared as an
         //    ORDER-INSENSITIVE NAME SET - because the rebuild reorders columns alphabetically and that
         //    reorder is the accepted divergence described above, not a defect.
-        var handRolledColumns = ExpectedColumnsOfAVersion5Store();
+        var handRolledColumns = ExpectedColumnsOfACurrentHandRolledStore();
         foreach (var (table, expectedColumns) in handRolledColumns)
         {
             var actual = Query(check, "SELECT name FROM pragma_table_info($t)", ("$t", table))
@@ -434,11 +462,14 @@ public sealed class GatewayStatsSqliteBaselineEquivalenceTests : IDisposable
         }
     }
 
-    /// <summary>The columns a version 5 store holds, read from a freshly built one rather than written out
-    /// here, so this cannot drift from what the old code actually creates.</summary>
-    private Dictionary<string, List<string>> ExpectedColumnsOfAVersion5Store()
+    /// <summary>The columns a CURRENT hand-rolled store holds, read from a freshly built one rather than
+    /// written out here, so this cannot drift from what the shipped code actually creates. Current version
+    /// rather than 5, because the store under test has been adopted and fully migrated by the time it is
+    /// compared - so the chain's own version 6 and 7 steps must have brought each shared table to exactly
+    /// the shape the hand-rolled steps give it.</summary>
+    private Dictionary<string, List<string>> ExpectedColumnsOfACurrentHandRolledStore()
     {
-        var reference = Path.Combine(_dir, "reference-v5.db");
+        var reference = Path.Combine(_dir, "reference-current.db");
         using (var db = new GatewayStatsDatabase(reference)) { }
         SqliteConnection.ClearAllPools();
 
@@ -451,15 +482,18 @@ public sealed class GatewayStatsSqliteBaselineEquivalenceTests : IDisposable
     }
 
     /// <summary>
-    /// The version stamp is part of the shape too. A hand-rolled store reports 5; a baseline-built store must
-    /// report 5 as well, or an older build meeting a newer file would read 0, decide the file predates every
-    /// migration, and run its version 1 to 5 steps against tables that already exist.
+    /// The version stamp is part of the shape too, at BOTH ends of the chain. A store the chain builds from
+    /// nothing must carry the same PRAGMA user_version the shipped hand-rolled code writes, or an older
+    /// build meeting a chain-built file would read the wrong number - read 0 and it decides the file
+    /// predates every migration and runs its version 1 to 5 steps against tables that already exist; read a
+    /// stale middle number and it re-runs steps the file already has. Compared at the CURRENT version, so
+    /// every migration's stamp is exercised, not only the baseline's.
     /// </summary>
     [Fact]
-    public void Baseline_StampsTheSameSchemaVersionAsTheHandRolledVersion5Code()
+    public void TheChain_StampsTheSameSchemaVersionAsTheShippedHandRolledCode()
     {
-        BuildHandRolledDatabase();
-        BuildBaselineDatabase();
+        BuildHandRolledCurrentDatabase();
+        BuildFullChainDatabase();
 
         using var handRolled = Open(_handRolledPath);
         using var baseline = Open(_baselinePath);

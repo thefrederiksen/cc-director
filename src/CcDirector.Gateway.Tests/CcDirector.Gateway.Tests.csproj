@@ -50,4 +50,17 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
+  <!-- The CcDirector.Gateway.Host reference above also drags that project's Content item
+       'hosted-gateway.image' into THIS project's output, because content items flow transitively across
+       project references. That file is the IMAGE-WIDE hosted identity marker: GatewayHostedMode.IsHostedImage
+       is true whenever it sits in the application base directory, which for a test run is this project's
+       output directory. With it present, every GatewayHost constructed anywhere in the test process believes
+       it is the hosted container image, and hundreds of unrelated tests fail with 503/401/402 shapes (the
+       2026-07-31 red-main incident, devthrottle_internal#1170). The test output is NOT the hosted image, so
+       the marker is removed after every build. The Host project's own output and its published artifact are
+       untouched - the hosted identity design is unchanged. -->
+  <Target Name="RemoveHostedImageMarkerFromTestOutput" AfterTargets="Build">
+    <Delete Files="$(OutDir)hosted-gateway.image" />
+  </Target>
+
 </Project>

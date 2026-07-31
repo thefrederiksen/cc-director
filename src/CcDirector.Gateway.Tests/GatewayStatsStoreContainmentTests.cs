@@ -200,9 +200,9 @@ public sealed class GatewayStatsStoreContainmentTests : IDisposable
     // ================================================ the ordinary self-host path still works
 
     /// <summary>
-    /// Self-host, unchanged: the local file is opened, the chain is applied, and the sixteen tables are
-    /// there. Asserted by READING the schema rather than by the absence of an exception - a store that
-    /// silently created nothing would not throw either.
+    /// Self-host, unchanged: the local file is opened, the chain is applied, and every table the model
+    /// names is there. Asserted by READING the schema rather than by the absence of an exception - a store
+    /// that silently created nothing would not throw either.
     /// </summary>
     [Fact]
     public void SelfHost_OpensTheLocalFileAndAppliesTheChain()
@@ -223,7 +223,11 @@ public sealed class GatewayStatsStoreContainmentTests : IDisposable
             .OrderBy(t => t, StringComparer.Ordinal)
             .ToList();
 
-        Assert.Equal(16, expected.Count);
+        // The vacuity guard for the check below: an empty expectation would make "nothing missing" true of
+        // an empty database. Nineteen = the sixteen statistics tables ported from schema version 5 plus the
+        // three concurrency tables the port moved out of gateway-concurrency-stats.json (this pin read 16
+        // until those three joined the model).
+        Assert.Equal(19, expected.Count);
 
         var connection = context.Database.GetDbConnection();
         connection.Open();
