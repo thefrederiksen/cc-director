@@ -139,41 +139,39 @@ def delete(path: str, timeout: float = 30) -> Any:
     return _request("DELETE", path, None, timeout=timeout)
 
 
-def get_fleet() -> Tuple[List[Dict[str, Any]], Optional[bool], Optional[str]]:
-    """The fleet roster, plus whether the Director could vouch that it is COMPLETE (issue #1051).
+def get_fleet() -> Tuple[List[Dict[str, Any]], Optional[bool], Optional[str], Optional[str]]:
+    """The fleet roster and BOTH of the Director's folded cautions (issues #1051, #1159 step A).
 
     The Gateway used to drop an unreachable Director's sessions and still answer 200, so a short roster
     was indistinguishable from a whole one. Since epic #1159 step A it SERVES those rows instead, dimmed
     and dated, so the doubt has moved rather than gone: the list is no longer short, but an unreachable
     Director's rows are the last thing it said rather than a confirmed present state. Asking for the
-    envelope returns the Director's folded verdict alongside the rows; the verdict is computed there,
-    never here, because deciding what a reachability state MEANS is ruling and a client only renders.
+    envelope returns the Director's folded verdicts alongside the rows; they are computed there, never
+    here, because deciding what a reachability state MEANS is ruling and a client only renders.
 
-    Returns (sessions, complete, reason). `complete` is None for "the Director did not say" - and
-    None is NOT True: a Director that has not restarted since this was added still serves the bare
-    array, and reading its silence as a guarantee would reinstate the very defect this closes.
+    Returns (sessions, complete, reason, stale_answer_caution).
 
-    Lives here, not in one tool, because three tools resolve a target against this roster and each
-    used to print "No session matches" with no idea the list might be short. Three copies of that
-    judgement would drift; one cannot.
-    """
-    body = get_json("fleet/sessions?envelope=true") or []
-    if isinstance(body, list):
-        return body, None, None
-    sessions = body.get("sessions") or []
-    complete = body.get("rosterComplete")
-    reason = body.get("rosterIncompleteReason")
-    return sessions, (complete if isinstance(complete, bool) else None), reason
+    * `complete` is None for "the Director did not say" - and None is NOT True: a Director that has not
+      restarted since this was added still serves the bare array, and reading its silence as a guarantee
+      would reinstate the very defect this closes.
+    * `stale_answer_caution` is the NEGATIVE-ANSWER caution, printed only when the caller's own lookup
+      came back with nothing. A machine that is connected but has not reported recently can be hiding
+      what was asked for, and that is the single case where its staleness changes the answer - a lookup
+      that FOUND what it wanted was plainly not hidden from. Printing it on a positive answer is what
+      teaches people to stop reading cautions, which is why it is a separate value and not folded into
+      `reason`.
 
+    THERE IS EXACTLY ONE FETCH, AND IT RETURNS EVERY FIELD. A second helper carrying the newer field
+    existed briefly and only `cc-history` called it, so `message send`, `session list`, rename, done and
+    `cc-status` went on answering "nothing matched" with no idea a stale machine might be hiding the
+    answer - a contract advertising a caution most callers never received (inspection 3, finding 1). An
+    opt-in helper is the drift; widening this one and letting the extra value go unread at a site that
+    does not need it is not. The arity change is deliberate: it makes every call site declare what it
+    does with the caution instead of silently keeping the old answer.
 
-def get_fleet_with_stale_caution():
-    """The roster, its completeness verdict, and the NEGATIVE-ANSWER caution (all folded by the Director).
-
-    The third value is printed ONLY when the caller's own lookup came back empty. A machine that is
-    connected but has not reported recently can be hiding what was asked for, and that is the single case
-    where its staleness changes the answer - a lookup that FOUND what it wanted was plainly not hidden
-    from. Printing it unconditionally is what teaches people to stop reading cautions, which is why it is
-    a separate value and not folded into the completeness reason.
+    Lives here, not in one tool, because four tools resolve a target against this roster and each used
+    to print "No session matches" with no idea the list might be short. Four copies of that judgement
+    would drift; one cannot.
     """
     body = get_json("fleet/sessions?envelope=true") or []
     if isinstance(body, list):

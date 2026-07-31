@@ -35,9 +35,9 @@ OFFLINE_REASON = "1 Director could not be reached, so its sessions below are the
 def fleet(monkeypatch):
     """Serve a chosen roster and completeness verdict, with no real HTTP."""
 
-    def serve(sessions, complete, reason=None):
+    def serve(sessions, complete, reason=None, stale=None):
         monkeypatch.delenv("CC_SESSION_ID", raising=False)
-        monkeypatch.setattr(session_ops, "_get_fleet", lambda: (sessions, complete, reason))
+        monkeypatch.setattr(session_ops, "_get_fleet", lambda: (sessions, complete, reason, stale))
 
     return serve
 
@@ -58,8 +58,22 @@ def test_an_incomplete_roster_reports_the_directors_own_reason():
 
 
 def test_an_incomplete_roster_with_no_reason_still_warns():
-    # Never go silent just because the reason was missing - incomplete is the load-bearing fact.
-    assert "incomplete" in director.roster_caveat(False, None)
+    """Never go silent just because the reason was missing - not-complete is the load-bearing fact.
+
+    This asserted the WORD "incomplete" until epic #1159 step A, and the word had to go: the roster no
+    longer drops an unreachable Director's rows, so "this list may be incomplete" described an
+    implementation that no longer exists. The fallback was reworded to the caveat that is still true -
+    those rows are the last thing that machine said - and this test was left pinning the retired word,
+    so it failed on the branch and passed on main. It now pins the two properties the test exists for
+    and neither of them is a wording: it says SOMETHING, and it says the not-complete thing rather than
+    the cannot-vouch thing. Both wordings can be edited again without this going red for no reason,
+    and going silent or collapsing the two states still reddens it.
+    """
+    caveat = director.roster_caveat(False, None)
+
+    assert caveat != ""
+    assert "could not be reached" in caveat
+    assert caveat != director.roster_caveat(None, None)
 
 
 def test_an_unknown_verdict_is_not_treated_as_complete():
@@ -173,7 +187,7 @@ def test_get_fleet_reads_the_envelope(monkeypatch):
         "rosterIncompleteReason": OFFLINE_REASON,
     })
 
-    sessions, complete, reason = director.get_fleet()
+    sessions, complete, reason, _ = director.get_fleet()
 
     assert len(sessions) == 1
     assert complete is False
@@ -198,17 +212,18 @@ def test_get_fleet_tolerates_an_older_director_serving_a_bare_array(monkeypatch)
     # an older Director. It must still work - and must report "cannot vouch", never "complete".
     monkeypatch.setattr(director, "get_json", lambda path: [_row()])
 
-    sessions, complete, reason = director.get_fleet()
+    sessions, complete, reason, stale = director.get_fleet()
 
     assert len(sessions) == 1
     assert complete is None
     assert reason is None
+    assert stale is None
 
 
 def test_get_fleet_ignores_a_non_boolean_completeness_value(monkeypatch):
     # A malformed field must degrade to "cannot vouch", not to a truthy string reading as complete.
     monkeypatch.setattr(director, "get_json", lambda path: {"sessions": [], "rosterComplete": "yes"})
 
-    _, complete, _ = director.get_fleet()
+    _, complete, _, _ = director.get_fleet()
 
     assert complete is None

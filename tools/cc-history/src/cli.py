@@ -61,7 +61,7 @@ def _run(
 ) -> None:
     """Show the last N conversation messages of TARGET (works for Claude, Codex, and Pi sessions)."""
     try:
-        sessions, complete, roster_reason, stale_caution = director.get_fleet_with_stale_caution()
+        sessions, complete, roster_reason, stale_caution = director.get_fleet()
     except director.DirectorError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)

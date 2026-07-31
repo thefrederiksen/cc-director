@@ -85,11 +85,12 @@ def _repo_name(repo: str) -> str:
     return repo.replace("\\", "/").rstrip("/").split("/")[-1] if repo else "-"
 
 
-def _get_fleet() -> Tuple[List[Dict[str, Any]], Optional[bool], Optional[str]]:
-    """The fleet roster and its completeness verdict, with this tool's error posture (issue #1051).
+def _get_fleet() -> Tuple[List[Dict[str, Any]], Optional[bool], Optional[str], Optional[str]]:
+    """The fleet roster and BOTH folded cautions, with this tool's error posture (issue #1051).
 
-    The fetch itself is shared (director.get_fleet) so the three tools that resolve a target against
-    this roster cannot drift; only the "print and exit" behaviour is local.
+    The fetch itself is shared (director.get_fleet) so the four tools that resolve a target against
+    this roster cannot drift; only the "print and exit" behaviour is local. The fourth value is the
+    negative-answer caution and is printed ONLY where this tool's own answer came back empty.
     """
     try:
         return director.get_fleet()
@@ -103,7 +104,7 @@ def _roster_caveat(complete: Optional[bool], reason: Optional[str]) -> str:
 
 
 def _resolve_target(target: str, *, command_name: str) -> Dict[str, Any]:
-    sessions, complete, reason = _get_fleet()
+    sessions, complete, reason, stale_caution = _get_fleet()
     # Issue #821: the shared resolver now understands the three-digit session number (#820) as a
     # first-class target, preferring it over id-prefix / name matching, so message send / ask and
     # session rename all address a session by its number through this one call.
@@ -120,6 +121,12 @@ def _resolve_target(target: str, *, command_name: str) -> Dict[str, Any]:
         caveat = _roster_caveat(complete, reason)
         if caveat:
             console.print(f"[yellow]The fleet list searched may be incomplete.[/yellow] {caveat}")
+        # THE negative answer the second caution exists for. A machine whose tunnel is up but whose
+        # pushes are late can be hiding the very session being addressed, and every target-resolving
+        # verb comes through here - message send, message ask, rename, done, hold, compact. Printed on
+        # this path only, so it stays rare enough to be read.
+        if stale_caution:
+            console.print(f"[yellow]{stale_caution}[/yellow]")
         raise typer.Exit(1)
     if len(matches) > 1:
         console.print(f"[yellow]'{target}' is ambiguous - {len(matches)} matches:[/yellow]")
@@ -150,7 +157,7 @@ def resolve_target_or_current(target: Optional[str]) -> str:
 
 def list_sessions(json_output: bool) -> None:
     """List every session running across the fleet."""
-    sessions, complete, reason = _get_fleet()
+    sessions, complete, reason, stale_caution = _get_fleet()
     caveat = _roster_caveat(complete, reason)
 
     if json_output:
@@ -162,6 +169,11 @@ def list_sessions(json_output: bool) -> None:
         # still has to be told, and stderr reaches a human without corrupting the parse.
         if caveat:
             print(f"WARNING: the fleet list may be incomplete. {caveat}", file=sys.stderr)
+        # An EMPTY machine-readable roster is a negative answer too, and the agent parsing it is the
+        # reader most likely to act on "nothing is running" as a fact. stderr, for the same reason the
+        # caveat goes there: the array shape is depended on.
+        if not sessions and stale_caution:
+            print(f"WARNING: {stale_caution}", file=sys.stderr)
         return
 
     if not sessions:
@@ -171,8 +183,17 @@ def list_sessions(json_output: bool) -> None:
         # Absent is not empty, and only one of the two is worth saying out loud.
         if caveat:
             console.print(f"[yellow]No sessions were returned, but this is not the whole fleet.[/yellow] {caveat}")
+        elif stale_caution:
+            # Connected, so the roster is COMPLETE and the offline caveat is silent - and the answer is
+            # still empty while a machine's rows are known to be stale. That is precisely the case where
+            # "no sessions are running in the fleet" is a claim the list cannot support.
+            console.print("[yellow]No sessions were returned, but this is not the whole fleet.[/yellow]")
         else:
             console.print("No sessions are running in the fleet.")
+        # Both cautions can be live at once - one Director offline, another connected but quiet - and on
+        # an empty answer they say different things. Printed after, never instead of, the other.
+        if stale_caution:
+            console.print(f"[yellow]{stale_caution}[/yellow]")
         return
 
     table = Table(show_header=True, header_style="bold", box=box.ASCII)
@@ -226,7 +247,7 @@ def whoami() -> None:
     # Completeness is deliberately ignored here: whoami looks up THIS session, which lives on the
     # Director being asked, and a Director always reports its own sessions (issue #1019). An
     # unreachable Director elsewhere cannot hide the caller from itself.
-    sessions, _, _ = _get_fleet()
+    sessions, _, _, _ = _get_fleet()
     me = next(
         (s for s in sessions if director.field(s, "sessionId", "SessionId").lower() == sid.lower()),
         None,
@@ -710,7 +731,7 @@ def _fleet_ids() -> List[str]:
     # sessions it checks for are the ones it just spawned on THIS Director, which always reports its
     # own (issue #1019), so completeness cannot hide them - but reading a different route than the
     # rest of the tool is how a selftest ends up passing on a roster nobody else sees.
-    sessions, _, _ = director.get_fleet()
+    sessions, _, _, _ = director.get_fleet()
     return [director.field(s, "sessionId", "SessionId") for s in sessions]
 
 

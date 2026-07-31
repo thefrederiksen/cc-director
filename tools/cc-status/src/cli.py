@@ -41,7 +41,7 @@ def _run(
     """Show what fleet sessions are doing: activity state, agent, repo, and last status reason."""
     try:
         # Named roster_reason, not reason: the per-session loop below binds `reason` to a status reason.
-        sessions, complete, roster_reason = director.get_fleet()
+        sessions, complete, roster_reason, stale_caution = director.get_fleet()
     except director.DirectorError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)
@@ -58,6 +58,11 @@ def _run(
             # Not found, or not reached? The two call for opposite next steps, so never imply the first.
             if caveat:
                 console.print(f"[yellow]The fleet list searched may be incomplete.[/yellow] {caveat}")
+            # The negative answer the second caution exists for: a connected machine whose pushes are
+            # late can be hiding the target. Printed here and not on the success path, so it stays rare
+            # enough to be read.
+            if stale_caution:
+                console.print(f"[yellow]{stale_caution}[/yellow]")
             raise typer.Exit(1)
 
     me = director.session_id()
@@ -66,8 +71,14 @@ def _run(
         # support - the sessions may be running fine on the machine we could not read (issue #1051).
         if caveat:
             console.print(f"[yellow](nothing came back, but this is not the whole fleet)[/yellow] {caveat}")
+        elif stale_caution:
+            console.print("[yellow](nothing came back, but this is not the whole fleet)[/yellow]")
         else:
             console.print("(no sessions running)")
+        # Both cautions can be live at once - one Director offline, another connected but quiet - and on
+        # an empty answer they say different things. Printed after, never instead of, the other.
+        if stale_caution:
+            console.print(f"[yellow]{stale_caution}[/yellow]")
         return
 
     for s in sessions:
