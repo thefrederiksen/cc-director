@@ -1,168 +1,194 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Bumps the product version, commits, tags, and pushes to trigger a GitHub Actions release.
+    Cuts a release. The only thing you need to decide is the version number.
 
 .DESCRIPTION
-    The product version lives in EXACTLY ONE file: Directory.Build.props at the
-    repo root (see docs/architecture/VERSIONING.md). MSBuild stamps that version
-    into every .NET binary in the release (Director, Gateway, Launcher, setup
-    wizards, setup CLI); all UIs read it from their assembly at runtime, so no
-    other file needs to change. (The Cockpit is the React app served in-process by
-    the Gateway now - issue #979 - so it has no separate stamped binary.)
+    Run it, press Enter to accept the next version, done.
 
-    This script bumps Directory.Build.props, commits, creates the vX.Y.Z git tag,
-    and pushes. The GitHub Actions release workflow builds and publishes the
-    release for Windows and macOS; a workflow guard fails the release if the tag
-    and Directory.Build.props ever disagree.
+    The product version lives in EXACTLY ONE file: Directory.Build.props at the
+    repo root (see docs/architecture/VERSIONING.md). MSBuild stamps it into every
+    .NET binary in the release (Director, Gateway, Launcher, setup wizards, setup
+    CLI); all UIs read it from their assembly at runtime, so no other file needs
+    to change.
+
+    WHY THIS OPENS A PULL REQUEST INSTEAD OF PUSHING TO MAIN
+    -------------------------------------------------------
+    main is protected by a ruleset that requires a pull request. The previous
+    version of this script ended with `git push origin main` followed by
+    `git push origin <tag>`. The branch push is rejected and the tag push
+    succeeds, which leaves the tag pointing at a commit that is not on main - a
+    released version whose bump and notes are missing from the branch everyone
+    works from. That happened on v1.9.2 and had to be repaired by hand.
+
+    So the order is: branch, commit, pull request, MERGE, and only then tag the
+    commit that is now on main. The tag can never get ahead of main.
 
 .EXAMPLE
     .\scripts\new-release.ps1
+    Current version: 1.9.2
+    New version [1.9.3]:            <- press Enter to take it
 #>
 
 $ErrorActionPreference = "Stop"
-
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$repoSlug = "thefrederiksen/devthrottle"
 
-# --- Check for uncommitted changes ---
-$status = git -C $repoRoot status --porcelain
-if ($status) {
+function Fail($message, $howToFix) {
     Write-Host ""
-    Write-Host "ERROR: Working tree has uncommitted changes." -ForegroundColor Red
-    Write-Host "Commit or stash your changes before running a release." -ForegroundColor Red
-    Write-Host ""
-    git -C $repoRoot status --short
+    Write-Host "ERROR: $message" -ForegroundColor Red
+    if ($howToFix) { Write-Host $howToFix -ForegroundColor Yellow }
     Write-Host ""
     exit 1
 }
+
+# --- Tools this needs ---
+if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+    Fail "The GitHub CLI (gh) is not installed." "It is required because main only accepts changes through a pull request.`nInstall from https://cli.github.com/ then run: gh auth login"
+}
+gh auth status 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { Fail "The GitHub CLI is not signed in." "Run: gh auth login" }
 
 # --- The single version source ---
 $propsPath = Join-Path $repoRoot "Directory.Build.props"
-if (-not (Test-Path $propsPath)) {
-    Write-Error "Directory.Build.props not found at $propsPath"
-    exit 1
-}
+if (-not (Test-Path $propsPath)) { Fail "Directory.Build.props not found at $propsPath" }
 
 [xml]$props = Get-Content $propsPath
 $currentVersion = $props.SelectSingleNode("//Version").InnerText
-if (-not $currentVersion) {
-    Write-Error "Could not read <Version> from $propsPath"
-    exit 1
+if (-not $currentVersion) { Fail "Could not read <Version> from $propsPath" }
+
+# --- Suggest the next patch version, which is what we ship day to day ---
+$suggested = $null
+if ($currentVersion -match '^(\d+)\.(\d+)\.(\d+)$') {
+    $suggested = "{0}.{1}.{2}" -f $matches[1], $matches[2], ([int]$matches[3] + 1)
 }
 
 Write-Host ""
 Write-Host "Current version: $currentVersion" -ForegroundColor Cyan
-$newVersion = Read-Host "New version (X.Y.Z or X.Y.Z-rcN)"
+if ($suggested) {
+    $answer = Read-Host "New version [$suggested]"
+    if ([string]::IsNullOrWhiteSpace($answer)) { $newVersion = $suggested } else { $newVersion = $answer.Trim() }
+} else {
+    $newVersion = (Read-Host "New version (X.Y.Z or X.Y.Z-rcN)").Trim()
+}
 
-# --- Validate semver format ---
 if ($newVersion -notmatch '^\d+\.\d+\.\d+(-rc\d+)?$') {
-    Write-Error "Invalid version format: '$newVersion'. Expected X.Y.Z or X.Y.Z-rcN"
-    exit 1
+    Fail "Invalid version format: '$newVersion'." "Expected X.Y.Z or X.Y.Z-rcN"
 }
+if ($newVersion -eq $currentVersion) { Fail "New version is the same as the current one ($currentVersion)." }
 
-if ($newVersion -eq $currentVersion) {
-    Write-Error "New version is the same as current version ($currentVersion)"
-    exit 1
-}
-
-# --- Check tag doesn't already exist ---
 $tagName = "v$newVersion"
-$existingTag = git -C $repoRoot tag -l $tagName
-if ($existingTag) {
-    Write-Error "Tag $tagName already exists"
-    exit 1
-}
+$branch  = "release/$tagName"
 
-# --- Guard: no .csproj may carry its own <Version> (it would silently override the props file) ---
-$strayVersions = Get-ChildItem $repoRoot -Recurse -Filter *.csproj |
-    Where-Object { $_.FullName -notmatch '\\archived\\' } |
-    Where-Object { (Get-Content $_.FullName -Raw) -match '<Version>' }
-if ($strayVersions) {
-    Write-Host ""
-    Write-Host "ERROR: These .csproj files declare their own <Version>, which overrides Directory.Build.props:" -ForegroundColor Red
-    $strayVersions | ForEach-Object { Write-Host "  - $($_.FullName)" -ForegroundColor Red }
-    Write-Host "Remove the <Version> element(s); the props file is the single source of truth." -ForegroundColor Red
-    exit 1
-}
+if (git -C $repoRoot tag -l $tagName)                  { Fail "Tag $tagName already exists locally." }
+if (git -C $repoRoot ls-remote --tags origin $tagName) { Fail "Tag $tagName already exists on the remote." "That version has been released. Pick the next one." }
 
-# --- Guard: the written release notes MUST exist before the tag does ---
-#
-# The release workflow publishes docs/public/release-notes/<tag>.md verbatim and FAILS when it is
-# absent - it will not generate a substitute, because a page of internal pull-request titles looks
-# like release notes and therefore ships unread. This guard is the same rule applied a minute
-# earlier, where it costs nothing: a tag that is already pushed cannot be un-pushed, and the
-# workflow's copy of the check can only fail AFTER the whole build has run.
-#
-# The working tree is clean by this point, so the notes file has to be committed already.
+# --- Release notes must exist. The workflow publishes this file verbatim as the
+#     release page and fails without it. Catching that here costs nothing; a
+#     pushed tag cannot be un-pushed. The file may be uncommitted - this script
+#     commits it along with the version bump. ---
+$notesRel  = "docs/public/release-notes/$tagName.md"   # forward slashes: matched against git status output
 $notesPath = Join-Path $repoRoot "docs\public\release-notes\$tagName.md"
 if (-not (Test-Path $notesPath)) {
-    Write-Host ""
-    Write-Host "ERROR: No written release notes for $tagName." -ForegroundColor Red
-    Write-Host "  Expected: $notesPath" -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Write the notes, commit them, then run this script again. The release workflow" -ForegroundColor Yellow
-    Write-Host "publishes that file and refuses to invent a substitute." -ForegroundColor Yellow
-    Write-Host ""
-    exit 1
+    Fail "No written release notes for $tagName." "Expected: $notesPath`n`nWrite them first. The workflow publishes that file as the release page and refuses`nto invent a substitute - a list of internal pull request titles looks like release`nnotes and therefore ships unread."
 }
-
 $notesChars = ((Get-Content $notesPath -Raw) -replace '\s', '').Length
 if ($notesChars -lt 200) {
-    Write-Host ""
-    Write-Host "ERROR: $notesPath has only $notesChars non-whitespace characters." -ForegroundColor Red
-    Write-Host "That is a placeholder, not release notes. The workflow applies the same floor." -ForegroundColor Red
-    Write-Host ""
-    exit 1
+    Fail "$notesRel has only $notesChars non-whitespace characters." "That is a placeholder, not release notes. The workflow applies the same floor."
 }
-Write-Host ""
-Write-Host "Release notes: $notesPath ($notesChars characters)" -ForegroundColor Gray
 
-# --- Update the one file ---
-Write-Host ""
-Write-Host "Updating version to $newVersion..." -ForegroundColor Cyan
-$props.SelectSingleNode("//Version").InnerText = $newVersion
-$props.Save($propsPath)
-Write-Host "  [+] $propsPath" -ForegroundColor Gray
+# --- Guard: no .csproj may carry its own <Version> (it silently overrides the props file) ---
+$stray = Get-ChildItem $repoRoot -Recurse -Filter *.csproj |
+    Where-Object { $_.FullName -notmatch '\\archived\\' } |
+    Where-Object { (Get-Content $_.FullName -Raw) -match '<Version>' }
+if ($stray) {
+    $list = ($stray | ForEach-Object { "  - $($_.FullName)" }) -join "`n"
+    Fail "These .csproj files declare their own <Version>, overriding Directory.Build.props:`n$list" "Remove the <Version> elements; the props file is the single source of truth."
+}
 
-# --- Determine pre-release ---
+# --- Working tree must be clean apart from the two files this script owns ---
+$notesPattern = [regex]::Escape($notesRel)
+$dirty = git -C $repoRoot status --porcelain | Where-Object {
+    $_ -notmatch 'Directory\.Build\.props$' -and $_ -notmatch "$notesPattern$"
+}
+if ($dirty) {
+    Fail "The working tree has changes that are not part of this release:`n$($dirty -join "`n")" "Commit, stash or discard them first. A release must be cut from a known state."
+}
+
+# --- Cut from an up-to-date main ---
+Write-Host "Fetching origin..." -ForegroundColor Gray
+git -C $repoRoot fetch --quiet origin main
+$currentBranch = git -C $repoRoot rev-parse --abbrev-ref HEAD
+if ($currentBranch -ne "main") { Fail "You are on '$currentBranch', not main." "Run: git checkout main" }
+$behind = git -C $repoRoot rev-list --count HEAD..origin/main
+if ([int]$behind -gt 0) { Fail "Local main is $behind commit(s) behind origin/main." "Run: git pull" }
+
 $isPreRelease = $newVersion -match '-rc\d+$'
 
-# --- Summary ---
 Write-Host ""
-Write-Host "=== Release Summary ===" -ForegroundColor Yellow
+Write-Host "=== Release summary ===" -ForegroundColor Yellow
 Write-Host "  Version : $currentVersion -> $newVersion"
-Write-Host "  Tag     : $tagName"
-if ($isPreRelease) {
-    Write-Host "  Type    : Pre-release" -ForegroundColor Yellow
-} else {
-    Write-Host "  Type    : Stable release" -ForegroundColor Green
+Write-Host "  Tag     : $tagName  (created only AFTER the pull request merges)"
+Write-Host "  Branch  : $branch"
+Write-Host "  Notes   : $notesRel ($notesChars characters)"
+if ($isPreRelease) { Write-Host "  Type    : Pre-release" -ForegroundColor Yellow }
+else               { Write-Host "  Type    : Stable release" -ForegroundColor Green }
+Write-Host ""
+Write-Host "This will bump the version, open a pull request, merge it, then tag main." -ForegroundColor Gray
+Write-Host ""
+
+$confirm = Read-Host "Go? (Y/N)"
+if ($confirm -ne 'Y' -and $confirm -ne 'y') { Write-Host "Aborted. Nothing was changed." -ForegroundColor Yellow; exit 0 }
+
+# --- 1. Branch, bump, commit, push ---
+Write-Host ""
+Write-Host "Creating $branch..." -ForegroundColor Cyan
+git -C $repoRoot checkout -q -b $branch
+
+$props.SelectSingleNode("//Version").InnerText = $newVersion
+$props.Save($propsPath)
+
+git -C $repoRoot add -- $propsPath $notesPath
+git -C $repoRoot commit -q -m "release: $tagName"
+git -C $repoRoot push -q -u origin $branch
+if ($LASTEXITCODE -ne 0) { Fail "Could not push $branch." }
+
+# --- 2. Pull request, then merge. main requires this; see the header. ---
+Write-Host "Opening the pull request..." -ForegroundColor Cyan
+$prBody = "Version bump and release notes for $tagName.`n`nThe tag is created only after this merges, so it can never point at a commit that is not on main.`n`nSee $notesRel for what is in this release."
+gh pr create --repo $repoSlug --base main --head $branch --title "release: $tagName" --body $prBody | Out-Null
+if ($LASTEXITCODE -ne 0) { Fail "Could not open the pull request." "The branch is pushed. Open and merge it by hand, then run:`n  git checkout main; git pull; git tag $tagName; git push origin $tagName" }
+
+Write-Host "Merging..." -ForegroundColor Cyan
+gh pr merge $branch --repo $repoSlug --squash --delete-branch
+if ($LASTEXITCODE -ne 0) {
+    Fail "The pull request did not merge." "It is open and the branch is pushed. Merge it in the browser, then run:`n  git checkout main; git pull; git tag $tagName; git push origin $tagName"
 }
-Write-Host ""
-Write-Host "File changed:" -ForegroundColor Yellow
-Write-Host "  - Directory.Build.props (the single version source)"
-Write-Host ""
 
-$confirm = Read-Host "Commit, tag, and push? (Y/N)"
-if ($confirm -ne 'Y' -and $confirm -ne 'y') {
-    Write-Host ""
-    Write-Host "Aborted. The file was updated but not committed." -ForegroundColor Yellow
-    Write-Host "Run 'git checkout -- Directory.Build.props' to undo." -ForegroundColor Yellow
-    exit 0
+# --- 3. Only now: tag the commit that is actually on main ---
+Write-Host "Returning to main..." -ForegroundColor Cyan
+git -C $repoRoot checkout -q main
+git -C $repoRoot pull -q
+
+# Prove the merge landed before tagging it.
+[xml]$check = Get-Content $propsPath
+$onMain = $check.SelectSingleNode("//Version").InnerText
+if ($onMain -ne $newVersion) {
+    Fail "main still reports version '$onMain', not '$newVersion'." "The merge did not land as expected. Nothing has been tagged, so nothing has been`nreleased. Check the pull request, then tag by hand once main is correct."
 }
 
-# --- Git operations ---
-Write-Host ""
-Write-Host "Committing..." -ForegroundColor Cyan
-git -C $repoRoot add $propsPath
-git -C $repoRoot commit -m "release: v$newVersion"
-
-Write-Host "Tagging $tagName..." -ForegroundColor Cyan
+Write-Host "Tagging $tagName on main..." -ForegroundColor Cyan
 git -C $repoRoot tag $tagName
-
-Write-Host "Pushing to origin..." -ForegroundColor Cyan
-git -C $repoRoot push origin main
 git -C $repoRoot push origin $tagName
+if ($LASTEXITCODE -ne 0) { Fail "Could not push the tag." "main is correct; only the tag is missing. Run: git push origin $tagName" }
 
 Write-Host ""
-Write-Host "Done! Release $tagName pushed." -ForegroundColor Green
-Write-Host "GitHub Actions: https://github.com/example-org/devthrottle/actions" -ForegroundColor Cyan
+Write-Host "Released $tagName." -ForegroundColor Green
+Write-Host "  Build    : https://github.com/$repoSlug/actions/workflows/release.yml" -ForegroundColor Cyan
+Write-Host "  Release  : https://github.com/$repoSlug/releases/tag/$tagName" -ForegroundColor Cyan
+Write-Host "  Download : https://stdevthrottledl.blob.core.windows.net/download/latest/devthrottle-setup-win-x64.exe" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "The workflow builds, signs, publishes, mirrors the public downloads, and then" -ForegroundColor Gray
+Write-Host "fetches the installer back from that address to check its hash. If it goes red," -ForegroundColor Gray
+Write-Host "the release is not usable - read the failing step before announcing anything." -ForegroundColor Gray
+Write-Host ""
