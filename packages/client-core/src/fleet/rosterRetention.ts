@@ -170,9 +170,27 @@ export function mergeRosterRetention(prev: RetentionCache, envelope: SessionsEnv
       continue;
     }
 
-    // Nothing served this poll (an older Gateway that still drops an offline machine's sessions, a
-    // Director swept past the eviction horizon, or one the Gateway forgot): re-inject the retained cache,
-    // marked, and leave the cache untouched so the cards persist.
+    // Nothing served this poll. Whether that means "keep showing it" or "it is gone" is decided by the
+    // Gateway's own semantics, not by a second clock on the client that could drift away from the one
+    // that actually evicts (inspection 1, finding 3):
+    //
+    //  - The envelope NAMES this Director but served no rows: the Gateway still knows the machine, it
+    //    just has nothing to say about it. Keep retaining - that is the whole point of the retention.
+    //  - The envelope does not name it AT ALL: the Gateway has swept it past the eviction horizon and
+    //    forgotten it. Drop it from the cache. Without this the phone re-injects its own copy forever,
+    //    the machine never returns to supply an authoritative empty set, and the Gateway's BOUNDED
+    //    retention becomes an UNBOUNDED per-page client retention - which made "sessions leave after the
+    //    eviction horizon" false on the one surface the owner actually looks at.
+    //
+    // Note the version-skew case this does not special-case: a Gateway old enough to serve no reachability
+    // entries at all names nobody, so every retained Director is dropped and the phone falls back to
+    // showing only live rows. That is the pre-mission behaviour rather than a new failure, and it is left
+    // visible here rather than hidden behind a guess about which Gateway is on the other end.
+    if (!reach) {
+      nextCache.byDirector.delete(id);
+      continue;
+    }
+
     const retained = prev.byDirector.get(id);
     if (retained && retained.length > 0) {
       for (const s of retained) {

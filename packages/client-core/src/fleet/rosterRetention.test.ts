@@ -97,14 +97,32 @@ describe("roster keep-and-mark retention merge", () => {
     expect(mark?.lastSeenLabel).toBe("last seen 2m ago");
   });
 
-  it("keeps sessions even after the Gateway forgets the Director entirely (no entry, no live sessions)", () => {
+  // Inspection 1, finding 3. This test used to demand the opposite - that the card survive
+  // "indefinitely" - which encoded the defect rather than the intent: the Gateway's retention is BOUNDED by
+  // the eviction horizon, and a phone that re-injects its own cache forever made that bound false on the
+  // one surface the owner looks at. A retired machine never comes back to supply the authoritative empty
+  // set that would have cleared it.
+  it("drops sessions once the Gateway has forgotten the Director entirely (past the eviction horizon)", () => {
     const first = mergeRosterRetention(emptyRetentionCache(), envelope([session("s1", "d1")], [director("d1", REACHABILITY_ONLINE)]));
-    // The Gateway has forgotten d1 completely: not in sessions[], not in directors[].
+    // The Gateway has forgotten d1 completely: not in sessions[], not in directors[]. That is what an
+    // eviction looks like from here, and it is the signal to let go.
     const second = mergeRosterRetention(first.cache, envelope([], []));
-    expect(second.roster.sessions.map((s) => s.sessionId)).toEqual(["s1"]);
-    expect(second.roster.marks.get("s1")?.reachability).toBe(REACHABILITY_OFFLINE);
-    // The card is retained indefinitely - the cache still holds it.
-    expect(second.cache.byDirector.get("d1")?.map((s) => s.sessionId)).toEqual(["s1"]);
+    expect(second.roster.sessions).toEqual([]);
+    expect(second.roster.marks.size).toBe(0);
+    expect(second.cache.byDirector.has("d1")).toBe(false);
+  });
+
+  // The other side of the same boundary, and the reason the rule is keyed to the envelope naming the
+  // Director rather than to a clock on the client: while the Gateway still knows the machine it still says
+  // so, and the card must stay. Only silence about the Director itself means eviction.
+  it("keeps retaining while the Gateway still names the Director, however long it serves no rows", () => {
+    let cache = mergeRosterRetention(emptyRetentionCache(), envelope([session("s1", "d1")], [director("d1", REACHABILITY_ONLINE)])).cache;
+    for (let poll = 0; poll < 50; poll++) {
+      const next = mergeRosterRetention(cache, envelope([], [director("d1", REACHABILITY_OFFLINE, { lastSeenAgeSeconds: 3600 * (poll + 1) })]));
+      expect(next.roster.sessions.map((s) => s.sessionId)).toEqual(["s1"]);
+      cache = next.cache;
+    }
+    expect(cache.byDirector.get("d1")?.map((s) => s.sessionId)).toEqual(["s1"]);
   });
 
   it("removes a session only on an authoritative online answer, never while unreachable", () => {
