@@ -54,6 +54,14 @@ public sealed class ControlApiHost : IAsyncDisposable
     // mints a child token from it. Volatile: written under the reapply lock, read on request threads.
     private volatile string? _acceptedSecret;
 
+    /// <summary>The accepted secret before the most recent runtime rotation, if any. Kept so the
+    /// session-child tokens stamped into ALREADY-RUNNING sessions' environments - which cannot be
+    /// re-issued - keep authenticating across one enroll/rotate/disconnect. Only session-child
+    /// credentials are honoured against it; full authority follows <see cref="_acceptedSecret"/>
+    /// alone. One deep by design: a second rotation retires the oldest window. Process-local on
+    /// purpose - sessions do not survive a Director restart, so neither must the grace.</summary>
+    private volatile string? _previousSecret;
+
     public string DirectorId { get; }
     public int Port { get; private set; }
     public bool AuthEnabled => _authEnabled;
@@ -574,11 +582,13 @@ public sealed class ControlApiHost : IAsyncDisposable
             // Gateway authenticates across machines in LAN mode (issue #457); else the local token.
             // Scoped tokens derived from whichever of those is in force are accepted too.
             _acceptedSecret = DirectorAuth.ResolveAcceptedToken(gatewayConfig.Token);
-            // Read the FIELD on every request, not a startup-captured copy: ReapplyGatewayAsync
+            // Read the FIELDS on every request, not startup-captured copies: ReapplyGatewayAsync
             // replaces the secret when the gateway config changes at runtime, and a captured copy
-            // would keep the old one in force until restart. Non-null: assigned just above, and
-            // reapply only ever assigns another resolved (non-null) value.
-            _app.Use((ctx, next) => DirectorAuth.Run(ctx, _acceptedSecret!, next));
+            // would keep the old one in force until restart. The previous secret rides along so a
+            // session launched before a rotation keeps its injected child credential (and nothing
+            // more). Non-null: assigned just above, and reapply only ever assigns another resolved
+            // (non-null) value.
+            _app.Use((ctx, next) => DirectorAuth.Run(ctx, _acceptedSecret!, _previousSecret, next));
         }
 
         // Enable WebSocket support for /dictate and any future streaming endpoints.
@@ -1238,8 +1248,18 @@ public sealed class ControlApiHost : IAsyncDisposable
             // the NEW one (the CLI and launcher resolve fresh on each call) until the Director is
             // restarted. Guarded like startup: with auth disabled the secret stays unset so session
             // launches keep minting no credential.
+            //
+            // When the secret actually changes, the outgoing one becomes the one-deep grace window
+            // for the session-child tokens already stamped into running sessions' environments -
+            // those processes cannot be handed a new credential, and without the window their hooks
+            // would 401 silently from here on. Full authority never verifies against the window.
             if (_authEnabled)
-                _acceptedSecret = DirectorAuth.ResolveAcceptedToken(gatewayConfig.Token);
+            {
+                var resolved = DirectorAuth.ResolveAcceptedToken(gatewayConfig.Token);
+                if (_acceptedSecret is { Length: > 0 } current && !string.Equals(resolved, current, StringComparison.Ordinal))
+                    _previousSecret = current;
+                _acceptedSecret = resolved;
+            }
 
             _gatewayClient = BuildGatewayClient(gatewayConfig);
             _gatewayClient.Start();

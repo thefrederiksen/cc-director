@@ -68,11 +68,18 @@ public static class DirectorAuth
     /// to do this is 403, and no retry will help; the two are deliberately distinguishable, because
     /// a client that cannot tell them apart cannot report a useful failure.
     /// </summary>
-    public static async Task Run(HttpContext ctx, string rootSecret, RequestDelegate next)
+    public static Task Run(HttpContext ctx, string rootSecret, RequestDelegate next)
+        => Run(ctx, rootSecret, previousRootSecret: null, next);
+
+    /// <inheritdoc cref="Run(HttpContext, string, RequestDelegate)"/>
+    /// <param name="previousRootSecret">The secret in force before the most recent runtime rotation,
+    /// if there was one. Only a SESSION-CHILD credential is honoured against it - see
+    /// <see cref="VerifyPresented(HttpContext, string, string?)"/>.</param>
+    public static async Task Run(HttpContext ctx, string rootSecret, string? previousRootSecret, RequestDelegate next)
     {
         var path = ctx.Request.Path.Value ?? "";
 
-        var principal = VerifyPresented(ctx, rootSecret);
+        var principal = VerifyPresented(ctx, rootSecret, previousRootSecret);
 
         if (PublicPaths.Contains(path))
         {
@@ -112,8 +119,19 @@ public static class DirectorAuth
     /// What the caller presented, whatever the route. Returns
     /// <see cref="ControlApiPrincipal.Invalid"/> when there is no Bearer header or it does not
     /// verify.
+    ///
+    /// <paramref name="previousRootSecret"/> is the one-deep grace window for runtime rotation: an
+    /// ALREADY-RUNNING session's environment cannot be changed, so the session-child token stamped
+    /// into it at launch is forever derived from the secret in force at launch time. When enroll,
+    /// rotate, or disconnect replaces the accepted secret, that live session's hooks would otherwise
+    /// 401 silently (they swallow HTTP errors) and the session's transcript pointer and preamble
+    /// injection would quietly die. So a credential that fails against the current secret is retried
+    /// against the previous one, and honoured ONLY if it turns out to be a session-child grant -
+    /// least privilege, bound to one session. Full authority (admin, cli, and the raw secret itself)
+    /// never rides the grace: whoever holds the current root can mint fresh credentials, and a
+    /// rotation must actually revoke the old full-authority ones.
     /// </summary>
-    public static ControlApiPrincipal VerifyPresented(HttpContext ctx, string rootSecret)
+    public static ControlApiPrincipal VerifyPresented(HttpContext ctx, string rootSecret, string? previousRootSecret = null)
     {
         if (!ctx.Request.Headers.TryGetValue("Authorization", out var header))
             return ControlApiPrincipal.Invalid;
@@ -122,7 +140,15 @@ public static class DirectorAuth
         if (!raw.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
             return ControlApiPrincipal.Invalid;
 
-        return DirectorScopedToken.Verify(raw["Bearer ".Length..].Trim(), rootSecret);
+        var presented = raw["Bearer ".Length..].Trim();
+        var principal = DirectorScopedToken.Verify(presented, rootSecret);
+        if (principal.IsValid || string.IsNullOrEmpty(previousRootSecret))
+            return principal;
+
+        var underPrevious = DirectorScopedToken.Verify(presented, previousRootSecret);
+        return underPrevious is { IsValid: true, Scope: ControlApiScope.SessionChild }
+            ? underPrevious
+            : ControlApiPrincipal.Invalid;
     }
 
     /// <summary>The authority recorded for this request, or null when the route is public and the
