@@ -874,13 +874,6 @@ public sealed class GatewayHost : IAsyncDisposable
         {
             EvictionHorizon = TimeSpan.FromHours(gatewayConfig.DirectorEvictionHorizonHours),
         };
-        // Issue #1292: free a removed Director's session numbers so a Director that died without releasing
-        // them does not leak the pool. OnDirectorRemoved fires on graceful unregister and on the registry's
-        // own stale/unreachable sweep, so this never fires for a merely momentarily-unreachable Director.
-        // Audit H2: the allocator is partitioned by tenant and a director id is unique only within its
-        // tenant, so the removal's OWNING tenant is threaded straight through - dropping it would let one
-        // account's disconnect free another account's numbers. The removal carries its owner (DirectorRemoval),
-        // so the release only ever touches the departed Director's own tenant partition.
         PushedSessions = new Streaming.PushedSessionStore();
         //
         // THE SESSION-NUMBER RELEASE ON EVICTION IS DELETED, and this comment is the record of why, because a
@@ -894,10 +887,19 @@ public sealed class GatewayHost : IAsyncDisposable
         // cleanup, the cleanup goes. Eviction drops a long-dead machine from the READ MODEL and does nothing
         // else; see PushedSessionStore.ForgetIfDisconnected.
         //
-        // The cost, stated plainly: a machine that never returns keeps its numbers marked in use. Adopt is
-        // additive, so the pool shrinks by the count of permanently retired machines - single digits on a
-        // personal fleet. Reclaiming them is a separate piece of work needing its own proof, not a rider on
-        // an eviction path where getting it wrong reallocates a live session's number.
+        // The cost, stated plainly and NOT understated - an earlier version of this comment said the pool
+        // shrinks by the count of retired MACHINES, which is wrong and flatteringly small. The deleted
+        // release freed every number a machine owned, one per session it had running, so the pool shrinks by
+        // the count of those NUMBERS. Adopt is additive and never frees one, so nothing reclaims them: a
+        // retired machine that had eight sessions costs eight of the nine hundred, permanently, and every
+        // subsequent retirement costs its own again. On a personal fleet that is small and slow; it is not
+        // nothing, and at hosted scale it is the number to watch. Reclaiming them is a separate piece of
+        // work needing its own proof, not a rider on an eviction path where getting it wrong reallocates a
+        // live session's number.
+        //
+        // The primitive itself (FleetSessionNumberAllocator.ReleaseForDirector) still exists and now has NO
+        // production caller - only tests. It is kept as a primitive for a future reclaim that establishes
+        // the machine is gone first. Do not wire it back to OnDirectorRemoved.
         // Repositories mission (#510 phase C): the sibling store for pushed repository/worktree snapshots.
         PushedRepositories = new Streaming.PushedRepositoryStore();
         // Repositories mission (#510 phase D): the daily repository history behind the weekly report.
@@ -1127,8 +1129,8 @@ public sealed class GatewayHost : IAsyncDisposable
         // snoozes table of the EF data layer - a Gateway restart re-arms every pending snooze from the
         // database; an entry already past its time simply fires on the first sweep. The path argument is the
         // LEGACY snooze.json, imported once on first upgrade then renamed aside. Tests MUST pass an isolated
-        // path so they never touch the real legacy file. The registry is bounded by dropping a removed
-        // Director's entries so they do not accumulate.
+        // path so they never touch the real legacy file. The registry is NO LONGER bounded by eviction - see
+        // the deletion record below, and the cost it carries.
         // The durable activity ledger (docs/PLAN-trustworthy-working-start-2026-07-24.md): tenant-scoped
         // evidence of why sessions enter/leave Working and why snoozes end, retained 30 days. Constructed
         // before the snooze registry because the registry appends its lifecycle decisions to it.
@@ -1138,12 +1140,6 @@ public sealed class GatewayHost : IAsyncDisposable
         // of the EF data layer. The path argument is the LEGACY wingman-instructions.json, imported once on
         // first upgrade then renamed aside. Tests MUST pass an isolated path so they never touch the real file.
         _instructionsStore = new Wingman.WingmanInstructionsStore(_gatewayDb, wingmanInstructionsPath ?? Path.Combine(CcStorage.Root(), "wingman-instructions.json"));
-        // Skipped when HOSTED (Hosted Multi-Tenancy): this cleanup writes the tenant-scoped snoozes store, but
-        // it fires from the DirectorRegistry stale sweep (a background thread with no ambient tenant), so on
-        // hosted it would fail closed. It is also a per-director-across-tenants operation, which the
-        // session-serving increment makes per-tenant. The other OnDirectorRemoved subscribers (session-number
-        // release, roster-cache forget) are in-memory and stay wired. Skipping it only leaves a removed
-        // Director's snoozes as durable tombstones, bounded by the live-session prune paths.
         // THE SNOOZE CLEAR ON EVICTION IS DELETED, and of the three deletions this is the one that mattered
         // most (inspection 2, finding 1).
         //
@@ -1153,12 +1149,23 @@ public sealed class GatewayHost : IAsyncDisposable
         // reconstruct that intention. Guarding it with a connection check could not work, because a check and
         // a delete are two operations and a Director reconnecting between them lost its snoozes anyway.
         //
-        // So the deletion is not performed at all. A retired Director's snooze rows stay as durable
-        // tombstones, which is harmless: they name a Director that no longer reports sessions, and
-        // PruneNotLive already clears them whenever a Director answers. Bounded, silent, and recoverable -
-        // which is what a cleanup should be, and what this one had stopped being.
+        // So the deletion is not performed at all, and the cost is REAL - an earlier version of this comment
+        // called the leftover rows "bounded" by PruneNotLive, and that is exactly backwards. PruneNotLive
+        // clears a Director's rows when that Director ANSWERS, and a permanently retired machine is precisely
+        // the one that never answers again. Its rows are therefore never reached by any prune, and each
+        // retirement adds its own set. They accumulate, durably, in the database, for as long as the Gateway
+        // lives - not many rows on a personal fleet, but growing without a ceiling and with nothing that
+        // removes them.
         //
-        // (It was already skipped entirely on hosted, for tenancy reasons. Now it is skipped everywhere.)
+        // That is accepted here rather than hidden, because the alternative was a race that destroyed a live
+        // owner's snoozes irrecoverably, and a slowly growing table of dead rows is recoverable by any future
+        // cleanup that first establishes the machine is gone. Reclaiming them is that separate piece of work.
+        //
+        // The primitive (SnoozeRegistry.ClearForDirector) still exists and now has NO production caller, only
+        // tests. Do not wire it back to OnDirectorRemoved: that is the race, and the snooze assertion in
+        // EvictionRaceAndCompositionTests.EvictionLeavesSnoozesAndNumbersAlone_OnTheRealHost will redden.
+        //
+        // (It was already skipped entirely on hosted, for tenancy reasons. Now it is not performed anywhere.)
         // THE PUSH SEAM where this Gateway drives the hold machine off the facts Directors report. The
         // DirectorHub (constructed per-invocation by SignalR) folds every pushed session through this one
         // instance, exactly as it does the input-stats aggregator.

@@ -43,9 +43,40 @@ was also used by the Car Mode loopback fleet. It is not: that is an unrelated pr
 a two-second response cache. Checked before deleting.)
 
 **The eviction horizon replaced the sixty-second registry sweep.** Passing it is now the ONE elapsed-time
-event allowed to remove a session, and it is the single point the whole removal cascade hangs off - session
-numbers, snooze rows, and a new `PushedSessionStore.Forget` so entries that survive a disconnect cannot
-survive forever.
+event allowed to remove a session.
+
+**Eviction drops a machine from the read model and does nothing else.** This is the single most important
+sentence in this document for anyone maintaining the code, because the obvious-looking change is to put the
+cleanups back.
+
+It began as a removal cascade: passing the horizon released the machine's session numbers, cleared its
+snooze rows, and forgot its pushed entry. An independent inspection found that a cascade cannot be made safe
+this way. Each step was a liveness check followed by a destructive action, and those are two operations, so a
+Director that reconnected in between was destroyed while it was live - numbers freed and re-handable to a new
+session, snoozes deleted outright. Guarding it harder does not help; the window is between the guard and the
+act. So the destruction was removed rather than protected. What remains is one atomic operation,
+`PushedSessionStore.ForgetIfDisconnected`, which takes the store's membership gate that registration also
+takes, so there is no in-between for a reconnect to land in.
+
+**What that costs, at its real size.** Both leftovers are permanent, and one of them grows:
+
+- A permanently retired machine keeps **every session number it held**, one per session it was running, out
+  of a pool of nine hundred. `Adopt` only ever marks a number in use, so nothing reclaims them.
+- Its **snooze rows stay in the database indefinitely**. `PruneNotLive` clears a Director's rows when that
+  Director answers, and a retired machine is precisely the one that never answers again - so no prune ever
+  reaches them, and every further retirement adds its own set. There is no ceiling and nothing that removes
+  them.
+
+That is accepted deliberately. Dead rows and marked-in-use numbers can be reclaimed later by something that
+establishes the machine is gone before it acts; a snooze destroyed by the race cannot be reconstructed by
+anything, because it was the owner's intention to set that machine aside until a particular time.
+
+`FleetSessionNumberAllocator.ReleaseForDirector` and `SnoozeRegistry.ClearForDirector` still exist and now
+have **no production caller** - only tests. **Do not wire either back to `OnDirectorRemoved`.** That restores
+the race, and `EvictionRaceAndCompositionTests.EvictionLeavesSnoozesAndNumbersAlone_OnTheRealHost` exists
+specifically to redden when it happens: it evicts a disconnected Director from a real host and then asserts,
+separately, that its armed snooze and its session number are both still there. Re-adding the snooze clear
+fails the first assertion; re-adding the number release fails the second.
 
 The default is twenty-four hours, confirmed by the owner, and it is read from
 `gateway.directorEvictionHorizonHours` in `config.json`. It started as a compile-time constant that only a
@@ -74,6 +105,27 @@ The brief called this the sharpest risk, and it is: the same list feeds things t
 | `concurrency.Observe` | no, but inflates | confirmed-live subset only |
 | `owners.Remember` | additive | everything served (correct - keeps "owner offline") |
 | `sessionNumbers.Adopt` | additive, never frees | everything served (correct - holds the number) |
+
+### The cost of serving more sessions through this path
+
+**This change makes every roster request do more synchronous database work, and the amount scales with how
+many sessions are retained.** It is stated here because this is the document a maintainer or a hosted
+operator reads, and without it the eviction horizon looks like a retention setting when it is also a
+performance dial.
+
+The per-session fold on the read path calls `HoldStateFor`, `IsExpired` and `SnoozeUntilFor`. Each of those
+opens a database context and queries, and each does so inside the snooze registry's **process-wide lock** -
+so the work is at least three synchronous database reads per served session, serialised across the whole
+process, on every roster request.
+
+Before this change a machine whose tunnel dropped silently shrank the list, which took its sessions out of
+that work. Now they stay in it. Five machines left off overnight keep their sessions in every roster request
+for the whole eviction horizon, so **raising the horizon raises the per-request database work**, not just how
+long cards linger.
+
+Magnitude, honestly: negligible on a personal fleet, materially worse at hosted scale. It was **not measured
+and not fixed here** - it is disclosed, not solved. Reducing it is owned by the Gateway remediation mission,
+which is rebasing onto this branch; that mission's existence is not evidence that this cost is gone.
 
 Two more destructive consumers were checked and are **not reached from this endpoint**:
 

@@ -189,10 +189,21 @@ public sealed class PushedSessionStore
     /// (and the entry survives, because a connection is active) or entirely after it (and re-creates the
     /// entry through GetOrAdd). There is no in-between for it to land in.
     ///
-    /// What the deletions cost, recorded here because a silent cost is worse than a named one: a machine
-    /// that never returns keeps its session numbers marked in use, and keeps its snooze rows as tombstones.
-    /// The snooze prune already clears those when a Director answers. Both are bounded, both are recoverable,
-    /// and neither is worth a race that can destroy a live machine's state.
+    /// What the deletions cost, recorded here because a silent cost is worse than a named one - and stated
+    /// at its real size, because the first version of this paragraph called both costs "bounded" and one of
+    /// them is not:
+    ///
+    /// A machine that never returns keeps every session number it held marked in use, one per session it was
+    /// running, and nothing reclaims them (Adopt only ever marks in use). And it keeps its snooze rows in the
+    /// database FOREVER: the snooze prune clears a Director's rows when that Director ANSWERS, and a
+    /// permanently retired machine is exactly the one that never answers, so no prune ever reaches them.
+    /// Each retirement adds its own set, with no ceiling and nothing that removes them.
+    ///
+    /// Both are accepted anyway, and the reason is worth more than the tidiness: the alternative was a race
+    /// that could free a LIVE machine's numbers and delete a live owner's snoozes, and a deleted snooze is
+    /// irrecoverable - nothing anywhere can reconstruct the intention behind it. Dead rows can be cleaned up
+    /// later by something that establishes the machine is gone first. A destroyed snooze cannot be anything
+    /// later at all.
     /// </summary>
     public bool ForgetIfDisconnected(TenantId tenant, string directorId)
     {
@@ -436,11 +447,15 @@ public sealed class PushedSessionStore
     /// Drop everything this store holds for one Director in one tenant (epic #1159 step A).
     ///
     /// Entries deliberately survive a disconnect - that is what lets the roster keep serving a machine whose
-    /// tunnel has closed - so without this they would survive FOREVER, and "keep the sessions" would quietly
+    /// tunnel has closed - so something must eventually release them, or "keep the sessions" would quietly
     /// become an unbounded memory leak keyed by every Director that ever connected. The eviction horizon is
-    /// the event that ends a machine's life in the Gateway, and this is that event applied here: it is called
-    /// from the registry's removal cascade, alongside the session-number release and the snooze clear, so
-    /// there is exactly ONE place a machine is forgotten rather than three timers that can disagree.
+    /// the event that ends a machine's life in the Gateway.
+    ///
+    /// THERE IS NO REMOVAL CASCADE ANY MORE, and this summary used to say there was - that eviction called
+    /// this alongside a session-number release and a snooze clear. Both of those are DELETED (inspection 2,
+    /// finding 1): a liveness check followed by a destructive action is two operations, and a Director
+    /// reconnecting between them was destroyed anyway. Eviction now performs exactly one operation, and it
+    /// is <see cref="ForgetIfDisconnected"/> below, not this method.
     ///
     /// Scoped to one (tenant, director) pair, so forgetting a machine in one account cannot reach another's.
     /// </summary>

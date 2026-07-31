@@ -60,6 +60,10 @@ public sealed class DirectorRegistry : IDisposable
     /// minute; the acceptance for this step is five. A short timeout is the right instrument for "may I
     /// route a command at this machine" - which is the tunnel connection, and is answered elsewhere - and
     /// the wrong one for "does this machine exist".
+    ///
+    /// The snooze and session-number destruction described above is HISTORY, not current behaviour: both
+    /// were deleted (inspection 2, finding 1) because their liveness guard could not be atomic with the
+    /// destruction. Passing this horizon now drops a machine from the READ MODEL and does nothing else.
     /// </summary>
     public static TimeSpan DefaultEvictionHorizon { get; } =
         TimeSpan.FromHours(Core.Configuration.GatewayConfig.DefaultDirectorEvictionHorizonHours);

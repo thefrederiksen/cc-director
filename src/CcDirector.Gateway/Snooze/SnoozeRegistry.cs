@@ -15,9 +15,17 @@ namespace CcDirector.Gateway.Snooze;
 /// timer MUST live here (not on the Director) precisely so it survives a dead Director - the whole point of
 /// the mission.
 ///
-/// Each entry also carries the owning <see cref="SnoozeEntry.DirectorId"/> so the registry can be bounded:
-/// when a Director is removed from the fleet (<c>Registry.OnDirectorRemoved</c>), every entry it owned is
-/// dropped, so entries for sessions that permanently left the roster do not accumulate.
+/// Each entry also carries the owning <see cref="SnoozeEntry.DirectorId"/>. That USED TO bound the registry:
+/// when a Director was removed from the fleet (<c>Registry.OnDirectorRemoved</c>) every entry it owned was
+/// dropped. THAT CLEANUP IS DELETED (epic #1159 step A, inspection 2 finding 1) - the liveness check in front
+/// of it could not be made atomic with the delete, so a Director that reconnected at the wrong moment lost
+/// snoozes its owner had set, irrecoverably.
+///
+/// The consequence, named rather than left to be discovered: a permanently retired Director's entries are
+/// never dropped. <see cref="PruneNotLive"/> clears a Director's rows only when that Director ANSWERS, which
+/// a retired one never does, so its rows persist for the life of the Gateway and each retirement adds more.
+/// This is a deliberate trade - a growing table of dead rows can be cleaned up later by something that first
+/// establishes the machine is gone; a snooze destroyed by a race cannot be recovered by anything.
 ///
 /// PERSISTENCE (Hosted Gateway mission, Step 1b): entries live in the EF data layer's <c>snoozes</c> table
 /// (SQLite locally), NOT the old hand-rolled <c>snooze.json</c>. The public API and observable behavior are
@@ -306,9 +314,19 @@ public sealed class SnoozeRegistry
     }
 
     /// <summary>
-    /// Drop every entry owned by <paramref name="directorId"/>. Called from
-    /// <c>Registry.OnDirectorRemoved</c> so entries for sessions whose Director permanently left the
-    /// fleet do not accumulate. Returns the number of entries removed; persists once if any.
+    /// Drop every entry owned by <paramref name="directorId"/>. Returns the number of entries removed;
+    /// persists once if any.
+    ///
+    /// NOT CALLED FROM <c>Registry.OnDirectorRemoved</c> - it was, and that wiring is DELETED (epic #1159
+    /// step A, inspection 2 finding 1). The eviction path checked whether the Director was connected and
+    /// then cleared, which is two operations, so a Director reconnecting in between had its owner's snoozes
+    /// deleted while it was live. That is the only irrecoverable loss in the whole eviction cascade, so the
+    /// cleanup was removed rather than guarded more cleverly.
+    ///
+    /// This method now has NO production caller and remains only as a primitive for a future cleanup that
+    /// establishes the machine is gone BEFORE calling it. Do NOT wire it to <c>OnDirectorRemoved</c>: that
+    /// restores the race, and the snooze assertion in
+    /// <c>EvictionRaceAndCompositionTests.EvictionLeavesSnoozesAndNumbersAlone_OnTheRealHost</c> will redden.
     /// </summary>
     public int ClearForDirector(string directorId)
     {
