@@ -132,6 +132,7 @@ internal static class GatewayWingmanVoiceEndpoint
         TimeSpan? streamStale = null,
         Func<string>? instructionsProvider = null,
         HttpClient? ttsHttpClient = null,
+        TimeSpan? ttsDeadline = null,
         Voice.VoiceUploadStore? uploadStore = null,
         Transcription.TranscriptionHistoryLog? history = null,
         Transcription.TranscriptionAudioArchive? audioArchive = null,
@@ -459,7 +460,7 @@ internal static class GatewayWingmanVoiceEndpoint
                 // preferBackup is false here: the silent-primary backup routing (issue devthrottle_internal#405) is driven by
                 // the per-session narration path (WingmanVoiceService), which owns the sticky state this
                 // interactive read-aloud endpoint does not carry. It still gets the proxy's own failover.
-                using var resp = await TtsSynthesis.PostAsync(ttsHttp, url, key, new { model, voice = spoken.Voice, input = spoken.Text, response_format = "mp3" }, spoken.Length, preferBackup: false, ct);
+                using var resp = await TtsSynthesis.PostAsync(ttsHttp, url, key, new { model, voice = spoken.Voice, input = spoken.Text, response_format = "mp3" }, spoken.Length, preferBackup: false, ct, ttsDeadline);
                 if (!resp.IsSuccessStatusCode)
                 {
                     var status = (int)resp.StatusCode;
