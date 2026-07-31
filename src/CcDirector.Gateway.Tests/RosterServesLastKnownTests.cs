@@ -188,6 +188,73 @@ public sealed class RosterServesLastKnownTests
         evictionHorizon: TimeSpan.FromMinutes(30));
     }
 
+    // ---------------------------------------------------------------------------------------------------
+    // Inspection 1, finding 5: the statistics fold takes the CONFIRMED-LIVE subset, and nothing pinned it.
+    // The endpoint tests injected neither input statistics nor concurrency, so swapping the confirmed-live
+    // subset for the whole served roster passed the entire suite - while the Gateway reported work happening
+    // on a sleeping laptop, and went on reporting it on every poll for as long as the machine stayed away.
+    // ---------------------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task AStaleServe_IsNotCountedAsWorkHappening()
+    {
+        var store = StoreWithPush(TimeSpan.FromMinutes(5), tunnelUp: false,
+            Session("s-1", "Architect", "red"),
+            Session("s-2", "Manager", "blue"));
+
+        var statsPath = Path.Combine(Path.GetTempPath(), "cc-conc-" + Guid.NewGuid().ToString("N") + ".json");
+        var concurrency = new CcDirector.Gateway.Stats.GatewaySessionConcurrencyStats(statsPath);
+        try
+        {
+            await WithGateway(store, async http =>
+            {
+                // The rows ARE served - that is the whole point of the branch - so this is not a test about
+                // what the roster shows.
+                using var body = await GetEnvelopeAsync(http);
+                Assert.Equal(2, body.RootElement.GetProperty("sessions").EnumerateArray().Count());
+
+                // ...and not one of them was recorded as activity, because the machine never confirmed them.
+                var snapshot = concurrency.Snapshot(DateTime.UtcNow, TenantId.Local);
+                Assert.Empty(snapshot.CurrentSessions);
+            }, concurrency: concurrency);
+        }
+        finally
+        {
+            try { if (File.Exists(statsPath)) File.Delete(statsPath); } catch { /* best effort */ }
+        }
+    }
+
+    /// <summary>
+    /// The other half, and without it the test above is satisfied by a statistics fold that counts NOTHING
+    /// ever. A confirmed-live serve must still be counted, or the branch has quietly switched the Gateway's
+    /// activity record off.
+    /// </summary>
+    [Fact]
+    public async Task AConfirmedLiveServe_IsStillCountedAsWorkHappening()
+    {
+        var store = StoreWithPush(TimeSpan.FromSeconds(2), tunnelUp: true,
+            Session("s-1", "Architect", "red"),
+            Session("s-2", "Manager", "blue"));
+
+        var statsPath = Path.Combine(Path.GetTempPath(), "cc-conc-" + Guid.NewGuid().ToString("N") + ".json");
+        var concurrency = new CcDirector.Gateway.Stats.GatewaySessionConcurrencyStats(statsPath);
+        try
+        {
+            await WithGateway(store, async http =>
+            {
+                using var body = await GetEnvelopeAsync(http);
+                Assert.Equal(2, body.RootElement.GetProperty("sessions").EnumerateArray().Count());
+
+                var snapshot = concurrency.Snapshot(DateTime.UtcNow, TenantId.Local);
+                Assert.Equal(2, snapshot.CurrentSessions.Count);
+            }, concurrency: concurrency);
+        }
+        finally
+        {
+            try { if (File.Exists(statsPath)) File.Delete(statsPath); } catch { /* best effort */ }
+        }
+    }
+
     [Fact]
     public void TheDefaultEvictionHorizonIsADay_NotAMinute()
     {
@@ -289,8 +356,9 @@ public sealed class RosterServesLastKnownTests
         Func<HttpClient, Task> assertion,
         SessionOwnerCache? owners = null,
         SnoozeRegistry? snoozeRegistry = null,
-        TimeSpan? evictionHorizon = null)
-        => WithGateway(store, (http, _) => assertion(http), owners, snoozeRegistry, evictionHorizon);
+        TimeSpan? evictionHorizon = null,
+        CcDirector.Gateway.Stats.GatewaySessionConcurrencyStats? concurrency = null)
+        => WithGateway(store, (http, _) => assertion(http), owners, snoozeRegistry, evictionHorizon, concurrency);
 
     /// <summary>
     /// Hosts the real Gateway routes over HTTP with the given push store - the same production
@@ -302,7 +370,8 @@ public sealed class RosterServesLastKnownTests
         Func<HttpClient, DirectorRegistry, Task> assertion,
         SessionOwnerCache? owners = null,
         SnoozeRegistry? snoozeRegistry = null,
-        TimeSpan? evictionHorizon = null)
+        TimeSpan? evictionHorizon = null,
+        CcDirector.Gateway.Stats.GatewaySessionConcurrencyStats? concurrency = null)
     {
         var instancesDirectory = Path.Combine(Path.GetTempPath(), "cc-roster-lastknown-" + Guid.NewGuid().ToString("N"));
         WebApplication? app = null;
@@ -327,7 +396,8 @@ public sealed class RosterServesLastKnownTests
                 owners: owners,
                 pushedSessions: store,
                 streamStaleAfter: StaleAfter,
-                snoozeRegistry: snoozeRegistry);
+                snoozeRegistry: snoozeRegistry,
+                concurrency: concurrency);
 
             await app.StartAsync();
             var port = BoundPort.Of(app);
