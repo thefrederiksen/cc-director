@@ -155,7 +155,11 @@ describe("roster keep-and-mark retention merge", () => {
     expect(afterTheOutage.cache.byDirector.has("d1")).toBe(true);
   });
 
-  it("drops the cards once the Director has been OBSERVED missing for longer than the horizon", () => {
+  // NAMED FOR WHAT THE BODY DOES. It used to say the Director had been "OBSERVED missing for longer than
+  // the horizon", and the body supplies ONE omission and then lets wall time pass - which is exactly the
+  // overclaim inspection 4 found in the source comments, reproduced in a test name. The horizon here is
+  // elapsed time after a first observed omission; nothing observes the interval.
+  it("drops the cards on a later empty envelope, a horizon after the first omission started the clock", () => {
     const t0 = 1_000_000;
     const first = mergeRosterRetention(emptyRetentionCache(), envelope([session("s1", "d1")], [director("d1", REACHABILITY_ONLINE)]), t0);
     // The first omission only starts the clock.

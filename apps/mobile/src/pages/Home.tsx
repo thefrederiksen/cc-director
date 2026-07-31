@@ -33,9 +33,12 @@ import {
 //
 // The roster reads the /sessions ENVELOPE (per-Director reachability), not the flat list, and runs it
 // through the keep-and-mark merge (mobile-resilience mission, Phase 2): a session whose owning machine
-// is unreachable STAYS on the roster, grayed and marked, and leaves only when its Director answers
-// without it. The retention cache is held in a ref so it survives across polls (and navigating into a
-// session and back) without churning React state.
+// is unreachable STAYS on the roster, grayed and marked. It leaves for one of TWO reasons - its Director
+// answered ONLINE without it, or the envelope stopped naming that Director at all and the client
+// retention horizon then elapsed. This comment claimed the first reason was the only one, which
+// contradicted the merge's own contract; see rosterRetention.ts, which owns the rule. The retention cache
+// is held in a ref so it survives across polls (and navigating into a session and back) without churning
+// React state.
 const POLL_INTERVAL_MS = 5000;
 
 // Voice-mode queue flow: how long the roster sits still before auto-speak jumps into the next
@@ -115,8 +118,9 @@ export function Home() {
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
       const envelope = await getSessionsEnvelope(signal);
-      // Keep-and-mark: retained sessions of unreachable machines stay on the roster, marked; a session
-      // leaves only when its owning Director answered without it (mergeRosterRetention owns the rule).
+      // Keep-and-mark: retained sessions of unreachable machines stay on the roster, marked. A session
+      // leaves when its owning Director answered ONLINE without it, or when the envelope has stopped
+      // naming that Director and the client retention horizon elapses (mergeRosterRetention owns both).
       const merged = mergeRosterRetention(retentionCache.current, envelope);
       retentionCache.current = merged.cache;
       setSessions(merged.roster.sessions);

@@ -636,7 +636,8 @@ public sealed class DirectorRegistry : IDisposable
                 // that once hung here are DELETED (inspection 2, finding 1), because a liveness check followed
                 // by a destructive action is two operations and a Director reconnecting between them was
                 // destroyed anyway. The single subscriber is PushedSessionStore.ForgetIfDisconnected, which is
-                // one atomic operation under the store's membership gate. Do not restore the others here.
+                // one atomic operation under the store's membership gate - whose atomicity is REASONED from
+                // the source and NOT proven by any test. Do not restore the others here.
                 if (kv.Value.Source == "http" || kv.Value.Source == "stream")
                 {
                     var lastSeen = kv.Value.LastSeen ?? DateTime.MinValue;

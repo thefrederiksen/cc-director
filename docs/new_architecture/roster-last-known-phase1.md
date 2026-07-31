@@ -56,7 +56,16 @@ Director that reconnected in between was destroyed while it was live - numbers f
 session, snoozes deleted outright. Guarding it harder does not help; the window is between the guard and the
 act. So the destruction was removed rather than protected. What remains is one atomic operation,
 `PushedSessionStore.ForgetIfDisconnected`, which takes the store's membership gate that registration also
-takes, so there is no in-between for a reconnect to land in.
+takes.
+
+**That gate is REASONED, NOT PROVEN, and this document previously stated it as a guarantee.** The argument
+is that a reconnect must land entirely before the removal (so the entry survives, because a connection is
+active) or entirely after it (so it re-creates the entry), leaving no in-between. Reading the source, that
+argument holds. But **no test exercises the interleaving**: deleting the gate outright leaves the entire
+repository suite green, which the store's own source comment says in those words. There is no concurrency
+test and no surviving seam anywhere in this branch, so nothing here would notice if the reasoning were
+wrong. Treat it as the best available argument, not as a demonstrated property - and if you are about to
+rely on it for something new, that is the moment to write the test that does not exist.
 
 **What that costs, at its real size.** Both leftovers are permanent, and one of them grows:
 
@@ -137,6 +146,13 @@ Two more destructive consumers were checked and are **not reached from this endp
 
 ## What is NOT proven, and what is out of scope
 
+- **The membership gate that makes eviction atomic is REASONED, NOT PROVEN.** This is the most load-bearing
+  unproven thing on the branch, and it was missing from this list while the body of this document asserted
+  it as fact. Removing the gate entirely leaves every test in the repository green. No concurrency is
+  tested anywhere in this phase; the sweep seam proves ORDERING, not scheduling. An attempted two-thread
+  test was written and DELETED because its assertion also passed when the competing thread was merely slow,
+  which would have been worse than no test - a green that proves the absence of the thing it was written to
+  prove the presence of.
 - **`GET /sessions/{sid}` still refuses a single session on age.** It is a display read with the same flaw.
   It sits on the per-session enrichment lines the brief put out of bounds for this phase, so it was left
   alone rather than half-fixed. It should be step A's first follow-up.

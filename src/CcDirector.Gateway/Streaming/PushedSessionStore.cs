@@ -185,9 +185,15 @@ public sealed class PushedSessionStore
     /// MODEL, and nothing else.
     ///
     /// Here the check and the removal are ONE operation under <see cref="_membershipGate"/>, which
-    /// <see cref="RegisterConnection"/> also takes, so a reconnect either happens entirely before this call
-    /// (and the entry survives, because a connection is active) or entirely after it (and re-creates the
-    /// entry through GetOrAdd). There is no in-between for it to land in.
+    /// <see cref="RegisterConnection"/> also takes, so a reconnect should either happen entirely before this
+    /// call (and the entry survives, because a connection is active) or entirely after it (and re-creates
+    /// the entry through GetOrAdd), leaving no in-between for it to land in.
+    ///
+    /// REASONED, NOT PROVEN - and the difference matters here more than anywhere else on this branch. That
+    /// is an argument from reading the source, not a demonstrated property: no test exercises the
+    /// interleaving, and deleting the gate leaves the entire suite green (see the gate's own declaration).
+    /// Do not upgrade this sentence to a guarantee in any document that quotes it; a previous version of the
+    /// phase record did exactly that.
     ///
     /// What the deletions cost, recorded here because a silent cost is worse than a named one - and stated
     /// at its real size, because the first version of this paragraph called both costs "bounded" and one of

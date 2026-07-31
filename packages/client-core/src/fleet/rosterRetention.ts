@@ -1,10 +1,21 @@
 // The roster keep-and-mark merge (mobile-resilience mission, Phase 2). The rule the owner asked for:
-// never let a session vanish from the roster just because its machine became unreachable - a session
-// leaves the list ONLY when its owning Director ANSWERED (is Online) and no longer reports it. When a
-// Director reads Wobbly or Offline, its last-known sessions STAY on the roster, marked unreachable, for
-// as long as the machine stays unreachable; when the machine answers again its live sessions replace
-// them in place. This generalizes the shipped voice rule (#1334): unreachable is a state you SHOW, not
-// data you DELETE.
+// never let a session vanish from the roster just because its machine became unreachable. When a
+// Director reads Wobbly or Offline, its last-known sessions STAY on the roster, marked unreachable; when
+// the machine answers again its live sessions replace them in place. This generalizes the shipped voice
+// rule (#1334): unreachable is a state you SHOW, not data you DELETE.
+//
+// A SESSION LEAVES FOR TWO REASONS, NOT ONE. This summary used to say "ONLY when its owning Director
+// ANSWERED and no longer reports it", and that stopped being true when the client clock was added - it
+// then contradicted the detailed contract further down this same file, which is worse than either version
+// alone because a reader who stops at the summary is confidently wrong. The two reasons are:
+//
+//  1. an ONLINE Director answered and did not report the session - the authoritative removal; or
+//  2. the envelope stopped naming that Director AT ALL and the client retention horizon then elapsed -
+//     see RETENTION_HORIZON_MS and `missingSince` below for exactly what that clock measures, which is
+//     less than its name suggests.
+//
+// The second is a display-cache expiry, not an authority: it drops a card the Gateway has stopped
+// mentioning, and the card returns from Gateway data the moment that machine is named again.
 //
 // THE GATEWAY IS NOW THE PRIMARY SOURCE FOR AN UNREACHABLE MACHINE; THIS CACHE IS THE FALLBACK.
 //

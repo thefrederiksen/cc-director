@@ -954,10 +954,14 @@ public sealed class GatewayHost : IAsyncDisposable
         //
         // THE ENTIRETY of what eviction destroys, and it is one atomic operation rather than a cascade
         // (inspection 2, finding 1). ForgetIfDisconnected checks liveness and removes the entry inside the
-        // store's own membership gate, which RegisterConnection also takes - so a reconnect either completes
-        // before this call, and the entry survives because a connection is active, or after it, and re-creates
-        // the entry. There is no window between a check and an act for it to land in, because there is no
-        // longer a check and an act: there is one operation.
+        // store's own membership gate, which RegisterConnection also takes - so a reconnect should either
+        // complete before this call, and the entry survives because a connection is active, or after it, and
+        // re-creates the entry. There is no window between a check and an act for it to land in, because
+        // there is no longer a check and an act: there is one operation.
+        //
+        // That last step is REASONED, NOT PROVEN. Removing the gate leaves the whole suite green and no test
+        // exercises the interleaving, so the argument rests on reading the source. It is the strongest claim
+        // available, and it is not a demonstration - do not quote it as one.
         //
         // Without this the roster would keep every machine that ever connected, which is the unbounded leak
         // the horizon exists to stop. With it, and with the other two steps deleted, the worst an eviction can
