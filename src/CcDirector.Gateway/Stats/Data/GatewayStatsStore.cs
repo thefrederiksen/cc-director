@@ -819,6 +819,7 @@ public sealed class GatewayStatsStore : IDisposable
         StatsStoreUnavailableReason.NotAStatisticsStore => "not_a_statistics_store",
         StatsStoreUnavailableReason.StoreUnreadable => "store_unreadable",
         StatsStoreUnavailableReason.StoreIsNewerThanThisBuild => "store_is_newer_than_this_build",
+        StatsStoreUnavailableReason.StoreLockedByAnotherProcess => "store_locked_by_another_process",
         StatsStoreUnavailableReason.DidNotAnswerInTime => "did_not_answer_in_time",
         StatsStoreUnavailableReason.InternalError => "internal_error",
         _ => throw new ArgumentOutOfRangeException(nameof(reason), reason,
