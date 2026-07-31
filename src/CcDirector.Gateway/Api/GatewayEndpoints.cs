@@ -158,7 +158,12 @@ internal static class GatewayEndpoints
         Transcription.DictionarySuggestionDismissalStore? dictionaryDismissals = null,
         // Composes the daily email's suggestions block for the caller's tenant. Null (older callers,
         // recording-only test harnesses) simply does not expose the email-block route.
-        Transcription.SuggestionEmailComposer? suggestionEmailComposer = null)
+        Transcription.SuggestionEmailComposer? suggestionEmailComposer = null,
+        // Issue devthrottle_internal#1195: the wingman brain, the JUDGE the menu guard consults before it
+        // refuses a prompt - the pure classifier only trips the question, it never convicts on its own.
+        // Null (older callers, tests without a brain) makes a tripwire-positive screen refuse outright:
+        // fail closed, because the guard exists to keep an Enter out of a real picker.
+        Wingman.WingmanTranslator? wingmanTranslator = null)
     {
         // The old issue #1188 "session lock" (423 Locked on human input while a PENDING dictation record
         // existed) was removed deliberately (issue #1308). This is a single-operator tool: a collision
@@ -1997,23 +2002,28 @@ internal static class GatewayEndpoints
             // the send. On a menu we type nothing and press nothing: the trailing Enter this prompt carries
             // would otherwise confirm whatever option the picker had highlighted.
             //
-            // Only a CONFIDENTLY-recognized menu refuses. A screen the classifier cannot read is forwarded
-            // exactly as it was before this guard existed - blocking on uncertainty would silently break
-            // ordinary voice replies, which is worse than the gap it would close.
+            // Only a MODEL-CONFIRMED menu refuses (issue devthrottle_internal#1195): the pure classifier is
+            // the tripwire, and when it fires the verdict comes from the wingman brain - served from the
+            // per-screen verdict cache when the screen has not changed since the turn was narrated, one
+            // small model call when it has. The regex alone convicted a finished summary of being a menu
+            // (session 115) and locked its owner out of voice; it never convicts on its own again. A screen
+            // the classifier cannot read is forwarded exactly as before the guard existed - blocking on
+            // uncertainty would silently break ordinary voice replies.
             if (req.MenuGuard)
             {
+                // The tenant is resolved BEFORE the check: the model confirmation and the spoken refusal
+                // both need it, and a menu-guard request that cannot resolve one has no honest answer.
+                var guardTenant = ResolveReadTenant(httpCtx, tenantBoundary);
+                if (guardTenant is null)
+                    return Results.Json(new { error = "a tenant could not be resolved for this request" },
+                        statusCode: StatusCodes.Status403Forbidden);
                 var guardRoute = new SessionVerbClient(director, sendCommand);
-                if (await Wingman.WaitingScreenReader.IsMenuAsync(guardRoute, sid, CancellationToken.None))
+                if (await Wingman.WaitingScreenReader.ConfirmedMenuAsync(guardRoute, sid, guardTenant.Value, wingmanTranslator, CancellationToken.None))
                 {
                     // The refusal is SPOKEN - a voice reply asked for this guard - so it is said in the
-                    // account's language (issue #1009). The tenant is resolved and the resolver required
-                    // rather than defaulted: a caller that reaches this branch without either would speak
-                    // English at somebody who chose French, which is the failure this mission exists to
-                    // remove. The on-screen Error line stays English like every other label.
-                    var guardTenant = ResolveReadTenant(httpCtx, tenantBoundary);
-                    if (guardTenant is null)
-                        return Results.Json(new { error = "a tenant could not be resolved for this request" },
-                            statusCode: StatusCodes.Status403Forbidden);
+                    // account's language (issue #1009). The resolver is required rather than defaulted: a
+                    // caller that reaches this branch without one would speak English at somebody who chose
+                    // French. The on-screen Error line stays English like every other label.
                     if (tenantSettings is null)
                         throw new InvalidOperationException(
                             "The menu guard speaks a refusal, so GatewayEndpoints.Map must be given a "

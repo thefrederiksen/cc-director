@@ -2510,6 +2510,10 @@ public sealed class GatewayHost : IAsyncDisposable
             dictionaryDismissals: _dictionaryDismissals,
             // The daily-email block route for the caller's tenant.
             suggestionEmailComposer: _suggestionEmailComposer,
+            // Issue devthrottle_internal#1195: the wingman brain judges the menu guard's refusals - the
+            // same translator (and verdict cache) the narration path uses, so an unchanged screen is
+            // answered from the cached per-turn verdict without a second model call.
+            wingmanTranslator: _voiceService?.Translator,
             requestShutdown: () =>
             {
                 var handler = OnShutdownRequested;

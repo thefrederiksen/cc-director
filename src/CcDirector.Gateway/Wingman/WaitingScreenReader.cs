@@ -1,3 +1,4 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Contracts;
@@ -64,6 +65,65 @@ internal static class WaitingScreenReader
     /// </summary>
     public static async Task<bool> IsMenuAsync(SessionVerbClient route, string sid, CancellationToken ct = default)
         => await ClassifyAsync(route, sid, ct) == WaitingScreenKind.Menu;
+
+    /// <summary>
+    /// The MODEL-CONFIRMED menu verdict (issue devthrottle_internal#1195) - the one every surface that BLOCKS
+    /// on a menu must use. The session-115 misfire proved the pure classifier can be satisfied by ordinary
+    /// prose (a numbered summary of finished work) plus a stale marker glyph, so the regex is demoted to a
+    /// tripwire: it decides when the model must be asked, and it alone never convicts.
+    ///
+    /// The flow: read the grid once; anything unreadable is not a menu (phase-1 behavior unchanged). If the
+    /// pure classifier sees no confident menu, that is final - no model call, which keeps ordinary sends at
+    /// regex cost. If it does, the verdict cache is consulted by grid fingerprint - the narration call judges
+    /// every turn's screen, so an unchanged screen is answered instantly with the model's verdict. Only a
+    /// changed, menu-shaped screen pays for one <see cref="WingmanTranslator.DetectMenuAsync"/> call. The two
+    /// failure directions are deliberate: no translator, or a model that cannot be reached while menu
+    /// structure is on screen, BLOCKS (typing into a real picker presses Enter on an option the person never
+    /// chose - the original #2193 disaster); an unreadable screen or a quiet classifier never blocks.
+    /// </summary>
+    public static async Task<bool> ConfirmedMenuAsync(
+        SessionVerbClient route, string sid, TenantId tenant, WingmanTranslator? translator, CancellationToken ct = default)
+    {
+        ScreenGridResponse? grid;
+        try { grid = await route.GetScreenGridAsync(sid, ct); }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[WaitingScreenReader] sid={sid}: screen-grid read threw ({ex.Message}) - not a menu");
+            return false;
+        }
+        if (grid is null || grid.Rows is null || grid.Rows.Count == 0) return false;
+
+        var kind = WaitingScreenClassifier.Classify(
+            grid.Rows, grid.CursorRow, grid.CursorCol, grid.CursorVisible, grid.IsAlternateScreen, grid.HasGrid);
+        if (kind != WaitingScreenKind.Menu) return false;
+
+        var key = $"{tenant}/{sid}";
+        var hash = WingmanScreenVerdictCache.HashRows(grid.Rows);
+        if (WingmanScreenVerdictCache.TryGet(key, hash, out var cached))
+        {
+            FileLog.Write($"[WaitingScreenReader] sid={sid}: menu-shaped screen, cached model verdict '{cached}'");
+            return cached == "menu";
+        }
+
+        if (translator is null)
+        {
+            FileLog.Write($"[WaitingScreenReader] sid={sid}: menu-shaped screen and no judge available - fail closed");
+            return true;
+        }
+
+        try
+        {
+            var menu = await translator.DetectMenuAsync(tenant, string.Join("\n", grid.Rows), ct);
+            WingmanScreenVerdictCache.Store(key, hash, menu.IsMenu ? "menu" : "not-menu");
+            FileLog.Write($"[WaitingScreenReader] sid={sid}: menu-shaped screen, model says isMenu={menu.IsMenu}");
+            return menu.IsMenu;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[WaitingScreenReader] sid={sid}: menu-shaped screen, model unreachable ({ex.Message}) - fail closed");
+            return true;
+        }
+    }
 
     /// <summary>The wire word for a classified screen: what the phone and the Cockpit read.</summary>
     public static string KindWord(WaitingScreenKind kind) => kind switch
