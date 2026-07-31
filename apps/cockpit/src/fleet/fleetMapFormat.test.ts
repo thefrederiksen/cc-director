@@ -9,6 +9,7 @@ import {
 import {
   agentBadgeText,
   buildControllerTree,
+  directorLabelOf,
   directorsByMachine,
   groupByDirector,
   machineKeyOf,
@@ -212,6 +213,37 @@ describe("groupByDirector", () => {
     const out = groupByDirector(sessions, byId);
     expect(out.map((g) => g.key)).toEqual(["a", "b"]);
     expect(out[0].sessions).toHaveLength(2);
+  });
+
+  it("labels a group with the Director's display name when the envelope reports one (devthrottle_internal#1176)", () => {
+    const sessions = [session({ sessionId: "s1", directorId: "d1" })];
+    const out = groupByDirector(sessions, byId, [
+      director({ directorId: "d1", displayName: "SOREN_NORTH_SLOT_2" }),
+    ]);
+    expect(out[0].label).toBe("SOREN_NORTH_SLOT_2");
+  });
+});
+
+describe("directorLabelOf", () => {
+  it("prefers the user-editable display name", () => {
+    expect(directorLabelOf("abcd1234-guid", director({ displayName: "SOREN_NORTH_SLOT_2" }))).toBe(
+      "SOREN_NORTH_SLOT_2",
+    );
+  });
+
+  it("falls back to the historical short-id label when unnamed or when reachability is missing", () => {
+    // An unnamed Director (or one behind an older Gateway that strips the field) must render exactly
+    // as it always did - the display name is additive, never a regression.
+    expect(directorLabelOf("32c4851e", director({ displayName: "" }))).toBe("Director 32c4851e");
+    expect(directorLabelOf("32c4851e", undefined)).toBe("Director 32c4851e");
+  });
+
+  it("ignores a whitespace-only display name", () => {
+    expect(directorLabelOf("32c4851e", director({ displayName: "   " }))).toBe("Director 32c4851e");
+  });
+
+  it("labels an empty id as unknown", () => {
+    expect(directorLabelOf("", undefined)).toBe("Director (unknown)");
   });
 });
 

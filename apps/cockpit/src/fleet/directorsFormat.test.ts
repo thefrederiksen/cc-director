@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SessionDto } from "@devthrottle/client-core/api/client";
 import { ENDPOINT_STATE_UNREACHABLE_BY_NAME, type FleetDirector, type MachineError } from "@devthrottle/client-core/fleet/fleetClient";
-import { directorStatus, epochOf, repoNamesOf } from "./directorsFormat";
+import { directorPrimaryLabel, directorStatus, epochOf, repoNamesOf } from "./directorsFormat";
 
 function director(overrides: Partial<FleetDirector> = {}): FleetDirector {
   return {
@@ -77,6 +77,23 @@ describe("epochOf", () => {
     expect(epochOf(null)).toBe(0);
     expect(epochOf("")).toBe(0);
     expect(epochOf("nonsense")).toBe(0);
+  });
+});
+
+describe("directorPrimaryLabel", () => {
+  it("prefers the user-editable display name (devthrottle_internal#1176)", () => {
+    expect(directorPrimaryLabel(director({ displayName: "SOREN_NORTH_SLOT_2" }))).toBe("SOREN_NORTH_SLOT_2");
+  });
+
+  it("falls back to the machine name when unnamed - the pre-#1176 rendering, unchanged", () => {
+    expect(directorPrimaryLabel(director())).toBe("SOREN_NORTH");
+    expect(directorPrimaryLabel(director({ displayName: "" }))).toBe("SOREN_NORTH");
+    expect(directorPrimaryLabel(director({ displayName: "   " }))).toBe("SOREN_NORTH");
+  });
+
+  it("falls back to the raw id only when even the machine name is blank", () => {
+    expect(directorPrimaryLabel(director({ displayName: "", machineName: "" }))).toBe("dir-1");
+    expect(directorPrimaryLabel(director({ displayName: undefined, machineName: undefined }))).toBe("dir-1");
   });
 });
 

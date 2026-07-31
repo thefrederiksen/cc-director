@@ -30,4 +30,12 @@ public sealed class DirectorStreamHello
 
     /// <summary>Gateway Cleanup mission (tunnel-only): when the Director process started (UTC).</summary>
     public DateTime StartedAt { get; set; }
+
+    /// <summary>
+    /// devthrottle_internal#1176: the instance's user-editable display name (from the named-instance
+    /// registry, e.g. "SOREN_NORTH_SLOT_2"), so several Directors on one machine are tellable apart
+    /// in the fleet UI. Empty when the instance has no name (older builds, unnamed default). Cosmetic
+    /// only: the Gateway sanitizes it and never keys on it.
+    /// </summary>
+    public string DisplayName { get; set; } = "";
 }

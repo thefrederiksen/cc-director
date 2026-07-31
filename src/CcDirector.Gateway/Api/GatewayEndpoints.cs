@@ -1022,6 +1022,7 @@ internal static class GatewayEndpoints
                 {
                     DirectorId = d.DirectorId,
                     MachineName = d.MachineName ?? "",
+                    DisplayName = d.DisplayName ?? "",
                     State = linkState,
                     // WHEN THE GATEWAY LAST HEARD THIS MACHINE, taken from the store's own arrival stamp rather
                     // than from the clock at serve time. The old online branch wrote DateTime.UtcNow with an age

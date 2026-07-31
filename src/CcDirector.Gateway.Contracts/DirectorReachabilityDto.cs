@@ -27,6 +27,14 @@ public sealed class DirectorReachabilityDto
     public string MachineName { get; set; } = "";
 
     /// <summary>
+    /// devthrottle_internal#1176: the Director's user-editable display name (copy of the registered
+    /// <c>DirectorDto.DisplayName</c>), carried here because the Fleet Map reads ONLY this envelope -
+    /// no second fetch - and its director labels need a real name. Empty when unnamed; clients fall
+    /// back to <see cref="MachineName"/>.
+    /// </summary>
+    public string DisplayName { get; set; } = "";
+
+    /// <summary>
     /// The presentation state, one of <see cref="StateOnline"/>, <see cref="StateWobbly"/>, or
     /// <see cref="StateOffline"/>. Never null.
     /// </summary>
