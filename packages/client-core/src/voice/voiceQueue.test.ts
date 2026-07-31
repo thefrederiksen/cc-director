@@ -29,7 +29,10 @@ vi.mock("./voiceRowState", () => ({
   isVoiceReady: (i: VoiceRowInputs) => i.reachable,
 }));
 
-const { voiceQueueFor } = await import("./voiceQueue");
+// A static import is correct despite the mock above: vitest hoists vi.mock calls above the imports, so
+// voiceQueue.ts resolves the stubbed module when it loads. Preferred over a dynamic import here because
+// the mock factory closes over nothing, and the static form is the well-trodden path.
+import { voiceQueueFor } from "./voiceQueue";
 
 const BASE = {
   sessionId: "s-1",
