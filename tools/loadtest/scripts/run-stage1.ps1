@@ -26,13 +26,22 @@ if (-not (Test-Path $viewersFile)) {
     throw "No viewers.json in $OutDir. Start the LoadRig first (tools/loadtest/README.md) - it writes the key files there."
 }
 
-# The same production guard the tools carry, applied before anything is sent - including the
-# metrics reset below, which carries a bearer key. Trailing dots are trimmed first, exactly as in
-# LoadTargetGuard.cs: the absolute-DNS spelling of a production host must not slip past endsWith.
+# The FULL target guard the tools carry (LoadTargetGuard.cs), applied before anything is sent -
+# including the metrics reset below, which carries a bearer key. All three rules, in order: the
+# production deny list has no override; loopback is free; any other host must be named exactly in
+# LOADTEST_ALLOW_HOST. Trailing dots trimmed first so the absolute-DNS spelling cannot slip past.
 $uri = [Uri]$GatewayUrl
 $hostName = $uri.Host.ToLowerInvariant().TrimEnd('.')
 if ($hostName.EndsWith("azurewebsites.net") -or $hostName.Contains("devthrottle")) {
-    throw "REFUSED: $GatewayUrl matches the production deny list. The harness never runs against production."
+    throw "REFUSED: $GatewayUrl matches the production deny list. The harness never runs against production; there is no override."
+}
+$localHosts = @('localhost', '127.0.0.1', '::1', 'host.docker.internal')
+if (-not ($localHosts -contains $hostName)) {
+    $allowedHost = $env:LOADTEST_ALLOW_HOST
+    if ($null -ne $allowedHost) { $allowedHost = $allowedHost.Trim().ToLowerInvariant().TrimEnd('.') }
+    if ($allowedHost -ne $hostName) {
+        throw "REFUSED: non-local host '$hostName'. If this is a dedicated staging rig, set LOADTEST_ALLOW_HOST=$hostName. Production is refused regardless."
+    }
 }
 
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"

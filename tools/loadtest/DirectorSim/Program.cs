@@ -157,25 +157,34 @@ if (eventsPerSecond > 0)
     // The delta stream: a token-bucket paced loop distributing PushDelta round-robin across all
     // connections. InvokeAsync (not fire-and-forget Send) so a server that stops keeping up shows as
     // rising in-flight here, bounded by the semaphore, instead of unbounded queueing hiding the ceiling.
-    var inFlight = new SemaphoreSlim(2000);
+    const int maxInFlight = 2000;
+    var inFlight = new SemaphoreSlim(maxInFlight);
+    // The window deadline is enforced by CANCELLATION, not only by loop conditions: with the backlog
+    // full the scheduler is parked inside WaitAsync, and a loop condition alone would never be
+    // evaluated again, so the run could outlive its configured duration indefinitely (review
+    // finding). This token fires at the deadline or on Ctrl+C, whichever comes first, and every wait
+    // and send in the window observes it.
+    using var windowCts = CancellationTokenSource.CreateLinkedTokenSource(stopRequested.Token);
+    if (durationSeconds > 0)
+        windowCts.CancelAfter(runUntil - DateTime.UtcNow);
     var scheduleStart = deltaWindowStart;
     long scheduled = 0;
     var simIndex = 0;
-    while (!stopRequested.IsCancellationRequested && DateTime.UtcNow < runUntil)
+    while (!windowCts.IsCancellationRequested && DateTime.UtcNow < runUntil)
     {
         var due = (long)((DateTime.UtcNow - scheduleStart).TotalSeconds * eventsPerSecond);
         if (scheduled >= due)
         {
-            try { await Task.Delay(10, stopRequested.Token); } catch (OperationCanceledException) { break; }
+            try { await Task.Delay(10, windowCts.Token); } catch (OperationCanceledException) { break; }
             continue;
         }
-        while (scheduled < due && !stopRequested.IsCancellationRequested)
+        while (scheduled < due && !windowCts.IsCancellationRequested)
         {
             var sim = sims[simIndex];
             simIndex = (simIndex + 1) % sims.Count;
             scheduled++;
-            try { await inFlight.WaitAsync(stopRequested.Token); } catch (OperationCanceledException) { break; }
-            _ = sim.SendOneDeltaAsync(stopRequested.Token).ContinueWith(t =>
+            try { await inFlight.WaitAsync(windowCts.Token); } catch (OperationCanceledException) { break; }
+            _ = sim.SendOneDeltaAsync(windowCts.Token).ContinueWith(t =>
             {
                 inFlight.Release();
                 if (t.IsCompletedSuccessfully && t.Result) Interlocked.Increment(ref deltasOk);
@@ -183,6 +192,16 @@ if (eventsPerSecond > 0)
             }, TaskScheduler.Default);
         }
     }
+    // Window over: cancel whatever is still queued or in flight, then DRAIN before the counters are
+    // read - a total printed while completion callbacks are still landing is not a total (review
+    // finding). Cancellation makes in-flight invocations fail fast, so the drain is bounded anyway;
+    // the 15 s cap is a backstop against a fully wedged server.
+    windowCts.Cancel();
+    var drainDeadline = DateTime.UtcNow.AddSeconds(15);
+    while (inFlight.CurrentCount < maxInFlight && DateTime.UtcNow < drainDeadline)
+        await Task.Delay(100);
+    if (inFlight.CurrentCount < maxInFlight)
+        Console.WriteLine($"[DirectorSim] WARNING: {maxInFlight - inFlight.CurrentCount} sends still unresolved after the 15 s drain; the WINDOW END totals undercount by at most that many.");
 }
 else
 {
