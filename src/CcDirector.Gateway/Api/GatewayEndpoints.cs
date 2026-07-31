@@ -49,7 +49,15 @@ internal static class GatewayEndpoints
     /// <param name="turnJobs">Issue #376: the async voice-turn job store (singleton owned by
     /// <see cref="GatewayHost"/>). When present, the submit/poll routes are mapped via
     /// <see cref="GatewayVoiceTurnEndpoint"/>; null (old callers) maps nothing.</param>
-    public static void Map(IEndpointRouteBuilder app, DirectorRegistry registry, string version, string token, bool authEnabled = false, Func<bool>? requestShutdown = null,
+    public static void Map(IEndpointRouteBuilder app, DirectorRegistry registry, string version, string token,
+        // Hosted Multi-Tenancy (session-serving PR1): the auth-boundary tenant binder. On the hosted Gateway
+        // the request-scoped reads resolve the caller's tenant from its authenticated device key and DENY
+        // (403) when it has none - never falling back to Local. REQUIRED, not defaulted (tenant-boundary
+        // hardening, release 2026-07-31, finding CR-7): the boundary is a security argument, and when it was
+        // optional one forgotten argument silently collapsed every hosted tenant into the Local partition.
+        // A caller that genuinely has none (a self-host-only test host) must SAY so with an explicit null.
+        Tenancy.HostedTenantBoundary? tenantBoundary,
+        bool authEnabled = false, Func<bool>? requestShutdown = null,
         Action<string, string, string>? onSessionState = null,
         Func<TenantId, string, bool>? voiceGeneratingFor = null,
         Func<TenantId, string, bool>? voiceAudioReadyFor = null,
@@ -125,11 +133,6 @@ internal static class GatewayEndpoints
         // (old callers, tests) leaves the endpoint to record the registry only, and the periodic sweep
         // reconciles the desktop.
         Fleet.FleetDisplayStateObserver? fleetDisplayState = null,
-        // Hosted Multi-Tenancy (session-serving PR1): the auth-boundary tenant binder. When non-null on the
-        // hosted Gateway, the request-scoped session reads (/sessions, /sessions/{sid}) resolve the caller's
-        // tenant from its authenticated device key and DENY (403) when it has none - never falling back to
-        // Local. Null (self-host, older callers, tests) keeps the single-tenant Local behavior.
-        Tenancy.HostedTenantBoundary? tenantBoundary = null,
         // Production-readiness B2 (process-control): the seam the DELETE /directors/{id} FORCE-KILL branch
         // calls to kill a Director's process tree by pid. Null (production) uses the real
         // Process.GetProcessById(pid).Kill(entireProcessTree:true). A test injects a recorder that observes
@@ -3367,10 +3370,26 @@ internal static class GatewayEndpoints
     /// Resolve a request's tenant for a session READ (Hosted Multi-Tenancy, session-serving PR1). Null means
     /// the caller must be DENIED (403): on the hosted Gateway an authenticated request whose device key has no
     /// bound tenant is refused, NEVER served the Local partition (which would be a wrong-tenant read waiting to
-    /// happen). Self-host, or no boundary (older callers / tests), is always Local - behavior unchanged.
+    /// happen). Self-host is always Local - behavior unchanged.
+    ///
+    /// GATED ON <see cref="GatewayHostedMode.IsHosted"/> ITSELF, never on whether a boundary was passed in
+    /// (tenant-boundary hardening, release 2026-07-31, finding CR-7 - the same shape
+    /// <c>GatewayDictationEndpoint.ResolveTenant</c> already carries). Deciding on the argument fails OPEN:
+    /// the boundary is a SECURITY argument, and this resolver used to answer <see cref="TenantId.Local"/>
+    /// whenever it was absent, so ONE forgotten argument at any of the dozens of call sites that thread it
+    /// silently collapsed every hosted tenant into the Local partition - with nothing failing loud to say so.
+    /// On hosted, a missing boundary and a boundary that is not hosted-wired both resolve to null, and null
+    /// is a REFUSAL. The second defence is that the boundary parameter is REQUIRED at every Map signature
+    /// that threads it here, so omitting it is a compile error rather than a runtime downgrade.
     /// </summary>
     internal static TenantId? ResolveReadTenant(HttpContext ctx, Tenancy.HostedTenantBoundary? boundary)
-        => boundary is null ? TenantId.Local : boundary.ResolveRequestTenant(ctx);
+    {
+        if (!GatewayHostedMode.IsHosted)
+            return boundary is null ? TenantId.Local : boundary.ResolveRequestTenant(ctx);
+        if (boundary is null || !boundary.IsHosted)
+            return null;
+        return boundary.ResolveRequestTenant(ctx);
+    }
 
     /// <summary>
     /// MTR-01 (Codex round 1): the answer for the legacy same-machine HTTP discovery plane (register /

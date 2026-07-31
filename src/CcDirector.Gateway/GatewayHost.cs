@@ -2514,7 +2514,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // Gateway Cleanup mission: the cut removed the DirectorEndpointClient argument (_client) - the
         // Gateway no longer dials Directors over HTTP, so Map no longer takes an HTTP client. The
         // network-diagnostics rollup store is threaded in as a named argument on the tunnel-only signature.
-        GatewayEndpoints.Map(_app, Registry, version, Token, AuthEnabled,
+        GatewayEndpoints.Map(_app, Registry, version, Token,
+            // The auth-boundary tenant binder - REQUIRED (finding CR-7): request-scoped reads resolve the
+            // caller's tenant through it, and on hosted a request with no bound tenant is denied, never Local.
+            _tenantBoundary,
+            AuthEnabled,
             netDiagRollup: _netDiagRollup,
             // Issue #2017: the snooze-default consumer at POST /sessions/{sid}/hold reads the caller tenant's
             // default through the resolver instead of the process-global config.
@@ -2731,10 +2735,7 @@ public sealed class GatewayHost : IAsyncDisposable
             fleetDisplayState: FleetDisplayState,
             // Workflows mission (phase 4, issue #1771): creating a mission also opens a workflow run of
             // the built-in "mission" workflow, pinned to its published version - the outcome spine.
-            workflowRuns: _workflowRuns,
-            // Hosted Multi-Tenancy (session-serving PR1): the read endpoints resolve the request's tenant from
-            // the authenticated device key through this boundary and deny (403) when hosted binds none.
-            tenantBoundary: _tenantBoundary);
+            workflowRuns: _workflowRuns);
 
         // Issue #268: the two raw per-session WebSocket legs (live Terminal stream + dictation)
         // proxied through the Gateway so a remote Cockpit talks same-origin to the Gateway and
@@ -3098,14 +3099,16 @@ public sealed class GatewayHost : IAsyncDisposable
         // /machines/{machine}/director/restart|start|stop to reach that machine's Director.
         // launcher-persistent-join: pass the stream-send hook only when stream mode is on. The relay tries
         // this first and falls back to the REST relay when it returns null (stream off, or launcher offline).
-        MachineEndpoints.Map(_app, Launchers, _machineSessionSpawner, SendLauncherCommandAsync,
+        MachineEndpoints.Map(_app, Launchers, _machineSessionSpawner,
+            // Tenant boundary - REQUIRED (finding CR-7): every launcher-registry read/write and relay is
+            // scoped to the calling tenant, and on hosted an unbound request is denied, never Local.
+            _tenantBoundary,
+            SendLauncherCommandAsync,
             // Gateway Cleanup mission (Wave 4b): validate a mission-scoped spawn against the Gateway store and
             // stamp the resolved mission name onto the create request forwarded to the Director.
             missions: Missions,
             // Workflows mission (phase 5b): seat spawns on workflow runs and record participants.
-            workflowRuns: _workflowRuns,
-            // Tenant boundary: every launcher-registry read/write is scoped to the calling tenant.
-            boundary: _tenantBoundary);
+            workflowRuns: _workflowRuns);
 
         // The Cockpit Settings page surface (docs/architecture/gateway/SETTINGS_OWNERSHIP.md):
         // one snapshot GET plus brain-restart and autostart actions. Reads this host directly

@@ -32,7 +32,8 @@ namespace CcDirector.Gateway.Prompts;
 public static class PromptEndpoints
 {
     public static void Map(IEndpointRouteBuilder app, GatewayPromptLog log,
-        Tenancy.HostedTenantBoundary? tenantBoundary = null,
+        // REQUIRED, not defaulted (finding CR-7): a forgotten boundary must be a compile error, never Local.
+        Tenancy.HostedTenantBoundary? tenantBoundary,
         History.SessionHistoryRecorder? history = null)
     {
         var store = log ?? throw new ArgumentNullException(nameof(log));
@@ -118,7 +119,16 @@ public static class PromptEndpoints
     /// callers and tests), is always Local.
     /// </summary>
     private static TenantId? ResolveTenant(HttpContext ctx, Tenancy.HostedTenantBoundary? boundary)
-        => boundary is null ? TenantId.Local : boundary.ResolveRequestTenant(ctx);
+    {
+        // Finding CR-7: gated on GatewayHostedMode.IsHosted itself, never on whether a boundary was passed
+        // in - deciding on the argument fails open. On hosted a missing or non-hosted-wired boundary
+        // resolves null, a refusal. Self-host is Local exactly as before.
+        if (!GatewayHostedMode.IsHosted)
+            return boundary is null ? TenantId.Local : boundary.ResolveRequestTenant(ctx);
+        if (boundary is null || !boundary.IsHosted)
+            return null;
+        return boundary.ResolveRequestTenant(ctx);
+    }
 
     /// <summary>Enter the resolved tenant's ambient scope for a database-writing side effect (the
     /// history recorder); the file-backed prompt log itself takes the tenant explicitly. No boundary

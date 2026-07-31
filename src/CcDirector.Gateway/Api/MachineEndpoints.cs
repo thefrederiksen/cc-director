@@ -138,6 +138,12 @@ internal static class MachineEndpoints
     /// </summary>
     public static void Map(IEndpointRouteBuilder outer, LauncherRegistry launchers,
         MachineSessionSpawner spawner,
+        // The tenant boundary. Every launcher-registry read/write and every relay is scoped to the CALLING
+        // tenant, resolved from the authenticated device key (never the machine name in the path or body).
+        // REQUIRED, not defaulted (tenant-boundary hardening, release 2026-07-31, finding CR-7): the boundary
+        // is a security argument, and when it was optional a forgotten argument silently served the Local
+        // partition on hosted. A self-host-only caller must state the absence with an explicit null.
+        HostedTenantBoundary? boundary,
         LauncherCommandRouter.SendLauncherCommandAsync? sendLauncherCommand = null,
         // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store. When non-null, a
         // mission-scoped spawn (req.MissionId set) is validated against it here - the Gateway is the source
@@ -151,11 +157,7 @@ internal static class MachineEndpoints
         // spawn with no explicit run auto-seats onto the mission's run. After a successful spawn the new
         // session is recorded as a run PARTICIPANT - the persisted run-to-session membership governance
         // reads. Null (old callers, tests) seats nothing and changes nothing.
-        Workflows.WorkflowRunStore? workflowRuns = null,
-        // The tenant boundary. Every launcher-registry read/write and every relay is scoped to the CALLING
-        // tenant, resolved from the authenticated device key (never the machine name in the path or body).
-        // Null on self-host, where the single tenant is Local and every authenticated caller resolves to it.
-        HostedTenantBoundary? boundary = null)
+        Workflows.WorkflowRunStore? workflowRuns = null)
     {
         if (spawner is null) throw new ArgumentNullException(nameof(spawner));
 

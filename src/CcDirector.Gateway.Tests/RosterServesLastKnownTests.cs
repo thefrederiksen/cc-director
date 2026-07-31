@@ -398,6 +398,9 @@ public sealed class RosterServesLastKnownTests
                 registry,
                 version: "test",
                 token: "test-token",
+                // Self-host-only harness: this host never runs hosted, so there is no boundary to pass. The
+                // parameter is required (finding CR-7), so the absence is stated rather than defaulted.
+                tenantBoundary: null,
                 owners: owners,
                 pushedSessions: store,
                 streamStaleAfter: StaleAfter,

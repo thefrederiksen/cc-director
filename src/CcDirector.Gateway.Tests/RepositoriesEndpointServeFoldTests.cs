@@ -120,6 +120,9 @@ public sealed class RepositoriesEndpointServeFoldTests
                 registry,
                 version: "test",
                 token: "test-token",
+                // Self-host-only harness: this host never runs hosted, so there is no boundary to pass. The
+                // parameter is required (finding CR-7), so the absence is stated rather than defaulted.
+                tenantBoundary: null,
                 pushedRepositories: store);
             await app.StartAsync();
             var port = BoundPort.Of(app);

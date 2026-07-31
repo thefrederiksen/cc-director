@@ -606,7 +606,10 @@ internal sealed class MachineGroupProbeHost : IAsyncDisposable
             (directorId, req, ct) => Task.FromResult<(bool, SessionDto?, string?)>(
                 (true, new SessionDto { SessionId = SpawnedSessionId }, null)));
 
-        MachineEndpoints.Map(app, launchers, spawner, sendLauncherCommand: null);
+        // Self-host control harness: SelfHostMachineControlTests sets CC_GATEWAY_HOSTED to the non-hosted
+        // values before starting this host, so there is no boundary to pass. The parameter is required
+        // (finding CR-7), so the absence is stated rather than defaulted.
+        MachineEndpoints.Map(app, launchers, spawner, boundary: null, sendLauncherCommand: null);
 
         await app.StartAsync();
         return new MachineGroupProbeHost
