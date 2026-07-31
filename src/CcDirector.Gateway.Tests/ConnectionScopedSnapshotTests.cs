@@ -40,15 +40,28 @@ public sealed class ConnectionScopedSnapshotTests
         LastActivityAt = DateTime.UtcNow,
     };
 
-    /// <summary>A Director whose last push landed <paramref name="pushAge"/> ago, tunnel up or down.</summary>
+    /// <summary>
+    /// A Director whose last push landed <paramref name="pushAge"/> ago, tunnel up or down.
+    ///
+    /// The clock MOVES, and that is the whole point of writing a new helper rather than reusing the one in
+    /// RosterServesLastKnownTests. That one pins the store's clock at the moment of the push, which is
+    /// right for its own tests - they drive the HTTP endpoint, and the endpoint measures age against real
+    /// time - but it is wrong here, because these tests call the store directly. With a pinned clock the
+    /// store measures the push as ZERO seconds old however far back it was stamped, so the fresh read
+    /// would return it and the very distinction under test would vanish. That is not a hypothetical: it is
+    /// what this test did on its first run, and the assertion it broke was the one that would otherwise
+    /// have passed vacuously.
+    /// </summary>
     private static PushedSessionStore StoreWithPush(TimeSpan pushAge, bool tunnelUp, params SessionDto[] sessions)
     {
-        var pushedAt = DateTime.UtcNow - pushAge;
-        var store = new PushedSessionStore(() => pushedAt);
+        var now = DateTime.UtcNow - pushAge;
+        var store = new PushedSessionStore(() => now);
         store.RegisterConnection(TenantId.Local, DirectorId, "conn-1");
         Assert.True(store.ApplySnapshot(TenantId.Local, DirectorId, "conn-1", 1, sessions));
         if (!tunnelUp)
             Assert.True(store.UnregisterConnection(TenantId.Local, DirectorId, "conn-1"));
+        // Time moves on to the present, so the push is genuinely `pushAge` old when the reads below run.
+        now = DateTime.UtcNow;
         return store;
     }
 

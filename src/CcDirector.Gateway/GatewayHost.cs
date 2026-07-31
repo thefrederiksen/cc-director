@@ -881,14 +881,21 @@ public sealed class GatewayHost : IAsyncDisposable
         // tenant, so the removal's OWNING tenant is threaded straight through - dropping it would let one
         // account's disconnect free another account's numbers. The removal carries its owner (DirectorRemoval),
         // so the release only ever touches the departed Director's own tenant partition.
+        PushedSessions = new Streaming.PushedSessionStore();
         //
         // Inspection 1 finding 1b: closing the sweep's judge-then-remove window is not enough on its own. A
         // Director can reconnect between the removal DECISION and this subscriber running, and the cascade
         // would then destroy a machine that is already back. So every DESTRUCTIVE subscriber re-checks, at the
         // moment it acts, whether that Director currently holds a live stream, and abandons its own part if it
         // does. It fails in the safe direction: a genuinely dead machine may leak a little state, a live one is
-        // never destroyed. PushedSessions is constructed just below and captured by the closure, which only
-        // runs long after the constructor.
+        // never destroyed.
+        //
+        // Registered AFTER PushedSessions is constructed, not before. The first version of this guard was
+        // written above that line and the compiler refused it - the closure dereferences a field that is not
+        // yet definitely assigned. It would have run correctly in production, because the closure only fires
+        // long after the constructor, but "correct only because of when it happens to run" is exactly the
+        // reasoning that stops being true when someone raises this event earlier. The order the three
+        // destructive subscribers register in is preserved: numbers, then forget, then snoozes.
         Registry.OnDirectorRemoved += removal =>
         {
             if (PushedSessions.IsStreamConnected(removal.Tenant, removal.DirectorId))
@@ -898,7 +905,6 @@ public sealed class GatewayHost : IAsyncDisposable
             }
             SessionNumbers.ReleaseForDirector(removal.Tenant, removal.DirectorId);
         };
-        PushedSessions = new Streaming.PushedSessionStore();
         // Repositories mission (#510 phase C): the sibling store for pushed repository/worktree snapshots.
         PushedRepositories = new Streaming.PushedRepositoryStore();
         // Repositories mission (#510 phase D): the daily repository history behind the weekly report.

@@ -87,7 +87,7 @@ public sealed class EvictionRaceAndCompositionTests : IDisposable
         // The reconnect lands in the window: after the sweep has judged the captured entry stale, before it
         // removes. This is the machine coming back at the worst possible moment.
         var reconnected = 0;
-        registry.OnSweepJudgedForTest = _ =>
+        registry.OnSweepJudgedForTest = () =>
         {
             if (reconnected++ > 0) return;
             registry.RegisterFromStream(DirectorId, Machine, "soren", "1.0", pid: 1234,
@@ -135,7 +135,7 @@ public sealed class EvictionRaceAndCompositionTests : IDisposable
         AgePastHorizon(registry);
 
         var beat = 0;
-        registry.OnSweepJudgedForTest = _ =>
+        registry.OnSweepJudgedForTest = () =>
         {
             if (beat++ > 0) return;
             Assert.True(registry.Heartbeat(DirectorId));

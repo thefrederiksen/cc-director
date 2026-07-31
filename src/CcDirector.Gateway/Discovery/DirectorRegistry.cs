@@ -147,7 +147,14 @@ public sealed class DirectorRegistry : IDisposable
     /// It proves the ORDERING window exists and is closed. It proves NOTHING about the concurrent race under
     /// real thread scheduling, and it must not be described as if it did. Null and inert in production.
     /// </summary>
-    internal Action<DirectorKey>? OnSweepJudgedForTest;
+    /// <remarks>
+    /// Deliberately parameterless. It carried the <c>DirectorKey</c> being judged until the compiler
+    /// pointed out that the key type is PRIVATE, so an internal field of that type is more accessible
+    /// than its own type. Rather than widen a private type to suit a test seam - which would let test
+    /// scaffolding dictate production visibility - the seam drops the argument it never needed: a test
+    /// already knows which Director it registered.
+    /// </remarks>
+    internal Action? OnSweepJudgedForTest;
 
     private FileSystemWatcher? _watcher;
     private Timer? _sweeper;
@@ -622,7 +629,7 @@ public sealed class DirectorRegistry : IDisposable
                         // refreshed since ToArray() captured it. Inspection 1 finding 1 - re-read and re-judge
                         // the CURRENT entry under the gate the refresh paths take, so a Director that came back
                         // in this window is not destroyed on the strength of a timestamp it has already beaten.
-                        OnSweepJudgedForTest?.Invoke(kv.Key);
+                        OnSweepJudgedForTest?.Invoke();
 
                         DirectorDto? removed = null;
                         TimeSpan age = default;

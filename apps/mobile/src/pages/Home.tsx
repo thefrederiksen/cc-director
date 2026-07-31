@@ -13,7 +13,7 @@ import { useNow, waitingLabel } from "@devthrottle/client-core/sessions/waiting"
 import { supervisionStats } from "@devthrottle/client-core/sessions/supervision";
 import { useNow as useSharedNow } from "@devthrottle/client-core/polling/useNow";
 import { playClip, playingSid, rowVoiceInputs, stopPlayback, syncVoiceSessions, useVoiceClips } from "@devthrottle/client-core/voice/clips";
-import { isVoiceReady, voiceRowState } from "@devthrottle/client-core/voice/voiceRowState";
+import { voiceRowState } from "@devthrottle/client-core/voice/voiceRowState";
 import { voiceQueueFor } from "@devthrottle/client-core/voice/voiceQueue";
 import { NavDrawer } from "../components/NavDrawer";
 import { SessionFilterPanel } from "../components/SessionFilterPanel";
