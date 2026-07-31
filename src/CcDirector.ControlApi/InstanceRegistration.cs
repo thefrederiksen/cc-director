@@ -35,7 +35,8 @@ public sealed class InstanceRegistration : IDisposable
     /// Override the shared instances directory. Tests pass an isolated temp directory so test
     /// Directors never appear in a real Gateway's discovery (and vice versa). Production omits it.
     /// </param>
-    public InstanceRegistration(string directorId, int port, string version, string? instancesDirectory = null)
+    public InstanceRegistration(string directorId, int port, string version, string? instancesDirectory = null,
+        string? displayName = null)
     {
         DirectorId = directorId;
         Port = port;
@@ -50,6 +51,9 @@ public sealed class InstanceRegistration : IDisposable
             ControlEndpoint = $"http://127.0.0.1:{port}",
             MachineName = Environment.MachineName,
             User = Environment.UserName,
+            // devthrottle_internal#1176: the instance's editable display name, so file-discovered
+            // Directors carry the same label a tunnel Hello reports. Empty = unnamed.
+            DisplayName = displayName?.Trim() ?? "",
             Version = version,
             SchemaVersion = 1,
         };

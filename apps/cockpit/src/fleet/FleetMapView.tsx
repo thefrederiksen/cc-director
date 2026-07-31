@@ -14,6 +14,7 @@ import { repoBasename, repoIdentity, relativeTime } from "./format";
 import {
   agentBadgeText,
   buildControllerTree,
+  directorLabelOf,
   directorsByMachine,
   groupByDirector,
   machineKeyOf,
@@ -50,10 +51,16 @@ const ReachabilityContext = createContext<DirectorReachability[]>([]);
 // fleet page reads that one store, this map and the Sessions roster always agree on the fleet at the
 // same moment, and a hidden tab makes no roster requests at all.
 
-type Pivot = "machine" | "repo" | "worktree" | "agent" | "list" | "mission";
+type Pivot = "machine" | "director" | "repo" | "worktree" | "agent" | "list" | "mission";
 
 const PIVOTS: ReadonlyArray<{ key: Pivot; label: string; kindLabel: string }> = [
   { key: "machine", label: "By machine", kindLabel: "Machine" },
+  // "By director" (devthrottle_internal#1177): one lane per Director across the fleet, headed by the
+  // Director's display name (machine as the subtitle) - the level below machine in the machine pivot's
+  // machine -> Director -> session hierarchy, promoted to lanes so several Directors on one machine sit
+  // side by side. Idle reachable Directors keep a lane (a free slot), exactly like the machine pivot's
+  // sub-groups.
+  { key: "director", label: "By director", kindLabel: "Director" },
   // "By repository" groups by the GitHub "owner/repo" (SessionDto.repoName), so every worktree and clone
   // of one repository rolls up together. "By working tree" groups by the on-disk checkout folder, so each
   // worktree stands on its own - the two sit side by side because they answer two different questions.
@@ -71,7 +78,7 @@ const PIVOTS: ReadonlyArray<{ key: Pivot; label: string; kindLabel: string }> = 
 
 // The pivots that lay the fleet out on the node canvas (root -> lanes). "list" is a flat grid and
 // "mission" is its own board; neither uses the canvas or the title search.
-const CANVAS_PIVOTS: ReadonlySet<Pivot> = new Set<Pivot>(["machine", "repo", "worktree", "agent"]);
+const CANVAS_PIVOTS: ReadonlySet<Pivot> = new Set<Pivot>(["machine", "director", "repo", "worktree", "agent"]);
 
 // The grouping is sticky per browser: the map opens on whatever the user last chose (rather than a
 // "smart" default that guesses from the fleet shape), so returning to the map lands them exactly where
@@ -83,6 +90,7 @@ function initialPivot(): Pivot {
     const saved = window.localStorage.getItem(PIVOT_STORAGE_KEY);
     if (
       saved === "machine" ||
+      saved === "director" ||
       saved === "repo" ||
       saved === "worktree" ||
       saved === "agent" ||
@@ -474,12 +482,38 @@ function LanePanel({ lane, pivot, onOpen, onNewSession, headRef }: LanePanelProp
   // still tags its machine/Director).
   const directorGroups = pivot === "machine" ? groupByDirector(lane.sessions, sessionSort, lane.directors) : null;
 
+  // Director pivot (devthrottle_internal#1177): the lane IS one Director, carrying its own reachability
+  // entry, so the head takes over what the machine pivot's Director sub-header does - state the tunnel
+  // condition, offer "+ New session" only while it could be honoured (withheld offline, kept wobbly,
+  // hidden for the unaddressable "(unknown)" lane), and render an idle lane as a free slot.
+  const directorLane = pivot === "director";
+  const laneReach = directorLane ? lane.directors[0] : undefined;
+  const laneOffline = directorLane && laneReach?.state === REACHABILITY_OFFLINE;
+  const laneWobbly = directorLane && laneReach?.state === REACHABILITY_WOBBLY;
+  const laneLastSeen = laneOffline || laneWobbly ? reachabilityLastSeen(laneReach?.lastSeenAgeSeconds) : "";
+
   return (
     <section className="fmap-lane">
       <div className="fmap-lane-head" ref={headRef}>
         <span className="fmap-lane-k">{lane.kindLabel}</span>
         <span className="fmap-lane-t">{lane.title}</span>
         {lane.subtitle.length > 0 && <span className="fmap-lane-sub">{lane.subtitle}</span>}
+        {(laneOffline || laneWobbly) && (
+          <span className="fmap-subhead-state">
+            {laneLastSeen.length > 0 ? `${laneOffline ? "Offline" : "Wobbly"} - ${laneLastSeen}` : laneOffline ? "Offline" : "Wobbly"}
+          </span>
+        )}
+        {directorLane && lane.key !== "(unknown)" && !laneOffline && (
+          <button
+            type="button"
+            className="fmap-subhead-new"
+            title="Start a new session on this Director"
+            aria-label={`Start a new session on ${lane.title}`}
+            onClick={() => onNewSession(lane.key)}
+          >
+            + New session
+          </button>
+        )}
         <span className="fmap-lane-agg">
           {agg.map((c) => (
             <span key={c} className="fmap-lane-aggdot" style={{ backgroundColor: dotColor(c) }} />
@@ -490,6 +524,12 @@ function LanePanel({ lane, pivot, onOpen, onNewSession, headRef }: LanePanelProp
       <div className="fmap-lane-body">
         {directorGroups !== null
           ? directorGroups.map((dg) => <DirectorSubGroup key={dg.key} group={dg} pivot={pivot} onOpen={onOpen} onNewSession={onNewSession} />)
+          : directorLane && lane.sessions.length === 0
+          ? (
+            <div className="fmap-freeslot">
+              {laneOffline ? "No sessions - machine unreachable" : "No sessions - free slot"}
+            </div>
+          )
           : <LaneCards sessions={lane.sessions} pivot={pivot} onOpen={onOpen} />}
       </div>
     </section>
@@ -700,6 +740,14 @@ function buildLanes(sessions: SessionDto[], pivot: Pivot, directors: DirectorRea
       // onto the same key (see fleetMapFormat).
       return machineKeyOf(s.machineName);
     }
+    if (pivot === "director") {
+      // Key by the RAW director id - it is also the "+ New session" target, so it must stay addressable
+      // (the machine pivot's groupByDirector keys the same way). The title here is the id fallback; the
+      // fold below re-titles every lane through directorLabelOf once reachability (and with it the
+      // display name) is in hand.
+      const dir = (s.directorId ?? "").trim();
+      return { key: dir.length === 0 ? "(unknown)" : dir, title: directorLabelOf(dir, undefined) };
+    }
     if (pivot === "repo") {
       // GitHub "owner/repo" identity - worktrees and clones of one repository fold into one lane.
       const title = repoIdentity(s.repoName, s.repoPath);
@@ -741,6 +789,27 @@ function buildLanes(sessions: SessionDto[], pivot: Pivot, directors: DirectorRea
     }
   }
 
+  // Director pivot (devthrottle_internal#1177): fold in EVERY Director the envelope reports - idle ones
+  // included, offline ones included (same delete-instead-of-dim rule as the machine pivot) - so a
+  // Director with no sessions still gets a lane (a free slot). Each lane carries its own reachability
+  // entry, and every lane is then re-titled through directorLabelOf so a lane whose Director reports a
+  // display name reads as that name rather than as 8 hex chars.
+  if (pivot === "director") {
+    for (const d of directors) {
+      const id = (d.directorId ?? "").trim();
+      if (id.length === 0) continue; // an unidentified Director is not an addressable slot
+      let g = byKey.get(id);
+      if (g === undefined) {
+        g = { title: "", list: [], directors: [] };
+        byKey.set(id, g);
+      }
+      g.directors = [d];
+    }
+    for (const [key, g] of byKey.entries()) {
+      g.title = key === "(unknown)" ? "Director (unknown)" : directorLabelOf(key, g.directors[0]);
+    }
+  }
+
   const kindLabel = PIVOTS.find((p) => p.key === pivot)?.kindLabel ?? "";
 
   return [...byKey.entries()]
@@ -760,6 +829,15 @@ function buildLanes(sessions: SessionDto[], pivot: Pivot, directors: DirectorRea
 function laneSubtitle(sessions: SessionDto[], pivot: Pivot, machineDirectors: DirectorReachability[] = []): string {
   const n = sessions.length;
   const sessionWord = `${n} session${n === 1 ? "" : "s"}`;
+  if (pivot === "director") {
+    // Lane = one Director; the missing coordinate is WHICH MACHINE it runs on. From the reachability
+    // entry when the envelope has one, else from any of the lane's sessions.
+    const machine =
+      (machineDirectors[0]?.machineName ?? "").trim() ||
+      sessions.map((s) => (s.machineName ?? "").trim()).find((m) => m.length > 0) ||
+      "";
+    return machine.length > 0 ? `${machine} / ${sessionWord}` : sessionWord;
+  }
   if (pivot === "machine") {
     // Count the machine's Directors from BOTH the sessions and the folded-in idle Directors, so an
     // otherwise-empty machine still reads "1 director / 0 sessions" (an available slot) rather than
@@ -822,6 +900,11 @@ function cardTags(s: SessionDto, pivot: Pivot): Array<{ k: string; v: string }> 
   const machine = (s.machineName ?? "").trim();
   if (pivot === "machine") {
     // Lane = machine, sub-grouped by Director; the missing coordinate is the repository.
+    return [{ k: "repo", v: repoIdentity(s.repoName, s.repoPath) }];
+  }
+  if (pivot === "director") {
+    // Lane = one Director (machine already in the lane subtitle); the missing coordinate is the
+    // repository.
     return [{ k: "repo", v: repoIdentity(s.repoName, s.repoPath) }];
   }
   if (pivot === "repo") {

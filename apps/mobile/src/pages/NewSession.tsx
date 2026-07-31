@@ -70,6 +70,9 @@ function directorSubtitle(d: DirectorInfo, now: number): string {
 }
 
 function directorLabel(d: DirectorInfo): string {
+  // devthrottle_internal#1176: the user-editable display name wins when the Director reports one - it
+  // is the label that tells several Directors on one machine apart by something a human chose.
+  if (d.displayName.trim()) return d.displayName.trim();
   if (d.machineName.trim()) return d.machineName.trim();
   return d.directorId || "director";
 }

@@ -25,6 +25,13 @@ public sealed class DirectorDto
     /// <summary>OS user name the Director is running as.</summary>
     public string User { get; set; } = "";
 
+    /// <summary>
+    /// devthrottle_internal#1176: the instance's user-editable display name (e.g. "SOREN_NORTH_SLOT_2"),
+    /// reported by the Director from its named-instance registry. Empty when the instance has no name
+    /// (older builds, unnamed default) - clients fall back to <see cref="MachineName"/>. Cosmetic only.
+    /// </summary>
+    public string DisplayName { get; set; } = "";
+
     /// <summary>Director version string (informational).</summary>
     public string Version { get; set; } = "";
 

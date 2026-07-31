@@ -59,6 +59,14 @@ public sealed class GatewayStreamClient : IAsyncDisposable
     // registers it from the stream (HTTP register is gone). Captured once at construction.
     private readonly DateTime _startedAt = System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime();
 
+    /// <summary>
+    /// devthrottle_internal#1176: provider of this instance's user-editable display name, consulted on
+    /// EVERY reseed (not captured once) so a rename lands fleet-wide on the next ~10s Hello without a
+    /// Director restart. Null in tests/older callers - the Hello then carries an empty name, which the
+    /// Gateway's merge guard treats as "no statement" rather than an erase.
+    /// </summary>
+    private readonly Func<string?>? _displayName;
+
     private HubConnection? _connection;
     private long _sequence;
     private int _started;
@@ -90,8 +98,10 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         TimeSpan? rePushInterval = null,
         SessionManager? sessionManager = null,
         GatewayConnectionMonitor? monitor = null,
-        Func<List<RepoStatusDto>>? repoSnapshot = null)
+        Func<List<RepoStatusDto>>? repoSnapshot = null,
+        Func<string?>? displayName = null)
     {
+        _displayName = displayName;
         _repoSnapshot = repoSnapshot;
         _config = config ?? throw new ArgumentNullException(nameof(config));
         _directorId = string.IsNullOrWhiteSpace(directorId) ? throw new ArgumentException("directorId is required", nameof(directorId)) : directorId;
@@ -425,6 +435,25 @@ public sealed class GatewayStreamClient : IAsyncDisposable
             new(TimeSpan.Zero, TimeSpan.Zero, Completed: false, Failure: "the tunnel was not connected");
     }
 
+    /// <summary>
+    /// devthrottle_internal#1176: the display name for this reseed's Hello. A cosmetic label must never
+    /// take the registration down, so a throwing provider (corrupt named-instances.json) is logged and
+    /// reported as "no statement" (empty) - the Gateway's merge guard keeps whatever it already holds.
+    /// </summary>
+    private string ReadDisplayName()
+    {
+        if (_displayName is null) return "";
+        try
+        {
+            return _displayName()?.Trim() ?? "";
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayStreamClient] display-name provider FAILED (Hello proceeds unnamed): {ex.Message}");
+            return "";
+        }
+    }
+
     private async Task<ReseedReport> ReseedAsync()
     {
         var conn = _connection;
@@ -447,6 +476,7 @@ public sealed class GatewayStreamClient : IAsyncDisposable
                 User = Environment.UserName,
                 Pid = Environment.ProcessId,
                 StartedAt = _startedAt,
+                DisplayName = ReadDisplayName(),
             });
             awaitGateway += DateTime.UtcNow - helloStarted;
 

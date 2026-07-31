@@ -53,6 +53,9 @@ type NewSessionRequest = components["schemas"]["NewSessionRequest"];
 export interface DirectorInfo {
   directorId: string;
   machineName: string;
+  /** The instance's user-editable display name (devthrottle_internal#1176). Empty when unnamed or from
+   *  an older Director - pickers fall back to machineName. */
+  displayName: string;
   /** Best-effort version label for the picker subtitle. */
   version: string;
   /** When the Director process started (ISO 8601 UTC), or empty. Drives the picker "up <uptime> /
@@ -1467,6 +1470,7 @@ export async function getDirectors(signal?: AbortSignal): Promise<DirectorInfo[]
     .map((d) => ({
       directorId: String(d.directorId ?? ""),
       machineName: String(d.machineName ?? ""),
+      displayName: String(d.displayName ?? ""),
       version: String(d.version ?? ""),
       startedAt: String(d.startedAt ?? ""),
       lastSeen: String(d.lastSeen ?? ""),

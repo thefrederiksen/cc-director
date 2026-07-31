@@ -161,6 +161,50 @@ describe("FleetMapView - By machine free slots", () => {
   });
 });
 
+describe("FleetMapView - By director pivot (devthrottle_internal#1177)", () => {
+  it("gives every Director its own lane by NAME, keeps idle ones as free slots and offline ones dimmed", () => {
+    // Selecting the pivot through storage also proves initialPivot() accepts "director" - without that
+    // allow-list entry the saved choice would silently reset to "machine" and this whole test would fail.
+    window.localStorage.setItem("cockpit.fleetMapPivot", "director");
+    rosterValue.current = {
+      sessions: [session({ directorId: "north-alpha", machineName: "SOREN_NORTH" })],
+      machineErrors: [],
+      directors: [
+        // A renamed Director: the lane must read as its display name, not as 8 hex chars.
+        director({ directorId: "north-alpha", machineName: "SOREN_NORTH", state: "online", displayName: "SOREN_NORTH_SLOT_2" }),
+        // An idle, unnamed Director on the SAME machine: its own lane (the whole point of the pivot),
+        // labelled with the historical short-id fallback, rendered as a free slot.
+        director({ directorId: "north-idle", machineName: "SOREN_NORTH", state: "online" }),
+        // An offline Director: shown dated with no action, never dropped (same rule as the machine pivot).
+        director({ directorId: "dead-beta", machineName: "DEAD_MACHINE", state: "offline", lastSeenAgeSeconds: 420 }),
+      ],
+      error: null,
+      refreshNow: () => {},
+    };
+
+    render(<FleetMapView />);
+
+    // Three lanes: the named one, the idle one (short-id fallback), the offline one.
+    expect(screen.getByText("SOREN_NORTH_SLOT_2")).toBeTruthy();
+    expect(screen.getByText("Director idle")).toBeTruthy();
+    expect(screen.getByText("Director beta")).toBeTruthy();
+
+    // The busy lane shows its session; the machine rides in the subtitle.
+    expect(screen.getByText("release")).toBeTruthy();
+    expect(screen.getByText("SOREN_NORTH / 1 session")).toBeTruthy();
+
+    // The idle Director is a free slot; the offline one is unreachable and dated.
+    expect(screen.getAllByText(/free slot/i)).toHaveLength(1);
+    expect(screen.getByText(/machine unreachable/i)).toBeTruthy();
+    expect(screen.getByText(/Offline - last seen 7m ago/)).toBeTruthy();
+
+    // "+ New session" is offered on the reachable lanes and withheld on the offline one.
+    expect(screen.getByRole("button", { name: /Start a new session on SOREN_NORTH_SLOT_2/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Start a new session on Director idle/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Start a new session on Director beta/ })).toBeNull();
+  });
+});
+
 describe("FleetMapView - Director sub-header new-session button", () => {
   it("opens the shared dialog pre-targeted to the clicked Director, not the newest one", async () => {
     // The dialog would otherwise default to the NEWEST-started Director. Make "soren-bbb" newest, so if
@@ -169,6 +213,7 @@ describe("FleetMapView - Director sub-header new-session button", () => {
       {
         directorId: "north-aaa",
         machineName: "SOREN_NORTH",
+        displayName: "",
         version: "1",
         startedAt: "2026-07-20T00:00:00Z",
         lastSeen: "",
@@ -177,6 +222,7 @@ describe("FleetMapView - Director sub-header new-session button", () => {
       {
         directorId: "soren-bbb",
         machineName: "SOREN_SOUTH",
+        displayName: "",
         version: "1",
         startedAt: "2026-07-24T00:00:00Z", // newest -> the dialog's default pick
         lastSeen: "",

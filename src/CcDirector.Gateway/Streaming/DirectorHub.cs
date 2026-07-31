@@ -175,7 +175,8 @@ public sealed class DirectorHub : Hub
         // structurally impossible, however the client chose hello.DirectorId. It also makes the entry visible
         // to this account's /directors list and to no other. The tenant is the one resolved above from the
         // authenticated device key - never the Hello payload, which the client writes.
-        _registry.RegisterFromStream(directorId, hello.MachineName, hello.User, hello.Version, hello.Pid, hello.StartedAt, tenant);
+        _registry.RegisterFromStream(directorId, hello.MachineName, hello.User, hello.Version, hello.Pid, hello.StartedAt, tenant,
+            hello.DisplayName);
         FileLog.Write($"[DirectorHub] Hello: director={directorId} bound to conn={Short(Context.ConnectionId)} (version={hello.Version}, machine={hello.MachineName})");
     }
 

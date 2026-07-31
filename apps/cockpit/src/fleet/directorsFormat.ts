@@ -52,6 +52,21 @@ export function endpointTooltip(d: FleetDirector): string {
   }`;
 }
 
+// The primary label of a Director row (devthrottle_internal#1176): the user-editable display name when
+// the Director reports one, else the machine name, else - only when even that is blank - the raw id.
+// This is THE precedence every director surface renders, so it lives in one tested place.
+export function directorPrimaryLabel(d: {
+  displayName?: string;
+  machineName?: string;
+  directorId: string;
+}): string {
+  const name = (d.displayName ?? "").trim();
+  if (name.length > 0) return name;
+  const machine = (d.machineName ?? "").trim();
+  if (machine.length > 0) return machine;
+  return d.directorId;
+}
+
 // A sortable epoch for the "last seen" column: the parsed milliseconds, or 0 when absent so a Director
 // the Gateway has never heard from sorts to the bottom of a newest-first sort.
 export function epochOf(iso: string | null | undefined): number {

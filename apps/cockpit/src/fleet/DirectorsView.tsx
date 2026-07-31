@@ -11,7 +11,7 @@ import { useVisiblePolling } from "@devthrottle/client-core/polling/useVisiblePo
 import { useNow } from "@devthrottle/client-core/polling/useNow";
 import { DataTable, PageHeader, type DataTableColumn } from "../components";
 import { clockLabel, relativeTime } from "./format";
-import { directorStatus, epochOf, repoNamesOf } from "./directorsFormat";
+import { directorPrimaryLabel, directorStatus, epochOf, repoNamesOf } from "./directorsFormat";
 
 // The Director registry table (issue #975; rebuilt on the shared DataTable in #1246) - the React view
 // over GET /directors, enriched with live session counts and unreachable flags from the roster
@@ -87,12 +87,13 @@ export function DirectorsView() {
     [errorByDirector],
   );
 
-  // The searchable text of a Director row: machine name, the user, the version, and the repositories it
-  // hosts - so the search box finds a Director by its machine or by a repository running on it.
+  // The searchable text of a Director row: display name, machine name, the user, the version, and the
+  // repositories it hosts - so the search box finds a renamed Director by its name (the point of
+  // devthrottle_internal#1176) as well as by machine or repository.
   const searchableText = useCallback(
     (d: FleetDirector): string => {
       const repos = repoNamesOf(sessionsByDirector.get(d.directorId.toLowerCase()) ?? []);
-      return [d.machineName ?? "", d.directorId, d.user ?? "", d.version ?? "", ...repos].join(" ");
+      return [d.displayName ?? "", d.machineName ?? "", d.directorId, d.user ?? "", d.version ?? "", ...repos].join(" ");
     },
     [sessionsByDirector],
   );
@@ -103,17 +104,28 @@ export function DirectorsView() {
     () => [
       {
         key: "machine",
-        header: "Machine",
+        header: "Director",
         sortable: true,
-        sortValue: (d) => (d.machineName ?? d.directorId).toLowerCase(),
-        render: (d) => (
-          <span className="dcell-machine">
-            <span className="dcell-name">
-              {(d.machineName ?? "").trim().length > 0 ? d.machineName : d.directorId}
+        sortValue: (d) => directorPrimaryLabel(d).toLowerCase(),
+        render: (d) => {
+          // devthrottle_internal#1176: the user-editable display name is the primary label when the
+          // Director reports one; machine + user become the dim secondary detail. Unnamed Directors
+          // render exactly as before (machine name bold, user dim; raw id as the last resort). A
+          // default instance's name is seeded to the hostname, so a machine name identical to the
+          // display name is not repeated beside it.
+          const primary = directorPrimaryLabel(d);
+          const machine = (d.machineName ?? "").trim();
+          const secondary = [machine.toLowerCase() === primary.toLowerCase() ? "" : machine, d.user ?? ""]
+            .map((part) => part.trim())
+            .filter((part) => part.length > 0)
+            .join(" ");
+          return (
+            <span className="dcell-machine">
+              <span className="dcell-name">{primary}</span>
+              {secondary.length > 0 && <span className="ddim"> {secondary}</span>}
             </span>
-            {(d.user ?? "").trim().length > 0 && <span className="ddim"> {d.user}</span>}
-          </span>
-        ),
+          );
+        },
       },
       {
         key: "status",
@@ -180,7 +192,7 @@ export function DirectorsView() {
           rows={directors}
           rowKey={(d) => d.directorId}
           searchableText={searchableText}
-          searchPlaceholder="Search by machine or repository"
+          searchPlaceholder="Search by name, machine or repository"
           defaultSort={{ columnKey: "machine", direction: "asc" }}
           emptyMessage={
             <>

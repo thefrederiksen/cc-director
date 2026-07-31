@@ -307,12 +307,18 @@ public sealed class DirectorRegistry : IDisposable
     /// its director id. It is never read from the Hello payload, and there is no default: an unresolved tenant
     /// is a rejected Hello at the hub, not a registration under a guessed owner.
     /// </summary>
-    public DirectorDto RegisterFromStream(string directorId, string machineName, string user, string version, int pid, DateTime startedAt, TenantId tenant)
+    public DirectorDto RegisterFromStream(string directorId, string machineName, string user, string version, int pid, DateTime startedAt, TenantId tenant,
+        string displayName = "")
     {
         if (string.IsNullOrEmpty(directorId))
             throw new ArgumentException("directorId is required", nameof(directorId));
         if (!tenant.IsValid)
             throw new ArgumentException("a valid tenant is required to register a Director", nameof(tenant));
+
+        // devthrottle_internal#1176: the display name is CLIENT-WRITTEN and cosmetic, so it is sanitized
+        // here - the single place every stream registration passes through - before it can reach the
+        // cockpit: control characters stripped, length clamped. Never keyed on, never trusted for tenancy.
+        var cleanDisplayName = SanitizeDisplayName(displayName);
 
         var now = DateTime.UtcNow;
         var key = new DirectorKey(tenant, directorId);
@@ -338,6 +344,9 @@ public sealed class DirectorRegistry : IDisposable
                 TailnetEndpoint = null,
                 MachineName = !string.IsNullOrEmpty(machineName) ? machineName : (existing?.MachineName ?? ""),
                 User = !string.IsNullOrEmpty(user) ? user : (existing?.User ?? ""),
+                // devthrottle_internal#1176: same merge guard as the fields above - an empty name from an
+                // older build's Hello is "no statement", not an instruction to erase the stored name.
+                DisplayName = !string.IsNullOrEmpty(cleanDisplayName) ? cleanDisplayName : (existing?.DisplayName ?? ""),
                 Version = !string.IsNullOrEmpty(version) ? version : (existing?.Version ?? ""),
                 SchemaVersion = 1,
                 LastSeen = now,
@@ -353,6 +362,22 @@ public sealed class DirectorRegistry : IDisposable
             OnDirectorAdded?.Invoke(new DirectorArrival(key.Tenant, dto));
         }
         return dto;
+    }
+
+    /// <summary>Longest display name the registry will store; anything longer is truncated, not rejected.</summary>
+    public const int MaxDisplayNameLength = 80;
+
+    /// <summary>
+    /// devthrottle_internal#1176: normalize a client-written display name before it is stored and served
+    /// to the cockpit. Trims, strips control characters (a name must never carry escape sequences into a
+    /// terminal or log line), and clamps to <see cref="MaxDisplayNameLength"/>. Empty in, empty out.
+    /// </summary>
+    internal static string SanitizeDisplayName(string? displayName)
+    {
+        if (string.IsNullOrWhiteSpace(displayName)) return "";
+        var chars = displayName.Trim().Where(c => !char.IsControl(c)).ToArray();
+        var clean = new string(chars);
+        return clean.Length <= MaxDisplayNameLength ? clean : clean[..MaxDisplayNameLength];
     }
 
     /// <summary>
