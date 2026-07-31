@@ -7,6 +7,7 @@ import {
   type DirectorReachability,
   type SessionsEnvelope,
 } from "./fleetClient";
+import { needsYouBadgeCount } from "../sessions/ordering";
 import { emptyRetentionCache, mergeRosterRetention, RETENTION_HORIZON_MS, type RetentionCache } from "./rosterRetention";
 
 // Minimal SessionDto fixtures: the merge only routes sessions by id/director/machine, so the triage and
@@ -97,7 +98,8 @@ describe("roster keep-and-mark retention merge", () => {
     expect(mark?.lastSeenLabel).toBe("last seen 2m ago");
   });
 
-  // Inspection 2, finding 3 - and this test has now been wrong TWICE, which is worth recording.
+  // Inspection 2, finding 3, then inspection 3, finding 2 - this test has now been wrong THREE times,
+  // which is worth recording because each wrong version looked like the disciplined one.
   //
   // First it demanded the card survive "indefinitely", which encoded the unbounded-retention defect.
   // Then it demanded the card be dropped the moment the envelope stopped NAMING the Director, which
@@ -105,7 +107,15 @@ describe("roster keep-and-mark retention merge", () => {
   // Directors reconnect, so the phone would have emptied itself on the first poll after any restart.
   // The wire carries no eviction tombstone, so absence proves nothing at all.
   //
-  // What is true: the retention is bounded, and the bound is the PHONE'S OWN clock.
+  // Then it bounded the retention by when the Director was last NAMED, and tested that with a
+  // FIVE-SECOND gap - which is the one gap at which the two designs cannot be told apart. A last-named
+  // stamp ages during time the phone observes NOTHING, so a suspended page or a long outage could carry
+  // it past the horizon and the first successful empty envelope after a restart would delete everything
+  // at once. The five-second test was green for both the working design and the broken one.
+  //
+  // What is true: the bound is the phone's own clock, and it counts OBSERVED ABSENCE. The first envelope
+  // that omits a Director starts the clock and can never delete; deletion needs a second one, a horizon
+  // later, still omitting it. The long-gap test below is the one that separates the two designs.
   it("keeps the cards through a Gateway restart, when the envelope suddenly names nobody", () => {
     const t0 = 1_000_000;
     const first = mergeRosterRetention(emptyRetentionCache(), envelope([session("s1", "d1")], [director("d1", REACHABILITY_ONLINE)]), t0);
@@ -115,16 +125,44 @@ describe("roster keep-and-mark retention merge", () => {
     expect(second.cache.byDirector.get("d1")?.map((s) => s.sessionId)).toEqual(["s1"]);
   });
 
-  it("drops the cards once the Director has gone unnamed for longer than the retention horizon", () => {
+  // THE TEST THAT SEPARATES THE TWO DESIGNS (inspection 3, finding 2). The phone was suspended, or its
+  // polls failed, for longer than the whole horizon - so it observed NOTHING for that time - and then the
+  // Gateway comes back and answers, naming nobody yet. Under the last-named stamp this single response
+  // deleted every card. It must not: nothing was observed to be absent, so nothing has been learned.
+  it("does NOT delete on the first empty response after a gap longer than the horizon", () => {
     const t0 = 1_000_000;
     const first = mergeRosterRetention(emptyRetentionCache(), envelope([session("s1", "d1")], [director("d1", REACHABILITY_ONLINE)]), t0);
-    const later = mergeRosterRetention(first.cache, envelope([], []), t0 + RETENTION_HORIZON_MS + 1);
+    const afterTheOutage = mergeRosterRetention(first.cache, envelope([], []), t0 + RETENTION_HORIZON_MS * 3);
+    expect(afterTheOutage.roster.sessions.map((s) => s.sessionId)).toEqual(["s1"]);
+    expect(afterTheOutage.cache.byDirector.has("d1")).toBe(true);
+  });
+
+  it("drops the cards once the Director has been OBSERVED missing for longer than the horizon", () => {
+    const t0 = 1_000_000;
+    const first = mergeRosterRetention(emptyRetentionCache(), envelope([session("s1", "d1")], [director("d1", REACHABILITY_ONLINE)]), t0);
+    // The first omission only starts the clock.
+    const observedMissing = mergeRosterRetention(first.cache, envelope([], []), t0 + 60_000);
+    expect(observedMissing.roster.sessions.map((s) => s.sessionId)).toEqual(["s1"]);
+    // A second successful envelope, still naming nobody, a horizon after the FIRST omission.
+    const later = mergeRosterRetention(observedMissing.cache, envelope([], []), t0 + 60_000 + RETENTION_HORIZON_MS + 1);
     expect(later.roster.sessions).toEqual([]);
     expect(later.cache.byDirector.has("d1")).toBe(false);
   });
 
+  // Coming back resets the clock. A machine that reappears and goes away again is starting a NEW absence,
+  // not resuming the old one, so it gets a full horizon - otherwise a Director that returns for one poll
+  // every day would accumulate its way to deletion while being seen constantly.
+  it("restarts the horizon when the Director is named again in between", () => {
+    const t0 = 1_000_000;
+    let cache = mergeRosterRetention(emptyRetentionCache(), envelope([session("s1", "d1")], [director("d1", REACHABILITY_ONLINE)]), t0).cache;
+    cache = mergeRosterRetention(cache, envelope([], []), t0 + 1_000).cache;                                    // observed missing
+    cache = mergeRosterRetention(cache, envelope([], [director("d1", REACHABILITY_OFFLINE)]), t0 + 2_000).cache; // named again
+    const later = mergeRosterRetention(cache, envelope([], []), t0 + 2_000 + RETENTION_HORIZON_MS);
+    expect(later.roster.sessions.map((s) => s.sessionId)).toEqual(["s1"]);
+  });
+
   // The other side of the boundary: while the Gateway still names the Director, the cards stay however
-  // long it serves no rows. Being named refreshes the clock, so this never expires.
+  // long it serves no rows. Being named clears the stamp, so this never expires.
   it("keeps retaining while the Gateway still names the Director, however long it serves no rows", () => {
     let cache = mergeRosterRetention(emptyRetentionCache(), envelope([session("s1", "d1")], [director("d1", REACHABILITY_ONLINE)]), 0).cache;
     for (let poll = 0; poll < 50; poll++) {
@@ -158,6 +196,51 @@ describe("roster keep-and-mark retention merge", () => {
     const wobbly = mergeRosterRetention(first.cache, envelope([], [director("d1", REACHABILITY_WOBBLY, { lastSeenAgeSeconds: 45 })]), 1000);
     const row = wobbly.roster.sessions.find((s) => s.sessionId === "s1");
     expect((row as { machineReachable?: boolean }).machineReachable).toBe(true);
+  });
+
+  // Inspection 3, finding 3. The three "may nag" surfaces - the row, the voice queue, and the app-icon
+  // badge - must be counting the SAME sessions. The row and the queue read the merged roster; the badge
+  // was counted from the raw envelope, so in a wobbly fallback the card nagged and could enter the voice
+  // queue while the badge was explicitly cleared.
+  //
+  // What this pins is the fact underneath that defect: in this exact state the two candidate sources give
+  // DIFFERENT answers, and the merged one is the answer the other two surfaces already give. If the
+  // envelope ever became an equally good source, the last assertion would go red and this test would have
+  // to be rewritten rather than quietly passing.
+  //
+  // NOT PROVEN HERE, and it cannot be until `apps/mobile` has a test harness (issue #1171): that the Home
+  // page passes the merged list to reconcileBadge. That call site is source-level only.
+  it("counts the badge differently from the envelope in a wobbly fallback, and the merged list is the one that agrees", () => {
+    const needsYou = session("s1", "d1");
+    (needsYou as { machineReachable?: boolean; triageBucket?: string }).machineReachable = true;
+    (needsYou as { machineReachable?: boolean; triageBucket?: string }).triageBucket = "needsYou";
+
+    const online = mergeRosterRetention(emptyRetentionCache(), envelope([needsYou], [director("d1", REACHABILITY_ONLINE)]), 0);
+    expect(needsYouBadgeCount(online.roster.sessions)).toBe(1);
+
+    // The Gateway names the Director wobbly and serves NO rows for it - the fallback case.
+    const wobblyEnvelope = envelope([], [director("d1", REACHABILITY_WOBBLY, { lastSeenAgeSeconds: 45 })]);
+    const fallback = mergeRosterRetention(online.cache, wobblyEnvelope, 1000);
+
+    // The row and the voice queue see the retained, still-reachable card...
+    expect(fallback.roster.sessions.map((s) => s.sessionId)).toEqual(["s1"]);
+    expect(needsYouBadgeCount(fallback.roster.sessions)).toBe(1);
+    // ...while the envelope the badge used to be counted from sees nothing at all. That gap IS the defect.
+    expect(needsYouBadgeCount(wobblyEnvelope.sessions)).toBe(0);
+  });
+
+  // The other side of it: an OFFLINE fallback must clear the badge on both sources, so the test above is
+  // pinning a real distinction between the two states rather than "merged always counts more".
+  it("counts no badge for a retained card whose machine is offline", () => {
+    const needsYou = session("s1", "d1");
+    (needsYou as { machineReachable?: boolean; triageBucket?: string }).machineReachable = true;
+    (needsYou as { machineReachable?: boolean; triageBucket?: string }).triageBucket = "needsYou";
+
+    const online = mergeRosterRetention(emptyRetentionCache(), envelope([needsYou], [director("d1", REACHABILITY_ONLINE)]), 0);
+    const fallback = mergeRosterRetention(online.cache, envelope([], [director("d1", REACHABILITY_OFFLINE, { lastSeenAgeSeconds: 900 })]), 1000);
+
+    expect(fallback.roster.sessions.map((s) => s.sessionId)).toEqual(["s1"]);   // still SHOWN
+    expect(needsYouBadgeCount(fallback.roster.sessions)).toBe(0);               // and not NAGGING
   });
 
   it("removes a session only on an authoritative online answer, never while unreachable", () => {

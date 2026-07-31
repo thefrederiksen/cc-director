@@ -62,7 +62,9 @@ export interface RosterSessionMark {
 export interface RetentionCache {
   byDirector: Map<string, SessionDto[]>;
   /**
-   * When each Director was last NAMED by an envelope, on THIS DEVICE'S clock (milliseconds).
+   * When each Director was FIRST OBSERVED MISSING - the time of the first successful envelope that
+   * failed to name it - on THIS DEVICE'S clock (milliseconds). Absent from the map means "not currently
+   * observed missing", which is the state of every Director the last envelope named.
    *
    * Inspection 2, finding 3. The first attempt at bounding retention treated a Director's ABSENCE from the
    * envelope as proof that the Gateway had evicted it past the horizon. It is not proof of anything: the
@@ -71,11 +73,26 @@ export interface RetentionCache {
    * successful poll after a restart. That is a worse defect than the unbounded retention it replaced,
    * because it is instant and silent.
    *
-   * The wire carries no eviction tombstone and no Gateway generation, so absence CANNOT be read as
-   * eviction. The retention is bounded by this device's own clock instead: being named refreshes the
-   * stamp, and cards are dropped only once a Director has gone unnamed for longer than the horizon.
+   * Inspection 3, finding 2. The SECOND attempt stamped when a Director was last NAMED, and that has the
+   * same failure by a different road. Time in which the phone observes nothing at all - a suspended but
+   * still-mounted page, a long network or Gateway outage - ages a last-named stamp just as fast as time
+   * in which the Director is genuinely absent, because the stamp measures elapsed wall clock rather than
+   * evidence. So the first successful empty envelope after a restart could arrive with the stamp already
+   * over the horizon and delete every card at once: precisely the failure the client clock was introduced
+   * to prevent.
+   *
+   * The stamp therefore measures the thing it is used for. It STARTS on the first successful envelope
+   * that omits the Director and is CLEARED the moment one names it again, so a card can only be dropped
+   * after the phone has actually watched that Director be absent across the horizon. No observations
+   * means no stamp means no deletion - a phone that saw nothing has learned nothing.
+   *
+   * The residual, stated rather than argued away: two observed omissions a horizon apart with the page
+   * suspended in between will still delete, even though the machine may have been present for most of
+   * that gap. That is narrower than what it replaces (it needs two successful envelopes, so no single
+   * response can ever empty the phone) and it fails recoverably - the card returns as soon as the
+   * machine does. Closing it entirely needs an eviction tombstone on the wire, which does not exist.
    */
-  lastNamedAt: Map<string, number>;
+  missingSince: Map<string, number>;
 }
 
 /**
@@ -86,7 +103,7 @@ export interface RetentionCache {
 export const RETENTION_HORIZON_MS = 24 * 60 * 60 * 1000;
 
 export function emptyRetentionCache(): RetentionCache {
-  return { byDirector: new Map<string, SessionDto[]>(), lastNamedAt: new Map<string, number>() };
+  return { byDirector: new Map<string, SessionDto[]>(), missingSince: new Map<string, number>() };
 }
 
 // The display roster produced by the merge: the sessions to render (live + retained-and-marked), in a
@@ -95,6 +112,27 @@ export interface RetainedRoster {
   sessions: SessionDto[];
   marks: Map<string, RosterSessionMark>;
 }
+
+// THIS LIST IS THE ONE SOURCE FOR EVERY "MAY NAG" SURFACE - the row, the voice queue, AND the app-icon
+// badge (inspection 3, finding 3).
+//
+// The mobile Home page rendered the row and built the voice queue from `roster.sessions` and then counted
+// the badge from the RAW envelope. In a wobbly fallback - the Gateway names a connected-but-quiet Director
+// and serves no rows for it - this list holds the retained, re-stamped-reachable card while the envelope
+// holds nothing, so the card took its attention treatment and could enter the voice queue while the badge
+// was explicitly cleared. Three surfaces that exist to say the same thing said two different things: the
+// same shape as inspection 1's finding 2, one layer along.
+//
+// The count itself was deliberately NOT folded into this module, though that would have removed the
+// caller's choice of source, because `needsYouBadgeCount` calls `classify`, which THROWS on a session the
+// Gateway did not stamp. Counting here would move that throw ahead of the roster render, so one unstamped
+// row would blank the whole screen rather than miscount a badge - trading a visible wrong number for an
+// invisible empty phone. It fails in the wrong direction, so the caller keeps the call and this note keeps
+// the reason.
+//
+// NOT PROVEN, and not softened: `apps/mobile` has no test harness (issue #1171), so nothing pins that the
+// Home page reads THIS list for its badge. What is pinned, in the test beside this file, is that the two
+// sources genuinely differ in the wobbly fallback and which of them the other surfaces agree with.
 
 // The owning Director id for a session, or "" when the Gateway did not stamp one (an older session, or
 // a purely local Director). "" sessions are never retained per-Director - they render live-only.
@@ -149,14 +187,15 @@ export function mergeRosterRetention(
 
   const nextCache: RetentionCache = {
     byDirector: new Map(prev.byDirector),
-    lastNamedAt: new Map(prev.lastNamedAt ?? []),
+    missingSince: new Map(prev.missingSince ?? []),
   };
 
   // Every Director this envelope NAMES - by serving rows for it or by carrying a reachability entry -
-  // has its clock refreshed. This is what makes a Gateway restart free: the restarted Gateway names
-  // nobody for a moment, and nobody's clock moves, so nothing is dropped.
+  // is no longer observed missing, so its stamp is CLEARED. A machine that comes back and goes away
+  // again starts a fresh horizon rather than resuming an old one, which is the honest reading: what was
+  // observed is a new absence, not a continuation of the previous one.
   for (const id of new Set<string>([...liveByDir.keys(), ...envelope.directors.map((d) => d.directorId)])) {
-    if (id) nextCache.lastNamedAt.set(id, nowMs);
+    if (id) nextCache.missingSince.delete(id);
   }
   const sessions: SessionDto[] = [];
   const marks = new Map<string, RosterSessionMark>();
@@ -226,17 +265,31 @@ export function mergeRosterRetention(
     // have deleted every card on the first successful poll after a restart, instantly and silently. That is
     // worse than the unbounded retention it was fixing.
     //
-    // So the bound is this device's own clock, which the phone can actually observe. A Director keeps its
-    // cards until it has gone UNNAMED for longer than the horizon; being named refreshes the stamp above.
-    // A Director we have never stamped starts its clock now rather than being dropped on sight - the safe
-    // direction, since the alternative deletes cards for a machine we simply have not seen yet.
-    const namedAt = nextCache.lastNamedAt.get(id);
-    if (namedAt === undefined) {
-      nextCache.lastNamedAt.set(id, nowMs);
-    } else if (nowMs - namedAt > RETENTION_HORIZON_MS) {
-      nextCache.byDirector.delete(id);
-      nextCache.lastNamedAt.delete(id);
-      continue;
+    // CORRECTED AGAIN after inspection 3, finding 2. The bound is this device's own clock, but it must
+    // count OBSERVED ABSENCE, not elapsed time. A last-named stamp counted both, so a suspended page or a
+    // long outage aged it while the phone was watching nothing, and the first successful empty envelope
+    // after a restart could arrive already past the horizon and delete everything at once - the very
+    // failure the client clock was added to prevent, arriving by a different road.
+    //
+    // A Director is stamped when an envelope is successfully received and does NOT name it, and the stamp
+    // is cleared above the moment one does. So the first omission only STARTS the clock - it can never
+    // delete - and a deletion requires a second successful envelope, still not naming it, a horizon
+    // later. A phone that received nothing has learned nothing and drops nothing.
+    //
+    // A Director the envelope DOES name but serves no rows for is not missing at all: the Gateway still
+    // knows the machine and is simply saying nothing about it. It is never stamped, so it retains until
+    // the Gateway itself forgets it, which is the Gateway's horizon doing the work rather than a second
+    // client clock racing it.
+    const named = reach !== undefined || live !== undefined;
+    if (!named) {
+      const missingAt = nextCache.missingSince.get(id);
+      if (missingAt === undefined) {
+        nextCache.missingSince.set(id, nowMs);
+      } else if (nowMs - missingAt > RETENTION_HORIZON_MS) {
+        nextCache.byDirector.delete(id);
+        nextCache.missingSince.delete(id);
+        continue;
+      }
     }
 
     const retained = prev.byDirector.get(id);

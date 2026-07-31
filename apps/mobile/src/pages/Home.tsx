@@ -122,17 +122,22 @@ export function Home() {
       setSessions(merged.roster.sessions);
       setMarks(merged.roster.marks);
       setError(null);
-      // The app-icon "needs you" dot and the voice-clip sync read what the GATEWAY served this poll
-      // (never the client-retained rows): the badge must reflect what genuinely needs you right now, and
-      // only a reachable session can have a phone-ready voice clip.
+      // The app-icon "needs you" dot is counted over the MERGED roster - the same sessions this page
+      // renders and builds the voice queue from. It used to be counted from the RAW envelope, and in a
+      // wobbly fallback - a connected-but-quiet Director the Gateway names but serves no rows for - the
+      // merged roster held the retained, still-reachable card while the envelope held nothing, so the
+      // card nagged and could enter the voice queue while the badge was cleared (inspection 3, finding 3).
+      // If these three ever read different lists again, that is the bug, not a tuning choice.
       //
-      // The Gateway now serves the sessions of a machine nobody can reach, so "served" no longer implies
-      // "actionable" and the count is taken through the shared badge rule: a needs-you session whose
-      // machine is unreachable stays VISIBLE in the group below and stays OUT of this number. A laptop
-      // asleep overnight with three red sessions must not leave the badge lit until morning.
-      void reconcileBadge(needsYouBadgeCount(envelope.sessions));
-      // Pull each gateway-ready voice session's clip down to the phone so the triangle can appear
-      // (phone-ready, the issue #850 rule). Fire-and-forget; it updates the clip store as bytes land.
+      // The badge RULE is unchanged and still lives in client-core: a needs-you session whose machine
+      // cannot be acted on stays VISIBLE in the group below and stays OUT of this number, so a laptop
+      // asleep overnight with three red sessions does not leave the badge lit until morning.
+      void reconcileBadge(needsYouBadgeCount(merged.roster.sessions));
+      // The clip sync DOES read the envelope, and that is not the same mistake: it fetches bytes the
+      // Gateway is serving this poll. A retained card has no new clip to pull - if its audio was already
+      // downloaded it plays, and if it was not, the session is not phone-ready and the voice queue
+      // excludes it, so nothing promises playback it cannot deliver.
+      // Fire-and-forget; it updates the clip store as bytes land (phone-ready, the issue #850 rule).
       void syncVoiceSessions(envelope.sessions);
     } catch (err) {
       if (signal?.aborted) return;
