@@ -98,15 +98,20 @@ public sealed class PostgresProviderProofTests
     }
 
     /// <summary>
-    /// Proves the migration applied an EXPLICIT byte-ordinal collation "C" to exactly the four natural-key
-    /// primary-key columns and to no others. This reads pg_attribute.attcollation (the column's DEFINED
-    /// collation), which is the type-default pseudo-collation ("default") for a plain text column and the
-    /// "C" collation only where the migration set COLLATE "C" explicitly - so it distinguishes our explicit
-    /// collation from the database's default collation even if that default happens to be C. Without this,
-    /// the behavioral ordering test alone could pass on a container whose default collation is already C.
+    /// Proves the migrations applied an EXPLICIT byte-ordinal collation "C" to exactly the natural-key
+    /// columns the model declares with UseCollation("C") - and to no others. This reads
+    /// pg_attribute.attcollation (the column's DEFINED collation), which is the type-default
+    /// pseudo-collation ("default") for a plain text column and the "C" collation only where the migration
+    /// set COLLATE "C" explicitly - so it distinguishes our explicit collation from the database's default
+    /// collation even if that default happens to be C. Without this, the behavioral ordering test alone
+    /// could pass on a container whose default collation is already C.
+    ///
+    /// The list below is kept as an EXPLICIT enumeration on purpose: adding a C collation to the model must
+    /// be acknowledged here, so an accidental one is loud. It went stale once (issue #1191) because this
+    /// suite is environment-gated and ran nowhere; it is now part of the routine local gate.
     /// </summary>
     [RequiresPostgresFact]
-    public void Collation_ExplicitC_OnExactlyTheFourNaturalKeys_OnRealPostgres()
+    public void Collation_ExplicitC_OnExactlyTheDeclaredNaturalKeys_OnRealPostgres()
     {
         EnsureMigrated();
         using var ctx = NewContext();
@@ -123,23 +128,28 @@ public sealed class PostgresProviderProofTests
             "AND col.collname = 'C' " +
             "ORDER BY c.relname, a.attname");
 
+        // One entry per UseCollation("C") declaration in GatewayDbContext, read back from the live catalog.
+        // 18 declarations, 18 columns - verified one-to-one against the model on 2026-07-31 (#1191).
         var expected = new[]
         {
-            // The device-credential natural keys (MTR-14): the DeviceId primary key and the DeviceKeyHash lookup
-            // index, plus the device-import marker's SourcePath key - all byte-ordinal to match SQLite BINARY.
+            ("account_trials", "subject"),
             ("device_credentials", "DeviceId"),
             ("device_credentials", "DeviceKeyHash"),
             ("device_import_markers", "SourcePath"),
+            ("dictation_suggestion_dismissals", "Term"),
+            ("dictation_suggestion_verdicts", "Term"),
             ("mission_notes", "Key"),
             ("push_subscriptions", "Endpoint"),
+            ("session_history", "SessionId"),
+            ("session_history_rollups", "RepoKey"),
             ("session_spend", "SessionId"),
+            ("skill_tenant_overrides", "SkillId"),
+            ("skills", "Id"),
             ("snoozes", "SessionId"),
-            // The per-account settings key (AddTenantSettings): tenant_settings.Key is byte-ordinal
-            // (GatewayDbContext UseCollation("C")) so a settings key compares exactly. This entry was
-            // missing here because the PG-gated suite never runs in CI; real-Postgres proof surfaced the gap.
             ("tenant_settings", "Key"),
             ("tenants", "AccountSubject"),
             ("tenants", "Id"),
+            ("workflow_tenant_overrides", "WorkflowId"),
         };
         Assert.Equal(expected, withExplicitC.ToArray());
 
