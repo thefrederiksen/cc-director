@@ -90,7 +90,12 @@ public sealed class GatewayStatsSqliteBaselineEquivalenceTests : IDisposable
     {
         using (var db = new GatewayStatsDatabase(_handRolledPath))
         {
-            Assert.Equal(5, GatewayStatsDatabase.SchemaVersion);
+            // The fixture is the FILE this block just created by running the real shipped code; what it
+            // must look like is pinned by the assertions that follow. There used to be an
+            // Assert.Equal(5, GatewayStatsDatabase.SchemaVersion) here - a literal copy of a constant,
+            // which can only ever fail when somebody legitimately moves the constant. Raising the
+            // schema version to 7 did exactly that and reddened five files at once for no defect
+            // (issue #1156). A pin that fires on correct changes is noise, not a guard.
         }
         SqliteConnection.ClearAllPools();
     }
