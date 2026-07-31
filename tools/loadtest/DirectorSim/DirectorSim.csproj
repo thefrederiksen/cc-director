@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Stage 2 of the Gateway load-test plan (devthrottle_internal issue #1173): the Director push
+       simulator. Opens N SignalR HubConnections to the Gateway's /director-stream, sends the real
+       Hello(DirectorStreamHello) + PushSnapshot(sequence, SessionDto[]) contract, then streams
+       PushDelta at a target total rate with a strictly increasing per-connection sequence (the
+       PushedSessionStore drops anything else, and a simulator that violated that would be load-testing
+       the reject path, not the fold). Deliberately NOT in cc-director.sln (tools/harnesses precedent). -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>DirectorSim</AssemblyName>
+    <SelfContained>false</SelfContained>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RootNamespace>CcDirector.LoadTest.DirectorSim</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Version-matched to the ASP.NET Core 10 server the Gateway runs on. -->
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.9" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The REAL wire contracts (DirectorStreamHello, SessionDto), so the simulator's messages are the
+         messages a real Director sends - not a lookalike shape the hub would bind differently. -->
+    <ProjectReference Include="..\..\..\src\CcDirector.Gateway.Contracts\CcDirector.Gateway.Contracts.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Shared\LoadTargetGuard.cs" Link="LoadTargetGuard.cs" />
+  </ItemGroup>
+
+</Project>

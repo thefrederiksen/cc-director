@@ -155,6 +155,9 @@ public sealed class DeviceRegistry : IDisposable
         {
             var suppliedBytes = HashKeyBytes(key);
             var suppliedHash = HashBytesToHex(suppliedBytes);
+            // Load-test Stage 0 (issue #1173): every authenticated request pays this uncached database
+            // lookup; counting it puts a number on that cost beside the roster's own reads.
+            Diagnostics.LoadTestMetrics.DeviceCredentialLookupObserved();
             using var ctx = _db.CreateUnscopedContext();
             var matches = ctx.DeviceCredentials
                 .AsNoTracking()

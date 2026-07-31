@@ -108,32 +108,47 @@ public sealed class HostedStatsServeTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// SERVE: the data route answers 200 for an enrolled tenant on hosted - NOT the 404 refusal the deny used
-    /// to give, and NOT the refusal envelope hiding behind a 200.
+    /// THE HOSTED FEED IS UNAVAILABLE WITH A NAMED REASON - the CURRENT contract, changed by the no-SQLite
+    /// remediation, and this test says so rather than pretending otherwise.
+    ///
+    /// This route used to answer 200 here, served from the file-backed aggregator (issue #1848 retired the
+    /// deny). The 2026-07-30 outage remediation then made a hosted Gateway open NO statistics file, ever, so
+    /// there is no aggregator on hosted - and the DATABASE-backed read path that replaces it has not been
+    /// wired yet. Until it is, the shipped hosted behaviour is the deliberate degraded state: 503, JSON, a
+    /// named reason, and NO data - never a vanished route (which reads as a broken deploy) and never a 200
+    /// carrying the Local partition. The serve-again wiring is tracked as its own issue; when it lands, this
+    /// test goes back to asserting 200 with the caller's own tenant totals.
     /// </summary>
     [Fact]
-    public async Task The_stats_feed_serves_an_enrolled_tenant_on_hosted()
+    public async Task The_stats_feed_on_hosted_is_unavailable_with_a_named_reason_and_serves_no_data()
     {
         var resp = await _httpA.GetAsync("stats/data");
 
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, resp.StatusCode);
         Assert.Equal("application/json", resp.Content.Headers.ContentType?.MediaType);
         var text = await resp.Content.ReadAsStringAsync();
-        Assert.DoesNotContain("not available on the hosted gateway", text, StringComparison.Ordinal);
+        using var doc = System.Text.Json.JsonDocument.Parse(text);
+        Assert.False(doc.RootElement.GetProperty("available").GetBoolean());
+        Assert.False(string.IsNullOrWhiteSpace(doc.RootElement.GetProperty("reason").GetString()));
+        // The unavailable envelope must carry NO statistics - a 503 that leaked totals would be worse than
+        // the 200 it replaced.
+        Assert.DoesNotContain("\"buckets\"", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"turns\"", text, StringComparison.Ordinal);
     }
 
-    /// <summary>The standalone dashboard page is retired (issue #587): /stats answers a redirect to the
-    /// Cockpit /your-throttle route on hosted too. It carries no per-tenant data; the feed it used to
-    /// fetch is what is tenant-gated.</summary>
+    /// <summary>The page route rides the same availability gate as the feed: on hosted, with no statistics
+    /// store wired, /stats answers the named 503 rather than vanishing or redirecting to a Cockpit page
+    /// whose feed cannot serve. The self-host redirect to /your-throttle is pinned by the self-host control
+    /// class below.</summary>
     [Fact]
-    public async Task The_stats_page_redirects_to_your_throttle_on_hosted()
+    public async Task The_stats_page_on_hosted_answers_the_same_named_unavailable_state()
     {
         using var handler = new HttpClientHandler { AllowAutoRedirect = false };
         using var raw = new HttpClient(handler) { BaseAddress = _httpA.BaseAddress };
         raw.DefaultRequestHeaders.Authorization = _httpA.DefaultRequestHeaders.Authorization;
         var resp = await raw.GetAsync("stats");
-        Assert.Equal(HttpStatusCode.Found, resp.StatusCode);
-        Assert.Equal("/your-throttle", resp.Headers.Location!.ToString());
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, resp.StatusCode);
+        Assert.False(string.IsNullOrWhiteSpace(await resp.Content.ReadAsStringAsync()));
     }
 
     /// <summary>
@@ -161,44 +176,31 @@ public sealed class HostedStatsServeTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// ISOLATED: turns fed into the aggregator for tenant A are counted in A's feed and are INVISIBLE to B.
-    /// Feeds A a distinctive voice/phone bucket; A's /stats/data reports it, B's reports an empty feed. Proves
-    /// the un-denied read is scoped to the caller's tenant, not fleet-global.
+    /// ISOLATION, in the shape the current hosted contract allows it to be asserted. The strong form of this
+    /// test - feed tenant A a distinctive bucket, read it back on A's feed, prove it invisible on B's - needs
+    /// an aggregator, and a hosted Gateway now has NONE by design (it never opens a statistics file; that is
+    /// the 2026-07-30 remediation). What remains assertable, and still worth pinning, is the pair of facts
+    /// that make a leak impossible in the shipped state: the hosted Gateway holds no local statistics store
+    /// AT ALL, and neither tenant's feed serves data - the same named 503 for both, with no totals in the
+    /// body. When the database-backed hosted read path is wired (its own issue), the strong form comes back.
     /// </summary>
     [Fact]
-    public async Task One_tenants_turns_are_invisible_to_another_tenant_on_hosted()
+    public async Task No_tenants_turns_can_leak_because_hosted_holds_no_local_statistics_at_all()
     {
-        _gateway.InputStats!.Observe(new SessionDto
+        // The mechanism a leak would need is absent by design on hosted.
+        Assert.Null(_gateway.InputStats);
+        Assert.Null(_gateway.SessionConcurrency);
+
+        // And both tenants receive the identical named unavailable state, with no data in it.
+        foreach (var http in new[] { _httpA, _httpB })
         {
-            SessionId = "s-alpha",
-            RepoPath = @"D:\ReposFred\alpha-only-repo",
-            InputStats = new InputStatsDto
-            {
-                Buckets = { new InputStatBucketDto { Modality = "voice", Surface = "phone", Turns = 7, Characters = 700 } },
-            },
-        }, null, _tenantA);
-
-        // Tenant A sees its own turns.
-        var a = await ReadFeed(_httpA);
-        var aBucket = Assert.Single(a.GetProperty("buckets").EnumerateArray());
-        Assert.Equal("voice", aBucket.GetProperty("modality").GetString());
-        Assert.Equal(7, aBucket.GetProperty("turns").GetInt64());
-        // And its repo tally carries A's repo.
-        Assert.Contains(a.GetProperty("repos").EnumerateArray(),
-            r => r.GetProperty("repoName").GetString() == "alpha-only-repo");
-
-        // Tenant B sees NONE of it - an empty feed, not A's totals.
-        var b = await ReadFeed(_httpB);
-        Assert.Empty(b.GetProperty("buckets").EnumerateArray());
-        Assert.Empty(b.GetProperty("repos").EnumerateArray());
-    }
-
-    private static async Task<JsonElement> ReadFeed(HttpClient http)
-    {
-        var resp = await http.GetAsync("stats/data");
-        resp.EnsureSuccessStatusCode();
-        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-        return doc.RootElement.Clone();
+            var resp = await http.GetAsync("stats/data");
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, resp.StatusCode);
+            var text = await resp.Content.ReadAsStringAsync();
+            Assert.DoesNotContain("\"buckets\"", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"repos\"", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("alpha-only-repo", text, StringComparison.Ordinal);
+        }
     }
 }
 

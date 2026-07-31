@@ -2,6 +2,7 @@
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Fleet;
 using CcDirector.Core.Security;
+using CcDirector.Core.Instances;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Wingman;
 using CcDirector.Core.Utilities;
@@ -769,7 +770,10 @@ public sealed class ControlApiHost : IAsyncDisposable
         // synchronously. Kept in step with the config in ReapplyGatewayAsync.
         _sessionManager.FleetNumberingActive = gatewayConfig.IsEnabled;
 
-        _registration = new InstanceRegistration(DirectorId, Port, _version, _instancesDirectory);
+        _registration = new InstanceRegistration(DirectorId, Port, _version, _instancesDirectory,
+            // devthrottle_internal#1176: stamp the instance's display name into the same-machine discovery
+            // file too, so a file-discovered Director carries the same name a tunnel Hello would.
+            displayName: InstanceContext.DisplayName);
         _registration.Register();
 
         // Gateway Cleanup mission (tunnel-only): the Director NO LONGER opens an inbound Tailscale Serve
@@ -987,7 +991,11 @@ public sealed class ControlApiHost : IAsyncDisposable
             monitor: GatewayMonitor,
             // Repositories mission (#510 phase C): the repository/worktree snapshot rides the same
             // tunnel; null when this host was built without a monitor (tests, older callers).
-            repoSnapshot: _repositoryMonitor is null ? null : SnapshotRepositories);
+            repoSnapshot: _repositoryMonitor is null ? null : SnapshotRepositories,
+            // devthrottle_internal#1176: read the display name from the named-instance registry on EVERY
+            // reseed (not InstanceContext.DisplayName, a start-once static) so a rename lands fleet-wide
+            // on the next ~10s Hello without a Director restart.
+            displayName: () => NamedInstanceRegistry.Get(InstanceContext.Slug)?.DisplayName);
     }
 
     /// <summary>

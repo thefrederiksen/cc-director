@@ -147,14 +147,18 @@ public static class GatewayStatsSqliteAdoption
                 "this persists the lock row must be cleared by hand. Statistics are unavailable; the rest of " +
                 "the Gateway is unaffected.");
 
-        // What the model expects, and what the file actually holds. Both read once, here, so every branch
-        // below decides from the SAME picture.
-        var expected = ExpectedSchema(context);
         var objects = ReadObjects(connection);
 
         var history = context.GetService<IHistoryRepository>();
         if (history.Exists())
-            return InspectTrackedStore(context, path, expected, objects);
+            return InspectTrackedStore(context, path, objects);
+
+        // Every claim on the un-tracked path below is about the BASELINE: a stamp asserts the file is what
+        // the BASELINE would have built, so the expected shape is read off a database the baseline migration
+        // itself just built - never off the live model, which moves on with every later migration. The model
+        // gaining a column is exactly how a genuine version 5 file would otherwise start being refused as
+        // incomplete, which condemns the whole population this step exists to rescue, silently.
+        var expected = ShapeTheChainBuildsAt(context, BaselineMigrationOf(context));
 
         // NOTHING AT ALL in the file - no table, no view, no trigger, no index of its own. Only THIS is a
         // fresh store. It is checked before the version stamp on purpose: an empty file reports user_version
@@ -404,8 +408,7 @@ public static class GatewayStatsSqliteAdoption
     /// guess, and guessing it is how a store loses data quietly.
     /// </summary>
     private static StatsStoreAdoptionResult InspectTrackedStore(
-        GatewayStatsDbContext context, string path,
-        IReadOnlyDictionary<string, ExpectedTable> expected, IReadOnlyDictionary<string, string> objects)
+        GatewayStatsDbContext context, string path, IReadOnlyDictionary<string, string> objects)
     {
         var connection = (SqliteConnection)context.Database.GetDbConnection();
         var chain = context.Database.GetMigrations().ToList();
@@ -447,6 +450,13 @@ public static class GatewayStatsSqliteAdoption
             // CLAIM ABOUT THE PAST, and the tables are the present. A store whose stat_delta has since been
             // dropped records the baseline, reports nothing pending, and dies on the first query. Reporting
             // it usable puts that failure outside this step's containment, so the shape is checked here too.
+            //
+            // Checked against the shape the chain builds AT THIS STORE'S OWN APPLIED LEVEL, never against the
+            // live model. A healthy store whose next migration is merely PENDING - every real install, the
+            // day a new migration ships - matches its applied set exactly and must not be condemned for not
+            // yet having what Migrate() is about to give it.
+            var appliedLevel = chain.Last(m => applied.Contains(m, StringComparer.Ordinal));
+            var expected = ShapeTheChainBuildsAt(context, appliedLevel);
             var damaged = DescribeMismatch(connection, expected, objects);
             if (damaged is not null)
                 return new StatsStoreAdoptionResult(
@@ -472,7 +482,11 @@ public static class GatewayStatsSqliteAdoption
                 $"The statistics store at '{path}' has a migration history table that records nothing and " +
                 "holds no objects of its own; the migration chain will create the schema.");
 
-        var foreign = objects.Keys.Where(n => !expected.ContainsKey(n))
+        // The reference shape here is the BASELINE's: this store's history does not record the baseline, so
+        // the only question is whether these are the baseline's own tables (an interrupted first migration)
+        // or somebody else's database.
+        var baselineShape = ShapeTheChainBuildsAt(context, baseline);
+        var foreign = objects.Keys.Where(n => !baselineShape.ContainsKey(n))
             .OrderBy(n => n, StringComparer.Ordinal).ToList();
         if (foreign.Count > 0 || applied.Count > 0)
             return new StatsStoreAdoptionResult(
@@ -489,7 +503,7 @@ public static class GatewayStatsSqliteAdoption
         return new StatsStoreAdoptionResult(
             StatsStoreAdoptionOutcome.NotAdoptable, StatsStoreUnavailableReason.StoreSchemaIncomplete,
             $"The statistics store at '{path}' has a migration history table that does NOT record the " +
-            $"baseline migration '{baseline}', but {objects.Count} of its {expected.Count} tables already " +
+            $"baseline migration '{baseline}', but {objects.Count} of its {baselineShape.Count} tables already " +
             "exist. A migration was interrupted partway. Running the chain would try to create tables that " +
             "are already there, so the store has NOT been changed and needs looking at by hand - restore it " +
             "from a backup, or move it aside to start a fresh one. Statistics are unavailable; the rest of " +
@@ -497,14 +511,7 @@ public static class GatewayStatsSqliteAdoption
     }
 
     /// <summary>
-    /// The shape this store expects, read off the MODEL rather than written out as a list.
-    ///
-    /// A CAVEAT THAT MUST NOT BE FORGOTTEN, because the comment here used to overclaim: the SQLite baseline
-    /// is hand-written data definition language, so reading the expectation from the model does NOT
-    /// automatically make it agree with what the baseline builds. The two agreed only once the model was
-    /// corrected, and the thing that actually holds them together is
-    /// <c>GatewayStatsSqliteBaselineEquivalenceTests</c>, which compares a baseline-built database against one
-    /// built by running the old code. This is the model's opinion, and it is checked elsewhere.
+    /// The shape this store expects at one point in the chain's history.
     /// </summary>
     private sealed record ExpectedTable(
         HashSet<string> Columns,
@@ -513,38 +520,53 @@ public static class GatewayStatsSqliteAdoption
         Dictionary<string, string?> ColumnDefaults,
         List<string> IndexNames);
 
-    private static Dictionary<string, ExpectedTable> ExpectedSchema(GatewayStatsDbContext context)
+    /// <summary>
+    /// The shape the migration chain builds when run up to <paramref name="targetMigration"/> - read off a
+    /// database the chain ITSELF just built, in memory, never off the live model.
+    ///
+    /// WHY NOT THE MODEL, because this used to read the model and that was a defect waiting for its trigger.
+    /// The model always describes the END of the chain, and it moves with every migration added; the claims
+    /// this file makes are about specific points in the chain's HISTORY - "what the baseline would have
+    /// built" for a stamp, "what this store's applied migrations built" for a tracked store. The day the
+    /// first post-baseline migration landed, the model stopped describing the baseline, and a model-based
+    /// expectation began refusing every GENUINE version 5 file for lacking columns the baseline never built -
+    /// the exact population adoption exists to rescue, condemned silently (a false refuse never breaks
+    /// anything; it just turns statistics off with a reason that is a lie).
+    ///
+    /// Running the real migrations into a scratch database also keeps the fixture rule this whole step is
+    /// built on: the expectation is EVIDENCE produced by running shipped code, not a description that can
+    /// drift from it.
+    /// </summary>
+    private static Dictionary<string, ExpectedTable> ShapeTheChainBuildsAt(
+        GatewayStatsDbContext context, string targetMigration)
     {
+        using var scratch = new SqliteConnection("Data Source=:memory:");
+        scratch.Open();
+
+        var options = new DbContextOptionsBuilder<GatewayStatsDbContext>().UseSqlite(scratch).Options;
+        using var reference = new GatewayStatsDbContext(options);
+        reference.GetService<IMigrator>().Migrate(targetMigration);
+
         var schema = new Dictionary<string, ExpectedTable>(StringComparer.Ordinal);
-        foreach (var entity in context.Model.GetEntityTypes())
+        foreach (var (table, type) in ReadObjects(scratch))
         {
-            var table = entity.GetTableName();
-            if (string.IsNullOrEmpty(table)) continue;
+            if (!string.Equals(type, "table", StringComparison.Ordinal)) continue;
 
-            var properties = entity.GetProperties().ToList();
-            var key = entity.FindPrimaryKey();
-
+            var columns = ReadColumns(scratch, table);
             schema[table] = new ExpectedTable(
-                Columns: new HashSet<string>(properties.Select(p => p.GetColumnName()), StringComparer.Ordinal),
-                PrimaryKeyColumns: key is null
-                    ? new List<string>()
-                    : key.Properties.Select(p => p.GetColumnName()).ToList(),
-                ColumnIsNullable: properties.ToDictionary(
-                    p => p.GetColumnName(), p => p.IsNullable, StringComparer.Ordinal),
-                // The ANNOTATION, not GetDefaultValue(). GetDefaultValue() hands back the CLR default for a
-                // non-nullable value type - 0 for a long - whether or not a database default was ever
-                // configured, so comparing against it condemns every healthy store for not having a DEFAULT 0
-                // on every integer column. The control case caught that immediately, which is the whole
-                // reason a healthy-store assertion sits beside every tightening.
-                ColumnDefaults: properties.ToDictionary(
-                    p => p.GetColumnName(),
-                    p => p.FindAnnotation(RelationalAnnotationNames.DefaultValue)?.Value?.ToString(),
-                    StringComparer.Ordinal),
-                IndexNames: entity.GetIndexes()
-                    .Select(i => i.GetDatabaseName())
-                    .Where(n => !string.IsNullOrEmpty(n))
-                    .Select(n => n!)
-                    .ToList());
+                Columns: new HashSet<string>(columns.Keys, StringComparer.Ordinal),
+                PrimaryKeyColumns: columns.Values.Where(c => c.KeyOrdinal > 0)
+                    .OrderBy(c => c.KeyOrdinal).Select(c => c.Name).ToList(),
+                ColumnIsNullable: columns.Values.ToDictionary(
+                    c => c.Name, c => !c.NotNull, StringComparer.Ordinal),
+                ColumnDefaults: columns.Values.ToDictionary(
+                    c => c.Name, c => c.Default, StringComparer.Ordinal),
+                // Named indexes only. SQLite's own sqlite_autoindex_* names are derived from constraint
+                // declaration ORDER, which is not a property either side promises, and the constraints they
+                // express are already compared through the primary key columns above.
+                IndexNames: ReadIndexNames(scratch, table)
+                    .Where(n => !n.StartsWith("sqlite_autoindex_", StringComparison.Ordinal))
+                    .OrderBy(n => n, StringComparer.Ordinal).ToList());
         }
         return schema;
     }
@@ -639,7 +661,7 @@ public static class GatewayStatsSqliteAdoption
             var actualKey = actual.Values.Where(c => c.KeyOrdinal > 0)
                 .OrderBy(c => c.KeyOrdinal).Select(c => c.Name).ToList();
             if (!actualKey.SequenceEqual(want.PrimaryKeyColumns, StringComparer.Ordinal))
-                return $"table {table} has primary key ({FormatKey(actualKey)}) where the baseline builds " +
+                return $"table {table} has primary key ({FormatKey(actualKey)}) where the chain builds " +
                        $"({FormatKey(want.PrimaryKeyColumns)})";
 
             // A single INTEGER primary key is a rowid ALIAS, and SQLite reports notnull 0 for it however it
@@ -659,13 +681,13 @@ public static class GatewayStatsSqliteAdoption
                 var isNullable = !actual[column].NotNull;
                 if (isNullable != want.ColumnIsNullable[column])
                     return $"table {table} column {column} is " +
-                           (isNullable ? "nullable" : "NOT NULL") + " where the baseline builds it " +
+                           (isNullable ? "nullable" : "NOT NULL") + " where the chain builds it " +
                            (want.ColumnIsNullable[column] ? "nullable" : "NOT NULL");
 
                 var wantDefault = want.ColumnDefaults[column];
                 if (wantDefault is not null && !DefaultMatches(actual[column].Default, wantDefault))
                     return $"table {table} column {column} has default " +
-                           $"{actual[column].Default ?? "<none>"} where the baseline builds it '{wantDefault}'";
+                           $"{actual[column].Default ?? "<none>"} where the chain builds it '{wantDefault}'";
             }
 
             var indexes = ReadIndexNames(connection, table);

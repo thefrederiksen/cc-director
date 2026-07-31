@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Gateway load-test rig (devthrottle_internal issue #1173, mission 05): boots the REAL GatewayHost
+       in hosted mode (CC_GATEWAY_HOSTED=1, Postgres) inside this process, seeds SYNTHETIC tenants and
+       device keys through the real TenantRegistry/DeviceRegistry, writes the key files the load drivers
+       read, and then runs as the load-test target until stopped.
+
+       Deliberately NOT in cc-director.sln (the tools/harnesses precedent) and deliberately WITHOUT the
+       hosted-gateway.image marker: hosted-by-environment but not hosted-image is the exact seam the
+       Gateway's own hosted tests use, where DeviceRegistry.OnAccountBoundForTest auto-seeds an
+       entitlement for each synthetic tenant so the request path's 402 gate does not fire. -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>LoadRig</AssemblyName>
+    <SelfContained>false</SelfContained>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RootNamespace>CcDirector.LoadTest.LoadRig</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\CcDirector.Gateway\CcDirector.Gateway.csproj" />
+    <!-- The Postgres migration set, referenced exactly as CcDirector.Gateway.Host references it: so the
+         DLL ships in this host's output and Database.Migrate() resolves it by name when the rig runs on
+         the throwaway Postgres. -->
+    <ProjectReference Include="..\..\..\src\CcDirector.Gateway.Migrations.Postgres\CcDirector.Gateway.Migrations.Postgres.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Shared\LoadTargetGuard.cs" Link="LoadTargetGuard.cs" />
+  </ItemGroup>
+
+</Project>

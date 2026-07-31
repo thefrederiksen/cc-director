@@ -527,6 +527,13 @@ internal static class GatewayEndpoints
         // time, not server work - keeping the reported latency honest.
         app.MapGet("/diag/ping", () => Results.Json(new { t = DateTime.UtcNow }));
 
+        // GET /diag/loadmetrics: the Stage 0 load-test instrumentation window (issue #1173) - lock wait,
+        // fold duration, sweep overlap, hub connection and push-ingress pressure, roster latency, and the
+        // standard process numbers. Behind the same auth gate as every other route. `?reset=true` starts a
+        // fresh window after the read, so each load step scrapes its own numbers.
+        app.MapGet("/diag/loadmetrics", (bool? reset) =>
+            Results.Json(Diagnostics.LoadTestMetrics.Snapshot(reset == true)));
+
         // Result logging: the phone/Cockpit POSTs its completed speed-test result here; the Gateway stamps
         // what IT saw about the connection, writes one greppable log line, and keeps it in a small ring so
         // an agent can read the recent history at GET /diag/results with no phone. This is the "log all of
@@ -1022,6 +1029,7 @@ internal static class GatewayEndpoints
                 {
                     DirectorId = d.DirectorId,
                     MachineName = d.MachineName ?? "",
+                    DisplayName = d.DisplayName ?? "",
                     State = linkState,
                     // WHEN THE GATEWAY LAST HEARD THIS MACHINE, taken from the store's own arrival stamp rather
                     // than from the clock at serve time. The old online branch wrote DateTime.UtcNow with an age
@@ -3494,6 +3502,11 @@ internal static class GatewayEndpoints
         if (roleUniverse is null) throw new ArgumentNullException(nameof(roleUniverse));
         if (toStamp is null) throw new ArgumentNullException(nameof(toStamp));
 
+        // Load-test Stage 0 (issue #1173): time the whole fold pass. This method is the shared hot path -
+        // the roster, the display sweep, and every accepted hub push all run it - so its duration under
+        // load is one of the numbers the load-test baseline exists to capture.
+        var foldStart = Stopwatch.GetTimestamp();
+
         var all = toStamp;
 
         // Snooze Length mission: an EXPIRED snooze must read as "needs you" again. The registry is the
@@ -3601,6 +3614,8 @@ internal static class GatewayEndpoints
             // pushes this down to the desktop, and the single-session read all emit the same deadline.
             s.SnoozeUntil = snoozeRegistry?.SnoozeUntilFor(s.SessionId);
         }
+
+        Diagnostics.LoadTestMetrics.FoldDurationMs.RecordSince(foldStart);
     }
 
     // Gateway Cleanup CUT RESTORATION (SB-4a): map a tunnel command's null-or-failed result to the faithful

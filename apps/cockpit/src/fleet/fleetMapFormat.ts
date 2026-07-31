@@ -132,6 +132,21 @@ export function shortDir(directorId: string): string {
   return tail.length > 8 ? tail.slice(0, 8) : tail;
 }
 
+/**
+ * The human label of a Director group or lane (devthrottle_internal#1176): the user-editable display
+ * name when the envelope reports one, else the historical "Director <short-id>". The short id stays the
+ * fallback - never the primary - so a renamed Director finally reads as its name and an unnamed or
+ * older-Gateway Director renders exactly as before.
+ */
+export function directorLabelOf(
+  directorId: string,
+  reachability: DirectorReachability | undefined,
+): string {
+  const name = (reachability?.displayName ?? "").trim();
+  if (name.length > 0) return name;
+  return `Director ${directorId.length === 0 ? "(unknown)" : shortDir(directorId)}`;
+}
+
 /** One machine's reachable Directors, keyed exactly as the machine pivot's lanes are (machineKeyOf). */
 export interface MachineDirectors {
   key: string;
@@ -212,7 +227,7 @@ export function groupByDirector(
   return [...byDir.entries()]
     .map(([key, arr]) => ({
       key: key.length === 0 ? "(unknown)" : key,
-      label: `Director ${key.length === 0 ? "(unknown)" : shortDir(key)}`,
+      label: directorLabelOf(key, reachByDir.get(key)),
       sessions: [...arr].sort(sort),
       reachability: reachByDir.get(key),
     }))

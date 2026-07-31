@@ -23,6 +23,9 @@ export interface FleetDirector {
   controlEndpoint?: string;
   machineName?: string;
   user?: string;
+  /** The instance's user-editable display name (devthrottle_internal#1176), e.g. "SOREN_NORTH_SLOT_2".
+   * Empty/absent when unnamed or from an older Director - fall back to machineName. */
+  displayName?: string;
   version?: string;
   schemaVersion?: number;
   /** When the Gateway last heard from this Director (ISO 8601), or null. */
@@ -103,6 +106,9 @@ export type ReachabilityState =
 export interface DirectorReachability {
   directorId: string;
   machineName?: string;
+  /** The Director's user-editable display name (devthrottle_internal#1176). Empty/absent when unnamed
+   * or from an older Gateway - fall back to machineName. */
+  displayName?: string;
   /** "online" | "wobbly" | "offline". */
   state: ReachabilityState;
   /** When the Gateway last HEARD this machine - the arrival stamp of its newest push (ISO 8601 UTC), or

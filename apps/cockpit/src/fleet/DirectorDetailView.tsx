@@ -15,6 +15,7 @@ import { useNow } from "@devthrottle/client-core/polling/useNow";
 import { isSettingsDirty, prettyPrintSettings } from "@devthrottle/client-core/fleet/settingsEditor";
 import { ConfirmDialog } from "../components";
 import { clockLabel, portLabel, relativeTime, repoBasename, uptime } from "./format";
+import { directorPrimaryLabel } from "./directorsFormat";
 
 // The standalone Director page (issue #975) - the React port of the Blazor DirectorDetail.razor:
 // registration facts, health, the Director's live sessions, and the repositories it offers for new
@@ -168,7 +169,14 @@ export function DirectorDetailView() {
       {lastError !== null && <div className="dpage-error">{lastError}</div>}
 
       <header className="dpage-head ddet-head">
-        <h1 className="dpage-h1">{d.machineName}</h1>
+        {/* devthrottle_internal#1176: the display name is the headline when the Director reports one;
+            the machine name then moves beside it as secondary detail. Unnamed Directors are unchanged,
+            and a name that IS the machine name (the seeded default) is not repeated beside itself. */}
+        <h1 className="dpage-h1">{directorPrimaryLabel(d)}</h1>
+        {(d.machineName ?? "").trim().length > 0 &&
+          (d.machineName ?? "").trim().toLowerCase() !== directorPrimaryLabel(d).toLowerCase() && (
+          <span className="dpage-sub">{d.machineName}</span>
+        )}
         <span className="dmono dpage-sub" title={d.directorId}>{portLabel(d.controlEndpoint, d.tailnetEndpoint, d.directorId)}</span>
         <span className="dpage-sub">v{d.version}</span>
         {unreachable ? (
@@ -276,6 +284,11 @@ export function DirectorDetailView() {
             <div className="ddet-sec-head"><h2>Registration</h2></div>
             <dl className="ddet-kv">
               <dt>Director id</dt><dd className="dmono">{d.directorId}</dd>
+              {(d.displayName ?? "").trim().length > 0 && (
+                <>
+                  <dt>Name</dt><dd>{d.displayName}</dd>
+                </>
+              )}
               <dt>Machine</dt><dd>{d.machineName}</dd>
               <dt>User</dt><dd>{d.user}</dd>
               <dt>Process id</dt><dd className="dmono">{d.pid}</dd>

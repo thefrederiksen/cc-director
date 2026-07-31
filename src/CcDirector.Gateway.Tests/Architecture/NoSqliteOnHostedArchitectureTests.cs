@@ -124,22 +124,98 @@ public sealed class NoSqliteOnHostedArchitectureTests
             f => f.Interfaces(nameof(GatewayDbContextDesignTimeFactory))
                   .Any(i => i.Contains("IDesignTimeDbContextFactory", StringComparison.Ordinal))),
 
+        // ---- The self-host statistics family. Self-host KEEPS SQLite and that is correct - the rule is no
+        // SQLite on the HOSTED Gateway. These entries replaced the two transitional "the port has not
+        // happened yet" accommodations the day the port landed (DT-SQL-5 expired them, exactly as designed);
+        // each now carries the STRUCTURAL property that keeps its type unreachable-or-refusing on hosted.
+
         ["GatewayStatsDatabase"] = new(
-            "THE SUBJECT OF THE REMEDIATION, NOT AN EXEMPTION, and its reason is FALSE TODAY: this store is " +
-            "ungated and really does open SQLite on hosted - it is the file on the Azure Files share that " +
-            "caused the 2026-07-30 outage. It is listed only so the guard could land ahead of the port.",
-            ConditionKind.ExpiresWhenTrue,
-            "A statistics DbContext exists in the hosted Gateway assemblies. Its presence is the machine-" +
-            "checkable signal that the port HAS happened, so this accommodation has expired and must be deleted.",
-            f => f.StatisticsDbContextExists),
+            "THE SELF-HOST STATISTICS FILE'S OPENER, and the one type here that opens it. Runtime-guarded at " +
+            "that exact line: HostedSqliteGuard.EnsureNotHosted refuses on hosted before the directory is " +
+            "even created, which is the refusal added for the 2026-07-30 outage's own file.",
+            ConditionKind.RequiresToStayTrue,
+            "GatewayStatsDatabase still calls HostedSqliteGuard.EnsureNotHosted before opening. Remove that " +
+            "call and the runtime half of the rule is gone from the only site that opens the statistics file.",
+            f => f.Calls("GatewayStatsDatabase")
+                  .Any(c => c.Contains("HostedSqliteGuard::EnsureNotHosted", StringComparison.Ordinal))),
 
         ["GatewayInputStatsAggregator"] = new(
-            "Reads and writes through the connection GatewayStatsDatabase already opened; it opens none of its " +
-            "own. It is gated exactly as well as that store is, and it goes away with it.",
-            ConditionKind.ExpiresWhenTrue,
-            "The same signal as the store above - a statistics DbContext exists, so the port has landed and " +
-            "this entry expires with it.",
-            f => f.StatisticsDbContextExists),
+            "Reads and writes through the connection GatewayStatsDatabase already opened; it opens none of " +
+            "its own. It is gated exactly as well as that store is: the store's constructor refuses on " +
+            "hosted, so this type can never be handed a connection there - and GatewayHost.OpenInputStats " +
+            "additionally never constructs it on hosted at all.",
+            ConditionKind.RequiresToStayTrue,
+            "It still obtains its connection FROM GatewayStatsDatabase (the runtime-guarded opener) and " +
+            "still opens none of its own.",
+            f => f.Calls("GatewayInputStatsAggregator")
+                     .Any(c => c.Contains("GatewayStatsDatabase::get_Connection", StringComparison.Ordinal))
+                 && !f.Calls("GatewayInputStatsAggregator")
+                     .Any(c => c.Contains("SqliteConnection::Open", StringComparison.Ordinal))),
+
+        ["GatewayStatsDbContextDesignTimeFactory"] = new(
+            "DESIGN-TIME ONLY: constructed by the 'dotnet ef' tooling to scaffold the statistics context's " +
+            "SQLITE migration chain, never by the Gateway process. Same shape as " +
+            "GatewayDbContextDesignTimeFactory above.",
+            ConditionKind.RequiresToStayTrue,
+            "It still implements IDesignTimeDbContextFactory, which is what makes it tooling-only. Give it " +
+            "any other role and that interface goes, and with it the justification.",
+            f => f.Interfaces("GatewayStatsDbContextDesignTimeFactory")
+                  .Any(i => i.Contains("IDesignTimeDbContextFactory", StringComparison.Ordinal))),
+
+        ["StatsConnectionSelection"] = new(
+            "THE SELECTOR that decides which statistics store exists at all, and where the no-file-on-hosted " +
+            "law is enforced for the store proper: on hosted it answers Postgres or NOT CONFIGURED, never " +
+            "the file. Its only SQLite reach is building the self-host connection STRING; it opens nothing.",
+            ConditionKind.RequiresToStayTrue,
+            "Its hosted branch still refuses a statistics file in so many words, and its only SQLite reach " +
+            "is still the connection-string builder.",
+            f => f.Literals("StatsConnectionSelection")
+                     .Any(l => l.Contains("NEVER opens a local statistics file", StringComparison.Ordinal))
+                 && f.Calls("StatsConnectionSelection")
+                     .Where(c => c.Contains("Sqlite", StringComparison.Ordinal))
+                     .All(c => c.Contains("SqliteConnectionStringBuilder", StringComparison.Ordinal))),
+
+        ["GatewayStatsStore"] = new(
+            "THE FAILURE-DOMAIN BOUNDARY around the statistics store. Its SQLite arm serves self-host only: " +
+            "the only connection string it ever opens is the one StatsConnectionSelection chose, and that " +
+            "selector never chooses a file on hosted.",
+            ConditionKind.RequiresToStayTrue,
+            "It still routes its provider choice through StatsConnectionSelection.Resolve rather than " +
+            "deciding for itself.",
+            f => f.Calls("GatewayStatsStore")
+                  .Any(c => c.Contains("StatsConnectionSelection::Resolve", StringComparison.Ordinal))),
+
+        ["GatewayStatsSqliteAdoption"] = new(
+            "THE SELF-HOST ADOPTION STEP: takes an existing version 5 file into the migration chain. It " +
+            "opens no file of its own - it inspects the caller's connection, refuses any context that is " +
+            "not on SQLite as a caller error, and its scratch reference database is in-memory.",
+            ConditionKind.RequiresToStayTrue,
+            "Its only production caller is still GatewayStatsStore, the boundary whose selector never " +
+            "chooses SQLite on hosted - so on hosted there is no path that reaches it.",
+            f => f.Calls("GatewayStatsStore")
+                  .Any(c => c.Contains("GatewayStatsSqliteAdoption::Adopt", StringComparison.Ordinal))),
+
+        ["GatewayStatsSqliteContextFactory"] = new(
+            "A context factory over an ALREADY-OPEN self-host connection - the one GatewayStatsDatabase " +
+            "opened, behind its runtime guard. It opens nothing itself, so it can only ever serve a " +
+            "connection that got past that guard.",
+            ConditionKind.RequiresToStayTrue,
+            "It still opens nothing: no SqliteConnection is constructed or opened here and no connection " +
+            "string is built.",
+            f => !f.Calls("GatewayStatsSqliteContextFactory").Any(c =>
+                     c.Contains("SqliteConnection::Open", StringComparison.Ordinal)
+                     || c.Contains("SqliteConnection::.ctor", StringComparison.Ordinal)
+                     || c.Contains("SqliteConnectionStringBuilder", StringComparison.Ordinal))),
+
+        ["GatewaySessionConcurrencyStore"] = new(
+            "Provider-agnostic concurrency store driven through whatever context factory GatewayStatsStore " +
+            "publishes - Npgsql on hosted. Its ONLY SQLite reach is asking which provider a context is on " +
+            "(IsSqlite) to choose the GREATEST/MAX spelling; it holds and opens no connection.",
+            ConditionKind.RequiresToStayTrue,
+            "Its only SQLite reach is still the read-only provider probe.",
+            f => f.Calls("GatewaySessionConcurrencyStore")
+                  .Where(c => c.Contains("Sqlite", StringComparison.Ordinal))
+                  .All(c => c.Contains("IsSqlite", StringComparison.Ordinal))),
     };
 
     // ----------------------------------------------------------------------------------------------------
