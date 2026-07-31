@@ -1701,33 +1701,59 @@ internal static class ControlEndpoints
     }
 
     /// <summary>
-    /// List sub-directories of <paramref name="path"/> for the remote folder browser. A null or
-    /// empty path returns the drive roots. Solo-tailnet: no path sandboxing (see remote-experience-plan.md).
+    /// List sub-directories of <paramref name="path"/> for the remote folder browser, contained to
+    /// <paramref name="allowedRoots"/> - the working directories of the sessions this Director hosts.
+    /// A null or empty path lists the allowed roots themselves; a named path must resolve INSIDE one
+    /// of them or the listing is refused. The pre-hardening version listed the drive roots and any
+    /// directory on the machine ("solo-tailnet: no path sandboxing"); that stood only while a single
+    /// owner held every key, and on a hosted Gateway it handed any active device key a full remote
+    /// directory browse. Same containment discipline as <see cref="ResolveSessionFile"/> and
+    /// <see cref="ResolveScreenshot"/>: resolve fully, then refuse anything outside an allowed root.
     /// </summary>
     // Gateway Cleanup Phase 0 (Worker R2): widened to internal so CatalogReadExecutor's fs-list core (the
     // list-directory read, lifted from GET /fs/list) calls the SAME helper - no drift, no duplication.
-    internal static DirectoryListingDto ListDirectory(string? path)
+    internal static DirectoryListingDto ListDirectory(string? path, IEnumerable<string> allowedRoots)
     {
+        // Normalize the roots once: full paths, trailing separators trimmed, duplicates collapsed.
+        var roots = new List<string>();
+        foreach (var root in allowedRoots)
+        {
+            if (string.IsNullOrWhiteSpace(root)) continue;
+            string fullRoot;
+            try { fullRoot = Path.GetFullPath(root).TrimEnd('\\', '/'); }
+            catch (ArgumentException) { continue; } // a label, not a local directory (remote-thread sessions)
+            if (!roots.Contains(fullRoot, StringComparer.OrdinalIgnoreCase))
+                roots.Add(fullRoot);
+        }
+
         if (string.IsNullOrWhiteSpace(path))
         {
-            var drives = DriveInfo.GetDrives()
-                .Where(d => d.IsReady)
-                .Select(d => new DirEntryDto
+            var rootEntries = roots
+                .Select(r => new DirEntryDto
                 {
-                    Name = d.Name.TrimEnd('\\', '/'),
-                    Path = d.RootDirectory.FullName,
-                    IsDrive = true,
+                    Name = Path.GetFileName(r) is { Length: > 0 } name ? name : r,
+                    Path = r,
+                    IsDrive = false,
                 })
                 .OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
-            return new DirectoryListingDto { CurrentPath = null, ParentPath = null, Entries = drives };
+            return new DirectoryListingDto { CurrentPath = null, ParentPath = null, Entries = rootEntries };
         }
 
-        var full = Path.GetFullPath(path);
+        var full = Path.GetFullPath(path).TrimEnd('\\', '/');
+        var containingRoot = roots.FirstOrDefault(r =>
+            string.Equals(full, r, StringComparison.OrdinalIgnoreCase)
+            || full.StartsWith(r + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
+        if (containingRoot is null)
+            throw new UnauthorizedAccessException($"directory is outside this Director's session working directories: {full}");
+
         if (!Directory.Exists(full))
             throw new DirectoryNotFoundException($"directory not found: {full}");
 
-        var parent = Directory.GetParent(full.TrimEnd('\\', '/'))?.FullName;
+        // Never offer navigation above the containing root: the root's own parent is not browsable.
+        var parent = string.Equals(full, containingRoot, StringComparison.OrdinalIgnoreCase)
+            ? null
+            : Directory.GetParent(full)?.FullName;
 
         var entries = Directory.EnumerateDirectories(full)
             .Select(d =>
@@ -2164,6 +2190,42 @@ internal static class ControlEndpoints
         if (!full.StartsWith(dirFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
             return null;
         return File.Exists(full) ? full : null;
+    }
+
+    /// <summary>
+    /// Resolve a client-supplied path for the session file read (the Local Files viewer) to an absolute
+    /// path INSIDE the session's own working directory, or null when it escapes it - an absolute path
+    /// elsewhere on the machine, a traversal that resolves outside, or an invalid path. This is
+    /// <see cref="ResolveScreenshot"/>'s twin for the read-file stream verb: resolve fully first, then
+    /// refuse anything outside the allowed root. The allowed root is the session's working directory -
+    /// the one directory the session is about - so a session-scoped file read can never reach
+    /// credentials, tokens, or any other file elsewhere on the machine.
+    /// </summary>
+    internal static string? ResolveSessionFile(string? workingDirectory, string? path)
+    {
+        if (string.IsNullOrWhiteSpace(workingDirectory) || string.IsNullOrWhiteSpace(path))
+            return null;
+
+        string root;
+        string full;
+        try
+        {
+            root = Path.GetFullPath(workingDirectory);
+            // A relative path resolves against the session's working directory; an absolute path stays
+            // itself. Either way the containment check below runs on the fully resolved result.
+            full = Path.GetFullPath(path, root);
+        }
+        catch (ArgumentException)
+        {
+            // Invalid characters, an embedded NUL, or a relative working directory (a session with no
+            // real local checkout, e.g. a remote-thread session) - nothing here is safe to serve.
+            return null;
+        }
+
+        var rootTrimmed = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (!full.StartsWith(rootTrimmed + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            return null;
+        return full;
     }
 
     internal static string ScreenshotContentType(string path) => Path.GetExtension(path).ToLowerInvariant() switch

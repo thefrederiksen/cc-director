@@ -200,36 +200,81 @@ public sealed class CockpitParityEndpointsTests : IDisposable
     }
 
     // ===== /fs/list =====
+    // Tenant-boundary hardening (release 2026-07-31, finding CR-4): the listing is CONTAINED to the working
+    // directories of the sessions this Director hosts. It used to list drive roots and any directory on the
+    // machine, which on a hosted Gateway handed any active device key a full remote directory browse.
+
+    /// <summary>A live session rooted at <see cref="_repoA"/>, making repoA an allowed fs-list root.</summary>
+    private void SeatSessionInRepoA() => _sm.CreateEmbeddedSession(_repoA, null, new ExecuteActionTestBackend());
 
     [Fact]
-    public void Fs_list_without_path_returns_drive_roots()
+    public void Fs_list_without_path_returns_the_session_roots_not_the_drives()
     {
+        SeatSessionInRepoA();
         var listing = Ok<DirectoryListingDto>(
-            CatalogReadExecutor.FsList(new DirectorCommand { Verb = "fs-list", PayloadJson = "" }));
+            CatalogReadExecutor.FsList(_sm, new DirectorCommand { Verb = "fs-list", PayloadJson = "" }));
         Assert.Null(listing.CurrentPath);
-        Assert.NotEmpty(listing.Entries);
-        Assert.All(listing.Entries, e => Assert.True(e.IsDrive));
+        var entry = Assert.Single(listing.Entries);
+        Assert.Equal(Path.GetFullPath(_repoA).TrimEnd('\\', '/'), entry.Path);
+        Assert.False(entry.IsDrive);
     }
 
     [Fact]
-    public void Fs_list_with_path_returns_subdirectories_and_parent()
+    public void Fs_list_without_path_and_without_sessions_lists_nothing()
     {
-        var listing = Ok<DirectoryListingDto>(CatalogReadExecutor.FsList(
+        var listing = Ok<DirectoryListingDto>(
+            CatalogReadExecutor.FsList(_sm, new DirectorCommand { Verb = "fs-list", PayloadJson = "" }));
+        Assert.Null(listing.CurrentPath);
+        Assert.Empty(listing.Entries);
+    }
+
+    [Fact]
+    public void Fs_list_with_a_session_root_returns_subdirectories_and_no_parent_above_the_root()
+    {
+        SeatSessionInRepoA();
+        var listing = Ok<DirectoryListingDto>(CatalogReadExecutor.FsList(_sm,
             new DirectorCommand { Verb = "fs-list", PayloadJson = Payload(new FsListRequest { Path = _repoA }) }));
         Assert.Equal(Path.GetFullPath(_repoA), listing.CurrentPath);
-        Assert.Equal(Path.GetFullPath(_tempRepos), listing.ParentPath);
+        Assert.Null(listing.ParentPath); // the root's own parent is not browsable
         Assert.Equal(2, listing.Entries.Count);
         Assert.Contains(listing.Entries, e => e.Name == "subdir1");
         Assert.Contains(listing.Entries, e => e.Name == "subdir2");
     }
 
     [Fact]
-    public void Fs_list_with_nonexistent_path_returns_400()
+    public void Fs_list_inside_a_session_root_keeps_the_parent_within_the_root()
     {
-        var result = CatalogReadExecutor.FsList(new DirectorCommand
+        SeatSessionInRepoA();
+        var sub = Path.Combine(_repoA, "subdir1");
+        var listing = Ok<DirectoryListingDto>(CatalogReadExecutor.FsList(_sm,
+            new DirectorCommand { Verb = "fs-list", PayloadJson = Payload(new FsListRequest { Path = sub }) }));
+        Assert.Equal(Path.GetFullPath(sub), listing.CurrentPath);
+        Assert.Equal(Path.GetFullPath(_repoA), listing.ParentPath);
+    }
+
+    [Fact]
+    public void Fs_list_outside_every_session_root_is_refused()
+    {
+        // repoB exists on disk but no session is rooted there - the reported CR-4 symptom was that any
+        // real directory on the machine could be listed. It must now be refused, not listed.
+        SeatSessionInRepoA();
+        var result = CatalogReadExecutor.FsList(_sm, new DirectorCommand
         {
             Verb = "fs-list",
-            PayloadJson = Payload(new FsListRequest { Path = Path.Combine(_root, "does-not-exist") }),
+            PayloadJson = Payload(new FsListRequest { Path = _repoB }),
+        });
+        Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+        Assert.Contains("outside", result.Error);
+    }
+
+    [Fact]
+    public void Fs_list_with_nonexistent_path_inside_the_root_returns_400()
+    {
+        SeatSessionInRepoA();
+        var result = CatalogReadExecutor.FsList(_sm, new DirectorCommand
+        {
+            Verb = "fs-list",
+            PayloadJson = Payload(new FsListRequest { Path = Path.Combine(_repoA, "does-not-exist") }),
         });
         Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
     }

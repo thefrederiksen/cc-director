@@ -221,12 +221,19 @@ public sealed class DirectorStreamProducersTests
         finally { sm.Dispose(); }
     }
 
+    // Tenant-boundary hardening (CR-4): the read-file verb is session-scoped now - the command carries the
+    // session id and the path must live inside that session's working directory - so these two tests seat a
+    // real session over a temp directory and read within it. The containment itself (out-of-root refusals,
+    // the screenshot control) is pinned in DirectorUpStreamHandlerContainmentTests.
+
     [Fact]
     public async Task Handler_ReadFile_ReturnsOkWithTotalSize_AndStreamsTheFile()
     {
         var sm = new SessionManager(new AgentOptions());
         var (handler, captured, drained) = NewHandler(sm);
-        var path = Path.Combine(Path.GetTempPath(), "ccd-upstream-read-" + Guid.NewGuid().ToString("N") + ".txt");
+        var dir = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "ccd-upstream-read-" + Guid.NewGuid().ToString("N"))).FullName;
+        var session = sm.CreateEmbeddedSession(dir, null, new ExecuteActionTestBackend());
+        var path = Path.Combine(dir, "read-me.txt");
         try
         {
             var content = Encoding.UTF8.GetBytes("the quick brown fox");
@@ -235,6 +242,7 @@ public sealed class DirectorStreamProducersTests
             var result = handler.Handle(new DirectorCommand
             {
                 Verb = "read-file",
+                SessionId = session.Id.ToString(),
                 PayloadJson = SessionCommandExecutor.Serialize(new OpenStreamRequest { StreamId = "rf-1", Path = path }),
             });
 
@@ -253,7 +261,7 @@ public sealed class DirectorStreamProducersTests
         finally
         {
             sm.Dispose();
-            try { File.Delete(path); } catch { /* best effort */ }
+            try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
         }
     }
 
@@ -262,15 +270,22 @@ public sealed class DirectorStreamProducersTests
     {
         var sm = new SessionManager(new AgentOptions());
         var (handler, _, _) = NewHandler(sm);
+        var dir = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "ccd-upstream-missing-" + Guid.NewGuid().ToString("N"))).FullName;
+        var session = sm.CreateEmbeddedSession(dir, null, new ExecuteActionTestBackend());
         try
         {
             var result = handler.Handle(new DirectorCommand
             {
                 Verb = "read-file",
-                PayloadJson = SessionCommandExecutor.Serialize(new OpenStreamRequest { StreamId = "rf-x", Path = Path.Combine(Path.GetTempPath(), "does-not-exist-" + Guid.NewGuid().ToString("N")) }),
+                SessionId = session.Id.ToString(),
+                PayloadJson = SessionCommandExecutor.Serialize(new OpenStreamRequest { StreamId = "rf-x", Path = Path.Combine(dir, "does-not-exist.txt") }),
             });
             Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
         }
-        finally { sm.Dispose(); }
+        finally
+        {
+            sm.Dispose();
+            try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
+        }
     }
 }

@@ -157,9 +157,11 @@ public sealed class CatalogReadExecutorTests
     // ---------- fs-list ----------
 
     [Fact]
-    public async Task DispatchAsync_FsList_NullPath_ReturnsDriveRoots()
+    public async Task DispatchAsync_FsList_NullPath_ListsTheSessionRoots()
     {
-        // A null/absent path lists the drive roots: CurrentPath is null and every entry is a drive.
+        // Tenant-boundary hardening (CR-4): a null/absent path lists the ALLOWED ROOTS - the working
+        // directories of this Director's sessions - not the machine's drive roots. With no sessions there
+        // is nothing browsable, and the listing says so honestly.
         var sm = new SessionManager(new Core.Configuration.AgentOptions());
         try
         {
@@ -169,17 +171,16 @@ public sealed class CatalogReadExecutorTests
             var listing = JsonSerializer.Deserialize<DirectoryListingDto>(result.BodyJson ?? "", Json);
             Assert.NotNull(listing);
             Assert.Null(listing!.CurrentPath);
-            Assert.NotEmpty(listing.Entries);
-            Assert.All(listing.Entries, e => Assert.True(e.IsDrive));
+            Assert.Empty(listing.Entries);
         }
         finally { sm.Dispose(); }
     }
 
     [Fact]
-    public async Task DispatchAsync_FsList_MissingDirectory_ReturnsBadRequest()
+    public async Task DispatchAsync_FsList_DirectoryOutsideTheSessionRoots_ReturnsBadRequest()
     {
-        // The source route wrapped ListDirectory in a try/catch that turned a missing directory into a 400;
-        // that preserved try/catch surfaces here as a BadRequest with the message.
+        // The source route wrapped ListDirectory in a try/catch that turned any fault into a 400; the CR-4
+        // out-of-root refusal surfaces through that same preserved try/catch as a BadRequest with the message.
         var sm = new SessionManager(new Core.Configuration.AgentOptions());
         try
         {
