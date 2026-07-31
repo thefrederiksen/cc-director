@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { setVoiceModeAllSessions, type SessionDto } from "@devthrottle/client-core/api/client";
-import { getAutoSpeak, inVoiceQueueOrder, queueTouchMs, setAutoSpeak } from "@devthrottle/client-core/voice/queueTouch";
+import { getAutoSpeak, queueTouchMs, setAutoSpeak } from "@devthrottle/client-core/voice/queueTouch";
 import { useVoiceModeAll } from "@devthrottle/client-core/voice/useVoiceModeAll";
 import { getSessionsEnvelope } from "@devthrottle/client-core/fleet/fleetClient";
 import { emptyRetentionCache, mergeRosterRetention, type RosterSessionMark } from "@devthrottle/client-core/fleet/rosterRetention";
@@ -14,6 +14,7 @@ import { supervisionStats } from "@devthrottle/client-core/sessions/supervision"
 import { useNow as useSharedNow } from "@devthrottle/client-core/polling/useNow";
 import { playClip, playingSid, rowVoiceInputs, stopPlayback, syncVoiceSessions, useVoiceClips } from "@devthrottle/client-core/voice/clips";
 import { isVoiceReady, voiceRowState } from "@devthrottle/client-core/voice/voiceRowState";
+import { voiceQueueFor } from "@devthrottle/client-core/voice/voiceQueue";
 import { NavDrawer } from "../components/NavDrawer";
 import { SessionFilterPanel } from "../components/SessionFilterPanel";
 import { useSessionFilter } from "../hooks/useSessionFilter";
@@ -182,20 +183,12 @@ export function Home() {
   // arrivals at the bottom - and a session you listened to but did not respond to or snooze drops to
   // the BOTTOM (the device-local listened-touch counts as re-entering the line), so everything not
   // yet heard is read first and the unhandled one comes around again.
-  const voiceReady = filtered
-    ? inVoiceQueueOrder(
-        filtered.filter(
-          (s) =>
-            classify(s) === "needsYou" &&
-            // Inspection 1, finding 2: this used to ask "is there a retention mark on this row?", which is a
-            // question about PUSH FRESHNESS, not about whether the machine can be reached. A wobbly machine -
-            // tunnel UP, pushes merely late - carries a mark, so it silently left the voice queue and the
-            // owner stopped being told about work he could still act on. The Gateway already stamps the
-            // answer; read that instead of inferring a different one here.
-            isVoiceReady(rowVoiceInputs(s, isWorking(s), machineCanBeActedOn(s))),
-        ),
-      )
-    : [];
+  // Inspection 1, finding 2: the whole selection lives in client-core now. This used to be assembled here,
+  // and the reachability argument it assembled asked "is there a retention mark on this row?" - a question
+  // about PUSH FRESHNESS, not about whether the machine can be reached - so a wobbly machine with its tunnel
+  // UP silently left the queue and the owner stopped being told about work he could still act on. Passing
+  // sessions and nothing else means there is no longer an argument here to get wrong.
+  const voiceReady = filtered ? voiceQueueFor(filtered) : [];
   // The "Needs you" group is a waiting line: the session that has been waiting for you the longest
   // sits at the top, and a session that only just started needing you drops in at the bottom
   // (inWaitingOrder). This keeps the list from reshuffling under you as sessions change state, and
