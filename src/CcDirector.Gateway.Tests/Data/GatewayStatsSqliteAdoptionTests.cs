@@ -46,20 +46,34 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
     }
 
     /// <summary>
-    /// Build a REAL version 5 statistics store at <see cref="_path"/> by running the shipped hand-rolled
-    /// creation and migration code, then close it so the file is free. This is the state every self-host user
-    /// who has ever opened the statistics page is in: sixteen tables, PRAGMA user_version 5, and no
-    /// __EFMigrationsHistory table.
+    /// Build a REAL hand-rolled statistics store at <see cref="_path"/> by running the shipped
+    /// <see cref="GatewayStatsDatabase"/> creation and migration code, then close it so the file is free.
+    /// This is the state every self-host user who has ever opened the statistics page is in: the full table
+    /// set, PRAGMA user_version stamped by the hand-rolled migrator, and no __EFMigrationsHistory table.
+    ///
+    /// WHY THIS IS NOT PINNED TO A VERSION NUMBER ANY MORE. It used to assert the literal 5 in two places,
+    /// which is how it broke: raising <see cref="GatewayStatsDatabase.SchemaVersion"/> to 7 left the
+    /// assertion behind and the whole class failed on arrival. A literal copy of a constant, kept in a second
+    /// place, rots the first time the constant moves - and the version number was never the premise anyway.
+    ///
+    /// The premise that actually matters is UNCHANGED and still pinned below: the file is produced by running
+    /// the REAL shipped code (never hand-written, never synthesised from the new model's idea of the old
+    /// schema), and it carries NO EF migrations-history table, so adoption has something genuine to adopt.
+    /// The version is asserted against the shipped constant rather than a literal, so the fixture keeps
+    /// telling the truth as the schema moves, and still fails loudly if the file and the build ever disagree.
+    ///
+    /// This is also the right shape for the field. A user upgrading arrives with an older file, the
+    /// hand-rolled migrator brings it up to the current version on open, and adoption runs on THAT - so a
+    /// store at the current version is exactly the state adoption meets in practice.
     /// </summary>
-    private void BuildRealVersion5Store()
+    private void BuildRealHandRolledStore()
     {
         using (var db = new GatewayStatsDatabase(_path))
         {
             // Pin the fixture's own premises. If the shipped code ever stops producing this shape, these
             // tests must say so here rather than silently going on to prove something about a file that no
             // longer exists in the field.
-            Assert.Equal(5, GatewayStatsDatabase.SchemaVersion);
-            Assert.Equal(5, ScalarInt(db.Connection, "PRAGMA user_version"));
+            Assert.Equal(GatewayStatsDatabase.SchemaVersion, ScalarInt(db.Connection, "PRAGMA user_version"));
             Assert.Equal(0, ScalarInt(db.Connection,
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='__EFMigrationsHistory'"));
         }
@@ -132,7 +146,7 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
     [Fact]
     public void Migrate_Version5Store_WithoutAdoption_FailsOnTablesThatAlreadyExist()
     {
-        BuildRealVersion5Store();
+        BuildRealHandRolledStore();
 
         using var context = OpenContext();
 
@@ -153,7 +167,7 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
     [Fact]
     public void Adopt_RealVersion5Store_StampsBaselineAndLetsTheChainRun()
     {
-        BuildRealVersion5Store();
+        BuildRealHandRolledStore();
         SeedDistinguishableStatDeltaRows();
 
         using var context = OpenContext();
@@ -178,7 +192,7 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
     [Fact]
     public void Adopt_RealVersion5Store_KeepsEveryRowItAlreadyHeld()
     {
-        BuildRealVersion5Store();
+        BuildRealHandRolledStore();
         SeedDistinguishableStatDeltaRows();
 
         using var context = OpenContext();
@@ -227,7 +241,7 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
     [Fact]
     public void Adopt_AlreadyAdoptedStore_IsTrackedAndDoesNothingTwice()
     {
-        BuildRealVersion5Store();
+        BuildRealHandRolledStore();
 
         using (var first = OpenContext())
         {
@@ -310,7 +324,7 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
     [InlineData(6)]  // written by a newer build that knows something this one does not
     public void Adopt_StatisticsStoreAtAnotherVersion_IsRefusedWithANamedReasonAndLeftUntouched(int version)
     {
-        BuildRealVersion5Store();
+        BuildRealHandRolledStore();
         SeedDistinguishableStatDeltaRows();
 
         // Move the REAL store's version stamp. The file keeps its genuine version 5 table shape, so this
@@ -388,7 +402,7 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
     [Fact]
     public void Adopt_NeverThrowsOnAnyStateAUsersFileCanBeIn()
     {
-        BuildRealVersion5Store();
+        BuildRealHandRolledStore();
         SeedDistinguishableStatDeltaRows();
 
         using (var connection = new SqliteConnection(
@@ -429,7 +443,7 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
     [Fact]
     public void Adopt_HistoryTableWithoutTheBaseline_IsRefusedRatherThanCertifiedAsTracked()
     {
-        BuildRealVersion5Store();
+        BuildRealHandRolledStore();
 
         // The state an interrupted first migration leaves: the history table exists and records nothing,
         // while the sixteen tables are already there. Created with Entity Framework's OWN create script, so
@@ -469,7 +483,7 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
     [Fact]
     public void Adopt_TrackedStoreWithATableDropped_IsRefusedAndLeavesTheFileByteIdentical()
     {
-        BuildRealVersion5Store();
+        BuildRealHandRolledStore();
 
         using (var context = OpenContext())
         {
@@ -505,7 +519,7 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
     [Fact]
     public void Adopt_StoreWhoseTableHasTheRightNamesAndNothingElse_IsRefusedAndLeavesTheFileByteIdentical()
     {
-        BuildRealVersion5Store();
+        BuildRealHandRolledStore();
 
         // The exact column names, and no primary key, no NOT NULL, no default and no indexes. A names-only
         // check adopted this and stamped it.
@@ -621,7 +635,7 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
     [Fact]
     public void Adopt_StoreCarryingAnAbandonedMigrationLock_RefusesImmediatelyRatherThanWaitingForever()
     {
-        BuildRealVersion5Store();
+        BuildRealHandRolledStore();
 
         using (var connection = new SqliteConnection(
                    new SqliteConnectionStringBuilder { DataSource = _path }.ToString()))
@@ -674,7 +688,7 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
     [Fact]
     public void Adopt_TrackedStoreWrittenByANewerBuild_IsRefusedAndLeavesTheFileByteIdentical()
     {
-        BuildRealVersion5Store();
+        BuildRealHandRolledStore();
 
         using (var context = OpenContext())
         {
@@ -747,7 +761,7 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
             "lock reaches the operator through the wrong bucket - which is the misdirection this work exists " +
             "to remove.");
 
-        BuildRealVersion5Store();
+        BuildRealHandRolledStore();
 
         // A second connection holds a real write transaction, so adoption must genuinely contend for it.
         using var holder = new SqliteConnection(
@@ -806,7 +820,7 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
     [Fact]
     public void Adopt_AHealthyVersion5StoreWithRows_IsNeverRefused()
     {
-        BuildRealVersion5Store();
+        BuildRealHandRolledStore();
         SeedDistinguishableStatDeltaRows();
 
         using var context = OpenContext();
@@ -826,7 +840,7 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
     [Fact]
     public void Adopt_AHealthyVersion5StoreWithEveryTablePopulated_IsNeverRefused()
     {
-        BuildRealVersion5Store();
+        BuildRealHandRolledStore();
 
         using (var db = new GatewayStatsDatabase(_path))
         {
@@ -936,7 +950,7 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
     [Fact]
     public void Adopt_AVersion5StoreWithAnExtraColumn_IsStillAdopted()
     {
-        BuildRealVersion5Store();
+        BuildRealHandRolledStore();
         SeedDistinguishableStatDeltaRows();
 
         using (var connection = new SqliteConnection(
@@ -971,7 +985,7 @@ public sealed class GatewayStatsSqliteAdoptionTests : IDisposable
     [Fact]
     public void Adopt_AVersion5StoreMissingAColumn_IsRefused()
     {
-        BuildRealVersion5Store();
+        BuildRealHandRolledStore();
 
         using (var connection = new SqliteConnection(
                    new SqliteConnectionStringBuilder { DataSource = _path }.ToString()))
