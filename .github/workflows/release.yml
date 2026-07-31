@@ -899,3 +899,101 @@ jobs:
             echo "## Published"
             echo "\`$GITHUB_REF_NAME\` left draft with every asset attached, so there is no window in which it is latest but incomplete."
           } >> "$GITHUB_STEP_SUMMARY"
+      # Mirror the files a PERSON downloads to a stable public address
+      # (devthrottle_internal #1186). GitHub stays the archive - this is not a
+      # second copy of history, only ever the latest build plus a short tail of
+      # versions.
+      #
+      # Why this exists: the GitHub download link is not a stable address. It
+      # redirects twice, and the URL the browser actually fetches from carries a
+      # per-asset GUID and a per-request signature, so no two downloads of ours
+      # ever come from the same place. Every clean download we measured (mindzie,
+      # three artifacts) sits at one fixed address overwritten in place; the one
+      # Windows holds does not. Unproven as a fix - see devthrottle_internal
+      # #1158 - but it is the only variable we can move while releasing daily.
+      #
+      # Only browser/agent-facing assets go here. The rest (gateway, director,
+      # launcher, python, ffmpeg, pyenv) are fetched by our own installer after
+      # it runs, never by a browser, so they stay on GitHub only.
+      - name: Mirror downloads to Azure Blob
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          AZ_ACCOUNT: stdevthrottledl
+          AZ_CONTAINER: download
+          AZ_KEY: ${{ secrets.AZURE_DOWNLOADS_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # Guarded here rather than in `if:` - a step's own env block is not
+          # reliably available to its own condition, and secrets cannot be read
+          # in a condition at all. Unset key means the mirror is not configured,
+          # which is not a release failure.
+          if [ -z "${AZ_KEY:-}" ]; then
+            echo "AZURE_DOWNLOADS_KEY not set - skipping the download mirror."
+            exit 0
+          fi
+
+          PUBLIC_ASSETS="
+            devthrottle-setup-win-x64.exe
+            devthrottle-setup-cli-win-x64.exe
+            devthrottle-setup-mac-arm64.zip
+            devthrottle-mac-arm64.dmg
+            devthrottle-setup-cli-mac-arm64
+            release-manifest.json
+          "
+
+          upload() {
+            local file="$1" dest="$2" cache="$3" ctype="$4"
+            echo "  -> $dest"
+            az storage blob upload \
+              --account-name "$AZ_ACCOUNT" --account-key "$AZ_KEY" \
+              --container-name "$AZ_CONTAINER" \
+              --file "$file" --name "$dest" --overwrite \
+              --content-cache-control "$cache" \
+              --content-type "$ctype" \
+              --only-show-errors -o none
+          }
+
+          for name in $PUBLIC_ASSETS; do
+            src="release-files/$name"
+            if [ ! -f "$src" ]; then
+              echo "MISSING from release-files, not mirrored: $name"
+              continue
+            fi
+            case "$name" in
+              *.json) ctype="application/json" ;;
+              *)      ctype="application/octet-stream" ;;
+            esac
+            # latest/ is overwritten every release, so it must not be cached for
+            # long or people keep getting yesterday's build. The versioned copy
+            # never changes, so it is immutable.
+            upload "$src" "latest/$name"        "public, max-age=300"                 "$ctype"
+            upload "$src" "v$VERSION/$name"     "public, max-age=31536000, immutable" "$ctype"
+          done
+
+          echo "Mirrored to https://$AZ_ACCOUNT.blob.core.windows.net/$AZ_CONTAINER/latest/"
+
+      # Prove the mirror rather than trust the exit code: fetch the installer
+      # back anonymously and check its SHA-256 against the manifest we just built.
+      - name: Verify the mirrored installer
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          AZ_KEY: ${{ secrets.AZURE_DOWNLOADS_KEY }}
+          BASE: https://stdevthrottledl.blob.core.windows.net/download/latest
+        run: |
+          set -euo pipefail
+          if [ -z "${AZ_KEY:-}" ]; then
+            echo "Mirror not configured - nothing to verify."
+            exit 0
+          fi
+          expected=$(jq -r '.assets["devthrottle-setup-win-x64.exe"].sha256' release-files/release-manifest.json)
+          curl -fsSL -o /tmp/mirrored.exe "$BASE/devthrottle-setup-win-x64.exe"
+          actual=$(sha256sum /tmp/mirrored.exe | cut -d' ' -f1)
+          echo "expected $expected"
+          echo "actual   $actual"
+          if [ "${expected,,}" != "${actual,,}" ]; then
+            echo "MIRROR MISMATCH - the public URL is not serving this release"
+            exit 1
+          fi
+          echo "Mirror verified: the public URL serves this release byte for byte."
