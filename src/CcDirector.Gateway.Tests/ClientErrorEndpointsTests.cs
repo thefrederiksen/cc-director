@@ -45,39 +45,50 @@ public sealed class ClientErrorEndpointsTests
 
     private const string Sensitive = "the password is hunter2 and the prompt said fix login";
 
-    [Fact]
-    public void DurableLine_reduces_every_client_controlled_field_to_structure()
+    // Hostile values that fit ANY identifier/route alphabet - the fifth review pass's point: a
+    // character filter cannot tell these from genuine route tokens, so nothing client-supplied may
+    // be logged verbatim at all.
+    private const string SensitiveToken = "hunter2";
+    private const string SensitivePath = "/prompt/api_key_sk-abc123/fix-login";
+
+    [Theory]
+    [InlineData(Sensitive)]
+    [InlineData(SensitiveToken)]
+    [InlineData(SensitivePath)]
+    public void DurableLine_never_carries_a_client_controlled_value_verbatim(string hostile)
     {
         var record = new ClientErrorEndpoints.ClientErrorRecord(
             AtUtc: DateTime.UtcNow,
             DeviceHash: "abcdef1234567890",
-            Surface: Sensitive,
-            Page: Sensitive,
-            Message: Sensitive,
-            Detail: Sensitive,
-            Stack: Sensitive);
+            Surface: hostile,
+            Page: hostile,
+            Message: hostile,
+            Detail: hostile,
+            Stack: hostile);
 
         var line = ClientErrorEndpoints.DurableLine(new TenantId("11111111-1111-1111-1111-111111111111"), record);
 
-        Assert.DoesNotContain("hunter2", line);
-        Assert.DoesNotContain("prompt said", line);
+        Assert.DoesNotContain(hostile, line);
         // The raw account tenant id must not appear either - only its one-way hash form.
         Assert.DoesNotContain("11111111-1111-1111-1111-111111111111", line);
         Assert.Contains("t#", line);
-        Assert.Contains($"messageLength={Sensitive.Length}", line);
+        Assert.Contains($"messageLength={hostile.Length}", line);
     }
 
-    /// <summary>The gate has two failure directions: a genuinely structural value must still be logged,
-    /// or the line stops being useful and someone reverts the gate.</summary>
+    /// <summary>The tag must stay CORRELATABLE (same value, same tag; different values, different
+    /// tags) or the line stops being useful for debugging and someone reverts the gate.</summary>
     [Fact]
-    public void StructuralToken_admits_route_shapes_and_refuses_prose()
+    public void HashTag_is_content_free_but_correlatable()
     {
-        Assert.Equal("/m/sessions/list", ClientErrorEndpoints.StructuralToken("/m/sessions/list", 200));
-        Assert.Equal("cockpit", ClientErrorEndpoints.StructuralToken("cockpit", 40));
-        Assert.Equal("(empty)", ClientErrorEndpoints.StructuralToken("", 40));
-        Assert.Equal($"(nonstructural:{Sensitive.Length})", ClientErrorEndpoints.StructuralToken(Sensitive, 200));
-        Assert.Equal("(nonstructural:9)", ClientErrorEndpoints.StructuralToken("a\"quote\"b", 40));
-        Assert.StartsWith("(overlong:", ClientErrorEndpoints.StructuralToken(new string('a', 300), 200));
+        var a1 = ClientErrorEndpoints.HashTag("/m/sessions/list");
+        var a2 = ClientErrorEndpoints.HashTag("/m/sessions/list");
+        var b = ClientErrorEndpoints.HashTag("/m/settings");
+
+        Assert.Equal(a1, a2);
+        Assert.NotEqual(a1, b);
+        Assert.StartsWith("h#", a1);
+        Assert.DoesNotContain("sessions", a1);
+        Assert.Equal("(empty)", ClientErrorEndpoints.HashTag(""));
     }
 
     /// <summary>
@@ -98,10 +109,12 @@ public sealed class ClientErrorEndpointsTests
         try
         {
             using var client = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
+            // Surface and Page get the alphabet-fitting hostile values on purpose: they would sail
+            // through any character filter, and the promise is that they still never reach the log.
             var resp = await client.PostAsJsonAsync("/client-errors", new ClientErrorEndpoints.ClientErrorPost
             {
-                Surface = Sensitive,
-                Page = Sensitive,
+                Surface = SensitiveToken,
+                Page = SensitivePath,
                 Message = Sensitive,
                 Detail = Sensitive,
                 Stack = Sensitive,
@@ -119,7 +132,9 @@ public sealed class ClientErrorEndpointsTests
         Assert.NotEmpty(durable);
         Assert.All(lines, l =>
         {
-            Assert.DoesNotContain("hunter2", l);
+            Assert.DoesNotContain(SensitiveToken, l);
+            Assert.DoesNotContain(SensitivePath, l);
+            Assert.DoesNotContain("api_key_sk-abc123", l);
             Assert.DoesNotContain("prompt said", l);
         });
         Assert.Contains(durable, l => l.Contains($"messageLength={Sensitive.Length}"));

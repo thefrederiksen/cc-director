@@ -56,33 +56,26 @@ internal static class ClientErrorEndpoints
 
     /// <summary>
     /// The one durable log line for a report. Internal so the regression test can post hostile content
-    /// into every client-controlled field and assert none of it reaches this line: each field is either
-    /// validated against a closed structural format (<see cref="StructuralToken"/>) or reduced to its
-    /// length. Nothing client-supplied is ever interpolated verbatim.
+    /// into every client-controlled field and assert none of it reaches this line. NOTHING
+    /// client-supplied is ever interpolated verbatim - not even values that look like identifiers,
+    /// because a character filter cannot tell a route token from a pasted secret that happens to fit
+    /// the same alphabet (the review's fifth pass: "hunter2" passes any structural shape test).
+    /// Surface and page are logged as one-way hash tags: the same value always produces the same tag,
+    /// so durable lines still correlate with each other and with the ring entry the account can read,
+    /// while the log itself carries no content.
     /// </summary>
     internal static string DurableLine(TenantId tenant, ClientErrorRecord record)
         => $"[ClientError] tenant={tenant.ToLogString()} device={record.DeviceHash} "
-            + $"surface={StructuralToken(record.Surface, 40)} page={StructuralToken(record.Page, 200)} "
+            + $"surface={HashTag(record.Surface)} page={HashTag(record.Page)} "
             + $"messageLength={record.Message.Length} detailLength={record.Detail.Length}";
 
-    /// <summary>
-    /// Admit a client-supplied identifier into the durable log ONLY if it has the shape of a code
-    /// identifier or route path: letters, digits, and the separator characters routes use. Anything
-    /// else - a space, a quote, a colon, any character free prose needs - is replaced by a placeholder
-    /// carrying just the length. A closed allowed-set, not a denylist: the field must PROVE it is
-    /// structural to be logged, so prose can never sneak through a gap nobody predicted.
-    /// </summary>
-    internal static string StructuralToken(string value, int maxLength)
+    /// <summary>A content-free, correlatable rendering of one client-supplied value: its length and a
+    /// short one-way hash (the same form <see cref="TenantId.ToLogString"/> uses). Never the value.</summary>
+    internal static string HashTag(string value)
     {
         if (string.IsNullOrEmpty(value)) return "(empty)";
-        if (value.Length > maxLength) return $"(overlong:{value.Length})";
-        foreach (var c in value)
-        {
-            var ok = c is (>= 'a' and <= 'z') or (>= 'A' and <= 'Z') or (>= '0' and <= '9')
-                or '/' or '-' or '_' or '.' or '~';
-            if (!ok) return $"(nonstructural:{value.Length})";
-        }
-        return value;
+        var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(value));
+        return $"h#{Convert.ToHexString(hash, 0, 4).ToLowerInvariant()}:{value.Length}";
     }
 
     // The per-device rate window: device hash -> (window start, count in window). Pruned lazily.
