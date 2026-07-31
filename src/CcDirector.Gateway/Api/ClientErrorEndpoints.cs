@@ -92,14 +92,14 @@ internal static class ClientErrorEndpoints
                 Detail: Cap(req.Detail ?? "", 2000),
                 Stack: Cap(req.Stack ?? "", 4000));
 
-            // The durable record: one greppable line in the same log every Gateway error goes to. The
-            // stack is deliberately excluded from the line (it is multi-line noise in a line-oriented
-            // log) - it stays readable on the ring.
-            // ToLogString, never Value: on hosted the raw account tenant id must not reach a log (the data
-            // map promises hashed tenant ids in service logs, and this line was one of two that broke it).
+            // The durable line is STRUCTURAL ONLY - who, where, when, and how big. Message and Detail are
+            // client-supplied free text: a browser error payload can carry anything on the page, including
+            // prompt or dictation content, so writing them verbatim here would falsify the data map's
+            // promise that service logs never carry customer content (the review that caught it: CR-3b,
+            // third pass). The full text stays readable on the per-tenant ring below, which is served only
+            // back to the account that reported it. ToLogString, never Value, for the same promise.
             FileLog.Write($"[ClientError] tenant={tenant.Value.ToLogString()} device={record.DeviceHash} surface={record.Surface} "
-                + $"page={record.Page} message={record.Message}"
-                + (record.Detail.Length > 0 ? $" detail={record.Detail}" : ""));
+                + $"page={record.Page} messageLength={record.Message.Length} detailLength={record.Detail.Length}");
 
             var ring = Rings.GetOrAdd(tenant.Value, static _ => new TenantRing());
             lock (ring.Lock)
