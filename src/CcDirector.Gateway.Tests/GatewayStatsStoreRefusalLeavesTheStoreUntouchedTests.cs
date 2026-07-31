@@ -72,6 +72,11 @@ public sealed class GatewayStatsStoreRefusalLeavesTheStoreUntouchedTests : IDisp
         Assert.False(TableExists("stat_delta"));
         Assert.False(TableExists("__EFMigrationsHistory"));
         var tablesBefore = CountUserTables();
+        // Captured, not assumed: the survival claim below is "the stamp is EXACTLY what it was before the
+        // refusal", whatever the current build's version happens to be. This line used to be a literal 5
+        // asserted after the fact - a copy of the constant in a second place, which went stale the day the
+        // schema version moved and reported a phantom mutation of a file nothing had touched.
+        var versionBefore = UserVersion();
 
         using (var store = new GatewayStatsStore(SelfHostChoice()))
         {
@@ -94,7 +99,7 @@ public sealed class GatewayStatsStoreRefusalLeavesTheStoreUntouchedTests : IDisp
             TableExists("__EFMigrationsHistory"),
             "A migration history table was stamped into a database this store had just refused.");
         Assert.Equal(tablesBefore, CountUserTables());
-        Assert.Equal(5, UserVersion());
+        Assert.Equal(versionBefore, UserVersion());
 
         _out.WriteLine(
             $"UNTOUCHED: tables={CountUserTables()} user_version={UserVersion()} " +
