@@ -27,18 +27,14 @@ namespace CcDirector.Gateway.Tests;
 /// ordering it was supposed to protect. So this reads BOTH values at run time and asserts only their
 /// relationship.
 ///
-/// THE REFLECTION IS A BRIDGE AND IT IS TEMPORARY. The adoption step's bound is private and lives on another
-/// worker's branch, so it cannot be referenced directly yet; worker 2 flagged the same problem from its side,
-/// having had to MIRROR this deadline as a literal in its own file. A mirrored constant is a second place to
-/// forget. At merge these become ONE constant referenced from both sides and this reflection goes away - and
-/// until then, reading the real field is still strictly better than copying its value, because a rename
-/// breaks this test loudly instead of leaving two numbers silently drifting apart.
+/// THE BRIDGE IS GONE, AS ITS AUTHOR SPECIFIED. This test used to read the adoption step's bound by
+/// reflection because that bound was private and on another worker's branch. The branches are merged and the
+/// bound is public, so the reflection has been replaced by the direct reference it was always a stand-in for:
+/// there is now ONE constant, read from both sides. A rename can no longer be a runtime surprise - it is a
+/// compile error, which is what the reflection was approximating and could only ever do at run time.
 /// </summary>
 public sealed class StatsStoreDeadlineRelationshipTests
 {
-    /// <summary>The adoption step's write-lock wait, in seconds.</summary>
-    private const string InnerBoundField = "WriteLockWaitSeconds";
-
     private readonly ITestOutputHelper _out;
 
     public StatsStoreDeadlineRelationshipTests(ITestOutputHelper output) => _out = output;
@@ -68,36 +64,17 @@ public sealed class StatsStoreDeadlineRelationshipTests
     }
 
     /// <summary>
-    /// THE FIXTURE'S OWN PREMISE. If the field cannot be found, this test would otherwise have nothing to
-    /// compare and could quietly pass by comparing a default against a real number. A rename must break it
-    /// LOUDLY, because a rename is exactly the moment somebody needs to re-check the ordering.
+    /// THE FIXTURE'S OWN PREMISE. The bound must be a positive duration, or the ordering this test asserts
+    /// cannot be evaluated against it and the comparison above would be measuring nothing.
     /// </summary>
     [Fact]
     public void TheInnerBound_IsStillWhereThisTestLooksForIt()
     {
-        var field = typeof(GatewayStatsSqliteAdoption)
-            .GetField(InnerBoundField, BindingFlags.NonPublic | BindingFlags.Static);
-
         Assert.True(
-            field is not null,
-            $"{nameof(GatewayStatsSqliteAdoption)}.{InnerBoundField} no longer exists. The startup deadline " +
-            "is derived from it, so it cannot simply be renamed: find the bound that replaced it, point this " +
-            "test at it, and re-check that it still expires before GatewayStatsStore.OpenDeadline.");
-
-        Assert.True(
-            field!.GetValue(null) is int seconds && seconds > 0,
-            $"{InnerBoundField} is not a positive whole number of seconds, so the relationship this test " +
-            "asserts cannot be evaluated against it.");
+            GatewayStatsSqliteAdoption.WriteLockWait > TimeSpan.Zero,
+            $"{nameof(GatewayStatsSqliteAdoption)}.{nameof(GatewayStatsSqliteAdoption.WriteLockWait)} is not " +
+            "a positive duration, so the relationship this test asserts cannot be evaluated against it.");
     }
 
-    private static TimeSpan ReadInnerBound()
-    {
-        var field = typeof(GatewayStatsSqliteAdoption)
-            .GetField(InnerBoundField, BindingFlags.NonPublic | BindingFlags.Static)
-            ?? throw new InvalidOperationException(
-                $"{nameof(GatewayStatsSqliteAdoption)}.{InnerBoundField} was not found - see " +
-                nameof(TheInnerBound_IsStillWhereThisTestLooksForIt) + ".");
-
-        return TimeSpan.FromSeconds((int)field.GetValue(null)!);
-    }
+    private static TimeSpan ReadInnerBound() => GatewayStatsSqliteAdoption.WriteLockWait;
 }
