@@ -900,9 +900,10 @@ jobs:
             echo "\`$GITHUB_REF_NAME\` left draft with every asset attached, so there is no window in which it is latest but incomplete."
           } >> "$GITHUB_STEP_SUMMARY"
       # Mirror the files a PERSON downloads to a stable public address
-      # (devthrottle_internal #1186). GitHub stays the archive - this is not a
-      # second copy of history, only ever the latest build plus a short tail of
-      # versions.
+      # (devthrottle_internal #1186). GitHub stays the archive: this holds ONLY
+      # the current build, under names that never change. Per-version copies were
+      # removed deliberately - GitHub already serves an immutable URL per version
+      # for free, so a second copy bought nothing and doubled the storage.
       #
       # Why this exists: the GitHub download link is not a stable address. It
       # redirects twice, and the URL the browser actually fetches from carries a
@@ -921,7 +922,6 @@ jobs:
           AZ_ACCOUNT: stdevthrottledl
           AZ_CONTAINER: download
           AZ_KEY: ${{ secrets.AZURE_DOWNLOADS_KEY }}
-          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
 
@@ -965,11 +965,11 @@ jobs:
               *.json) ctype="application/json" ;;
               *)      ctype="application/octet-stream" ;;
             esac
-            # latest/ is overwritten every release, so it must not be cached for
-            # long or people keep getting yesterday's build. The versioned copy
-            # never changes, so it is immutable.
-            upload "$src" "latest/$name"        "public, max-age=300"                 "$ctype"
-            upload "$src" "v$VERSION/$name"     "public, max-age=31536000, immutable" "$ctype"
+            # One copy, one name, overwritten every release - so the download
+            # address never changes. Short cache or people keep getting
+            # yesterday's build. release-manifest.json alongside it says which
+            # version is currently there, for anything that needs to know.
+            upload "$src" "latest/$name" "public, max-age=300" "$ctype"
           done
 
           echo "Mirrored to https://$AZ_ACCOUNT.blob.core.windows.net/$AZ_CONTAINER/latest/"
