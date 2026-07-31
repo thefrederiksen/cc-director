@@ -865,7 +865,15 @@ public sealed class GatewayHost : IAsyncDisposable
 
         Port = port;
         Token = token ?? _gatewayAuth.LoadOrCreate();
-        Registry = new DirectorRegistry(instancesDirectory);
+        // Epic #1159 step A: the eviction horizon is the ONE elapsed-time rule that removes a session, so it
+        // is read from configuration here rather than left as a constant only a test can move. Default is a
+        // day; a zero or negative value in config.json is refused by the loader and the default stands, so a
+        // typo cannot quietly restore the deleting roster.
+        var gatewayConfig = Core.Configuration.GatewayConfig.Load();
+        Registry = new DirectorRegistry(instancesDirectory)
+        {
+            EvictionHorizon = TimeSpan.FromHours(gatewayConfig.DirectorEvictionHorizonHours),
+        };
         // Issue #1292: free a removed Director's session numbers so a Director that died without releasing
         // them does not leak the pool. OnDirectorRemoved fires on graceful unregister and on the registry's
         // own stale/unreachable sweep, so this never fires for a merely momentarily-unreachable Director.
@@ -928,7 +936,6 @@ public sealed class GatewayHost : IAsyncDisposable
         // sessions; the roster read now serves last-known state unconditionally and reports its age instead.
         Registry.OnDirectorRemoved += removal => PushedSessions.Forget(removal.Tenant, removal.DirectorId);
         LauncherConnections = new Streaming.LauncherConnectionRegistry();
-        var gatewayConfig = Core.Configuration.GatewayConfig.Load();
         // Gateway Cleanup: the tunnel is mandatory; the streamMode parameter is ignored and retained only for existing test call sites (removed with the test rewrite).
         _streamStaleAfter = TimeSpan.FromSeconds(gatewayConfig.StreamStaleAfterSeconds);
         AuthEnabled = ResolveAuthEnabled(authEnabled);

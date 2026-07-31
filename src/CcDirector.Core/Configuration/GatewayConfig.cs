@@ -130,6 +130,20 @@ public sealed class GatewayConfig
     /// </summary>
     public const int DefaultDirectorEvictionHorizonHours = 24;
 
+    /// <summary>
+    /// How long a machine may be gone before the Gateway forgets it and its sessions leave the roster. Read
+    /// from the gateway block's <c>directorEvictionHorizonHours</c> key; default
+    /// <see cref="DefaultDirectorEvictionHorizonHours"/>.
+    ///
+    /// It is configurable because the right answer depends on how the fleet is used, and nobody has measured
+    /// that yet - a machine that sleeps overnight wants a day, a shared build farm churning through short-lived
+    /// Directors may want an hour. The DEFAULT is the ruling; this key exists so changing it does not need a
+    /// release. A value of zero or less is refused rather than honoured: a zero horizon would evict every
+    /// machine on the next thirty-second sweep, which is the deleting roster this whole read model exists to
+    /// end, and it would arrive as a silent configuration typo rather than a visible change.
+    /// </summary>
+    public int DirectorEvictionHorizonHours { get; init; } = DefaultDirectorEvictionHorizonHours;
+
     /// <summary>True when <see cref="Url"/> is configured.</summary>
     public bool IsEnabled => !string.IsNullOrWhiteSpace(Url);
 
@@ -184,6 +198,12 @@ public sealed class GatewayConfig
                 && sa.ValueKind == JsonValueKind.Number && sa.TryGetInt32(out var sav) && sav > 0
                     ? sav
                     : DefaultStreamStaleAfterSeconds;
+            // Epic #1159 step A. Must be a POSITIVE integer or the default stands - see the property's note on
+            // why a zero is refused rather than honoured.
+            var evictionHorizonHours = gw.TryGetProperty("directorEvictionHorizonHours", out var eh)
+                && eh.ValueKind == JsonValueKind.Number && eh.TryGetInt32(out var ehv) && ehv > 0
+                    ? ehv
+                    : DefaultDirectorEvictionHorizonHours;
 
             // Same-machine credential resolution. A Gateway-role install never runs the pairing step
             // (that step, and only that step, writes gateway.token - it is a Workstation-only step), so
@@ -214,6 +234,7 @@ public sealed class GatewayConfig
                 AddressingMode = mode,
                 StreamMode = streamMode,
                 StreamStaleAfterSeconds = staleAfterSeconds,
+                DirectorEvictionHorizonHours = evictionHorizonHours,
             };
         }
         catch (Exception ex)
