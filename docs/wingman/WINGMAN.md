@@ -242,7 +242,9 @@ for our own benefit has to be something the user can see they turned on.
 
 When a session is removed, its recording directory is deleted. Before that, removal closed the
 writer and left the file, so an install with recording on accumulated the screens of sessions
-that no longer existed in a directory nothing ever swept.
+that no longer existed in a directory nothing ever swept. Startup additionally sweeps any
+recording whose session no longer exists, so recordings orphaned before an upgrade - removed
+under the old release, when nothing purged - are deleted the first time the new Director runs.
 
 ## 6b. State-change log + the Desktop Wingman tab (observability)
 

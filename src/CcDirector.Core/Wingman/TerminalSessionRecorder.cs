@@ -33,7 +33,9 @@ namespace CcDirector.Core.Wingman;
 /// is not optional and does not follow the setting: recordings made while capture WAS on (the old
 /// default-on release, or a setting since switched off) must not outlive their session just because
 /// nothing is capturing today. So the host constructs and starts this recorder unconditionally, the
-/// removal subscription is always live, and only the capture side is gated.
+/// removal subscription is always live, and only the capture side is gated. Startup additionally
+/// sweeps recordings whose sessions were removed before this process existed - the removal event
+/// for those fired (or never fired) in a previous life, so subscription alone can never reach them.
 /// </summary>
 public sealed class TerminalSessionRecorder : IDisposable
 {
@@ -62,6 +64,13 @@ public sealed class TerminalSessionRecorder : IDisposable
         // class note: a pre-existing recording must be deleted with its session even on an install
         // where capture is off.
         _sessionManager.OnSessionRemoved += OnSessionRemoved;
+
+        // Startup reconciliation, also regardless of the capture setting: the removal subscription
+        // only covers sessions removed while THIS process runs. A recording whose session was
+        // removed before the upgrade - under the old default-on release, when no purge handler
+        // existed - has no live session left to emit a removal event, so without this sweep it
+        // survives forever on exactly the installs the purge policy was written for.
+        SweepOrphanedRecordings();
 
         if (!_captureEnabled)
         {
@@ -122,6 +131,48 @@ public sealed class TerminalSessionRecorder : IDisposable
             FileLog.Write($"[TerminalSessionRecorder] could NOT purge {dir}: {ex.Message}. "
                           + "That session's recorded screens are still on disk.");
         }
+    }
+
+    /// <summary>
+    /// Delete every recording directory whose session no longer exists. Only directories whose name
+    /// is a session id in the recorder's own spelling ("N") are touched - anything else under the
+    /// root was not written by us, and a sweep that guesses about foreign directories is a data
+    /// deleter, not a janitor. A directory created concurrently for a NEW session cannot collide:
+    /// session ids are fresh guids, so a name either belongs to a live session (kept) or to nothing.
+    /// </summary>
+    private void SweepOrphanedRecordings()
+    {
+        string[] dirs;
+        try
+        {
+            if (!Directory.Exists(_root)) return;
+            dirs = Directory.GetDirectories(_root);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[TerminalSessionRecorder] startup sweep could not list {_root}: {ex.Message}");
+            return;
+        }
+
+        var live = _sessionManager.ListSessions().Select(s => s.Id).ToHashSet();
+        var swept = 0;
+        foreach (var dir in dirs)
+        {
+            if (!Guid.TryParseExact(Path.GetFileName(dir), "N", out var sessionId) || live.Contains(sessionId))
+                continue;
+            try
+            {
+                Directory.Delete(dir, recursive: true);
+                swept++;
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[TerminalSessionRecorder] startup sweep could NOT delete {dir}: {ex.Message}. "
+                              + "That removed session's recorded screens are still on disk.");
+            }
+        }
+        if (swept > 0)
+            FileLog.Write($"[TerminalSessionRecorder] startup sweep purged {swept} recording(s) whose sessions were removed before this run");
     }
 
     private void Wire(Session session)

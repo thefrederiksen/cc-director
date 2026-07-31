@@ -117,6 +117,52 @@ public sealed class TerminalSessionRecorderPolicyTests : IDisposable
     }
 
     /// <summary>
+    /// The pass-3 inspection's Finding 2: purge-on-removal only fires for sessions removed while
+    /// THIS process is running. A recording whose session was removed before the upgrade - under
+    /// the old default-on release, with no purge handler alive to notice - has no live session left
+    /// to emit a removal event, so without a startup reconciliation it survives forever and the
+    /// claim that installs no longer accumulate removed-session screens is false for exactly the
+    /// installs the policy was written for. Startup must sweep those orphans, under the shipped
+    /// default (capture OFF), while leaving live sessions' recordings and unrecognised directories
+    /// alone.
+    /// </summary>
+    [Fact]
+    public void Startup_sweeps_recordings_orphaned_before_this_run()
+    {
+        var recordings = Path.Combine(_root, "recordings-startup-sweep");
+
+        // The pre-upgrade world, arranged BEFORE the recorder exists: a recording whose session was
+        // removed in a previous life, and a directory that is not a recording at all.
+        var orphanDir = Path.Combine(recordings, Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(orphanDir);
+        File.WriteAllText(Path.Combine(orphanDir, "grid.jsonl"), "{\"rows\":[\"screens of a session removed before the upgrade\"]}\n");
+        var foreignDir = Path.Combine(recordings, "not-a-session-recording");
+        Directory.CreateDirectory(foreignDir);
+        File.WriteAllText(Path.Combine(foreignDir, "keep.txt"), "someone else's data at a name we do not recognise");
+
+        var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
+        using var recorder = new TerminalSessionRecorder(manager, root: recordings, captureEnabled: false);
+        try
+        {
+            // A session alive at startup: its recording must survive the sweep.
+            var live = manager.CreateSession(Path.GetTempPath());
+            var liveDir = Path.Combine(recordings, live.Id.ToString("N"));
+            Directory.CreateDirectory(liveDir);
+            File.WriteAllText(Path.Combine(liveDir, "grid.jsonl"), "{\"rows\":[\"a live session's screens\"]}\n");
+
+            recorder.Start();
+
+            Assert.False(Directory.Exists(orphanDir),
+                "the recording orphaned before this run is still on disk - the startup sweep did not run");
+            Assert.True(Directory.Exists(liveDir),
+                "the startup sweep deleted a LIVE session's recording");
+            Assert.True(Directory.Exists(foreignDir),
+                "the startup sweep deleted a directory it does not own");
+        }
+        finally { manager.Dispose(); }
+    }
+
+    /// <summary>
     /// Capture and purge are two different lifecycles: switching capture OFF must not switch the
     /// purge off with it. A recording made while capture WAS on (the old default-on release) still
     /// belongs to its session, and is deleted with it - while the capture-off recorder writes
