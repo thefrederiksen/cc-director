@@ -152,6 +152,7 @@ var reporter = Task.Run(async () =>
 });
 
 var deltaWindowStart = DateTime.UtcNow;
+var windowEndUtc = deltaWindowStart;
 if (eventsPerSecond > 0)
 {
     // The delta stream: a token-bucket paced loop distributing PushDelta round-robin across all
@@ -186,16 +187,21 @@ if (eventsPerSecond > 0)
             try { await inFlight.WaitAsync(windowCts.Token); } catch (OperationCanceledException) { break; }
             _ = sim.SendOneDeltaAsync(windowCts.Token).ContinueWith(t =>
             {
-                inFlight.Release();
+                // Counters BEFORE the release: the drain below treats a full semaphore as "every
+                // outcome recorded", so releasing first would let it read totals with this
+                // callback's count still pending (review finding).
                 if (t.IsCompletedSuccessfully && t.Result) Interlocked.Increment(ref deltasOk);
                 else Interlocked.Increment(ref deltasFailed);
+                inFlight.Release();
             }, TaskScheduler.Default);
         }
     }
     // Window over: cancel whatever is still queued or in flight, then DRAIN before the counters are
     // read - a total printed while completion callbacks are still landing is not a total (review
     // finding). Cancellation makes in-flight invocations fail fast, so the drain is bounded anyway;
-    // the 15 s cap is a backstop against a fully wedged server.
+    // the 15 s cap is a backstop against a fully wedged server. The window END is stamped HERE,
+    // before the drain, so the reported window length is the measurement, not measurement + drain.
+    windowEndUtc = DateTime.UtcNow;
     windowCts.Cancel();
     var drainDeadline = DateTime.UtcNow.AddSeconds(15);
     while (inFlight.CurrentCount < maxInFlight && DateTime.UtcNow < drainDeadline)
@@ -208,13 +214,14 @@ else
     // Hold mode: keep connections and their pushed rosters open (the Stage 1 background fleet).
     try { await Task.Delay(durationSeconds > 0 ? TimeSpan.FromSeconds(durationSeconds) : Timeout.InfiniteTimeSpan, stopRequested.Token); }
     catch (OperationCanceledException) { }
+    windowEndUtc = DateTime.UtcNow;
 }
 
 // The measurement WINDOW ends here. Cancelling also cancels every queued and in-flight send, so
 // completions that would otherwise trickle in during teardown cannot inflate the run's numbers -
 // the first baseline's totals included exactly that drain, and read as double the true rate
 // (review finding). The window numbers are printed before teardown so they are unambiguous.
-var windowSeconds = (DateTime.UtcNow - deltaWindowStart).TotalSeconds;
+var windowSeconds = (windowEndUtc - deltaWindowStart).TotalSeconds;
 Console.WriteLine($"[DirectorSim] WINDOW END: deltasOk={Interlocked.Read(ref deltasOk)} deltasFailed={Interlocked.Read(ref deltasFailed)} over {windowSeconds:F0}s (configured duration {durationSeconds}s)");
 stopRequested.Cancel();
 await reporter;

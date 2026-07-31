@@ -31,7 +31,8 @@ if (-not (Test-Path $viewersFile)) {
 # production deny list has no override; loopback is free; any other host must be named exactly in
 # LOADTEST_ALLOW_HOST. Trailing dots trimmed first so the absolute-DNS spelling cannot slip past.
 $uri = [Uri]$GatewayUrl
-$hostName = $uri.Host.ToLowerInvariant().TrimEnd('.')
+# Uri.Host keeps IPv6 addresses in brackets ('[::1]'); strip them so the loopback list matches.
+$hostName = $uri.Host.ToLowerInvariant().TrimEnd('.').Trim('[', ']')
 if ($hostName.EndsWith("azurewebsites.net") -or $hostName.Contains("devthrottle")) {
     throw "REFUSED: $GatewayUrl matches the production deny list. The harness never runs against production; there is no override."
 }
