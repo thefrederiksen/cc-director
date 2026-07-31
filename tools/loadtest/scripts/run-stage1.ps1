@@ -42,7 +42,7 @@ $viewerKey = (Get-Content $viewersFile -Raw | ConvertFrom-Json)[0].deviceKey
 $headers = @{ Authorization = "Bearer $viewerKey" }
 
 # Fresh metrics window for this run.
-Invoke-RestMethod -Uri "$GatewayUrl/diag/loadmetrics?reset=true" -Headers $headers | Out-Null
+Invoke-RestMethod -Uri "$GatewayUrl/diag/loadmetrics?reset=true" -Headers $headers -TimeoutSec 15 | Out-Null
 Write-Host "[run-stage1] metrics window reset; scraping every $ScrapeSeconds s into $scrapeFile"
 
 # Background scraper: one JSON line per interval for the whole run.
@@ -51,7 +51,9 @@ $scraper = Start-Job -ScriptBlock {
     $h = @{ Authorization = "Bearer $key" }
     while ($true) {
         try {
-            $m = Invoke-RestMethod -Uri "$url/diag/loadmetrics" -Headers $h
+            # A hard timeout, or a wedged Gateway hangs this scraper forever and the timeline just stops
+            # exactly when it gets interesting (learned on the first baseline run).
+            $m = Invoke-RestMethod -Uri "$url/diag/loadmetrics" -Headers $h -TimeoutSec 15
             ($m | ConvertTo-Json -Compress -Depth 10) | Add-Content -Path $file -Encoding utf8
         } catch {
             "{`"scrapeError`":`"$($_.Exception.Message -replace '\"','')`"}" | Add-Content -Path $file -Encoding utf8

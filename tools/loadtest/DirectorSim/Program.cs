@@ -120,7 +120,13 @@ var reporter = Task.Run(async () =>
                     var raw = await httpForMetrics.GetStringAsync("diag/loadmetrics", stopRequested.Token);
                     gatewayMetrics = JsonSerializer.Deserialize<JsonElement>(raw);
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
+                catch (OperationCanceledException)
+                {
+                    // Shutdown cancelled an in-flight scrape - end the reporter, do not crash the run
+                    // (a TaskCanceledException here took the whole first Stage 2 run's summary with it).
+                    break;
+                }
+                catch (Exception ex)
                 {
                     gatewayMetrics = new { scrapeError = ex.Message };
                 }

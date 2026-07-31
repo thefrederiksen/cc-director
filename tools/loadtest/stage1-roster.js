@@ -56,6 +56,7 @@ const rosterLatency = new Trend('roster_latency', true);
 const rosterErrors = new Rate('roster_errors');
 
 export const options = {
+  summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(90)', 'p(95)', 'p(99)'],
   // The plan's climb: 100 -> 500 -> 1000 -> 2500 -> 5000 -> 10000 viewers at a 2 s cadence
   // (~9,000 requests/second at the top). Each step ramps then holds, so every plateau gives a clean
   // window to read (scrape /diag/loadmetrics?reset=true at each plateau start).
