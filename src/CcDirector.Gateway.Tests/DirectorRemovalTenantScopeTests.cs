@@ -104,8 +104,16 @@ public sealed class DirectorRemovalTenantScopeTests
             Seed(store, TenantA, "a-only");
             Seed(store, TenantB, "b-only");
 
-            // Act - tenant A's Director stops being refreshed and ages past the eviction horizon, then the
-            // stale sweep runs. This is the ordinary removal path a departed Director travels.
+            // Act - tenant A's Director DEPARTS: its tunnel closes, and then it ages past the eviction
+            // horizon without being refreshed. Both halves are now required, and the tunnel close is new
+            // (inspection 2, finding 1). Eviction no longer forgets a Director that still holds a live
+            // stream - that is the whole point of ForgetIfDisconnected - so a fixture that ages a machine
+            // out while leaving its tunnel UP is describing something that cannot happen to a live
+            // Director: a connected machine re-Hellos every few seconds and never ages. Leaving the
+            // connection open here made this test fail, which is the guard working rather than a
+            // regression, and the fix is to model a departure properly instead of weakening the assertion
+            // below - A's sessions must still be gone.
+            Assert.True(store.UnregisterConnection(TenantA, SharedId, $"conn-{TenantA.Value}"));
             a.LastSeen = DateTime.UtcNow - DirectorRegistry.DefaultEvictionHorizon - TimeSpan.FromSeconds(30);
             registry.SweepStale();
 

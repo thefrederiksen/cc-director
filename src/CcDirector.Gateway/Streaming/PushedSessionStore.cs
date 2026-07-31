@@ -60,6 +60,18 @@ public sealed class PushedSessionStore
     /// invisible to every reader.
     ///
     /// Lock ORDER is this gate first, then <c>entry.Gate</c>, in both paths. Never the other way round.
+    ///
+    /// REASONED BUT NOT PROVEN, and that is stated here rather than left to be assumed. Deleting this gate
+    /// from <see cref="RegisterConnection"/> leaves every test in this repository GREEN - it was tried - so
+    /// nothing currently pins it. A two-threaded proof was written and then DELETED rather than shipped:
+    /// its assertion was "the reconnect had not completed while the gate was held", which also passes when
+    /// the second thread was merely slow to arrive, so it would have reported success whether or not the
+    /// gate existed. A timing test whose failure direction is "pass" is not a proof; it is a future false
+    /// green. Proving mutual exclusion here needs a rendezvous that can distinguish BLOCKED from ABSENT,
+    /// and that was not something to invent at the end of a long night.
+    ///
+    /// So: the argument above is the justification, and there is no test behind it. Anyone removing this
+    /// gate will see a green suite, and the green will mean nothing.
     /// </summary>
     private readonly object _membershipGate = new();
 
