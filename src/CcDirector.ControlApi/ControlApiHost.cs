@@ -44,10 +44,14 @@ public sealed class ControlApiHost : IAsyncDisposable
     // Not readonly: LAN addressing mode (issue #457) auto-enables auth at StartAsync, because
     // binding the Control API to the LAN without auth would expose it to the whole network.
     private bool _authEnabled;
-    // The machine secret this host accepts, resolved once at StartAsync. Held because things other
-    // than the middleware need to present a credential to their OWN Director: the startup self-probe
-    // calls /healthz over real HTTP, and every session launch mints a child token from it.
-    private string? _acceptedSecret;
+    // The machine secret this host accepts, resolved at StartAsync and re-resolved by
+    // ReapplyGatewayAsync, because a runtime gateway change (enroll, rotate, disconnect) changes
+    // which secret is in force - the middleware must read this field per request, never a copy
+    // captured at startup, or the API keeps honouring the old secret until the Director restarts.
+    // Held on the host because things other than the middleware present a credential to their OWN
+    // Director: the startup self-probe calls /healthz over real HTTP, and every session launch
+    // mints a child token from it. Volatile: written under the reapply lock, read on request threads.
+    private volatile string? _acceptedSecret;
 
     public string DirectorId { get; }
     public int Port { get; private set; }
@@ -569,8 +573,11 @@ public sealed class ControlApiHost : IAsyncDisposable
             // Gateway authenticates across machines in LAN mode (issue #457); else the local token.
             // Scoped tokens derived from whichever of those is in force are accepted too.
             _acceptedSecret = DirectorAuth.ResolveAcceptedToken(gatewayConfig.Token);
-            var secret = _acceptedSecret;
-            _app.Use((ctx, next) => DirectorAuth.Run(ctx, secret, next));
+            // Read the FIELD on every request, not a startup-captured copy: ReapplyGatewayAsync
+            // replaces the secret when the gateway config changes at runtime, and a captured copy
+            // would keep the old one in force until restart. Non-null: assigned just above, and
+            // reapply only ever assigns another resolved (non-null) value.
+            _app.Use((ctx, next) => DirectorAuth.Run(ctx, _acceptedSecret!, next));
         }
 
         // Enable WebSocket support for /dictate and any future streaming endpoints.
@@ -1211,6 +1218,17 @@ public sealed class ControlApiHost : IAsyncDisposable
             }
 
             var gatewayConfig = GatewayConfig.Load();
+
+            // The accepted secret follows the gateway config: enrolling, rotating, or disconnecting
+            // a gateway token changes which secret callers derive their credentials from, and the
+            // auth middleware reads _acceptedSecret per request. Without this re-resolve the API
+            // keeps accepting tokens derived from the OLD secret and 401s every caller presenting
+            // the NEW one (the CLI and launcher resolve fresh on each call) until the Director is
+            // restarted. Guarded like startup: with auth disabled the secret stays unset so session
+            // launches keep minting no credential.
+            if (_authEnabled)
+                _acceptedSecret = DirectorAuth.ResolveAcceptedToken(gatewayConfig.Token);
+
             _gatewayClient = BuildGatewayClient(gatewayConfig);
             _gatewayClient.Start();
             _streamClient = BuildStreamClient(gatewayConfig);
