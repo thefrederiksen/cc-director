@@ -95,7 +95,7 @@ public sealed class DirectorRemovalTenantScopeTests
         {
             var store = new PushedSessionStore();
             // Wired exactly as GatewayHost wires it.
-            registry.OnDirectorRemoved += removal => store.Forget(removal.Tenant, removal.DirectorId);
+            registry.OnDirectorRemoved += removal => store.ForgetIfDisconnected(removal.Tenant, removal.DirectorId);
 
             // Arrange - both tenants register a Director under the SAME id, and both have pushed a session.
             // Tenant B is the one that must be left completely undisturbed.

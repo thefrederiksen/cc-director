@@ -61,10 +61,32 @@ export interface RosterSessionMark {
 // per owning Director id. Opaque to callers except through the pure functions below.
 export interface RetentionCache {
   byDirector: Map<string, SessionDto[]>;
+  /**
+   * When each Director was last NAMED by an envelope, on THIS DEVICE'S clock (milliseconds).
+   *
+   * Inspection 2, finding 3. The first attempt at bounding retention treated a Director's ABSENCE from the
+   * envelope as proof that the Gateway had evicted it past the horizon. It is not proof of anything: the
+   * pushed store is in memory, so a RESTARTED Gateway serves a byte-identical empty envelope before its
+   * Directors have reconnected and reseeded - and the phone would have deleted every card on the first
+   * successful poll after a restart. That is a worse defect than the unbounded retention it replaced,
+   * because it is instant and silent.
+   *
+   * The wire carries no eviction tombstone and no Gateway generation, so absence CANNOT be read as
+   * eviction. The retention is bounded by this device's own clock instead: being named refreshes the
+   * stamp, and cards are dropped only once a Director has gone unnamed for longer than the horizon.
+   */
+  lastNamedAt: Map<string, number>;
 }
 
+/**
+ * How long the phone keeps a Director's cards after the envelope stops naming it. Mirrors the Gateway's
+ * own default eviction horizon so the two agree about how long a machine may be gone, while remaining an
+ * independent clock - deliberately, since the phone cannot observe the Gateway's.
+ */
+export const RETENTION_HORIZON_MS = 24 * 60 * 60 * 1000;
+
 export function emptyRetentionCache(): RetentionCache {
-  return { byDirector: new Map<string, SessionDto[]>() };
+  return { byDirector: new Map<string, SessionDto[]>(), lastNamedAt: new Map<string, number>() };
 }
 
 // The display roster produced by the merge: the sessions to render (live + retained-and-marked), in a
@@ -116,12 +138,26 @@ function markFor(state: SessionReachability, machineName: string, reach: Directo
 //  - WOBBLY or OFFLINE **with no rows**, or a Director the Gateway forgot entirely: nothing was served,
 //    so re-inject the retained cache sessions, marked, and keep the cache untouched - the cards stay
 //    until the machine answers again (decision 5).
-export function mergeRosterRetention(prev: RetentionCache, envelope: SessionsEnvelope): { cache: RetentionCache; roster: RetainedRoster } {
+export function mergeRosterRetention(
+  prev: RetentionCache,
+  envelope: SessionsEnvelope,
+  nowMs: number = Date.now(),
+): { cache: RetentionCache; roster: RetainedRoster } {
   const liveByDir = groupByDirector(envelope.sessions);
   const reachByDir = new Map<string, DirectorReachability>();
   for (const d of envelope.directors) reachByDir.set(d.directorId, d);
 
-  const nextCache: RetentionCache = { byDirector: new Map(prev.byDirector) };
+  const nextCache: RetentionCache = {
+    byDirector: new Map(prev.byDirector),
+    lastNamedAt: new Map(prev.lastNamedAt ?? []),
+  };
+
+  // Every Director this envelope NAMES - by serving rows for it or by carrying a reachability entry -
+  // has its clock refreshed. This is what makes a Gateway restart free: the restarted Gateway names
+  // nobody for a moment, and nobody's clock moves, so nothing is dropped.
+  for (const id of new Set<string>([...liveByDir.keys(), ...envelope.directors.map((d) => d.directorId)])) {
+    if (id) nextCache.lastNamedAt.set(id, nowMs);
+  }
   const sessions: SessionDto[] = [];
   const marks = new Map<string, RosterSessionMark>();
 
@@ -182,19 +218,41 @@ export function mergeRosterRetention(prev: RetentionCache, envelope: SessionsEnv
     //    retention becomes an UNBOUNDED per-page client retention - which made "sessions leave after the
     //    eviction horizon" false on the one surface the owner actually looks at.
     //
-    // Note the version-skew case this does not special-case: a Gateway old enough to serve no reachability
-    // entries at all names nobody, so every retained Director is dropped and the phone falls back to
-    // showing only live rows. That is the pre-mission behaviour rather than a new failure, and it is left
-    // visible here rather than hidden behind a guess about which Gateway is on the other end.
-    if (!reach) {
+    // CORRECTED after inspection 2, finding 3. The rule above was wrong and the reasoning that produced it
+    // is worth keeping visible: it read the Gateway's own semantics rather than inventing a client clock,
+    // which sounded like the disciplined choice, and it made ABSENCE mean EVICTED. Absence means no such
+    // thing. The pushed store is in memory and the wire carries no eviction tombstone, so a RESTARTED
+    // Gateway produces exactly the same empty envelope before its Directors reconnect - and the phone would
+    // have deleted every card on the first successful poll after a restart, instantly and silently. That is
+    // worse than the unbounded retention it was fixing.
+    //
+    // So the bound is this device's own clock, which the phone can actually observe. A Director keeps its
+    // cards until it has gone UNNAMED for longer than the horizon; being named refreshes the stamp above.
+    // A Director we have never stamped starts its clock now rather than being dropped on sight - the safe
+    // direction, since the alternative deletes cards for a machine we simply have not seen yet.
+    const namedAt = nextCache.lastNamedAt.get(id);
+    if (namedAt === undefined) {
+      nextCache.lastNamedAt.set(id, nowMs);
+    } else if (nowMs - namedAt > RETENTION_HORIZON_MS) {
       nextCache.byDirector.delete(id);
+      nextCache.lastNamedAt.delete(id);
       continue;
     }
 
     const retained = prev.byDirector.get(id);
     if (retained && retained.length > 0) {
       for (const s of retained) {
-        sessions.push(s);
+        // RE-STAMPED with the machine's CURRENT reachability, not the value this row was cached with
+        // (inspection 2, finding 2). A row cached while the machine was ONLINE carries
+        // machineReachable=true, and this mission deliberately moved the attention treatment, the waiting
+        // clock, the voice indicator and the voice queue onto that stamp - so re-injecting the row
+        // untouched produced a card that LOOKED unreachable, dimmed and dated, while still nagging and
+        // still promising it could speak. The mark said one thing and the row said another.
+        //
+        // Wobbly stays reachable, because a wobbly machine's tunnel is up and a command sent to it lands;
+        // offline becomes false. That is the same two-flag rule the Gateway applies to rows it serves
+        // itself, applied here to the rows it did not.
+        sessions.push({ ...s, machineReachable: markState === REACHABILITY_WOBBLY });
         marks.set(s.sessionId ?? "", markFor(markState, machineLabel(s, reach), reach));
       }
     }

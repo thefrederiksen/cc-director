@@ -883,28 +883,21 @@ public sealed class GatewayHost : IAsyncDisposable
         // so the release only ever touches the departed Director's own tenant partition.
         PushedSessions = new Streaming.PushedSessionStore();
         //
-        // Inspection 1 finding 1b: closing the sweep's judge-then-remove window is not enough on its own. A
-        // Director can reconnect between the removal DECISION and this subscriber running, and the cascade
-        // would then destroy a machine that is already back. So every DESTRUCTIVE subscriber re-checks, at the
-        // moment it acts, whether that Director currently holds a live stream, and abandons its own part if it
-        // does. It fails in the safe direction: a genuinely dead machine may leak a little state, a live one is
-        // never destroyed.
+        // THE SESSION-NUMBER RELEASE ON EVICTION IS DELETED, and this comment is the record of why, because a
+        // deletion with no explanation is the kind of thing a later tidy-up quietly restores.
         //
-        // Registered AFTER PushedSessions is constructed, not before. The first version of this guard was
-        // written above that line and the compiler refused it - the closure dereferences a field that is not
-        // yet definitely assigned. It would have run correctly in production, because the closure only fires
-        // long after the constructor, but "correct only because of when it happens to run" is exactly the
-        // reasoning that stops being true when someone raises this event earlier. The order the three
-        // destructive subscribers register in is preserved: numbers, then forget, then snoozes.
-        Registry.OnDirectorRemoved += removal =>
-        {
-            if (PushedSessions.IsStreamConnected(removal.Tenant, removal.DirectorId))
-            {
-                FileLog.Write($"[GatewayHost] eviction cascade SKIPPED session-number release for {removal.DirectorId}: it holds a live stream again");
-                return;
-            }
-            SessionNumbers.ReleaseForDirector(removal.Tenant, removal.DirectorId);
-        };
+        // Issue #1292 released a removed Director's session numbers here so a Director that died without
+        // releasing them did not leak the pool. Inspection 2 (finding 1) showed the guard protecting it could
+        // not work: a connection check followed by a destructive action is two operations, so a Director
+        // reconnecting between them had its numbers freed while it was live - and a freed number can be handed
+        // to a NEW session while the old one still holds it. Rather than build a cleverer guard around a
+        // cleanup, the cleanup goes. Eviction drops a long-dead machine from the READ MODEL and does nothing
+        // else; see PushedSessionStore.ForgetIfDisconnected.
+        //
+        // The cost, stated plainly: a machine that never returns keeps its numbers marked in use. Adopt is
+        // additive, so the pool shrinks by the count of permanently retired machines - single digits on a
+        // personal fleet. Reclaiming them is a separate piece of work needing its own proof, not a rider on
+        // an eviction path where getting it wrong reallocates a live session's number.
         // Repositories mission (#510 phase C): the sibling store for pushed repository/worktree snapshots.
         PushedRepositories = new Streaming.PushedRepositoryStore();
         // Repositories mission (#510 phase D): the daily repository history behind the weekly report.
@@ -957,21 +950,17 @@ public sealed class GatewayHost : IAsyncDisposable
         // staleness authority in the roster path and the one that declared a machine Offline and dropped its
         // sessions; the roster read now serves last-known state unconditionally and reports its age instead.
         //
-        // Finding 1b guard, as above. This one reads the store it is about to write, so state the ordering
-        // that makes the guard sound across all three subscribers: Forget REMOVES the entry IsStreamConnected
-        // reads, but it only ever does so while the Director is disconnected, and RegisterConnection re-adds
-        // the entry with GetOrAdd on reconnect. So a later subscriber either sees the surviving entry (nobody
-        // forgot it, because the machine was live) or sees the entry a reconnect re-created. There is no
-        // ordering in which Forget makes a LIVE Director look dead to the subscribers that follow it.
-        Registry.OnDirectorRemoved += removal =>
-        {
-            if (PushedSessions.IsStreamConnected(removal.Tenant, removal.DirectorId))
-            {
-                FileLog.Write($"[GatewayHost] eviction cascade SKIPPED pushed-session forget for {removal.DirectorId}: it holds a live stream again");
-                return;
-            }
-            PushedSessions.Forget(removal.Tenant, removal.DirectorId);
-        };
+        // THE ENTIRETY of what eviction destroys, and it is one atomic operation rather than a cascade
+        // (inspection 2, finding 1). ForgetIfDisconnected checks liveness and removes the entry inside the
+        // store's own membership gate, which RegisterConnection also takes - so a reconnect either completes
+        // before this call, and the entry survives because a connection is active, or after it, and re-creates
+        // the entry. There is no window between a check and an act for it to land in, because there is no
+        // longer a check and an act: there is one operation.
+        //
+        // Without this the roster would keep every machine that ever connected, which is the unbounded leak
+        // the horizon exists to stop. With it, and with the other two steps deleted, the worst an eviction can
+        // do to a machine that is quietly back is nothing at all.
+        Registry.OnDirectorRemoved += removal => PushedSessions.ForgetIfDisconnected(removal.Tenant, removal.DirectorId);
         LauncherConnections = new Streaming.LauncherConnectionRegistry();
         // Gateway Cleanup: the tunnel is mandatory; the streamMode parameter is ignored and retained only for existing test call sites (removed with the test rewrite).
         _streamStaleAfter = TimeSpan.FromSeconds(gatewayConfig.StreamStaleAfterSeconds);
@@ -1155,21 +1144,21 @@ public sealed class GatewayHost : IAsyncDisposable
         // session-serving increment makes per-tenant. The other OnDirectorRemoved subscribers (session-number
         // release, roster-cache forget) are in-memory and stay wired. Skipping it only leaves a removed
         // Director's snoozes as durable tombstones, bounded by the live-session prune paths.
-        // Finding 1b guard, as on the other two destructive subscribers. This is the one whose loss does not
-        // recover - released session numbers can be reallocated and a forgotten pushed entry is repopulated by
-        // the next Hello, but deleted snoozes are simply gone - so it is the one that most needs the machine to
-        // be genuinely absent at the moment of deletion, not merely to have been absent when the sweep decided.
-        Registry.OnDirectorRemoved += removal =>
-        {
-            if (GatewayHostedMode.IsHosted)
-                return;
-            if (PushedSessions.IsStreamConnected(removal.Tenant, removal.DirectorId))
-            {
-                FileLog.Write($"[GatewayHost] eviction cascade SKIPPED snooze clear for {removal.DirectorId}: it holds a live stream again");
-                return;
-            }
-            _snoozeRegistry.ClearForDirector(removal.DirectorId);
-        };
+        // THE SNOOZE CLEAR ON EVICTION IS DELETED, and of the three deletions this is the one that mattered
+        // most (inspection 2, finding 1).
+        //
+        // It was the only IRRECOVERABLE loss in the eviction cascade. A released session number can be
+        // re-adopted and a forgotten pushed entry is repopulated by the next Hello, but a deleted snooze is
+        // simply gone - the owner set a machine aside until a particular time, and nothing anywhere can
+        // reconstruct that intention. Guarding it with a connection check could not work, because a check and
+        // a delete are two operations and a Director reconnecting between them lost its snoozes anyway.
+        //
+        // So the deletion is not performed at all. A retired Director's snooze rows stay as durable
+        // tombstones, which is harmless: they name a Director that no longer reports sessions, and
+        // PruneNotLive already clears them whenever a Director answers. Bounded, silent, and recoverable -
+        // which is what a cleanup should be, and what this one had stopped being.
+        //
+        // (It was already skipped entirely on hosted, for tenancy reasons. Now it is skipped everywhere.)
         // THE PUSH SEAM where this Gateway drives the hold machine off the facts Directors report. The
         // DirectorHub (constructed per-invocation by SignalR) folds every pushed session through this one
         // instance, exactly as it does the input-stats aggregator.

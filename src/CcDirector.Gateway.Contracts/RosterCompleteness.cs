@@ -70,6 +70,52 @@ public static class RosterCompleteness
         return (false, $"{count} - {string.Join("; ", named)}");
     }
 
+    /// <summary>
+    /// The caution to print when a lookup came back with NOTHING and a connected-but-quiet machine could be
+    /// the reason. Null when there is no such machine, which is almost always.
+    ///
+    /// WHY THIS IS SEPARATE FROM <see cref="Fold"/>, and why it is scoped to a negative answer. The two
+    /// inspections of this branch reached opposite conclusions and BOTH were right. The first said a blanket
+    /// caution on the most-run command in the tool teaches the reader to skip it, and then it is not read on
+    /// the day it matters. The second said calling a connected-but-stale roster COMPLETE is simply false: a
+    /// wobbly Director is a tunnel that is up with no recent push, so its rows may omit a session started
+    /// since, exactly the authority problem the offline wording now describes.
+    ///
+    /// Both hold, so neither extreme is taken. The caution is raised only where the staleness can actually
+    /// change the answer: when the caller asked for something and got NOTHING. A lookup that found what it
+    /// wanted needs no caveat - the stale set did not hide it, because it produced it. A lookup that came
+    /// back empty while a machine's rows are known to be stale needs one, because that is the only case
+    /// where "not found" and "not visible from here" differ. Rare enough to still be read.
+    ///
+    /// <see cref="Fold"/> keeps its own, separate caution for OFFLINE Directors, which is about the
+    /// authority of rows that ARE shown and therefore applies to a positive answer too. Different claims,
+    /// different triggers.
+    /// </summary>
+    public static string? StaleAnswerCaution(IReadOnlyList<DirectorReachabilityDto>? reachability)
+    {
+        if (reachability is null || reachability.Count == 0)
+            return null;
+
+        var stale = reachability
+            .Where(r => string.Equals(r.State, DirectorReachabilityDto.StateWobbly, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (stale.Count == 0)
+            return null;
+
+        var named = stale.Select(r =>
+        {
+            var who = !string.IsNullOrWhiteSpace(r.MachineName) ? r.MachineName : r.DirectorId;
+            if (string.IsNullOrWhiteSpace(who))
+                who = "an unidentified Director";
+            return r.LastSeenAgeSeconds is double secs and > 0 ? $"{who}, last reported {DescribeAge(secs)} ago" : who;
+        });
+
+        var count = stale.Count == 1
+            ? "1 machine is connected but has not reported recently"
+            : $"{stale.Count} machines are connected but have not reported recently";
+        return $"{count}, so something that started there may not be in this list yet - {string.Join("; ", named)}";
+    }
+
     /// <summary>A coarse, human age for a last-seen gap. Deliberately vague - the precision is not the point.</summary>
     public static string DescribeAge(double seconds)
     {

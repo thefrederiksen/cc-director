@@ -166,6 +166,30 @@ def get_fleet() -> Tuple[List[Dict[str, Any]], Optional[bool], Optional[str]]:
     return sessions, (complete if isinstance(complete, bool) else None), reason
 
 
+def get_fleet_with_stale_caution():
+    """The roster, its completeness verdict, and the NEGATIVE-ANSWER caution (all folded by the Director).
+
+    The third value is printed ONLY when the caller's own lookup came back empty. A machine that is
+    connected but has not reported recently can be hiding what was asked for, and that is the single case
+    where its staleness changes the answer - a lookup that FOUND what it wanted was plainly not hidden
+    from. Printing it unconditionally is what teaches people to stop reading cautions, which is why it is
+    a separate value and not folded into the completeness reason.
+    """
+    body = get_json("fleet/sessions?envelope=true") or []
+    if isinstance(body, list):
+        return body, None, None, None
+    sessions = body.get("sessions") or []
+    complete = body.get("rosterComplete")
+    reason = body.get("rosterIncompleteReason")
+    stale = body.get("rosterStaleAnswerCaution")
+    return (
+        sessions,
+        (complete if isinstance(complete, bool) else None),
+        reason,
+        stale if isinstance(stale, str) and stale.strip() else None,
+    )
+
+
 def roster_caveat(complete: Optional[bool], reason: Optional[str]) -> str:
     """The sentence to add when the roster may not be trustworthy end to end. Empty when it is (#1051).
 

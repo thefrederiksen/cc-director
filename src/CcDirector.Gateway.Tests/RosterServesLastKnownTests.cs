@@ -385,7 +385,7 @@ public sealed class RosterServesLastKnownTests
             registry = evictionHorizon is TimeSpan horizon
                 ? new DirectorRegistry(instancesDirectory) { EvictionHorizon = horizon }
                 : new DirectorRegistry(instancesDirectory);
-            registry.OnDirectorRemoved += removal => store.Forget(removal.Tenant, removal.DirectorId);
+            registry.OnDirectorRemoved += removal => store.ForgetIfDisconnected(removal.Tenant, removal.DirectorId);
             registry.RegisterFromStream(DirectorId, Machine, "soren", "1.0", 4242, DateTime.UtcNow, TenantId.Local);
 
             GatewayEndpoints.Map(

@@ -7,7 +7,7 @@ import {
   type DirectorReachability,
   type SessionsEnvelope,
 } from "./fleetClient";
-import { emptyRetentionCache, mergeRosterRetention, type RetentionCache } from "./rosterRetention";
+import { emptyRetentionCache, mergeRosterRetention, RETENTION_HORIZON_MS, type RetentionCache } from "./rosterRetention";
 
 // Minimal SessionDto fixtures: the merge only routes sessions by id/director/machine, so the triage and
 // color fields the ordering helpers need are irrelevant here.
@@ -97,32 +97,67 @@ describe("roster keep-and-mark retention merge", () => {
     expect(mark?.lastSeenLabel).toBe("last seen 2m ago");
   });
 
-  // Inspection 1, finding 3. This test used to demand the opposite - that the card survive
-  // "indefinitely" - which encoded the defect rather than the intent: the Gateway's retention is BOUNDED by
-  // the eviction horizon, and a phone that re-injects its own cache forever made that bound false on the
-  // one surface the owner looks at. A retired machine never comes back to supply the authoritative empty
-  // set that would have cleared it.
-  it("drops sessions once the Gateway has forgotten the Director entirely (past the eviction horizon)", () => {
-    const first = mergeRosterRetention(emptyRetentionCache(), envelope([session("s1", "d1")], [director("d1", REACHABILITY_ONLINE)]));
-    // The Gateway has forgotten d1 completely: not in sessions[], not in directors[]. That is what an
-    // eviction looks like from here, and it is the signal to let go.
-    const second = mergeRosterRetention(first.cache, envelope([], []));
-    expect(second.roster.sessions).toEqual([]);
-    expect(second.roster.marks.size).toBe(0);
-    expect(second.cache.byDirector.has("d1")).toBe(false);
+  // Inspection 2, finding 3 - and this test has now been wrong TWICE, which is worth recording.
+  //
+  // First it demanded the card survive "indefinitely", which encoded the unbounded-retention defect.
+  // Then it demanded the card be dropped the moment the envelope stopped NAMING the Director, which
+  // read absence as proof of eviction - and a RESTARTED Gateway serves exactly that envelope before its
+  // Directors reconnect, so the phone would have emptied itself on the first poll after any restart.
+  // The wire carries no eviction tombstone, so absence proves nothing at all.
+  //
+  // What is true: the retention is bounded, and the bound is the PHONE'S OWN clock.
+  it("keeps the cards through a Gateway restart, when the envelope suddenly names nobody", () => {
+    const t0 = 1_000_000;
+    const first = mergeRosterRetention(emptyRetentionCache(), envelope([session("s1", "d1")], [director("d1", REACHABILITY_ONLINE)]), t0);
+    // The Gateway restarted: it answers successfully, but knows nothing yet.
+    const second = mergeRosterRetention(first.cache, envelope([], []), t0 + 5_000);
+    expect(second.roster.sessions.map((s) => s.sessionId)).toEqual(["s1"]);
+    expect(second.cache.byDirector.get("d1")?.map((s) => s.sessionId)).toEqual(["s1"]);
   });
 
-  // The other side of the same boundary, and the reason the rule is keyed to the envelope naming the
-  // Director rather than to a clock on the client: while the Gateway still knows the machine it still says
-  // so, and the card must stay. Only silence about the Director itself means eviction.
+  it("drops the cards once the Director has gone unnamed for longer than the retention horizon", () => {
+    const t0 = 1_000_000;
+    const first = mergeRosterRetention(emptyRetentionCache(), envelope([session("s1", "d1")], [director("d1", REACHABILITY_ONLINE)]), t0);
+    const later = mergeRosterRetention(first.cache, envelope([], []), t0 + RETENTION_HORIZON_MS + 1);
+    expect(later.roster.sessions).toEqual([]);
+    expect(later.cache.byDirector.has("d1")).toBe(false);
+  });
+
+  // The other side of the boundary: while the Gateway still names the Director, the cards stay however
+  // long it serves no rows. Being named refreshes the clock, so this never expires.
   it("keeps retaining while the Gateway still names the Director, however long it serves no rows", () => {
-    let cache = mergeRosterRetention(emptyRetentionCache(), envelope([session("s1", "d1")], [director("d1", REACHABILITY_ONLINE)])).cache;
+    let cache = mergeRosterRetention(emptyRetentionCache(), envelope([session("s1", "d1")], [director("d1", REACHABILITY_ONLINE)]), 0).cache;
     for (let poll = 0; poll < 50; poll++) {
-      const next = mergeRosterRetention(cache, envelope([], [director("d1", REACHABILITY_OFFLINE, { lastSeenAgeSeconds: 3600 * (poll + 1) })]));
+      const at = poll * RETENTION_HORIZON_MS;   // far beyond the horizon, but it is NAMED every time
+      const next = mergeRosterRetention(cache, envelope([], [director("d1", REACHABILITY_OFFLINE, { lastSeenAgeSeconds: 3600 })]), at);
       expect(next.roster.sessions.map((s) => s.sessionId)).toEqual(["s1"]);
       cache = next.cache;
     }
-    expect(cache.byDirector.get("d1")?.map((s) => s.sessionId)).toEqual(["s1"]);
+  });
+
+  // Inspection 2, finding 2. A row cached while the machine was ONLINE carries machineReachable=true.
+  // Re-injecting it untouched produced a card that LOOKED unreachable - dimmed, dated - while still
+  // nagging, still showing a waiting clock, and still promising it could speak, because the branch
+  // deliberately moved all of those onto the Gateway's stamp.
+  it("re-stamps a retained row as unreachable when its machine is offline", () => {
+    const online = session("s1", "d1");
+    (online as { machineReachable?: boolean }).machineReachable = true;
+    const first = mergeRosterRetention(emptyRetentionCache(), envelope([online], [director("d1", REACHABILITY_ONLINE)]), 0);
+    const offline = mergeRosterRetention(first.cache, envelope([], [director("d1", REACHABILITY_OFFLINE, { lastSeenAgeSeconds: 300 })]), 1000);
+    const row = offline.roster.sessions.find((s) => s.sessionId === "s1");
+    expect(row).toBeDefined();
+    expect((row as { machineReachable?: boolean }).machineReachable).toBe(false);
+  });
+
+  // ...and a WOBBLY machine keeps its true stamp, because its tunnel is up and a command sent to it
+  // lands. Without this the re-stamp would silence exactly the machine the mission set out to keep nagging.
+  it("leaves a retained row reachable when its machine is only wobbly", () => {
+    const online = session("s1", "d1");
+    (online as { machineReachable?: boolean }).machineReachable = true;
+    const first = mergeRosterRetention(emptyRetentionCache(), envelope([online], [director("d1", REACHABILITY_ONLINE)]), 0);
+    const wobbly = mergeRosterRetention(first.cache, envelope([], [director("d1", REACHABILITY_WOBBLY, { lastSeenAgeSeconds: 45 })]), 1000);
+    const row = wobbly.roster.sessions.find((s) => s.sessionId === "s1");
+    expect((row as { machineReachable?: boolean }).machineReachable).toBe(true);
   });
 
   it("removes a session only on an authoritative online answer, never while unreachable", () => {

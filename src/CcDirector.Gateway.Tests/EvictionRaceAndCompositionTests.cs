@@ -155,70 +155,86 @@ public sealed class EvictionRaceAndCompositionTests : IDisposable
     // ---------------------------------------------------------------------------------------------------
 
     [Fact]
-    public async Task EvictionCascade_WhenTheMachineIsBack_FiresButSkipsTheDestructivePart()
+    public async Task EvictionOfALiveMachine_DoesNothingAtAll()
     {
         await using var gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "test-token-12345",
             authEnabled: true, instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
 
-        // The horizon is deliberately left at whatever the SHIPPED composition chose - it is init-only on the
-        // registry and cannot be reached around, which is the point. AgePastHorizon winds the entry back
-        // relative to that value, so this drives the real eviction whatever the configured horizon is.
         gateway.Registry.RegisterFromStream(DirectorId, Machine, "soren", "1.0", pid: 1234,
             startedAt: DateTime.UtcNow, tenant: TenantId.Local);
-
-        // The tunnel is UP and the machine has pushed - this is a live Director by the only measure the
-        // guard consults.
         gateway.PushedSessions.RegisterConnection(TenantId.Local, DirectorId, "conn-1");
         Assert.True(gateway.PushedSessions.ApplySnapshot(TenantId.Local, DirectorId, "conn-1", 1, new[] { Session("s-1") }));
-        Assert.True(gateway.PushedSessions.IsStreamConnected(TenantId.Local, DirectorId));
 
-        // A NON-destructive observer, so this test can tell "the guard worked" from "the cascade never ran".
-        // Asserting only that the sessions survived would also pass if the event never fired, if a subscriber
-        // were never wired, or if something threw upstream.
-        var cascadeFired = false;
-        gateway.Registry.OnDirectorRemoved += _ => cascadeFired = true;
+        var removalFired = false;
+        gateway.Registry.OnDirectorRemoved += _ => removalFired = true;
 
         AgePastHorizon(gateway.Registry);
         gateway.Registry.SweepStale();
 
-        Assert.True(cascadeFired);   // the cascade DID run - the guard is what stopped the damage
-        // ...and the destructive part abandoned itself: the machine keeps its pushed sessions.
+        Assert.True(removalFired);   // the registry entry did go - eviction is not silently disabled
+        // ...and the read model kept the machine, because it holds a live stream. ONE operation decided
+        // that, inside the store's membership gate, so there is no window between a check and an act.
         Assert.NotEmpty(gateway.PushedSessions.GetLastKnown(TenantId.Local, DirectorId).Sessions);
     }
 
     /// <summary>
-    /// The control that makes the test above mean something: with the tunnel DOWN, the same cascade on the
-    /// same path DOES destroy. Without this, a guard that always skipped - or a Forget that never worked -
-    /// would look identical.
+    /// The control. Without it a ForgetIfDisconnected that always declined would pass the test above, and
+    /// "never forget a machine" is the unbounded leak the horizon exists to prevent.
     /// </summary>
     [Fact]
-    public async Task EvictionCascade_WhenTheMachineIsGenuinelyGone_DestroysAsItAlwaysDid()
+    public async Task EvictionOfAGenuinelyGoneMachine_DropsItFromTheReadModel()
     {
         await using var gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "test-token-12345",
             authEnabled: true, instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
 
-        // The horizon is deliberately left at whatever the SHIPPED composition chose - it is init-only on the
-        // registry and cannot be reached around, which is the point. AgePastHorizon winds the entry back
-        // relative to that value, so this drives the real eviction whatever the configured horizon is.
         gateway.Registry.RegisterFromStream(DirectorId, Machine, "soren", "1.0", pid: 1234,
             startedAt: DateTime.UtcNow, tenant: TenantId.Local);
-
         gateway.PushedSessions.RegisterConnection(TenantId.Local, DirectorId, "conn-1");
         Assert.True(gateway.PushedSessions.ApplySnapshot(TenantId.Local, DirectorId, "conn-1", 1, new[] { Session("s-1") }));
-        // The tunnel closes and stays closed - the machine really is gone.
         Assert.True(gateway.PushedSessions.UnregisterConnection(TenantId.Local, DirectorId, "conn-1"));
-        Assert.False(gateway.PushedSessions.IsStreamConnected(TenantId.Local, DirectorId));
-
-        var cascadeFired = false;
-        gateway.Registry.OnDirectorRemoved += _ => cascadeFired = true;
 
         AgePastHorizon(gateway.Registry);
         gateway.Registry.SweepStale();
 
-        Assert.True(cascadeFired);
         Assert.Empty(gateway.PushedSessions.GetLastKnown(TenantId.Local, DirectorId).Sessions);
+    }
+
+    // ---------------------------------------------------------------------------------------------------
+    // Inspection 2, finding 1: the two destructive steps that were DELETED from eviction.
+    //
+    // These pin an ABSENCE, which is the kind of thing a later tidy-up silently restores - someone notices
+    // a retired machine's numbers are still held, "fixes" it here, and reinstates a race that can free a
+    // live session's number or delete an owner's snoozes. The deletion is the fix; these say so.
+    // ---------------------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task EvictionLeavesSnoozesAndNumbersAlone_OnTheRealHost()
+    {
+        await using var gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: "test-token-12345",
+            authEnabled: true, instancesDirectory: _instancesDir,
+            workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
+
+        gateway.Registry.RegisterFromStream(DirectorId, Machine, "soren", "1.0", pid: 1234,
+            startedAt: DateTime.UtcNow, tenant: TenantId.Local);
+        gateway.PushedSessions.RegisterConnection(TenantId.Local, DirectorId, "conn-1");
+        Assert.True(gateway.PushedSessions.ApplySnapshot(TenantId.Local, DirectorId, "conn-1", 1, new[] { Session("s-1") }));
+        Assert.True(gateway.PushedSessions.UnregisterConnection(TenantId.Local, DirectorId, "conn-1"));
+
+        // A number the Director owns, adopted the way the roster read adopts one.
+        gateway.SessionNumbers.Adopt(TenantId.Local, "s-1", DirectorId, 742);
+        Assert.Equal(742, gateway.SessionNumbers.NumberFor(TenantId.Local, "s-1"));
+
+        AgePastHorizon(gateway.Registry);
+        gateway.Registry.SweepStale();
+
+        // The machine left the read model...
+        Assert.Empty(gateway.PushedSessions.GetLastKnown(TenantId.Local, DirectorId).Sessions);
+        // ...and its number was NOT freed. Freeing it is what could hand a live session's number to a new
+        // one, and no cleanup is worth that. If anyone re-wires ReleaseForDirector onto OnDirectorRemoved,
+        // this returns null and the test fails - which is the whole point of pinning a deletion.
+        Assert.Equal(742, gateway.SessionNumbers.NumberFor(TenantId.Local, "s-1"));
     }
 
     // ---------------------------------------------------------------------------------------------------

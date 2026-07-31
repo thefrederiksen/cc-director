@@ -45,6 +45,25 @@ public sealed class PushedSessionStore
     private readonly Func<DateTime> _utcNow;
 
     /// <summary>
+    /// Serialises MEMBERSHIP changes - a Director entering the store (<see cref="RegisterConnection"/>) against
+    /// a Director being dropped from it (<see cref="ForgetIfDisconnected"/>). It is NOT taken by the read paths.
+    ///
+    /// Inspection 2, finding 1. The eviction cascade used to check whether a Director was connected and then,
+    /// as a SECOND operation, destroy its state. A check followed by an action is two operations however
+    /// carefully they are written, so a reconnect lands between them and the live machine is destroyed anyway.
+    /// No guard fixes that; only making it ONE operation does, which is what this gate is for.
+    ///
+    /// It has to cover <see cref="RegisterConnection"/>'s <c>GetOrAdd</c> and not merely the removal, and that
+    /// is the subtle half: without it a reconnect can be handed - by GetOrAdd - the very entry that is about to
+    /// be removed, and would then write its sessions into a detached object that no read can ever reach. That
+    /// failure is worse than the one being fixed, because the Director looks connected, reports success, and is
+    /// invisible to every reader.
+    ///
+    /// Lock ORDER is this gate first, then <c>entry.Gate</c>, in both paths. Never the other way round.
+    /// </summary>
+    private readonly object _membershipGate = new();
+
+    /// <summary>
     /// Create the store. <paramref name="utcNow"/> is a test seam for the staleness and idle-clock logic;
     /// production passes null and the store reads <see cref="DateTime.UtcNow"/>.
     /// </summary>
@@ -97,6 +116,10 @@ public sealed class PushedSessionStore
         if (string.IsNullOrWhiteSpace(connectionId))
             throw new ArgumentException("connectionId is required", nameof(connectionId));
 
+        // MEMBERSHIP gate first, then the entry gate - see _membershipGate for why GetOrAdd itself must be
+        // inside it and not merely the writes below. Never take these in the other order.
+        lock (_membershipGate)
+        {
         var entry = DirectorsFor(tenant).GetOrAdd(directorId, _ => new DirectorEntry());
         lock (entry.Gate)
         {
@@ -135,6 +158,54 @@ public sealed class PushedSessionStore
             entry.ReceivedAtUtc = DateTime.MinValue;
         }
         FileLog.Write($"[PushedSessionStore] RegisterConnection: tenant={tenant.ToLogString()}, director={directorId}, conn={Short(connectionId)} is now the active connection");
+        }
+    }
+
+    /// <summary>
+    /// Drop <paramref name="directorId"/> from the read model IF it currently holds no stream connection.
+    /// Returns true when the entry was removed, false when the Director is live (or was already gone).
+    ///
+    /// THIS IS THE WHOLE OF EVICTION'S DESTRUCTIVE WORK, and the narrowness is the point (inspection 2,
+    /// finding 1). The eviction cascade used to also release the Director's session numbers and delete its
+    /// snoozes, each guarded by a separate connection check - and a check followed by an action is two
+    /// operations, so a reconnect between them destroyed a live machine anyway. Rather than build a cleverer
+    /// guard, those two steps were DELETED: eviction's job is to drop a long-dead machine from the READ
+    /// MODEL, and nothing else.
+    ///
+    /// Here the check and the removal are ONE operation under <see cref="_membershipGate"/>, which
+    /// <see cref="RegisterConnection"/> also takes, so a reconnect either happens entirely before this call
+    /// (and the entry survives, because a connection is active) or entirely after it (and re-creates the
+    /// entry through GetOrAdd). There is no in-between for it to land in.
+    ///
+    /// What the deletions cost, recorded here because a silent cost is worse than a named one: a machine
+    /// that never returns keeps its session numbers marked in use, and keeps its snooze rows as tombstones.
+    /// The snooze prune already clears those when a Director answers. Both are bounded, both are recoverable,
+    /// and neither is worth a race that can destroy a live machine's state.
+    /// </summary>
+    public bool ForgetIfDisconnected(TenantId tenant, string directorId)
+    {
+        if (string.IsNullOrEmpty(directorId))
+            return false;
+
+        lock (_membershipGate)
+        {
+            var directors = DirectorsFor(tenant);
+            if (!directors.TryGetValue(directorId, out var entry))
+                return false;
+
+            lock (entry.Gate)
+            {
+                if (entry.ActiveConnectionId is not null)
+                {
+                    FileLog.Write($"[PushedSessionStore] ForgetIfDisconnected DECLINED: tenant={tenant.ToLogString()}, director={directorId} holds a live stream - the read model keeps it");
+                    return false;
+                }
+            }
+
+            directors.TryRemove(directorId, out _);
+            FileLog.Write($"[PushedSessionStore] ForgetIfDisconnected: tenant={tenant.ToLogString()}, director={directorId} passed the eviction horizon with no connection; its sessions leave the roster");
+            return true;
+        }
     }
 
     /// <summary>
@@ -361,6 +432,13 @@ public sealed class PushedSessionStore
     ///
     /// Scoped to one (tenant, director) pair, so forgetting a machine in one account cannot reach another's.
     /// </summary>
+    /// <remarks>
+    /// UNCONDITIONAL. It does not look at whether the Director is connected, and it is deliberately NOT the
+    /// eviction path - inspection 2 found that wiring a liveness check in front of a call like this cannot be
+    /// made safe, because the check and the call are two operations. Eviction uses
+    /// <see cref="ForgetIfDisconnected"/>, which is one. This remains only as a primitive for callers that
+    /// have already established the Director is gone. Do not wire it to <c>OnDirectorRemoved</c>.
+    /// </remarks>
     public void Forget(TenantId tenant, string directorId)
     {
         if (string.IsNullOrEmpty(directorId))
@@ -516,9 +594,22 @@ public sealed class PushedSessionStore
         return result;
     }
 
-    /// <summary>True when this Director currently has an active stream connection (used for diagnostics).</summary>
-    public bool IsStreamConnected(TenantId tenant, string directorId) =>
-        DirectorsFor(tenant).TryGetValue(directorId, out var entry) && entry.ActiveConnectionId is not null;
+    /// <summary>
+    /// True when this Director currently has an active stream connection.
+    ///
+    /// Reads under the entry gate. It used to read <c>ActiveConnectionId</c> without it, which inspection 2
+    /// pointed out means even the OBSERVATION was unsynchronised with the register/unregister writes. That is
+    /// no longer load-bearing for eviction - <see cref="ForgetIfDisconnected"/> makes its own decision inside
+    /// the membership gate rather than calling this - but a liveness answer that can be read mid-write is a
+    /// trap for the next caller, so it is fixed rather than left because the current callers happen to cope.
+    /// </summary>
+    public bool IsStreamConnected(TenantId tenant, string directorId)
+    {
+        if (!DirectorsFor(tenant).TryGetValue(directorId, out var entry))
+            return false;
+        lock (entry.Gate)
+            return entry.ActiveConnectionId is not null;
+    }
 
     /// <summary>
     /// The active stream connection id for a Director, or null when none. The Gateway uses it to address a

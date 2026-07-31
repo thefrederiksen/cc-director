@@ -539,6 +539,11 @@ internal static class ControlEndpoints
                         directors = reachability,
                         rosterComplete = complete,
                         rosterIncompleteReason = incompleteReason,
+                        // The caution a tool prints ONLY when its own answer came back empty - a machine that
+                        // is connected but has not reported recently could be hiding what was asked for. It is
+                        // folded here like every other verdict, and it is a separate field rather than part of
+                        // rosterIncompleteReason precisely because it must not be printed on a positive answer.
+                        rosterStaleAnswerCaution = RosterCompleteness.StaleAnswerCaution(reachability),
                     });
                 }
                 catch (Exception ex)
