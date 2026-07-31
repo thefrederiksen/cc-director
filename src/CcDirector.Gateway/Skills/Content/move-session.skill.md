@@ -58,8 +58,15 @@ address-free, reaching the fleet through your own Director. Drop to Gateway REST
 `%LOCALAPPDATA%\cc-director\config\director\gateway-token.txt`) only for the composer nudge and the
 fallback auto-handover.
 
-The Director loopback still serves `/healthz` - which is how you find a target Director's port and
-confirm what it is running.
+The Director loopback still serves `/healthz`, and it is the only route that answers without a
+credential - which is how you find a target Director's port. Its unauthenticated answer is liveness
+ONLY (`{"status":"ok"}`); to see what that Director is RUNNING, present the machine secret from
+`%LOCALAPPDATA%\cc-director\config\director\gateway-token.txt` (or `gateway.token` from
+`config.json` when the machine is attached to a Gateway):
+
+```bash
+curl -s -H "Authorization: Bearer <machine-secret>" http://127.0.0.1:<targetPort>/healthz
+```
 
 ---
 
@@ -148,7 +155,8 @@ nothing better is available, not by preference.
 ## Step 3 - Start the target on the SAME agent and the SAME model
 
 Sessions are created on whichever Director owns you. To land on a different one, override the API
-base with that Director's Control API port (read it from its `/healthz`):
+base with that Director's Control API port (found by probing `/healthz` on each candidate port -
+that route answers without a credential, which is exactly what makes it usable for discovery):
 
 ```bash
 CC_DIRECTOR_API=http://127.0.0.1:<targetPort> cc-devthrottle session spawn "<repoPath>" \

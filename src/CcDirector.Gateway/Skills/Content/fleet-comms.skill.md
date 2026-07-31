@@ -49,14 +49,27 @@ routes and answers 404 to a perfectly correct call.
 that LACKS the routes and a fresh build from main that HAS them both report `"version":"1.1.0"`.
 Verified 2026-07-14 by running both side by side. The version cannot tell them apart.
 
-Probe the route itself, and compare it against a route you know is fake:
+Probe the route itself, and compare it against a route you know is fake.
+
+The Director's floor requires a credential on every route but `/healthz`, so a probe sent without one
+is answered 401 and says nothing about whether the route exists. Present the credential your session
+was given at launch:
 
 ```
 curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:7879/fleet/rename \
+  -H "Authorization: Bearer $CC_DIRECTOR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"toSessionId":"00000000-0000-0000-0000-000000000000","name":"probe"}'
-curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:7879/fleet/definitely-not-a-route -d '{}'
+curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:7879/fleet/definitely-not-a-route \
+  -H "Authorization: Bearer $CC_DIRECTOR_TOKEN" -d '{}'
 ```
+
+**Read 401 and 403 as answers about your CREDENTIAL, never about the route.** A session credential is
+deliberately refused on `/fleet/rename` and the rest of the dangerous set, so BOTH probes answering
+403 means your credential cannot reach either - which is a different fact from the route being
+missing, and reading it as "the route is gone" would send you to update a Director that is fine. Run
+the comparison through `cc-devthrottle`, which carries full authority, when you need to tell those
+apart.
 
 - Both 404 -> the route genuinely is not there. The Director is older than the restoration;
   update it. There is no workaround.
