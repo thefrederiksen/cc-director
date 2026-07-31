@@ -100,6 +100,40 @@ public class UpdateCheckOutcomeTests
         Assert.Contains("9.9.9", view.Detail);
     }
 
+    [Fact]
+    public async Task AnAlreadyStagedRelease_IsNotDownloadedAgain()
+    {
+        if (!Supported) return;
+
+        // The defect: a Director that runs for days re-checks every hour, and the check only asked
+        // "is the release newer than the running build?" - never "do I already have it?". So the same
+        // release was downloaded again every hour until a restart applied it. Here the staged build is
+        // already on disk and the handler REFUSES any download, so the check can only pass by
+        // recognising the work is done.
+        var stagedFile = Path.Combine(Path.GetTempPath(), $"cc-update-staged-{Guid.NewGuid():N}.exe");
+        File.WriteAllText(stagedFile, "the already-downloaded build");
+        try
+        {
+            var seed = new UpdaterState
+            {
+                StagedVersion = "9.9.9",
+                StagedExecutable = stagedFile,
+            };
+
+            var (outcome, state) = await CheckAgainstReleaseAsync(tag: "v9.9.9", withAssets: true,
+                seed: seed, handler: new DownloadRefusingHandler(tag: "v9.9.9"));
+
+            Assert.Equal(UpdatePhase.Staged, outcome);
+            Assert.Equal("Staged", state.LastCheckOutcome);
+            Assert.Equal("9.9.9", state.StagedVersion);
+            Assert.Equal(stagedFile, state.StagedExecutable);
+        }
+        finally
+        {
+            File.Delete(stagedFile);
+        }
+    }
+
     // ---- Harness ----------------------------------------------------------
 
     /// <summary>
@@ -158,6 +192,31 @@ public class UpdateCheckOutcomeTests
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
             => throw new HttpRequestException("the network is unreachable");
+    }
+
+    /// <summary>
+    /// Answers the releases/latest call with a complete release, and fails the test outright if
+    /// anything tries to download one of its files. This is how the already-staged test can prove a
+    /// negative: the only way through it is to not download.
+    /// </summary>
+    private sealed class DownloadRefusingHandler(string tag) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            if (request.RequestUri is { } uri && uri.Host == "example.invalid")
+                throw new InvalidOperationException($"the check tried to download {uri} for a release that is already staged");
+
+            var body = $$"""
+                {"tag_name":"{{tag}}","assets":[
+                  {"name":"cc-director-win-x64.exe","browser_download_url":"https://example.invalid/a"},
+                  {"name":"release-manifest.json","browser_download_url":"https://example.invalid/m"}
+                ]}
+                """;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json"),
+            });
+        }
     }
 
     [Fact]

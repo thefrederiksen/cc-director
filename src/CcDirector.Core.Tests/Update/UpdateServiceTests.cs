@@ -101,6 +101,51 @@ public class UpdateServiceTests
         Assert.True(UpdateService.ShouldStage(new Version(0, 3, 1), new Version(0, 3, 3), state));
     }
 
+    // ---- AlreadyStaged ----------------------------------------------------
+
+    [Fact]
+    public void AlreadyStaged_SameVersionAndFilePresent_True()
+    {
+        var (path, _) = WriteTempWithHash("staged build");
+        try
+        {
+            var state = new UpdaterState { StagedVersion = "0.3.3", StagedExecutable = path };
+            Assert.True(UpdateService.AlreadyStaged("0.3.3", state));
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void AlreadyStaged_DifferentVersionStaged_False()
+    {
+        // A newer release than the one staged must still be downloaded.
+        var (path, _) = WriteTempWithHash("staged build");
+        try
+        {
+            var state = new UpdaterState { StagedVersion = "0.3.3", StagedExecutable = path };
+            Assert.False(UpdateService.AlreadyStaged("0.3.4", state));
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void AlreadyStaged_StagedFileDeleted_False()
+    {
+        // The record says staged but the build is gone from disk: download again.
+        var state = new UpdaterState
+        {
+            StagedVersion = "0.3.3",
+            StagedExecutable = Path.Combine(Path.GetTempPath(), $"cc-update-gone-{Guid.NewGuid():N}.exe"),
+        };
+        Assert.False(UpdateService.AlreadyStaged("0.3.3", state));
+    }
+
+    [Fact]
+    public void AlreadyStaged_NothingStaged_False()
+    {
+        Assert.False(UpdateService.AlreadyStaged("0.3.3", new UpdaterState()));
+    }
+
     // ---- Sha256Matches ----------------------------------------------------
 
     [Fact]

@@ -186,6 +186,19 @@ public sealed class UpdateService
                 return Conclude(state, UpdatePhase.UpToDate, versionText);
             }
 
+            if (AlreadyStaged(versionText, state))
+            {
+                // This exact release was already downloaded, verified, and staged by an earlier check,
+                // and its build is still on disk waiting for a restart. A Director that runs for days
+                // re-checked every hour, and because this test was missing it re-downloaded the same
+                // hundred-megabyte build every one of those hours and announced "downloaded" each time.
+                // There is nothing to fetch until either a newer release appears or a restart applies
+                // this one; if the staged file has meanwhile been deleted, the test below fails and the
+                // download runs again, which is the repair.
+                FileLog.Write($"[UpdateService] Release {tag} is already staged at {state.StagedExecutable}; not downloading it again.");
+                return Conclude(state, UpdatePhase.Staged, versionText);
+            }
+
             var assetUrl = FindAssetUrl(release.RootElement, assetName);
             var manifestUrl = FindAssetUrl(release.RootElement, ManifestAssetName);
 
@@ -377,6 +390,18 @@ public sealed class UpdateService
             return false;
         return true;
     }
+
+    /// <summary>
+    /// True when <paramref name="version"/> was already downloaded, verified, and staged by an earlier
+    /// check and its staged executable is still on disk. <see cref="UpdaterState.StagedVersion"/> is
+    /// only ever written after the SHA-256 verification passes, so a matching record plus a present
+    /// file means the work is done; checking the version alone would trust a record whose file has
+    /// since been deleted, and checking the file alone would trust a leftover from a different version.
+    /// </summary>
+    public static bool AlreadyStaged(string version, UpdaterState state)
+        => state.StagedVersion == version
+           && !string.IsNullOrEmpty(state.StagedExecutable)
+           && File.Exists(state.StagedExecutable);
 
     /// <summary>Compute a file's SHA-256 and compare (case-insensitive hex) to the expected value.</summary>
     public static bool Sha256Matches(string filePath, string expectedHex)
