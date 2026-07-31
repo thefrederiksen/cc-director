@@ -226,11 +226,22 @@ public sealed class EvictionRaceAndCompositionTests : IDisposable
         gateway.SessionNumbers.Adopt(TenantId.Local, "s-1", DirectorId, 742);
         Assert.Equal(742, gateway.SessionNumbers.NumberFor(TenantId.Local, "s-1"));
 
+        // And a snooze the OWNER set - the thing nothing can reconstruct once it is gone. This assertion
+        // was missing when the test was first written: its NAME said snoozes and its body only checked
+        // numbers, which is an overclaim of exactly the kind this mission keeps finding in other people's
+        // work. Without it, re-adding the snooze clearing would have left the test green.
+        gateway.SnoozeRegistry.Snooze("s-1", DateTime.UtcNow.AddHours(2), DirectorId);
+        Assert.NotNull(gateway.SnoozeRegistry.SnoozeUntilFor("s-1"));
+
         AgePastHorizon(gateway.Registry);
         gateway.Registry.SweepStale();
 
         // The machine left the read model...
         Assert.Empty(gateway.PushedSessions.GetLastKnown(TenantId.Local, DirectorId).Sessions);
+        // ...and the owner's snooze survived it. This is the irrecoverable one: a released number can be
+        // re-adopted and a forgotten entry is repopulated by the next Hello, but nothing anywhere can
+        // reconstruct an owner's intention to set a machine aside until a particular time.
+        Assert.NotNull(gateway.SnoozeRegistry.SnoozeUntilFor("s-1"));
         // ...and its number was NOT freed. Freeing it is what could hand a live session's number to a new
         // one, and no cleanup is worth that. If anyone re-wires ReleaseForDirector onto OnDirectorRemoved,
         // this returns null and the test fails - which is the whole point of pinning a deletion.
