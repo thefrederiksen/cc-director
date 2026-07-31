@@ -87,8 +87,8 @@ if (git -C $repoRoot ls-remote --tags origin $tagName) { Fail "Tag $tagName alre
 #     release page and fails without it. Catching that here costs nothing; a
 #     pushed tag cannot be un-pushed. The file may be uncommitted - this script
 #     commits it along with the version bump. ---
-$notesRel  = "docs/public/release-notes/$tagName.md"
-$notesPath = Join-Path $repoRoot ($notesRel -replace '/', '\')
+$notesRel  = "docs/public/release-notes/$tagName.md"   # forward slashes: matched against git status output
+$notesPath = Join-Path $repoRoot "docs\public\release-notes\$tagName.md"
 if (-not (Test-Path $notesPath)) {
     Fail "No written release notes for $tagName." "Expected: $notesPath`n`nWrite them first. The workflow publishes that file as the release page and refuses`nto invent a substitute - a list of internal pull request titles looks like release`nnotes and therefore ships unread."
 }
