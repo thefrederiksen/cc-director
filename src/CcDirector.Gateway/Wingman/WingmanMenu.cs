@@ -140,20 +140,42 @@ public static class WingmanMenuLogic
 
     /// <summary>
     /// True when the LIVE grid carries a menu OWNED BY ITS DRAWN SELECTION MARKER (issue #1777, round-4): a row
-    /// with the drawn <c>❯</c>/<c>&gt;</c> marker on a numbered/lettered option, plus two or more option lines.
+    /// with the drawn <c>❯</c>/<c>&gt;</c> marker on a numbered/lettered option, plus two or more option lines
+    /// forming ONE CONTIGUOUS BLOCK with the marker inside it. The block rule exists because an agent's prose
+    /// reply routinely ends in a numbered summary of finished work; counting "1." and "3." with paragraphs of
+    /// prose between them as menu options declared a finished session to be "waiting on a menu" (the session-115
+    /// misfire, where a stale composer glyph supplied the marker). A real Ink picker draws its options as
+    /// consecutive rows; a single non-option row inside the block is tolerated for a wrapped option label.
     /// This is cursor-INDEPENDENT on purpose - a full-screen Ink menu hides the hardware cursor - so
     /// menu-answering works with a hidden cursor. A menu with no recognizable textual marker (reverse-video
     /// only) is NOT recognized here and the caller fails closed (styled-picker parsing is deferred).
+    /// This shape check remains a TRIPWIRE, not a conviction: a compact one-line-per-item summary with a stray
+    /// marker still passes it, which is why every surface that BLOCKS on a menu confirms with the model first
+    /// (see WaitingScreenReader.ConfirmedMenuAsync).
     /// </summary>
     public static bool LiveScreenHasMenuSelection(IReadOnlyList<string>? rows)
     {
         if (rows is null || rows.Count == 0) return false;
         var options = 0;
         var hasMarker = false;
+        var gap = 0;
         foreach (var r in rows)
         {
-            if (IsOptionLine(r)) options++;
-            if (!hasMarker && IsSelectedOptionLine(r)) hasMarker = true;
+            if (IsOptionLine(r))
+            {
+                options++;
+                if (IsSelectedOptionLine(r)) hasMarker = true;
+                gap = 0;
+            }
+            else if (options > 0 && gap == 0 && !string.IsNullOrWhiteSpace(r))
+            {
+                gap = 1;   // one wrapped option-label row is allowed inside the block
+            }
+            else
+            {
+                if (hasMarker && options >= 2) return true;   // the block that just ended was a menu
+                options = 0; hasMarker = false; gap = 0;
+            }
         }
         return hasMarker && options >= 2;
     }

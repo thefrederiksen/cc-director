@@ -288,24 +288,24 @@ public sealed class WingmanTranslator
     /// </summary>
     /// <returns>The faithful, speakable translation and how long the brain took.</returns>
     /// <exception cref="ArgumentException">The latest reply is empty - there is nothing to translate.</exception>
-    public Task<WingmanTranslation> TranslateAsync(TenantId tenant, string recentContext, string latestReply, string? sessionTitle, CancellationToken ct = default)
-        => TranslateWithAsync(tenant, _instructions(), recentContext, latestReply, sessionTitle, ct);
+    public Task<WingmanTranslation> TranslateAsync(TenantId tenant, string recentContext, string latestReply, string? sessionTitle, string? liveScreen = null, CancellationToken ct = default)
+        => TranslateWithAsync(tenant, _instructions(), recentContext, latestReply, sessionTitle, liveScreen, ct);
 
     /// <summary>
     /// Same as <see cref="TranslateAsync"/> but with caller-supplied instructions instead of the
     /// active ones (issue #537 A/B testing): re-run a DRAFT prompt over a captured reply to compare
     /// its spoken output against what the wingman said before, without changing the live instructions.
     /// </summary>
-    public async Task<WingmanTranslation> TranslateWithAsync(TenantId tenant, string instructions, string recentContext, string latestReply, string? sessionTitle, CancellationToken ct = default)
+    public async Task<WingmanTranslation> TranslateWithAsync(TenantId tenant, string instructions, string recentContext, string latestReply, string? sessionTitle, string? liveScreen = null, CancellationToken ct = default)
     {
         RequireTenant(tenant);
         if (string.IsNullOrWhiteSpace(latestReply))
             throw new ArgumentException("Latest reply is required - there is nothing to translate.", nameof(latestReply));
 
-        _log($"[WingmanTranslator] TranslateWithAsync: instrLen={instructions?.Length ?? 0}, contextLen={recentContext?.Length ?? 0}, replyLen={latestReply.Length}, title={(string.IsNullOrWhiteSpace(sessionTitle) ? "(none)" : sessionTitle)}, language={LanguageFor(tenant).Code}");
+        _log($"[WingmanTranslator] TranslateWithAsync: instrLen={instructions?.Length ?? 0}, contextLen={recentContext?.Length ?? 0}, replyLen={latestReply.Length}, screenLen={liveScreen?.Length ?? 0}, title={(string.IsNullOrWhiteSpace(sessionTitle) ? "(none)" : sessionTitle)}, language={LanguageFor(tenant).Code}");
 
         var language = LanguageFor(tenant);
-        var prompt = BuildPrompt(language, instructions ?? FidelityPrompt, recentContext ?? "", latestReply, sessionTitle);
+        var prompt = BuildPrompt(language, instructions ?? FidelityPrompt, recentContext ?? "", latestReply, sessionTitle, liveScreen);
 
         var brain = await _brainProvider(tenant, WingmanModelRole.Fast, ct);
         AskResult ask;
@@ -325,12 +325,51 @@ public sealed class WingmanTranslator
             throw new InvalidOperationException(
                 "[WingmanTranslator] The wingman returned an empty spoken translation for a non-empty reply.");
 
-        _log($"[WingmanTranslator] TranslateWithAsync OK: spokenLen={spoken.Length}, replySeconds={ask.ReplySeconds:F1}");
+        // The SCREEN verdict is asked for only when a live screen went in, and its absence or garbling is
+        // deliberately harmless: Screen stays null and every consumer falls back to its fail-safe default.
+        var screen = string.IsNullOrWhiteSpace(liveScreen) ? null : ParseScreenVerdict(ask.Text);
+        _log($"[WingmanTranslator] TranslateWithAsync OK: spokenLen={spoken.Length}, needs={screen?.Needs ?? "(none)"}, replySeconds={ask.ReplySeconds:F1}");
         return new WingmanTranslation
         {
             Spoken = spoken,
             ReplySeconds = ask.ReplySeconds,
+            Screen = screen,
         };
+    }
+
+    /// <summary>
+    /// Pull the one-line <c>SCREEN: {...}</c> verdict out of the brain's reply (issue devthrottle_internal#1195).
+    /// Tolerant on purpose: the LAST "SCREEN" label in the reply wins (the prompt's own example lines sit
+    /// earlier), the JSON object is taken by brace balance rather than to end-of-line, and anything that does
+    /// not parse to a known <c>needs</c> value returns null - unknown, never a guess. Internal so a test can
+    /// assert the happy path and that garbage degrades to null.
+    /// </summary>
+    internal static WingmanScreenVerdict? ParseScreenVerdict(string reply)
+    {
+        if (string.IsNullOrWhiteSpace(reply)) return null;
+        var label = Regex.Matches(reply, @"SCREEN\s*:\s*\{");
+        if (label.Count == 0) return null;
+        var m = label[^1];
+        var start = m.Index + m.Length - 1;   // the '{'
+        var depth = 0;
+        var end = -1;
+        for (var i = start; i < reply.Length; i++)
+        {
+            if (reply[i] == '{') depth++;
+            else if (reply[i] == '}' && --depth == 0) { end = i; break; }
+        }
+        if (end < 0) return null;
+        try
+        {
+            var v = JsonSerializer.Deserialize<WingmanScreenVerdict>(reply[start..(end + 1)],
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            if (v is null) return null;
+            v.Needs = (v.Needs ?? "").Trim().ToLowerInvariant();
+            v.Question ??= "";
+            v.Options ??= new();
+            return v.Needs is "menu" or "answer" or "nothing" ? v : null;
+        }
+        catch (JsonException) { return null; }
     }
 
     /// <summary>
@@ -520,6 +559,17 @@ public sealed class WingmanTranslator
         sb.AppendLine("a numbered/lettered list, a permission prompt (\"Do you want to proceed?\"), a picker, or a");
         sb.AppendLine("plan approval. A free-text \"type your message\" prompt or an idle screen is NOT a menu.");
         sb.AppendLine();
+        sb.AppendLine("A numbered list INSIDE the agent's own prose is NOT a menu. Agents routinely end a turn");
+        sb.AppendLine("with a numbered summary of finished work (\"1. Committed the fix... 2. Updated the tests...");
+        sb.AppendLine("3. Cleaned up...\") sitting above an empty input box - that is a report, not a choice, even");
+        sb.AppendLine("when a stray marker glyph appears next to a number. A menu is an interactive control that");
+        sb.AppendLine("owns the screen and is waiting for a selection, like:");
+        sb.AppendLine("  Do you want to proceed?");
+        sb.AppendLine("  > 1. Yes");
+        sb.AppendLine("    2. Yes, and don't ask again this session");
+        sb.AppendLine("    3. No, and tell the agent what to do differently");
+        sb.AppendLine("If the screen only shows a finished reply above an empty composer, answer isMenu=false.");
+        sb.AppendLine();
         sb.AppendLine("If it IS a menu, extract it (rules from the proven brief contract):");
         sb.AppendLine("- question: the choice being asked, in plain words to hear out loud. No code or paths.");
         sb.AppendLine("- options: each listed choice. key = its visible label (e.g. \"1. Yes\"). send = the EXACT");
@@ -673,7 +723,7 @@ public sealed class WingmanTranslator
     /// no session here" case (the draft-prompt A/B path) and omits the block entirely, which the
     /// rule's own escape clause covers - the model is never handed an empty title to voice.
     /// </summary>
-    public static string BuildPrompt(SpokenLanguage language, string instructions, string recentContext, string latestReply, string? sessionTitle)
+    public static string BuildPrompt(SpokenLanguage language, string instructions, string recentContext, string latestReply, string? sessionTitle, string? liveScreen = null)
     {
         ArgumentNullException.ThrowIfNull(language);
         var sb = new StringBuilder();
@@ -700,6 +750,15 @@ public sealed class WingmanTranslator
             sb.Append(recentContext.Trim());
             sb.Append("\n---\n\n");
         }
+        if (!string.IsNullOrWhiteSpace(liveScreen))
+        {
+            sb.Append("The terminal screen this session is showing RIGHT NOW, top to bottom (its live ");
+            sb.Append("grid; stale glyphs from earlier frames may linger on it). Use it ONLY for the ");
+            sb.Append("SCREEN verdict asked for after the markers - do not narrate it:\n");
+            sb.Append("---\n");
+            sb.Append(liveScreen.Trim());
+            sb.Append("\n---\n\n");
+        }
         sb.Append("The agent's LATEST reply - translate THIS for the ear (adding the minimum context ");
         sb.Append("from above only if the reply is too short to stand on its own):\n");
         sb.Append("---\n");
@@ -711,8 +770,35 @@ public sealed class WingmanTranslator
         sb.Append('\n');
         sb.Append("<spoken version>\n");
         sb.Append(SessionAskRunner.AnswerEndMarker);
+        if (!string.IsNullOrWhiteSpace(liveScreen))
+        {
+            sb.Append('\n');
+            sb.Append(ScreenVerdictContract);
+        }
         return sb.ToString();
     }
+
+    /// <summary>
+    /// The SCREEN verdict addendum (issue devthrottle_internal#1195): asked for ONLY when a live screen was
+    /// supplied, and asked for AFTER the spoken markers so the proven spoken contract stays byte-identical -
+    /// <see cref="ExtractSpoken"/> reads between the markers and never sees this line, which is what makes a
+    /// garbled verdict harmless to the narration. Public so a test can assert the contract.
+    /// </summary>
+    public const string ScreenVerdictContract =
+        "Then, AFTER the end marker, output EXACTLY ONE more line - your verdict on what the live screen\n"
+        + "needs from the person, as JSON on a single line:\n"
+        + "SCREEN: {\"needs\":\"menu\",\"question\":\"...\",\"options\":[\"1. Yes\",\"2. No\"]}\n"
+        + "or SCREEN: {\"needs\":\"answer\"}  or  SCREEN: {\"needs\":\"nothing\"}\n"
+        + "- \"menu\": the screen RIGHT NOW shows an interactive picker that must be answered by SELECTING a\n"
+        + "  listed option (a permission prompt, a plan approval, a chooser with a selection marker). Typed\n"
+        + "  free text will NOT work there. Include the question and the visible option labels.\n"
+        + "- \"answer\": the agent asked the person something they answer in typed or spoken WORDS, or is\n"
+        + "  waiting on a decision from them.\n"
+        + "- \"nothing\": informational - the agent reported progress or results and is not waiting on the\n"
+        + "  person for anything.\n"
+        + "A numbered list INSIDE the agent's prose (a summary of work done, steps, findings) is NOT a menu,\n"
+        + "even if a stray marker glyph sits next to a number - a menu is an interactive control waiting for\n"
+        + "a selection. A finished reply above an empty input box is \"answer\" or \"nothing\", never \"menu\".";
 
     /// <summary>
     /// Build the "recent conversation" context string from a session's transcript widgets: the last
@@ -754,4 +840,9 @@ public sealed class WingmanTranslation
 
     /// <summary>Seconds the warm brain took to produce the translation.</summary>
     public double ReplySeconds { get; init; }
+
+    /// <summary>The model's verdict on what the live screen needs from the person
+    /// (issue devthrottle_internal#1195), or null when no live screen was supplied or the verdict line did
+    /// not parse. Null means UNKNOWN: callers fall back to their fail-safe default, never to a block.</summary>
+    public WingmanScreenVerdict? Screen { get; init; }
 }

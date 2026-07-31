@@ -139,11 +139,14 @@ public static class WaitingScreenClassifier
         var line = rows[cursorRow];
         if (string.IsNullOrWhiteSpace(line)) return false;
 
-        // The first non-border, non-space column is the prompt marker.
+        // The first non-border, non-space column is the prompt marker. Claude Code draws its composer prompt
+        // as '❯' (U+276F), not the ASCII '>'; accepting only '>' meant a REAL Claude Code composer was never
+        // positively recognized, so the classifier's own ambiguity rule (menu-ish structure + live composer ->
+        // Blocked, never Menu) could not fire - one of the two defects behind the session-115 menu misfire.
         var first = 0;
         while (first < line.Length && System.Array.IndexOf(BorderOrSpace, line[first]) >= 0) first++;
-        if (first >= line.Length || line[first] != '>') return false;
-        if (first + 1 < line.Length && line[first + 1] == '>') return false; // ">>" is the mode-cycle arrow
+        if (first >= line.Length || (line[first] != '>' && line[first] != '❯')) return false;
+        if (first + 1 < line.Length && (line[first + 1] == '>' || line[first + 1] == '❯')) return false; // ">>" is the mode-cycle arrow
 
         // THE COMPOSER INVARIANT (issue #1777, final tighten): a real text composer has the visible cursor at
         // the INSERTION POINT - it TRAILS the input, right after the last non-space character the user typed, or
