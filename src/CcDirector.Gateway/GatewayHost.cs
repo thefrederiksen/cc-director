@@ -61,6 +61,15 @@ public sealed class GatewayHost : IAsyncDisposable
     public string Token { get; }
     public DirectorRegistry Registry { get; }
 
+    /// <summary>
+    /// The finalised route table, captured after every endpoint is mapped (StartAsync). Internal, for the
+    /// route-surface guard tests: the shell-prefix auth allowlist (AuthMiddleware.IsPublicShellSurfaceRequest)
+    /// is complete only while the endpoint set under /mobile, /m and /assets is exactly the set it was
+    /// written against, and the guard test pins that set here.
+    /// </summary>
+    internal IReadOnlyList<Microsoft.AspNetCore.Http.Endpoint> MappedEndpoints { get; private set; }
+        = Array.Empty<Microsoft.AspNetCore.Http.Endpoint>();
+
     // The process's ONE system capability, minted here in the composition root. Passed to the internal
     // system passes that legitimately read across tenants; never handed to a request handler. The guard
     // test (SystemScopeGuardTests) enforces that SystemScope.Grant() is called nowhere else.
@@ -3225,6 +3234,12 @@ public sealed class GatewayHost : IAsyncDisposable
         // with the pre-start test harness, so reverting it to the DI composite reddens the tie tests rather
         // than silently regressing this path.
         Tenancy.HostedRefusalRouteSpace.ValidateBeforeStart(_app);
+
+        // The finalised route table, kept for the route-surface guard tests (the auth allowlist for the
+        // shell prefixes is complete ONLY while the set of endpoints mapped under /mobile, /m and /assets
+        // stays exactly what the allowlist was written against - the guard pins that set, so a new route
+        // under a shell prefix fails a test until it is consciously ruled public or gated).
+        MappedEndpoints = Tenancy.HostedRefusalRouteSpace.SelectFinalisedEndpoints(_app);
 
         await _app.StartAsync();
 

@@ -12,14 +12,14 @@ namespace CcDirector.Gateway.Util;
 ///                     /devices/enroll-signed-in (epic #1069: carries its own loopback + signed-in
 ///                     guards, so a token-less fresh device can earn its first key), the credential-free
 ///                     cloud sign-in start front door /account/sign-in-start (issue #1076, GET + POST -
-///                     it reads/returns no credential and no account data), the mobile app
-///                     shell /mobile + everything under /mobile/ (which includes the enroll path
-///                     POST /mobile/enroll - it carries its own account-scoped authorization) plus the
-///                     legacy /m + /m/ mount it re-based from (still public so the Gateway's 301 to
-///                     /mobile and the back-compat POST /m/enroll stay reachable pre-credential), the desktop
-///                     Cockpit sign-in surface /signin + /device-callback and the shell's static
-///                     assets under /assets/ (issue #1088 - see below), and the JSON /cockpit endpoint
-///                     (a program GET, NOT a browser navigation - see below).
+///                     it reads/returns no credential and no account data), the shell surfaces via the
+///                     EXPLICIT allowlist in IsPublicShellSurfaceRequest - the GET/HEAD phone shell
+///                     under /mobile, the GET/HEAD legacy /m redirect mount, the exact enrollment POSTs
+///                     (/mobile/enroll + /m/enroll, each carrying its own account-scoped authorization),
+///                     and the GET/HEAD Cockpit static assets under /assets/ (issue #1088) - plus the
+///                     desktop Cockpit sign-in surface /signin + /device-callback, and the JSON /cockpit
+///                     endpoint (a program GET, NOT a browser navigation - see below). Any OTHER method
+///                     or route under those shell prefixes is credential-gated by default.
 /// Authenticated:      every other route (Bearer header OR cc-gateway-token cookie OR, per
 ///                     issue #469, a per-device key issued at enrollment).
 ///
@@ -168,6 +168,53 @@ internal static class AuthMiddleware
         Api.ReportRecipientsEndpoint.Path,
     };
 
+    /// <summary>
+    /// The EXPLICIT allowlist of credential-less request shapes on the shell surfaces. These paths were
+    /// auth-opened BY PREFIX until the 2026-07-31 tenant-boundary hardening - everything under /mobile,
+    /// /m and /assets passed the gate in every HTTP method, so any future route mapped under those
+    /// prefixes would have been silently public. Now the public set is spelled out, and a new route under
+    /// a shell prefix is credential-gated by default unless it is added here on purpose.
+    ///
+    /// What is public, and why it is the complete day-one set (the endpoints actually mapped under these
+    /// prefixes are pinned by ShellPrefixRouteSurfaceGuardTests, so this list and the route table cannot
+    /// drift apart silently):
+    ///
+    ///  - GET/HEAD /mobile and /mobile/** - the phone app shell (MobileApp.ServeAsync): a static file
+    ///    strictly inside wwwroot/mobile, or the index shell for every client-side route. The GET surface
+    ///    IS the app - client routes are arbitrary and grow with the app, and a signed-in phone's
+    ///    NAVIGATIONS carry no credential either (the per-device key lives in the app, not in a cookie) -
+    ///    so the whole GET surface must load pre-credential (issues #806/#908: the shell carries no
+    ///    secret; every data endpoint stays credential-gated). Method-scoped: a future POST/PUT/DELETE
+    ///    route under /mobile is NOT public.
+    ///  - GET/HEAD /m and /m/** - the legacy mount: pure 301 redirects onto /mobile (owner ruling
+    ///    2026-07-20), reachable pre-credential so an installed phone app on the old path is not walled
+    ///    out.
+    ///  - POST /mobile/enroll and POST /m/enroll - the enrollment mint seam, EXACT paths only. Public at
+    ///    this gate because each carries its OWN account-scoped authorization (the verified cloud account
+    ///    token) inside the endpoint.
+    ///  - GET/HEAD /assets/** - the desktop Cockpit shell's Vite content-hashed JavaScript/CSS (issue
+    ///    #1088): the /signin screen cannot render before any credential exists unless its script and
+    ///    styles load. Static files only, no secrets, no data.
+    /// </summary>
+    private static bool IsPublicShellSurfaceRequest(string method, string path)
+    {
+        if (HttpMethods.IsGet(method) || HttpMethods.IsHead(method))
+        {
+            if (string.Equals(path, "/mobile", StringComparison.OrdinalIgnoreCase)
+                || path.StartsWith("/mobile/", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(path, "/m", StringComparison.OrdinalIgnoreCase)
+                || path.StartsWith("/m/", StringComparison.OrdinalIgnoreCase)
+                || path.StartsWith(CockpitAssetsPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return HttpMethods.IsPost(method)
+               && (string.Equals(path, "/mobile/enroll", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(path, "/m/enroll", StringComparison.OrdinalIgnoreCase));
+    }
+
     public static async Task Run(HttpContext ctx, RequireToken cfg, Func<Task> next)
     {
         var path = ctx.Request.Path.Value ?? "";
@@ -184,32 +231,10 @@ internal static class AuthMiddleware
 
         if (!isCockpitBrowserShell && PublicPaths.Contains(path)) { await next(); return; }
 
-        // Issue #806 / #908: the mobile app shell (/mobile and its built assets) carries no secret. It
-        // must load without the global gate so the Sign in screen can render before the phone has any
-        // credential; the phone then enrolls (POST /mobile/enroll, itself under /mobile/ and carrying its
-        // own authorization - an account-scoped device key) and authenticates its OWN API calls (e.g.
-        // /sessions) with the per-device key it receives. The master token is no longer injected into
-        // the shell (issue #908), so reaching /mobile grants no access on its own - the data endpoints stay
-        // Bearer/cookie-gated on that per-device key.
-        //
-        // The legacy /m mount stays public too: the app re-based from /m to /mobile (owner ruling
-        // 2026-07-20), and the Gateway 301s /m -> /mobile and keeps POST /m/enroll as a back-compat route.
-        // Both the redirect and that route must be reachable before the device holds any credential,
-        // exactly as /mobile is - so an installed phone PWA still on the old path is not walled out.
-        if (string.Equals(path, "/mobile", StringComparison.OrdinalIgnoreCase)
-            || path.StartsWith("/mobile/", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(path, "/m", StringComparison.OrdinalIgnoreCase)
-            || path.StartsWith("/m/", StringComparison.OrdinalIgnoreCase))
-        {
-            await next();
-            return;
-        }
-
-        // Issue #1088: the desktop Cockpit shell's static assets (Vite's content-hashed JavaScript/CSS
-        // under /assets/) are public, exactly like the /m assets above - the /signin screen cannot
-        // render before any credential exists unless its script and styles load. The files carry no
-        // secret and no data; every data endpoint stays credential-gated below.
-        if (path.StartsWith(CockpitAssetsPrefix, StringComparison.OrdinalIgnoreCase))
+        // The shell surfaces (/mobile, the legacy /m mount, the Cockpit's /assets) pass the gate through
+        // ONE explicit allowlist of the public request shapes that exist today - never by prefix alone.
+        // See IsPublicShellSurfaceRequest for the list and the reasoning per entry.
+        if (IsPublicShellSurfaceRequest(ctx.Request.Method, path))
         {
             await next();
             return;
