@@ -101,8 +101,8 @@ def _request(method: str, path: str, body: Optional[dict] = None, timeout: float
     if not token:
         raise DirectorError(
             "Cannot read this machine's Director secret, so no command can be authorized. "
-            f"Expected it at {director_token._token_file()}, or as gateway.token in "
-            f"{director_token._config_json()}. Start the Director once to have it written."
+            f"Expected it at {director_token.token_file_path()}, or as gateway.token in "
+            f"{director_token.config_json_path()}. Start the Director once to have it written."
         )
     req.add_header("Authorization", f"Bearer {token}")
 

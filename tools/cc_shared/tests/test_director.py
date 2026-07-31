@@ -210,3 +210,23 @@ def test_request_still_reports_the_status_when_the_body_carries_no_sentence(monk
         director.get_json("fleet/sessions")
 
     assert str(caught.value) == "HTTP 502 from the Director"
+
+
+def test_request_on_a_machine_with_no_secret_raises_a_director_error_naming_both_paths(tmp_path, monkeypatch):
+    """The missing-secret branch of _request, driven for real rather than around.
+
+    This branch formatted its message with helper names that do not exist on the token module
+    (the module's functions were renamed and this one caller was not), so a machine whose secret
+    could not be read crashed with an AttributeError instead of the sentence written for exactly
+    that machine. Every other test either provides a token or stops at cli_token() being None,
+    so nothing walked into the branch itself.
+    """
+    monkeypatch.setenv("CC_DIRECTOR_API", "http://127.0.0.1:1")
+    monkeypatch.setenv("CC_DIRECTOR_ROOT", str(tmp_path))  # an empty root: no secret anywhere
+
+    with pytest.raises(director.DirectorError) as caught:
+        director.get_json("fleet/sessions")
+
+    message = str(caught.value)
+    assert "no command can be authorized" in message
+    assert str(tmp_path) in message  # the paths named are the ones actually searched
