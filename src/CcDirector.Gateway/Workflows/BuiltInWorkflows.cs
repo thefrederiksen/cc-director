@@ -73,6 +73,15 @@ public static class BuiltInWorkflows
                     Reviewer: "Manager",
                     Done: "A merged pull request. Committed and pushed is still in progress."),
                 new WorkflowStep(
+                    Name: "Land the record",
+                    Description: "The Architect lands the mission's own paper trail - brief, rulings, state note, "
+                               + "inspections, fix reports, evidence - as the last slice, from inside the mission "
+                               + "worktree. A record left uncommitted is one disk away from gone, and it is what "
+                               + "the next agent rebuilds the mission from.",
+                    Doer: "Architect",
+                    Reviewer: null,
+                    Done: "The mission's record is merged to the main branch."),
+                new WorkflowStep(
                     Name: "Report",
                     Description: "The quality report goes to the owner. This is the one interruption the mission "
                                + "is allowed to spend.",
