@@ -251,14 +251,57 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
     {
         RegisterAliceLauncher();
 
+        // Tenant-boundary hardening (inspection finding I1-03): this test used to send
+        // args = "/c echo hi" on a HOSTED Gateway, which is exactly the capability that finding
+        // removed - a caller selecting a catalogued command interpreter and supplying the real
+        // command in the argument string. The launch capability itself is unchanged and is still
+        // proven here: the catalogued application starts, and the relay genuinely reaches the
+        // launcher process. Only the caller-supplied argument channel is gone on hosted.
         var resp = await Send("POST", $"machines/{AliceMachine}/launch", _aliceKey,
-            new { path = @"C:\Windows\System32\cmd.exe", args = "/c echo hi", confirmProtected = true });
+            new { path = @"C:\Windows\System32\cmd.exe", confirmProtected = true });
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
         Assert.Equal("launch", doc.RootElement.GetProperty("verb").GetString());
         Assert.Contains(StubSentinel, doc.RootElement.GetProperty("payload").GetString()!, StringComparison.Ordinal);
         Assert.Equal(new[] { "launch" }, AliceLauncherHits());
+    }
+
+    /// <summary>
+    /// Inspection finding I1-03. The catalogue allowlist alone was never containment: every ordinary
+    /// machine has a command interpreter or script host among its installed applications, so a caller
+    /// could select that catalogued entry and put the real command in the ARGUMENT string, which the
+    /// launcher interpolates into the command line it starts. On a hosted process the launch verb now
+    /// accepts no caller-supplied arguments and no caller-supplied working directory.
+    ///
+    /// The refusal is proven the way everything in this file is proven - by OBSERVING THE ACT, not
+    /// only the status code. A 403 would also be produced by a Gateway that was simply broken, so each
+    /// case additionally asserts that Alice's stub launcher process was NEVER DIALED. The test above is
+    /// the control that proves that instrument is live: the same launcher IS dialed, and DOES return
+    /// its sentinel, when the same tenant asks for the same application with no arguments.
+    /// </summary>
+    [Theory]
+    [InlineData("/c whoami", null)]
+    [InlineData(null, @"C:\Windows\System32")]
+    [InlineData("/c whoami", @"C:\Windows\System32")]
+    public async Task A_hosted_launch_carrying_arguments_or_a_working_directory_is_refused(string? args, string? cwd)
+    {
+        RegisterAliceLauncher();
+
+        var resp = await Send("POST", $"machines/{AliceMachine}/launch", _aliceKey,
+            new { path = @"C:\Windows\System32\cmd.exe", args, cwd, confirmProtected = true });
+
+        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+        var text = await resp.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(text);
+        Assert.Equal("launch_arguments_not_allowed", doc.RootElement.GetProperty("error").GetString());
+
+        // The refusal is EXPLICIT, not a silent drop: the caller is told, rather than having a
+        // different program started on their behalf and reported as success.
+        Assert.Contains("does not accept", text, StringComparison.Ordinal);
+
+        // THE ACT: the launcher process was never reached, so nothing ran.
+        Assert.Empty(AliceLauncherHits());
     }
 
     [Fact]
@@ -320,13 +363,19 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
     [Fact]
     public async Task One_tenant_cannot_execute_code_on_another_tenants_machine()
     {
-        // The sharpest form of the leak: POST /machines/{machine}/launch forwards a caller-supplied path,
-        // arguments and working directory to the launcher, which runs them.
+        // The sharpest form of the leak: POST /machines/{machine}/launch forwards a caller-supplied
+        // program to the launcher, which runs it.
         RegisterAliceLauncher();
 
         // Bob CONFIRMS (CR-5's accident guard is not aimed at him) - the tenant partition alone must refuse.
+        //
+        // The body carries NO args and NO cwd deliberately. Since inspection finding I1-03 a hosted
+        // Gateway refuses those outright, and that refusal fires before the machine is resolved - so a
+        // body carrying them would be answered 403 "arguments not allowed" and this test would no longer
+        // be proving anything about TENANCY. Keeping the body clean means the only thing that can refuse
+        // it is the tenant partition, which is the whole point of this test.
         var resp = await Send("POST", $"machines/{AliceMachine}/launch", _bobKey,
-            new { path = @"C:\Windows\System32\cmd.exe", args = "/c whoami", cwd = @"C:\", confirmProtected = true });
+            new { path = @"C:\Windows\System32\cmd.exe", confirmProtected = true });
 
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
         Assert.Empty(AliceLauncherHits());
@@ -500,14 +549,19 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
 
     /// <summary>A REAL, WELL-FORMED body for each write, so a refusal can never be a validation accident: the
     /// sessions route needs repoPath and register needs machineName/port/token, and either would answer 400
-    /// rather than the status under test.</summary>
+    /// rather than the status under test.
+    ///
+    /// The launch body carries NO args and NO cwd for the same reason. Since inspection finding I1-03 a
+    /// hosted Gateway refuses a launch that supplies either, and that refusal fires before the machine is
+    /// resolved - so a body carrying them would be answered "arguments not allowed" and every row of this
+    /// table would stop testing the thing it names. Well-formed now means clean.</summary>
     private static object? BodyFor(string path) =>
         path.EndsWith("/sessions", StringComparison.Ordinal)
             ? new { repoPath = @"C:\repo", agent = "ClaudeCode" }
             : path.EndsWith("launchers/register", StringComparison.Ordinal)
                 ? new { machineName = AliceMachine, port = 7788, token = "tok", pid = 11, version = "1.0.0" }
                 : path.EndsWith("/launch", StringComparison.Ordinal)
-                    ? new { path = @"C:\Windows\System32\cmd.exe", args = "/c whoami", cwd = @"C:\", confirmProtected = true }
+                    ? new { path = @"C:\Windows\System32\cmd.exe", confirmProtected = true }
                     : null;
 
     internal static HttpContent JsonBody(object value) =>

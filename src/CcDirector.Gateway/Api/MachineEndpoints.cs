@@ -479,6 +479,42 @@ internal static class MachineEndpoints
                 }, statusCode: 403);
             }
 
+            // Tenant-boundary hardening (release 2026-07-31, inspection finding I1-03). On a HOSTED
+            // process the launch verb accepts NO caller-supplied arguments and no caller-supplied working
+            // directory: the catalogue entry ALONE determines what runs.
+            //
+            // Why: the catalogue allowlist on its own was never containment. Every ordinary machine has a
+            // command interpreter or script host in its installed applications, so a caller could select
+            // that catalogued entry and put the real command in the argument string - the launcher
+            // interpolates it into the command line it starts. That is arbitrary code execution wearing an
+            // installed application's name, which is the capability this mission exists to remove.
+            //
+            // Self-host is deliberately UNCHANGED - the desktop and the local agent keep passing arguments,
+            // so no capability is deleted, only narrowed on the surface a stolen tenant credential can reach.
+            // This is reversible when the credential-authority tiers land (the named gap from ruling 6).
+            //
+            // The refusal is EXPLICIT rather than a silent drop: quietly discarding the arguments would
+            // start a DIFFERENT program than the caller asked for and report success, which is its own
+            // failure mode and a worse one to debug.
+            if (GatewayHostedMode.IsHosted
+                && (!string.IsNullOrWhiteSpace(body?.Args) || !string.IsNullOrWhiteSpace(body?.Cwd)))
+            {
+                var supplied = !string.IsNullOrWhiteSpace(body?.Args) && !string.IsNullOrWhiteSpace(body?.Cwd)
+                    ? "arguments and a working directory"
+                    : !string.IsNullOrWhiteSpace(body?.Args) ? "arguments" : "a working directory";
+                var reason = $"launch guard: this hosted service does not accept {supplied} on a launch request";
+                FileLog.Write($"[MachineEndpoints] RELAY_REFUSED machine={machine} verb=launch reason={reason}");
+                return Results.Json(new
+                {
+                    error = "launch_arguments_not_allowed",
+                    detail = reason,
+                    machine,
+                    verb = "launch",
+                    hint = "Start the application by its catalogue name or path with no args and no cwd. "
+                         + "The catalogue entry determines what runs.",
+                }, statusCode: 403);
+            }
+
             var outcome = await LauncherLifecycleRelay.SendLaunchAsync(
                 tenant, machine, body, launchers, sendLauncherCommand, ct);
             return ToResult(machine, "launch", outcome);
