@@ -24,7 +24,10 @@ namespace CcDirector.Gateway.Activity;
 public static class ActivityEventEndpoints
 {
     public static void Map(IEndpointRouteBuilder app, ActivityEventStore store,
-        Tenancy.HostedTenantBoundary? tenantBoundary = null)
+        // REQUIRED, not defaulted (tenant-boundary hardening, release 2026-07-31, finding CR-7): the boundary
+        // is a security argument, and when it was optional a forgotten argument silently served the Local
+        // partition on hosted. A self-host-only caller must state the absence with an explicit null.
+        Tenancy.HostedTenantBoundary? tenantBoundary)
     {
         ArgumentNullException.ThrowIfNull(store);
 
@@ -77,10 +80,19 @@ public static class ActivityEventEndpoints
 
     /// <summary>
     /// Resolve the request's tenant from the AUTHENTICATED device key the auth middleware stashed - the same
-    /// seam the prompt log uses. Null means DENY on hosted; self-host, or no boundary (tests), is Local.
+    /// seam the prompt log uses. Null means DENY. Gated on <see cref="GatewayHostedMode.IsHosted"/> ITSELF,
+    /// never on whether a boundary was passed in (finding CR-7): deciding on the argument fails open, so on
+    /// hosted a missing or non-hosted-wired boundary resolves null - a refusal, never Local. Self-host is
+    /// Local exactly as before.
     /// </summary>
     private static TenantId? ResolveTenant(HttpContext ctx, Tenancy.HostedTenantBoundary? boundary)
-        => boundary is null ? TenantId.Local : boundary.ResolveRequestTenant(ctx);
+    {
+        if (!GatewayHostedMode.IsHosted)
+            return boundary is null ? TenantId.Local : boundary.ResolveRequestTenant(ctx);
+        if (boundary is null || !boundary.IsHosted)
+            return null;
+        return boundary.ResolveRequestTenant(ctx);
+    }
 
     /// <summary>
     /// Enter the resolved tenant's ambient scope for the store call: the store reaches the database through

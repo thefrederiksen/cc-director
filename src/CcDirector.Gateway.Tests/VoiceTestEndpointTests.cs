@@ -54,7 +54,12 @@ public sealed class VoiceTestEndpointTests : IDisposable
 
         var vault = new KeyVault(Path.Combine(_root, "test.vault"));
         var store = new VoiceTestClipStore(Path.Combine(_root, "clips"));
-        VoiceTestEndpoint.Map(app, new GatewayTranscriptionService(vault), tenantBoundary: null, storeOverride: store);
+        // The boundary is required and non-nullable now (finding I1-01). Self-host harness, so the REAL
+        // self-host boundary: built over the SingleTenantContext, it always resolves Local.
+        VoiceTestEndpoint.Map(app, new GatewayTranscriptionService(vault),
+            tenantBoundary: new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
+                new CcDirector.Core.Tenancy.SingleTenantContext(), new CcDirector.Gateway.Pairing.DeviceRegistry()),
+            storeOverride: store);
 
         await app.StartAsync();
         return (app, new HttpClient { BaseAddress = new Uri(app.Urls.First()) }, store);

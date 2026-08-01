@@ -49,17 +49,22 @@ public sealed class DirectorHubTests : IDisposable
         catch (Exception) { /* best-effort temp cleanup */ }
     }
 
+    // The boundary is required and non-nullable now (finding I1-01). These are self-host hub tests, so they
+    // get the REAL self-host boundary: built over the SingleTenantContext, it always resolves Local.
+    private static CcDirector.Gateway.Tenancy.HostedTenantBoundary SelfHostBoundary() =>
+        new(new CcDirector.Core.Tenancy.SingleTenantContext(), new CcDirector.Gateway.Pairing.DeviceRegistry());
+
     private (DirectorHub hub, FakeHubCallerContext ctx) NewHub(string connectionId)
     {
         var ctx = new FakeHubCallerContext(connectionId);
-        var hub = new DirectorHub(_store, _registry, InputStatsHandle.Available(_inputStats), new GatewayStreamRegistry()) { Context = ctx };
+        var hub = new DirectorHub(_store, _registry, InputStatsHandle.Available(_inputStats), new GatewayStreamRegistry(), SelfHostBoundary()) { Context = ctx };
         return (hub, ctx);
     }
 
     private (DirectorHub hub, FakeHubCallerContext ctx) NewHub(string connectionId, SnoozeLandingObserver snooze)
     {
         var ctx = new FakeHubCallerContext(connectionId);
-        var hub = new DirectorHub(_store, _registry, InputStatsHandle.Available(_inputStats), new GatewayStreamRegistry(), snoozeLandings: snooze) { Context = ctx };
+        var hub = new DirectorHub(_store, _registry, InputStatsHandle.Available(_inputStats), new GatewayStreamRegistry(), SelfHostBoundary(), snoozeLandings: snooze) { Context = ctx };
         return (hub, ctx);
     }
 
@@ -269,7 +274,22 @@ public sealed class DirectorHubTests : IDisposable
 
     private sealed class FakeHubCallerContext : HubCallerContext
     {
-        public FakeHubCallerContext(string connectionId) => ConnectionId = connectionId;
+        public FakeHubCallerContext(string connectionId)
+        {
+            ConnectionId = connectionId;
+            // The hub resolves its connection tenant through the boundary, which on self-host answers Local
+            // for any request - but only when the connection HAS an HttpContext, exactly as a real SignalR
+            // negotiate does. The fake used to carry none, which was invisible while these tests passed a
+            // null boundary; with the REAL self-host boundary (finding I1-01) an absent HttpContext is an
+            // unresolvable connection and Hello would abort.
+            Features.Set<Microsoft.AspNetCore.Http.Connections.Features.IHttpContextFeature>(
+                new HttpContextFeatureImpl { HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext() });
+        }
+
+        private sealed class HttpContextFeatureImpl : Microsoft.AspNetCore.Http.Connections.Features.IHttpContextFeature
+        {
+            public Microsoft.AspNetCore.Http.HttpContext? HttpContext { get; set; }
+        }
 
         public override string ConnectionId { get; }
         public override string? UserIdentifier => null;

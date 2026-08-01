@@ -61,6 +61,15 @@ public sealed class GatewayHost : IAsyncDisposable
     public string Token { get; }
     public DirectorRegistry Registry { get; }
 
+    /// <summary>
+    /// The finalised route table, captured after every endpoint is mapped (StartAsync). Internal, for the
+    /// route-surface guard tests: the shell-prefix auth allowlist (AuthMiddleware.IsPublicShellSurfaceRequest)
+    /// is complete only while the endpoint set under /mobile, /m and /assets is exactly the set it was
+    /// written against, and the guard test pins that set here.
+    /// </summary>
+    internal IReadOnlyList<Microsoft.AspNetCore.Http.Endpoint> MappedEndpoints { get; private set; }
+        = Array.Empty<Microsoft.AspNetCore.Http.Endpoint>();
+
     // The process's ONE system capability, minted here in the composition root. Passed to the internal
     // system passes that legitimately read across tenants; never handed to a request handler. The guard
     // test (SystemScopeGuardTests) enforces that SystemScope.Grant() is called nowhere else.
@@ -2514,7 +2523,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // Gateway Cleanup mission: the cut removed the DirectorEndpointClient argument (_client) - the
         // Gateway no longer dials Directors over HTTP, so Map no longer takes an HTTP client. The
         // network-diagnostics rollup store is threaded in as a named argument on the tunnel-only signature.
-        GatewayEndpoints.Map(_app, Registry, version, Token, AuthEnabled,
+        GatewayEndpoints.Map(_app, Registry, version, Token,
+            // The auth-boundary tenant binder - REQUIRED (finding CR-7): request-scoped reads resolve the
+            // caller's tenant through it, and on hosted a request with no bound tenant is denied, never Local.
+            _tenantBoundary,
+            AuthEnabled,
             netDiagRollup: _netDiagRollup,
             // Issue #2017: the snooze-default consumer at POST /sessions/{sid}/hold reads the caller tenant's
             // default through the resolver instead of the process-global config.
@@ -2731,10 +2744,7 @@ public sealed class GatewayHost : IAsyncDisposable
             fleetDisplayState: FleetDisplayState,
             // Workflows mission (phase 4, issue #1771): creating a mission also opens a workflow run of
             // the built-in "mission" workflow, pinned to its published version - the outcome spine.
-            workflowRuns: _workflowRuns,
-            // Hosted Multi-Tenancy (session-serving PR1): the read endpoints resolve the request's tenant from
-            // the authenticated device key through this boundary and deny (403) when hosted binds none.
-            tenantBoundary: _tenantBoundary);
+            workflowRuns: _workflowRuns);
 
         // Issue #268: the two raw per-session WebSocket legs (live Terminal stream + dictation)
         // proxied through the Gateway so a remote Cockpit talks same-origin to the Gateway and
@@ -2943,8 +2953,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // Issue #1856: the boundary and the tenant registry make this endpoint tenant-bearing on hosted, where
         // it must answer about the CALLER's enrollment rather than about a Gateway credential hosted does not
         // hold. On self-host the boundary reports not-hosted and the endpoint behaves exactly as before.
-        AccountStatusEndpoint.Map(_app, Account, new Core.Account.AccountNicknameClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }),
-            tenantBoundary: _tenantBoundary, tenants: TenantRegistry);
+        AccountStatusEndpoint.Map(_app, Account, _tenantBoundary,
+            nickname: new Core.Account.AccountNicknameClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }),
+            tenants: TenantRegistry);
 
         // Gateway Centralization Phase 3 (issue #648): POST /account/logout CLEARS the Gateway-hosted
         // DevThrottle credential through the same reused DevThrottleAccountService (Account). The account
@@ -3033,7 +3044,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // through this one endpoint - it resolves the mode + key and runs the right provider (in-process
         // Whisper, or the resolved provider-compatible batch endpoint). Optional ?correct=true also runs
         // the validated dictionary correction, keeping that out of the callers too.
-        TranscriptionBatchEndpoint.Map(_app, _keyVault, _transcriptionHistory, _transcriptionAudioArchive, _tenantBoundary, _transcripts);
+        TranscriptionBatchEndpoint.Map(_app, _keyVault, _tenantBoundary, _transcriptionHistory, _transcriptionAudioArchive, _transcripts);
 
         // Read-only analysis over the LOCAL minimized transcription history: latency percentiles, cleanup
         // behaviour, most-corrected terms, and word frequencies, so any agent can query the Gateway to
@@ -3098,14 +3109,16 @@ public sealed class GatewayHost : IAsyncDisposable
         // /machines/{machine}/director/restart|start|stop to reach that machine's Director.
         // launcher-persistent-join: pass the stream-send hook only when stream mode is on. The relay tries
         // this first and falls back to the REST relay when it returns null (stream off, or launcher offline).
-        MachineEndpoints.Map(_app, Launchers, _machineSessionSpawner, SendLauncherCommandAsync,
+        MachineEndpoints.Map(_app, Launchers, _machineSessionSpawner,
+            // Tenant boundary - REQUIRED (finding CR-7): every launcher-registry read/write and relay is
+            // scoped to the calling tenant, and on hosted an unbound request is denied, never Local.
+            _tenantBoundary,
+            SendLauncherCommandAsync,
             // Gateway Cleanup mission (Wave 4b): validate a mission-scoped spawn against the Gateway store and
             // stamp the resolved mission name onto the create request forwarded to the Director.
             missions: Missions,
             // Workflows mission (phase 5b): seat spawns on workflow runs and record participants.
-            workflowRuns: _workflowRuns,
-            // Tenant boundary: every launcher-registry read/write is scoped to the calling tenant.
-            boundary: _tenantBoundary);
+            workflowRuns: _workflowRuns);
 
         // The Cockpit Settings page surface (docs/architecture/gateway/SETTINGS_OWNERSHIP.md):
         // one snapshot GET plus brain-restart and autostart actions. Reads this host directly
@@ -3161,7 +3174,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // broken deploy, and the reason is what tells an operator whether to fix a setting or a database.
         if (InputStats is not null)
         {
-            Stats.StatsPageEndpoint.Map(_app, InputStats, SessionConcurrency, _tenantSettingsResolver, _tenantBoundary, _sessionHistory);
+            Stats.StatsPageEndpoint.Map(_app, InputStats, _tenantBoundary, SessionConcurrency, _tenantSettingsResolver, _sessionHistory);
         }
         else
         {
@@ -3222,6 +3235,12 @@ public sealed class GatewayHost : IAsyncDisposable
         // with the pre-start test harness, so reverting it to the DI composite reddens the tie tests rather
         // than silently regressing this path.
         Tenancy.HostedRefusalRouteSpace.ValidateBeforeStart(_app);
+
+        // The finalised route table, kept for the route-surface guard tests (the auth allowlist for the
+        // shell prefixes is complete ONLY while the set of endpoints mapped under /mobile, /m and /assets
+        // stays exactly what the allowlist was written against - the guard pins that set, so a new route
+        // under a shell prefix fails a test until it is consciously ruled public or gated).
+        MappedEndpoints = Tenancy.HostedRefusalRouteSpace.SelectFinalisedEndpoints(_app);
 
         await _app.StartAsync();
 

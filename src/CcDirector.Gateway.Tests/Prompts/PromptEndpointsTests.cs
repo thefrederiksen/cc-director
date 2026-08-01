@@ -30,7 +30,9 @@ public sealed class PromptEndpointsTests : IAsyncLifetime
         _app = builder.Build();
         _app.Urls.Add("http://127.0.0.1:0");
 
-        PromptEndpoints.Map(_app, new GatewayPromptLog(_dir));
+        // Self-host-only harness: this host never runs hosted, so there is no boundary to pass. The
+        // parameter is required (finding CR-7), so the absence is stated rather than defaulted.
+        PromptEndpoints.Map(_app, new GatewayPromptLog(_dir), tenantBoundary: null);
         await _app.StartAsync();
 
         _client = new HttpClient { BaseAddress = new Uri(_app.Urls.First()) };

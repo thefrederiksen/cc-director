@@ -138,6 +138,12 @@ internal static class MachineEndpoints
     /// </summary>
     public static void Map(IEndpointRouteBuilder outer, LauncherRegistry launchers,
         MachineSessionSpawner spawner,
+        // The tenant boundary. Every launcher-registry read/write and every relay is scoped to the CALLING
+        // tenant, resolved from the authenticated device key (never the machine name in the path or body).
+        // REQUIRED, not defaulted (tenant-boundary hardening, release 2026-07-31, finding CR-7): the boundary
+        // is a security argument, and when it was optional a forgotten argument silently served the Local
+        // partition on hosted. A self-host-only caller must state the absence with an explicit null.
+        HostedTenantBoundary? boundary,
         LauncherCommandRouter.SendLauncherCommandAsync? sendLauncherCommand = null,
         // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store. When non-null, a
         // mission-scoped spawn (req.MissionId set) is validated against it here - the Gateway is the source
@@ -151,11 +157,7 @@ internal static class MachineEndpoints
         // spawn with no explicit run auto-seats onto the mission's run. After a successful spawn the new
         // session is recorded as a run PARTICIPANT - the persisted run-to-session membership governance
         // reads. Null (old callers, tests) seats nothing and changes nothing.
-        Workflows.WorkflowRunStore? workflowRuns = null,
-        // The tenant boundary. Every launcher-registry read/write and every relay is scoped to the CALLING
-        // tenant, resolved from the authenticated device key (never the machine name in the path or body).
-        // Null on self-host, where the single tenant is Local and every authenticated caller resolves to it.
-        HostedTenantBoundary? boundary = null)
+        Workflows.WorkflowRunStore? workflowRuns = null)
     {
         if (spawner is null) throw new ArgumentNullException(nameof(spawner));
 
@@ -457,6 +459,72 @@ internal static class MachineEndpoints
             try { body = await ctx.Request.ReadFromJsonAsync<LaunchRelayBody>(ct); }
             catch { /* treat as null -> launcher will 400 */ }
 
+            // Tenant-boundary hardening (release 2026-07-31, finding CR-5): starting a program on a machine is
+            // always a protected action, so EVERY launch requires the same explicit confirmation the sibling
+            // restart/stop slot guard demands - it used to relay on key possession alone, which made a stolen
+            // key remote code execution across the account. This is the accident guard; the authorization half
+            // is the launcher's installed-applications allowlist (AppCatalog.ResolveLaunchPath), enforced in
+            // the launcher process itself so no relay arm can bypass it.
+            if (body?.ConfirmProtected != true)
+            {
+                var reason = "launch guard: refusing to start a program without confirmProtected=true";
+                FileLog.Write($"[MachineEndpoints] RELAY_REFUSED machine={machine} verb=launch reason={reason}");
+                return Results.Json(new
+                {
+                    error = "launch_guard",
+                    detail = reason,
+                    machine,
+                    verb = "launch",
+                    hint = "Set confirmProtected=true to confirm starting a program on this machine.",
+                }, statusCode: 403);
+            }
+
+            // Tenant-boundary hardening (release 2026-07-31, inspection finding I1-03). On a HOSTED
+            // process the launch verb accepts NO caller-supplied arguments and no caller-supplied working
+            // directory: the catalogue entry ALONE determines what runs.
+            //
+            // Why: the catalogue allowlist on its own was never containment. Every ordinary machine has a
+            // command interpreter or script host in its installed applications, so a caller could select
+            // that catalogued entry and put the real command in the argument string - the launcher
+            // interpolates it into the command line it starts. That is arbitrary code execution wearing an
+            // installed application's name, which is the capability this mission exists to remove.
+            //
+            // Self-host is deliberately UNCHANGED - the desktop and the local agent keep passing arguments,
+            // so no capability is deleted, only narrowed on the surface a stolen tenant credential can reach.
+            // This is reversible when the credential-authority tiers land (the named gap from ruling 6).
+            //
+            // The refusal is EXPLICIT rather than a silent drop: quietly discarding the arguments would
+            // start a DIFFERENT program than the caller asked for and report success, which is its own
+            // failure mode and a worse one to debug.
+            // The rule is about the FIELD BEING PRESENT, not about what is in it (inspection finding
+            // M03-I2B-02). The first version of this guard tested IsNullOrWhiteSpace and then
+            // forwarded the original object, so an empty or whitespace-only value passed a rule that
+            // says no caller-supplied arguments and no caller-supplied working directory are
+            // accepted. That is not merely untidy: an EMPTY working directory is not "no working
+            // directory" downstream - it moves the launcher's choice from the application's own
+            // directory to the process default, which is a caller-influenced change to how the
+            // program starts. A JSON null is treated as absent because it is indistinguishable from
+            // an omitted property and carries nothing from the caller either way.
+            var suppliedArgs = body?.Args is not null;
+            var suppliedCwd = body?.Cwd is not null;
+            if (GatewayHostedMode.IsHosted && (suppliedArgs || suppliedCwd))
+            {
+                var supplied = suppliedArgs && suppliedCwd
+                    ? "arguments and a working directory"
+                    : suppliedArgs ? "arguments" : "a working directory";
+                var reason = $"launch guard: this hosted service does not accept {supplied} on a launch request";
+                FileLog.Write($"[MachineEndpoints] RELAY_REFUSED machine={machine} verb=launch reason={reason}");
+                return Results.Json(new
+                {
+                    error = "launch_arguments_not_allowed",
+                    detail = reason,
+                    machine,
+                    verb = "launch",
+                    hint = "Start the application by its catalogue name or path with no args and no cwd. "
+                         + "The catalogue entry determines what runs.",
+                }, statusCode: 403);
+            }
+
             var outcome = await LauncherLifecycleRelay.SendLaunchAsync(
                 tenant, machine, body, launchers, sendLauncherCommand, ct);
             return ToResult(machine, "launch", outcome);
@@ -665,6 +733,12 @@ internal sealed class LaunchRelayBody
     public string? Args { get; init; }
     public string? Cwd { get; init; }
     public bool Headless { get; init; }
+
+    /// <summary>
+    /// Tenant-boundary hardening (CR-5): the explicit confirmation every launch requires, the same flag the
+    /// restart/stop slot guard reads. Without it the route refuses with 403 before any relay arm runs.
+    /// </summary>
+    public bool ConfirmProtected { get; init; }
 }
 
 /// <summary>Response body returned by the Gateway for relay calls.</summary>

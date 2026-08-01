@@ -126,6 +126,10 @@ internal static class GatewayWingmanVoiceEndpoint
         KeyVault vault,
         WingmanVoiceService voice,
         TenantSettingsResolver tenantSettings,
+        // REQUIRED AND NON-NULLABLE (finding I1-01), and moved AHEAD of the optional tail so it cannot sit
+        // in a defaulted position: a forgotten boundary must be a compile error, never a silent default.
+        // Self-host callers construct it over the SingleTenantContext.
+        Tenancy.HostedTenantBoundary tenantBoundary,
         Streaming.PushedSessionStore? pushedSessions = null,
         DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = null,
         SessionOwnerCache? owners = null,
@@ -136,7 +140,6 @@ internal static class GatewayWingmanVoiceEndpoint
         Voice.VoiceUploadStore? uploadStore = null,
         Transcription.TranscriptionHistoryLog? history = null,
         Transcription.TranscriptionAudioArchive? audioArchive = null,
-        Tenancy.HostedTenantBoundary? tenantBoundary = null,
         Transcription.TranscriptStore? transcripts = null)
     {
         // The speech transport: the shared static in production, an injected stub in a test. This is the

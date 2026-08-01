@@ -43,7 +43,9 @@ internal static class VoiceQualityEndpoint
 
     public static void Map(
         IEndpointRouteBuilder app,
-        Tenancy.HostedTenantBoundary? tenantBoundary = null,
+        // REQUIRED AND NON-NULLABLE (finding I1-01): a forgotten boundary must be a compile error, never a
+        // silent default. Self-host callers construct it over the SingleTenantContext.
+        Tenancy.HostedTenantBoundary tenantBoundary,
         MicrophoneQualityLog? logOverride = null)
     {
         var group = app.MapGroup(Prefix);

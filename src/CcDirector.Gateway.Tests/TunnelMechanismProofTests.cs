@@ -180,6 +180,17 @@ public sealed class TunnelMechanismProofTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 
+    [Fact]
+    public async Task ReadFile_outsideTheSessionWorkingDirectory_is400_overTheTunnel()
+    {
+        // Tenant-boundary hardening (CR-4): the session's working directory is the temp root, so a path that
+        // resolves to its PARENT is outside the allowed root and must be refused end to end over the tunnel.
+        var outside = Path.Combine(Path.GetTempPath(), "..", "cc-outside-" + Guid.NewGuid().ToString("N") + ".txt");
+        var resp = await _http.GetAsync($"sessions/{_sid}/file?path={Uri.EscapeDataString(outside)}");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Contains("outside the session's working directory", await resp.Content.ReadAsStringAsync());
+    }
+
     // ---------------------------------------------------------- real up-stream producers over the wire ----
 
     [Fact]

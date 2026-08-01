@@ -72,7 +72,11 @@ public sealed class VoiceUploadLimitsTests : IDisposable
             (_, _, _) => throw new InvalidOperationException("the brain must not be reached by an upload-size test"),
             vault,
             voice,
-            tenantSettings);
+            tenantSettings,
+            // The boundary is required and non-nullable now (finding I1-01). Self-host harness, so the REAL
+            // self-host boundary: built over the SingleTenantContext, it always resolves Local.
+            new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
+                new CcDirector.Core.Tenancy.SingleTenantContext(), new CcDirector.Gateway.Pairing.DeviceRegistry()));
 
         await app.StartAsync();
         return (app, new HttpClient { BaseAddress = new Uri(app.Urls.First()) });

@@ -111,7 +111,10 @@ internal static class RecordingEndpoints
     /// </summary>
     public static void Map(
         IEndpointRouteBuilder outer,
-        Tenancy.HostedTenantBoundary? tenantBoundary = null,
+        // The auth-boundary tenant binder. REQUIRED AND NON-NULLABLE (finding I1-01): when this defaulted to
+        // null, a forgotten argument compiled cleanly and the resolver behind it decided on the argument. A
+        // self-host caller constructs the boundary over the SingleTenantContext, which always resolves Local.
+        Tenancy.HostedTenantBoundary tenantBoundary,
         KeyVault? keyVault = null,
         TranscriptionHistoryLog? history = null,
         TranscriptionAudioArchive? audioArchive = null,
@@ -136,7 +139,7 @@ internal static class RecordingEndpoints
     /// </summary>
     private static void MapRoutes(
         IEndpointRouteBuilder app,
-        Tenancy.HostedTenantBoundary? tenantBoundary,
+        Tenancy.HostedTenantBoundary tenantBoundary,
         KeyVault? keyVault,
         TranscriptionHistoryLog? history,
         TranscriptionAudioArchive? audioArchive,

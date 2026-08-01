@@ -454,16 +454,18 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     /// <summary>
     /// Start something on one machine through the Gateway's machine relay. Either <paramref name="path"/> or
     /// <paramref name="app"/> identifies it; the launcher resolves a name against its own catalogue.
+    /// <paramref name="confirmProtected"/> is the explicit confirmation the Gateway requires on every launch
+    /// (tenant-boundary hardening, CR-5) - forwarded verbatim, never invented on the caller's behalf.
     /// </summary>
     public async Task<(int Status, string Body)> LaunchOnMachineAsync(string machine, string? path, string? app,
-        string? args, string? cwd, bool headless, CancellationToken ct = default)
+        string? args, string? cwd, bool headless, bool confirmProtected = false, CancellationToken ct = default)
     {
         if (!_config.IsEnabled)
             throw new InvalidOperationException($"Gateway is not configured; cannot launch on machine '{machine}'.");
 
         FileLog.Write($"[GatewayClient] LaunchOnMachineAsync: {machine} path={path ?? "(none)"} app={app ?? "(none)"}");
         using var resp = await _http.PostAsJsonAsync($"machines/{Uri.EscapeDataString(machine)}/launch",
-            new { path, app, args, cwd, headless }, ct);
+            new { path, app, args, cwd, headless, confirmProtected }, ct);
         var body = await resp.Content.ReadAsStringAsync(ct);
         FileLog.Write($"[GatewayClient] LaunchOnMachineAsync: {machine} -> {(int)resp.StatusCode}");
         return ((int)resp.StatusCode, body);

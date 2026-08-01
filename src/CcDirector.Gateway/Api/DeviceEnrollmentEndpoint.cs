@@ -25,9 +25,10 @@ internal static class DeviceEnrollmentEndpoint
 {
     public static void Map(IEndpointRouteBuilder app, DeviceRegistry devices,
         // MTR-12: the auth-boundary tenant binder. The listing is scoped to the REQUEST's own tenant, resolved
-        // from the AUTHENTICATED per-device key the auth middleware stashed (never from client input). Null
-        // (self-host, tests) is the single Local tenant, so its own devices list exactly as before.
-        Tenancy.HostedTenantBoundary? tenantBoundary = null)
+        // from the AUTHENTICATED per-device key the auth middleware stashed (never from client input).
+        // REQUIRED AND NON-NULLABLE (finding I1-01): a forgotten boundary must be a compile error, never a
+        // silent default. Self-host callers construct it over the SingleTenantContext.
+        Tenancy.HostedTenantBoundary tenantBoundary)
     {
         if (devices is null) throw new ArgumentNullException(nameof(devices));
 
@@ -37,7 +38,10 @@ internal static class DeviceEnrollmentEndpoint
             // full multi-tenant device inventory (every id / machine name / issued time across every tenant). On
             // self-host every caller is the single Local tenant (unchanged behaviour); on hosted a request with no
             // bound tenant is DENIED (403) - never a fall-back to Local, and never another tenant's devices.
-            var tenant = tenantBoundary is null ? TenantId.Local : tenantBoundary.ResolveRequestTenant(ctx);
+            // Resolved through the gated shared resolver (finding I1-01): deciding on the argument
+            // (`tenantBoundary is null ? TenantId.Local : ...`) fails OPEN - a hosted process handed a null
+            // boundary would answer the shared Local partition's full device inventory.
+            var tenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
             if (tenant is null)
                 return Results.Json(new { error = "no tenant is bound to this request" },
                     statusCode: StatusCodes.Status403Forbidden);

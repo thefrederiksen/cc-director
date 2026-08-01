@@ -71,7 +71,9 @@ internal static class AccountDevicesEndpoint
     /// the hosted path FAILS CLOSED with a 503. Ignored off hosted mode.
     /// </param>
     public static void Map(IEndpointRouteBuilder app, DevThrottleAccountService? account, DeviceRegistryClient devices, string thisDeviceName,
-        Pairing.DeviceRegistry localDevices, Tenancy.HostedTenantBoundary? tenantBoundary = null)
+        // REQUIRED AND NON-NULLABLE (finding I1-01): a forgotten boundary must be a compile error, never a
+        // silent default. Self-host callers construct it over the SingleTenantContext.
+        Pairing.DeviceRegistry localDevices, Tenancy.HostedTenantBoundary tenantBoundary)
     {
         if (devices is null) throw new ArgumentNullException(nameof(devices));
         if (thisDeviceName is null) throw new ArgumentNullException(nameof(thisDeviceName));

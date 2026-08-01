@@ -112,7 +112,12 @@ public sealed class DictionarySuggestionsEndpointTests : IDisposable
         builder.Logging.ClearProviders();
         var app = builder.Build();
         app.Urls.Add(bindUrl);
-        RecordingEndpoints.Map(app, tenantBoundary: null, keyVault: null, history: null, audioArchive: null,
+        // The boundary is required and non-nullable now (finding I1-01). This is a self-host harness, so it
+        // gets the REAL self-host boundary: built over the SingleTenantContext, it always resolves Local.
+        RecordingEndpoints.Map(app,
+            tenantBoundary: new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
+                new CcDirector.Core.Tenancy.SingleTenantContext(), new CcDirector.Gateway.Pairing.DeviceRegistry()),
+            keyVault: null, history: null, audioArchive: null,
             suggestions: suggestions, dismissals: dismissals);
         await app.StartAsync();
         var baseUrl = $"http://127.0.0.1:{BoundPort.Of(app)}";

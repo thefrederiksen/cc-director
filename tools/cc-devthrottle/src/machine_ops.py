@@ -187,7 +187,11 @@ def launch(machine: str, app: Optional[str], path: Optional[str], args: Optional
     if not app and not path:
         _fail("Name what to start: --app \"Chrome\" or --path \"C:\\\\Tools\\\\thing.exe\".")
 
-    body = {"app": app, "path": path, "args": args, "cwd": cwd, "headless": headless}
+    # confirmProtected carries this command's explicit intent through the relay: the Gateway refuses any
+    # launch without it (tenant-boundary hardening, CR-5). Typing `machine launch` IS the confirmation -
+    # the flag exists to stop programs being started as a side effect of something else.
+    body = {"app": app, "path": path, "args": args, "cwd": cwd, "headless": headless,
+            "confirmProtected": True}
     try:
         payload = director.post_json(f"fleet/machines/{machine}/launch", body, timeout=60)
     except director.DirectorError as err:

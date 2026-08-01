@@ -30,14 +30,18 @@ internal static class RepoStateEndpoints
     public const string Path = "/gateway/repostate";
 
     public static void Map(IEndpointRouteBuilder app, RepoStateStore store,
-        Tenancy.HostedTenantBoundary? tenantBoundary = null, Func<DateTime>? utcNow = null)
+        // REQUIRED AND NON-NULLABLE (finding I1-01): a forgotten boundary must be a compile error, never a
+        // silent default. Self-host callers construct it over the SingleTenantContext.
+        Tenancy.HostedTenantBoundary tenantBoundary, Func<DateTime>? utcNow = null)
     {
         ArgumentNullException.ThrowIfNull(store);
         var now = utcNow ?? (() => DateTime.UtcNow);
 
         app.MapPost(Path, (HttpContext ctx, RepoStatePushRequest? request) =>
         {
-            var tenant = tenantBoundary is null ? TenantId.Local : tenantBoundary.ResolveRequestTenant(ctx);
+            // Resolved through the gated shared resolver (finding I1-01): deciding on the argument fails
+            // OPEN - a hosted process handed a null boundary would write the push into the Local partition.
+            var tenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
             if (tenant is null)
                 return Results.Json(new { error = "no tenant is bound to this request" },
                     statusCode: StatusCodes.Status403Forbidden);

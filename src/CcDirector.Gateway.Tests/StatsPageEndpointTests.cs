@@ -58,7 +58,11 @@ public sealed class StatsPageEndpointTests : IDisposable
             app.Use(async (ctx, next) => await AuthMiddleware.Run(ctx, requireToken, next));
         }
 
-        StatsPageEndpoint.Map(app, agg);
+        // The boundary is required and non-nullable now (finding I1-01). Self-host harness, so the REAL
+        // self-host boundary: built over the SingleTenantContext, it always resolves Local.
+        StatsPageEndpoint.Map(app, agg,
+            new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
+                new CcDirector.Core.Tenancy.SingleTenantContext(), new CcDirector.Gateway.Pairing.DeviceRegistry()));
         await app.StartAsync();
         var http = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
         return (app, http);

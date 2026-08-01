@@ -40,7 +40,9 @@ internal static class TranscriptionAnalysisEndpoint
 
     public static void Map(
         IEndpointRouteBuilder outer,
-        Tenancy.HostedTenantBoundary? tenantBoundary = null,
+        // REQUIRED AND NON-NULLABLE (finding I1-01): a forgotten boundary must be a compile error, never a
+        // silent default. Self-host callers construct it over the SingleTenantContext.
+        Tenancy.HostedTenantBoundary tenantBoundary,
         TranscriptionHistoryReader? reader = null,
         TranscriptionAudioArchive? audioArchive = null)
     {
@@ -59,7 +61,7 @@ internal static class TranscriptionAnalysisEndpoint
 
     private static void MapRoutes(
         IEndpointRouteBuilder app,
-        Tenancy.HostedTenantBoundary? tenantBoundary,
+        Tenancy.HostedTenantBoundary tenantBoundary,
         TranscriptionHistoryReader? reader,
         TranscriptionAudioArchive? audioArchive)
     {

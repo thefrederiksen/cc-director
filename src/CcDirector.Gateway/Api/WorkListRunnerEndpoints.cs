@@ -37,8 +37,10 @@ internal static class WorkListRunnerEndpoints
         DirectorCommandRouter.SendDirectorCommandAsync? sendCommand,
         // MTR-01: the auth-boundary tenant binder. This route spawns a drain (sessions) on a target Director,
         // so it must resolve that Director in the REQUEST's own tenant - a client-supplied directorId can only
-        // ever name a Director the caller owns. Null (self-host, tests) is the single Local tenant, unchanged.
-        Tenancy.HostedTenantBoundary? tenantBoundary = null)
+        // ever name a Director the caller owns. REQUIRED AND NON-NULLABLE (finding I1-01): a forgotten
+        // boundary must be a compile error, never a silent default. Self-host callers construct it over the
+        // SingleTenantContext.
+        Tenancy.HostedTenantBoundary tenantBoundary)
     {
         app.MapPost("/lists/{name}/run", async (string name, HttpContext ctx) =>
         {
@@ -65,7 +67,9 @@ internal static class WorkListRunnerEndpoints
             // Gate on existence only; the run itself dispatches the create verb down the stream.
             // MTR-01: resolve the target Director in the REQUEST's own tenant (403 with no bound tenant, 404 for
             // an id the caller does not own) so a drain cannot be started on another tenant's Director.
-            var reqTenant = tenantBoundary is null ? TenantId.Local : tenantBoundary.ResolveRequestTenant(ctx);
+            // Resolved through the gated shared resolver (finding I1-01): deciding on the argument fails
+            // OPEN - a hosted process handed a null boundary would resolve Local and reach Local's Directors.
+            var reqTenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
             if (reqTenant is null)
                 return Results.Json(new { error = "no tenant is bound to this request" },
                     statusCode: StatusCodes.Status403Forbidden);

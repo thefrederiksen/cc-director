@@ -398,6 +398,11 @@ public sealed class RosterServesLastKnownTests
                 registry,
                 version: "test",
                 token: "test-token",
+                // Self-host-only harness. The boundary is required and non-nullable now (finding I1-01), so
+                // it gets the REAL self-host boundary: built over the SingleTenantContext, it always
+                // resolves Local - behaviour identical to the null it used to state.
+                tenantBoundary: new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
+                    new CcDirector.Core.Tenancy.SingleTenantContext(), new CcDirector.Gateway.Pairing.DeviceRegistry()),
                 owners: owners,
                 pushedSessions: store,
                 streamStaleAfter: StaleAfter,

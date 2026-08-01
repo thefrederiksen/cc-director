@@ -91,11 +91,25 @@ internal sealed class DirectorUpStreamHandler
             return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "streamId is required");
         if (string.IsNullOrEmpty(request.Path))
             return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "path is required");
-        if (!File.Exists(request.Path))
+
+        // The file read is SESSION-SCOPED: resolve the session exactly as OpenTerminal does, and refuse any
+        // path outside its working directory through ResolveSessionFile (ResolveScreenshot's twin - resolve
+        // fully, then refuse anything outside the allowed root). The pre-hardening version served ANY path
+        // after only File.Exists, so on a hosted Gateway any active device key could read gateway-token.txt,
+        // .ssh keys, or .env files on any machine in the account.
+        if (!Guid.TryParse(command.SessionId, out var guid))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "invalid session id format");
+        var session = _sessionManager.GetSession(guid);
+        if (session is null)
+            return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found");
+
+        var path = ControlEndpoints.ResolveSessionFile(session.WorkingDirectory, request.Path);
+        if (path is null)
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "path is outside the session's working directory");
+        if (!File.Exists(path))
             return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "file not found");
 
         var streamId = request.StreamId;
-        var path = request.Path;
         StartProducer(streamId, ct => DirectorStreamProducers.ProduceFileAsync(path, streamId, ct));
         return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(BuildReadResponse(path, ControlEndpoints.FileContentType(path))));
     }

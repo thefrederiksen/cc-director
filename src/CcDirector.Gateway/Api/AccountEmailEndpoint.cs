@@ -60,7 +60,9 @@ internal static class AccountEmailEndpoint
     /// - never a fabricated success and never a fabricated sign-out.
     /// </param>
     public static void Map(IEndpointRouteBuilder app, DevThrottleAccountService? account, AccountNotifyClient notify,
-        Tenancy.HostedTenantBoundary? tenantBoundary = null, Tenancy.TenantRegistry? tenants = null,
+        // REQUIRED AND NON-NULLABLE (finding I1-01): a forgotten boundary must be a compile error, never a
+        // silent default. Self-host callers construct it over the SingleTenantContext.
+        Tenancy.HostedTenantBoundary tenantBoundary, Tenancy.TenantRegistry? tenants = null,
         AccountNotifyByTenantClient? byTenant = null)
     {
         if (notify is null) throw new ArgumentNullException(nameof(notify));

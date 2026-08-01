@@ -222,7 +222,12 @@ internal static class StatsGroupProbeHost
         var app = builder.Build();
         app.Urls.Add("http://127.0.0.1:0");
 
-        var group = StatsPageEndpoint.Map(app, aggregator);
+        // The boundary is required and non-nullable now (finding I1-01). This probe host is used by the
+        // SELF-HOST control tests only, so it gets the REAL self-host boundary: built over the
+        // SingleTenantContext, it always resolves the single Local tenant.
+        var group = StatsPageEndpoint.Map(app, aggregator,
+            new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
+                new CcDirector.Core.Tenancy.SingleTenantContext(), new CcDirector.Gateway.Pairing.DeviceRegistry()));
         mapIntoGroup?.Invoke(group);
         mapOutsideGroup?.Invoke(app);
 

@@ -719,7 +719,8 @@ internal static class ControlEndpoints
             try
             {
                 var (status, body) = await gw.LaunchOnMachineAsync(
-                    machine, req?.Path, req?.App, req?.Args, req?.Cwd, req?.Headless ?? false, ct);
+                    machine, req?.Path, req?.App, req?.Args, req?.Cwd, req?.Headless ?? false,
+                    req?.ConfirmProtected ?? false, ct);
                 return Results.Content(body, "application/json; charset=utf-8", statusCode: status);
             }
             catch (Exception ex)
@@ -1701,33 +1702,78 @@ internal static class ControlEndpoints
     }
 
     /// <summary>
-    /// List sub-directories of <paramref name="path"/> for the remote folder browser. A null or
-    /// empty path returns the drive roots. Solo-tailnet: no path sandboxing (see remote-experience-plan.md).
+    /// List sub-directories of <paramref name="path"/> for the remote folder browser, contained to
+    /// <paramref name="allowedRoots"/> - the working directories of the sessions this Director hosts.
+    /// A null or empty path lists the allowed roots themselves; a named path must resolve INSIDE one
+    /// of them or the listing is refused. The pre-hardening version listed the drive roots and any
+    /// directory on the machine ("solo-tailnet: no path sandboxing"); that stood only while a single
+    /// owner held every key, and on a hosted Gateway it handed any active device key a full remote
+    /// directory browse. Same containment discipline as <see cref="ResolveSessionFile"/> and
+    /// <see cref="ResolveScreenshot"/>: resolve fully, then refuse anything outside an allowed root.
     /// </summary>
     // Gateway Cleanup Phase 0 (Worker R2): widened to internal so CatalogReadExecutor's fs-list core (the
     // list-directory read, lifted from GET /fs/list) calls the SAME helper - no drift, no duplication.
-    internal static DirectoryListingDto ListDirectory(string? path)
+    internal static DirectoryListingDto ListDirectory(string? path, IEnumerable<string> allowedRoots)
     {
+        // Normalize the roots once: full paths, trailing separators trimmed, duplicates collapsed.
+        var roots = new List<string>();
+        foreach (var root in allowedRoots)
+        {
+            if (string.IsNullOrWhiteSpace(root)) continue;
+            string fullRoot;
+            try { fullRoot = NormalizeDirectoryPath(Path.GetFullPath(root)); }
+            catch (ArgumentException) { continue; } // a label, not a local directory (remote-thread sessions)
+            if (!roots.Contains(fullRoot, StringComparer.FromComparison(PathContainmentComparison)))
+                roots.Add(fullRoot);
+        }
+
         if (string.IsNullOrWhiteSpace(path))
         {
-            var drives = DriveInfo.GetDrives()
-                .Where(d => d.IsReady)
-                .Select(d => new DirEntryDto
+            var rootEntries = roots
+                .Select(r => new DirEntryDto
                 {
-                    Name = d.Name.TrimEnd('\\', '/'),
-                    Path = d.RootDirectory.FullName,
-                    IsDrive = true,
+                    Name = Path.GetFileName(r) is { Length: > 0 } name ? name : r,
+                    Path = r,
+                    IsDrive = false,
                 })
                 .OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
-            return new DirectoryListingDto { CurrentPath = null, ParentPath = null, Entries = drives };
+            return new DirectoryListingDto { CurrentPath = null, ParentPath = null, Entries = rootEntries };
         }
 
-        var full = Path.GetFullPath(path);
+        var full = NormalizeDirectoryPath(Path.GetFullPath(path));
+        var containingRoot = roots.FirstOrDefault(r =>
+            string.Equals(full, r, PathContainmentComparison)
+            || full.StartsWith(ContainmentPrefix(r), PathContainmentComparison));
+        if (containingRoot is null)
+            throw new UnauthorizedAccessException($"directory is outside this Director's session working directories: {full}");
+
         if (!Directory.Exists(full))
             throw new DirectoryNotFoundException($"directory not found: {full}");
 
-        var parent = Directory.GetParent(full.TrimEnd('\\', '/'))?.FullName;
+        // The containment test above is LEXICAL, and Path.GetFullPath never touches the filesystem, so a
+        // link or junction planted under an allowed root keeps a legal prefix while the enumeration
+        // below follows it anywhere on disk. Decide again on the REAL filesystem identity of both the
+        // requested directory and the allowed roots (a root may itself be reached through a link), and
+        // refuse an identity that cannot be established rather than following an unresolvable reparse
+        // point.
+        var realFull = ResolveRealPath(full);
+        if (realFull is null)
+            throw new UnauthorizedAccessException($"directory could not be resolved to a real path: {full}");
+        var realFullTrimmed = NormalizeDirectoryPath(realFull);
+        var containedForReal = roots
+            .Select(ResolveRealPath)
+            .Where(r => r is not null)
+            .Select(r => NormalizeDirectoryPath(r!))
+            .Any(r => string.Equals(realFullTrimmed, r, PathIdentityComparison)
+                      || realFullTrimmed.StartsWith(ContainmentPrefix(r), PathIdentityComparison));
+        if (!containedForReal)
+            throw new UnauthorizedAccessException($"directory is outside this Director's session working directories: {full}");
+
+        // Never offer navigation above the containing root: the root's own parent is not browsable.
+        var parent = string.Equals(full, containingRoot, PathContainmentComparison)
+            ? null
+            : Directory.GetParent(full)?.FullName;
 
         var entries = Directory.EnumerateDirectories(full)
             .Select(d =>
@@ -2160,10 +2206,293 @@ internal static class ControlEndpoints
         var dir = CcStorage.Screenshots();
         var full = Path.GetFullPath(Path.Combine(dir, name));
         // Confirm the resolved path is still under the screenshots folder.
-        var dirFull = Path.GetFullPath(dir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        if (!full.StartsWith(dirFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        var dirFull = NormalizeDirectoryPath(Path.GetFullPath(dir));
+        if (!full.StartsWith(ContainmentPrefix(dirFull), PathContainmentComparison))
             return null;
-        return File.Exists(full) ? full : null;
+        if (!File.Exists(full))
+            return null;
+
+        // The bare-name gate above stops a traversal SPELLING, but it cannot stop a symbolic link
+        // PLANTED inside the screenshots folder under an innocent image name - the name is bare, the
+        // extension is allowed, and the lexical prefix is legal, while the file itself is somewhere
+        // else entirely. Decide on the real identity, and refuse when it cannot be established.
+        var realFull = ResolveRealPath(full);
+        var realDir = ResolveRealPath(dirFull);
+        if (realFull is null || realDir is null)
+            return null;
+        var realDirTrimmed = NormalizeDirectoryPath(realDir);
+        if (!realFull.StartsWith(ContainmentPrefix(realDirTrimmed), PathIdentityComparison))
+            return null;
+
+        // And the same last gate as the session-file read: an in-folder HARD LINK named
+        // "innocent.png" passes the bare-name test, the extension test and both prefix tests while
+        // naming a file that also lives outside the screenshots folder (M03-I2-01).
+        return RefuseUnlessSingleName(full);
+    }
+
+    /// <summary>
+    /// Resolve a client-supplied path for the session file read (the Local Files viewer) to an absolute
+    /// path INSIDE the session's own working directory, or null when it escapes it - an absolute path
+    /// elsewhere on the machine, a traversal that resolves outside, or an invalid path. This is
+    /// <see cref="ResolveScreenshot"/>'s twin for the read-file stream verb: resolve fully first, then
+    /// refuse anything outside the allowed root. The allowed root is the session's working directory -
+    /// the one directory the session is about - so a session-scoped file read can never reach
+    /// credentials, tokens, or any other file elsewhere on the machine.
+    /// </summary>
+    internal static string? ResolveSessionFile(string? workingDirectory, string? path)
+    {
+        if (string.IsNullOrWhiteSpace(workingDirectory) || string.IsNullOrWhiteSpace(path))
+            return null;
+
+        string root;
+        string full;
+        try
+        {
+            root = Path.GetFullPath(workingDirectory);
+            // A relative path resolves against the session's working directory; an absolute path stays
+            // itself. Either way the containment check below runs on the fully resolved result.
+            full = Path.GetFullPath(path, root);
+        }
+        catch (ArgumentException)
+        {
+            // Invalid characters, an embedded NUL, or a relative working directory (a session with no
+            // real local checkout, e.g. a remote-thread session) - nothing here is safe to serve.
+            return null;
+        }
+
+        var rootTrimmed = NormalizeDirectoryPath(root);
+        if (!full.StartsWith(ContainmentPrefix(rootTrimmed), PathContainmentComparison))
+            return null;
+
+        // The prefix test above is necessary but NOT sufficient. Path.GetFullPath is pure string
+        // normalization - it never touches the filesystem - so a symbolic link or directory junction
+        // planted UNDER the working directory keeps a perfectly legal lexical prefix while the read
+        // that follows walks out to anywhere on disk. Decide again on the REAL filesystem identity.
+        // BOTH sides are resolved: the working directory may itself be reached through a link, and
+        // resolving only the candidate would then make every legal file look out-of-root.
+        var realRoot = ResolveRealPath(rootTrimmed);
+        var realFull = ResolveRealPath(full);
+        if (realRoot is null || realFull is null)
+            return null; // identity not establishable (an unresolvable reparse point, a cycle) - refuse
+        var realRootTrimmed = NormalizeDirectoryPath(realRoot);
+        if (!realFull.StartsWith(ContainmentPrefix(realRootTrimmed), PathIdentityComparison))
+            return null;
+
+        // Everything above decides where the NAME is. This decides whether the name is the only one
+        // (M03-I2-01). A hard link is a second directory entry for the same file object and carries
+        // no reparse-point attribute, so nothing above can see it: the in-root alias resolves to
+        // itself, passes containment, and the read serves a file that also lives outside the root.
+        // A file with more than one name cannot be proven to be inside anything, so it is refused,
+        // and so is a file whose name count cannot be established.
+        return RefuseUnlessSingleName(full);
+    }
+
+    /// <summary>
+    /// The last gate of the file-containment decision: return <paramref name="full"/> only when the
+    /// filesystem says this file has exactly ONE name. See <see cref="FilesystemIdentity"/> for why a
+    /// second name defeats every path-based containment test ever written.
+    /// </summary>
+    private static string? RefuseUnlessSingleName(string full)
+    {
+        // A path with no file behind it has no identity to alias and serves nothing; the caller's own
+        // existence check answers it as an ordinary not-found. Asking the filesystem how many names a
+        // missing file has would turn every not-found into a containment refusal, which is a worse
+        // answer to debug and would deny a session file the moment it is deleted.
+        if (!File.Exists(full))
+            return full;
+
+        var singleName = FilesystemIdentity.HasExactlyOneName(full);
+        if (singleName is null)
+        {
+            FileLog.Write($"[ControlEndpoints] REFUSED {full}: the number of names this file has could not be established");
+            return null;
+        }
+        if (singleName == false)
+        {
+            FileLog.Write($"[ControlEndpoints] REFUSED {full}: the file has more than one name, so it cannot be shown to live inside the allowed root");
+            return null;
+        }
+        return full;
+    }
+
+    /// <summary>
+    /// A directory path with its trailing separators removed - EXCEPT when the path IS a filesystem
+    /// root, where the separator is part of the name and removing it changes the meaning completely.
+    ///
+    /// This is not a tidiness helper, it is a correctness one. On Windows <c>D:\</c> trimmed becomes
+    /// <c>D:</c>, which is DRIVE-RELATIVE: it resolves to that drive's current directory, not to the
+    /// drive's root. On Unix <c>/</c> trimmed becomes the empty string, which resolves to the process
+    /// current directory. Either way a session whose working directory is a filesystem root would have
+    /// its containment decided against a completely different directory, and every file under it
+    /// refused - which is exactly the regression the second inspection found (M03-I2B-04).
+    /// </summary>
+    internal static string NormalizeDirectoryPath(string path)
+    {
+        if (string.IsNullOrEmpty(path))
+            return path;
+        var pathRoot = Path.GetPathRoot(path);
+        if (!string.IsNullOrEmpty(pathRoot) && string.Equals(path, pathRoot, StringComparison.Ordinal))
+            return path;
+        var trimmed = path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return trimmed.Length == 0 ? path : trimmed;
+    }
+
+    /// <summary>
+    /// The prefix every path INSIDE <paramref name="directory"/> begins with: the directory followed
+    /// by exactly one separator. A filesystem root already ends in its own separator, so appending a
+    /// second one would build a prefix that no real path can ever match.
+    /// </summary>
+    internal static string ContainmentPrefix(string directory) =>
+        directory.EndsWith(Path.DirectorySeparatorChar) || directory.EndsWith(Path.AltDirectorySeparatorChar)
+            ? directory
+            : directory + Path.DirectorySeparatorChar;
+
+    /// <summary>
+    /// Comparison for path-containment decisions. Case-insensitive ONLY on Windows, where the
+    /// filesystem itself compares names case-insensitively; ordinal (case-sensitive) everywhere
+    /// else. On Linux paths are case-sensitive, so an ignore-case prefix test would accept
+    /// "/ROOT/x" as inside "/root" - two genuinely different directories. macOS is deliberately
+    /// treated as case-sensitive as well: its default volumes compare case-insensitively, but
+    /// case-sensitive APFS volumes are common on developer machines, and mis-classifying one
+    /// OPENS the boundary while the reverse only refuses a case-variant spelling of a legal
+    /// path - fail closed. Exposed through <see cref="PathContainmentComparisonFor"/> so both
+    /// branches of the decision are testable on any one build machine.
+    /// </summary>
+    internal static StringComparison PathContainmentComparison { get; } =
+        PathContainmentComparisonFor(OperatingSystem.IsWindows());
+
+    /// <summary>The pure decision behind <see cref="PathContainmentComparison"/>; see there.</summary>
+    internal static StringComparison PathContainmentComparisonFor(bool windowsFileSystem) =>
+        windowsFileSystem ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
+    /// <summary>
+    /// Comparison for the containment decision made on RESOLVED paths - always ordinal, on every
+    /// platform, because both sides have already been folded to the spelling the filesystem itself
+    /// uses (<see cref="FilesystemIdentity.CanonicalPath"/>).
+    ///
+    /// This is the second half of inspection finding M03-I2-01. The platform-wide ignore-case rule
+    /// above is right about the DEFAULT Windows filesystem and wrong about a directory carrying the
+    /// NTFS per-directory case-sensitive flag, where "repo" and "REPO" are two different directories
+    /// and an ignore-case prefix test accepts the wrong one as inside. Comparing canonical spellings
+    /// ordinally decides correctly under either rule, and needs no guess about which rule applies:
+    /// on a case-insensitive parent every spelling folds onto the one real name, and on a
+    /// case-sensitive parent the two names fold to themselves and stay distinct.
+    ///
+    /// <see cref="PathContainmentComparison"/> is kept for the cheap LEXICAL pre-filter that runs
+    /// before anything touches the filesystem. That pre-filter is deliberately the more permissive
+    /// of the two on Windows: it only has to avoid resolving obvious nonsense, and the resolved
+    /// comparison below is what actually decides.
+    /// </summary>
+    internal static StringComparison PathIdentityComparison => StringComparison.Ordinal;
+
+    /// <summary>
+    /// Resolve <paramref name="path"/> to its REAL filesystem identity: every symbolic link,
+    /// junction, or other resolvable reparse point in every EXISTING component - intermediate
+    /// directories included, which a single <see cref="File.ResolveLinkTarget(string, bool)"/>
+    /// call does not cover - is followed to its final target, and a resolved target is walked
+    /// again in full so a target that itself sits behind links is also resolved. Returns null
+    /// when the identity cannot be established: a reparse point .NET cannot interpret, a link
+    /// cycle, or a component whose attributes cannot be read. Callers must REFUSE on null -
+    /// never fall back to the lexical answer. Components that do not exist cannot hide a link,
+    /// so a non-existent suffix is kept lexically (the caller's own existence checks handle it).
+    /// </summary>
+    internal static string? ResolveRealPath(string path)
+    {
+        var resolved = ResolveLinkChain(path);
+        if (resolved is null)
+            return null;
+
+        // Fold the result to the spelling the filesystem itself uses. On Windows that is what makes
+        // the containment comparison ORDINAL and therefore correct on a per-directory case-sensitive
+        // parent, which the platform supports and the old ignore-case rule got wrong (M03-I2-01).
+        // Everywhere else this returns the path unchanged.
+        return FilesystemIdentity.CanonicalPath(resolved);
+    }
+
+    /// <summary>
+    /// The link-following half of <see cref="ResolveRealPath"/>: every existing component walked,
+    /// every resolvable reparse point followed. See there for the contract.
+    /// </summary>
+    private static string? ResolveLinkChain(string path)
+    {
+        // More link hops than this is a cycle (a link pointing back at its own ancestor) or an
+        // absurd chain; either way the identity is not establishable - refuse.
+        const int maxLinkResolutions = 40;
+        var resolutions = 0;
+
+        string current;
+        try { current = Path.GetFullPath(path); }
+        catch (ArgumentException) { return null; }
+
+        var followedLink = true;
+        while (followedLink)
+        {
+            followedLink = false;
+            var pathRoot = Path.GetPathRoot(current);
+            if (string.IsNullOrEmpty(pathRoot))
+                return null; // not an absolute path - no real identity to establish
+            var components = current[pathRoot.Length..].Split(
+                new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+                StringSplitOptions.RemoveEmptyEntries);
+
+            var prefix = pathRoot;
+            for (var i = 0; i < components.Length; i++)
+            {
+                var candidate = Path.Combine(prefix, components[i]);
+
+                FileAttributes attributes;
+                try
+                {
+                    attributes = File.GetAttributes(candidate);
+                }
+                catch (FileNotFoundException)
+                {
+                    // Nothing exists from this component down, so nothing below can be a link;
+                    // keep the remainder lexically.
+                    return Path.Combine(prefix, string.Join(Path.DirectorySeparatorChar, components[i..]));
+                }
+                catch (DirectoryNotFoundException)
+                {
+                    return Path.Combine(prefix, string.Join(Path.DirectorySeparatorChar, components[i..]));
+                }
+                catch (IOException) { return null; }
+                catch (UnauthorizedAccessException) { return null; }
+
+                if ((attributes & FileAttributes.ReparsePoint) != 0)
+                {
+                    if (++resolutions > maxLinkResolutions)
+                        return null;
+
+                    FileSystemInfo linkInfo = (attributes & FileAttributes.Directory) != 0
+                        ? new DirectoryInfo(candidate)
+                        : new FileInfo(candidate);
+                    FileSystemInfo? target;
+                    try { target = linkInfo.ResolveLinkTarget(returnFinalTarget: true); }
+                    catch (IOException) { return null; }
+                    catch (UnauthorizedAccessException) { return null; }
+                    if (target is null)
+                        return null; // a reparse point whose target cannot be read - refuse, never follow
+
+                    var remainder = components[(i + 1)..];
+                    current = remainder.Length == 0
+                        ? target.FullName
+                        : Path.Combine(target.FullName, Path.Combine(remainder));
+                    try { current = Path.GetFullPath(current); }
+                    catch (ArgumentException) { return null; }
+
+                    // The target's own path may run through further links; walk it again in full.
+                    followedLink = true;
+                    break;
+                }
+
+                prefix = candidate;
+            }
+
+            if (!followedLink)
+                current = prefix;
+        }
+
+        return current;
     }
 
     internal static string ScreenshotContentType(string path) => Path.GetExtension(path).ToLowerInvariant() switch
@@ -2210,4 +2539,11 @@ internal sealed class MachineLaunchRequest
     public string? Args { get; init; }
     public string? Cwd { get; init; }
     public bool Headless { get; init; }
+
+    /// <summary>
+    /// Tenant-boundary hardening (CR-5): the explicit confirmation the Gateway's launch relay now requires
+    /// on every launch (the restart/stop slot-guard flag, applied to program starts). Forwarded through this
+    /// Director hop verbatim, so a caller that wants a program started must say so explicitly end to end.
+    /// </summary>
+    public bool ConfirmProtected { get; init; }
 }

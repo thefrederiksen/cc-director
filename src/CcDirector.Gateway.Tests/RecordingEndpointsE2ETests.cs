@@ -45,7 +45,11 @@ public sealed class RecordingEndpointsE2ETests
         builder.Logging.ClearProviders();
         var app = builder.Build();
         app.Urls.Add(bindUrl);
-        RecordingEndpoints.Map(app);
+        // The boundary is required and non-nullable now (finding I1-01). Self-host harness, so the REAL
+        // self-host boundary: built over the SingleTenantContext, it always resolves Local.
+        RecordingEndpoints.Map(app,
+            new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
+                new CcDirector.Core.Tenancy.SingleTenantContext(), new CcDirector.Gateway.Pairing.DeviceRegistry()));
         await app.StartAsync();
         var baseUrl = $"http://127.0.0.1:{BoundPort.Of(app)}";
 

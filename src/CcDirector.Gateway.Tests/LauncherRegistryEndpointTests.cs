@@ -226,8 +226,47 @@ public sealed class LauncherRegistryEndpointTests : IAsyncLifetime
     [Fact]
     public async Task Relay_Launch_UnknownMachine_Returns404()
     {
-        var resp = await _http.PostAsJsonAsync("machines/UNKNOWN-MACHINE/launch", new { path = "foo.exe" });
+        var resp = await _http.PostAsJsonAsync("machines/UNKNOWN-MACHINE/launch", new { path = "foo.exe", confirmProtected = true });
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    // -------------------------------------------------------------------------
+    // Tenant-boundary hardening (release 2026-07-31, finding CR-5): EVERY launch
+    // requires confirmProtected=true, the same flag the restart/stop slot guard
+    // reads. Key possession alone used to be enough to start a program.
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public async Task Relay_Launch_WithoutConfirmProtected_IsRefused403_BeforeAnyRelay()
+    {
+        // A REGISTERED machine on a dead port: if the relay were attempted the answer would be 502
+        // "unreachable". The 403 with the launch_guard error proves the refusal happened BEFORE any
+        // dial - the reported CR-5 symptom was that this request relayed on key possession alone.
+        var req = BuildRegistrationRequest("LAUNCH-GUARD-MACHINE", port: 1);
+        await _http.PostAsJsonAsync("launchers/register", req);
+
+        var resp = await _http.PostAsJsonAsync("machines/LAUNCH-GUARD-MACHINE/launch",
+            new { path = @"C:\Windows\System32\cmd.exe", args = "/c whoami" });
+
+        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+        var json = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("launch_guard", json);
+        Assert.Contains("confirmProtected", json);
+    }
+
+    [Fact]
+    public async Task Relay_Launch_WithConfirmProtected_PassesTheGateAndReachesTheRelay()
+    {
+        // The allowed-path control: with the confirmation present the gate opens and the relay is
+        // attempted - the dead port turns that attempt into 502, which is exactly the proof that the
+        // request got PAST the 403 gate.
+        var req = BuildRegistrationRequest("LAUNCH-CONFIRM-MACHINE", port: 1);
+        await _http.PostAsJsonAsync("launchers/register", req);
+
+        var resp = await _http.PostAsJsonAsync("machines/LAUNCH-CONFIRM-MACHINE/launch",
+            new { path = @"C:\Windows\System32\cmd.exe", confirmProtected = true });
+
+        Assert.Equal(HttpStatusCode.BadGateway, resp.StatusCode);
     }
 
     // -------------------------------------------------------------------------

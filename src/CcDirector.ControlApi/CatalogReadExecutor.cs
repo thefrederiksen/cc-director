@@ -74,7 +74,7 @@ internal sealed class CatalogReadExecutor : ISessionCommandArea
             "coaching-categories" => CoachingCategories(),
             "claude-sessions" => ClaudeSessions(command),
             "interrupted-list" => InterruptedList(),
-            "fs-list" => FsList(command),
+            "fs-list" => FsList(context.SessionManager, command),
             "facts" => Facts(context.DirectorId, context.Services?.DirectorVersion),
             "repos-list" => ReposList(context.Services?.Repositories),
             "agents-list" => AgentsList(context.SessionManager.Options),
@@ -419,20 +419,25 @@ internal sealed class CatalogReadExecutor : ISessionCommandArea
     }
 
     /// <summary>
-    /// The <c>fs-list</c> verb (the list-directory read): the remote folder browser. Mirrors the Director's
-    /// <c>GET /fs/list</c> lambda - lists the drive roots when the payload path is null/blank, otherwise the
-    /// named directory - and returns a serialized <see cref="DirectoryListingDto"/>. The source route wrapped
-    /// the listing in a try/catch that turned any fault (a missing directory, an access error) into a 400 with
-    /// the message, so that try/catch is preserved here and surfaced as a <see cref="DirectorCommandStatus.BadRequest"/>.
+    /// The <c>fs-list</c> verb (the list-directory read): the remote folder browser, CONTAINED to the
+    /// working directories of the sessions this Director hosts. A null/blank payload path lists those
+    /// allowed roots; a named path must resolve inside one of them or the listing is refused (the
+    /// pre-hardening version listed drive roots and any directory on the machine, which on a hosted
+    /// Gateway handed any active device key a full remote directory browse). Returns a serialized
+    /// <see cref="DirectoryListingDto"/>. The source route wrapped the listing in a try/catch that
+    /// turned any fault (a missing directory, an access error, and now an out-of-root refusal) into a
+    /// 400 with the message, so that try/catch is preserved here and surfaced as a
+    /// <see cref="DirectorCommandStatus.BadRequest"/>.
     /// </summary>
-    internal static DirectorCommandResult FsList(DirectorCommand command)
+    internal static DirectorCommandResult FsList(SessionManager sessionManager, DirectorCommand command)
     {
         var request = SessionCommandExecutor.Deserialize<FsListRequest>(command.PayloadJson);
         var path = request?.Path;
         FileLog.Write($"[CatalogReadExecutor] fs-list: path={path}");
         try
         {
-            return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(ControlEndpoints.ListDirectory(path)));
+            var allowedRoots = sessionManager.ListSessions().Select(s => s.WorkingDirectory);
+            return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(ControlEndpoints.ListDirectory(path, allowedRoots)));
         }
         catch (Exception ex)
         {

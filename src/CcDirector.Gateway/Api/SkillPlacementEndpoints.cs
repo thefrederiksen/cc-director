@@ -24,14 +24,18 @@ internal static class SkillPlacementEndpoints
     public const string Path = "/gateway/skills/placement";
 
     public static void Map(IEndpointRouteBuilder app, SkillPlacementStore store,
-        Tenancy.HostedTenantBoundary? tenantBoundary = null, Func<DateTime>? utcNow = null)
+        // REQUIRED AND NON-NULLABLE (finding I1-01): a forgotten boundary must be a compile error, never a
+        // silent default. Self-host callers construct it over the SingleTenantContext.
+        Tenancy.HostedTenantBoundary tenantBoundary, Func<DateTime>? utcNow = null)
     {
         ArgumentNullException.ThrowIfNull(store);
         var now = utcNow ?? (() => DateTime.UtcNow);
 
         app.MapPost(Path, (HttpContext ctx, SkillPlacementPushRequest? request) =>
         {
-            var tenant = tenantBoundary is null ? TenantId.Local : tenantBoundary.ResolveRequestTenant(ctx);
+            // Resolved through the gated shared resolver (finding I1-01): deciding on the argument fails
+            // OPEN - a hosted process handed a null boundary would write the report into the Local partition.
+            var tenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
             if (tenant is null)
                 return Results.Json(new { error = "no tenant is bound to this request" },
                     statusCode: StatusCodes.Status403Forbidden);
@@ -65,7 +69,8 @@ internal static class SkillPlacementEndpoints
 
         app.MapGet(Path, (HttpContext ctx) =>
         {
-            var tenant = tenantBoundary is null ? TenantId.Local : tenantBoundary.ResolveRequestTenant(ctx);
+            // Gated resolver, same reasoning as the POST above (finding I1-01).
+            var tenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
             if (tenant is null)
                 return Results.Json(new { error = "no tenant is bound to this request" },
                     statusCode: StatusCodes.Status403Forbidden);
