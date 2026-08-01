@@ -176,7 +176,17 @@ public sealed class GatewayHost : IAsyncDisposable
     /// <c>concurrency?.Snapshot</c>), so an absent recorder is an absent series on the statistics surface -
     /// never a zero, never an invented figure, and never an exception on the roster path.
     /// </summary>
-    public Stats.ISessionConcurrencyRecorder? SessionConcurrency { get; }
+    /// <remarks>
+    /// RE-ASKED ON EVERY READ, like <see cref="Stats.InputStatsHandle.Aggregator"/>. On hosted the answer
+    /// comes from <see cref="Stats.LateStatsObservers"/>, so a statistics store that finished opening after
+    /// the startup deadline starts recording concurrency instead of staying dead until a restart. Do not
+    /// cache what this returns.
+    /// </remarks>
+    public Stats.ISessionConcurrencyRecorder? SessionConcurrency =>
+        _hostedStatsObservers is not null ? _hostedStatsObservers.Concurrency : _selfHostConcurrency;
+
+    private readonly Stats.LateStatsObservers? _hostedStatsObservers;
+    private readonly Stats.GatewaySessionConcurrencyStats? _selfHostConcurrency;
 
     /// <summary>
     /// THE FAILURE-DOMAIN BOUNDARY around the statistics store: its provider selection, its connection and
@@ -850,43 +860,18 @@ public sealed class GatewayHost : IAsyncDisposable
     /// <param name="statsStore">The already-constructed statistics store boundary. On hosted it carries
     /// either the pooled PostgreSQL factory to build over, or the named reason there is not one - which is
     /// the SAME reason this returns, rather than a second spelling of it invented here.</param>
-    private static Stats.InputStatsHandle OpenInputStats(string? inputStatsPath, Stats.Data.GatewayStatsStore statsStore)
+    private static Stats.InputStatsHandle OpenInputStats(string? inputStatsPath, Stats.LateStatsObservers? hostedObservers)
     {
         if (GatewayHostedMode.IsHosted || GatewayHostedMode.IsHostedImage)
         {
-            var factory = statsStore.Factory;
-            if (factory is null)
-            {
-                // Not "hosted, therefore no statistics" - "the statistics store is unavailable, and here is
-                // the store's OWN reason". Passing the store's reason through unchanged is what lets an
-                // operator reading a 503 tell a missing connection string from a database that is refusing
-                // connections; a reason re-worded here would be a second, drifting account of one fact.
-                var reason =
-                    $"The hosted statistics store is unavailable ({statsStore.Availability.ReasonCode}): " +
-                    $"{statsStore.Availability.Detail}";
-                FileLog.Write($"[GatewayHost] input statistics are UNAVAILABLE ({statsStore.Availability.ReasonCode}): {reason}");
-                return Stats.InputStatsHandle.Unavailable(reason);
-            }
-
-            try
-            {
-                var hosted = new Stats.GatewayInputStatsAggregator(factory);
-                FileLog.Write(
-                    "[GatewayHost] input statistics opened on the hosted statistics store " +
-                    $"(source={statsStore.Availability.Source} target={statsStore.Availability.Target}); no local file is opened");
-                return Stats.InputStatsHandle.Available(hosted);
-            }
-            catch (Exception ex)
-            {
-                // The store opened and migrated, and building the read/write path over it still failed. Same
-                // boundary as the self-host arm below: the Gateway serves, statistics say why they do not.
-                var reason =
-                    $"The hosted statistics store opened, but the statistics read path could not be built over it " +
-                    $"({ex.GetType().Name}: {ex.Message}). Statistics are unavailable; the roster, the tunnels and " +
-                    "every other Gateway surface are unaffected.";
-                FileLog.Write($"[GatewayHost] input statistics are UNAVAILABLE (ReadPathCouldNotBeBuilt): {reason}");
-                return Stats.InputStatsHandle.Unavailable(reason);
-            }
+            // DEFERRED, not decided. The statistics store is allowed to publish its context factory AFTER
+            // the startup deadline, and reading that factory once here - which is what the first version of
+            // this wiring did - threw the late arrival away and left a merely slow PostgreSQL cold start
+            // with no statistics until the process was restarted. The handle asks the resolver each time.
+            FileLog.Write(
+                "[GatewayHost] input statistics on hosted are resolved ON FIRST USE from the statistics store's " +
+                "context factory; no local file is opened on this path under any circumstance");
+            return Stats.InputStatsHandle.Deferred(hostedObservers!);
         }
 
         try
@@ -1003,25 +988,21 @@ public sealed class GatewayHost : IAsyncDisposable
             FileLog.Write(
                 $"[GatewayHost] statistics store: source={StatsStore.Availability.Source} " +
                 $"target={StatsStore.Availability.Target}");
-        InputStatsHandle = OpenInputStats(inputStatsPath, StatsStore);
+        // The hosted resolver, which owns BOTH hosted observers and builds them together the first time
+        // anything asks and the store has a factory. Null on self-host, which has no late-arrival problem
+        // because its file either opened in the constructor or did not.
+        _hostedStatsObservers = GatewayHostedMode.IsHosted || GatewayHostedMode.IsHostedImage
+            ? new Stats.LateStatsObservers(StatsStore)
+            : null;
+        InputStatsHandle = OpenInputStats(inputStatsPath, _hostedStatsObservers);
         _promptLog = new Prompts.GatewayPromptLog(promptLogPath);
-        // The fleet concurrency record, and WHICH of the two recorders is in use is the one difference
-        // between the deployments here (issue #1174).
-        //
-        // Self-host keeps the JSON-backed recorder it always had. A hosted Gateway never constructs that one,
-        // so gateway-concurrency-stats.json is never written on that path - see the property's remarks for
-        // the incident that makes writing it there unacceptable - and instead gets the database-backed store
-        // over the SAME pooled factory the aggregator above uses. Hosted with no usable store gets nothing,
-        // which every consumer already renders as an absent series rather than a zero.
-        // Written as a statement rather than a nested conditional deliberately: the two branches return two
-        // unrelated concrete types and only the interface relates them, which is exactly the kind of
-        // expression whose meaning depends on the reader knowing how a target-typed conditional resolves.
-        if (GatewayHostedMode.IsHosted || GatewayHostedMode.IsHostedImage)
-            SessionConcurrency = StatsStore.Factory is { } concurrencyFactory
-                ? new Stats.GatewaySessionConcurrencyStore(concurrencyFactory)
-                : null;
-        else
-            SessionConcurrency = new Stats.GatewaySessionConcurrencyStats();
+        // The self-host fleet concurrency record, which is the only one constructed eagerly. A hosted
+        // Gateway never constructs it, so gateway-concurrency-stats.json is never written on that path -
+        // see the SessionConcurrency property for the incident that makes writing it there unacceptable -
+        // and reads its recorder from the hosted resolver instead.
+        _selfHostConcurrency = GatewayHostedMode.IsHosted || GatewayHostedMode.IsHostedImage
+            ? null
+            : new Stats.GatewaySessionConcurrencyStats();
         // Epic #1159 step A: when a machine passes the eviction horizon (or unregisters gracefully), forget
         // what it pushed. The pushed store keeps a Director's sessions across a disconnect on purpose - that
         // is what lets the roster serve a machine whose tunnel is down - so this is the one place those

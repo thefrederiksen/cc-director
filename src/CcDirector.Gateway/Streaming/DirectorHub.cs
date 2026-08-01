@@ -327,7 +327,19 @@ public sealed class DirectorHub : Hub
         var accepted = _store.ApplyRemove(RequireBoundTenant(), directorId, Context.ConnectionId, sequence, sessionId);
         // DevThrottle Stats: its contribution stays in the totals; drop only its high-water entry, scoped to
         // this connection's bound tenant (MTR-08) so it cannot drop another tenant's same-id high-water.
-        _inputStats?.Forget(sessionId, RequireBoundTenant());
+        //
+        // CONTAINED, and this call is NOT the in-memory tidy-up its name suggests: Forget clears the mirror
+        // and then goes to the database writer to delete the stored high-water rows. So it fails for exactly
+        // the reasons the other two observations fail, and it sits after ApplyRemove has already committed
+        // the authoritative removal - the partial-success shape the snapshot and delta catches were added to
+        // remove. Containing two of the three hub paths and leaving this one was the hole an inspection
+        // found; the claim was about the hub, not about two of its methods.
+        if (_inputStats is not null)
+        {
+            var boundTenant = RequireBoundTenant();
+            Stats.StatsObservation.Contain(_inputStats.Health, "DirectorHub.RemoveSession",
+                () => _inputStats.Forget(sessionId, boundTenant));
+        }
         // A DEPARTURE RE-ROLES THE SURVIVORS, exactly as an arrival does: a controller leaving should stop
         // its workers being Workers. Must run AFTER ApplyRemove so the sweep resolves the fleet that now
         // exists rather than the one that just left.
