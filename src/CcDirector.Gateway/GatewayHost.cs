@@ -1620,6 +1620,31 @@ public sealed class GatewayHost : IAsyncDisposable
     }
 
     /// <summary>
+    /// The authenticated caller's identity for the access log: which device asked, and for which
+    /// account. The log already recorded WHAT was requested - including the file path on a session
+    /// file read - but only the remote address for WHO, and an address attributes nothing when the
+    /// caller is a phone on a mobile network or a tunnel. Without this, a log can show that a private
+    /// key was read and still not say which device read it, which is the difference between knowing
+    /// you were breached and knowing whose credential to revoke.
+    ///
+    /// Carries NO key material: DeviceCredentialIdentity holds neither the raw credential nor its
+    /// stored hash, so DT-05 (a credential never reaches the log) still holds. The account identifier
+    /// is already disclosed on /privacy as something service logs may contain. Unauthenticated
+    /// requests add nothing, so public routes are unchanged.
+    /// </summary>
+    private static string DeviceForLog(HttpContext ctx)
+    {
+        if (ctx.Items.TryGetValue(Util.AuthMiddleware.AuthenticatedDeviceItemKey, out var value)
+            && value is Pairing.DeviceCredentialIdentity identity)
+        {
+            var tenant = string.IsNullOrEmpty(identity.TenantId) ? "-" : identity.TenantId;
+            return $" device={identity.DeviceId} type={identity.DeviceType} account={tenant}";
+        }
+
+        return "";
+    }
+
+    /// <summary>
     /// Resolves this device's platform string for cloud device registration (issue #857): a short, stable
     /// operating-system label sent as the device's <c>platform</c>. The Gateway credential service is
     /// Windows-only today, so this is "windows" in practice, but the label is computed (not hard-coded) so
@@ -2366,7 +2391,7 @@ public sealed class GatewayHost : IAsyncDisposable
                     && !path.StartsWith("/assets/", StringComparison.OrdinalIgnoreCase))
                 {
                     var client = ctx.Connection.RemoteIpAddress?.ToString() ?? "?";
-                    FileLog.Write($"[GatewayHost] {ctx.Request.Method} {path}{SafeQueryForLog(ctx.Request.Path, ctx.Request.QueryString)} -> {ctx.Response.StatusCode} ({sw.ElapsedMilliseconds}ms) client={client} host={ctx.Request.Host}");
+                    FileLog.Write($"[GatewayHost] {ctx.Request.Method} {path}{SafeQueryForLog(ctx.Request.Path, ctx.Request.QueryString)} -> {ctx.Response.StatusCode} ({sw.ElapsedMilliseconds}ms) client={client} host={ctx.Request.Host}{DeviceForLog(ctx)}");
                 }
             }
         });
