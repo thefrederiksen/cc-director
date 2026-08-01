@@ -84,7 +84,7 @@ set.
 
 | Project | Outcome | Total | vs baseline | Executed | Failed | Skipped |
 |---|---|---|---|---|---|---|
-| CcDirector.Gateway.Tests | Completed | 5169 | 5153 (+16) | 5163 | 0 | 6 |
+| CcDirector.Gateway.Tests | Completed | 5172 | 5153 (+19) | 5166 | 0 | 6 |
 | CcDirector.Core.Tests | Completed | 4196 | 4179 (+17, main added tests) | 4188 | 0 | 8 |
 | CcDirector.Avalonia.Tests | Completed | 353 | 353 (=) | 353 | 0 | 0 |
 | CcDirector.Launcher.Tests | Completed | 110 | 110 (=) | 110 | 0 | 0 |
@@ -93,22 +93,24 @@ set.
 | CcDirector.Terminal.Avalonia.Tests | Completed | 24 | 24 (=) | 24 | 0 | 0 |
 
 **The number that matters is EXECUTED, not total.** The Gateway suite executed 5163 against the
-baseline's 5113 - FIFTY more tests actually ran - because the baseline run had no rig and skipped every
-PostgreSQL-gated fact. Skips fell from 40 to 6. A gate that only compared totals would have shrugged at
-+16; the executed count is what shows the hosted work was exercised at all.
+baseline's 5113 - FIFTY-THREE more tests actually ran - because the baseline run had no rig and skipped
+every PostgreSQL-gated fact. Skips fell from 40 to 6. A gate that only compared totals would have shrugged
+at +19; the executed count is what shows the hosted work was exercised at all.
 
 **The hosted facts EXECUTED rather than skipped**, which is the whole point of the stronger gate:
 
 - 8 in `HostedStatsServeTests` - serve from PostgreSQL, the production-ingress round trip, a real
   concurrency number, tenant isolation, the two refusals, and the page redirect.
-- 5 in `HostedSchemaRefusesAnUnownedRowTests` - omitted tenant refused, empty refused, all-whitespace
-  refused, tab/newline/mixed refused, and the control proving an owned row is still stored.
+- 8 in `HostedSchemaRefusesAnUnownedRowTests` - omitted refused, empty refused, all-whitespace refused,
+  whitespace-inside-a-legal-value refused, a walk over ALL 25 characters `char.IsWhiteSpace` reports
+  refusing every one, and three positive controls over the spellings production actually mints (`local`,
+  `system`, a GUID).
 - 7 in `StatisticsFailureIsContainedOnTheHotPathTests` - three containment facts (roster, hub push, hub
   remove), three uncontained controls, and the log assertion.
 - 1 in `ALateStatisticsStoreReachesTheRosterTests` - a store published AFTER route mapping still records
   from the roster.
 
-All twenty-one passed.
+All twenty-four passed.
 
 **The 6 remaining Gateway skips are unrelated to this work** and are named here so nobody has to guess:
 five live main-database proofs waiting on `CC_GATEWAY_DB_CONNECTION` (a different variable from the
