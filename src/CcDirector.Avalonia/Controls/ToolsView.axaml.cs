@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
+using CcDirector.Core.Setup;
 using CcDirector.Core.Tools;
 using CcDirector.Core.Utilities;
 
@@ -32,6 +33,12 @@ public partial class ToolsView : UserControl
     private IReadOnlyList<SkillToolLink> _allLinks = Array.Empty<SkillToolLink>();
     private bool _loaded;
 
+    // Supplied by the owning window with the fault verdict, so the banner re-checks against the same
+    // Director the verdict was reached about.
+    private string? _controlApiBaseUrl;
+    private string? _expectedBinDir;
+    private Func<Task>? _onFleetToolRepaired;
+
     public ToolsView()
     {
         InitializeComponent();
@@ -49,6 +56,109 @@ public partial class ToolsView : UserControl
     /// installed (the Settings Tools tab hosts this view above its "Download and repair tools" button),
     /// so the status list reflects the freshly installed toolset without reopening the dialog.</summary>
     public Task ReloadAsync() => LoadCatalogAsync();
+
+    /// <summary>
+    /// Show (or hide) the PATH fault banner from a verdict the Director already reached.
+    ///
+    /// The verdict is PASSED IN rather than re-derived here, so the badge on the rail and this banner
+    /// can never disagree about the same machine at the same moment - the disagreement between two
+    /// surfaces describing one thing is the failure this whole area exists to prevent.
+    /// </summary>
+    /// <param name="check">The Director's latest reachability verdict, or null when it has none yet.
+    /// Null hides the banner: no verdict is not a fault, and it is not a pass either.</param>
+    /// <param name="controlApiBaseUrl">The Director's own Control API address, so the banner can
+    /// re-check against the same endpoint after a repair.</param>
+    /// <param name="onRepaired">Invoked after a successful repair so the owning window re-drives its
+    /// own badge rather than being left showing a fault the user has just fixed.</param>
+    public void ShowFleetToolStatus(
+        FleetToolCheck? check, string? controlApiBaseUrl, Func<Task>? onRepaired = null)
+    {
+        _controlApiBaseUrl = controlApiBaseUrl;
+        _onFleetToolRepaired = onRepaired;
+        RenderFleetToolStatus(check);
+    }
+
+    private void RenderFleetToolStatus(FleetToolCheck? check)
+    {
+        if (check is not { Verdict: FleetToolVerdict.CannotReachDirector })
+        {
+            PathFaultBanner.IsVisible = false;
+            return;
+        }
+
+        PathFaultBanner.IsVisible = true;
+        _expectedBinDir = check.ExpectedBinDir;
+        PathFaultResolved.Text = check.ResolvedPath ?? "(not resolved)";
+        PathFaultExpected.Text = check.ExpectedBinDir ?? "(unknown)";
+        PathFaultExplanation.Text = check.IsDifferentInstall
+            ? "The command line on your PATH belongs to another install, so agents in your sessions "
+              + "report \"cannot connect to DevThrottle\" even though this Director is healthy and connected."
+            // Same install, still refused: repointing PATH will not help, so say what was actually seen
+            // rather than offering a fix for a fault this is not.
+            : $"The command line on your PATH could not authenticate against this Director: {check.Detail}";
+
+        // Only offer the button for the fault it actually repairs.
+        PathFaultFixButton.IsVisible = check.IsDifferentInstall;
+        PathFaultProgress.Text = "";
+    }
+
+    private async void PathFaultFixButton_Click(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            // Immediate feedback before any awaited work (responsive-UI rule).
+            PathFaultFixButton.IsEnabled = false;
+            PathFaultProgress.Text = "Repointing PATH...";
+
+            // The directory the verdict named as ours. Re-deriving it here from a different source is how
+            // the banner and the check come to disagree about which directory the repair is even for.
+            var binDir = _expectedBinDir;
+            if (string.IsNullOrWhiteSpace(binDir))
+            {
+                PathFaultProgress.Text = "No install directory to repoint to.";
+                PathFaultFixButton.IsEnabled = true;
+                return;
+            }
+
+            var repair = await Task.Run(() => FleetToolPathRepair.PutFirstOnPath(binDir));
+
+            if (!repair.Succeeded)
+            {
+                PathFaultProgress.Text = repair.Detail;
+                PathFaultFixButton.IsEnabled = true;
+                return;
+            }
+
+            // Re-ask the question rather than assuming the repair worked. A button that reports its own
+            // success without re-checking is how a fix that did nothing still looks like a fix.
+            if (string.IsNullOrWhiteSpace(_controlApiBaseUrl))
+            {
+                PathFaultProgress.Text = "PATH updated. Re-open Settings to re-check.";
+                PathFaultFixButton.IsEnabled = true;
+                return;
+            }
+
+            PathFaultProgress.Text = "Checking...";
+            var recheck = await new FleetToolReachability().RunAsync(_controlApiBaseUrl, binDir);
+            RenderFleetToolStatus(recheck);
+
+            if (recheck.Verdict == FleetToolVerdict.Working)
+            {
+                if (_onFleetToolRepaired is { } notify) await notify();
+            }
+            else
+            {
+                PathFaultProgress.Text = $"PATH updated, but it still cannot reach this Director: {recheck.Detail}";
+                PathFaultFixButton.IsEnabled = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[ToolsView] PathFaultFixButton_Click FAILED: {ex.Message}");
+            PathFaultProgress.Text = $"Could not repoint PATH: {ex.Message}";
+            PathFaultFixButton.IsEnabled = true;
+        }
+    }
 
     private async Task LoadCatalogAsync()
     {

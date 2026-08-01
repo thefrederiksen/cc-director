@@ -74,6 +74,18 @@ public static class HomeStatusBuilder
 
     public const string ToolsRowTitle = "DevThrottle tools";
 
+    /// <summary>
+    /// Whether the command line a spawned session reaches can actually drive this Director.
+    ///
+    /// This is a DIFFERENT question from the tools row, which is why it is a different row. The tools
+    /// row asks whether the tools this install placed are present and working, and it can legitimately
+    /// answer "8 of 8 passing" while every session on the machine is dead in the water - because the
+    /// cc-devthrottle PATH resolves belongs to another install entirely. Reporting one as the other is
+    /// how this page came to say "All systems go" directly above a red "Sessions cannot reach this
+    /// Director" banner on the very same screen.
+    /// </summary>
+    public const string SessionsRowTitle = "Sessions";
+
     public static HomeStatus Build(
         IReadOnlyList<AgentCliFact> agentClis,
         int toolsBuilt,
@@ -81,7 +93,8 @@ public static class HomeStatusBuilder
         IReadOnlyList<string>? brokenTools = null,
         Tools.ToolHealthSummary? toolHealth = null,
         bool basePythonBroken = false,
-        bool toolsSetupInProgress = false)
+        bool toolsSetupInProgress = false,
+        Setup.FleetToolCheck? sessionReachability = null)
     {
         // Tool setup that is still running is progress, not a fault - it outranks every failure signal
         // below, because on first launch those signals ARE the unfinished setup. It goes red only once
@@ -112,9 +125,51 @@ public static class HomeStatusBuilder
             toolsCheck,
         };
 
+        // Only when there IS a verdict. An unjudged machine must not be handed a green row it did not
+        // earn, and must not be handed a red one either - it gets no row at all until the check has run.
+        if (BuildSessions(sessionReachability) is { } sessionsCheck)
+            checks.Add(sessionsCheck);
+
         var readyCount = checks.Count(c => c.Level == HomeCheckLevel.Ok);
         var allReady = readyCount == checks.Count;
         return new HomeStatus(checks, allReady, readyCount, checks.Count);
+    }
+
+    /// <summary>
+    /// The Sessions row, or null when the check has not reached a verdict yet.
+    ///
+    /// The detail is written for someone who has just been told by an agent that DevThrottle is down.
+    /// It names the real cause, because the failure mode this row exists to end is a user believing the
+    /// product or the network is broken when neither is.
+    /// </summary>
+    private static HomeCheck? BuildSessions(Setup.FleetToolCheck? check)
+    {
+        if (check is null) return null;
+
+        return check.Verdict switch
+        {
+            Setup.FleetToolVerdict.Working =>
+                new HomeCheck(SessionsRowTitle, HomeCheckLevel.Ok,
+                    "the command line can reach this Director", HomeCheckAction.None),
+
+            Setup.FleetToolVerdict.NotFound =>
+                new HomeCheck(SessionsRowTitle, HomeCheckLevel.Bad,
+                    "cc-devthrottle is not on this machine's PATH, so sessions cannot drive DevThrottle",
+                    HomeCheckAction.OpenTools),
+
+            Setup.FleetToolVerdict.CannotReachDirector when check.IsDifferentInstall =>
+                new HomeCheck(SessionsRowTitle, HomeCheckLevel.Bad,
+                    "the command line on your PATH is from another install, so agents report "
+                    + "\"cannot connect to DevThrottle\"", HomeCheckAction.OpenTools),
+
+            Setup.FleetToolVerdict.CannotReachDirector =>
+                new HomeCheck(SessionsRowTitle, HomeCheckLevel.Bad,
+                    $"the command line cannot reach this Director: {check.Detail}", HomeCheckAction.OpenTools),
+
+            // Unchecked, or a verdict added later that this switch has not been taught. Saying nothing
+            // is correct; inventing a green row would be the bug this whole row exists to prevent.
+            _ => null,
+        };
     }
 
     /// <summary>

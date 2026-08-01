@@ -19,6 +19,7 @@ using CcDirector.Core.Account;
 using CcDirector.Core.AgentPlugins;
 using CcDirector.Core.Agents;
 using CcDirector.Core.Backends;
+using CcDirector.Core.Setup;
 using CcDirector.Core.Claude;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.GatewayConnection;
@@ -1192,7 +1193,7 @@ public partial class MainWindow : Window
                 || (facts.missing.Count > 0 && !_autoRepairAttempted);
             _lastHomeStatus = HomeStatusBuilder.Build(
                 facts.clis, facts.built, facts.total, facts.missing, _lastToolHealth, _lastBasePythonBroken,
-                _toolsSetupInProgress);
+                _toolsSetupInProgress, _lastFleetToolCheck);
 
             ApplyHomeHealth();
 
@@ -1264,6 +1265,9 @@ public partial class MainWindow : Window
     // Cached result of the last shared base-Python runtime probe (issue #995), so the immediate home render
     // in RefreshHomeAsync reflects a known-broken runtime without re-launching the probe on the fast path.
     private bool _lastBasePythonBroken;
+    // Whether the cc-devthrottle a spawned session would reach can drive THIS Director. Null means not
+    // judged yet, which is rendered as nothing rather than as a pass.
+    private FleetToolCheck? _lastFleetToolCheck;
     private bool _toolHealthRunning;
     // True while the tools are still being set up (first-launch provisioning or a repair in flight).
     // The status screen renders this as progress instead of a failure - see HomeCheckLevel.Busy.
@@ -1321,7 +1325,8 @@ public partial class MainWindow : Window
             if (_lastClis is { } clis && _lastBuildFacts is { } bf)
             {
                 _lastHomeStatus = HomeStatusBuilder.Build(
-                    clis, bf.built, bf.total, bf.missing, summary, basePythonBroken, _toolsSetupInProgress);
+                    clis, bf.built, bf.total, bf.missing, summary, basePythonBroken, _toolsSetupInProgress,
+                    _lastFleetToolCheck);
                 ApplyHomeHealth();
             }
 
@@ -1363,6 +1368,22 @@ public partial class MainWindow : Window
     /// </summary>
     private async Task DriveToolsSyncAsync()
     {
+        // Re-ask "can a session I spawn actually drive me?" alongside the tool health run, so the badge
+        // reflects the PATH as it is now. A repair, an installer run, or another Director starting can
+        // change the answer without anything on this machine's disk looking different.
+        await RefreshFleetToolReachabilityAsync();
+
+        // Re-fold the home rows now the verdict exists. This check finishes AFTER the home page is first
+        // built, so without this the page keeps the answer it had before the question was asked - which is
+        // how it came to print "All systems go" while the log already held the failure.
+        if (_lastClis is { } homeClis && _lastBuildFacts is { } homeFacts)
+        {
+            _lastHomeStatus = HomeStatusBuilder.Build(
+                homeClis, homeFacts.built, homeFacts.total, homeFacts.missing, _lastToolHealth,
+                _lastBasePythonBroken, _toolsSetupInProgress, _lastFleetToolCheck);
+            ApplyHomeHealth();
+        }
+
         var enabled = ToolAutoUpdateSetting.Get();
         var (reconcilableDrift, unreconcilableFault) = await ClassifyToolsProblemAsync(probeReconciler: enabled);
 
@@ -1401,6 +1422,52 @@ public partial class MainWindow : Window
     /// running when we would act on the answer (auto-update on, or judging a reconcile that just finished)
     /// and not otherwise. It is skipped while a reconcile is in flight - it would be reading a moving target.
     /// </summary>
+    /// <summary>
+    /// Ask whether the cc-devthrottle a spawned session would reach can actually drive THIS Director, and
+    /// keep the answer for the badge and the repair panel.
+    ///
+    /// This is a different question from every other tools check, which is why it needed its own: the rest
+    /// ask whether the tools this install placed are present and working. This one asks whether the tool
+    /// PATH resolves is OURS. A machine can pass all of those and still hand every agent a cc-devthrottle
+    /// from an older install that cannot authenticate - the Director healthy and connected, every session
+    /// reporting "cannot connect to DevThrottle".
+    /// </summary>
+    /// <summary>
+    /// THIS Director's own tool directory - the one whose cc-devthrottle can drive it.
+    ///
+    /// Deliberately NOT <c>InstallLayout.Default().BinDir</c>. That resolves to the flat
+    /// %LOCALAPPDATA%\cc-director\bin, which predates instance homes: on a machine upgraded through the
+    /// move to <c>instances\&lt;slug&gt;</c> it is exactly where the SUPERSEDED tools were left behind.
+    /// Using it made the check name the broken directory as the good one, so a machine whose PATH
+    /// resolved that stale copy reported "same install" and offered no repair - and had the button been
+    /// offered, it would have repointed PATH at the stale copy it was supposed to escape.
+    ///
+    /// Storage is per instance, so the tools that belong to this Director are under ITS home.
+    /// </summary>
+    private static string OwnToolBinDir()
+        => Path.Combine(CcDirector.Core.Instances.InstanceContext.InstanceHome, "bin");
+
+    private async Task RefreshFleetToolReachabilityAsync()
+    {
+        // Before the Control API is listening there is no address to prove anything against, and a failure
+        // for that reason would say nothing about the tools. No verdict is not a pass: leave the previous
+        // answer (or none) standing.
+        var endpoint = _sessionManager.ControlApiBaseUrl;
+        if (string.IsNullOrWhiteSpace(endpoint))
+            return;
+
+        try
+        {
+            _lastFleetToolCheck = await new FleetToolReachability().RunAsync(endpoint, OwnToolBinDir());
+        }
+        catch (Exception ex)
+        {
+            // Never let a probe failure take the window down, and never let it read as a pass either.
+            FileLog.Write($"[MainWindow] RefreshFleetToolReachabilityAsync FAILED: {ex.Message}");
+            _lastFleetToolCheck = null;
+        }
+    }
+
     private async Task<(bool ReconcilableDrift, bool UnreconcilableFault)> ClassifyToolsProblemAsync(bool probeReconciler)
     {
         var health = _lastToolHealth;
@@ -1416,6 +1483,13 @@ public partial class MainWindow : Window
         // The shared base Python being hollow takes every Python tool down at once and IS repairable, so it
         // counts as drift rather than a per-tool fault.
         if (_lastBasePythonBroken) reconcilableDrift = true;
+
+        // A cc-devthrottle that cannot reach this Director is a fault no reconcile touches: the reconciler
+        // repairs THIS install's shims and venv, all of which can be perfect while PATH still resolves an
+        // older install's copy first. Feeding it to a reconcile would spend the attempt budget on three
+        // guaranteed no-ops and land on a red badge naming no reason - exactly the shape issue #1045 fixed.
+        if (_lastFleetToolCheck is { Verdict: FleetToolVerdict.CannotReachDirector })
+            unreconcilableFault = true;
 
         if (probeReconciler && !reconcilableDrift && !_toolsReconcileInFlight)
         {
@@ -1623,16 +1697,36 @@ public partial class MainWindow : Window
                 ToolsIndicator.Cursor = new Cursor(StandardCursorType.Hand);
                 ToolsIndicatorDot.Fill = AttentionRedBorder;
                 ToolsIndicatorGlyph.IsVisible = true;
-                ToolsIndicatorLabel.Text = "Tools need attention";
-                ToolsIndicatorLabel.Foreground = AttentionRedText;
-                ToolsIndicatorSub.Text = string.IsNullOrEmpty(detail) ? "click to open Settings and repair" : detail;
-                ToolsIndicatorSub.Foreground = AttentionRedSub;
                 ToolsIndicatorSpinner.IsVisible = false;
-                // Not "automatic sync did not resolve it": red is now also reached for a tool that is
-                // installed and simply does not work, where no sync was ever the right answer and none
-                // was attempted. The sub-label above carries the specific reason (issue #1045).
-                ToolTip.SetTip(ToolsIndicator,
-                    "The DevThrottle tools are not all working.\nClick to open Settings and repair the tools.");
+                ToolsIndicatorLabel.Foreground = AttentionRedText;
+                ToolsIndicatorSub.Foreground = AttentionRedSub;
+
+                // "Tools need attention" is true but useless when the fault is that PATH points somewhere
+                // else: the tools ARE fine, they just belong to a different install. Naming the real thing
+                // is what stops an agent - and the owner - blaming the network for an hour.
+                if (_lastFleetToolCheck is { Verdict: FleetToolVerdict.CannotReachDirector } fleetFault)
+                {
+                    ToolsIndicatorLabel.Text = "Sessions cannot reach this Director";
+                    ToolsIndicatorSub.Text = fleetFault.IsDifferentInstall
+                        ? "the command line on your PATH is from another install"
+                        : fleetFault.Detail;
+                    ToolTip.SetTip(ToolsIndicator,
+                        "Agents in your sessions will report \"cannot connect to DevThrottle\",\n" +
+                        "even though this Director is healthy and connected.\n\n" +
+                        $"Your PATH gives: {fleetFault.ResolvedPath}\n" +
+                        $"This Director is: {fleetFault.ExpectedBinDir}\n\n" +
+                        "Click to open Settings and repair it.");
+                }
+                else
+                {
+                    ToolsIndicatorLabel.Text = "Tools need attention";
+                    ToolsIndicatorSub.Text = string.IsNullOrEmpty(detail) ? "click to open Settings and repair" : detail;
+                    // Not "automatic sync did not resolve it": red is now also reached for a tool that is
+                    // installed and simply does not work, where no sync was ever the right answer and none
+                    // was attempted. The sub-label above carries the specific reason (issue #1045).
+                    ToolTip.SetTip(ToolsIndicator,
+                        "The DevThrottle tools are not all working.\nClick to open Settings and repair the tools.");
+                }
                 break;
 
             case ToolsIndicatorState.Warning:
@@ -4182,6 +4276,20 @@ public partial class MainWindow : Window
         // Live-sync the pinned rail group with every change made on the Browsers tab, so the rail
         // behind the open dialog never shows a browser that was just renamed or removed.
         dialog.BrowsersView.Changed += (_, _) => _ = BrowsersRail.RefreshAsync();
+
+        // Hand the Tools tab the verdict this window already reached, rather than letting it probe
+        // again: two surfaces re-deriving the same answer is how they come to disagree about one
+        // machine. The callback re-drives the rail badge the moment a repair lands, so the badge does
+        // not sit red behind a dialog reporting the fault fixed.
+        dialog.EmbeddedToolsView.ShowFleetToolStatus(
+            _lastFleetToolCheck,
+            _sessionManager.ControlApiBaseUrl,
+            async () =>
+            {
+                await RefreshFleetToolReachabilityAsync();
+                await DriveToolsSyncAsync();
+            });
+
         if (onGatewayTab)
             dialog.SelectGatewayTab();
         else if (onToolsTab)
