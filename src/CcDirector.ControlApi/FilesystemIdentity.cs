@@ -207,13 +207,27 @@ internal static class FilesystemIdentity
     private static extern bool GetFileInformationByHandle(
         SafeFileHandle hFile, out ByHandleFileInformation lpFileInformation);
 
+    /// <summary>
+    /// BY_HANDLE_FILE_INFORMATION, field for field.
+    ///
+    /// Every member is written out as a 32-bit value, including the three timestamps, because the
+    /// Win32 structure is a run of DWORDs and FILETIMEs and is therefore 4-byte aligned throughout.
+    /// Declaring the timestamps as <c>long</c> is the obvious-looking mistake and it is silent: the
+    /// runtime aligns a 64-bit field to 8 bytes, inserts padding after the leading attributes DWORD,
+    /// and every field after it reads from the wrong offset - so the link count comes back as an
+    /// arbitrary number rather than failing. It was caught here by a probe that printed the count for
+    /// an ordinary file and got 983040 instead of 1.
+    /// </summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct ByHandleFileInformation
     {
         public uint FileAttributes;
-        public long CreationTime;
-        public long LastAccessTime;
-        public long LastWriteTime;
+        public uint CreationTimeLow;
+        public uint CreationTimeHigh;
+        public uint LastAccessTimeLow;
+        public uint LastAccessTimeHigh;
+        public uint LastWriteTimeLow;
+        public uint LastWriteTimeHigh;
         public uint VolumeSerialNumber;
         public uint FileSizeHigh;
         public uint FileSizeLow;
