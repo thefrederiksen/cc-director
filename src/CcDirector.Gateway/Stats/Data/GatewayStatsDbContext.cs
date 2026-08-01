@@ -409,6 +409,25 @@ public sealed class GatewayStatsDbContext : DbContext
                     if (property.ClrType == typeof(string))
                         property.SetCollation("C");
 
+        }
+
+        ConcurrencyStatsModel.Configure(modelBuilder);
+
+        // SQLITE IS UNTOUCHED BY ALL OF THIS, exactly as it is by the block above: a self-host
+        // gateway-stats.db is already on disk carrying the tenant default, and removing it there would
+        // force a table rebuild on every existing file to buy nothing on a single-tenant install.
+        if (Database.IsNpgsql())
+        {
+            // THE TENANT GUARD IS APPLIED HERE, AFTER ConcurrencyStatsModel.Configure, AND THE ORDER IS
+            // LOAD-BEARING. It used to sit inside the PostgreSQL block above, which runs BEFORE the
+            // concurrency entities are given their table names - so entityType.GetTableName() returned the
+            // DbSet-derived default for those three, and their constraints were created as
+            // ck_ConcurrencyPeaks_tenant_not_empty rather than ck_concurrency_peak_tenant_not_empty. The
+            // constraints still guarded the right tables, so nothing was unprotected - but the name did not
+            // match what TenantNotEmptyConstraint() returns, which makes the helper wrong for those tables and
+            // would send anyone reading a violation to a constraint that does not exist under that name.
+            // Found by the migration-transition proof, which tried to drop the constraints by their computed
+            // names and could not.
             // 3. NO TENANT DEFAULT, AND NO EMPTY TENANT. This is the multi-tenant schema, and it must not
             //    accept a row whose owner was not stated.
             //
@@ -489,7 +508,5 @@ public sealed class GatewayStatsDbContext : DbContext
                 entityType.AddCheckConstraint(TenantNotEmptyConstraint(table), "\"tenant\" ~ '^[a-z0-9-]+$'");
             }
         }
-
-        ConcurrencyStatsModel.Configure(modelBuilder);
     }
 }

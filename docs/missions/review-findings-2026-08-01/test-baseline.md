@@ -92,7 +92,7 @@ set.
 | CcDirector.Engine.Tests | Completed | 63 | 63 (=) | 63 | 0 | 0 |
 | CcDirector.Terminal.Avalonia.Tests | Completed | 24 | 24 (=) | 24 | 0 | 0 |
 
-**The number that matters is EXECUTED, not total.** The Gateway suite executed 5163 against the
+**The number that matters is EXECUTED, not total.** The Gateway suite executed 5166 against the
 baseline's 5113 - FIFTY-THREE more tests actually ran - because the baseline run had no rig and skipped
 every PostgreSQL-gated fact. Skips fell from 40 to 6. A gate that only compared totals would have shrugged
 at +19; the executed count is what shows the hosted work was exercised at all.

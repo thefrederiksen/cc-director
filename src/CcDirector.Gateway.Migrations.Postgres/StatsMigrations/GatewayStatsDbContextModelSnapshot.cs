@@ -275,7 +275,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.ToTable("concurrency_hour", "gateway_stats", t =>
                         {
-                            t.HasCheckConstraint("ck_ConcurrencyHours_tenant_not_empty", "\"tenant\" ~ '^[a-z0-9-]+$'");
+                            t.HasCheckConstraint("ck_concurrency_hour_tenant_not_empty", "\"tenant\" ~ '^[a-z0-9-]+$'");
                         });
                 });
 
@@ -305,7 +305,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.ToTable("concurrency_hour_member", "gateway_stats", t =>
                         {
-                            t.HasCheckConstraint("ck_ConcurrencyHourMembers_tenant_not_empty", "\"tenant\" ~ '^[a-z0-9-]+$'");
+                            t.HasCheckConstraint("ck_concurrency_hour_member_tenant_not_empty", "\"tenant\" ~ '^[a-z0-9-]+$'");
                         });
                 });
 
@@ -336,7 +336,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.ToTable("concurrency_peak", "gateway_stats", t =>
                         {
-                            t.HasCheckConstraint("ck_ConcurrencyPeaks_tenant_not_empty", "\"tenant\" ~ '^[a-z0-9-]+$'");
+                            t.HasCheckConstraint("ck_concurrency_peak_tenant_not_empty", "\"tenant\" ~ '^[a-z0-9-]+$'");
                         });
                 });
 

@@ -38,13 +38,43 @@ public sealed class HostedSchemaRefusesAnUnownedRowTests
 {
     private const string ConnectionEnvVar = "CC_GATEWAY_TEST_PG_STATS_CONNECTION";
 
+    private const string SkipReason =
+        "Set " + ConnectionEnvVar + " (scripts\\pg-stats-proof-rig.ps1 -Verb up) to prove the hosted schema " +
+        "refuses an unowned row.";
+
+    private static bool RigIsAbsent => string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(ConnectionEnvVar));
+
     private sealed class RequiresPostgresStatsFactAttribute : FactAttribute
     {
         public RequiresPostgresStatsFactAttribute()
         {
-            if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(ConnectionEnvVar)))
-                Skip = $"Set {ConnectionEnvVar} (scripts\\pg-stats-proof-rig.ps1 -Verb up) to prove the hosted " +
-                       "schema refuses an unowned row.";
+            if (RigIsAbsent) Skip = SkipReason;
+        }
+    }
+
+    /// <summary>
+    /// THE THEORY EQUIVALENT, AND IT HAS TO EXIST RATHER THAN BE A RUNTIME CHECK INSIDE THE METHOD.
+    ///
+    /// The positive controls started life as a plain <c>[Theory]</c> with an early return at the top of the
+    /// method when the rig was absent. That does not work, and the way it fails is worth understanding
+    /// because it is not obvious from reading the method: xUnit does not construct a test class for a fact
+    /// it has already decided to SKIP, but a fact with no Skip is constructed before its body runs - and
+    /// this class's CONSTRUCTOR calls <c>Reset()</c>, which needs the connection. So the constructor threw
+    /// before the method could decline, and the three cases FAILED instead of skipping.
+    ///
+    /// That is not a private problem. It turns every ordinary Gateway run on this machine - every session,
+    /// not just this mission's - red by three tests, and it contradicts the contract the mission's own
+    /// baseline document records: the hosted database facts are OPTIONAL locally, and W1's stronger gate
+    /// separately requires them with the rig up.
+    ///
+    /// The gate therefore has to sit where the fixture cannot get in front of it: at DISCOVERY, in the
+    /// attribute, exactly like the Fact version above.
+    /// </summary>
+    private sealed class RequiresPostgresStatsTheoryAttribute : TheoryAttribute
+    {
+        public RequiresPostgresStatsTheoryAttribute()
+        {
+            if (RigIsAbsent) Skip = SkipReason;
         }
     }
 
@@ -259,15 +289,12 @@ public sealed class HostedSchemaRefusesAnUnownedRowTests
     /// account, which is <c>Guid.NewGuid().ToString()</c> from TenantRegistry. An allowlist is only safe
     /// if it admits everything legitimate, so refusing one of these would be a far worse defect than the
     /// one being fixed - and this is the fact that would say so.</param>
-    [Theory]
+    [RequiresPostgresStatsTheory]
     [InlineData("local")]
     [InlineData("system")]
     [InlineData("9f2c1b7e-4d3a-4c5e-8b6f-0a1d2e3f4a5b")]
     public void A_row_whose_tenant_is_a_spelling_production_mints_is_still_stored(string tenant)
     {
-        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(ConnectionEnvVar)))
-            return;   // same gate as the facts above; a Theory cannot carry the custom attribute's Skip.
-
         // The spelling is a REAL TenantId, not merely a string this test likes the look of - so a pattern
         // that drifted away from what TenantId accepts would fail here rather than pass quietly.
         Assert.True(new TenantId(tenant).IsValid);
