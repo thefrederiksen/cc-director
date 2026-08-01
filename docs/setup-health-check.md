@@ -193,6 +193,77 @@ Built and proven:
 Not yet done: the end-to-end proof in a running Director (badge appears on this machine, banner shows,
 button clears both), which needs a slot Director launched against the live fault.
 
+## What happened when the button was pressed, 2026-08-01 10:43
+
+It did exactly what it was built to do and could not have worked. From that Director's own log:
+
+```
+10:43:16.273 [FleetToolPathRepair] PutFirstOnPath: ...\instances\default\bin
+10:43:16.278 [FleetToolPathRepair] PutFirstOnPath done: ...\instances\default\bin is now first
+10:43:16.278 [FleetToolReachability] RunAsync: probing cc-devthrottle against http://127.0.0.1:7879
+10:43:17.430 [FleetToolReachability] cc-devthrottle at ...\cc-director\bin\cc-devthrottle.CMD
+             FAILED to reach http://127.0.0.1:7879: Error: missing or invalid token
+```
+
+PATH was repaired correctly - registry and running process both - and the re-check resolved the same
+stale copy again, because `instances\default\bin` was **empty**. That Director's own tools had never
+been installed. Three minutes later, on the machine's own evidence:
+
+```
+10:44:19.283 [ToolReconciler] drift found: missingShims=8
+10:44:21.214 [ToolHealthProbe] cc-devthrottle FAILED: binary missing:
+             ...\instances\default\pyenv\Scripts\cc-devthrottle.exe
+```
+
+and on disk, `instances\default\pyenv` was created at 10:44:25 and the shims at 10:46:20 - both after
+the button was pressed. `ExecutableResolver` walks PATH in order and skips a directory with no match,
+so promoting an empty one changes the order and nothing about what resolves.
+
+**The root cause: the guard tested the container, not the contents.** `PutFirstOnPath` required only
+`Directory.Exists(binDir)`, and the directory had existed - empty - since the instance home was
+created. The check above it could see that PATH pointed at another install; it could not see that we
+had nothing to point at, because it never asked about our own copy.
+
+The wider fault on that machine was bigger than PATH order: this Director had no tools at all. The
+banner named a symptom of that and offered a fix for the symptom.
+
+### What changed
+
+1. **The check asks a second question.** `FleetToolReachability` now runs the same functional probe
+   against `expectedBinDir` directly, by full path, whenever the PATH probe fails. `OwnVerdict` splits
+   two faults that look identical from outside: PATH resolves someone else's WORKING copy (repoint), or
+   we have no working copy (install first, then repoint). It also puts in the log the line whose absence
+   made this undiagnosable from the panel: *this Director has no cc-devthrottle of its own*.
+2. **The button's precondition is provable.** `CanRepairByRepointingPath` requires our own copy to have
+   passed. When it has not, the banner says the tools are not installed and the button installs them
+   before touching PATH. `PutFirstOnPath` independently refuses a directory holding no `cc-devthrottle`,
+   before it writes anything.
+3. **The repair leaves ONE entry per command line.** Two entries serve nobody - only the first can win,
+   and the loser waits to win again the moment the order shifts. Superseded DevThrottle directories come
+   out of the user PATH: the flat pre-migration `<root>\bin`, anything under the temp directory (a
+   wizard test harness had leaked `...\Temp\wizard-harness-home-29ef...\cc-director\bin` onto the real
+   user PATH), and install bins gone from disk. **Another live instance's bin is left alone** - a second
+   Director in its own instance home is legitimate, and removing its tools to tidy ours would be
+   sabotage dressed as hygiene. Entries are decided on the EXPANDED path and written back RAW.
+   Nothing on disk is touched.
+4. **Sessions no longer depend on machine PATH order.** `SessionManager` puts this Director's own bin
+   first on every session's PATH, in the same breath as the `CC_DIRECTOR_API` address the session must
+   call. Machine PATH is shared state any other install can win; a session should not have to find us
+   when we can tell it. The PATH repair is now a convenience for the user's own terminals rather than
+   the mechanism the product depends on.
+5. **The panel cannot sit on a stale verdict.** The tools health pass is computed once per run, so the
+   verdict handed to the Tools page could be minutes old and describe a machine an intervening repair
+   had already healed - which is exactly what the screenshot behind this work was showing. The page
+   re-asks on load and repaints.
+
+### Why the original could not have caught this
+
+The design rule "the verdict is FUNCTIONAL, never structural" was applied to the check and not to the
+repair. The check ran a tool and read its exit code; the repair asked whether a directory existed. One
+of those is a fact about behaviour and the other is a fact about shape, and the shape was true while
+the behaviour was absent. The lesson generalises past PATH: **when a remedy depends on a resource, the
+guard must exercise the resource, not confirm its container.**
+
 ## Two hazards handled, worth not re-introducing
 
 **The user PATH must be written RAW.** Reading it through `Environment.GetEnvironmentVariable` returns

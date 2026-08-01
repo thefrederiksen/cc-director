@@ -576,6 +576,26 @@ public sealed class SessionManager : IDisposable
             if (!string.IsNullOrEmpty(DirectorId))
                 envVars["CC_DIRECTOR_ID"] = DirectorId;
 
+            // Put THIS Director's own cc-* tools first on the session's PATH.
+            //
+            // The address above is useless to a session holding a command line that cannot use it.
+            // Machine PATH is shared state: any other install, an unfinished migration, or a test rig
+            // that leaked an entry can put a different copy of cc-devthrottle in front of ours, and
+            // then every agent in every session reports "cannot connect to DevThrottle" while this
+            // Director is healthy and connected. That is not hypothetical - it is what happened on the
+            // machine this was written for, and repairing the machine PATH afterwards could only ever
+            // fix it for sessions started later.
+            //
+            // So the session is not asked to find us. It is TOLD, in the same breath as the address it
+            // must call. Nothing is removed from the user's PATH here - only which copy of our own
+            // command line wins - and this leaves the machine PATH itself untouched.
+            var ownToolBin = Path.Combine(Instances.InstanceContext.InstanceHome, "bin");
+            if (Directory.Exists(ownToolBin))
+            {
+                envVars["PATH"] = Setup.FleetToolPathRepair.PathWithOwnToolsFirst(
+                    ownToolBin, Environment.GetEnvironmentVariable("PATH"));
+            }
+
             // The credential that goes with the address above. Bound to THIS session's id and
             // least-privilege: it reads this session and the safe discovery set, and it is refused on
             // spawn, shutdown, prompting another session, another session's terminal, and settings.

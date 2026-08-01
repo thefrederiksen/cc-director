@@ -88,6 +88,15 @@ foreach ($proj in $toRun) {
     $args = @("test", (Join-Path $repoRoot $proj), "--no-build", "-c", $Configuration, "--nologo", "-v", "q") + $filterArgs
     $p = Start-Process -FilePath "dotnet" -ArgumentList $args -NoNewWindow -PassThru `
                        -RedirectStandardOutput $out -RedirectStandardError "$out.err"
+
+    # Touching .Handle keeps the process handle OPEN, which is the only reason ExitCode is readable
+    # after the process ends. Without it Start-Process -PassThru hands back an object whose ExitCode
+    # is EMPTY once the child exits - and "$null -eq 0" is false, so every project was classified
+    # FAIL. This script is the merge gate, and it was reporting "RESULT: FAILED in 7 project(s)"
+    # over seven lines that each said "Passed!  - Failed: 0". A gate that fails on green is worse
+    # than no gate: it trains everyone to ignore it, or to go and wait fifty minutes for CI.
+    $null = $p.Handle
+
     $running += [pscustomobject]@{ Name = $name; Process = $p; Log = $out }
     Write-Host "  started $name"
 }

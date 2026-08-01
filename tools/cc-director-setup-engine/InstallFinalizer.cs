@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Runtime.Versioning;
+using CcDirector.Core.Setup;
 
 namespace CcDirector.Setup.Engine;
 
@@ -11,19 +12,67 @@ namespace CcDirector.Setup.Engine;
 /// </summary>
 public static class InstallFinalizer
 {
-    /// <summary>Add the tools bin dir to the user PATH if not already present. Returns true if it changed.</summary>
+    /// <summary>
+    /// Add the tools bin dir to the user PATH if not already present. Returns true if it changed.
+    ///
+    /// TWO THINGS THIS HAS TO GET RIGHT, both learned from damage this method did:
+    ///
+    /// 1. It reads and writes the RAW stored value. It used to go through
+    ///    <c>Environment.GetEnvironmentVariable("Path", User)</c>, which returns the PATH with every
+    ///    %VARIABLE% already expanded, and wrote that back - baking one moment's expansion into the
+    ///    user's PATH permanently and destroying every variable reference in it. The raw accessors on
+    ///    <see cref="FleetToolPathRepair"/> are the single safe way to touch it.
+    ///
+    /// 2. It refuses to write a throwaway root into permanent machine state. Every Director repairs
+    ///    its own tools, and a Director running from a temporary root (a test rig, a wizard harness,
+    ///    an unpacked bundle) would otherwise append ITS temporary bin to the real user PATH, where it
+    ///    outlives the directory by months. That is exactly how
+    ///    <c>...\Temp\wizard-harness-home-29ef...\cc-director\bin</c> came to be on a live machine's
+    ///    PATH, pointing at a directory that no longer exists.
+    /// </summary>
     [SupportedOSPlatform("windows")]
     public static bool AddBinToPath(InstallLayout layout)
     {
         ArgumentNullException.ThrowIfNull(layout);
-        var current = Environment.GetEnvironmentVariable("Path", EnvironmentVariableTarget.User) ?? "";
+
+        if (IsUnderTemp(layout.BinDir))
+        {
+            EngineLog.Write(
+                "[InstallFinalizer] NOT adding to PATH - this install lives under the temp directory "
+                + $"and would outlive itself there: {layout.BinDir}");
+            return false;
+        }
+
+        var current = FleetToolPathRepair.ReadUserPathRaw();
         var updated = ComputePathWith(current, layout.BinDir);
         if (updated == current) return false;
-        // SetEnvironmentVariable(User) persists to the registry and broadcasts WM_SETTINGCHANGE, so new
-        // processes pick it up (existing shells still need to be reopened).
-        Environment.SetEnvironmentVariable("Path", updated, EnvironmentVariableTarget.User);
+
+        FleetToolPathRepair.WriteUserPathRaw(updated);
         EngineLog.Write($"[InstallFinalizer] added to PATH: {layout.BinDir}");
         return true;
+    }
+
+    /// <summary>
+    /// Is this directory inside the machine's temp directory? Compared on full paths so a directory
+    /// merely NAMED like temp is not caught, and case-insensitively because Windows paths are.
+    /// </summary>
+    internal static bool IsUnderTemp(string directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory)) return false;
+        try
+        {
+            var temp = Path.GetFullPath(Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar)
+                       + Path.DirectorySeparatorChar;
+            var full = Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar)
+                       + Path.DirectorySeparatorChar;
+            return full.StartsWith(temp, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
+        {
+            // A path we cannot resolve cannot support the claim that it is under temp, and refusing to
+            // add it on a guess would break an ordinary install.
+            return false;
+        }
     }
 
     /// <summary>Create (or overwrite) the Start Menu shortcut for the Director. No-op if its exe is absent.</summary>
