@@ -230,7 +230,16 @@ public class FleetToolPathRepairTests
     {
         // The install ROOT is on this machine's PATH as well as its bin. It is not a tool directory,
         // so it is not ours to remove - being near our files is not the same as being ours.
-        var result = RewriteWith(P(Root, OurBin), Root, OurBin);
+        //
+        // The shared helper cannot express this case: it answers "exists" and "holds the tool" from
+        // one list, so it can only describe directories where those two agree. Here they must NOT -
+        // the root exists AND holds nothing - which is exactly the distinction being tested.
+        var result = FleetToolPathRepair.Rewrite(
+            P(Root, OurBin), OurBin,
+            directoryExists: _ => true,
+            holdsFleetTool: dir => !string.Equals(
+                dir.TrimEnd(Path.DirectorySeparatorChar), Root, StringComparison.OrdinalIgnoreCase),
+            tempRoot: TempRoot);
 
         Assert.Contains(Root, result.Path, StringComparison.OrdinalIgnoreCase);
         Assert.Empty(result.Removed);
