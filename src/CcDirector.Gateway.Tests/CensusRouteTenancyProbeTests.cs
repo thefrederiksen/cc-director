@@ -208,22 +208,32 @@ public sealed class CensusRouteTenancyProbeTests : IAsyncLifetime
             HttpStatusCode.OK, "CONTROL GET /gateway/skills/{id}/versions/1 (owner B)");
         Assert.Equal(1, Int(versionOne, "version"));
 
-        // CROSS: tenant A naming tenant B's skill id on every read route. Each must be an ordinary
-        // not-found, and none may carry the seeded body or file content.
-        foreach (var path in new[]
+        // CROSS: tenant A naming tenant B's skill id on every read route.
+        //
+        // Inspection finding M03-I2-03. These five rows used to accept "NotFound or BadRequest", and a
+        // union of statuses cannot say WHICH decision was reached. SkillEndpoints.Guard deliberately
+        // turns any SkillValidationException into a 400, so a future required field, a model-binding
+        // change, or handler-specific validation would keep these rows green with the tenant lookup
+        // never reached - the exact defect Phase 5a found one row over, in enable and disable. Each row
+        // now asserts the SINGLE outcome a cross-tenant miss actually produces: the ordinary not-found,
+        // with the not-found contract that route really writes. A 400 now fails the test, which is the
+        // point: it would mean the refusal came from somewhere other than the tenant partition.
+        foreach (var (path, expectedError) in new[]
                  {
-                     $"gateway/skills/{sid}",
-                     $"gateway/skills/{sid}/body",
-                     $"gateway/skills/{sid}/files/{fileName}",
-                     $"gateway/skills/{sid}/versions",
-                     $"gateway/skills/{sid}/versions/1",
+                     ($"gateway/skills/{sid}", $"no skill with id '{sid}'"),
+                     ($"gateway/skills/{sid}/body", $"no skill with id '{sid}'"),
+                     ($"gateway/skills/{sid}/files/{fileName}", $"no file '{fileName}' on skill '{sid}'"),
+                     ($"gateway/skills/{sid}/versions", $"no skill with id '{sid}'"),
+                     ($"gateway/skills/{sid}/versions/1", $"no skill with id '{sid}'"),
                  })
         {
             var resp = await Send("GET", path, _keyA, null);
             var text = await resp.Content.ReadAsStringAsync();
             _out.WriteLine($"CROSS   GET /{path} (tenant A) -> {(int)resp.StatusCode} {text}");
-            Assert.True(resp.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.BadRequest,
-                $"/{path}: tenant A must be refused, got {(int)resp.StatusCode}; body was: {text}");
+            Assert.True(resp.StatusCode == HttpStatusCode.NotFound,
+                $"/{path}: tenant A must get the ordinary not-found and nothing else, " +
+                $"got {(int)resp.StatusCode}; body was: {text}");
+            Assert.Equal(expectedError, ErrorOf(text));
             Assert.DoesNotContain(body, text, StringComparison.Ordinal);
             Assert.DoesNotContain(fileContent, text, StringComparison.Ordinal);
         }
@@ -302,11 +312,18 @@ public sealed class CensusRouteTenancyProbeTests : IAsyncLifetime
         // Inspection finding I1-04: the clone RESPONSE used to go unasserted entirely. Only the later
         // "no stolen copy" read was checked, which a missing or completely inert clone handler passes
         // just as happily as a working one that correctly refused. The response is now asserted.
+        // Inspection finding M03-I2-03, second half: this row asserted only "not a success status",
+        // which EVERY 4xx and 5xx satisfies - a validation refusal, a routing miss, a method mismatch,
+        // a server fault. Clone has validation and conflict paths around the source lookup, so any of
+        // them could have kept this green while the tenant lookup never ran. It now asserts the one
+        // outcome a cross-tenant clone actually produces and the exact contract it writes.
         var clone = await Send("POST", $"gateway/skills/{sid}/clone?newId=stolen-copy", _keyA, "{}");
         var cloneText = await clone.Content.ReadAsStringAsync();
         _out.WriteLine($"CROSS   POST clone (tenant A) -> {(int)clone.StatusCode} {cloneText}");
-        Assert.False(clone.IsSuccessStatusCode,
-            $"clone of another tenant's skill must not succeed, got {(int)clone.StatusCode}; body was: {cloneText}");
+        Assert.True(clone.StatusCode == HttpStatusCode.NotFound,
+            $"clone of another tenant's skill must be the ordinary not-found and nothing else, " +
+            $"got {(int)clone.StatusCode}; body was: {cloneText}");
+        Assert.Equal($"no skill with id '{sid}'", ErrorOf(cloneText));
         Assert.DoesNotContain(body, cloneText, StringComparison.Ordinal);
 
         var stolen = await Send("GET", "gateway/skills/stolen-copy", _keyA, null);
@@ -440,6 +457,18 @@ public sealed class CensusRouteTenancyProbeTests : IAsyncLifetime
     }
 
     private static string Str(JsonElement el, string prop) => Member(el, prop, JsonValueKind.String).GetString()!;
+
+    /// <summary>
+    /// The "error" string a refusal body carries. A security row asserts this as well as the status so
+    /// it proves WHICH refusal it got (inspection finding M03-I2-03) - a bare status can be produced by
+    /// a validation path, a routing miss or a method mismatch just as easily as by the tenant lookup
+    /// the row is named for.
+    /// </summary>
+    private static string ErrorOf(string body)
+    {
+        using var doc = JsonDocument.Parse(body);
+        return Str(doc.RootElement, "error");
+    }
 
     private static int Int(JsonElement el, string prop) => Member(el, prop, JsonValueKind.Number).GetInt32();
 
