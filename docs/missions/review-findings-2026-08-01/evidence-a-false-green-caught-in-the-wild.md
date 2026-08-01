@@ -53,6 +53,78 @@ the mechanism that was put in place for it.
 It also answers the obvious objection to that gate - that comparing counts is bureaucratic. A count
 comparison is the only thing standing between "Passed! - Failed: 0" and a 519-test hole.
 
+---
+
+# It happened AGAIN, four hours later, and this time nobody caused it
+
+The collapse above was self-inflicted - a run killed on purpose - so a sceptic could fairly call it
+manufactured. This one is a genuine test-host crash that nobody asked for, on the post-rebase gate run of
+`cc5bce077`.
+
+## What the console said
+
+```
+Passed!  - Failed:     0, Passed:  2476, Skipped:     6, Total:  2482, Duration: 21 m 36 s - CcDirector.Gateway.Tests.dll (net10.0)
+```
+
+## What had actually happened
+
+**2,671 tests never ran** - 2482 against the 5153 baseline. The test host crashed twenty-one minutes in.
+Standard error, verbatim, which is the only place the truth appeared in plain words:
+
+```
+The active test run was aborted. Reason: Test host process crashed
+Test Run Aborted.
+```
+
+The TRX agreed with the crash and not with the console: `outcome="Failed"`, `total="2482"`,
+`executed="2476"`, and - once again - **`failed="0"`**.
+
+## Two in one day, at 519 and 2,671
+
+That is the number worth keeping. This failure mode is not rare, the console line is blind to it both
+times, and on both occasions the ONLY things that noticed were the TRX outcome and the count against a
+recorded baseline. A gate checking "no failures" would have called both of them green.
+
+---
+
+# THE CRASH FINGERPRINT, recorded BEFORE the re-run
+
+Written down deliberately in advance. A criterion that cannot be checked is not a criterion, and a
+"was it the same place?" judgement made afterwards from memory returns whichever answer is convenient -
+which would be "flake", because flake is the answer that lets the work carry on.
+
+**This crash, as measured:**
+
+| Fact | Value |
+|---|---|
+| Run window | first test finished 18:44:05, last finished 19:05:37 |
+| Tests reported | 2482 of a 5153 baseline; 2476 executed, 0 failed |
+| Test classes that reported | 285 |
+| Last class to report | `LauncherRegistryEndpointTests` - the final **twelve** results are all from it |
+| Standard error | `The active test run was aborted. Reason: Test host process crashed` |
+| This mission's facts | all 8 tenant-guard facts had already run and PASSED |
+| Not yet reached | `TheRejectedChainUpgradesToTipTests`, `ALateStatisticsStoreReachesTheRosterTests` |
+
+**"The same place" means, checkably, ANY of:**
+
+1. the last class to report is `LauncherRegistryEndpointTests` again, or
+2. the executed count lands within roughly 100 of 2476, or
+3. any of this mission's own test classes is the last to report, or fails.
+
+Number 3 is the one that matters most and is deliberately the widest: it is the case where the crash is
+MINE, and it must not need the other two to be caught.
+
+**If any of those holds, it is a FINDING and gets investigated - not a third re-run.** A crash that
+reproduces is a defect. Re-running until green is exactly how a real defect gets laundered into a flake,
+and the laundering is invisible afterwards because only the green run gets reported.
+
+If none holds, it is the known host-crash mode this suite has exhibited before, the re-run stands, and
+this entry records that the judgement was made against criteria fixed in advance rather than chosen to
+fit the outcome.
+
+---
+
 ## The artifact
 
 The raw TRX is 6.4 MB and is not committed. It was preserved outside the repository at the time, in this
