@@ -1723,7 +1723,7 @@ internal static class ControlEndpoints
             string fullRoot;
             try { fullRoot = Path.GetFullPath(root).TrimEnd('\\', '/'); }
             catch (ArgumentException) { continue; } // a label, not a local directory (remote-thread sessions)
-            if (!roots.Contains(fullRoot, StringComparer.OrdinalIgnoreCase))
+            if (!roots.Contains(fullRoot, StringComparer.FromComparison(PathContainmentComparison)))
                 roots.Add(fullRoot);
         }
 
@@ -1743,16 +1743,35 @@ internal static class ControlEndpoints
 
         var full = Path.GetFullPath(path).TrimEnd('\\', '/');
         var containingRoot = roots.FirstOrDefault(r =>
-            string.Equals(full, r, StringComparison.OrdinalIgnoreCase)
-            || full.StartsWith(r + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
+            string.Equals(full, r, PathContainmentComparison)
+            || full.StartsWith(r + Path.DirectorySeparatorChar, PathContainmentComparison));
         if (containingRoot is null)
             throw new UnauthorizedAccessException($"directory is outside this Director's session working directories: {full}");
 
         if (!Directory.Exists(full))
             throw new DirectoryNotFoundException($"directory not found: {full}");
 
+        // The containment test above is LEXICAL, and Path.GetFullPath never touches the filesystem, so a
+        // link or junction planted under an allowed root keeps a legal prefix while the enumeration
+        // below follows it anywhere on disk. Decide again on the REAL filesystem identity of both the
+        // requested directory and the allowed roots (a root may itself be reached through a link), and
+        // refuse an identity that cannot be established rather than following an unresolvable reparse
+        // point.
+        var realFull = ResolveRealPath(full);
+        if (realFull is null)
+            throw new UnauthorizedAccessException($"directory could not be resolved to a real path: {full}");
+        var realFullTrimmed = realFull.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var containedForReal = roots
+            .Select(ResolveRealPath)
+            .Where(r => r is not null)
+            .Select(r => r!.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+            .Any(r => string.Equals(realFullTrimmed, r, PathContainmentComparison)
+                      || realFullTrimmed.StartsWith(r + Path.DirectorySeparatorChar, PathContainmentComparison));
+        if (!containedForReal)
+            throw new UnauthorizedAccessException($"directory is outside this Director's session working directories: {full}");
+
         // Never offer navigation above the containing root: the root's own parent is not browsable.
-        var parent = string.Equals(full, containingRoot, StringComparison.OrdinalIgnoreCase)
+        var parent = string.Equals(full, containingRoot, PathContainmentComparison)
             ? null
             : Directory.GetParent(full)?.FullName;
 
@@ -2188,9 +2207,23 @@ internal static class ControlEndpoints
         var full = Path.GetFullPath(Path.Combine(dir, name));
         // Confirm the resolved path is still under the screenshots folder.
         var dirFull = Path.GetFullPath(dir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        if (!full.StartsWith(dirFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        if (!full.StartsWith(dirFull + Path.DirectorySeparatorChar, PathContainmentComparison))
             return null;
-        return File.Exists(full) ? full : null;
+        if (!File.Exists(full))
+            return null;
+
+        // The bare-name gate above stops a traversal SPELLING, but it cannot stop a symbolic link
+        // PLANTED inside the screenshots folder under an innocent image name - the name is bare, the
+        // extension is allowed, and the lexical prefix is legal, while the file itself is somewhere
+        // else entirely. Decide on the real identity, and refuse when it cannot be established.
+        var realFull = ResolveRealPath(full);
+        var realDir = ResolveRealPath(dirFull);
+        if (realFull is null || realDir is null)
+            return null;
+        var realDirTrimmed = realDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (!realFull.StartsWith(realDirTrimmed + Path.DirectorySeparatorChar, PathContainmentComparison))
+            return null;
+        return full;
     }
 
     /// <summary>
@@ -2224,9 +2257,134 @@ internal static class ControlEndpoints
         }
 
         var rootTrimmed = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        if (!full.StartsWith(rootTrimmed + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        if (!full.StartsWith(rootTrimmed + Path.DirectorySeparatorChar, PathContainmentComparison))
+            return null;
+
+        // The prefix test above is necessary but NOT sufficient. Path.GetFullPath is pure string
+        // normalization - it never touches the filesystem - so a symbolic link or directory junction
+        // planted UNDER the working directory keeps a perfectly legal lexical prefix while the read
+        // that follows walks out to anywhere on disk. Decide again on the REAL filesystem identity.
+        // BOTH sides are resolved: the working directory may itself be reached through a link, and
+        // resolving only the candidate would then make every legal file look out-of-root.
+        var realRoot = ResolveRealPath(rootTrimmed);
+        var realFull = ResolveRealPath(full);
+        if (realRoot is null || realFull is null)
+            return null; // identity not establishable (an unresolvable reparse point, a cycle) - refuse
+        var realRootTrimmed = realRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (!realFull.StartsWith(realRootTrimmed + Path.DirectorySeparatorChar, PathContainmentComparison))
             return null;
         return full;
+    }
+
+    /// <summary>
+    /// Comparison for path-containment decisions. Case-insensitive ONLY on Windows, where the
+    /// filesystem itself compares names case-insensitively; ordinal (case-sensitive) everywhere
+    /// else. On Linux paths are case-sensitive, so an ignore-case prefix test would accept
+    /// "/ROOT/x" as inside "/root" - two genuinely different directories. macOS is deliberately
+    /// treated as case-sensitive as well: its default volumes compare case-insensitively, but
+    /// case-sensitive APFS volumes are common on developer machines, and mis-classifying one
+    /// OPENS the boundary while the reverse only refuses a case-variant spelling of a legal
+    /// path - fail closed. Exposed through <see cref="PathContainmentComparisonFor"/> so both
+    /// branches of the decision are testable on any one build machine.
+    /// </summary>
+    internal static StringComparison PathContainmentComparison { get; } =
+        PathContainmentComparisonFor(OperatingSystem.IsWindows());
+
+    /// <summary>The pure decision behind <see cref="PathContainmentComparison"/>; see there.</summary>
+    internal static StringComparison PathContainmentComparisonFor(bool windowsFileSystem) =>
+        windowsFileSystem ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
+    /// <summary>
+    /// Resolve <paramref name="path"/> to its REAL filesystem identity: every symbolic link,
+    /// junction, or other resolvable reparse point in every EXISTING component - intermediate
+    /// directories included, which a single <see cref="File.ResolveLinkTarget(string, bool)"/>
+    /// call does not cover - is followed to its final target, and a resolved target is walked
+    /// again in full so a target that itself sits behind links is also resolved. Returns null
+    /// when the identity cannot be established: a reparse point .NET cannot interpret, a link
+    /// cycle, or a component whose attributes cannot be read. Callers must REFUSE on null -
+    /// never fall back to the lexical answer. Components that do not exist cannot hide a link,
+    /// so a non-existent suffix is kept lexically (the caller's own existence checks handle it).
+    /// </summary>
+    internal static string? ResolveRealPath(string path)
+    {
+        // More link hops than this is a cycle (a link pointing back at its own ancestor) or an
+        // absurd chain; either way the identity is not establishable - refuse.
+        const int maxLinkResolutions = 40;
+        var resolutions = 0;
+
+        string current;
+        try { current = Path.GetFullPath(path); }
+        catch (ArgumentException) { return null; }
+
+        var followedLink = true;
+        while (followedLink)
+        {
+            followedLink = false;
+            var pathRoot = Path.GetPathRoot(current);
+            if (string.IsNullOrEmpty(pathRoot))
+                return null; // not an absolute path - no real identity to establish
+            var components = current[pathRoot.Length..].Split(
+                new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+                StringSplitOptions.RemoveEmptyEntries);
+
+            var prefix = pathRoot;
+            for (var i = 0; i < components.Length; i++)
+            {
+                var candidate = Path.Combine(prefix, components[i]);
+
+                FileAttributes attributes;
+                try
+                {
+                    attributes = File.GetAttributes(candidate);
+                }
+                catch (FileNotFoundException)
+                {
+                    // Nothing exists from this component down, so nothing below can be a link;
+                    // keep the remainder lexically.
+                    return Path.Combine(prefix, string.Join(Path.DirectorySeparatorChar, components[i..]));
+                }
+                catch (DirectoryNotFoundException)
+                {
+                    return Path.Combine(prefix, string.Join(Path.DirectorySeparatorChar, components[i..]));
+                }
+                catch (IOException) { return null; }
+                catch (UnauthorizedAccessException) { return null; }
+
+                if ((attributes & FileAttributes.ReparsePoint) != 0)
+                {
+                    if (++resolutions > maxLinkResolutions)
+                        return null;
+
+                    FileSystemInfo linkInfo = (attributes & FileAttributes.Directory) != 0
+                        ? new DirectoryInfo(candidate)
+                        : new FileInfo(candidate);
+                    FileSystemInfo? target;
+                    try { target = linkInfo.ResolveLinkTarget(returnFinalTarget: true); }
+                    catch (IOException) { return null; }
+                    catch (UnauthorizedAccessException) { return null; }
+                    if (target is null)
+                        return null; // a reparse point whose target cannot be read - refuse, never follow
+
+                    var remainder = components[(i + 1)..];
+                    current = remainder.Length == 0
+                        ? target.FullName
+                        : Path.Combine(target.FullName, Path.Combine(remainder));
+                    try { current = Path.GetFullPath(current); }
+                    catch (ArgumentException) { return null; }
+
+                    // The target's own path may run through further links; walk it again in full.
+                    followedLink = true;
+                    break;
+                }
+
+                prefix = candidate;
+            }
+
+            if (!followedLink)
+                current = prefix;
+        }
+
+        return current;
     }
 
     internal static string ScreenshotContentType(string path) => Path.GetExtension(path).ToLowerInvariant() switch
