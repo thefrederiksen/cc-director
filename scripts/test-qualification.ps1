@@ -57,7 +57,15 @@ param(
 
     [string] $WorkRoot = "",
 
-    [switch] $TearDown
+    [switch] $TearDown,
+
+    # How long the parent waits for the machine-wide suite lock before giving up. The default matches
+    # the suite's own MaxWait. Raise it for overnight soaks on a busy machine. FAIRNESS NOTE: while the
+    # soak holds the lock, an ordinary run queues with ITS 45-minute refusal ticking - so on a busy
+    # fleet keep -Rounds low enough that one hold stays under about 40 minutes (one round of 2-4
+    # processes), and save multi-round invocations for quiet hours.
+    [ValidateRange(1, 720)]
+    [int] $LockWaitMinutes = 45
 )
 
 $ErrorActionPreference = 'Stop'
@@ -152,7 +160,7 @@ function Acquire-SuiteLock {
     # unawares, so the soak occupies the lock exactly like any other run and the fleet queues as usual.
     $lockPath = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'cc-director\test-locks\gateway-test-suite.lock'
     New-Item -ItemType Directory -Force (Split-Path $lockPath -Parent) | Out-Null
-    $deadline = (Get-Date).AddMinutes(45)
+    $deadline = (Get-Date).AddMinutes($LockWaitMinutes)
     $announced = $false
     while ($true) {
         try {
@@ -172,7 +180,7 @@ function Acquire-SuiteLock {
                 $announced = $true
                 Write-Step "The suite lock is held by an ordinary run; the soak waits its turn (up to 45 minutes)."
             }
-            if ((Get-Date) -gt $deadline) { throw "The suite lock did not free within 45 minutes; rerun the soak later." }
+            if ((Get-Date) -gt $deadline) { throw "The suite lock did not free within $LockWaitMinutes minutes; rerun the soak later." }
             Start-Sleep -Seconds 3
         }
     }
@@ -214,6 +222,7 @@ for ($round = 1; $round -le $Rounds; $round++) {
         $trxName = "qual-$tag.trx"
         $log = Join-Path $WorkRoot "qual-$tag.log"
         $cmdFile = Join-Path $WorkRoot "qual-$tag.cmd"
+        $exitFile = Join-Path $WorkRoot "qual-$tag.exit"
 
         # A per-process launcher file, so each child gets EXACTLY this environment: the bypass token
         # set, and every live-proof connection variable cleared ('set NAME=' unsets in cmd). The lock
@@ -226,19 +235,27 @@ for ($round = 1; $round -le $Rounds; $round++) {
             'set CC_GATEWAY_DB_CONNECTION=',
             "cd /d `"$w`"",
             "dotnet test $TestProject --no-build --nologo --logger `"trx;LogFileName=$trxName`" > `"$log`" 2>&1",
+            # The child's exit code, written where the parent can read it even if the parent died. It is
+            # the ONLY artefact that separates a silent Environment.Exit(0) from a crash from an external
+            # kill - a distinction a vanished test host does not otherwise offer (issue #1203).
+            "echo %ERRORLEVEL% > `"$exitFile`"",
             'exit /b %ERRORLEVEL%'
         )
         Set-Content -Path $cmdFile -Value $lines -Encoding Ascii
 
         $p = Start-Process -FilePath $env:ComSpec -ArgumentList '/c', "`"$cmdFile`"" -PassThru -WindowStyle Hidden
-        $running += [pscustomobject]@{ Index = $i; Process = $p; Worktree = $w; TrxName = $trxName; Log = $log }
+        $running += [pscustomobject]@{ Index = $i; Process = $p; Worktree = $w; TrxName = $trxName; Log = $log; ExitFile = $exitFile }
     }
 
     $running | ForEach-Object { $_.Process.WaitForExit() }
 
     # ---- judge the round: TRX outcome and counters, never the console ----
     $results = @()
+    $exitCodes = @()
     foreach ($r in $running) {
+        $childExit = if (Test-Path $r.ExitFile) { (Get-Content $r.ExitFile -TotalCount 1).Trim() } else { 'unrecorded' }
+        $exitCodes += $childExit
+
         $trxPath = Join-Path $r.Worktree ("src\CcDirector.Gateway.Tests\TestResults\" + $r.TrxName)
         if (-not (Test-Path $trxPath)) {
             $anyFailure = $true
@@ -264,10 +281,10 @@ for ($round = 1; $round -le $Rounds; $round++) {
         $row = [ordered]@{
             kind = 'process'; utc = $stamp; commit = $commit; round = $round; process = ($i + 1)
             outcome = $res.Outcome; total = $res.Total; executed = $res.Executed
-            passed = $res.Passed; failed = $res.Failed; verdict = $verdict
+            passed = $res.Passed; failed = $res.Failed; verdict = $verdict; childExit = $exitCodes[$i]
         }
         Add-Content -Path $Ledger -Value (([pscustomobject]$row) | ConvertTo-Json -Compress) -Encoding Ascii
-        Write-Step "round $round p$($i + 1): outcome=$($res.Outcome) total=$($res.Total) passed=$($res.Passed) failed=$($res.Failed) verdict=$verdict"
+        Write-Step "round $round p$($i + 1): outcome=$($res.Outcome) total=$($res.Total) passed=$($res.Passed) failed=$($res.Failed) exit=$($exitCodes[$i]) verdict=$verdict"
     }
 
     $hostStarts = Get-LedgerHostStarts
