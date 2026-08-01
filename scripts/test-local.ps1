@@ -113,7 +113,13 @@ foreach ($proj in $toRun) {
     # FAIL. This script is the merge gate, and it was reporting "RESULT: FAILED in 7 project(s)"
     # over seven lines that each said "Passed!  - Failed: 0". A gate that fails on green is worse
     # than no gate: it trains everyone to ignore it, or to go and wait fifty minutes for CI.
+    #
+    # This mission met the same bug independently and wrote the same fix; main's landed first and is kept
+    # as the incumbent, with the duplicate dropped. TWO copies would cache the handle twice, and a
+    # careless resolution of the same conflict would leave NEITHER - the original bug back, with two
+    # commits in the history each claiming to have fixed it.
     $null = $p.Handle
+
 
     $running += [pscustomobject]@{ Name = $name; Process = $p; Log = $out; Trx = $trx }
     Write-Host "  started $name"
