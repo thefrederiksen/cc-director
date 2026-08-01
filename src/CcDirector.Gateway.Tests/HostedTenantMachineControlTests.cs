@@ -279,11 +279,25 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
     /// case additionally asserts that Alice's stub launcher process was NEVER DIALED. The test above is
     /// the control that proves that instrument is live: the same launcher IS dialed, and DOES return
     /// its sentinel, when the same tenant asks for the same application with no arguments.
+    ///
+    /// The empty and whitespace-only cases are inspection finding M03-I2B-02. The first version of
+    /// this guard tested IsNullOrWhiteSpace and then forwarded the original object, so those values
+    /// passed a rule that says no caller-supplied arguments and no caller-supplied working directory
+    /// are accepted - and the three cases here only covered non-whitespace values, so nothing caught
+    /// it. An empty working directory is not "no working directory" downstream: it moves the
+    /// launcher's choice from the application's own directory to the process default. The rule is now
+    /// about the FIELD BEING PRESENT rather than about what is in it.
     /// </summary>
     [Theory]
     [InlineData("/c whoami", null)]
     [InlineData(null, @"C:\Windows\System32")]
     [InlineData("/c whoami", @"C:\Windows\System32")]
+    [InlineData("", null)]
+    [InlineData("   ", null)]
+    [InlineData(null, "")]
+    [InlineData(null, "   ")]
+    [InlineData("", "")]
+    [InlineData("\t", "\t")]
     public async Task A_hosted_launch_carrying_arguments_or_a_working_directory_is_refused(string? args, string? cwd)
     {
         RegisterAliceLauncher();

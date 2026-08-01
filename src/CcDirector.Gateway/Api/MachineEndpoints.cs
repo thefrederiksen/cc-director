@@ -496,12 +496,22 @@ internal static class MachineEndpoints
             // The refusal is EXPLICIT rather than a silent drop: quietly discarding the arguments would
             // start a DIFFERENT program than the caller asked for and report success, which is its own
             // failure mode and a worse one to debug.
-            if (GatewayHostedMode.IsHosted
-                && (!string.IsNullOrWhiteSpace(body?.Args) || !string.IsNullOrWhiteSpace(body?.Cwd)))
+            // The rule is about the FIELD BEING PRESENT, not about what is in it (inspection finding
+            // M03-I2B-02). The first version of this guard tested IsNullOrWhiteSpace and then
+            // forwarded the original object, so an empty or whitespace-only value passed a rule that
+            // says no caller-supplied arguments and no caller-supplied working directory are
+            // accepted. That is not merely untidy: an EMPTY working directory is not "no working
+            // directory" downstream - it moves the launcher's choice from the application's own
+            // directory to the process default, which is a caller-influenced change to how the
+            // program starts. A JSON null is treated as absent because it is indistinguishable from
+            // an omitted property and carries nothing from the caller either way.
+            var suppliedArgs = body?.Args is not null;
+            var suppliedCwd = body?.Cwd is not null;
+            if (GatewayHostedMode.IsHosted && (suppliedArgs || suppliedCwd))
             {
-                var supplied = !string.IsNullOrWhiteSpace(body?.Args) && !string.IsNullOrWhiteSpace(body?.Cwd)
+                var supplied = suppliedArgs && suppliedCwd
                     ? "arguments and a working directory"
-                    : !string.IsNullOrWhiteSpace(body?.Args) ? "arguments" : "a working directory";
+                    : suppliedArgs ? "arguments" : "a working directory";
                 var reason = $"launch guard: this hosted service does not accept {supplied} on a launch request";
                 FileLog.Write($"[MachineEndpoints] RELAY_REFUSED machine={machine} verb=launch reason={reason}");
                 return Results.Json(new
