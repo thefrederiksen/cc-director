@@ -38,7 +38,7 @@ internal static class BrowserSignInFlow
             ? $"Sign in to whatever you want this browser to reach: {accountKind} to bring your profile "
               + "across, or just the individual websites you want an agent to use."
             : "Sign in to the individual websites you want an agent to use - this browser has no single "
-              + "account that carries a profile across.";
+              + "account that carries a whole profile across.";
 
         var dialog = new ConfirmDialog(
             "Sign in once",
@@ -48,8 +48,8 @@ internal static class BrowserSignInFlow
             + "DevThrottle never types your credentials.\n\n"
             + $"{whatToSignInTo} Whatever is signed in "
             + "here is what your agents can drive - nothing else.\n\n"
-            + "The logins are kept in this browser's own profile, apart from your everyday browser, and "
-            + "last until the account signs them out.\n\n"
+            + "The logins are kept in this profile's own folder, apart from the profile you browse in "
+            + "yourself, and last until the account signs them out.\n\n"
             + "When you are signed in, click Done.",
             confirmLabel: "Done - I am signed in",
             cancelLabel: "Not yet");

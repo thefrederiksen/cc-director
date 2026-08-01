@@ -89,7 +89,10 @@ autostart_app = typer.Typer(
     no_args_is_help=True,
 )
 browser_app = typer.Typer(
-    help="Manage DevThrottle's drivable automation browsers (signed in once, driven by an agent; machine-local).",
+    # The verb stays "browser": it is the resource name agents already hold, in the actions registry
+    # and in the attach command baked into the fold. The HELP says "profile", which is what the thing
+    # actually is - a dedicated signed-in profile inside Chrome or Edge, not a browser we installed.
+    help="Manage DevThrottle's drivable browser profiles (signed in once, driven by an agent; machine-local).",
     add_completion=False,
     no_args_is_help=True,
 )
@@ -636,14 +639,14 @@ _ACTIONS = [
     },
     {
         "id": "browser-list",
-        "description": "List this machine's drivable automation browsers (name, browser, status, account).",
+        "description": "List this machine's drivable browser profiles (name, browser, status, account).",
         "command": "cc-devthrottle browser list --json",
         "mutatesState": False,
         "args": [],
     },
     {
         "id": "browser-create",
-        "description": "Register a new drivable browser (does not launch it).",
+        "description": "Register a new drivable browser profile (does not launch it).",
         "command": 'cc-devthrottle browser create --name "Center Consulting" --browser chrome',
         "mutatesState": True,
         "args": [],
@@ -657,21 +660,21 @@ _ACTIONS = [
     },
     {
         "id": "browser-start",
-        "description": "Launch a browser if it is down, then print how to attach the harness.",
+        "description": "Launch a profile if it is down, then print how to attach the harness.",
         "command": 'cc-devthrottle browser start "Center Consulting"',
         "mutatesState": True,
         "args": [],
     },
     {
         "id": "browser-attach",
-        "description": "Print the BU_NAME/BU_CDP_URL export lines to attach browser-harness to a browser.",
+        "description": "Print the BU_NAME/BU_CDP_URL export lines to attach browser-harness to a profile.",
         "command": 'eval "$(cc-devthrottle browser attach \'Center Consulting\')"',
         "mutatesState": False,
         "args": [],
     },
     {
         "id": "browser-stop",
-        "description": "Close a running automation browser cleanly (its login is kept).",
+        "description": "Close a running browser profile cleanly (its login is kept).",
         "command": 'cc-devthrottle browser stop "Center Consulting"',
         "mutatesState": True,
         "args": [],
@@ -689,7 +692,7 @@ def _version_callback(value: bool) -> None:
 def browser_list(
     json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
 ) -> None:
-    """List the drivable automation browsers on this machine."""
+    """List the drivable browser profiles on this machine."""
     browser_ops.list_browsers(json_output)
 
 
@@ -701,7 +704,7 @@ def browser_create(
     ),
     json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
 ) -> None:
-    """Register a new drivable browser (does not launch it)."""
+    """Register a new drivable browser profile (does not launch it)."""
     browser_ops.create_browser(name, browser, json_output)
 
 

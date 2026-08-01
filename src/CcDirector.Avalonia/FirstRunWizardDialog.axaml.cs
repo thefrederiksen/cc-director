@@ -272,7 +272,7 @@ public partial class FirstRunWizardDialog : Window
         WizardStep.Tools => "Tools",
         WizardStep.Code => "Your code",
         WizardStep.Screenshots => "Screenshots",
-        WizardStep.Browsers => "Browsers",
+        WizardStep.Browsers => "Browser profiles",
         WizardStep.Done => "Done",
         _ => step.ToString(),
     };
@@ -2007,7 +2007,7 @@ public partial class FirstRunWizardDialog : Window
         throw new InvalidOperationException(
             $"None of the browsers DevThrottle can drive ({string.Join(", ", Enum.GetNames<BrowserKind>())}) "
             + "is installed on this machine, so there is no browser to set up. "
-            + "Install one, then set browsers up from the Browsers group in the left rail.");
+            + "Install one, then set profiles up from the Browser profiles group in the left rail.");
     }
 
     /// <summary>The honest way out: move on, having done nothing and written nothing. The panel names
@@ -2536,16 +2536,16 @@ public partial class FirstRunWizardDialog : Window
         else if (_browsersView is not null)
             DoneReceiptPanel.Children.Add(ReceiptRow(
                 $"Browser created - {_browsersView.Name}",
-                "Nobody has signed in to it yet - finish that in the Browsers group in the left rail",
+                "Nobody has signed in to it yet - finish that in the Browser profiles group in the left rail",
                 RowState.NotSetUp));
         else if (_browsersHarnessInstalled)
             DoneReceiptPanel.Children.Add(ReceiptRow(
                 "Browser Harness installed",
-                "No browser set up yet - add one from the Browsers group in the left rail", RowState.NotSetUp));
+                "No profile set up yet - add one from the Browser profiles group in the left rail", RowState.NotSetUp));
         else
             DoneReceiptPanel.Children.Add(ReceiptRow(
-                "Browsers",
-                "Give agents a signed-in browser any time - the Browsers group in the left rail", done: false));
+                "Browser profiles",
+                "Give agents a signed-in browser profile any time - the Browser profiles group in the left rail", done: false));
 
         // Morning report row. There is no longer a frequency question in the wizard - the report is
         // one person, one email, and asking about it once per machine could never reconcile (issue

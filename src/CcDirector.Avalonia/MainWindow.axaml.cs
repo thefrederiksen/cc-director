@@ -4036,9 +4036,9 @@ public partial class MainWindow : Window
         // Top-level on purpose (Browsers feature, slice 2): the drivable-browser capability is a
         // headline feature and the menu entry is how it advertises itself. Both items land on
         // Settings > Browsers - the rail group is the everyday launch surface.
-        var browsers = new NativeMenuItem("Browsers") { Menu = new NativeMenu() };
-        browsers.Menu.Items.Add(Item("New Browser...", () => _ = OpenSettingsAsync(onBrowsersTab: true, openBrowserCreate: true)));
-        browsers.Menu.Items.Add(Item("Manage Browsers...", () => _ = OpenSettingsAsync(onBrowsersTab: true)));
+        var browsers = new NativeMenuItem("Browser profiles") { Menu = new NativeMenu() };
+        browsers.Menu.Items.Add(Item("New Browser Profile...", () => _ = OpenSettingsAsync(onBrowsersTab: true, openBrowserCreate: true)));
+        browsers.Menu.Items.Add(Item("Manage Browser Profiles...", () => _ = OpenSettingsAsync(onBrowsersTab: true)));
         menu.Items.Add(browsers);
 
         // ===== Tools (alpha only - none of these are verified working yet) =====

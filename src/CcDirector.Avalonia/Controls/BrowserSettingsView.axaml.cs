@@ -43,6 +43,10 @@ public partial class BrowserSettingsView : UserControl
     public void OpenCreatePanel()
     {
         CreatePanel.IsVisible = true;
+        // The empty state and the form both want the window. While the form is open the form wins -
+        // the teaching has already been read by anyone who got this far, and leaving it underneath
+        // pushes the fields the user is filling in off the top of a small window.
+        EmptyStatePanel.IsVisible = false;
         CreateNameBox.Focus();
     }
 
@@ -78,7 +82,15 @@ public partial class BrowserSettingsView : UserControl
 
             _views = views;
             HarnessBanner.IsVisible = !harnessInstalled;
-            EmptyText.IsVisible = views.Count == 0;
+
+            // With no browsers, the empty state IS the tab: it has the whole window to explain what a
+            // browser here is, why it is not the one you already use, and that it starts signed in to
+            // nothing. The header repeats the first line of that, so it stays out of the way until
+            // there is a list to head. The create panel replaces the empty state while it is open,
+            // rather than pushing a wall of teaching below the form the user is already filling in.
+            var isEmpty = views.Count == 0;
+            EmptyStatePanel.IsVisible = isEmpty && !CreatePanel.IsVisible;
+            HeaderPanel.IsVisible = !isEmpty;
             StatusText.Text = "";
 
             // The create panel offers only the browsers actually installed on this machine.
@@ -277,11 +289,36 @@ public partial class BrowserSettingsView : UserControl
                 throw new ArgumentException("Pick which browser to use.");
 
             CreateError.IsVisible = false;
-            await Task.Run(() => AutomationBrowserService.Create(name, kind));
+            var created = await Task.Run(() => AutomationBrowserService.Create(name, kind));
 
             CreateNameBox.Text = "";
             CreatePanel.IsVisible = false;
-            StatusText.Text = $"Created \"{name}\". Next: Sign in once, so it holds a login your agents can use.";
+            await RefreshAndNotifyAsync();
+
+            // Go straight into the sign-in, which is what the button says it will do. A profile
+            // created and left unsigned is worth nothing to an agent, and the old flow - create, then
+            // find and click "Sign in once" on the new card - made the one step that MATTERS the one
+            // step the user had to know to take. Backing out is still allowed: the profile exists and
+            // its card offers the sign-in whenever they come back to it.
+            //
+            // Reported through StatusText and NOT through CreateError, in its own try: by this point
+            // the profile has been created and the create panel is closed, so a failure written to
+            // CreateError would land in a hidden control and the user would see nothing at all. What
+            // can fail here is the launch - the browser not coming up on its debug port - and that
+            // must be visible, with the profile still listed so they can retry from its card.
+            try
+            {
+                if (await BrowserSignInFlow.RunAsync(OwnerWindow(), AutomationBrowserViewFold.FoldPending(created)))
+                    StatusText.Text = $"\"{name}\" is signed in and ready to drive.";
+                else
+                    StatusText.Text = $"Created \"{name}\". It holds no login yet - use Sign in once when you are ready.";
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[BrowserSettingsView] BtnCreate_Click: sign-in after create FAILED: {ex.Message}");
+                StatusText.Text = $"Created \"{name}\", but it could not be opened for sign-in: {ex.Message}";
+            }
+
             await RefreshAndNotifyAsync();
         }
         catch (Exception ex)
@@ -296,6 +333,22 @@ public partial class BrowserSettingsView : UserControl
     {
         CreatePanel.IsVisible = false;
         CreateError.IsVisible = false;
+        // Backing out of the form on a machine with no browsers must land back on the explanation,
+        // not on a blank tab.
+        EmptyStatePanel.IsVisible = _views.Count == 0;
+    }
+
+    /// <summary>
+    /// Fill the name box from one of the offered role names. These are a starting point for the
+    /// hardest part of the form - people stall on naming, then type "test" and regret it - so the
+    /// text stays editable rather than being a fixed choice.
+    /// </summary>
+    private void BtnNameSuggestion_Click(object? sender, RoutedEventArgs e)
+    {
+        if ((sender as Button)?.Tag is not string suggestion) return;
+        CreateNameBox.Text = suggestion;
+        CreateNameBox.Focus();
+        CreateNameBox.CaretIndex = suggestion.Length;
     }
 
     // ---- per-card actions ----
