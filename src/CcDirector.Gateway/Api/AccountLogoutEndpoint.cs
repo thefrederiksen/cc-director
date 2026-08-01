@@ -56,8 +56,12 @@ internal static class AccountLogoutEndpoint
     /// Gateway does NOT fall back to the self-host answer - the hosted path fails closed. Ignored off hosted.
     /// </param>
     /// <param name="tenants">The tenant registry, read on hosted for the caller's display email.</param>
-    public static void Map(IEndpointRouteBuilder app, DevThrottleAccountService? account, Func<CancellationToken, Task>? onBeforeLogout = null,
-        Tenancy.HostedTenantBoundary? tenantBoundary = null, Tenancy.TenantRegistry? tenants = null)
+    public static void Map(IEndpointRouteBuilder app, DevThrottleAccountService? account,
+        // REQUIRED AND NON-NULLABLE (finding I1-01), and moved AHEAD of the optional hook so it cannot sit
+        // in a defaulted tail: a forgotten boundary must be a compile error, never a silent default.
+        // Self-host callers construct it over the SingleTenantContext.
+        Tenancy.HostedTenantBoundary tenantBoundary, Func<CancellationToken, Task>? onBeforeLogout = null,
+        Tenancy.TenantRegistry? tenants = null)
     {
         app.MapPost("/account/logout", async (HttpContext ctx) =>
         {

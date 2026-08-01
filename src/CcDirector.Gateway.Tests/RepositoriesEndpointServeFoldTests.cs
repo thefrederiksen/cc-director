@@ -120,9 +120,11 @@ public sealed class RepositoriesEndpointServeFoldTests
                 registry,
                 version: "test",
                 token: "test-token",
-                // Self-host-only harness: this host never runs hosted, so there is no boundary to pass. The
-                // parameter is required (finding CR-7), so the absence is stated rather than defaulted.
-                tenantBoundary: null,
+                // Self-host-only harness. The boundary is required and non-nullable now (finding I1-01), so
+                // it gets the REAL self-host boundary: built over the SingleTenantContext, it always
+                // resolves Local - behaviour identical to the null it used to state.
+                tenantBoundary: new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
+                    new CcDirector.Core.Tenancy.SingleTenantContext(), new CcDirector.Gateway.Pairing.DeviceRegistry()),
                 pushedRepositories: store);
             await app.StartAsync();
             var port = BoundPort.Of(app);

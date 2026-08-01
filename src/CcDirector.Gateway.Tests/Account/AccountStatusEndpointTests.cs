@@ -89,7 +89,12 @@ public sealed class AccountStatusEndpointTests
             app.Use(async (ctx, next) => await AuthMiddleware.Run(ctx, requireToken, next));
         }
 
-        AccountStatusEndpoint.Map(app, account, nickname);
+        // The boundary is required and non-nullable now (finding I1-01). This is a self-host harness, so it
+        // gets the REAL self-host boundary: built over the SingleTenantContext, it always resolves Local.
+        AccountStatusEndpoint.Map(app, account,
+            new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
+                new CcDirector.Core.Tenancy.SingleTenantContext(), new DeviceRegistry()),
+            nickname);
         await app.StartAsync();
 
         var baseUrl = app.Urls.First();

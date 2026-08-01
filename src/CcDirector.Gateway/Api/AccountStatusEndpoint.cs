@@ -70,8 +70,12 @@ internal static class AccountStatusEndpoint
     /// Null disables that lookup, which yields a signed-in answer with the identity absent - never a
     /// signed-out one.
     /// </param>
-    public static void Map(IEndpointRouteBuilder app, DevThrottleAccountService? account, AccountNicknameClient? nickname = null,
-        Tenancy.HostedTenantBoundary? tenantBoundary = null, Tenancy.TenantRegistry? tenants = null)
+    public static void Map(IEndpointRouteBuilder app, DevThrottleAccountService? account,
+        // REQUIRED AND NON-NULLABLE (finding I1-01), and moved AHEAD of the optional nickname client so it
+        // cannot sit in a defaulted tail: a forgotten boundary must be a compile error, never a silent
+        // default. Self-host callers construct it over the SingleTenantContext.
+        Tenancy.HostedTenantBoundary tenantBoundary, AccountNicknameClient? nickname = null,
+        Tenancy.TenantRegistry? tenants = null)
     {
         // Per-account nickname cache so this hard-polled endpoint hits the cloud at most once per TTL.
         // Captured in the closure (Map runs once per host) and guarded by its own lock.

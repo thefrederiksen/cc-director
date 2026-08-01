@@ -81,6 +81,10 @@ public sealed class WingmanTtsStatusPassthroughTests
             vault,
             voice,
             tenantSettings,
+            // The boundary is required and non-nullable now (finding I1-01). Self-host harness, so the REAL
+            // self-host boundary: built over the SingleTenantContext, it always resolves Local.
+            new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
+                new CcDirector.Core.Tenancy.SingleTenantContext(), new CcDirector.Gateway.Pairing.DeviceRegistry()),
             ttsHttpClient: new HttpClient(upstream) { Timeout = Timeout.InfiniteTimeSpan },
             // The stall test proves a never-answering upstream becomes 504 rather than 502. What is under
             // test is WHICH status comes back, not how long the Gateway is willing to wait - so the deadline

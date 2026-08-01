@@ -14,11 +14,18 @@ using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.History;
 using CcDirector.Gateway.Pairing;
 using CcDirector.Gateway.Prompts;
+using CcDirector.Gateway.Reports;
 using CcDirector.Gateway.Running;
+using CcDirector.Gateway.Skills;
+using CcDirector.Gateway.Stats;
+using CcDirector.Gateway.Streaming;
 using CcDirector.Gateway.Tenancy;
 using CcDirector.Gateway.Tests.Data;
 using CcDirector.Gateway.Util;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 using Xunit;
 
@@ -41,6 +48,24 @@ namespace CcDirector.Gateway.Tests;
 ///   4. <c>PromptEndpoints.ResolveTenant</c> - probed at <c>GET /prompts</c>.
 ///   5. <c>HostedTenantBoundary</c> itself - a hosted process wiring a boundary that could only answer
 ///      Local now THROWS at construction, and at resolution when hosted mode appeared after construction.
+///
+/// Phase 5a (inspection finding I1-01) extends the census to the sites that still carried an OPTIONAL
+/// nullable boundary defaulting to null, and whose resolvers decided on the ARGUMENT rather than on
+/// <see cref="GatewayHostedMode.IsHosted"/>:
+///
+///   7. <c>SessionWsProxyEndpoints.ResolveTenantOrDenyAsync</c> - the widest per-session surface (terminal
+///      stream, file read, screenshot legs, the catch-all session verbs, director backfill). Probed at
+///      <c>GET /sessions/{sid}/screenshots</c>, with the stand-in tunnel echoing WHICH Director served, so
+///      the assertion is about the partition choice itself.
+///   8. <c>DeviceEnrollmentEndpoint</c> - probed at <c>GET /devices</c> (the full device inventory of the
+///      Local partition is the disclosure).
+///   9. <c>RepoStateEndpoints</c> - probed at <c>POST /gateway/repostate</c> (a wrong-partition WRITE).
+///  10. <c>SkillPlacementEndpoints</c> - probed at <c>GET /gateway/skills/placement</c>.
+///  11. <c>WorkListRunnerEndpoints</c> - probed at <c>POST /lists/{name}/run</c> (reaches Local's
+///      Directors when open).
+///  12. <c>DirectorHub</c> - Hello binds the connection's tenant; an unwired hosted hub used to bind Local,
+///      putting the Director's whole push stream into the shared partition.
+///  13. <c>LauncherHub</c> - same shape for the launcher machine-control plane.
 ///
 /// Each resolver used to answer <see cref="TenantId.Local"/> whenever its boundary argument was absent,
 /// WITHOUT asking <see cref="GatewayHostedMode.IsHosted"/> - so one forgotten optional argument silently
@@ -78,6 +103,7 @@ public sealed class OmittedTenantBoundaryFailClosedTests : IAsyncLifetime
 
     private const string LocalSecretMachine = "local-partition-secret-machine";
     private const string LocalSecretPrompt = "local-partition-secret-prompt-text";
+    private const string LocalSecretScreenshot = "local-partition-secret-screenshot.png";
 
     private readonly string _storageRoot =
         Path.Combine(Path.GetTempPath(), "cc-omitted-boundary-" + Guid.NewGuid().ToString("N"));
@@ -317,6 +343,237 @@ public sealed class OmittedTenantBoundaryFailClosedTests : IAsyncLifetime
             () => boundary.ResolveRequestTenant(new Microsoft.AspNetCore.Http.DefaultHttpContext()));
     }
 
+    // ===== site 7: SessionWsProxyEndpoints, probed at GET /sessions/{sid}/screenshots ===============
+
+    [Fact]
+    public async Task SessionScreenshots_refuses_on_hosted_when_the_boundary_was_omitted()
+    {
+        // The widest fail-open surface on the census: this helper's resolver used to decide on the ARGUMENT
+        // (`boundary is null ? TenantId.Local : ...`) with no hosted-mode gate at all, so a null boundary on
+        // hosted served the LOCAL partition to every leg it guards. The seeded disclosure: a session pushed
+        // into the Local partition, and a stand-in tunnel that echoes WHICH Director id it served - so the
+        // assertion is about the partition the route chose, not about an empty store.
+        const string sid = "11111111-1111-1111-1111-111111111111";
+        var unwiredStore = new PushedSessionStore(() => DateTime.UtcNow);
+        unwiredStore.RegisterConnection(TenantId.Local, "local-dir", "conn-local");
+        Assert.True(unwiredStore.ApplyDelta(TenantId.Local, "local-dir", "conn-local", 1,
+            new SessionDto { SessionId = sid })); // the disclosure claim is meaningless if the seed failed
+        DirectorCommandRouter.SendDirectorCommandAsync unwiredSend = (directorId, _, _) =>
+            Task.FromResult<DirectorCommandResult?>(DirectorCommandResult.Success(
+                "{\"servedBy\":\"" + directorId + "\",\"items\":[\"" + LocalSecretScreenshot + "\"]}"));
+
+        await using (var unwired = await Host.StartAsync(_tenant,
+            app => SessionWsProxyEndpoints.Map(app, unwiredStore, new GatewayStreamRegistry(), unwiredSend,
+                new DirectorRegistry(Path.Combine(_storageRoot, "wsproxy-unwired")), tenantBoundary: null!)))
+        {
+            var (status, body) = await Get(unwired.Http, $"/sessions/{sid}/screenshots?count=5");
+            AssertRefusal(status, body);
+            Assert.DoesNotContain(LocalSecretScreenshot, body, StringComparison.Ordinal);
+            Assert.DoesNotContain("local-dir", body, StringComparison.Ordinal);
+        }
+
+        // Positive companion: the SAME session id exists in BOTH the Local partition and the caller's own,
+        // owned by differently-named Directors, and the tunnel echoes which one it dispatched to. The wired
+        // twin must serve the caller's OWN Director - so the 403 above is the guard refusing, and the
+        // partition choice (never the Local one) is proven directly rather than inferred from absence.
+        var wiredStore = new PushedSessionStore(() => DateTime.UtcNow);
+        wiredStore.RegisterConnection(TenantId.Local, "local-dir", "conn-local");
+        Assert.True(wiredStore.ApplyDelta(TenantId.Local, "local-dir", "conn-local", 1, new SessionDto { SessionId = sid }));
+        wiredStore.RegisterConnection(_tenant, "own-dir", "conn-own");
+        Assert.True(wiredStore.ApplyDelta(_tenant, "own-dir", "conn-own", 1, new SessionDto { SessionId = sid }));
+        DirectorCommandRouter.SendDirectorCommandAsync wiredSend = (directorId, _, _) =>
+            Task.FromResult<DirectorCommandResult?>(DirectorCommandResult.Success(
+                "{\"servedBy\":\"" + directorId + "\",\"items\":[]}"));
+
+        await using var wired = await Host.StartAsync(_tenant,
+            app => SessionWsProxyEndpoints.Map(app, wiredStore, new GatewayStreamRegistry(), wiredSend,
+                new DirectorRegistry(Path.Combine(_storageRoot, "wsproxy-wired")), tenantBoundary: WiredBoundary()));
+        var (wiredStatus, wiredBody) = await Get(wired.Http, $"/sessions/{sid}/screenshots?count=5");
+        Assert.Equal(HttpStatusCode.OK, wiredStatus);
+        Assert.Contains("own-dir", wiredBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("local-dir", wiredBody, StringComparison.Ordinal);
+    }
+
+    // ===== site 8: DeviceEnrollmentEndpoint, probed at GET /devices =================================
+
+    [Fact]
+    public async Task DevicesList_refuses_on_hosted_when_the_boundary_was_omitted()
+    {
+        // The disclosure: the Local partition's device inventory (device ids, machine names, issued times).
+        // Before the gate, the unwired hosted host resolved Local and served exactly this list.
+        var unwiredDevices = new DeviceRegistry(Path.Combine(_storageRoot, "devices-unwired.json"));
+        unwiredDevices.Register("local-device", LocalSecretMachine);
+
+        await using (var unwired = await Host.StartAsync(_tenant,
+            app => DeviceEnrollmentEndpoint.Map(app, unwiredDevices, tenantBoundary: null!)))
+        {
+            var (status, body) = await Get(unwired.Http, "/devices");
+            AssertRefusal(status, body);
+            Assert.DoesNotContain(LocalSecretMachine, body, StringComparison.Ordinal);
+        }
+
+        // Positive companion: the caller's OWN device (bound to its tenant) is served; the Local
+        // partition's is not.
+        var wiredDevices = new DeviceRegistry(Path.Combine(_storageRoot, "devices-wired.json"));
+        wiredDevices.Register("local-device", LocalSecretMachine);
+        wiredDevices.Register("own-device", "own-machine");
+        wiredDevices.SetAccountBinding("own-device", "sub-own", _tenant.Value);
+
+        await using var wired = await Host.StartAsync(_tenant,
+            app => DeviceEnrollmentEndpoint.Map(app, wiredDevices, tenantBoundary: WiredBoundary()));
+        var (wiredStatus, wiredBody) = await Get(wired.Http, "/devices");
+        Assert.Equal(HttpStatusCode.OK, wiredStatus);
+        Assert.Contains("own-machine", wiredBody, StringComparison.Ordinal);
+        Assert.DoesNotContain(LocalSecretMachine, wiredBody, StringComparison.Ordinal);
+    }
+
+    // ===== site 9: RepoStateEndpoints, probed at POST /gateway/repostate ============================
+
+    [Fact]
+    public async Task RepoStatePush_refuses_on_hosted_when_the_boundary_was_omitted()
+    {
+        // A WRITE surface: the hazard is not a read-back but a wrong-partition write - before the gate, an
+        // unwired hosted host stamped the push into the Local partition. The refusal is asserted the same
+        // way; the wired twin proves the identical request is well-formed and lands (stored count served).
+        const string pushBody = """{"directorId":"dir-1","machineName":"M1","repositories":[]}""";
+
+        using var unwiredDb = new GatewayDbTestHarness();
+        await using (var unwired = await Host.StartAsync(_tenant,
+            app => RepoStateEndpoints.Map(app, new RepoStateStore(unwiredDb.Open()), tenantBoundary: null!)))
+        {
+            var (status, body) = await Post(unwired.Http, RepoStateEndpoints.Path, pushBody);
+            AssertRefusal(status, body);
+        }
+
+        using var wiredDb = new GatewayDbTestHarness();
+        var ambient = new AsyncLocalTenantContext();
+        await using var wired = await Host.StartAsync(_tenant,
+            app => RepoStateEndpoints.Map(app, new RepoStateStore(wiredDb.Open(ambient)),
+                tenantBoundary: new HostedTenantBoundary(ambient, new DeviceRegistry())));
+        var (wiredStatus, wiredBody) = await Post(wired.Http, RepoStateEndpoints.Path, pushBody);
+        Assert.Equal(HttpStatusCode.OK, wiredStatus);
+        Assert.Equal(0, JsonDocument.Parse(wiredBody).RootElement.GetProperty("stored").GetInt32());
+    }
+
+    // ===== site 10: SkillPlacementEndpoints, probed at GET /gateway/skills/placement ================
+
+    [Fact]
+    public async Task SkillPlacementReport_refuses_on_hosted_when_the_boundary_was_omitted()
+    {
+        using var unwiredDb = new GatewayDbTestHarness();
+        await using (var unwired = await Host.StartAsync(_tenant,
+            app => SkillPlacementEndpoints.Map(app, new SkillPlacementStore(unwiredDb.Open()), tenantBoundary: null!)))
+        {
+            var (status, body) = await Get(unwired.Http, SkillPlacementEndpoints.Path);
+            AssertRefusal(status, body);
+        }
+
+        using var wiredDb = new GatewayDbTestHarness();
+        var ambient = new AsyncLocalTenantContext();
+        await using var wired = await Host.StartAsync(_tenant,
+            app => SkillPlacementEndpoints.Map(app, new SkillPlacementStore(wiredDb.Open(ambient)),
+                tenantBoundary: new HostedTenantBoundary(ambient, new DeviceRegistry())));
+        var (wiredStatus, wiredBody) = await Get(wired.Http, SkillPlacementEndpoints.Path);
+        Assert.Equal(HttpStatusCode.OK, wiredStatus);
+        Assert.Equal(JsonValueKind.Object, JsonDocument.Parse(wiredBody).RootElement.ValueKind);
+    }
+
+    // ===== site 11: WorkListRunnerEndpoints, probed at POST /lists/{name}/run =======================
+
+    [Fact]
+    public async Task WorkListRun_refuses_on_hosted_when_the_boundary_was_omitted()
+    {
+        // The boundary check sits AFTER the body-shape and list-existence checks, so the probe carries a
+        // valid body and a real stored list - the unwired twin's 403 can only be the tenant gate. The wired
+        // twin passes the gate and fails at the NEXT check (no such Director in the caller's tenant, 404),
+        // which is the proof it got past the boundary; before the gate an open unwired host would instead
+        // reach the LOCAL partition's Directors.
+        const string runBody = """{"directorId":"dir-1","repoPath":"C:/repo"}""";
+
+        using var unwiredDb = new GatewayDbTestHarness();
+        var unwiredLists = new WorkListStore(unwiredDb.Open(), Path.Combine(_storageRoot, "worklists-unwired.json"));
+        Assert.True(unwiredLists.Create("boundary-probe"));
+        await using (var unwired = await Host.StartAsync(_tenant,
+            app => WorkListRunnerEndpoints.Map(app, unwiredLists,
+                new DirectorRegistry(Path.Combine(_storageRoot, "wlr-unwired")),
+                new WorkListRunnerManager(), sendCommand: null, tenantBoundary: null!)))
+        {
+            var (status, body) = await Post(unwired.Http, "/lists/boundary-probe/run", runBody);
+            AssertRefusal(status, body);
+        }
+
+        using var wiredDb = new GatewayDbTestHarness();
+        var wiredLists = new WorkListStore(wiredDb.Open(), Path.Combine(_storageRoot, "worklists-wired.json"));
+        Assert.True(wiredLists.Create("boundary-probe"));
+        await using var wired = await Host.StartAsync(_tenant,
+            app => WorkListRunnerEndpoints.Map(app, wiredLists,
+                new DirectorRegistry(Path.Combine(_storageRoot, "wlr-wired")),
+                new WorkListRunnerManager(), sendCommand: null, tenantBoundary: WiredBoundary()));
+        var (wiredStatus, wiredBody) = await Post(wired.Http, "/lists/boundary-probe/run", runBody);
+        Assert.Equal(HttpStatusCode.NotFound, wiredStatus);
+        Assert.Contains("no such director", wiredBody, StringComparison.Ordinal);
+    }
+
+    // ===== site 12: DirectorHub - Hello binds the connection's tenant ===============================
+
+    [Fact]
+    public void DirectorHub_Hello_aborts_on_hosted_when_the_boundary_was_omitted()
+    {
+        // The hub used to resolve `_tenantBoundary is null -> TenantId.Local`, so on hosted an unwired hub
+        // bound the Director connection - and its ENTIRE push stream - into the shared Local partition.
+        // The connection arrives authenticated (a bound account identity is stashed on its HttpContext);
+        // the boundary is the only variable.
+        var store = new PushedSessionStore(() => DateTime.UtcNow);
+        var (hub, ctx) = NewDirectorHub("conn-unwired", tenantBoundary: null!, store);
+
+        hub.Hello(new DirectorStreamHello { DirectorId = "dir-x", Version = "t" });
+
+        Assert.True(ctx.Aborted);
+        // The connection never bound, so a push cannot even be expressed - and nothing reached Local.
+        Assert.Throws<HubException>(() => hub.PushDelta(1, new SessionDto { SessionId = "sess-x" }));
+        Assert.Empty(store.SnapshotFresh(TenantId.Local, TimeSpan.FromMinutes(5)));
+
+        // Positive companion: the same connection with the ONE argument supplied binds the caller's own
+        // tenant and its push lands there - never in Local.
+        var wiredStore = new PushedSessionStore(() => DateTime.UtcNow);
+        var (wiredHub, wiredCtx) = NewDirectorHub("conn-wired", WiredBoundary(), wiredStore);
+        wiredHub.Hello(new DirectorStreamHello { DirectorId = "dir-own", Version = "t" });
+        Assert.False(wiredCtx.Aborted);
+        wiredHub.PushDelta(1, new SessionDto { SessionId = "sess-own" });
+        Assert.Empty(wiredStore.SnapshotFresh(TenantId.Local, TimeSpan.FromMinutes(5)));
+        Assert.Single(wiredStore.SnapshotFresh(_tenant, TimeSpan.FromMinutes(5)));
+    }
+
+    // ===== site 13: LauncherHub - Hello binds the launcher's tenant =================================
+
+    [Fact]
+    public void LauncherHub_Hello_aborts_on_hosted_when_the_boundary_was_omitted()
+    {
+        // Same shape as the DirectorHub: an unwired hosted hub used to register the launcher under Local,
+        // exposing the machine-control plane through the shared partition.
+        var registry = new LauncherConnectionRegistry();
+        var (hub, ctx) = NewLauncherHub("conn-launcher-unwired", tenantBoundary: null!, registry, deviceKey: "any-key");
+
+        hub.Hello(new LauncherStreamHello { MachineName = LocalSecretMachine, Port = 1, Version = "t" });
+
+        Assert.True(ctx.Aborted);
+        Assert.False(registry.IsStreamConnected(TenantId.Local, LocalSecretMachine));
+
+        // Positive companion: a device key BOUND to the caller's tenant registers under that tenant only.
+        var wiredDevices = new DeviceRegistry(Path.Combine(_storageRoot, "launcher-devices.json"));
+        var key = wiredDevices.Register("launcher-device", "own-machine").DeviceKey;
+        wiredDevices.SetAccountBinding("launcher-device", "sub-own", _tenant.Value);
+        var wiredRegistry = new LauncherConnectionRegistry();
+        var (wiredHub, wiredCtx) = NewLauncherHub("conn-launcher-wired",
+            new HostedTenantBoundary(new AsyncLocalTenantContext(), wiredDevices), wiredRegistry, key);
+
+        wiredHub.Hello(new LauncherStreamHello { MachineName = "own-machine", Port = 1, Version = "t" });
+
+        Assert.False(wiredCtx.Aborted);
+        Assert.True(wiredRegistry.IsStreamConnected(_tenant, "own-machine"));
+        Assert.False(wiredRegistry.IsStreamConnected(TenantId.Local, "own-machine"));
+    }
+
     // ===== the refusal itself =======================================================================
 
     /// <summary>
@@ -359,6 +616,75 @@ public sealed class OmittedTenantBoundaryFailClosedTests : IAsyncLifetime
     {
         using var resp = await http.GetAsync(path);
         return (resp.StatusCode, await resp.Content.ReadAsStringAsync());
+    }
+
+    private static async Task<(HttpStatusCode status, string body)> Post(HttpClient http, string path, string json)
+    {
+        using var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+        using var resp = await http.PostAsync(path, content);
+        return (resp.StatusCode, await resp.Content.ReadAsStringAsync());
+    }
+
+    /// <summary>
+    /// A DirectorHub over a fake caller context whose connection arrives AUTHENTICATED - the bound account
+    /// identity is stashed on the connection's HttpContext exactly as the auth middleware does on the
+    /// negotiate request - so the boundary argument is the only variable, same as the HTTP twins above.
+    /// </summary>
+    private (DirectorHub hub, FakeHubCtx ctx) NewDirectorHub(
+        string connId, HostedTenantBoundary tenantBoundary, PushedSessionStore store)
+    {
+        var http = new DefaultHttpContext();
+        http.Items[AuthMiddleware.AuthenticatedDeviceItemKey] = new DeviceCredentialIdentity(
+            "test-device", _tenant.Value, DeviceRegistry.DefaultDeviceType, DeviceRegistry.StatusActive);
+        var ctx = new FakeHubCtx(connId, http);
+        var hub = new DirectorHub(store,
+            new DirectorRegistry(Path.Combine(_storageRoot, "hub-" + connId)),
+            InputStatsHandle.Unavailable("not under test"),
+            new GatewayStreamRegistry(),
+            tenantBoundary)
+        { Context = ctx };
+        return (hub, ctx);
+    }
+
+    /// <summary>
+    /// A LauncherHub over the same fake caller context shape; the launcher resolves its tenant from the RAW
+    /// authenticated device key the auth layer stashes, so that is what the context carries.
+    /// </summary>
+    private static (LauncherHub hub, FakeHubCtx ctx) NewLauncherHub(
+        string connId, HostedTenantBoundary tenantBoundary, LauncherConnectionRegistry registry, string deviceKey)
+    {
+        var http = new DefaultHttpContext();
+        http.Items[AuthMiddleware.DeviceKeyItemKey] = deviceKey;
+        var ctx = new FakeHubCtx(connId, http);
+        var hub = new LauncherHub(registry, tenantBoundary) { Context = ctx };
+        return (hub, ctx);
+    }
+
+    /// <summary>A hub caller context that records Abort and carries an HttpContext, mirroring the shape the
+    /// SignalR transport provides (the same stand-in HostedTenancyActivationTests uses).</summary>
+    private sealed class FakeHubCtx : HubCallerContext
+    {
+        public FakeHubCtx(string connectionId, HttpContext http)
+        {
+            ConnectionId = connectionId;
+            Features.Set<Microsoft.AspNetCore.Http.Connections.Features.IHttpContextFeature>(
+                new HttpContextFeatureImpl { HttpContext = http });
+        }
+
+        public override string ConnectionId { get; }
+        public override string? UserIdentifier => null;
+        public override System.Security.Claims.ClaimsPrincipal? User => null;
+        public override IDictionary<object, object?> Items { get; } = new Dictionary<object, object?>();
+        public override IFeatureCollection Features { get; } = new FeatureCollection();
+        public override CancellationToken ConnectionAborted => CancellationToken.None;
+
+        public bool Aborted { get; private set; }
+        public override void Abort() => Aborted = true;
+
+        private sealed class HttpContextFeatureImpl : Microsoft.AspNetCore.Http.Connections.Features.IHttpContextFeature
+        {
+            public HttpContext? HttpContext { get; set; }
+        }
     }
 
     /// <summary>

@@ -139,8 +139,11 @@ public sealed class AccountDevicesEndpointTests
         }
 
         // Self-host path: GatewayHostedMode is not hosted here, so the local registry and tenant boundary are
-        // never consulted - a bare registry satisfies the required argument and no boundary is passed.
-        AccountDevicesEndpoint.Map(app, account, devices, ThisMachine, new DeviceRegistry());
+        // never consulted - a bare registry satisfies the required argument, and the boundary (required and
+        // non-nullable, finding I1-01) is the REAL self-host one over the SingleTenantContext.
+        AccountDevicesEndpoint.Map(app, account, devices, ThisMachine, new DeviceRegistry(),
+            new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
+                new CcDirector.Core.Tenancy.SingleTenantContext(), new DeviceRegistry()));
         await app.StartAsync();
 
         var baseUrl = app.Urls.First();

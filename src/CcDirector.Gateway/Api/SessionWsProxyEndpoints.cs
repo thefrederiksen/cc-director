@@ -51,8 +51,13 @@ internal static class SessionWsProxyEndpoints
         Streaming.GatewayStreamRegistry streamRegistry,
         DirectorCommandRouter.SendDirectorCommandAsync sendCommand,
         Discovery.DirectorRegistry registry,
-        TimeSpan? streamStaleAfter = null,
-        Tenancy.HostedTenantBoundary? tenantBoundary = null)
+        // REQUIRED AND NON-NULLABLE (finding I1-01), and moved AHEAD of the optional staleness knob so it
+        // cannot sit in a defaulted tail: this helper serves the terminal stream, the file read, the
+        // screenshot legs, the catch-all session verbs and the director backfill - the widest per-session
+        // surface on the Gateway - so a forgotten boundary must be a compile error, never a silent default.
+        // Self-host callers construct it over the SingleTenantContext.
+        Tenancy.HostedTenantBoundary tenantBoundary,
+        TimeSpan? streamStaleAfter = null)
     {
         var tunnel = new TunnelStreamLegs(streamRegistry, sendCommand);
         var stale = streamStaleAfter ?? TimeSpan.FromSeconds(10);
@@ -61,7 +66,7 @@ internal static class SessionWsProxyEndpoints
         // terminal-input unary verbs. See TunnelStreamLegs for the wire translation.
         app.MapGet("/sessions/{sid}/stream", async (string sid, HttpContext ctx) =>
         {
-            var reqTenant = ResolveTenantOrDeny(ctx, tenantBoundary);
+            var reqTenant = await ResolveTenantOrDenyAsync(ctx, tenantBoundary);
             if (reqTenant is null) return;
             if (pushedSessions.TryLocate(reqTenant.Value, sid, stale) is { } loc)
             {
@@ -75,7 +80,7 @@ internal static class SessionWsProxyEndpoints
         // a Range request re-fetches the whole file (tracked follow-up); never a silent truncation.
         app.MapGet("/sessions/{sid}/file", async (string sid, HttpContext ctx) =>
         {
-            var reqTenant = ResolveTenantOrDeny(ctx, tenantBoundary);
+            var reqTenant = await ResolveTenantOrDenyAsync(ctx, tenantBoundary);
             if (reqTenant is null) return;
             if (pushedSessions.TryLocate(reqTenant.Value, sid, stale) is { } loc)
             {
@@ -91,7 +96,7 @@ internal static class SessionWsProxyEndpoints
         // routing key for the machine-wide screenshots folder on the owning Director.
         app.Map("/sessions/{sid}/screenshots/file", async (string sid, HttpContext ctx) =>
         {
-            var reqTenant = ResolveTenantOrDeny(ctx, tenantBoundary);
+            var reqTenant = await ResolveTenantOrDenyAsync(ctx, tenantBoundary);
             if (reqTenant is null) return;
             if (pushedSessions.TryLocate(reqTenant.Value, sid, stale) is not { } loc)
             {
@@ -115,7 +120,7 @@ internal static class SessionWsProxyEndpoints
         // caps the newest-first rows.
         app.MapGet("/sessions/{sid}/screenshots", async (string sid, HttpContext ctx) =>
         {
-            var reqTenant = ResolveTenantOrDeny(ctx, tenantBoundary);
+            var reqTenant = await ResolveTenantOrDenyAsync(ctx, tenantBoundary);
             if (reqTenant is null) return;
             if (pushedSessions.TryLocate(reqTenant.Value, sid, stale) is not { } loc)
             {
@@ -140,7 +145,7 @@ internal static class SessionWsProxyEndpoints
             // when the id is not the caller's Director. Gating BEFORE the dispatch is what guarantees no verb
             // ever reaches another tenant's Director over the tunnel, and it routes the id through the only
             // registry accessor there is (Get(tenant, id)) - there is no bare-id path to evade.
-            var reqTenant = ResolveTenantOrDeny(ctx, tenantBoundary);
+            var reqTenant = await ResolveTenantOrDenyAsync(ctx, tenantBoundary);
             if (reqTenant is null) return;
             if (registry.Get(reqTenant.Value, id) is null)
             {
@@ -170,7 +175,7 @@ internal static class SessionWsProxyEndpoints
             // Resolving the tenant at the locate isolates BOTH the read verbs and the write verbs the catch-all
             // dispatches (resize, clear-context, voice-mode, ...): a wrong-tenant session is never located, so
             // the dispatch never runs against another account's session.
-            var reqTenant = ResolveTenantOrDeny(ctx, tenantBoundary);
+            var reqTenant = await ResolveTenantOrDenyAsync(ctx, tenantBoundary);
             if (reqTenant is null) return;
             if (pushedSessions.TryLocate(reqTenant.Value, sid, stale) is not { } loc)
             {
@@ -186,15 +191,26 @@ internal static class SessionWsProxyEndpoints
 
     /// <summary>
     /// Hosted Multi-Tenancy (session-serving PR1): resolve the request's tenant from the authenticated device
-    /// key. On self-host (or when no boundary is wired) this is always Local. On hosted a null means no tenant
-    /// is bound to the request - the leg writes 403 and returns null so the caller denies, never reading the
-    /// Local partition (which on hosted would be a wrong-tenant read that surfaces another account's session).
+    /// key. On self-host this is always Local. On hosted a null means no tenant is bound to the request - the
+    /// leg writes the standard 403 deny and returns null so the caller denies, never reading the Local
+    /// partition (which on hosted would be a wrong-tenant read that surfaces another account's session).
+    ///
+    /// Resolved through the gated shared resolver (finding I1-01): this helper used to decide on the ARGUMENT
+    /// (<c>boundary is null ? TenantId.Local : ...</c>), which fails OPEN - a hosted process handed a null
+    /// boundary answered Local, exposing every per-session leg (terminal, file, screenshots, the catch-all
+    /// verbs, backfill) to the shared partition. <see cref="GatewayEndpoints.ResolveReadTenant"/> gates on
+    /// <see cref="GatewayHostedMode.IsHosted"/> itself, so on hosted a missing or non-hosted-wired boundary
+    /// is a REFUSAL. The second defence is that <see cref="Map"/> takes the boundary as a required
+    /// non-nullable argument, so omitting it is a compile error rather than a runtime downgrade.
     /// </summary>
-    private static TenantId? ResolveTenantOrDeny(HttpContext ctx, Tenancy.HostedTenantBoundary? boundary)
+    private static async Task<TenantId?> ResolveTenantOrDenyAsync(HttpContext ctx, Tenancy.HostedTenantBoundary? boundary)
     {
-        var tenant = boundary is null ? TenantId.Local : boundary.ResolveRequestTenant(ctx);
+        var tenant = GatewayEndpoints.ResolveReadTenant(ctx, boundary);
         if (tenant is null && !ctx.Response.HasStarted)
+        {
             ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+            await ctx.Response.WriteAsJsonAsync(new { error = "no tenant is bound to this request" }, ctx.RequestAborted);
+        }
         return tenant;
     }
 

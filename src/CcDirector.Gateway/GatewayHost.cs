@@ -2953,8 +2953,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // Issue #1856: the boundary and the tenant registry make this endpoint tenant-bearing on hosted, where
         // it must answer about the CALLER's enrollment rather than about a Gateway credential hosted does not
         // hold. On self-host the boundary reports not-hosted and the endpoint behaves exactly as before.
-        AccountStatusEndpoint.Map(_app, Account, new Core.Account.AccountNicknameClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }),
-            tenantBoundary: _tenantBoundary, tenants: TenantRegistry);
+        AccountStatusEndpoint.Map(_app, Account, _tenantBoundary,
+            nickname: new Core.Account.AccountNicknameClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }),
+            tenants: TenantRegistry);
 
         // Gateway Centralization Phase 3 (issue #648): POST /account/logout CLEARS the Gateway-hosted
         // DevThrottle credential through the same reused DevThrottleAccountService (Account). The account
@@ -3043,7 +3044,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // through this one endpoint - it resolves the mode + key and runs the right provider (in-process
         // Whisper, or the resolved provider-compatible batch endpoint). Optional ?correct=true also runs
         // the validated dictionary correction, keeping that out of the callers too.
-        TranscriptionBatchEndpoint.Map(_app, _keyVault, _transcriptionHistory, _transcriptionAudioArchive, _tenantBoundary, _transcripts);
+        TranscriptionBatchEndpoint.Map(_app, _keyVault, _tenantBoundary, _transcriptionHistory, _transcriptionAudioArchive, _transcripts);
 
         // Read-only analysis over the LOCAL minimized transcription history: latency percentiles, cleanup
         // behaviour, most-corrected terms, and word frequencies, so any agent can query the Gateway to
@@ -3173,7 +3174,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // broken deploy, and the reason is what tells an operator whether to fix a setting or a database.
         if (InputStats is not null)
         {
-            Stats.StatsPageEndpoint.Map(_app, InputStats, SessionConcurrency, _tenantSettingsResolver, _tenantBoundary, _sessionHistory);
+            Stats.StatsPageEndpoint.Map(_app, InputStats, _tenantBoundary, SessionConcurrency, _tenantSettingsResolver, _sessionHistory);
         }
         else
         {

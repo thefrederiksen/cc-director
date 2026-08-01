@@ -35,9 +35,12 @@ internal static class TranscriptionBatchEndpoint
     public static void Map(
         IEndpointRouteBuilder app,
         KeyVault vault,
+        // REQUIRED AND NON-NULLABLE (finding I1-01), and moved AHEAD of the optional tail so it cannot sit
+        // in a defaulted position: a forgotten boundary must be a compile error, never a silent default.
+        // Self-host callers construct it over the SingleTenantContext.
+        Tenancy.HostedTenantBoundary tenantBoundary,
         TranscriptionHistoryLog? history = null,
         TranscriptionAudioArchive? audioArchive = null,
-        Tenancy.HostedTenantBoundary? tenantBoundary = null,
         TranscriptStore? transcripts = null)
     {
         app.MapPost("/transcription", async (HttpContext ctx) =>

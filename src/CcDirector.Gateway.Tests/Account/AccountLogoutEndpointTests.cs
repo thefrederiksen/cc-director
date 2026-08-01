@@ -89,8 +89,12 @@ public sealed class AccountLogoutEndpointTests
             app.Use(async (ctx, next) => await AuthMiddleware.Run(ctx, requireToken, next));
         }
 
-        AccountStatusEndpoint.Map(app, account);
-        AccountLogoutEndpoint.Map(app, account);
+        // The boundary is required and non-nullable now (finding I1-01). This is a self-host harness, so it
+        // gets the REAL self-host boundary: built over the SingleTenantContext, it always resolves Local.
+        var boundary = new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
+            new CcDirector.Core.Tenancy.SingleTenantContext(), new DeviceRegistry());
+        AccountStatusEndpoint.Map(app, account, boundary);
+        AccountLogoutEndpoint.Map(app, account, boundary);
         await app.StartAsync();
 
         var baseUrl = app.Urls.First();

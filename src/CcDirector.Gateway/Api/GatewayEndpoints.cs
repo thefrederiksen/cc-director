@@ -52,11 +52,13 @@ internal static class GatewayEndpoints
     public static void Map(IEndpointRouteBuilder app, DirectorRegistry registry, string version, string token,
         // Hosted Multi-Tenancy (session-serving PR1): the auth-boundary tenant binder. On the hosted Gateway
         // the request-scoped reads resolve the caller's tenant from its authenticated device key and DENY
-        // (403) when it has none - never falling back to Local. REQUIRED, not defaulted (tenant-boundary
-        // hardening, release 2026-07-31, finding CR-7): the boundary is a security argument, and when it was
-        // optional one forgotten argument silently collapsed every hosted tenant into the Local partition.
-        // A caller that genuinely has none (a self-host-only test host) must SAY so with an explicit null.
-        Tenancy.HostedTenantBoundary? tenantBoundary,
+        // (403) when it has none - never falling back to Local. REQUIRED AND NON-NULLABLE (tenant-boundary
+        // hardening, release 2026-07-31, findings CR-7 and I1-01): the boundary is a security argument, and
+        // when it was optional one forgotten argument silently collapsed every hosted tenant into the Local
+        // partition. Under nullable-warnings-as-errors, passing a possibly-null value here is a compile
+        // error too. A self-host process constructs the boundary over the SingleTenantContext, which always
+        // resolves Local - so there is no legitimate caller with nothing to pass.
+        Tenancy.HostedTenantBoundary tenantBoundary,
         bool authEnabled = false, Func<bool>? requestShutdown = null,
         Action<string, string, string>? onSessionState = null,
         Func<TenantId, string, bool>? voiceGeneratingFor = null,

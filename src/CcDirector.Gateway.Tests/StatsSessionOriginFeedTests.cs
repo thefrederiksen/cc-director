@@ -46,7 +46,12 @@ public sealed class StatsSessionOriginFeedTests : IDisposable
         builder.Logging.ClearProviders();
         var app = builder.Build();
         app.Urls.Add("http://127.0.0.1:0");
-        StatsPageEndpoint.Map(app, new GatewayInputStatsAggregator(), sessionHistory: history);
+        // The boundary is required and non-nullable now (finding I1-01). Self-host harness, so the REAL
+        // self-host boundary: built over the SingleTenantContext, it always resolves Local.
+        StatsPageEndpoint.Map(app, new GatewayInputStatsAggregator(),
+            new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
+                new CcDirector.Core.Tenancy.SingleTenantContext(), new CcDirector.Gateway.Pairing.DeviceRegistry()),
+            sessionHistory: history);
         await app.StartAsync();
         return (app, new HttpClient { BaseAddress = new Uri(app.Urls.First()) });
     }

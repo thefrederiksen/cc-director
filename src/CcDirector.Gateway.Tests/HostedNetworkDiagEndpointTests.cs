@@ -151,9 +151,15 @@ public sealed class HostedNetworkDiagEndpointTests
                 registry,
                 version: "test",
                 token: "test-token",
-                // Self-host-only harness: this host never runs hosted, so there is no boundary to pass. The
-                // parameter is required (finding CR-7), so the absence is stated rather than defaulted.
-                tenantBoundary: null,
+                // The boundary is required and non-nullable now (finding I1-01), so this harness wires the
+                // REAL boundary for the mode it just selected: the hosted arm needs the per-account ambient
+                // context (a hosted process constructing the single-tenant one fails loud by design), and
+                // the self-host arm gets the SingleTenantContext, which always resolves Local.
+                tenantBoundary: hosted
+                    ? new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
+                        new CcDirector.Core.Tenancy.AsyncLocalTenantContext(), new CcDirector.Gateway.Pairing.DeviceRegistry())
+                    : new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
+                        new CcDirector.Core.Tenancy.SingleTenantContext(), new CcDirector.Gateway.Pairing.DeviceRegistry()),
                 collectNetworkDiagnostic: collectNetworkDiagnostic);
             await app.StartAsync();
             var port = BoundPort.Of(app);

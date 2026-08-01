@@ -120,15 +120,17 @@ public static class StatsPageEndpoint
     /// answers 403 when no tenant resolves.
     /// </summary>
     public static RouteGroupBuilder Map(IEndpointRouteBuilder outer, GatewayInputStatsAggregator aggregator,
+        // The tenant boundary the data route resolves the CALLER's tenant through. REQUIRED AND NON-NULLABLE
+        // (finding I1-01), and moved AHEAD of the optional tail so it cannot sit in a defaulted position: a
+        // forgotten boundary must be a compile error, never a silent default. Self-host callers construct it
+        // over the SingleTenantContext, which always resolves the single Local tenant; on hosted it resolves
+        // the authenticated device key's tenant and the route answers 403 when there is none - never Local.
+        Tenancy.HostedTenantBoundary tenantBoundary,
         GatewaySessionConcurrencyStats? concurrency = null,
         // Issue #2017: the per-tenant settings resolver. The display time zone is read for the caller's tenant
         // (TimeZone(tenant)) instead of the process-global config. Null (older callers, tests) keeps the global
         // read, byte-identical to before.
         Settings.TenantSettingsResolver? tenantSettings = null,
-        // The tenant boundary the data route resolves the CALLER's tenant through. Null (self-host, older
-        // callers, tests) means the single Local tenant; on hosted it resolves the authenticated device key's
-        // tenant and answers 403 when there is none - never falling back to Local.
-        Tenancy.HostedTenantBoundary? tenantBoundary = null,
         // The durable work-history store (devthrottle_internal issue #982), source of the session-origin
         // counts. Null (older callers, tests) omits that block from the feed entirely rather than serving
         // zeroes - a zero here would read as "no agent ever started a session", which is a different and

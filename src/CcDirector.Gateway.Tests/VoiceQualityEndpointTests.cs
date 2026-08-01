@@ -47,7 +47,12 @@ public sealed class VoiceQualityEndpointTests : IDisposable
         app.Urls.Add("http://127.0.0.1:0");
 
         var log = new MicrophoneQualityLog(Path.Combine(_root, "quality"));
-        VoiceQualityEndpoint.Map(app, tenantBoundary: null, logOverride: log);
+        // The boundary is required and non-nullable now (finding I1-01). Self-host harness, so the REAL
+        // self-host boundary: built over the SingleTenantContext, it always resolves Local.
+        VoiceQualityEndpoint.Map(app,
+            tenantBoundary: new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
+                new CcDirector.Core.Tenancy.SingleTenantContext(), new CcDirector.Gateway.Pairing.DeviceRegistry()),
+            logOverride: log);
 
         await app.StartAsync();
         return (app, new HttpClient { BaseAddress = new Uri(app.Urls.First()) }, log);

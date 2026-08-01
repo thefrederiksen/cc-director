@@ -48,10 +48,17 @@ public sealed class DirectorHub : Hub
 
     private readonly DirectorConnectionRegistry? _connections;
 
+    // The boundary is REQUIRED AND NON-NULLABLE (finding I1-01), and moved AHEAD of the optional tail so it
+    // cannot sit in a defaulted position: constructing this hub without one must be a compile error, never a
+    // silent default. In production SignalR resolves it from dependency injection (GatewayHost registers the
+    // singleton); a self-host process registers a boundary built over the SingleTenantContext, which always
+    // resolves Local. The FIELD stays nullable because a miswire is still expressible with a forced null, and
+    // the runtime gate in ResolveConnectionTenant must hold even then.
     public DirectorHub(PushedSessionStore store, DirectorRegistry registry, Stats.InputStatsHandle inputStats,
-        GatewayStreamRegistry streamRegistry, Snooze.SnoozeLandingObserver? snoozeLandings = null,
+        GatewayStreamRegistry streamRegistry, HostedTenantBoundary tenantBoundary,
+        Snooze.SnoozeLandingObserver? snoozeLandings = null,
         Fleet.FleetRoleObserver? fleetRoles = null, Fleet.FleetDisplayStateObserver? fleetDisplayState = null,
-        HostedTenantBoundary? tenantBoundary = null, DirectorConnectionRegistry? connections = null,
+        DirectorConnectionRegistry? connections = null,
         PushedRepositoryStore? repositoryStore = null, RepoHistoryStore? repoHistory = null,
         History.SessionHistoryRecorder? sessionHistory = null)
     {
@@ -374,9 +381,22 @@ public sealed class DirectorHub : Hub
     /// </summary>
     private TenantId? ResolveConnectionTenant()
     {
-        if (_tenantBoundary is null)
-            return TenantId.Local;
+        // GATED ON GatewayHostedMode.IsHosted ITSELF, never on whether a boundary was wired (finding I1-01,
+        // the same shape GatewayEndpoints.ResolveReadTenant carries). Deciding on the field fails OPEN: a
+        // hosted process whose hub was constructed without a boundary would resolve TenantId.Local and bind
+        // the Director's whole push stream into the shared partition. On hosted, a missing or
+        // non-hosted-wired boundary resolves to null, and null is a REFUSAL - Hello aborts the connection.
+        // The second defence is the required non-nullable constructor parameter.
+        if (!GatewayHostedMode.IsHosted)
+        {
+            if (_tenantBoundary is null)
+                return TenantId.Local;
+            var selfHostContext = Context.GetHttpContext();
+            return selfHostContext is null ? null : _tenantBoundary.ResolveRequestTenant(selfHostContext);
+        }
 
+        if (_tenantBoundary is null || !_tenantBoundary.IsHosted)
+            return null;
         var httpContext = Context.GetHttpContext();
         return httpContext is null ? null : _tenantBoundary.ResolveRequestTenant(httpContext);
     }
