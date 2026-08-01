@@ -1637,16 +1637,24 @@ public sealed class GatewayHost : IAsyncDisposable
     /// you were breached and knowing whose credential to revoke.
     ///
     /// Carries NO key material: DeviceCredentialIdentity holds neither the raw credential nor its
-    /// stored hash, so DT-05 (a credential never reaches the log) still holds. The account identifier
-    /// is already disclosed on /privacy as something service logs may contain. Unauthenticated
+    /// stored hash, so DT-05 (a credential never reaches the log) still holds. Unauthenticated
     /// requests add nothing, so public routes are unchanged.
+    ///
+    /// The account is written through <see cref="TenantId.ToLogString"/>, the one-way hash tag every
+    /// other tenant-bearing line uses. The first version of this method wrote the RAW account id, one
+    /// day after #2343 had gone through the Gateway replacing exactly that with the hash - and it did
+    /// so on the highest-volume line in the process, which would have undone that work at the worst
+    /// possible site. The tag is stable, so two lines from one account still correlate, which is all
+    /// this line needs to do.
     /// </summary>
     private static string DeviceForLog(HttpContext ctx)
     {
         if (ctx.Items.TryGetValue(Util.AuthMiddleware.AuthenticatedDeviceItemKey, out var value)
             && value is Pairing.DeviceCredentialIdentity identity)
         {
-            var tenant = string.IsNullOrEmpty(identity.TenantId) ? "-" : identity.TenantId;
+            var tenant = string.IsNullOrEmpty(identity.TenantId)
+                ? "-"
+                : new TenantId(identity.TenantId).ToLogString();
             return $" device={identity.DeviceId} type={identity.DeviceType} account={tenant}";
         }
 
