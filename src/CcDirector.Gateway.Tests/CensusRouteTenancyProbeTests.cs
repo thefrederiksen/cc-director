@@ -273,20 +273,28 @@ public sealed class CensusRouteTenancyProbeTests : IAsyncLifetime
         await SeedPublishedSkill(_keyB, sid, body, "notes.md", "supporting");
 
         // CROSS: every write verb tenant A can name B's id with.
-        foreach (var (method, path) in new[]
+        //
+        // Inspection finding I1-04, and the probe was weaker than even the inspection realised. The
+        // enable and disable rows used to send an empty body and accept 400 as a refusal. Both routes
+        // require a 'by' field naming who is making the change, so both were answering
+        // 400 "Turning a skill on or off requires 'by'" - a VALIDATION error raised before any tenancy
+        // decision was reached. Those two rows were passing without the tenant boundary ever being
+        // consulted. Each row now sends a well formed body, so the only thing left that can refuse it is
+        // the tenant partition, and the accepted status is tightened to the ordinary not-found that a
+        // cross-tenant miss actually produces.
+        foreach (var (method, path, reqBody) in new[]
                  {
-                     ("POST", $"gateway/skills/{sid}/publish"),
-                     ("POST", $"gateway/skills/{sid}/enable"),
-                     ("POST", $"gateway/skills/{sid}/disable"),
-                     ("DELETE", $"gateway/skills/{sid}"),
+                     ("POST", $"gateway/skills/{sid}/publish", "{}"),
+                     ("POST", $"gateway/skills/{sid}/enable?by=census-probe", "{}"),
+                     ("POST", $"gateway/skills/{sid}/disable?by=census-probe", "{}"),
+                     ("DELETE", $"gateway/skills/{sid}", null),
                  })
         {
-            var resp = await Send(method, path, _keyA, method == "POST" ? "{}" : null);
+            var resp = await Send(method, path, _keyA, reqBody);
             var text = await resp.Content.ReadAsStringAsync();
             _out.WriteLine($"CROSS   {method} /{path} (tenant A) -> {(int)resp.StatusCode} {text}");
-            Assert.True(resp.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.BadRequest
-                            or HttpStatusCode.Conflict,
-                $"{method} /{path}: tenant A must be refused, got {(int)resp.StatusCode}; body was: {text}");
+            Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+            Assert.DoesNotContain(body, text, StringComparison.Ordinal);
         }
 
         // A's clone attempt of B's id - the clone path is the one write that READS the named skill.
@@ -322,10 +330,11 @@ public sealed class CensusRouteTenancyProbeTests : IAsyncLifetime
         // been removed would have satisfied the security assertion. The owner drives both here.
         foreach (var verb in new[] { "disable", "enable" })
         {
-            var ownerToggle = await Send("POST", $"gateway/skills/{sid}/{verb}", _keyB, "{}");
-            _out.WriteLine($"CONTROL POST /gateway/skills/{{id}}/{verb} (owner B) -> {(int)ownerToggle.StatusCode}");
+            var ownerToggle = await Send("POST", $"gateway/skills/{sid}/{verb}?by=census-probe", _keyB, "{}");
+            var toggleText = await ownerToggle.Content.ReadAsStringAsync();
+            _out.WriteLine($"CONTROL POST /gateway/skills/{{id}}/{verb} (owner B) -> {(int)ownerToggle.StatusCode} {toggleText}");
             Assert.True(ownerToggle.IsSuccessStatusCode,
-                $"the owner's own {verb} must succeed or A's refusal of it proves nothing, got {(int)ownerToggle.StatusCode}");
+                $"the owner's own {verb} must succeed or A's refusal of it proves nothing, got {(int)ownerToggle.StatusCode}; body was: {toggleText}");
         }
 
         // INDEPENDENT RE-READ: B's skill survived every attempt, still published, still readable.
