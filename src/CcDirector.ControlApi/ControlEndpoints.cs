@@ -1721,7 +1721,7 @@ internal static class ControlEndpoints
         {
             if (string.IsNullOrWhiteSpace(root)) continue;
             string fullRoot;
-            try { fullRoot = Path.GetFullPath(root).TrimEnd('\\', '/'); }
+            try { fullRoot = NormalizeDirectoryPath(Path.GetFullPath(root)); }
             catch (ArgumentException) { continue; } // a label, not a local directory (remote-thread sessions)
             if (!roots.Contains(fullRoot, StringComparer.FromComparison(PathContainmentComparison)))
                 roots.Add(fullRoot);
@@ -1741,10 +1741,10 @@ internal static class ControlEndpoints
             return new DirectoryListingDto { CurrentPath = null, ParentPath = null, Entries = rootEntries };
         }
 
-        var full = Path.GetFullPath(path).TrimEnd('\\', '/');
+        var full = NormalizeDirectoryPath(Path.GetFullPath(path));
         var containingRoot = roots.FirstOrDefault(r =>
             string.Equals(full, r, PathContainmentComparison)
-            || full.StartsWith(r + Path.DirectorySeparatorChar, PathContainmentComparison));
+            || full.StartsWith(ContainmentPrefix(r), PathContainmentComparison));
         if (containingRoot is null)
             throw new UnauthorizedAccessException($"directory is outside this Director's session working directories: {full}");
 
@@ -1760,13 +1760,13 @@ internal static class ControlEndpoints
         var realFull = ResolveRealPath(full);
         if (realFull is null)
             throw new UnauthorizedAccessException($"directory could not be resolved to a real path: {full}");
-        var realFullTrimmed = realFull.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var realFullTrimmed = NormalizeDirectoryPath(realFull);
         var containedForReal = roots
             .Select(ResolveRealPath)
             .Where(r => r is not null)
-            .Select(r => r!.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+            .Select(r => NormalizeDirectoryPath(r!))
             .Any(r => string.Equals(realFullTrimmed, r, PathContainmentComparison)
-                      || realFullTrimmed.StartsWith(r + Path.DirectorySeparatorChar, PathContainmentComparison));
+                      || realFullTrimmed.StartsWith(ContainmentPrefix(r), PathContainmentComparison));
         if (!containedForReal)
             throw new UnauthorizedAccessException($"directory is outside this Director's session working directories: {full}");
 
@@ -2206,8 +2206,8 @@ internal static class ControlEndpoints
         var dir = CcStorage.Screenshots();
         var full = Path.GetFullPath(Path.Combine(dir, name));
         // Confirm the resolved path is still under the screenshots folder.
-        var dirFull = Path.GetFullPath(dir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        if (!full.StartsWith(dirFull + Path.DirectorySeparatorChar, PathContainmentComparison))
+        var dirFull = NormalizeDirectoryPath(Path.GetFullPath(dir));
+        if (!full.StartsWith(ContainmentPrefix(dirFull), PathContainmentComparison))
             return null;
         if (!File.Exists(full))
             return null;
@@ -2220,9 +2220,10 @@ internal static class ControlEndpoints
         var realDir = ResolveRealPath(dirFull);
         if (realFull is null || realDir is null)
             return null;
-        var realDirTrimmed = realDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        if (!realFull.StartsWith(realDirTrimmed + Path.DirectorySeparatorChar, PathContainmentComparison))
+        var realDirTrimmed = NormalizeDirectoryPath(realDir);
+        if (!realFull.StartsWith(ContainmentPrefix(realDirTrimmed), PathContainmentComparison))
             return null;
+
         return full;
     }
 
@@ -2256,8 +2257,8 @@ internal static class ControlEndpoints
             return null;
         }
 
-        var rootTrimmed = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        if (!full.StartsWith(rootTrimmed + Path.DirectorySeparatorChar, PathContainmentComparison))
+        var rootTrimmed = NormalizeDirectoryPath(root);
+        if (!full.StartsWith(ContainmentPrefix(rootTrimmed), PathContainmentComparison))
             return null;
 
         // The prefix test above is necessary but NOT sufficient. Path.GetFullPath is pure string
@@ -2270,11 +2271,44 @@ internal static class ControlEndpoints
         var realFull = ResolveRealPath(full);
         if (realRoot is null || realFull is null)
             return null; // identity not establishable (an unresolvable reparse point, a cycle) - refuse
-        var realRootTrimmed = realRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        if (!realFull.StartsWith(realRootTrimmed + Path.DirectorySeparatorChar, PathContainmentComparison))
+        var realRootTrimmed = NormalizeDirectoryPath(realRoot);
+        if (!realFull.StartsWith(ContainmentPrefix(realRootTrimmed), PathContainmentComparison))
             return null;
+
         return full;
     }
+
+    /// <summary>
+    /// A directory path with its trailing separators removed - EXCEPT when the path IS a filesystem
+    /// root, where the separator is part of the name and removing it changes the meaning completely.
+    ///
+    /// This is not a tidiness helper, it is a correctness one. On Windows <c>D:\</c> trimmed becomes
+    /// <c>D:</c>, which is DRIVE-RELATIVE: it resolves to that drive's current directory, not to the
+    /// drive's root. On Unix <c>/</c> trimmed becomes the empty string, which resolves to the process
+    /// current directory. Either way a session whose working directory is a filesystem root would have
+    /// its containment decided against a completely different directory, and every file under it
+    /// refused - which is exactly the regression the second inspection found (M03-I2B-04).
+    /// </summary>
+    internal static string NormalizeDirectoryPath(string path)
+    {
+        if (string.IsNullOrEmpty(path))
+            return path;
+        var pathRoot = Path.GetPathRoot(path);
+        if (!string.IsNullOrEmpty(pathRoot) && string.Equals(path, pathRoot, StringComparison.Ordinal))
+            return path;
+        var trimmed = path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return trimmed.Length == 0 ? path : trimmed;
+    }
+
+    /// <summary>
+    /// The prefix every path INSIDE <paramref name="directory"/> begins with: the directory followed
+    /// by exactly one separator. A filesystem root already ends in its own separator, so appending a
+    /// second one would build a prefix that no real path can ever match.
+    /// </summary>
+    internal static string ContainmentPrefix(string directory) =>
+        directory.EndsWith(Path.DirectorySeparatorChar) || directory.EndsWith(Path.AltDirectorySeparatorChar)
+            ? directory
+            : directory + Path.DirectorySeparatorChar;
 
     /// <summary>
     /// Comparison for path-containment decisions. Case-insensitive ONLY on Windows, where the
@@ -2293,6 +2327,7 @@ internal static class ControlEndpoints
     /// <summary>The pure decision behind <see cref="PathContainmentComparison"/>; see there.</summary>
     internal static StringComparison PathContainmentComparisonFor(bool windowsFileSystem) =>
         windowsFileSystem ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
 
     /// <summary>
     /// Resolve <paramref name="path"/> to its REAL filesystem identity: every symbolic link,
