@@ -16,6 +16,12 @@ namespace CcDirector.Gateway.Prompts;
 /// GET /prompts  - anyone asking for history asks here. That is the point of the log living on the
 /// Gateway: it already has the whole fleet's record, so nothing has to go hunting across machines.
 ///
+/// GET /prompts/export and DELETE /prompts - the account data rights (CR-3b, devthrottle_internal issue
+/// #1180). Export returns the requesting account's ENTIRE prompt history as a downloadable JSON document;
+/// delete removes every one of that account's daily files. The log is the single copy (the Director keeps
+/// none, and the Gateway makes no backup of it), so the delete IS the erasure - immediate, not queued.
+/// Both are tenant-scoped exactly like the verbs above; neither can name another account's partition.
+///
 /// TENANT-SCOPED (issue #1848). "The whole fleet's record" means the REQUESTING ACCOUNT'S fleet. Both verbs
 /// resolve the request's tenant from the authenticated device key with the same seam the cockpit read path
 /// uses, and write into / read out of only that tenant's partition. Before this, neither handler took an
@@ -70,6 +76,38 @@ public static class PromptEndpoints
 
             var records = store.Read(tenant.Value, fromUtc, toUtc);
             return Results.Ok(new { count = records.Count, records });
+        });
+
+        app.MapGet("/prompts/export", (HttpContext ctx) =>
+        {
+            var tenant = ResolveTenant(ctx, tenantBoundary);
+            if (tenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" },
+                    statusCode: StatusCodes.Status403Forbidden);
+
+            var records = store.ReadAll(tenant.Value);
+            var payload = new { exportedAtUtc = DateTime.UtcNow, count = records.Count, records };
+            // Web defaults so the export's field names match what GET /prompts serves; indented because
+            // this file is FOR the member to read and keep, not for a machine round-trip.
+            var bytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(payload,
+                new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web) { WriteIndented = true });
+            FileLog.Write($"[PromptEndpoints] GET /prompts/export: tenant={tenant.Value.ToLogString()}, exported {records.Count} records");
+            return Results.File(bytes, "application/json",
+                $"prompt-history-{DateTime.UtcNow:yyyyMMdd}.json");
+        });
+
+        app.MapDelete("/prompts", (HttpContext ctx) =>
+        {
+            var tenant = ResolveTenant(ctx, tenantBoundary);
+            if (tenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" },
+                    statusCode: StatusCodes.Status403Forbidden);
+
+            // DeleteAll is loud on failure by design: an erasure that half-happened must surface as an
+            // error to the caller (the pipeline's 500), never as a success with rows left behind.
+            var deletedFiles = store.DeleteAll(tenant.Value);
+            FileLog.Write($"[PromptEndpoints] DELETE /prompts: tenant={tenant.Value.ToLogString()}, deleted {deletedFiles} daily files");
+            return Results.Ok(new { deletedFiles });
         });
     }
 

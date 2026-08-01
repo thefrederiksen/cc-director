@@ -59,18 +59,64 @@ release and its exact commit.
   `CcDirector.Core.AppVersion` (or the inline equivalent in projects that do
   not reference Core).
 
-## How a release flows
+## How to cut a release
 
-1. Run `scripts/new-release.ps1`. It bumps **one file**
-   (`Directory.Build.props`), commits `release: vX.Y.Z`, tags `vX.Y.Z`, pushes.
-2. CI (`release.yml`) builds everything from the tagged commit. Every .NET
-   binary is stamped `X.Y.Z` automatically. A guard step fails the release if
-   the tag and `Directory.Build.props` disagree.
-3. The release manifest lists every asset with its version (= the release
-   version) and its SHA-256.
-4. Installed machines see `X.Y.Z > installed` and update every asset in their
+**Two things to do. Write the notes, run the script.**
+
+1. **Write `docs/public/release-notes/vX.Y.Z.md`.** This file *is* the release
+   page - the workflow publishes it verbatim and **fails if it is missing or
+   under 200 non-whitespace characters**. It will not generate a substitute,
+   because a page of internal pull request titles looks like release notes and
+   therefore ships unread. Leave it uncommitted; the script commits it.
+
+2. **Run `scripts/new-release.ps1` from `main`, with a clean tree.** It offers
+   the next patch version - press Enter to take it. That is the only decision.
+
+```
+Current version: 1.9.2
+New version [1.9.3]:          <- Enter
+```
+
+Everything after that is automatic, and every step is checked before the next
+one runs.
+
+### What the script does, and why in this order
+
+**main is protected by a ruleset requiring a pull request**, so the version bump
+cannot be pushed straight to it. The script therefore branches, opens a pull
+request, **merges it, and only then creates the tag** - after re-reading
+`Directory.Build.props` from the merged `main` to prove the bump actually landed.
+
+That order is not a style preference. An earlier version of this script ran
+`git push origin main` then `git push origin <tag>`: the branch push is rejected
+by the ruleset and the tag push succeeds, so the tag ends up pointing at a commit
+that is not on `main` - a released version whose bump and notes are missing from
+the branch everyone works from. It happened on **v1.9.2** and was repaired by
+hand. **A tag can never be un-pushed, so it is created last.**
+
+It also refuses to start if: the notes are missing or too short, the tag already
+exists locally or on the remote, a `.csproj` declares its own `<Version>`, the
+tree has unrelated changes, you are not on `main`, or `main` is behind the remote.
+
+### What happens after the tag
+
+3. `release.yml` builds everything from the tagged commit. Every .NET binary is
+   stamped `X.Y.Z` automatically, and a guard fails the release if the tag and
+   `Directory.Build.props` disagree.
+4. The release is created as a **draft**, and published only once
+   `release-manifest.json` is provably attached - so a release is never "latest"
+   while incomplete.
+5. The public downloads are **mirrored to a stable address** (see
+   devthrottle_internal #1186), then the installer is fetched back from that
+   address and its SHA-256 compared to the manifest. **A mismatch fails the
+   release**, so the public URL is never quietly serving the wrong build.
+6. The manifest lists every asset with its version and SHA-256.
+7. Installed machines see `X.Y.Z > installed` and update every asset in their
    role: Director self-update on launch, Gateway self-update with health-check
    rollback, tools via ToolUpdater.
+
+If the workflow goes red, **the release is not usable** - read the failing step
+before announcing anything.
 
 ## Where the version is shown
 

@@ -101,7 +101,13 @@ public sealed class HostedTenantMachineControlTests : IAsyncLifetime
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
             snoozePath: Path.Combine(_instancesDir, "snooze", "snooze.json"),
-            streamMode: true);
+            streamMode: true,
+            // These tests assert AUTH behaviour on the machine routes. The spawn route auto-launches a
+            // Director and waits for it to appear; no Director ever appears here, so the control request used
+            // to sit through production's full ninety-second wait - the single slowest test in the suite
+            // (issue #1156). What is under test is which STATUS comes back, never how long the Gateway is
+            // willing to wait for a Director, so the wait is injected short.
+            directorLaunchTimeout: TimeSpan.FromMilliseconds(250));
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
 

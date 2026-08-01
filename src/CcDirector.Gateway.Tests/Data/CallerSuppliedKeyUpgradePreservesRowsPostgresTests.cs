@@ -54,9 +54,9 @@ public sealed class CallerSuppliedKeyUpgradePreservesRowsPostgresTests
         }
     }
 
-    private static string Connection =>
-        Environment.GetEnvironmentVariable(ConnectionEnvVar)
-        ?? throw new InvalidOperationException($"{ConnectionEnvVar} is not set.");
+    // Per RUN, not per operator: PostgresProofDatabase appends a unique suffix to the supplied
+    // database name so two concurrent runs cannot EnsureDeleted() each other's schema (issue #1156).
+    private static string Connection => PostgresProofDatabase.Connection;
 
     /// <summary>The same wiring the runtime hosted Gateway uses: Npgsql, the Postgres migrations assembly, and
     /// the migrations history table in the <c>gateway</c> schema.</summary>
@@ -78,14 +78,7 @@ public sealed class CallerSuppliedKeyUpgradePreservesRowsPostgresTests
     /// "ccpg" - a token no real database would carry. A loose substring marker like "test" is deliberately NOT
     /// used: it matches ordinary names such as "latest" or "contest", which would defeat the guard.
     /// </summary>
-    private static void GuardThrowawayDatabase()
-    {
-        var database = new NpgsqlConnectionStringBuilder(Connection).Database ?? "";
-        if (!database.StartsWith("ccpg", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException(
-                $"Refusing to drop database '{database}': the upgrade proof recreates the database from " +
-                $"nothing, so {ConnectionEnvVar} must point at a throwaway whose name starts with 'ccpg'.");
-    }
+    private static void GuardThrowawayDatabase() => PostgresProofDatabase.GuardThrowawayDatabase();
 
     private static void MigrateTo(string? target)
     {

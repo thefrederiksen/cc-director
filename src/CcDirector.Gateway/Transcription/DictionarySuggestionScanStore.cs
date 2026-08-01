@@ -112,7 +112,9 @@ public sealed class DictionarySuggestionScanStore
             if (kept.Count == suggestions.Count) return;
             existing.SuggestionsJson = SerializeSuggestions(kept);
             ctx.SaveChanges();
-            FileLog.Write($"[SuggestionScanStore] RemoveSuggestion: tenant={tenant.ToLogString()} term={norm} remaining={kept.Count}");
+            // The term itself is dictation-derived customer content and stays out of the log (the data
+            // map promises service logs carry no dictation content); its length is enough to correlate.
+            FileLog.Write($"[SuggestionScanStore] RemoveSuggestion: tenant={tenant.ToLogString()} termLength={norm.Length} remaining={kept.Count}");
         }
     }
 

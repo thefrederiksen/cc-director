@@ -512,6 +512,15 @@ public sealed class GatewayHost : IAsyncDisposable
     private static readonly TimeSpan ActivityRetentionInterval = TimeSpan.FromHours(6);
     private static readonly TimeSpan ActivityRetentionStartupDelay = TimeSpan.FromMinutes(5);
 
+    // The prompt log's retention purge (CR-3b, devthrottle_internal #1180): wakes a few times a day and
+    // deletes every partition's daily files older than the retention window. Guarded against overlap the
+    // same way the activity sweep is. Created in StartAsync, disposed in StopAsync.
+    private Prompts.PromptLogRetentionSweep? _promptRetentionSweep;
+    private System.Threading.Timer? _promptRetentionTimer;
+    private int _promptRetentionInFlight;
+    private static readonly TimeSpan PromptRetentionInterval = TimeSpan.FromHours(6);
+    private static readonly TimeSpan PromptRetentionStartupDelay = TimeSpan.FromMinutes(7);
+
     // The daily dictionary-suggestion scan (devthrottle #2115): the timer ticks every few minutes; the sweep
     // decides PER TENANT whether that tenant's local 00:05 has passed since its last stored scan, so each
     // tenant scans at its own midnight from one timer. Cheap when nothing is due (one stored-row read per
@@ -850,7 +859,9 @@ public sealed class GatewayHost : IAsyncDisposable
         }
     }
 
-    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? promptLogPath = null, string? snoozePath = null, string? pushSubscriptionsPath = null, string? wingmanInstructionsPath = null, string? missionsPath = null, string? missionNotesPath = null, Transcription.GatewayTranscriptionService? dictationTranscription = null, Core.Agents.AgentKind? brainTool = null)
+    private readonly TimeSpan? _directorLaunchTimeout;
+
+    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? promptLogPath = null, string? snoozePath = null, string? pushSubscriptionsPath = null, string? wingmanInstructionsPath = null, string? missionsPath = null, string? missionNotesPath = null, Transcription.GatewayTranscriptionService? dictationTranscription = null, Core.Agents.AgentKind? brainTool = null, TimeSpan? directorLaunchTimeout = null)
     {
         var retiredFilesRemoved = Core.Configuration.LegacyPrivacyDataCleanup.Run();
         if (retiredFilesRemoved > 0)
@@ -864,6 +875,13 @@ public sealed class GatewayHost : IAsyncDisposable
         BrainTool = Core.Configuration.BrainToolConfig.EnsureHostable(brainTool ?? Core.Configuration.BrainToolConfig.Get());
 
         Port = port;
+        // How long a spawn waits for an auto-launched Director to appear. Production's default lives in
+        // RegistryDirectorTargetResolver (90s). A test that only needs to prove a route's AUTH behaviour
+        // passes a short one: the control request in the hosted deny-by-default theory used to sit through
+        // the full ninety seconds for a Director that was never going to appear, which was the single
+        // slowest test in the suite (issue #1156). Injected rather than a static test hook, so two hosts in
+        // one process can hold different values.
+        _directorLaunchTimeout = directorLaunchTimeout;
         Token = token ?? _gatewayAuth.LoadOrCreate();
         // Epic #1159 step A: the eviction horizon is the ONE elapsed-time rule that removes a session, so it
         // is read from configuration here rather than left as a constant only a test can move. Default is a
@@ -1374,7 +1392,8 @@ public sealed class GatewayHost : IAsyncDisposable
             // The auto-launch runs IN-PROCESS through the shared launcher relay, carrying the resolved tenant
             // as an argument. It used to POST to this Gateway's own /machines/{m}/director/start over
             // loopback, which cannot carry a device key and so arrived with no tenant at all.
-            new Running.RelayDirectorLauncher(Launchers, SendLauncherCommandAsync));
+            new Running.RelayDirectorLauncher(Launchers, SendLauncherCommandAsync),
+            launchTimeout: _directorLaunchTimeout);
         // The single resolve-then-create path shared by the cron firing engine and the interactive
         // POST /machines/{machine}/sessions relay ("start a session on another computer"). Gateway Cleanup
         // Phase 2 (PR E-B2): both the spawner and the work-list drain driver ride the tunnel. Tunnel-only:
@@ -2491,6 +2510,10 @@ public sealed class GatewayHost : IAsyncDisposable
             dictionaryDismissals: _dictionaryDismissals,
             // The daily-email block route for the caller's tenant.
             suggestionEmailComposer: _suggestionEmailComposer,
+            // Issue devthrottle_internal#1195: the wingman brain judges the menu guard's refusals - the
+            // same translator (and verdict cache) the narration path uses, so an unchanged screen is
+            // answered from the cached per-turn verdict without a second model call.
+            wingmanTranslator: _voiceService?.Translator,
             requestShutdown: () =>
             {
                 var handler = OnShutdownRequested;
@@ -3215,6 +3238,16 @@ public sealed class GatewayHost : IAsyncDisposable
             ActivityRetentionStartupDelay, ActivityRetentionInterval);
         FileLog.Write($"[GatewayHost] activity retention sweep started: every {ActivityRetentionInterval.TotalHours:0}h, retention {Activity.ActivityRetentionSweep.RetentionPeriod.TotalDays:0} days");
 
+        // The prompt log's retention purge (CR-3b): same footing as the other bounded stores. The window
+        // resolves from the deployment mode - hosted is always the product default; self-host may override
+        // via the environment (a malformed override throws HERE, loudly, at startup, not mid-sweep).
+        _promptRetentionSweep = new Prompts.PromptLogRetentionSweep(_promptLog,
+            Prompts.PromptLogRetentionSweep.ResolveRetention(GatewayHostedMode.IsHosted,
+                Environment.GetEnvironmentVariable(Prompts.PromptLogRetentionSweep.RetentionDaysEnvVar)));
+        _promptRetentionTimer = new System.Threading.Timer(_ => SweepPromptRetention(), null,
+            PromptRetentionStartupDelay, PromptRetentionInterval);
+        FileLog.Write($"[GatewayHost] prompt-log retention sweep started: every {PromptRetentionInterval.TotalHours:0}h, retention {_promptRetentionSweep.Retention.TotalDays:0} days");
+
         // The daily dictionary-suggestion scan (devthrottle #2115): each tick asks, per tenant, whether that
         // tenant's local 00:05 has passed since its last stored scan; only then does it mine and screen. The
         // first pass is delayed so startup is never contended, and a tenant with no stored scan yet is seeded
@@ -3590,6 +3623,29 @@ public sealed class GatewayHost : IAsyncDisposable
     }
 
     /// <summary>
+    /// The prompt-log retention timer callback (a boundary - it owns the overlap guard and the try/catch so
+    /// a purge failure never crashes the timer thread). One sweep at a time; a skipped tick simply purges on
+    /// the next one, which retention granularity is indifferent to.
+    /// </summary>
+    private void SweepPromptRetention()
+    {
+        if (Interlocked.CompareExchange(ref _promptRetentionInFlight, 1, 0) != 0)
+            return;
+        try
+        {
+            _promptRetentionSweep?.Sweep();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayHost] prompt-log retention sweep FAILED: {ex.Message}");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _promptRetentionInFlight, 0);
+        }
+    }
+
+    /// <summary>
     /// The dictionary-suggestion timer callback (a boundary - it owns the overlap guard and the try/catch so
     /// a scan failure never crashes the timer thread). One sweep at a time; a skipped tick simply checks on
     /// the next one, which a daily schedule is indifferent to.
@@ -3847,6 +3903,8 @@ public sealed class GatewayHost : IAsyncDisposable
         try { _cronTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] cron timer dispose error: {ex.Message}"); }
         _cronTimer = null;
         try { _activityRetentionTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] activity retention timer dispose error: {ex.Message}"); }
+        try { _promptRetentionTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] prompt-log retention timer dispose error: {ex.Message}"); }
+        _promptRetentionTimer = null;
         try { _suggestionSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] dictionary-suggestion timer dispose error: {ex.Message}"); }
         try { _sessionHistoryTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] session history timer dispose error: {ex.Message}"); }
         _sessionHistoryTimer = null;

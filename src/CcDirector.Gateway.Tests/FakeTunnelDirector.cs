@@ -27,6 +27,10 @@ public sealed class FakeTunnelDirector : IAsyncDisposable
     public static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
 
     private readonly HubConnection _conn;
+    // Held for this fake's whole life: the registered tailnet endpoint must STAY unreachable, so the port
+    // stays reserved-and-refusing until DisposeAsync. Releasing it early would let another process bind the
+    // address this fake advertises as dead (issue #1156).
+    private readonly DeadPortReservation _deadEndpoint;
     private Func<DirectorCommand, DirectorCommandResult> _dispatch;
     private long _sequence;
 
@@ -36,11 +40,12 @@ public sealed class FakeTunnelDirector : IAsyncDisposable
     /// <summary>The last command the Gateway sent over the tunnel, so a test can assert the verb + payload.</summary>
     public DirectorCommand? LastCommand { get; private set; }
 
-    private FakeTunnelDirector(string directorId, HubConnection conn, Func<DirectorCommand, DirectorCommandResult> dispatch)
+    private FakeTunnelDirector(string directorId, HubConnection conn, Func<DirectorCommand, DirectorCommandResult> dispatch, DeadPortReservation deadEndpoint)
     {
         DirectorId = directorId;
         _conn = conn;
         _dispatch = dispatch;
+        _deadEndpoint = deadEndpoint;
     }
 
     /// <summary>
@@ -60,11 +65,13 @@ public sealed class FakeTunnelDirector : IAsyncDisposable
         Func<DirectorCommand, DirectorCommandResult>? dispatch = null)
     {
         // Registered UNREACHABLE: nothing listens on this advertised endpoint, so any working result
-        // could only have come over the tunnel.
+        // could only have come over the tunnel. The port is RESERVED for the fake's lifetime rather than
+        // probed-and-released, so no other process can start answering on it mid-test (issue #1156).
+        var deadEndpoint = DeadPortReservation.Reserve();
         gateway.Registry.Upsert(new DirectorRegistrationRequest
         {
             DirectorId = directorId,
-            TailnetEndpoint = $"http://127.0.0.1:{DeadPort()}/",
+            TailnetEndpoint = deadEndpoint.LoopbackUrl,
             MachineName = machineName ?? Environment.MachineName,
             Pid = 1,
             Version = "test",
@@ -78,7 +85,8 @@ public sealed class FakeTunnelDirector : IAsyncDisposable
             .Build();
 
         var fake = new FakeTunnelDirector(directorId, conn,
-            dispatch ?? (cmd => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}")));
+            dispatch ?? (cmd => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}")),
+            deadEndpoint);
 
         conn.On<DirectorCommand, DirectorCommandResult>("Command", cmd =>
         {
@@ -117,15 +125,6 @@ public sealed class FakeTunnelDirector : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         try { await _conn.DisposeAsync(); } catch { /* best effort */ }
-    }
-
-    private static int DeadPort()
-    {
-        // An OS-assigned free port we bind then immediately release, so nothing listens there.
-        using var l = new TcpListener(IPAddress.Loopback, 0);
-        l.Start();
-        var port = ((IPEndPoint)l.LocalEndpoint).Port;
-        l.Stop();
-        return port;
+        _deadEndpoint.Dispose();
     }
 }

@@ -129,7 +129,8 @@ public sealed class DevopsAdapterDispatchProofTests : IAsyncLifetime
 
     private static string TempRepo()
     {
-        var dir = Path.Combine(Path.GetTempPath(), "cc300-repo");
+        // Unique per run: a fixed temp name is shared by every concurrent run on the machine (issue #1156).
+        var dir = Path.Combine(Path.GetTempPath(), "cc300-repo-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         return dir;
     }

@@ -980,6 +980,11 @@ public sealed class GatewayStatsWritePathPostgresTests
     /// satisfied honestly by a block on an unrelated identity row; requiring the blocked backend to hold a
     /// write lock on the contested relation AND no other write lock in this schema is what ties the wait to
     /// the row under test, which the fixture has already established is the only row in that table.
+    ///
+    /// The no-other-write-lock clause counts TABLES only (relkind 'r'). A write also takes RowExclusiveLock
+    /// on the target's indexes, which are relations in the same schema - so without the relkind filter the
+    /// contested table's own primary-key index disqualified a correctly-blocked writer, and this witness
+    /// could never fire on any non-HOT update (issue #1190, observed live in pg_locks).
     /// </summary>
     private static bool IsBlockedOnRelation(int blockedPid, int blockerPid, string table)
     {
@@ -1000,6 +1005,7 @@ public sealed class GatewayStatsWritePathPostgresTests
                                   WHERE other.pid = {0} AND other.granted
                                     AND other.locktype = 'relation'
                                     AND other.mode = 'RowExclusiveLock'
+                                    AND c.relkind = 'r'
                                     AND n.nspname = {3}
                                     AND other.relation <> CAST({2} AS regclass))",
             blockedPid, blockerPid, table, GatewayStatsDbContext.PostgresSchema).Single() > 0;

@@ -32,8 +32,11 @@ namespace CcDirector.Gateway.Prompts;
 /// migrates); a hosted account tenant lands under tenants/&lt;id&gt;/. The tenant is always supplied by the
 /// caller, which resolved it from the authenticated device key at the boundary - this type never guesses one.
 ///
-/// Retention is unbounded. The point is looking back across weeks and months, and the text is small.
-/// (Contrast TurnReviewLog, which holds terminal SCREENS and expires at 7 days.) Nothing prunes this.
+/// Retention is BOUNDED (CR-3b, devthrottle_internal issue #1180). Prompt text is customer content -
+/// proprietary code, file paths, error output, pasted credentials - so it lives for the retention window
+/// and no longer. <see cref="PromptLogRetentionSweep"/> owns the window and the timer;
+/// <see cref="PurgeOlderThan"/> is the enforcement. A member can also export their whole history and
+/// delete it outright (<see cref="ReadAll"/> / <see cref="DeleteAll"/>, served by PromptEndpoints).
 ///
 /// Fail-safe: every write is wrapped, so a logging error can never fail a Director's push.
 /// </summary>
@@ -219,5 +222,114 @@ public sealed class GatewayPromptLog
             }
         }
         return results;
+    }
+
+    /// <summary>
+    /// Every message ONE tenant holds, oldest day first - the account-export read. Enumerates the daily
+    /// files that actually exist in the tenant's partition rather than iterating a date range, so the whole
+    /// history is returned without knowing how far back it goes.
+    /// </summary>
+    public IReadOnlyList<PromptRecord> ReadAll(TenantId tenant)
+    {
+        var directory = DirectoryFor(tenant);
+        if (!Directory.Exists(directory)) return Array.Empty<PromptRecord>();
+
+        var days = DailyFilesIn(directory).Keys.OrderBy(d => d).ToList();
+        if (days.Count == 0) return Array.Empty<PromptRecord>();
+        return Read(tenant, days[0], days[^1]);
+    }
+
+    /// <summary>
+    /// Delete EVERY daily file in one tenant's partition - the account right-to-erasure. This is the single
+    /// copy (the Director keeps none), so when this returns the tenant's prompt history is gone. Deliberately
+    /// LOUD on failure, unlike <see cref="Append"/>: a delete the caller believes happened but did not is a
+    /// broken promise about customer data, so an IO failure propagates and the endpoint reports it.
+    /// Returns how many daily files were removed.
+    /// </summary>
+    public int DeleteAll(TenantId tenant)
+    {
+        var directory = DirectoryFor(tenant);
+        if (!Directory.Exists(directory)) return 0;
+
+        var deleted = 0;
+        lock (GateFor(tenant))
+        {
+            foreach (var path in DailyFilesIn(directory).Values)
+            {
+                File.Delete(path);
+                deleted++;
+            }
+        }
+        FileLog.Write($"[GatewayPromptLog] DeleteAll: tenant={tenant.ToLogString()}, deleted {deleted} daily files");
+        return deleted;
+    }
+
+    /// <summary>
+    /// Retention enforcement: delete every daily file, in EVERY partition, whose day is strictly before the
+    /// cutoff's day. Sweeps the partitions found ON DISK (the Local root plus every folder under tenants/)
+    /// rather than a tenant census, so a partition orphaned by a deleted tenant still ages out instead of
+    /// holding that customer's prompt text forever. Granularity is the daily file: a file is removed only
+    /// once its whole day is past the cutoff, so a record lives at most one day past the window.
+    /// Per-file failures are logged and skipped - a locked file must not stop the rest of the sweep - and
+    /// the file that failed is simply retried on the next pass. Returns how many files were removed.
+    /// </summary>
+    public int PurgeOlderThan(DateTime cutoffUtc)
+    {
+        var deleted = 0;
+        deleted += PurgePartition(TenantId.Local, _directory, cutoffUtc);
+
+        var tenantsRoot = Path.Combine(_directory, "tenants");
+        if (Directory.Exists(tenantsRoot))
+        {
+            foreach (var partition in Directory.GetDirectories(tenantsRoot))
+            {
+                // The folder name IS the tenant id; an orphaned or malformed folder still gets its own gate
+                // (keyed by the raw name) so the purge never crosses another partition's lock.
+                deleted += PurgePartition(new TenantId(Path.GetFileName(partition)), partition, cutoffUtc);
+            }
+        }
+        return deleted;
+    }
+
+    private int PurgePartition(TenantId tenant, string directory, DateTime cutoffUtc)
+    {
+        if (!Directory.Exists(directory)) return 0;
+        var deleted = 0;
+        lock (GateFor(tenant))
+        {
+            foreach (var (day, path) in DailyFilesIn(directory))
+            {
+                if (day >= cutoffUtc.Date) continue;
+                try
+                {
+                    File.Delete(path);
+                    deleted++;
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[GatewayPromptLog] PurgePartition: could not delete {Path.GetFileName(path)} for tenant={tenant.ToLogString()}: {Redact(ex.Message, tenant)}");
+                }
+            }
+        }
+        return deleted;
+    }
+
+    /// <summary>
+    /// The daily files in one partition directory, keyed by their UTC day. Only files matching the exact
+    /// conversation-yyyyMMdd.jsonl shape are returned - anything else in the folder is not this log's to
+    /// touch, and deleting by parsed-name-only is how a purge eats a file it does not own.
+    /// </summary>
+    private static Dictionary<DateTime, string> DailyFilesIn(string directory)
+    {
+        var files = new Dictionary<DateTime, string>();
+        foreach (var path in Directory.GetFiles(directory, "conversation-*.jsonl"))
+        {
+            var name = Path.GetFileNameWithoutExtension(path);
+            var stamp = name.Substring("conversation-".Length);
+            if (DateTime.TryParseExact(stamp, "yyyyMMdd", null,
+                    System.Globalization.DateTimeStyles.None, out var day))
+                files[day.Date] = path;
+        }
+        return files;
     }
 }

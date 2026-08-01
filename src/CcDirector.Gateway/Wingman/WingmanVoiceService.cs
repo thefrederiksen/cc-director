@@ -71,6 +71,11 @@ public sealed class WingmanVoiceService
     }
 
     private readonly WingmanTranslator _translator;
+
+    /// <summary>The wingman brain this service narrates with, exposed so the host can hand the SAME judge
+    /// to the prompt menu guard (issue devthrottle_internal#1195) - one translator, one verdict cache, no
+    /// second warm-brain wiring.</summary>
+    public WingmanTranslator Translator => _translator;
     private readonly KeyVault _vault;
     private readonly TenantSettingsResolver _tenantSettings;
     /// <summary>Tenant partition key (see <see cref="CanonicalTenantKey"/>) -> that tenant's whole voice
@@ -877,6 +882,15 @@ public sealed class WingmanVoiceService
         }
         // Recent conversation so the wingman can add context to a short/terse latest reply.
         var recentContext = WingmanTranslator.BuildRecentContext(widgets);
+        // The LIVE screen goes into the same call (issue devthrottle_internal#1195): the model that writes
+        // the summary also judges what the screen needs - menu, an answer, or nothing - because the pure
+        // regex classifier convicted a finished summary of being a menu (session 115). One tunnel read per
+        // narration, exactly the read the old post-translate menu check made anyway. A failed read just
+        // means no verdict this turn: the narration itself never depends on it.
+        ScreenGridResponse? screenGrid = null;
+        try { screenGrid = await route.GetScreenGridAsync(sid, ct); }
+        catch (Exception ex) { FileLog.Write($"[WingmanVoiceService] screen-grid read failed for sid={sid}: {ex.Message} - narrating without a screen verdict"); }
+        var liveScreen = screenGrid is { HasGrid: true, Rows.Count: > 0 } ? string.Join("\n", screenGrid.Rows) : null;
         // The wingman is now running for this session - show it yellow until the summary lands, but
         // only for a brand-new turn. A background refresh / catch-up stays quiet so a session a phone
         // may be listening to is never flipped yellow mid-play (issue #1322).
@@ -886,7 +900,7 @@ public sealed class WingmanVoiceService
             WingmanTranslation t;
             try
             {
-                t = await _translator.TranslateAsync(tenant, recentContext, lastReply, _sessionTitleResolver?.Invoke(tenant, sid), ct);
+                t = await _translator.TranslateAsync(tenant, recentContext, lastReply, _sessionTitleResolver?.Invoke(tenant, sid), liveScreen, ct);
             }
             catch (Exception ex) when (IsModelDidNotAnswer(ex, ct))
             {
@@ -905,15 +919,20 @@ public sealed class WingmanVoiceService
             }
             // Announce a waiting menu AS THE TURN IS READ (issue #2193). A turn that ends on a picker is the
             // one case where the narration alone is misleading: the agent's words are read out, the person
-            // answers by voice, and the answer goes nowhere - because voice cannot pick an option yet. So the
-            // live screen is read once here (pure classifier, NO model call) and the fact is spoken with the
-            // turn, before they try to reply. One extra tunnel read per NARRATION - deliberately not added to
-            // the session poll, so this costs nothing per-poll across a fleet.
+            // answers by voice, and the answer goes nowhere - because voice cannot pick an option yet.
+            // The verdict is the MODEL's, from the same call that wrote the summary (issue
+            // devthrottle_internal#1195) - the pure classifier declared a finished summary to be a menu
+            // (session 115), so it no longer announces on its own. The verdict is cached against the screen
+            // fingerprint it judged, which is what lets the send-time guards answer an unchanged screen
+            // without a second model call. No verdict (no readable screen, or a garbled SCREEN line) means
+            // no announcement - the fail-safe direction for a spoken claim.
             var spoken = t.Spoken;
-            if (await WaitingScreenReader.IsMenuAsync(route, sid, ct))
+            if (t.Screen is not null && screenGrid?.Rows is { Count: > 0 } judgedRows)
+                WingmanScreenVerdictCache.Store($"{tenant}/{sid}", WingmanScreenVerdictCache.HashRows(judgedRows), t.Screen.Needs);
+            if (t.Screen?.Needs == "menu")
             {
                 spoken += Speech.SpokenPhrases.WaitingScreenMenuNarrationSuffix.In(_tenantSettings.SpokenLanguage(tenant));
-                FileLog.Write($"[WingmanVoiceService] narration announces a waiting menu: sid={sid}");
+                FileLog.Write($"[WingmanVoiceService] narration announces a waiting menu (model verdict): sid={sid}");
             }
             await StoreSpokenAsync(tenant, sid, spoken, lastReply, ct);
             // Log the TRUE outcome: StoreSpokenAsync only makes the session playable when the

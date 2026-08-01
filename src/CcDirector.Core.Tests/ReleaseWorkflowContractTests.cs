@@ -137,12 +137,27 @@ public sealed class ReleaseWorkflowContractTests
             + "only fail AFTER the tag is pushed and the whole build has run, and a pushed tag cannot be "
             + "un-pushed. Checking here costs nothing.");
 
-        Assert.True(Regex.IsMatch(script, @"if \(-not \(Test-Path \$notesPath\)\)[\s\S]*?exit 1"),
+        // The guard must TERMINATE, by whatever route. The script may exit inline or call its Fail
+        // helper; both end the run, and pinning one spelling would fail an honest refactor while
+        // proving nothing extra. What must not happen is warning and carrying on, because that
+        // pushes the tag.
+        Assert.True(Regex.IsMatch(script, @"if \(-not \(Test-Path \$notesPath\)\)[\s\S]*?(exit 1|Fail )"),
             $"{ScriptPath} no longer EXITS when the notes file is absent. Warning and continuing would push the tag.");
 
-        Assert.True(Regex.IsMatch(script, @"\$notesChars -lt 200[\s\S]*?exit 1"),
+        Assert.True(Regex.IsMatch(script, @"\$notesChars -lt 200[\s\S]*?(exit 1|Fail )"),
             $"{ScriptPath} no longer rejects a placeholder notes file. The workflow applies a 200-character floor; "
             + "these two must agree, or the script waves through exactly what the workflow will reject.");
+
+        // ...and if it terminates via the helper, the helper has to actually terminate. Without this
+        // the assertions above could be satisfied by a Fail that printed a message and returned,
+        // which is precisely the "warned and carried on" failure they exist to prevent.
+        if (Regex.IsMatch(script, @"function Fail"))
+        {
+            var fail = Regex.Match(script, @"function Fail[\s\S]*?\n\}");
+            Assert.True(fail.Success && fail.Value.Contains("exit 1", StringComparison.Ordinal),
+                $"{ScriptPath} defines a Fail helper that does not exit. Every guard that calls it would print its "
+                + "message and then carry on to push the tag - the exact defect these guards exist to stop.");
+        }
 
         // The guard has to run BEFORE the tag is created, or it is decoration.
         var guardAt = script.IndexOf("$notesPath = Join-Path", StringComparison.Ordinal);

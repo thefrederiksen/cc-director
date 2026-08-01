@@ -194,9 +194,15 @@ internal static class TtsSynthesis
     /// <param name="preferBackup">When true, send <see cref="PreferBackupHeaderName"/> so the cloud
     /// proxy routes straight to the backup provider (issue devthrottle_internal#405). The Gateway sets this after it has
     /// seen the primary go silent on this session; it is a routing hint only and changes no deadline.</param>
-    public static async Task<HttpResponseMessage> PostAsync(HttpClient http, string url, string key, object payload, int inputChars, bool preferBackup, CancellationToken ct)
+    /// <param name="deadlineOverride">Replaces the length-derived deadline. Exists so a test can prove the
+    /// stall-to-504 path without waiting through the production sixty-second base (issue #1156): the test that
+    /// covered it used to spend 60s of every suite run sitting on a clock. Passed as an OPTION rather than
+    /// exposed as a static test hook on purpose - a process-global switch would be shared by every host in the
+    /// process and is exactly the kind of seam that blocks running these tests in parallel. Null in production,
+    /// where the length-derived deadline is the only one.</param>
+    public static async Task<HttpResponseMessage> PostAsync(HttpClient http, string url, string key, object payload, int inputChars, bool preferBackup, CancellationToken ct, TimeSpan? deadlineOverride = null)
     {
-        var deadline = DeadlineFor(inputChars);
+        var deadline = deadlineOverride ?? DeadlineFor(inputChars);
         TimeoutException? lastTimeout = null;
         for (var attempt = 1; attempt <= Attempts; attempt++)
         {
