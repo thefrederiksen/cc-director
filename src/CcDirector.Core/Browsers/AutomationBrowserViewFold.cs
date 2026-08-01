@@ -105,13 +105,22 @@ public static class AutomationBrowserViewFold
             .ToDictionary(v => v.Id, v => v.Status, StringComparer.OrdinalIgnoreCase);
 
         return AutomationBrowserRegistry.Load()
-            .Select(b => Fold(
-                b,
-                lastKnown is not null && lastKnown.TryGetValue(b.Id, out var status)
-                    ? status
-                    : AutomationBrowserStatus.Checking,
-                ReadAccountOrNull(b)))
+            .Select(b => lastKnown is not null && lastKnown.TryGetValue(b.Id, out var status)
+                ? Fold(b, status, ReadAccountOrNull(b))
+                : FoldPending(b))
             .ToList();
+    }
+
+    /// <summary>
+    /// Fold ONE browser without probing it: the full view, status
+    /// <see cref="AutomationBrowserStatus.Checking"/>. Used for a browser that has just been created
+    /// and so cannot have a probed status yet, and by <see cref="ListPending"/> for rows being shown
+    /// for the first time.
+    /// </summary>
+    public static AutomationBrowserView FoldPending(AutomationBrowser browser)
+    {
+        if (browser is null) throw new ArgumentNullException(nameof(browser));
+        return Fold(browser, AutomationBrowserStatus.Checking, ReadAccountOrNull(browser));
     }
 
     /// <summary>Fold one browser: probe its live status, read its signed-in account, then map.</summary>

@@ -10,18 +10,20 @@
 
     <Grid RowDefinitions="Auto,Auto,Auto,*" Margin="0,4,0,0">
 
-        <!-- Header: what this is, the honest one-sign-in rule, and the primary actions. -->
-        <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,14,8">
-            <TextBlock Classes="sectionTitle" Text="Browsers" />
+        <!-- Header: shown ONLY once profiles exist. On a clean install the empty state below is the
+             teaching surface and says all of this at length, so repeating it here would be noise.
+             Once it has done its job it shrinks to these two lines plus a way back to the detail. -->
+        <StackPanel Grid.Row="0" x:Name="HeaderPanel" Spacing="8" Margin="0,0,14,8">
+            <TextBlock Classes="sectionTitle" Text="Browser profiles" />
             <TextBlock Classes="hint"
-                       Text="Real, signed-in browsers your agents can drive through Browser Harness. Each one is a dedicated browser profile DevThrottle creates - never your everyday browser. You sign it in once, by hand, and the login lasts for months; after that any agent on this machine attaches with one command. The one sign-in cannot be automated away: modern browsers block driving your main profile and encrypt its logins, so a dedicated profile with a single hand sign-in is the honest design." />
+                       Text="Real, signed-in browser profiles your agents can drive. Each one has its own logins, kept apart from the profile you browse in yourself. Add one per role you want an agent to act as." />
             <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">
-                <Button x:Name="NewBrowserButton" Classes="primaryButton" Content="+ New browser"
+                <Button x:Name="NewBrowserButton" Classes="primaryButton" Content="+ New browser profile"
                         MinWidth="130" Click="BtnNewBrowser_Click"
                         ToolTip.Tip="Create a new drivable browser profile" />
                 <Button x:Name="RefreshButton" Classes="dialogButton" Content="Refresh"
                         Click="BtnRefresh_Click"
-                        ToolTip.Tip="Re-check each browser's live status" />
+                        ToolTip.Tip="Re-check each profile's live status" />
                 <TextBlock x:Name="StatusText" Text="" Foreground="#888888" FontSize="11"
                            TextWrapping="Wrap" VerticalAlignment="Center" MaxWidth="480" />
             </StackPanel>
@@ -37,7 +39,7 @@
                     <TextBlock Text="Turn on browser control" Foreground="#CCCCCC"
                                FontSize="13" FontWeight="SemiBold" />
                     <TextBlock Classes="hint"
-                               Text="To let your agents drive these browsers, install Browser Harness - the tool DevThrottle uses to drive them, made by browser-use. DevThrottle installs it for you, into its own environment. Your browsers below stay listed and ready; they just cannot be driven until it is installed." />
+                               Text="To let your agents drive these profiles, install Browser Harness - the tool DevThrottle uses to drive them, made by browser-use. DevThrottle installs it for you, into its own environment. Your profiles below stay listed and ready; they just cannot be driven until it is installed." />
                     <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">
                         <Button x:Name="HarnessInstallButton" Classes="dialogButton"
                                 Content="Install Browser Harness"
@@ -57,25 +59,108 @@
             </Grid>
         </Border>
 
-        <!-- Inline create panel, shown by + New browser. -->
+        <!-- Inline create panel, shown by + New browser profile.
+
+             Two columns on purpose. The left is the form; the right says what clicking Create will
+             DO, before it does it. The thing people get wrong here is assuming this adopts a profile
+             they already use - it does not, it makes an empty one - and the moment to correct that is
+             before they click, not after they open it and find themselves logged out of everything. -->
         <Border Grid.Row="2" x:Name="CreatePanel" Classes="card" IsVisible="False" Margin="0,0,14,10">
-            <StackPanel Spacing="8">
-                <TextBlock Classes="sectionTitle" Margin="0" Text="New browser" />
-                <TextBlock Classes="hint"
-                           Text="Name it after the identity it will hold (for example the account or client it signs in as). DevThrottle creates a fresh, dedicated profile - your everyday browser is never touched." />
-                <Grid ColumnDefinitions="*,140,Auto,Auto" Margin="0,4,0,0">
-                    <TextBox x:Name="CreateNameBox" Grid.Column="0" Classes="settingsInput"
-                             Watermark="e.g. Center Consulting" />
-                    <ComboBox x:Name="CreateKindCombo" Grid.Column="1" Margin="8,0,0,0"
-                              VerticalAlignment="Stretch" HorizontalAlignment="Stretch" />
-                    <Button Grid.Column="2" Classes="primaryButton" Content="Create"
-                            Margin="8,0,0,0" MinWidth="90" Click="BtnCreate_Click" />
-                    <Button Grid.Column="3" Classes="dialogButton" Content="Cancel"
-                            Margin="8,0,0,0" Click="BtnCreateCancel_Click" />
-                </Grid>
-                <TextBlock x:Name="CreateError" Text="" Foreground="#EF4444" FontSize="11"
-                           TextWrapping="Wrap" IsVisible="False" />
-            </StackPanel>
+            <Grid ColumnDefinitions="*,340">
+
+                <StackPanel Grid.Column="0" Spacing="8" Margin="0,0,18,0">
+                    <TextBlock Classes="sectionTitle" Margin="0" Text="New browser profile" />
+                    <TextBlock Classes="hint"
+                               Text="You are about to create a brand new, empty profile - not a copy of one you already use." />
+
+                    <TextBlock Text="What will this profile be signed in as?" Foreground="#CCCCCC"
+                               FontSize="12" FontWeight="SemiBold" Margin="0,8,0,0" />
+                    <TextBox x:Name="CreateNameBox" Classes="settingsInput" Watermark="Work" />
+                    <TextBlock Classes="hint"
+                               Text="Name it after the identity it will hold, not what you plan to do with it. &quot;Work&quot; and &quot;Acme Corp&quot; tell you what an agent can reach; &quot;testing&quot; and &quot;profile 2&quot; will not, six weeks from now." />
+                    <StackPanel Orientation="Horizontal" Spacing="6" Margin="0,2,0,0">
+                        <Button Classes="dialogButton" Content="Work" MinWidth="0" Height="22"
+                                Padding="10,0" FontSize="11" Tag="Work" Click="BtnNameSuggestion_Click" />
+                        <Button Classes="dialogButton" Content="Personal" MinWidth="0" Height="22"
+                                Padding="10,0" FontSize="11" Tag="Personal" Click="BtnNameSuggestion_Click" />
+                        <Button Classes="dialogButton" Content="Research" MinWidth="0" Height="22"
+                                Padding="10,0" FontSize="11" Tag="Research" Click="BtnNameSuggestion_Click" />
+                    </StackPanel>
+
+                    <TextBlock Text="Which browser" Foreground="#CCCCCC" FontSize="12"
+                               FontWeight="SemiBold" Margin="0,10,0,0" />
+                    <ComboBox x:Name="CreateKindCombo" HorizontalAlignment="Left" MinWidth="180" />
+                    <TextBlock Classes="hint"
+                               Text="Only browsers installed on this machine are listed. Pick the one whose account you want to sign in to - otherwise the choice makes no difference to your agents." />
+
+                    <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,12,0,0">
+                        <Button Classes="primaryButton" Content="Create and sign in"
+                                MinWidth="150" Click="BtnCreate_Click"
+                                ToolTip.Tip="Create the profile, then open it so you can sign in by hand" />
+                        <Button Classes="dialogButton" Content="Cancel" Click="BtnCreateCancel_Click" />
+                    </StackPanel>
+                    <TextBlock x:Name="CreateError" Text="" Foreground="#EF4444" FontSize="11"
+                               TextWrapping="Wrap" IsVisible="False" />
+                </StackPanel>
+
+                <Border Grid.Column="1" Background="#212122" BorderBrush="#3C3C3C" BorderThickness="1,0,0,0"
+                        Padding="18,2,4,4">
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="What happens when you click Create" Foreground="#CCCCCC"
+                                   FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6" />
+
+                        <Grid ColumnDefinitions="Auto,*" Margin="0,0,0,12">
+                            <Border Grid.Column="0" Width="19" Height="19" CornerRadius="10"
+                                    Background="#2D2D30" BorderBrush="#505052" BorderThickness="1"
+                                    VerticalAlignment="Top">
+                                <TextBlock Text="1" Foreground="#9A9A9A" FontSize="11"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                            <StackPanel Grid.Column="1" Margin="10,0,0,0" Spacing="1">
+                                <TextBlock Text="A new browser window opens" Foreground="#CCCCCC"
+                                           FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                <TextBlock Classes="hint"
+                                           Text="Empty, with its own profile folder. The Chrome or Edge you use yourself keeps running, untouched." />
+                            </StackPanel>
+                        </Grid>
+
+                        <Grid ColumnDefinitions="Auto,*" Margin="0,0,0,12">
+                            <Border Grid.Column="0" Width="19" Height="19" CornerRadius="10"
+                                    Background="#2D2D30" BorderBrush="#505052" BorderThickness="1"
+                                    VerticalAlignment="Top">
+                                <TextBlock Text="2" Foreground="#9A9A9A" FontSize="11"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                            <StackPanel Grid.Column="1" Margin="10,0,0,0" Spacing="1">
+                                <TextBlock Text="You sign in, by hand" Foreground="#CCCCCC"
+                                           FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                <TextBlock Classes="hint"
+                                           Text="Whatever you want the agent to reach. DevThrottle never types your credentials and never sees them." />
+                            </StackPanel>
+                        </Grid>
+
+                        <Grid ColumnDefinitions="Auto,*" Margin="0,0,0,10">
+                            <Border Grid.Column="0" Width="19" Height="19" CornerRadius="10"
+                                    Background="#2D2D30" BorderBrush="#505052" BorderThickness="1"
+                                    VerticalAlignment="Top">
+                                <TextBlock Text="3" Foreground="#9A9A9A" FontSize="11"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                            <StackPanel Grid.Column="1" Margin="10,0,0,0" Spacing="1">
+                                <TextBlock Text="You tell us you are done" Foreground="#CCCCCC"
+                                           FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                <TextBlock Classes="hint"
+                                           Text="It is then listed here as ready, and any agent on this machine can drive it." />
+                            </StackPanel>
+                        </Grid>
+
+                        <Border Background="#2A2A2B" CornerRadius="4" Padding="10,8" Margin="0,4,0,0">
+                            <TextBlock Classes="hint"
+                                       Text="Nothing here touches the browser you use yourself - not its tabs, not its bookmarks, not its logins. You can delete this browser at any time and it takes its own folder with it." />
+                        </Border>
+                    </StackPanel>
+                </Border>
+            </Grid>
         </Border>
 
         <!-- One card per browser. -->
@@ -108,7 +193,7 @@
                                                     Height="22" Padding="8,0" FontSize="10"
                                                     Tag="{Binding Id}" Click="BtnRenameStart_Click"
                                                     IsEnabled="{Binding NotBusy}"
-                                                    ToolTip.Tip="Rename this browser (DevThrottle's own name - the browser profile itself is untouched)" />
+                                                    ToolTip.Tip="Rename this profile (DevThrottle's own label - the profile's data is untouched)" />
                                         </StackPanel>
                                         <StackPanel Orientation="Horizontal" Spacing="6"
                                                     IsVisible="{Binding IsRenaming}">
@@ -136,11 +221,11 @@
                                         <Button Classes="primaryButton" Content="Sign in once" MinWidth="110"
                                                 IsVisible="{Binding ShowSignIn}" IsEnabled="{Binding NotBusy}"
                                                 Tag="{Binding Id}" Click="BtnSignIn_Click"
-                                                ToolTip.Tip="Open this browser on its sign-in page for the one-time hand sign-in" />
+                                                ToolTip.Tip="Open this profile on its sign-in page for the one-time hand sign-in" />
                                         <Button Classes="dialogButton" Content="Start" MinWidth="70"
                                                 IsVisible="{Binding ShowStart}" IsEnabled="{Binding NotBusy}"
                                                 Tag="{Binding Id}" Click="BtnStart_Click"
-                                                ToolTip.Tip="Launch this browser so an agent can attach to it" />
+                                                ToolTip.Tip="Launch this profile so an agent can attach to it" />
                                         <Button Classes="dialogButton" Content="Copy attach command" MinWidth="150"
                                                 IsVisible="{Binding ShowAttach}" IsEnabled="{Binding NotBusy}"
                                                 Tag="{Binding Id}" Click="BtnAttach_Click"
@@ -148,11 +233,11 @@
                                         <Button Classes="dialogButton" Content="Stop" MinWidth="60"
                                                 IsVisible="{Binding ShowStop}" IsEnabled="{Binding NotBusy}"
                                                 Tag="{Binding Id}" Click="BtnStop_Click"
-                                                ToolTip.Tip="Close this browser cleanly (its login is kept)" />
+                                                ToolTip.Tip="Close this profile cleanly (its login is kept)" />
                                         <Button Classes="iconButton"
                                                 Tag="{Binding Id}" Click="BtnRemove_Click"
                                                 IsEnabled="{Binding NotBusy}"
-                                                ToolTip.Tip="Remove this browser and permanently delete its profile folder">
+                                                ToolTip.Tip="Remove this profile and permanently delete its folder">
                                             <Canvas Width="12" Height="14" HorizontalAlignment="Center" VerticalAlignment="Center">
                                                 <Rectangle Canvas.Left="0" Canvas.Top="2" Width="12" Height="1.6" Fill="#E06C6C" />
                                                 <Rectangle Canvas.Left="4" Canvas.Top="0" Width="4" Height="2" Fill="#E06C6C" />
@@ -168,10 +253,151 @@
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>
 
-                <TextBlock x:Name="EmptyText" IsVisible="False"
-                           Text="No browsers yet. Click + New browser to create one - DevThrottle opens it, you sign in once, and from then on your agents drive it."
-                           Foreground="#888888" FontSize="12" FontStyle="Italic" Margin="4,4,0,0"
-                           TextWrapping="Wrap" />
+                <!-- The empty state is the ONE moment we have the whole window and the user's full
+                     attention, so it is the teaching surface rather than an apology for having no
+                     rows. It answers, in order, the four things people get wrong: what a browser here
+                     IS, why it is not the browser they already use, how many to make, and the fact
+                     that it starts signed in to nothing. -->
+                <StackPanel x:Name="EmptyStatePanel" IsVisible="False" Spacing="0" MaxWidth="900"
+                            HorizontalAlignment="Left" Margin="0,2,0,0">
+
+                    <TextBlock Text="Give your agents a browser profile of their own"
+                               Foreground="#E6E6E6" FontSize="20" FontWeight="SemiBold"
+                               TextWrapping="Wrap" Margin="0,0,0,10" />
+                    <TextBlock Classes="hint" MaxWidth="760" HorizontalAlignment="Left"
+                               Text="A profile here is a real, signed-in Chrome or Edge profile your agents can drive - click things, read pages, fill forms - through Browser Harness. It is not a scraper and not a headless shell. It is a real browser, running on this machine, that an agent controls the way a person would." />
+                    <TextBlock Classes="hint" MaxWidth="760" HorizontalAlignment="Left" Margin="0,8,0,0"
+                               Text="It is not the profile you browse in yourself, and that is deliberate. Chrome and Edge now refuse to be remote-controlled on your everyday profile, and they encrypt its saved logins so they cannot be copied out. So DevThrottle creates a separate, dedicated one instead - which is also the arrangement you want: your agent gets exactly the accounts you give it, and nothing else." />
+
+                    <!-- The lifecycle, in the order it happens. -->
+                    <Grid ColumnDefinitions="*,12,*,12,*" Margin="0,18,0,0">
+                        <Border Grid.Column="0" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="1"
+                                CornerRadius="6" Padding="14,13">
+                            <StackPanel Spacing="5">
+                                <Border Width="22" Height="22" CornerRadius="11" Background="#0F6CBD"
+                                        HorizontalAlignment="Left">
+                                    <TextBlock Text="1" Foreground="White" FontSize="12" FontWeight="SemiBold"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                                <TextBlock Text="You create it" Foreground="#CCCCCC" FontSize="13"
+                                           FontWeight="SemiBold" TextWrapping="Wrap" />
+                                <TextBlock Classes="hint"
+                                           Text="DevThrottle makes a fresh, dedicated browser profile in its own folder. Your everyday Chrome and Edge are never touched." />
+                            </StackPanel>
+                        </Border>
+                        <Border Grid.Column="2" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="1"
+                                CornerRadius="6" Padding="14,13">
+                            <StackPanel Spacing="5">
+                                <Border Width="22" Height="22" CornerRadius="11" Background="#0F6CBD"
+                                        HorizontalAlignment="Left">
+                                    <TextBlock Text="2" Foreground="White" FontSize="12" FontWeight="SemiBold"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                                <TextBlock Text="You sign it in, once" Foreground="#CCCCCC" FontSize="13"
+                                           FontWeight="SemiBold" TextWrapping="Wrap" />
+                                <TextBlock Classes="hint"
+                                           Text="It opens and you log in by hand - DevThrottle never types your credentials. The login then lasts for months." />
+                            </StackPanel>
+                        </Border>
+                        <Border Grid.Column="4" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="1"
+                                CornerRadius="6" Padding="14,13">
+                            <StackPanel Spacing="5">
+                                <Border Width="22" Height="22" CornerRadius="11" Background="#0F6CBD"
+                                        HorizontalAlignment="Left">
+                                    <TextBlock Text="3" Foreground="White" FontSize="12" FontWeight="SemiBold"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                                <TextBlock Text="Any agent attaches" Foreground="#CCCCCC" FontSize="13"
+                                           FontWeight="SemiBold" TextWrapping="Wrap" />
+                                <TextBlock Classes="hint"
+                                           Text="From then on any agent on this machine drives it with one command. No sign-in, no re-auth, no captcha loop." />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+
+                    <!-- One per role: the mental model that makes the whole feature click. -->
+                    <Border Background="#252526" BorderBrush="#3C3C3C" BorderThickness="1"
+                            CornerRadius="6" Padding="16" Margin="0,16,0,0">
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="Make one for each role you want an agent to act as"
+                                       Foreground="#CCCCCC" FontSize="13" FontWeight="SemiBold"
+                                       TextWrapping="Wrap" />
+                            <TextBlock Classes="hint"
+                                       Text="The useful way to think about it is to mirror the separation you already keep in your own head - work, personal, a particular client. Name each one after the identity it holds, and you always know what an agent can reach when you point it at that profile." />
+                            <Grid ColumnDefinitions="*,10,*,10,*" Margin="0,10,0,0">
+                                <Border Grid.Column="0" Background="#2D2D30" BorderBrush="#3C3C3C"
+                                        BorderThickness="1" CornerRadius="5" Padding="11,10">
+                                    <Grid ColumnDefinitions="Auto,*">
+                                        <Border Grid.Column="0" Width="26" Height="26" CornerRadius="5"
+                                                Background="#0F6CBD" VerticalAlignment="Top">
+                                            <TextBlock Text="W" Foreground="White" FontSize="13" FontWeight="SemiBold"
+                                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                        </Border>
+                                        <StackPanel Grid.Column="1" Margin="10,0,0,0" Spacing="2">
+                                            <TextBlock Text="Work" Foreground="#CCCCCC" FontSize="12"
+                                                       FontWeight="SemiBold" />
+                                            <TextBlock Classes="hint"
+                                                       Text="Company account, internal tools, the ticket tracker" />
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                                <Border Grid.Column="2" Background="#2D2D30" BorderBrush="#3C3C3C"
+                                        BorderThickness="1" CornerRadius="5" Padding="11,10">
+                                    <Grid ColumnDefinitions="Auto,*">
+                                        <Border Grid.Column="0" Width="26" Height="26" CornerRadius="5"
+                                                Background="#1AA1B8" VerticalAlignment="Top">
+                                            <TextBlock Text="A" Foreground="White" FontSize="13" FontWeight="SemiBold"
+                                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                        </Border>
+                                        <StackPanel Grid.Column="1" Margin="10,0,0,0" Spacing="2">
+                                            <TextBlock Text="Acme Corp" Foreground="#CCCCCC" FontSize="12"
+                                                       FontWeight="SemiBold" />
+                                            <TextBlock Classes="hint"
+                                                       Text="One client only - their portal and dashboards, nothing else" />
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                                <Border Grid.Column="4" Background="#2D2D30" BorderBrush="#3C3C3C"
+                                        BorderThickness="1" CornerRadius="5" Padding="11,10">
+                                    <Grid ColumnDefinitions="Auto,*">
+                                        <Border Grid.Column="0" Width="26" Height="26" CornerRadius="5"
+                                                Background="#8A63D2" VerticalAlignment="Top">
+                                            <TextBlock Text="P" Foreground="White" FontSize="13" FontWeight="SemiBold"
+                                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                        </Border>
+                                        <StackPanel Grid.Column="1" Margin="10,0,0,0" Spacing="2">
+                                            <TextBlock Text="Personal" Foreground="#CCCCCC" FontSize="12"
+                                                       FontWeight="SemiBold" />
+                                            <TextBlock Classes="hint"
+                                                       Text="Your own accounts, kept well away from anything work" />
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- The one fact whose absence makes the feature look broken. -->
+                    <Border Background="#231F16" BorderBrush="#5C4A22" BorderThickness="1"
+                            CornerRadius="6" Padding="14,12" Margin="0,16,0,0">
+                        <Grid ColumnDefinitions="Auto,*">
+                            <TextBlock Grid.Column="0" Text="!" Foreground="#F0B848" FontSize="14"
+                                       FontWeight="Bold" VerticalAlignment="Top" Margin="2,0,0,0" />
+                            <TextBlock Grid.Column="1" Margin="12,0,0,0" Foreground="#D8D2C6" FontSize="12"
+                                       TextWrapping="Wrap" LineHeight="18"
+                                       Text="It starts completely empty. A new profile here is signed in to nothing at all - it does not inherit your existing tabs, bookmarks or logins. You choose what goes in it: sign in to a Google or Microsoft account to bring a whole profile across, or just sign in to the individual websites you want the agent to reach. Whatever you sign in is exactly what your agents can drive - nothing else." />
+                        </Grid>
+                    </Border>
+
+                    <StackPanel Orientation="Horizontal" Spacing="14" Margin="0,20,0,0"
+                                VerticalAlignment="Center">
+                        <Button Classes="primaryButton" Content="+ Create browser profile"
+                                MinWidth="210" Height="34" FontSize="13" Click="BtnNewBrowser_Click"
+                                ToolTip.Tip="Create a new drivable browser profile" />
+                        <TextBlock Text="Takes about a minute, most of it you signing in."
+                                   Foreground="#777777" FontSize="12" VerticalAlignment="Center" />
+                    </StackPanel>
+                </StackPanel>
             </StackPanel>
         </ScrollViewer>
     </Grid>

@@ -158,9 +158,9 @@ public partial class BrowsersRailGroup : UserControl
             ActionForeground = v.Status == AutomationBrowserStatus.NeedsSignIn ? AmberBrush : AccentBrush,
             ActionToolTip = v.Status switch
             {
-                AutomationBrowserStatus.Stopped => "Start this browser",
+                AutomationBrowserStatus.Stopped => "Start this profile",
                 AutomationBrowserStatus.NeedsSignIn => "Open the sign-in page for the one-time hand sign-in",
-                _ => "Copy the command that points an agent's Browser Harness at this browser",
+                _ => "Copy the command that points an agent's Browser Harness at this profile",
             },
             RowToolTip = $"{v.Subtitle} ({v.StatusLabel}). Click to manage in Settings.",
         }).ToList();

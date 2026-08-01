@@ -60,14 +60,14 @@
                     <Button x:Name="AddButton" Classes="rowAction" Content="+"
                             Foreground="#CCCCCC" FontSize="13" Padding="5,0"
                             Click="AddButton_Click"
-                            ToolTip.Tip="Add a browser" />
+                            ToolTip.Tip="Add a browser profile" />
                     <Path x:Name="Chevron" Fill="#888888" VerticalAlignment="Center"
                           Data="M 0,0 L 4,4 L 8,0" Stretch="None" />
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
                     <TextBlock Text="[B]" Foreground="#4A9EFF" FontFamily="Cascadia Mono, Consolas"
                                FontSize="12" VerticalAlignment="Center" />
-                    <TextBlock Text="Browsers" Foreground="#CCCCCC" FontSize="12"
+                    <TextBlock Text="Browser profiles" Foreground="#CCCCCC" FontSize="12"
                                FontWeight="SemiBold" VerticalAlignment="Center" />
                 </StackPanel>
             </DockPanel>

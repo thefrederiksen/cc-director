@@ -264,7 +264,7 @@
                 </Grid>
             </TabItem>
 
-            <TabItem Header="Browsers">
+            <TabItem Header="Browser profiles">
                 <!-- Browsers feature (slice 2): the workshop for drivable automation browsers -
                      create, sign in once, rename, remove. The rail's pinned Browsers group is the
                      launch surface; this tab is where they are set up. All logic lives in the view. -->
