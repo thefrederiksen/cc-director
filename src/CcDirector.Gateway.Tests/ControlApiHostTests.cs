@@ -18,10 +18,22 @@ namespace CcDirector.Gateway.Tests;
 [Collection("DirectorRoot")]
 public sealed class ControlApiHostTests : IAsyncLifetime
 {
+    private readonly string _root;
+    private readonly string? _prevRoot;
     private ControlApiHost _host = null!;
     private SessionManager _sm = null!;
     private HttpClient _client = null!;
     private bool _shutdownRequested;
+
+    public ControlApiHostTests()
+    {
+        // Isolate the machine-global director root so the host resolves its accepted token from a
+        // fresh empty config (no fleet token) and writes its registration file into a temp root -
+        // independent of whatever gateway the test machine happens to have configured.
+        _prevRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
+        _root = Path.Combine(Path.GetTempPath(), "ccd-hosttests-root-" + Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _root);
+    }
 
     public async Task InitializeAsync()
     {
@@ -32,9 +44,7 @@ public sealed class ControlApiHostTests : IAsyncLifetime
             return Task.CompletedTask;
         }, useEphemeralPort: true);
         var port = await _host.StartAsync();
-        _client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
-        var token = DirectorAuth.LoadOrCreateToken();
-        _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        _client = DirectorTestClient.Admin(port);
     }
 
     public async Task DisposeAsync()
@@ -50,6 +60,8 @@ public sealed class ControlApiHostTests : IAsyncLifetime
             if (File.Exists(f)) File.Delete(f);
         }
         catch { /* test cleanup, ignore */ }
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _prevRoot);
+        try { if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
     }
 
     [Fact]
@@ -345,9 +357,7 @@ public sealed class ControlApiHostEphemeralFallbackTests : IDisposable
             // The Control API actually answers on the ephemeral port. Gateway Cleanup mission (the cut):
             // GET /sessions is gone from the loopback floor, so the liveness probe uses a floor route that
             // survives - GET /healthz - which is all this test needs to prove the fallback host is listening.
-            using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
-            client.DefaultRequestHeaders.Authorization =
-                new AuthenticationHeaderValue("Bearer", DirectorAuth.LoadOrCreateToken());
+            using var client = DirectorTestClient.Admin(port);
             var resp = await client.GetAsync("healthz");
             Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         }

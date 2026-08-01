@@ -18,9 +18,11 @@ Usage:
         --advertised http://this-host:7879 [--token TOKEN]
     python configure_settings.py set <dotted.key> <value>
 
-Auth is OFF by default (single-user trust boundary), so no token is needed. If a Director
-has auth enabled you'll get a 401 - pass --director-token, or the script reads it from
-config/director/gateway-token.txt.
+Every route but /healthz requires a credential. This script reads the Director's secret itself,
+from the home of the INSTANCE it discovered - every Director, the default included, keeps its
+storage under <base>/instances/<slug> - preferring gateway.token from that home's config/config.json
+when the machine is attached to a Gateway, otherwise that home's config/director/gateway-token.txt.
+No token normally has to be passed. Use --director-token to override it.
 
 ASCII-only output. No Unicode.
 """
@@ -35,7 +37,7 @@ from pathlib import Path
 
 
 def _local_app_data() -> Path:
-    """Resolve the cc-director config base, honoring CC_DIRECTOR_ROOT like the app does."""
+    """Resolve the cc-director storage base, honoring CC_DIRECTOR_ROOT like the app does."""
     override = os.environ.get("CC_DIRECTOR_ROOT")
     if override:
         return Path(override)
@@ -48,12 +50,27 @@ def _local_app_data() -> Path:
     return Path(os.path.expanduser("~")) / ".local" / "share" / "cc-director"
 
 
-def _instances_dir() -> Path:
-    return _local_app_data() / "config" / "director" / "instances"
+def _instance_homes() -> list[Path]:
+    """Every storage home a Director on this machine may run from.
+
+    Every Director - the default included - keeps its whole storage under its own home,
+    <base>/instances/<slug>, and registers THERE; the flat base itself is included for a
+    pre-instance install. The registration and the secret live under the same home, which is
+    what lets discovery hand back a credential that the discovered Director actually accepts.
+    """
+    base = _local_app_data()
+    homes = [base]
+    instances = base / "instances"
+    try:
+        if instances.is_dir():
+            homes.extend(p for p in sorted(instances.iterdir()) if p.is_dir())
+    except OSError:
+        pass
+    return homes
 
 
-def _token_file() -> Path:
-    return _local_app_data() / "config" / "director" / "gateway-token.txt"
+def _token_file(home: Path) -> Path:
+    return home / "config" / "director" / "gateway-token.txt"
 
 
 def _pid_alive(pid: int) -> bool:
@@ -83,43 +100,51 @@ def _ci_get(obj: dict, key: str):
     return None
 
 
-def discover_control_endpoint() -> str:
-    """Find the newest LIVE Director's loopback control endpoint, e.g. http://127.0.0.1:7883.
+def discover_director() -> tuple[str, Path]:
+    """Find the newest LIVE Director: its loopback control endpoint AND the instance home it runs
+    from, e.g. ("http://127.0.0.1:7883", .../cc-director/instances/default).
+
+    The home matters as much as the endpoint: the secret that authorizes calls to that endpoint is
+    stored under that home. Reading registrations from only the flat base - which is what this did -
+    found no Director at all on a clean install, where even the default instance registers one
+    level in.
 
     Raises with a clear message if none is running.
     """
-    d = _instances_dir()
-    if not d.is_dir():
-        raise RuntimeError(
-            f"No Director instances directory at {d}. Is CC Director running?"
-        )
-
     candidates = []
-    for f in d.glob("*.json"):
-        try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+    searched = []
+    for home in _instance_homes():
+        d = home / "config" / "director" / "instances"
+        searched.append(str(d))
+        if not d.is_dir():
             continue
-        endpoint = _ci_get(data, "ControlEndpoint")
-        pid = _ci_get(data, "Pid")
-        started = _ci_get(data, "StartedAt") or ""
-        if not endpoint or not isinstance(pid, int):
-            continue
-        if not _pid_alive(pid):
-            continue
-        candidates.append((started, endpoint))
+        for f in d.glob("*.json"):
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            endpoint = _ci_get(data, "ControlEndpoint")
+            pid = _ci_get(data, "Pid")
+            started = _ci_get(data, "StartedAt") or ""
+            if not endpoint or not isinstance(pid, int):
+                continue
+            if not _pid_alive(pid):
+                continue
+            candidates.append((started, endpoint, home))
 
     if not candidates:
         raise RuntimeError(
-            f"Found no running Director in {d}. Start CC Director, then retry."
+            "Found no running Director (searched " + ", ".join(searched)
+            + "). Start CC Director, then retry."
         )
 
     # Newest by StartedAt (ISO-8601 sorts lexically).
     candidates.sort(key=lambda c: c[0], reverse=True)
-    return candidates[0][1].rstrip("/")
+    return candidates[0][1].rstrip("/"), candidates[0][2]
 
 
-def _request(method: str, url: str, token: str | None, body: dict | None = None) -> dict:
+def _request(method: str, url: str, token: str | None, body: dict | None = None,
+             token_file_hint: Path | None = None) -> dict:
     data = json.dumps(body).encode("utf-8") if body is not None else None
     headers = {"Content-Type": "application/json"}
     if token:
@@ -132,46 +157,82 @@ def _request(method: str, url: str, token: str | None, body: dict | None = None)
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", errors="replace")
         if e.code == 401:
+            hint = f" or set the token at {token_file_hint}" if token_file_hint else ""
             raise RuntimeError(
-                "401 Unauthorized: this Director has auth enabled. Pass --director-token "
-                f"or set the token at {_token_file()}."
+                f"401 Unauthorized: this Director refused the credential. Pass --director-token{hint}."
             ) from e
         raise RuntimeError(f"{method} {url} failed: HTTP {e.code} {detail}") from e
     except urllib.error.URLError as e:
         raise RuntimeError(f"{method} {url} failed: {e.reason}") from e
 
 
-def _resolve_token(explicit: str | None) -> str | None:
+def _config_json(home: Path) -> Path:
+    return home / "config" / "config.json"
+
+
+def _resolve_token(explicit: str | None, home: Path) -> str | None:
+    """The secret of the Director INSTANCE being called, read from that instance's home.
+
+    The Control API requires a credential on every route now, so this is no longer an optional read.
+    It has to resolve the secret the way that Director does or every call is answered 401: the
+    SHARED fleet token from the instance's config.json when the machine is attached to a Gateway,
+    and the instance's own persisted token otherwise. Two past shapes of this bug: reading only the
+    token file (wrong on every Gateway-attached machine), and reading the right pair of files from
+    the FLAT root - which on a clean install holds neither, because every Director's storage lives
+    under its own instances/<slug> home.
+
+    The raw machine secret is what is presented, deliberately. It is full authority, which is what
+    reading and writing settings needs, and the Director accepts it as the root it is.
+    """
     if explicit:
         return explicit
-    # Only used if a Director happens to have auth on; harmless to read if present.
-    tf = _token_file()
+
+    cfg = _config_json(home)
+    if cfg.is_file():
+        try:
+            data = json.loads(cfg.read_text(encoding="utf-8"))
+            gateway = data.get("gateway") if isinstance(data, dict) else None
+            if isinstance(gateway, dict):
+                token = gateway.get("token")
+                if isinstance(token, str) and token.strip():
+                    return token.strip()
+        except (OSError, ValueError):
+            pass
+
+    tf = _token_file(home)
     if tf.is_file():
         return tf.read_text(encoding="utf-8").strip() or None
     return None
 
 
+def _connect(explicit_token: str | None) -> tuple[str, str | None, Path]:
+    """Discover the Director to talk to and the credential IT accepts: (endpoint, token, home)."""
+    base, home = discover_director()
+    return base, _resolve_token(explicit_token, home), home
+
+
 def get_settings(token: str | None) -> dict:
-    base = discover_control_endpoint()
-    return _request("GET", f"{base}/settings", token)
+    base, resolved, home = _connect(token)
+    return _request("GET", f"{base}/settings", resolved, token_file_hint=_token_file(home))
 
 
 def put_settings(patch: dict, token: str | None) -> dict:
-    base = discover_control_endpoint()
-    return _request("PUT", f"{base}/settings", token, body=patch)
+    base, resolved, home = _connect(token)
+    return _request("PUT", f"{base}/settings", resolved, body=patch, token_file_hint=_token_file(home))
 
 
 def detect(kind: str, apply: bool, token: str | None) -> dict:
     """POST /settings/detect/{kind}. With apply=True the Director writes the detected value."""
-    base = discover_control_endpoint()
+    base, resolved, home = _connect(token)
     q = "?apply=true" if apply else ""
-    return _request("POST", f"{base}/settings/detect/{kind}{q}", token)
+    return _request("POST", f"{base}/settings/detect/{kind}{q}", resolved, token_file_hint=_token_file(home))
 
 
 def test_gateway(url: str, token: str | None) -> dict:
     """POST /settings/test/gateway - probe a gateway URL's /healthz."""
-    base = discover_control_endpoint()
-    return _request("POST", f"{base}/settings/test/gateway", token, body={"url": url})
+    base, resolved, home = _connect(token)
+    return _request("POST", f"{base}/settings/test/gateway", resolved, body={"url": url},
+                    token_file_hint=_token_file(home))
 
 
 def _dig(obj: dict, dotted: str):
@@ -230,7 +291,9 @@ def main() -> int:
     p_tg.add_argument("--url", required=True, help="Gateway base URL to test.")
 
     args = parser.parse_args()
-    token = _resolve_token(args.director_token)
+    # The credential is resolved per call, AFTER discovery, from the home of the very instance the
+    # discovered endpoint belongs to - an explicit --director-token still overrides it.
+    token = args.director_token
 
     try:
         if args.command == "show":

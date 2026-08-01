@@ -106,6 +106,13 @@ The `scripts\local-build` directory holds development slots `cc-director1.exe` t
 
 **Shut a test Director down cleanly, do NOT force-kill it.** Send `POST http://127.0.0.1:<port>/shutdown` to its Control API — that makes the Director kill its own sessions and delete its crash journal, so it does not leave a phantom "interrupted" entry in the fleet (issue #960). A force-kill (`Stop-Process -Force`) gives the process no chance to clean up and DOES leave that phantom journal, so it is the last resort only — use it only if the graceful shutdown does not exit in time (the Director is genuinely stuck). The `scripts\agent-session-isolation.ps1 teardown` verb already does this.
 
+The Control API requires a credential — a bare POST is refused with 401, which looks like "it did not answer" and quietly funnels you toward the force-kill this rule exists to avoid. Attach a Bearer token resolved from that Director's OWN storage root, the way the Director resolves it: the `gateway.token` value in `<root>\config\config.json` when it is attached to a Gateway, else the contents of `<root>\config\director\gateway-token.txt` (on a clean install those live under `<root>\instances\<slug>\`). `scripts\agent-session-isolation.ps1` (`Get-ShutdownToken`) is the working reference:
+
+```powershell
+Invoke-WebRequest "http://127.0.0.1:<port>/shutdown" -Method POST -UseBasicParsing `
+  -Headers @{ Authorization = "Bearer $tok" }
+```
+
 When you must force-kill as a last resort: only kill a process whose path matches the slot YOU launched (e.g. `cc-director5.exe`). Confirm via `Get-Process | Select-Object Id, ProcessName, Path` first. Never use a blanket `Stop-Process -Name cc-director*` — that would kill the main build and the user's working sessions.
 
 For non-session-creating tests (HTML rendering, REST endpoint smoke, build-only verification) launching from your context is still fine. Only session-creation tests need the Task Scheduler path.

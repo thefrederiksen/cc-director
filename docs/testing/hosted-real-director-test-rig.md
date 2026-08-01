@@ -266,8 +266,19 @@ terminal view: dead `/buffer` means a hosted user cannot see their own terminal.
 
 ### Teardown ages out correctly
 
+The Control API requires a credential - a bare POST is a 401, and 401 is exactly how a missed
+teardown starts. Resolve the secret the test Director accepts from ITS root, the way the Director
+itself resolves it (the shared gateway token when enrolled, else its own persisted token), which is
+the same resolution `scripts/agent-session-isolation.ps1` uses:
+
 ```powershell
-Invoke-WebRequest "http://127.0.0.1:<port>/shutdown" -Method POST -UseBasicParsing
+$tok = $null
+if (Test-Path "$root\config\config.json") {
+    $tok = (Get-Content "$root\config\config.json" -Raw | ConvertFrom-Json).gateway.token
+}
+if (-not $tok) { $tok = (Get-Content "$root\config\director\gateway-token.txt" -Raw).Trim() }
+Invoke-WebRequest "http://127.0.0.1:<port>/shutdown" -Method POST -UseBasicParsing `
+  -Headers @{ Authorization = "Bearer $tok" }
 ```
 
 The Director exits, and within `GatewayConfig.DefaultStreamStaleAfterSeconds` (20 seconds) the

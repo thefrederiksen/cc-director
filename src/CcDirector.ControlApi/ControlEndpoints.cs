@@ -12,6 +12,7 @@ using CcDirector.Core.Configuration;
 using CcDirector.Core.Fleet;
 using CcDirector.Core.History;
 using CcDirector.Core.Network;
+using CcDirector.Core.Security;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Wingman;
@@ -33,16 +34,38 @@ internal static class ControlEndpoints
     public static void Map(IEndpointRouteBuilder app, SessionManager sessionManager, string directorId, string version, Func<Task> requestShutdownAsync, bool authEnabled = false, RepositoryRegistry? repositoryRegistry = null, TurnSummaryCache? turnSummaryCache = null, string? gatewayUrl = null, ProactiveExplainService? proactiveExplain = null, GatewayConnectionMonitor? gatewayMonitor = null, Func<TailnetEndpointResolution>? resolveTailnetEndpoint = null, Func<GatewayClient?>? gatewayClientProvider = null, MessageSteward? messageSteward = null, MissionStore? missionStore = null, Func<CancellationToken, Task<SignedInUser?>>? signedInUserResolver = null, Core.Git.RepositoryMonitor? repositoryMonitor = null)
     {
         // ===== Healthz =====
-        app.MapGet("/healthz", () => Results.Json(new HealthDto
+        // The one route reachable without a credential, so its unauthenticated answer says ONLY that
+        // something is alive here. It used to answer everybody with this Director's identifier, the
+        // machine's name, the product version and a live session count - configuration, handed out
+        // on the single route designed to ask for nothing, and readable by any local process or any
+        // page that could reach loopback.
+        //
+        // A caller that DID authenticate still gets the full answer, because the launcher's update
+        // check reads the version and the session count from here to decide whether a swap would
+        // interrupt live work, and the startup self-probe reads the identifier to prove no other
+        // service is shadowing the bound port. Trimming the body for everyone would have broken both
+        // silently; trimming it for callers who present nothing costs neither of them anything.
+        app.MapGet("/healthz", (HttpContext ctx) =>
         {
-            Status = "ok",
-            Directors = 1,
-            Sessions = sessionManager.ListSessions().Count,
-            Version = version,
-            ServerTime = DateTime.UtcNow,
-            DirectorId = directorId,
-            MachineName = Environment.MachineName,
-        }));
+            // With authentication switched off there is no credential to present, so there is no
+            // caller to trim for: the host is embedded somewhere that already established who it is
+            // talking to, and trimming would only break that caller.
+            var callerHasFullAuthority = !authEnabled
+                || DirectorAuth.PrincipalOf(ctx) is { Scope: ControlApiScope.Full };
+            if (!callerHasFullAuthority)
+                return Results.Json(new { status = "ok" });
+
+            return Results.Json(new HealthDto
+            {
+                Status = "ok",
+                Directors = 1,
+                Sessions = sessionManager.ListSessions().Count,
+                Version = version,
+                ServerTime = DateTime.UtcNow,
+                DirectorId = directorId,
+                MachineName = Environment.MachineName,
+            });
+        });
 
         // ===== Prompts that did not go (issue internal#811) =====
         // The question the issue is named after - "how often is this happening?" - answered without

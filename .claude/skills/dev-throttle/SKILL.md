@@ -75,7 +75,7 @@ agent-lifecycle hooks, not for driving sessions:
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| GET | `/healthz` | Health, version, director id, session/director counts |
+| GET | `/healthz` | Liveness. The only route that answers WITHOUT a credential, and its unauthenticated answer is `{"status":"ok"}` and nothing else. Present a credential and it also carries the version, director id, and session/director counts |
 | GET | `/fleet/sessions` | Roster the local Director sees (what `cc-devthrottle session list` reads) |
 | POST | `/fleet/send`, `/fleet/ask` | Fleet messaging relay (used by `cc-devthrottle message`) |
 | POST | `/fleet/spawn` | Spawn on another machine, relayed via the Gateway |
@@ -84,13 +84,24 @@ agent-lifecycle hooks, not for driving sessions:
 | GET/PUT | `/settings` (+ agents/tools/workspaces) | Local config surface (desktop app + cc-settings-api) |
 | GET/POST | `/sessions/{sid}/fleet-preamble`, `/claude-hook` | Agent-lifecycle IPC (the SessionStart hook calls these) |
 
-"Is the app running / what version?" is the one raw call worth knowing:
+"Is the app running?" is the one raw call worth knowing:
 
 ```
 curl http://127.0.0.1:7879/healthz
 ```
 
-Everything else an agent needs goes through `cc-devthrottle`.
+**Every other route requires a credential.** The Director's loopback floor is authenticated: loopback
+proves the caller is on this machine, which does not distinguish the desktop from the command line
+from an agent's child process from a browser that followed a rebound name to 127.0.0.1. A call with
+no credential is answered 401, and one with a `Host` header that is not this Director's own loopback
+address is answered 403 before it reaches a handler.
+
+You do not normally have to think about this: `cc-devthrottle` derives its own credential from the
+machine secret, and an agent inside a session is given one at launch as `CC_DIRECTOR_TOKEN`, bound to
+that session. That injected credential reads its OWN session and the roster and nothing else - it
+cannot spawn, shut down, prompt another session, read another session's terminal, or change settings.
+Use `cc-devthrottle` for anything beyond that; it is what everything else an agent needs goes
+through.
 
 ## Creating a session correctly (always name it)
 
@@ -156,14 +167,14 @@ use the identity the preamble gave you. If no user is named (nobody signed in), 
 
 - "What cc-* tools do I have for X?" - look in the tool list above; run the tool with `--help` for syntax.
 - "How do I list / message / create / close sessions?" - use `cc-devthrottle` (details in the fleet-comms skill).
-- "Is the app running / what version?" - `curl http://127.0.0.1:7879/healthz`.
+- "Is the app running?" - `curl http://127.0.0.1:7879/healthz`. For the VERSION, present a
+  credential: the unauthenticated answer is liveness only.
 
 ## What this skill does NOT do
 
 - It does not replace `<tool> --help`, which has the authoritative flags and examples for each tool.
 - It does not replace the **fleet-comms** skill, which is the full reference for `cc-devthrottle`.
 
----
 
 **Skill Version:** 5.2 (tunnel-only fleet)
 **Last Updated:** 2026-07-14

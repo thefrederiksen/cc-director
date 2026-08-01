@@ -50,7 +50,10 @@ needs a live transcription key - ignore it). Read these first:
 - NEVER kill or disturb the owner's Directors: the main build and slots 1-4. SLOT 5+ ONLY is yours. Confirm
   a process's exe path (`Get-Process | Select Id,Path`) before ANY stop.
 - Prefer graceful shutdown (`POST http://127.0.0.1:<port>/shutdown`) over force-kill for your test
-  Directors/Gateways.
+  Directors/Gateways. The Control API requires a credential - attach `Authorization: Bearer <token>`
+  resolved from that Director's OWN isolated root (`gateway.token` in `config\config.json` when
+  attached to a Gateway, else `config\director\gateway-token.txt`; see `Get-ShutdownToken` in
+  `scripts\agent-session-isolation.ps1`). A bare POST is a 401 that reads as "it did not answer".
 - DO NOT COMMIT, push, or touch `main`. All work stays UNCOMMITTED in this worktree (owner's instruction).
 - Do the REST-removal ONLY in this worktree/test build - never on the owner's running app.
 - Enterprise quality per `docs/CodingStyle.md` (no `!` operator, FileLog logging, try-catch at boundaries

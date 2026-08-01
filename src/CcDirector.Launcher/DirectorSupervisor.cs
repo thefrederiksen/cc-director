@@ -1,6 +1,8 @@
+using CcDirector.Core.Security;
 using CcDirector.Core.Network;
 using System.Diagnostics;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
@@ -151,23 +153,43 @@ public sealed class DirectorSupervisor
         // failure degraded the very signal used to tell a real crash from a clean stop - while looking like it
         // worked every time. The kill remains the fallback, because a Director that cannot be stopped at all
         // would be worse; what changes is that it can no longer happen quietly.
-        var port = FindDirectorPort(proc.Id);
-        if (port <= 0)
+        var registration = FindDirectorRegistration(proc.Id);
+        if (registration is null)
             FileLog.Write($"[DirectorSupervisor] StopAsync: NO registration found for pid={proc.Id} - cannot reach "
                           + "the Control API, so this stop will FORCE-KILL instead of shutting down gracefully. "
                           + "The Director is running but its instance registration was not found in any known "
                           + "directory; expect a phantom crash-journal entry.");
 
-        if (port > 0)
+        if (registration is { } reg)
         {
+            var port = reg.Port;
             try
             {
                 FileLog.Write($"[DirectorSupervisor] StopAsync: POST http://127.0.0.1:{port}/shutdown");
-                using var resp = await _http.PostAsync($"http://127.0.0.1:{port}/shutdown", content: null, ct);
+                using var request = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/shutdown");
+                AttachDirectorCredential(request, reg.Home);
+                using var resp = await _http.SendAsync(request, ct);
                 FileLog.Write($"[DirectorSupervisor] StopAsync: /shutdown -> {(int)resp.StatusCode}");
-                // Wait for the process to exit after the graceful shutdown.
-                await WaitForExitAsync(proc, TimeSpan.FromSeconds(10), ct);
-                return;
+
+                // A REFUSAL is not a graceful stop, and treating it as one is how this call quietly
+                // became a force-kill. The Director is up and answering - it simply did not accept the
+                // credential - so falling through to Kill() gives it no chance to clean up and leaves a
+                // phantom "interrupted" entry in its crash journal, degrading the very signal used to
+                // tell a real crash from a deliberate stop. Say so loudly; the kill below is still the
+                // last resort, because a Director that cannot be stopped at all would be worse.
+                if (!resp.IsSuccessStatusCode)
+                {
+                    FileLog.Write($"[DirectorSupervisor] StopAsync: /shutdown was REFUSED with {(int)resp.StatusCode}. "
+                                  + "The Director is running and answering, so this is a credential problem, not an "
+                                  + "unreachable Control API. Expect a phantom crash-journal entry from the force-kill "
+                                  + $"that follows. This instance's secret is read from under {reg.Home}.");
+                }
+                else
+                {
+                    // Wait for the process to exit after the graceful shutdown.
+                    await WaitForExitAsync(proc, TimeSpan.FromSeconds(10), ct);
+                    return;
+                }
             }
             catch (Exception ex)
             {
@@ -207,17 +229,26 @@ public sealed class DirectorSupervisor
         if (process is null)
             return null;
 
-        var port = FindDirectorPort(process.Id);
-        if (port <= 0)
+        var registration = FindDirectorRegistration(process.Id);
+        if (registration is not { } reg)
         {
             FileLog.Write($"[DirectorSupervisor] ReadHealthAsync: the Director is running (pid={process.Id}) but no "
                           + "instance registration names its control port, so it cannot be asked anything.");
             return null;
         }
 
+        var port = reg.Port;
         try
         {
-            using var response = await _http.GetAsync($"http://127.0.0.1:{port}/healthz", ct);
+            // Authenticated on purpose. /healthz answers an anonymous caller with liveness and nothing
+            // else, and what this method needs is the version and the session count - the version is
+            // what certifies that a swap actually happened, and the session count is what decides
+            // whether updating now would interrupt live work. Both are configuration, so both are
+            // behind the credential; a token-less probe here would read a healthy Director as one with
+            // nothing to say.
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{port}/healthz");
+            AttachDirectorCredential(request, reg.Home);
+            using var response = await _http.SendAsync(request, ct);
             if (!response.IsSuccessStatusCode)
             {
                 FileLog.Write($"[DirectorSupervisor] ReadHealthAsync: /healthz on {port} answered {(int)response.StatusCode}");
@@ -246,6 +277,45 @@ public sealed class DirectorSupervisor
 
     private static readonly System.Text.Json.JsonSerializerOptions HealthJsonOptions =
         new(System.Text.Json.JsonSerializerDefaults.Web);
+
+    /// <summary>
+    /// Present the credential of the Director instance being addressed. The launcher is a
+    /// full-authority local caller - stopping the Director and reading its version are exactly the
+    /// operations that need to be - so it derives an admin token from the secret THAT instance
+    /// accepts.
+    ///
+    /// The secret lives under the instance's own home. Every Director - the default included -
+    /// keeps its whole storage under <c>instances/&lt;slug&gt;</c>, so on a clean install the
+    /// launcher's shared root holds no secret at all: minting from the launcher's own root - which
+    /// is what this did - sent a credential the Director refused (or one derived from a stale
+    /// flat-root file that only matched by accident), and the refusal fell through to force-kill.
+    /// The home comes from the same registration that supplied the port, so the secret read and the
+    /// Director called are the same instance by construction.
+    ///
+    /// An instance with no readable secret gets no header rather than an exception: the caller then
+    /// sees a refusal it can report, which is a better failure than the launcher throwing on a path
+    /// whose whole job is to stop something.
+    /// </summary>
+    internal static void AttachDirectorCredential(HttpRequestMessage request, string instanceHome)
+    {
+        try
+        {
+            var secret = DirectorMachineSecret.TryReadFrom(instanceHome);
+            if (secret is null)
+            {
+                FileLog.Write($"[DirectorSupervisor] no Director secret is readable under {instanceHome}, so the "
+                              + "call will go unauthenticated and be refused.");
+                return;
+            }
+            request.Headers.Authorization = new AuthenticationHeaderValue(
+                "Bearer", DirectorScopedToken.Mint(secret, ScopeNames.Admin));
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DirectorSupervisor] cannot read the Director secret under {instanceHome}, so the call "
+                          + $"will go unauthenticated and be refused: {ex.Message}");
+        }
+    }
 
     /// <summary>
     /// Restart the Director: stop gracefully, wait, then start fresh.
@@ -306,24 +376,27 @@ public sealed class DirectorSupervisor
     }
 
     /// <summary>
-    /// Find the installed Director's Control API port: the instance registration whose
-    /// Pid is the process we identified as the installed Director. Returns 0 if not found.
+    /// Find the installed Director's registration: the instance registration whose Pid is the
+    /// process we identified as the installed Director. Returns null if not found. The registration
+    /// carries both the Control API port AND the instance home it was read from - the callers need
+    /// the pair, because the credential that authorizes a call to that port is the secret stored
+    /// under that home.
     /// </summary>
-    private int FindDirectorPort(int directorPid)
+    private InstanceRegistration? FindDirectorRegistration(int directorPid)
     {
         try
         {
             foreach (var instance in ReadInstanceRegistrations())
             {
                 if (instance.Pid == directorPid && instance.Port > 0)
-                    return instance.Port;
+                    return instance;
             }
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[DirectorSupervisor] FindDirectorPort error: {ex.Message}");
+            FileLog.Write($"[DirectorSupervisor] FindDirectorRegistration error: {ex.Message}");
         }
-        return 0;
+        return null;
     }
 
     /// <summary>
@@ -334,8 +407,14 @@ public sealed class DirectorSupervisor
     /// </summary>
     private const string InstancesFolderName = "instances";
 
-    /// <summary>One parsed instance registration file: config/director/instances/{id}.json.</summary>
-    internal readonly record struct InstanceRegistration(int Pid, int Port);
+    /// <summary>
+    /// One parsed instance registration file: config/director/instances/{id}.json. <paramref name="Home"/>
+    /// is the storage root of the instance the file was read from - the launcher's own root for a flat
+    /// (pre-1.8) registration, <c>&lt;root&gt;/instances/&lt;slug&gt;</c> for a per-instance one. That is
+    /// where the registered Director keeps its whole storage, so the secret that authorizes calls to
+    /// <paramref name="Port"/> lives under <paramref name="Home"/> and nowhere else.
+    /// </summary>
+    internal readonly record struct InstanceRegistration(int Pid, int Port, string Home);
 
     /// <summary>
     /// Read every Director instance registration file (CcStorage.DirectorInstances).
@@ -380,6 +459,13 @@ public sealed class DirectorSupervisor
         {
             if (!Directory.Exists(dir)) continue;
 
+            // The instance home this registration directory belongs to. A Director registers under
+            // its OWN home at <home>/config/director/instances, so the home is three levels up -
+            // for the flat layout that is the storage root itself, for a per-instance layout it is
+            // <root>/instances/<slug>. Carried on every registration because the secret that
+            // authorizes calls to the registered port is stored under this home.
+            var home = Path.GetFullPath(Path.Combine(dir, "..", "..", ".."));
+
             string[] files;
             try
             {
@@ -403,7 +489,7 @@ public sealed class DirectorSupervisor
                     if (root.TryGetProperty("ControlEndpoint", out var epEl)
                         && Uri.TryCreate(epEl.GetString(), UriKind.Absolute, out var ep))
                         port = ep.Port;
-                    result.Add(new InstanceRegistration(pid, port));
+                    result.Add(new InstanceRegistration(pid, port, home));
                 }
                 catch
                 {

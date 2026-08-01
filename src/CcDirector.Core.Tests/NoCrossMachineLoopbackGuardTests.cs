@@ -90,6 +90,7 @@ public sealed class NoCrossMachineLoopbackGuardTests
         ["src/CcDirector.Avalonia/HostedAi/DesktopHostedAiCta.cs"] = "Doc comments only: describe that Settings resolves the Cockpit front door and never opens a localhost URL (states the no-loopback policy).",
         ["src/CcDirector.Core/Browser/WorkflowRunner.cs"] = "Drives a local browser via loopback CDP.",
         ["src/CcDirector.Core/Sessions/SessionManager.cs"] = "Stamps the same-machine CC_DIRECTOR_API loopback URL for in-session agents.",
+        ["src/CcDirector.ControlApi/ControlApiGuard.cs"] = "The loopback literals here are the ALLOWLIST ITSELF, not an address anything dials. The Host gate accepts only '127.0.0.1:<bound port>' / 'localhost:<bound port>' and refuses everything else, which is the DNS-rebinding defence; the cross-site gate compares a browser's Origin against that same loopback origin. Recognising this machine's own address is the opposite of advertising it cross-machine - a mode-appropriate address here would WIDEN what the Director accepts.",
     };
 
     [Fact]
