@@ -135,7 +135,64 @@ public sealed class HostedSchemaRefusesAnUnownedRowTests
     }
 
     /// <summary>
-    /// THE CONTROL. Without it both facts above would pass against a table that refuses EVERY insert - a
+    /// THE THIRD SPELLING OF "NAMES NOBODY", and the one that got through.
+    ///
+    /// The first version of the constraint was <c>tenant &lt;&gt; ''</c>, which refuses the empty string and
+    /// nothing else. An inspector stood up the restricted-role rig, applied this exact chain, inserted a
+    /// tenant of THREE SPACES and read it back at length 3. That is not a hypothetical: whitespace was
+    /// storable, and <see cref="TenantId"/> itself rejects a whitespace tenant, so the schema was enforcing
+    /// a spelling of the invariant rather than the invariant.
+    ///
+    /// The two facts above tested only the two spellings that already worked, which is why the hole
+    /// survived. This one exists because the fix is not "add btrim" - it is "assert the case that got
+    /// through".
+    /// </summary>
+    [RequiresPostgresStatsFact]
+    public void An_insert_whose_tenant_is_only_whitespace_is_refused()
+    {
+        using var connection = Open();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText =
+            $"INSERT INTO {GatewayStatsDbContext.PostgresSchema}.stat_delta " +
+            "(tenant, hour_utc, session_id, modality, surface, is_voice, repo_id, wingman, turns, chars) " +
+            "VALUES ('   ', '2026-08-01T12', 's-whitespace-tenant', 'typed', 'desktop', false, 1, false, 1, 1)";
+
+        var thrown = Assert.ThrowsAny<PostgresException>(() => cmd.ExecuteNonQuery());
+        _out.WriteLine($"WHITESPACE TENANT refused: {thrown.SqlState} {thrown.MessageText}");
+
+        Assert.Equal("23514", thrown.SqlState);
+        Assert.Equal(GatewayStatsDbContext.TenantNotEmptyConstraint("stat_delta"), thrown.ConstraintName);
+
+        // And nothing was stored under it - the refusal is the whole point, not a warning.
+        using var count = connection.CreateCommand();
+        count.CommandText =
+            $"SELECT COUNT(*) FROM {GatewayStatsDbContext.PostgresSchema}.stat_delta WHERE session_id = 's-whitespace-tenant'";
+        Assert.Equal(0L, Convert.ToInt64(count.ExecuteScalar()));
+    }
+
+    /// <summary>Tab and newline are whitespace too, and a predicate that handled only the space character
+    /// would pass the fact above while leaving the hole open one keystroke over.</summary>
+    [RequiresPostgresStatsFact]
+    public void An_insert_whose_tenant_is_a_tab_or_newline_is_refused()
+    {
+        foreach (var (spelling, label) in new[] { ("\t", "tab"), ("\n", "newline"), (" \t \n ", "mixed") })
+        {
+            using var connection = Open();
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText =
+                $"INSERT INTO {GatewayStatsDbContext.PostgresSchema}.stat_delta " +
+                "(tenant, hour_utc, session_id, modality, surface, is_voice, repo_id, wingman, turns, chars) " +
+                "VALUES (@t, '2026-08-01T12', 's-ws', 'typed', 'desktop', false, 1, false, 1, 1)";
+            cmd.Parameters.AddWithValue("t", spelling);
+
+            var thrown = Assert.ThrowsAny<PostgresException>(() => cmd.ExecuteNonQuery());
+            _out.WriteLine($"{label} TENANT refused: {thrown.SqlState} {thrown.ConstraintName}");
+            Assert.Equal("23514", thrown.SqlState);
+        }
+    }
+
+    /// <summary>
+    /// THE CONTROL. Without it every refusal above would pass against a table that refuses EVERY insert - a
     /// typo in the column list, a schema that never got created, a constraint that is simply wrong. A row
     /// that DOES name its owner must still be stored.
     /// </summary>

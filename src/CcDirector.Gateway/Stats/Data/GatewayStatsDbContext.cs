@@ -436,7 +436,14 @@ public sealed class GatewayStatsDbContext : DbContext
 
                 var table = entityType.GetTableName();
                 if (table is null) continue;
-                entityType.AddCheckConstraint(TenantNotEmptyConstraint(table), "\"tenant\" <> ''");
+
+                // TRIM-BASED, not <> ''. The first version of this constraint refused the empty string and
+                // nothing else, which left a hole an inspector walked straight through: it stood up the
+                // restricted-role rig, applied this exact chain, inserted a tenant of THREE SPACES, and read
+                // it back at length 3. A whitespace tenant is not a tenant - TenantId itself rejects one -
+                // so a schema that accepts it is not enforcing the invariant it claims to, it is enforcing a
+                // spelling of it. btrim collapses every all-whitespace value to '' before the comparison.
+                entityType.AddCheckConstraint(TenantNotEmptyConstraint(table), "btrim(\"tenant\") <> ''");
             }
         }
 

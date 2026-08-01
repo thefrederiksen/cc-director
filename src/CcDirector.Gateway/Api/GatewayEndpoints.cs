@@ -102,11 +102,16 @@ internal static class GatewayEndpoints
         // /sessions roster (the path that carries SessionDto.InputStats whether stream mode is on or off),
         // so "Your Throttle" is fed by the same roster the fleet already reads, not only by the SignalR
         // push path (which is unmapped when stream mode is off). Null (old callers, tests) folds nothing.
-        Stats.GatewayInputStatsAggregator? inputStats = null,
+        // A RESOLVER, not an instance (round-two finding 1). On hosted the aggregator arrives when the
+        // statistics store publishes its factory, which may be AFTER these routes are mapped. Capturing the
+        // instance froze the answer for the roster while the stats feed resolved correctly per request - so
+        // a store that published late served a tenant a working /stats/data over a roster that recorded
+        // nothing into it. Statistics served and statistics never written is the worst of both.
+        Func<Stats.GatewayInputStatsAggregator?>? inputStats = null,
         // DevThrottle Stats: the durable fleet concurrency record. Observed from the same assembled roster
         // (live count + actively-working count), so the peak is captured fleet-wide whether stream mode is
         // on or off. Null (old callers, tests) records nothing.
-        Stats.ISessionConcurrencyRecorder? concurrency = null,
+        Func<Stats.ISessionConcurrencyRecorder?>? concurrency = null,
         // Snooze Length mission: the Gateway-owned snooze registry. POST /sessions/{sid}/hold REQUIRES it -
         // it records/clears a snooze-until here (the authoritative hold) and the /sessions fold reads it to
         // return an EXPIRED snooze to "needs you" (OnHold=false) on its own even if its Director has died.
@@ -1347,9 +1352,10 @@ internal static class GatewayEndpoints
             // would still answer 500. Statistics are a background concern and must not be able to break the
             // path every client polls. Contained, never swallowed: see StatsObservation.
             var live = all.Where(s => confirmedLive.Contains(s.SessionId)).ToList();
-            if (inputStats is not null)
-                Stats.StatsObservation.Contain(inputStats.Health, "GET /sessions roster fold",
-                    () => inputStats.ObserveSnapshot(live, DateTime.UtcNow, reqTenant.Value));
+            // RESOLVED PER REQUEST, never captured - see the parameter for why.
+            if (inputStats?.Invoke() is { } statsNow)
+                Stats.StatsObservation.Contain(statsNow.Health, "GET /sessions roster fold",
+                    () => statsNow.ObserveSnapshot(live, DateTime.UtcNow, reqTenant.Value));
 
             // DevThrottle Stats: record fleet concurrency and the hourly activity log from the same
             // assembled roster - max concurrent loaded/running (live) and actively working, plus how many
@@ -1358,9 +1364,9 @@ internal static class GatewayEndpoints
             // tracker keeps only the higher value per hour, so folding on every /sessions read never inflates.
             // Contained for the same reason as the fold above, and separately from it: two observers, two
             // sets of counters, so a log line and a failure count name which one is failing.
-            if (concurrency is not null)
-                Stats.StatsObservation.Contain(concurrency.Health, "GET /sessions concurrency observation",
-                    () => concurrency.Observe(live, DateTime.UtcNow, reqTenant.Value));
+            if (concurrency?.Invoke() is { } concurrencyNow)
+                Stats.StatsObservation.Contain(concurrencyNow.Health, "GET /sessions concurrency observation",
+                    () => concurrencyNow.Observe(live, DateTime.UtcNow, reqTenant.Value));
 
             // Issue #1292: adopt every observed number into the allocator's in-use set. This is how the
             // Gateway learns numbers it did not hand out - a number a Director assigned offline, or any

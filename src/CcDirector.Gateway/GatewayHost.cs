@@ -2373,12 +2373,15 @@ public sealed class GatewayHost : IAsyncDisposable
         // authenticated device key at Hello and enters that scope on every push (Hosted Multi-Tenancy incr 1).
         builder.Services.AddSingleton(_tenantBoundary);
         builder.Services.AddSingleton(_directorConnections);
-        // Registered only when there IS one, and under the INTERFACE so the registration does not name which
-        // of the two recorders this deployment picked. Registering a null would throw at container build -
-        // which would turn an absent statistics recorder into a Gateway that does not start, the exact
-        // inversion this whole step is preventing.
-        if (SessionConcurrency is not null)
-            builder.Services.AddSingleton<Stats.ISessionConcurrencyRecorder>(SessionConcurrency);
+        // Registered as a FACTORY, under the interface, so the container asks the same resolver everything
+        // else asks. Registering the INSTANCE would freeze the answer at container-build time - a third
+        // place the hosted late-open decision got frozen, alongside the roster and the route mapping - and
+        // registering it only "when there is one" made that freeze permanent for a store still opening.
+        //
+        // It stays nullable rather than being omitted: an absent statistics recorder must never be a
+        // Gateway that does not start, which is the inversion this whole boundary exists to prevent. Every
+        // consumer already treats it as optional.
+        builder.Services.AddSingleton<Func<Stats.ISessionConcurrencyRecorder?>>(_ => () => SessionConcurrency);
         // The statistics failure-domain boundary, so anything resolved from the container can ask whether
         // there is a statistics store and, when there is not, why not.
         builder.Services.AddSingleton(StatsStore);
@@ -2770,10 +2773,14 @@ public sealed class GatewayHost : IAsyncDisposable
             // DevThrottle Stats: feed the input-tally aggregator from the assembled /sessions roster, so
             // "Your Throttle" is populated whether stream mode is on or off (the DirectorHub push fold only
             // runs in stream mode, which is off in production).
-            inputStats: InputStats,
+            // Passed as RESOLVERS, not as instances. Reading these two properties HERE would evaluate them
+            // once, while mapping, and hand the roster whatever the answer was at that instant - which on
+            // hosted is "nothing" whenever the statistics store is still opening. The properties are cheap
+            // and re-ask the resolver, so the roster sees a late-published store on the very next request.
+            inputStats: () => InputStats,
             // DevThrottle Stats: record fleet concurrency (live + actively-working session counts) from the
             // same assembled roster, so the peak is captured fleet-wide regardless of stream mode.
-            concurrency: SessionConcurrency,
+            concurrency: () => SessionConcurrency,
             // Snooze Length mission: the Gateway-owned snooze registry. POST /sessions/{sid}/hold records
             // (or clears) a snooze-until here, and the /sessions fold overlays an EXPIRED snooze back into
             // "needs you" so the session returns on its own even after its Director dies.
