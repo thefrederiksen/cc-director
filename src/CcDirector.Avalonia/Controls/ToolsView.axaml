@@ -72,9 +72,12 @@
                                VerticalAlignment="Center" />
                 </StackPanel>
 
-                <!-- The two things a reversible change to shared machine state has to say up front. -->
+                <!-- What a change to shared machine state has to say up front. Superseded entries now
+                     come OUT of PATH - two entries for one command line serve nobody, only the first
+                     can win - so this says exactly how far that goes: PATH entries, never files, and
+                     never another live install's. -->
                 <TextBlock Foreground="#B08585" FontSize="10" TextWrapping="Wrap"
-                           Text="Nothing is deleted. The other install stays on PATH behind this one. Sessions already running keep the old PATH until they restart." />
+                           Text="Nothing on disk is deleted. Superseded DevThrottle entries are removed from your PATH and the files stay where they are; another install that is still in use is left alone. Sessions already running keep the old PATH until they restart." />
             </StackPanel>
         </Border>
 

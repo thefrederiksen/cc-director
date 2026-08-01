@@ -4288,6 +4288,15 @@ public partial class MainWindow : Window
             {
                 await RefreshFleetToolReachabilityAsync();
                 await DriveToolsSyncAsync();
+            },
+            // The verdict above is whatever the last tools health pass reached, and that pass is
+            // computed once per run - so it can be minutes old and describe a machine an intervening
+            // repair has already healed. The page re-asks on load and repaints, which is the
+            // difference between "still broken" and "fixed a while ago" for the person reading it.
+            async () =>
+            {
+                await RefreshFleetToolReachabilityAsync();
+                return _lastFleetToolCheck;
             });
 
         if (onGatewayTab)

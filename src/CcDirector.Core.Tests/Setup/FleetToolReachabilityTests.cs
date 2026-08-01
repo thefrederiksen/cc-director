@@ -50,6 +50,17 @@ public class FleetToolReachabilityTests : IDisposable
     private static FleetToolReachability WithResolved(string? resolvedPath)
         => new(TimeSpan.FromSeconds(30), _ => resolvedPath);
 
+    /// <summary>
+    /// Resolve the bare command name one way and an explicit path another, which is the whole point of
+    /// the second probe: PATH's answer and our own copy are different questions with different answers.
+    /// </summary>
+    private static FleetToolReachability WithPathAndOwn(string? onPath, string? ours)
+        => new(TimeSpan.FromSeconds(30),
+            command => command == FleetToolReachability.ToolName ? onPath : ours);
+
+    private static readonly string OurBinDir =
+        Path.Combine("C:", "cc-director", "instances", "default", "bin");
+
     [Fact]
     public async Task RunAsync_ToolNotOnPath_ReportsNotFound()
     {
@@ -103,6 +114,103 @@ public class FleetToolReachabilityTests : IDisposable
 
         await Assert.ThrowsAsync<ArgumentException>(
             () => reachability.RunAsync("", expectedBinDir: null));
+    }
+
+    [Fact]
+    public async Task RunAsync_PathToolFails_AndOurOwnCopyWorks_IsRepairableByRepointingPath()
+    {
+        var stale = StubTool(exitCode: 1, "Error: missing or invalid token");
+        var ours = StubTool(exitCode: 0, "ok");
+
+        var check = await WithPathAndOwn(onPath: stale, ours: ours).RunAsync("http://127.0.0.1:7879", OurBinDir);
+
+        Assert.Equal(FleetToolVerdict.CannotReachDirector, check.Verdict);
+        Assert.Equal(FleetToolVerdict.Working, check.OwnVerdict);
+        Assert.True(check.CanRepairByRepointingPath);
+        Assert.False(check.OwnToolsAreMissingOrBroken);
+    }
+
+    [Fact]
+    public async Task RunAsync_PathToolFails_AndWeHaveNoCopyOfOurOwn_IsNotRepairableByRepointingPath()
+    {
+        // THE FAILURE THIS EXISTS FOR, 2026-08-01 on SOREN_NORTH. PATH resolved a stale install's
+        // cc-devthrottle and this Director's own bin directory was EMPTY - its tools had never been
+        // installed. The panel saw only "PATH points somewhere else", offered "Repoint PATH", and the
+        // repair put an empty directory in front: resolution fell straight through it to the same
+        // stale copy and reported the same "missing or invalid token" it had been pressed to fix.
+        //
+        // Repointing must not be offered here. There is nothing to point at.
+        var stale = StubTool(exitCode: 1, "Error: missing or invalid token");
+
+        var check = await WithPathAndOwn(onPath: stale, ours: null).RunAsync("http://127.0.0.1:7879", OurBinDir);
+
+        Assert.Equal(FleetToolVerdict.CannotReachDirector, check.Verdict);
+        Assert.Equal(FleetToolVerdict.NotFound, check.OwnVerdict);
+        Assert.False(check.CanRepairByRepointingPath);
+        Assert.True(check.OwnToolsAreMissingOrBroken);
+        Assert.Contains(OurBinDir, check.OwnDetail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task RunAsync_PathToolFails_AndOurOwnCopyAlsoFails_IsNotRepairableByRepointingPath()
+    {
+        // Our tools are installed and broken. Reordering PATH would hand sessions a second copy that
+        // fails the same way, so the button must stay away from this one too.
+        var stale = StubTool(exitCode: 1, "Error: missing or invalid token");
+        var oursBroken = StubTool(exitCode: 1, "ModuleNotFoundError: no module named cc_shared");
+
+        var check = await WithPathAndOwn(onPath: stale, ours: oursBroken)
+            .RunAsync("http://127.0.0.1:7879", OurBinDir);
+
+        Assert.Equal(FleetToolVerdict.CannotReachDirector, check.OwnVerdict);
+        Assert.False(check.CanRepairByRepointingPath);
+        Assert.True(check.OwnToolsAreMissingOrBroken);
+        Assert.Contains("ModuleNotFoundError", check.OwnDetail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RunAsync_PathToolWorks_LeavesOurOwnCopyUnasked()
+    {
+        // Nothing is wrong, so there is no second question - and an unasked question must report as
+        // Unchecked, never as a pass.
+        var working = StubTool(exitCode: 0, "ok");
+
+        var check = await WithPathAndOwn(onPath: working, ours: null).RunAsync("http://127.0.0.1:7879", OurBinDir);
+
+        Assert.Equal(FleetToolVerdict.Working, check.Verdict);
+        Assert.Equal(FleetToolVerdict.Unchecked, check.OwnVerdict);
+        Assert.False(check.CanRepairByRepointingPath);
+        Assert.False(check.OwnToolsAreMissingOrBroken);
+    }
+
+    [Fact]
+    public async Task RunAsync_NoBinDirOfOurOwn_ReportsOurCopyAsUncheckedRatherThanMissing()
+    {
+        // A development build has no install directory. "We have no tools" would be a claim the check
+        // cannot support, and it would light this banner on every developer machine.
+        var stale = StubTool(exitCode: 1, "Error: missing or invalid token");
+
+        var check = await WithPathAndOwn(onPath: stale, ours: null)
+            .RunAsync("http://127.0.0.1:7879", expectedBinDir: null);
+
+        Assert.Equal(FleetToolVerdict.Unchecked, check.OwnVerdict);
+        Assert.False(check.OwnToolsAreMissingOrBroken);
+        Assert.False(check.CanRepairByRepointingPath);
+    }
+
+    [Fact]
+    public void CanRepairByRepointingPath_OurOwnCopyWorksButPathResolvedItAnyway_IsFalse()
+    {
+        // Same install, still refused. Repointing PATH at the directory it already resolves repairs
+        // nothing, so the fault must not be offered a fix that cannot touch it.
+        var check = new FleetToolCheck(
+            FleetToolVerdict.CannotReachDirector,
+            ResolvedPath: Path.Combine(OurBinDir, "cc-devthrottle.cmd"),
+            ExpectedBinDir: OurBinDir,
+            Detail: "missing or invalid token",
+            OwnVerdict: FleetToolVerdict.Working);
+
+        Assert.False(check.CanRepairByRepointingPath);
     }
 
     [Fact]

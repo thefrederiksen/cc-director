@@ -26,13 +26,41 @@ public enum FleetToolVerdict
 /// <summary>
 /// One reachability run. <see cref="ResolvedPath"/> and <see cref="ExpectedBinDir"/> are what the
 /// explanation panel shows; they never decide the verdict.
+///
+/// <see cref="OwnVerdict"/> is the SECOND question, and it is the one whose absence cost a morning:
+/// "never mind what PATH gives me - does MY OWN copy work?" Without it the panel could only see that
+/// PATH pointed somewhere else, so it offered to repoint PATH at a directory that was empty. The
+/// repair reordered PATH exactly as asked, resolution fell straight through the empty directory to
+/// the same stale install, and the button reported the same failure it started with.
 /// </summary>
 public sealed record FleetToolCheck(
     FleetToolVerdict Verdict,
     string? ResolvedPath,
     string? ExpectedBinDir,
-    string Detail)
+    string Detail,
+    FleetToolVerdict OwnVerdict = FleetToolVerdict.Unchecked,
+    string OwnDetail = "")
 {
+    /// <summary>
+    /// True only when repointing PATH is a repair that can actually work: PATH resolves someone
+    /// else's copy, and OURS is present and proven to drive this Director.
+    ///
+    /// This is the precondition the button was missing. "PATH points at another install" was treated
+    /// as sufficient, which it is not - it is only half of it. The other half is that we have
+    /// something worth pointing at.
+    /// </summary>
+    public bool CanRepairByRepointingPath
+        => Verdict == FleetToolVerdict.CannotReachDirector
+           && OwnVerdict == FleetToolVerdict.Working
+           && IsDifferentInstall;
+
+    /// <summary>
+    /// True when this Director has no working cc-devthrottle of its own, so PATH order is not the
+    /// fault and reordering it would repair nothing. The remedy is to install our tools first.
+    /// </summary>
+    public bool OwnToolsAreMissingOrBroken
+        => OwnVerdict is FleetToolVerdict.NotFound or FleetToolVerdict.CannotReachDirector;
+
     /// <summary>
     /// True when the resolved tool belongs to a different install than this Director's. Explanation
     /// only - a development build legitimately runs from outside any install directory, so this must
@@ -133,9 +161,12 @@ public sealed class FleetToolReachability
         if (resolved is null)
         {
             FileLog.Write($"[FleetToolReachability] {ToolName} is not on PATH");
+            var (missingOwnVerdict, missingOwnDetail) =
+                await ProbeOwnCopyAsync(expectedBinDir, controlApiBaseUrl, ct);
             return new FleetToolCheck(
                 FleetToolVerdict.NotFound, null, expectedBinDir,
-                $"Nothing named {ToolName} is on this machine's PATH.");
+                $"Nothing named {ToolName} is on this machine's PATH.",
+                missingOwnVerdict, missingOwnDetail);
         }
 
         var (exitCode, output) = await RunProbeAsync(resolved, controlApiBaseUrl, ct);
@@ -152,7 +183,51 @@ public sealed class FleetToolReachability
         var detail = FirstMeaningfulLine(output) ?? $"exit {exitCode}";
         FileLog.Write(
             $"[FleetToolReachability] {ToolName} at {resolved} FAILED to reach {controlApiBaseUrl}: {detail}");
-        return new FleetToolCheck(FleetToolVerdict.CannotReachDirector, resolved, expectedBinDir, detail);
+
+        // PATH gave us something that does not work. That alone does not say whether OUR copy would,
+        // and the two faults have different repairs - so ask the second question before reporting.
+        var (ownVerdict, ownDetail) = await ProbeOwnCopyAsync(expectedBinDir, controlApiBaseUrl, ct);
+        return new FleetToolCheck(
+            FleetToolVerdict.CannotReachDirector, resolved, expectedBinDir, detail, ownVerdict, ownDetail);
+    }
+
+    /// <summary>
+    /// Run the same functional probe against THIS Director's own copy, addressed by its full path so
+    /// PATH cannot answer for it.
+    ///
+    /// It runs only when PATH has already failed, because it exists to tell two faults apart: PATH
+    /// resolves someone else's working copy (repoint), or we have no working copy to point at
+    /// (install first, then repoint). Nothing structural is consulted - a directory that exists and a
+    /// tool that runs are different claims, and it was the first standing in for the second that made
+    /// the repair impossible.
+    /// </summary>
+    private async Task<(FleetToolVerdict Verdict, string Detail)> ProbeOwnCopyAsync(
+        string? expectedBinDir, string controlApiBaseUrl, CancellationToken ct)
+    {
+        // A development build has no install directory of its own. No directory is not a fault, and it
+        // is not a pass either - it is a question that cannot be asked here.
+        if (string.IsNullOrWhiteSpace(expectedBinDir))
+            return (FleetToolVerdict.Unchecked, "");
+
+        var own = _resolve(Path.Combine(expectedBinDir, ToolName));
+        if (own is null)
+        {
+            FileLog.Write(
+                $"[FleetToolReachability] this Director has no {ToolName} of its own in {expectedBinDir}");
+            return (FleetToolVerdict.NotFound, $"There is no {ToolName} in {expectedBinDir}.");
+        }
+
+        var (exitCode, output) = await RunProbeAsync(own, controlApiBaseUrl, ct);
+        if (exitCode == 0)
+        {
+            FileLog.Write($"[FleetToolReachability] this Director's own {ToolName} at {own} reached it");
+            return (FleetToolVerdict.Working, "reached this Director");
+        }
+
+        var detail = FirstMeaningfulLine(output) ?? $"exit {exitCode}";
+        FileLog.Write(
+            $"[FleetToolReachability] this Director's own {ToolName} at {own} FAILED to reach it: {detail}");
+        return (FleetToolVerdict.CannotReachDirector, detail);
     }
 
     private async Task<(int ExitCode, string Output)> RunProbeAsync(

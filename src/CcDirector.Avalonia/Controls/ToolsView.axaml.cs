@@ -37,7 +37,9 @@ public partial class ToolsView : UserControl
     // Director the verdict was reached about.
     private string? _controlApiBaseUrl;
     private string? _expectedBinDir;
+    private FleetToolCheck? _fleetToolCheck;
     private Func<Task>? _onFleetToolRepaired;
+    private Func<Task<FleetToolCheck?>>? _refreshFleetToolCheck;
 
     public ToolsView()
     {
@@ -50,6 +52,24 @@ public partial class ToolsView : UserControl
         if (_loaded) return;
         _loaded = true;
         await LoadCatalogAsync();
+
+        // Re-ask the reachability question now the page is up. The window's verdict can be minutes old
+        // - a tool repair may have healed the machine since - and a banner reporting a fault that is
+        // already fixed is indistinguishable, to the person reading it, from a fix that did not work.
+        // Painted first, refreshed after: the page never waits on a probe that can take seconds.
+        if (_refreshFleetToolCheck is { } refresh)
+        {
+            try
+            {
+                RenderFleetToolStatus(await refresh());
+            }
+            catch (Exception ex)
+            {
+                // A failed re-probe leaves the verdict we were handed standing. It must not read as a
+                // pass, and it must not take the page down.
+                FileLog.Write($"[ToolsView] fleet tool re-check FAILED: {ex.Message}");
+            }
+        }
     }
 
     /// <summary>Reload the catalog and re-run the checks. Called after a repair changes what is
@@ -70,16 +90,35 @@ public partial class ToolsView : UserControl
     /// re-check against the same endpoint after a repair.</param>
     /// <param name="onRepaired">Invoked after a successful repair so the owning window re-drives its
     /// own badge rather than being left showing a fault the user has just fixed.</param>
+    /// <param name="refresh">Re-runs the Director's own check and returns its fresh verdict. Called
+    /// once when the page loads, so an open panel cannot sit on a verdict the machine has outgrown.</param>
     public void ShowFleetToolStatus(
-        FleetToolCheck? check, string? controlApiBaseUrl, Func<Task>? onRepaired = null)
+        FleetToolCheck? check,
+        string? controlApiBaseUrl,
+        Func<Task>? onRepaired = null,
+        Func<Task<FleetToolCheck?>>? refresh = null)
     {
         _controlApiBaseUrl = controlApiBaseUrl;
         _onFleetToolRepaired = onRepaired;
+        _refreshFleetToolCheck = refresh;
         RenderFleetToolStatus(check);
     }
 
+    /// <summary>
+    /// Paint the fault, and say which of the TWO faults it is. They look identical from the outside -
+    /// a session cannot reach this Director - and they have different repairs:
+    ///
+    ///   PATH resolves someone else's WORKING copy   -> repoint PATH (ours is ready and waiting)
+    ///   we have no working copy of our own          -> install ours FIRST, then repoint
+    ///
+    /// Telling them apart is the whole fix. Offering "Repoint PATH" for the second one is what shipped:
+    /// the button dutifully reordered PATH around a directory that was empty, resolution fell through
+    /// it to the same stale install, and it reported the failure it was pressed to fix.
+    /// </summary>
     private void RenderFleetToolStatus(FleetToolCheck? check)
     {
+        _fleetToolCheck = check;
+
         if (check is not { Verdict: FleetToolVerdict.CannotReachDirector })
         {
             PathFaultBanner.IsVisible = false;
@@ -90,15 +129,36 @@ public partial class ToolsView : UserControl
         _expectedBinDir = check.ExpectedBinDir;
         PathFaultResolved.Text = check.ResolvedPath ?? "(not resolved)";
         PathFaultExpected.Text = check.ExpectedBinDir ?? "(unknown)";
-        PathFaultExplanation.Text = check.IsDifferentInstall
-            ? "The command line on your PATH belongs to another install, so agents in your sessions "
-              + "report \"cannot connect to DevThrottle\" even though this Director is healthy and connected."
-            // Same install, still refused: repointing PATH will not help, so say what was actually seen
-            // rather than offering a fix for a fault this is not.
-            : $"The command line on your PATH could not authenticate against this Director: {check.Detail}";
 
-        // Only offer the button for the fault it actually repairs.
-        PathFaultFixButton.IsVisible = check.IsDifferentInstall;
+        if (check.OwnToolsAreMissingOrBroken)
+        {
+            PathFaultExplanation.Text =
+                "This Director's own command-line tools are not installed and working, so PATH order is "
+                + $"not the problem: there is nothing here to point at yet ({check.OwnDetail}) Installing "
+                + "them is the repair; repointing PATH on its own would change nothing.";
+            PathFaultFixButton.Content = "Install tools, then repoint PATH";
+            PathFaultFixButton.IsVisible = true;
+        }
+        else if (check.CanRepairByRepointingPath)
+        {
+            PathFaultExplanation.Text =
+                "The command line on your PATH belongs to another install, so agents in your sessions "
+                + "report \"cannot connect to DevThrottle\" even though this Director is healthy and "
+                + "connected. This Director's own copy is installed and works.";
+            PathFaultFixButton.Content = "Repoint PATH to this install";
+            PathFaultFixButton.IsVisible = true;
+        }
+        else
+        {
+            // Same install and still refused, or no install directory to compare against. Repointing
+            // repairs neither, so state what was seen and offer nothing rather than a button that
+            // cannot work.
+            PathFaultExplanation.Text =
+                $"The command line on your PATH could not authenticate against this Director: {check.Detail}";
+            PathFaultFixButton.IsVisible = false;
+        }
+
+        PathFaultFixButton.IsEnabled = true;
         PathFaultProgress.Text = "";
     }
 
@@ -118,6 +178,30 @@ public partial class ToolsView : UserControl
                 PathFaultProgress.Text = "No install directory to repoint to.";
                 PathFaultFixButton.IsEnabled = true;
                 return;
+            }
+
+            // When the fault is that we have no working tools of our own, install them BEFORE touching
+            // PATH. Repointing first would put an empty directory in front and report success.
+            if (_fleetToolCheck is { OwnToolsAreMissingOrBroken: true })
+            {
+                PathFaultProgress.Text = "Installing this Director's tools...";
+                var progress = new Progress<string>(message => PathFaultProgress.Text = message);
+                var installed = await Task.Run(() =>
+                    new CcDirector.Setup.Engine.ToolUpdater(CcDirector.Setup.Engine.InstallLayout.Default())
+                        .RepairPythonToolsAsync(progress));
+
+                FileLog.Write(
+                    $"[ToolsView] PATH fault: tool install success={installed.Success}, {installed.Message}");
+                if (!installed.Success)
+                {
+                    PathFaultProgress.Text = $"Could not install the tools: {installed.Message}";
+                    PathFaultFixButton.IsEnabled = true;
+                    return;
+                }
+
+                // The catalog behind this banner is now describing a toolset that no longer exists.
+                await LoadCatalogAsync();
+                PathFaultProgress.Text = "Repointing PATH...";
             }
 
             var repair = await Task.Run(() => FleetToolPathRepair.PutFirstOnPath(binDir));
