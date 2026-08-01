@@ -112,6 +112,16 @@ All eighteen passed.
 five live main-database proofs waiting on `CC_GATEWAY_DB_CONNECTION` (a different variable from the
 statistics one, and not set for this run), and `DT_TEN_3`, which is explicitly a future increment.
 
+### This gate caught a real false green on this mission - see the evidence beside this file
+
+`evidence-a-false-green-caught-in-the-wild.md`, in this directory, records a run that printed
+`Passed! - Failed: 0` over a **519-test collapse**, with the TRX `outcome` and `total` the only two
+fields in the entire artifact that disagreed. The TRX's own `failed="0"` did not notice, so a gate
+checking "no failures" - in the console OR in the TRX - would have called it green.
+
+It is worth reading before anyone proposes simplifying this gate to a failure count. The count comparison
+is not bureaucracy; it is the only thing standing between that console line and the hole underneath it.
+
 ### Baselines will be EXCEEDED from here, and that is not drift
 
 `origin/main` has since added tests to `CcDirector.Core.Tests` and the setup-engine tests, so those
