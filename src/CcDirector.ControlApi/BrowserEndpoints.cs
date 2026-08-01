@@ -40,7 +40,13 @@ internal static class BrowserEndpoints
             if (req is null || string.IsNullOrWhiteSpace(req.Name))
                 return Results.BadRequest(new { error = "name is required" });
             if (!TryParseKind(req.Browser, out var kind))
-                return Results.BadRequest(new { error = $"unknown browser \"{req.Browser}\" - use chrome or edge" });
+                return Results.BadRequest(new
+                {
+                    // Listed from the enum so the error names every browser this build accepts, rather
+                    // than an older pair someone has to discover is out of date.
+                    error = $"unknown browser \"{req.Browser}\" - use one of: "
+                        + string.Join(", ", Enum.GetNames<BrowserKind>().Select(n => n.ToLowerInvariant())),
+                });
 
             try
             {

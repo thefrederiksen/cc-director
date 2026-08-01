@@ -147,8 +147,72 @@ public class BrowserLauncherTests
     {
         var windows = BrowserLauncher.WindowsCandidates();
 
-        Assert.All(windows, c => Assert.EndsWith("User Data", c.UserDataDir));
+        // The Chromium-standard shape, which is every browser here EXCEPT Opera - Opera keeps its
+        // profile in Roaming with no "User Data" level, asserted on its own below. Blanket-asserting
+        // "User Data" across the whole table would have made the Opera row unaddable rather than
+        // catching a real defect.
+        Assert.All(windows.Where(c => c.Kind != BrowserKind.Opera),
+            c => Assert.EndsWith("User Data", c.UserDataDir));
         Assert.All(windows, c => Assert.All(c.ExeCandidates, p => Assert.EndsWith(".exe", p)));
+    }
+
+    [Fact]
+    public void WindowsCandidates_OperaUsesRoamingAppDataWithNoUserDataLevel()
+    {
+        var opera = Assert.Single(BrowserLauncher.WindowsCandidates(), c => c.Kind == BrowserKind.Opera);
+
+        // Opera's profile is NOT where the Chromium pattern says: it is under Roaming, and the folder
+        // is "Opera Stable" rather than a "User Data" level. Reading Local State from a Chrome-shaped
+        // guess finds nothing and the browser silently reports no signed-in account.
+        Assert.EndsWith(Path.Combine("Opera Software", "Opera Stable"), opera.UserDataDir);
+        Assert.DoesNotContain("User Data", opera.UserDataDir);
+        Assert.StartsWith(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), opera.UserDataDir);
+
+        // The installer defaults to a per-user install, so that path must be tried before the
+        // all-users one or the default install is the case we miss.
+        Assert.StartsWith(
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Opera"),
+            opera.ExeCandidates[0]);
+    }
+
+    [Fact]
+    public void WindowsCandidates_BraveUsesItsOwnVendorFolder()
+    {
+        var brave = Assert.Single(BrowserLauncher.WindowsCandidates(), c => c.Kind == BrowserKind.Brave);
+
+        Assert.All(brave.ExeCandidates, p => Assert.EndsWith(Path.Combine("Brave-Browser", "Application", "brave.exe"), p));
+        Assert.EndsWith(Path.Combine("BraveSoftware", "Brave-Browser", "User Data"), brave.UserDataDir);
+    }
+
+    [Fact]
+    public void MacCandidates_BraveAndOperaReachTheBinaryAndTheirOwnSupportFolders()
+    {
+        var mac = BrowserLauncher.MacCandidates();
+        var brave = Assert.Single(mac, c => c.Kind == BrowserKind.Brave);
+        var opera = Assert.Single(mac, c => c.Kind == BrowserKind.Opera);
+
+        Assert.All(brave.ExeCandidates, p => Assert.EndsWith(".app/Contents/MacOS/Brave Browser", Slashes(p)));
+        Assert.All(opera.ExeCandidates, p => Assert.EndsWith(".app/Contents/MacOS/Opera", Slashes(p)));
+
+        // Neither follows the product name: Brave nests under a vendor folder, and Opera's support
+        // folder is named by BUNDLE ID. Both are the kind of thing a pattern-match gets wrong.
+        Assert.EndsWith("Library/Application Support/BraveSoftware/Brave-Browser", Slashes(brave.UserDataDir));
+        Assert.EndsWith("Library/Application Support/com.operasoftware.Opera", Slashes(opera.UserDataDir));
+        Assert.DoesNotContain("User Data", Slashes(brave.UserDataDir));
+        Assert.DoesNotContain("User Data", Slashes(opera.UserDataDir));
+    }
+
+    [Fact]
+    public void EveryBrowserKind_HasAWindowsAndAMacCandidateRow()
+    {
+        // The bug this catches is an enum member added without its install locations: the browser
+        // appears in the API's accepted list and in error messages, then reports "not installed" on
+        // every machine because nothing ever looks for it.
+        foreach (var kind in Enum.GetValues<BrowserKind>())
+        {
+            Assert.Single(BrowserLauncher.WindowsCandidates(), c => c.Kind == kind);
+            Assert.Single(BrowserLauncher.MacCandidates(), c => c.Kind == kind);
+        }
     }
 
     [Fact]

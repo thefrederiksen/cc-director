@@ -696,7 +696,9 @@ def browser_list(
 @browser_app.command("create")
 def browser_create(
     name: str = typer.Option(..., "--name", help='Human-facing name, e.g. "Center Consulting".'),
-    browser: str = typer.Option("chrome", "--browser", help="Which browser: chrome or edge."),
+    browser: str = typer.Option(
+        "chrome", "--browser", help="Which browser: chrome, edge, brave, or opera."
+    ),
     json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
 ) -> None:
     """Register a new drivable browser (does not launch it)."""

@@ -45,6 +45,52 @@ public sealed class AutomationBrowserViewFoldTests
     }
 
     [Fact]
+    public void Fold_Checking_IsGreyAndOffersNoAction()
+    {
+        var view = AutomationBrowserViewFold.Fold(Browser(), AutomationBrowserStatus.Checking, account: null);
+
+        Assert.Equal("Checking...", view.StatusLabel);
+        Assert.Equal("grey", view.DotColor);
+        Assert.Equal("Chrome - checking...", view.Subtitle);
+
+        // The empty action is the point, not an oversight: every action a surface could offer depends
+        // on whether the browser is running, and "Start" on a browser that turns out to be running is
+        // the wrong button. A surface reads empty as "offer nothing yet".
+        Assert.Equal("", view.ActionLabel);
+    }
+
+    [Fact]
+    public void Fold_Checking_StillCarriesEverythingThatCostsNoProbe()
+    {
+        // The whole reason this status exists: a surface can paint the row in full - name, browser,
+        // port, account, attach command - and wait only for the one fact that is slow.
+        var view = AutomationBrowserViewFold.Fold(Browser(), AutomationBrowserStatus.Checking, "soren@centerconsulting.com");
+
+        Assert.Equal("center-consulting", view.Id);
+        Assert.Equal("Center Consulting", view.Name);
+        Assert.Equal("Chrome", view.Browser);
+        Assert.Equal(9310, view.Port);
+        Assert.Equal("soren@centerconsulting.com", view.Account);
+        Assert.Equal("Chrome - soren@centerconsulting.com", view.Subtitle);
+        Assert.Contains("center-consulting", view.AttachCommand);
+    }
+
+    [Fact]
+    public void EveryStatus_FoldsWithoutThrowing()
+    {
+        // The three display switches throw on an unhandled status, so a status added without a display
+        // decision takes the whole list down at render time rather than at build time. This is the
+        // build-time catch.
+        foreach (var status in Enum.GetValues<AutomationBrowserStatus>())
+        {
+            var view = AutomationBrowserViewFold.Fold(Browser(), status, account: null);
+            Assert.False(string.IsNullOrWhiteSpace(view.StatusLabel));
+            Assert.False(string.IsNullOrWhiteSpace(view.DotColor));
+            Assert.False(string.IsNullOrWhiteSpace(view.Subtitle));
+        }
+    }
+
+    [Fact]
     public void Fold_Stopped_IsGreyStart()
     {
         var view = AutomationBrowserViewFold.Fold(Browser(BrowserKind.Edge), AutomationBrowserStatus.Stopped, account: null);
