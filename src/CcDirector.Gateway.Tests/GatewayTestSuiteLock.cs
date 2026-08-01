@@ -121,6 +121,80 @@ internal static class GatewayTestSuiteLock
     /// <summary>Exit code used when the lock location itself is unusable - a setup failure, not contention.</summary>
     internal const int SetupFailureExitCode = 98;
 
+    /// <summary>
+    /// The qualification bypass (issue #1156 step 4). The soak that qualifies removing this lock has to run
+    /// several ordinary suite processes CONCURRENTLY - the very thing the lock forbids - so the
+    /// qualification script, and only it, asks for a bypass by setting this variable to
+    /// <see cref="QualificationToken"/> in each child process it launches.
+    /// </summary>
+    internal const string QualificationEnvVar = "CC_GATEWAY_TEST_LOCK_QUALIFICATION";
+
+    /// <summary>
+    /// The exact value <see cref="QualificationEnvVar"/> must carry. A specific sentence rather than "1",
+    /// so a stray truthy value copied between shells cannot silently disable the lock.
+    /// </summary>
+    internal const string QualificationToken = "isolated-worktree-soak";
+
+    /// <summary>
+    /// The live-proof connection variables the bypass fails CLOSED on. The stats write-path proofs point at
+    /// one named database rather than deriving a per-run one, and the gateway-database live proofs use the
+    /// production variable outright - two qualification processes sharing either would corrupt each other
+    /// and report failures nobody caused, which is precisely the false evidence a soak must never produce.
+    /// The qualification script clears these for its children; this check is what makes forgetting that a
+    /// loud stop instead of a quiet lie.
+    /// </summary>
+    internal static readonly string[] LiveProofEnvVars =
+    {
+        "CC_GATEWAY_TEST_PG_CONNECTION",
+        "CC_GATEWAY_TEST_PG_STATS_CONNECTION",
+        "CC_GATEWAY_DB_CONNECTION",
+    };
+
+    /// <summary>True when this run was admitted through the qualification bypass rather than the lock.
+    /// The two lock-behaviour tests read it: the serialization property is DELIBERATELY suspended in a
+    /// qualification run, and they assert that state rather than false-failing the soak.</summary>
+    internal static bool QualificationBypassActive { get; private set; }
+
+    /// <summary>How the run may proceed, ruled from values alone so both branches are unit-testable.</summary>
+    internal enum QualificationRuling
+    {
+        /// <summary>No bypass requested: take the lock as always.</summary>
+        NotRequested,
+
+        /// <summary>Requested with the exact token and no live-proof variable set: run without the lock.</summary>
+        Bypass,
+
+        /// <summary>Requested while a live-proof variable is set: stop the process, run nothing.</summary>
+        RefuseLiveProof,
+
+        /// <summary>The variable is set but carries the wrong value. Stop the process: silently taking the
+        /// locked path instead would serialize the whole soak, and thousands of "clean" host starts that
+        /// never actually overlapped would certify nothing while looking like proof.</summary>
+        RefuseWrongToken,
+    }
+
+    /// <summary>
+    /// Pure ruling over the qualification request - reads nothing ambient, so a test can hand it every
+    /// combination without mutating process state (the same rule <see cref="ComputeLockFilePath"/> follows).
+    /// </summary>
+    internal static QualificationRuling RuleOnQualification(
+        string? qualificationValue, IReadOnlyList<(string Name, string? Value)> liveProofValues)
+    {
+        if (string.IsNullOrWhiteSpace(qualificationValue))
+            return QualificationRuling.NotRequested;
+
+        if (!string.Equals(qualificationValue, QualificationToken, StringComparison.Ordinal))
+            return QualificationRuling.RefuseWrongToken;
+
+        foreach (var (_, value) in liveProofValues)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+                return QualificationRuling.RefuseLiveProof;
+        }
+
+        return QualificationRuling.Bypass;
+    }
+
     /// <summary>The file name every run of this assembly contends for, whatever working tree it was built
     /// from.</summary>
     private const string LockFileName = "gateway-test-suite.lock";
@@ -230,6 +304,45 @@ internal static class GatewayTestSuiteLock
     [ModuleInitializer]
     internal static void Acquire()
     {
+        var liveProofValues = new (string Name, string? Value)[LiveProofEnvVars.Length];
+        for (var i = 0; i < LiveProofEnvVars.Length; i++)
+            liveProofValues[i] = (LiveProofEnvVars[i], Environment.GetEnvironmentVariable(LiveProofEnvVars[i]));
+
+        switch (RuleOnQualification(Environment.GetEnvironmentVariable(QualificationEnvVar), liveProofValues))
+        {
+            case QualificationRuling.Bypass:
+                QualificationBypassActive = true;
+                Say($"[gateway-test-lock] QUALIFICATION BYPASS (issue #1156 step 4): this run was launched "
+                    + $"by the qualification script and runs WITHOUT the per-user lock, concurrently with "
+                    + $"its sibling processes, to qualify removing the lock. pid {Environment.ProcessId}. "
+                    + $"If you are seeing this outside scripts/test-qualification.ps1, unset "
+                    + $"{QualificationEnvVar} - an ordinary run must never bypass the lock.");
+                return;
+
+            case QualificationRuling.RefuseLiveProof:
+                var offending = string.Join(", ", Array.ConvertAll(
+                    Array.FindAll(liveProofValues, v => !string.IsNullOrWhiteSpace(v.Value)), v => v.Name));
+                Say($"[gateway-test-lock] *** QUALIFICATION REFUSED. {QualificationEnvVar} is set, but a "
+                    + $"live-proof connection variable is also set ({offending}). Concurrent qualification "
+                    + $"processes sharing a live database corrupt each other and produce false soak "
+                    + $"evidence. NO TESTS WILL RUN. Clear those variables in the qualification children "
+                    + $"and run again. ***");
+                Console.Out.Flush();
+                Console.Error.Flush();
+                Environment.Exit(SetupFailureExitCode);
+                return;
+
+            case QualificationRuling.RefuseWrongToken:
+                Say($"[gateway-test-lock] *** QUALIFICATION REFUSED. {QualificationEnvVar} is set but does "
+                    + $"not carry the exact token '{QualificationToken}'. Falling back to the locked path "
+                    + $"would silently serialize the soak and certify nothing, so NO TESTS WILL RUN. Fix "
+                    + $"the value or unset the variable. ***");
+                Console.Out.Flush();
+                Console.Error.Flush();
+                Environment.Exit(SetupFailureExitCode);
+                return;
+        }
+
         var started = DateTime.UtcNow;
         var lastProgress = DateTime.MinValue;
         var announcedWait = false;
