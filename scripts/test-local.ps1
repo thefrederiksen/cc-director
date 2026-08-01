@@ -20,6 +20,11 @@
        improvement without being told. A convention that each caller re-implements cannot be improved
        centrally - which is the same argument GatewayTestSuiteLock makes about acquisition being automatic.
 
+    EVERY RUN WRITES A TRX FILE AND PRINTS ITS OUTCOME AND TEST COUNT. That pair, not the console
+    "Passed!" line, is the verdict - see the comment above the run loop for why. The TRX files are kept
+    after a green run as well as a red one, because a green with a collapsed count is the result most
+    worth being able to go back and check.
+
 .PARAMETER Gateway
     Run ONLY the Gateway suite. Use when the change is Gateway-side and you want its answer first.
 
@@ -80,12 +85,25 @@ New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 $filterArgs = @()
 if ($Filter -ne "") { $filterArgs = @("--filter", $Filter) }
 
-# Start every project at once. The Gateway suite may sit in its own queue; the others do not wait for it.
+# WHY EVERY RUN WRITES A TRX FILE, AND WHY THE CONSOLE SUMMARY BELOW IS NOT THE VERDICT.
+#
+# "Passed! - Failed: 0" is printed by a run that passed everything it managed to START. When a test host
+# crashes part way through, the surviving processes still print that line, with a smaller count that
+# nobody looks at - which has already very nearly certified a change that silently stopped 1,340 tests
+# from running. A green with a collapsed count is the most dangerous result this script can produce,
+# because it is indistinguishable from a real green at a glance.
+#
+# The TRX file carries the two things that make the difference checkable: ResultSummary/@outcome, which
+# says whether the run COMPLETED rather than merely whether its assertions passed, and Counters/@total,
+# which says how many tests there were. Judge a run by those two against a recorded baseline, never by
+# the console line. scripts/test-qualification.ps1 already judges its soak this way.
 $running = @()
 foreach ($proj in $toRun) {
     $name = Split-Path -Leaf ([System.IO.Path]::GetDirectoryName((Join-Path $repoRoot $proj)))
     $out = Join-Path $logDir "$name.log"
-    $args = @("test", (Join-Path $repoRoot $proj), "--no-build", "-c", $Configuration, "--nologo", "-v", "q") + $filterArgs
+    $trx = Join-Path $logDir "$name.trx"
+    $args = @("test", (Join-Path $repoRoot $proj), "--no-build", "-c", $Configuration, "--nologo", "-v", "q",
+              "--logger", "trx;LogFileName=$name.trx", "--results-directory", $logDir) + $filterArgs
     $p = Start-Process -FilePath "dotnet" -ArgumentList $args -NoNewWindow -PassThru `
                        -RedirectStandardOutput $out -RedirectStandardError "$out.err"
 
@@ -97,7 +115,7 @@ foreach ($proj in $toRun) {
     # than no gate: it trains everyone to ignore it, or to go and wait fifty minutes for CI.
     $null = $p.Handle
 
-    $running += [pscustomobject]@{ Name = $name; Process = $p; Log = $out }
+    $running += [pscustomobject]@{ Name = $name; Process = $p; Log = $out; Trx = $trx }
     Write-Host "  started $name"
 }
 
@@ -116,6 +134,17 @@ foreach ($r in $running) {
     }
     if ($null -eq $summary -or $summary -eq "") { $summary = "(no summary line - see $($r.Log))" }
 
+    # The authoritative pair, read from the TRX rather than from the console line above.
+    $outcome = "NO-TRX"
+    $total = 0
+    if (Test-Path $r.Trx) {
+        [xml] $doc = Get-Content $r.Trx -Raw
+        $outcome = [string] $doc.TestRun.ResultSummary.outcome
+        $total = [int] $doc.TestRun.ResultSummary.Counters.total
+    }
+    $r | Add-Member -NotePropertyName Outcome -NotePropertyValue $outcome
+    $r | Add-Member -NotePropertyName Total -NotePropertyValue $total
+
     if ($r.Process.ExitCode -eq 0) {
         Write-Host ("  PASS  {0}  {1}" -f $r.Name, $summary.Trim())
     } else {
@@ -125,9 +154,17 @@ foreach ($r in $running) {
 }
 
 Write-Host ""
+Write-Host "TRX verdict - THIS is the gate. Outcome must be 'Completed' AND total at or above the baseline:"
+foreach ($r in $running) {
+    Write-Host ("  {0,-40} outcome={1,-12} total={2}" -f $r.Name, $r.Outcome, $r.Total)
+}
+Write-Host ""
+Write-Host "TRX files: $logDir"
+Write-Host ""
+
 if ($failed.Count -eq 0) {
-    Write-Host "RESULT: ALL GREEN. This is the gate - you do not need to wait for GitHub CI to merge."
-    Remove-Item -Recurse -Force $logDir -ErrorAction SilentlyContinue
+    Write-Host "RESULT: all projects exited zero. Check the TRX outcome and totals above before calling it green."
+    Write-Host "This is the gate - you do not need to wait for GitHub CI to merge."
     exit 0
 }
 
