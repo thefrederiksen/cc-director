@@ -77,36 +77,38 @@ So the Architect has ruled that W1's gate additionally requires **the six hosted
 TRX as EXECUTED and passed, with the PostgreSQL rig up**, recorded here as evidence. A skipped fact does
 not gate this work.
 
-## W1's gate run - GREEN, with the rig up
+## W1's FINAL gate run - GREEN, post-rebase, with the rig up
 
 Run from a clean tree rebuilt at the committed state, rig `rf` on port 55436, both connection variables
 set.
 
 | Project | Outcome | Total | vs baseline | Executed | Failed | Skipped |
 |---|---|---|---|---|---|---|
-| CcDirector.Gateway.Tests | Completed | 5166 | 5153 (+13) | 5160 | 0 | 6 |
-| CcDirector.Core.Tests | Completed | 4179 | 4179 (=) | 4171 | 0 | 8 |
+| CcDirector.Gateway.Tests | Completed | 5169 | 5153 (+16) | 5163 | 0 | 6 |
+| CcDirector.Core.Tests | Completed | 4196 | 4179 (+17, main added tests) | 4188 | 0 | 8 |
 | CcDirector.Avalonia.Tests | Completed | 353 | 353 (=) | 353 | 0 | 0 |
 | CcDirector.Launcher.Tests | Completed | 110 | 110 (=) | 110 | 0 | 0 |
 | CcDirector.HostedAgent.Tests | Completed | 88 | 88 (=) | 88 | 0 | 0 |
 | CcDirector.Engine.Tests | Completed | 63 | 63 (=) | 63 | 0 | 0 |
 | CcDirector.Terminal.Avalonia.Tests | Completed | 24 | 24 (=) | 24 | 0 | 0 |
 
-**The number that matters is EXECUTED, not total.** The Gateway suite executed 5160 against the
-baseline's 5113 - forty-seven more tests actually ran - because the baseline run had no rig and skipped
-every PostgreSQL-gated fact. Skips fell from 40 to 6. A gate that only compared totals would have
-called +13 a curiosity; the executed count is what shows the hosted work was exercised at all.
+**The number that matters is EXECUTED, not total.** The Gateway suite executed 5163 against the
+baseline's 5113 - FIFTY more tests actually ran - because the baseline run had no rig and skipped every
+PostgreSQL-gated fact. Skips fell from 40 to 6. A gate that only compared totals would have shrugged at
++16; the executed count is what shows the hosted work was exercised at all.
 
 **The hosted facts EXECUTED rather than skipped**, which is the whole point of the stronger gate:
 
 - 8 in `HostedStatsServeTests` - serve from PostgreSQL, the production-ingress round trip, a real
   concurrency number, tenant isolation, the two refusals, and the page redirect.
-- 3 in `HostedSchemaRefusesAnUnownedRowTests` - omitted tenant refused, empty tenant refused, and the
-  control proving an owned row is still stored.
-- 7 in `StatisticsFailureIsContainedOnTheHotPathTests` - three containment facts, three uncontained
-  controls, and the log assertion.
+- 5 in `HostedSchemaRefusesAnUnownedRowTests` - omitted tenant refused, empty refused, all-whitespace
+  refused, tab/newline/mixed refused, and the control proving an owned row is still stored.
+- 7 in `StatisticsFailureIsContainedOnTheHotPathTests` - three containment facts (roster, hub push, hub
+  remove), three uncontained controls, and the log assertion.
+- 1 in `ALateStatisticsStoreReachesTheRosterTests` - a store published AFTER route mapping still records
+  from the roster.
 
-All eighteen passed.
+All twenty-one passed.
 
 **The 6 remaining Gateway skips are unrelated to this work** and are named here so nobody has to guess:
 five live main-database proofs waiting on `CC_GATEWAY_DB_CONNECTION` (a different variable from the
