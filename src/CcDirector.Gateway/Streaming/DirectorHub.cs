@@ -214,7 +214,17 @@ public sealed class DirectorHub : Hub
         var accepted = _store.ApplySnapshot(RequireBoundTenant(), directorId, Context.ConnectionId, sequence, set);
         // DevThrottle Stats: fold each session's input tally into the always-available aggregate, under this
         // connection's bound tenant (MTR-08) so one account's tallies never coalesce with another's.
-        _inputStats?.ObserveSnapshot(set, tenant: RequireBoundTenant());
+        //
+        // CONTAINED (failure review M2), and this is the call site where containment matters most: the store
+        // mutation ABOVE has already committed by the time the fold runs, so a statistics failure escaping
+        // here would fail the invocation AFTER part of the operation had succeeded - the Director would be
+        // told its push failed when its sessions had in fact landed. Contained, never swallowed.
+        if (_inputStats is not null)
+        {
+            var boundTenant = RequireBoundTenant();
+            Stats.StatsObservation.Contain(_inputStats.Health, "DirectorHub.PushSnapshot",
+                () => _inputStats.ObserveSnapshot(set, tenant: boundTenant));
+        }
         // A push the store REJECTED (from a superseded connection, or a stale sequence) is NOT authoritative,
         // so it must not drive the snooze observer - whose edges MUTATE the authoritative registry
         // (ClearIfArmed deletes an armed snooze, Land converts a deferral). A rejected stale Working push
@@ -270,8 +280,14 @@ public sealed class DirectorHub : Hub
         using var tenantScope = EnterBoundTenantScope();
         var accepted = _store.ApplyDelta(RequireBoundTenant(), directorId, Context.ConnectionId, sequence, session);
         // DevThrottle Stats: fold this session's tally into the always-available aggregate, under this
-        // connection's bound tenant (MTR-08).
-        _inputStats?.Observe(session, tenant: RequireBoundTenant());
+        // connection's bound tenant (MTR-08). Contained for the same reason as PushSnapshot above - the
+        // delta has already been applied to the store by this line.
+        if (_inputStats is not null)
+        {
+            var boundTenant = RequireBoundTenant();
+            Stats.StatsObservation.Contain(_inputStats.Health, "DirectorHub.PushDelta",
+                () => _inputStats.Observe(session, tenant: boundTenant));
+        }
         // A push the store REJECTED (superseded connection, or a stale sequence) is NOT authoritative, so it
         // must not drive the snooze observer, whose edges MUTATE the authoritative registry (ClearIfArmed
         // deletes an armed snooze, Land converts a deferral). See the note in PushSnapshot. The roles/display

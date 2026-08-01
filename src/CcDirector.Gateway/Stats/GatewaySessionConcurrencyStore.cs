@@ -40,8 +40,11 @@ namespace CcDirector.Gateway.Stats;
 /// Threading: one in-process lock guards the in-memory shadow, exactly as the JSON store's lock did. It does
 /// NOT (and cannot) serialize other containers - that is what the upserts are for.
 /// </summary>
-public sealed class GatewaySessionConcurrencyStore
+public sealed class GatewaySessionConcurrencyStore : ISessionConcurrencyRecorder
 {
+    /// <inheritdoc />
+    public StatsFailureCounters Health { get; } = new("concurrency-database");
+
     private const int RetentionDays = 90;
     private const string HourFormat = "yyyy-MM-ddTHH";
 

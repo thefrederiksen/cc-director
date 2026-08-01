@@ -106,7 +106,7 @@ internal static class GatewayEndpoints
         // DevThrottle Stats: the durable fleet concurrency record. Observed from the same assembled roster
         // (live count + actively-working count), so the peak is captured fleet-wide whether stream mode is
         // on or off. Null (old callers, tests) records nothing.
-        Stats.GatewaySessionConcurrencyStats? concurrency = null,
+        Stats.ISessionConcurrencyRecorder? concurrency = null,
         // Snooze Length mission: the Gateway-owned snooze registry. POST /sessions/{sid}/hold REQUIRES it -
         // it records/clears a snooze-until here (the authoritative hold) and the /sessions fold reads it to
         // return an EXPIRED snooze to "needs you" (OnHold=false) on its own even if its Director has died.
@@ -1341,15 +1341,26 @@ internal static class GatewayEndpoints
             // and, worse, would keep reporting it on every poll for as long as the machine stayed away. The
             // stamp is the Gateway's own, set from the same freshness decision that produced the reachability
             // state above, so there is one rule and not a second staleness test here.
+            //
+            // CONTAINED (failure review M2). The fold runs inline on the request thread, so a statistics
+            // write failure used to leave this route - the roster is fully assembled by this line, and it
+            // would still answer 500. Statistics are a background concern and must not be able to break the
+            // path every client polls. Contained, never swallowed: see StatsObservation.
             var live = all.Where(s => confirmedLive.Contains(s.SessionId)).ToList();
-            inputStats?.ObserveSnapshot(live, DateTime.UtcNow, reqTenant.Value);
+            if (inputStats is not null)
+                Stats.StatsObservation.Contain(inputStats.Health, "GET /sessions roster fold",
+                    () => inputStats.ObserveSnapshot(live, DateTime.UtcNow, reqTenant.Value));
 
             // DevThrottle Stats: record fleet concurrency and the hourly activity log from the same
             // assembled roster - max concurrent loaded/running (live) and actively working, plus how many
             // distinct sessions/machines/repositories ran each hour. Per-tenant with no per-Director
             // instrumentation, since the roster already sees this tenant's sessions on every machine. The
             // tracker keeps only the higher value per hour, so folding on every /sessions read never inflates.
-            concurrency?.Observe(live, DateTime.UtcNow, reqTenant.Value);
+            // Contained for the same reason as the fold above, and separately from it: two observers, two
+            // sets of counters, so a log line and a failure count name which one is failing.
+            if (concurrency is not null)
+                Stats.StatsObservation.Contain(concurrency.Health, "GET /sessions concurrency observation",
+                    () => concurrency.Observe(live, DateTime.UtcNow, reqTenant.Value));
 
             // Issue #1292: adopt every observed number into the allocator's in-use set. This is how the
             // Gateway learns numbers it did not hand out - a number a Director assigned offline, or any

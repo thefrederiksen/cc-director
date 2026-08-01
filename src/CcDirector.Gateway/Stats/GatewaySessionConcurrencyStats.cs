@@ -34,8 +34,11 @@ namespace CcDirector.Gateway.Stats;
 /// and the on-disk shape is the same numbers it always held, now under one tenant key. The dashboard that
 /// reads a snapshot is refused in whole on hosted (issue #1848), so a reader here only ever runs for Local.
 /// </summary>
-public sealed class GatewaySessionConcurrencyStats
+public sealed class GatewaySessionConcurrencyStats : ISessionConcurrencyRecorder
 {
+    /// <inheritdoc />
+    public StatsFailureCounters Health { get; } = new("concurrency-json");
+
     private static readonly JsonSerializerOptions FileJsonOptions = new() { WriteIndented = true };
     private const int RetentionDays = 90;
     private const string HourFormat = "yyyy-MM-ddTHH";

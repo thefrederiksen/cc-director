@@ -3,7 +3,6 @@ using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Stats.Data;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
 namespace CcDirector.Gateway.Stats;
@@ -61,7 +60,12 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     private const string HourFormat = StatsHourKey.Format;
     private const string AgentsSinceKey = GatewayStatsAggregatorKeys.AgentsSince;
 
-    private readonly GatewayStatsDatabase _db;
+    // The self-host file, or NULL on hosted. Null is not a degraded state here: it says this aggregator was
+    // built over a context factory rather than over a local database, which is the hosted shape. Everything
+    // that reads or writes goes through _contexts either way; this field exists only for the two things that
+    // are genuinely about a FILE - retiring the legacy JSON document beside it, and naming the path in the
+    // startup log.
+    private readonly GatewayStatsDatabase? _db;
     private readonly bool _ownsDatabase;
     private readonly object _lock = new();
 
@@ -75,6 +79,12 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     // upsert on every high-water and membership write - see GatewayStatsWriter for why that is not
     // negotiable.
     private readonly GatewayStatsWriter _writer;
+
+    /// <summary>This aggregator's own health counters, which the hot-path call sites record a contained
+    /// failure on - see <see cref="StatsObservation"/>. This type does NOT contain its own failures: an
+    /// observation that cannot be stored still throws to its caller, and the caller decides whether that is
+    /// fatal to it. The roster read and the tunnel push decide it is not.</summary>
+    public StatsFailureCounters Health { get; } = new("input-stats");
 
     // ---- The mirror. Membership and identity ONLY - never a tally (Decision 6). ----
     //
@@ -141,16 +151,15 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     // not a per-tenant statistic, so it stays a single value read tenant-agnostically.
     private string _modelsSinceUtc = "";
 
-    /// <summary>Statements executed through the RAW helpers at the bottom of this file - the fold path, and
-    /// the startup mirror load. The seam acceptance criterion 3 measures: an IDLE poll must not move this at
-    /// all, and a fold must move it by an amount bounded by what CHANGED, never by how much history is stored.
-    /// Both of those claims are about the fold, and both still hold.
+    /// <summary>Statements executed through the raw helpers that used to sit at the bottom of this file.
+    /// PERMANENTLY ZERO: those helpers are gone (issue #1174 - see the note where they were), because a
+    /// SQLite command builder cannot serve a hosted Gateway that has no SQLite connection.
     ///
-    /// IT IS NOT A COUNT OF TOTAL DATABASE TRAFFIC, and the name says "raw" so that nobody reads it as one.
-    /// The twelve read projections, the two mirror joins and the two since-stamps now execute through Entity
-    /// Framework, which does not pass through these helpers and is not counted here. A counter documenting a
-    /// guarantee it does not provide is worse than no counter, so this one claims only the path it sees.</summary>
-    internal long RawStatementsExecuted { get; private set; }
+    /// It is kept, at zero, rather than deleted, because <see cref="StatementsExecuted"/> is the sum and the
+    /// term being visibly zero is the honest statement that the raw path executed nothing. It was never a
+    /// count of total database traffic - the read projections, the mirror load and the since-stamps all
+    /// execute through Entity Framework and were never counted here.</summary>
+    internal long RawStatementsExecuted => 0;
 
     /// <summary>Every statement executed against the database, reads here plus every write the
     /// <see cref="GatewayStatsWriter"/> made. The seam acceptance criterion 3 measures it: an IDLE poll must
@@ -242,13 +251,41 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     {
     }
 
+    /// <summary>
+    /// THE HOSTED CONSTRUCTOR (issue #1174). Takes the context factory the statistics store published -
+    /// pooled Npgsql on hosted - and holds NO file and NO connection of its own.
+    ///
+    /// This is the constructor that makes <c>/stats</c> and <c>/stats/data</c> answer on a hosted Gateway.
+    /// Before it existed the only way to build this type was over a SQLite file, and a hosted Gateway never
+    /// opens one by design, so the read path had nothing to read and the two routes answered a named 503
+    /// however healthy the PostgreSQL store was. The store's own remarks call that out; this closes it.
+    ///
+    /// Everything below this line behaves identically on both providers because everything below this line
+    /// goes through <see cref="_contexts"/>. There is no self-host branch inside this class and there must
+    /// not become one: the difference between the deployments is WHICH FACTORY the caller passes, decided
+    /// once at construction, and that is the whole difference.
+    ///
+    /// There is no legacy-JSON retirement on this path. That step renames a file beside the SQLite database,
+    /// and a hosted Gateway has neither the file nor the directory - running it would be looking for a
+    /// self-host artifact in a place it cannot exist.
+    /// </summary>
+    /// <param name="contexts">The statistics context factory, from <c>GatewayStatsStore.Factory</c>. The
+    /// caller keeps ownership of whatever is underneath it.</param>
+    public GatewayInputStatsAggregator(IDbContextFactory<GatewayStatsDbContext> contexts)
+    {
+        _db = null;
+        _ownsDatabase = false;
+        _contexts = contexts ?? throw new ArgumentNullException(nameof(contexts));
+        _writer = new GatewayStatsWriter(_contexts);
+        LoadMirror();
+    }
+
     private GatewayInputStatsAggregator(GatewayStatsDatabase database, bool ownsDatabase)
     {
         _db = database;
         _ownsDatabase = ownsDatabase;
-        // The reads run on Entity Framework over the SAME open connection this database owns. Provider
-        // selection is worker 6's; until it lands the only store handed to this type is the SQLite one, so
-        // that is what the reads are pointed at - one store, named once, never chosen at read time.
+        // The reads run on Entity Framework over the SAME open connection this database owns - the self-host
+        // arm of the provider choice the hosted constructor above makes the other way.
         _contexts = new GatewayStatsSqliteContextFactory(database.Connection);
         // The write path runs on Entity Framework over the SAME open file this class reads through, so the
         // self-host store keeps its single connection and its single writer while the statements that touch
@@ -266,6 +303,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     // marker to strand.
     private void RetireLegacyJsonStore()
     {
+        if (_db is null) return;
         var legacy = Path.Combine(Path.GetDirectoryName(_db.Path) ?? CcStorage.Root(), "gateway-input-stats.json");
         if (!File.Exists(legacy)) return;
 
@@ -283,46 +321,73 @@ public sealed class GatewayInputStatsAggregator : IDisposable
             // Every row carries its owning tenant (MTR-08), so the mirror is rebuilt per tenant - exactly the
             // partition that was written. A surrogate id lands in the flat id->display map (ids are globally
             // unique) AND in its tenant's display->id map.
-            Read("SELECT tenant, session_id, modality, surface, turns, chars, generation FROM session_highwater", r =>
+            //
+            // THESE TEN READS WERE RAW SQLite STATEMENTS AND ARE NOW ENTITY FRAMEWORK, for one reason: the
+            // hosted Gateway has no SQLite connection to run them on. A mirror that can only be loaded from a
+            // file is a read path that can only serve self-host, which is exactly the state issue #1174
+            // describes. Same tables, same columns, same order; the provider is now whatever the caller's
+            // context factory is pointed at.
+            using (var db = _contexts.CreateDbContext())
             {
-                var key = (new TenantId(r.GetString(0)), r.GetString(1));
-                if (!_highWater.TryGetValue(key, out var hw))
+                foreach (var row in db.SessionHighwater
+                             .Select(h => new { h.Tenant, h.SessionId, h.Modality, h.Surface, h.Turns, h.Chars, h.Generation }))
                 {
-                    hw = new Dictionary<(string, string), Counters>();
-                    _highWater[key] = hw;
+                    var key = (new TenantId(row.Tenant), row.SessionId);
+                    if (!_highWater.TryGetValue(key, out var hw))
+                    {
+                        hw = new Dictionary<(string, string), Counters>();
+                        _highWater[key] = hw;
+                    }
+                    hw[(row.Modality, row.Surface)] = new Counters { Turns = row.Turns, Characters = row.Chars, Generation = row.Generation };
                 }
-                hw[(r.GetString(2), r.GetString(3))] = new Counters { Turns = r.GetInt64(4), Characters = r.GetInt64(5), Generation = r.GetInt64(6) };
-            });
-            Read("SELECT tenant, session_id, turns, chars, generation FROM agent_driven_highwater",
-                r => _agentDrivenHighWater[(new TenantId(r.GetString(0)), r.GetString(1))] = new Counters { Turns = r.GetInt64(2), Characters = r.GetInt64(3), Generation = r.GetInt64(4) });
-            Read("SELECT tenant, session_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, generation FROM token_highwater",
-                r => _tokenHighWater[(new TenantId(r.GetString(0)), r.GetString(1))] = new TokenCounters
+
+                foreach (var row in db.AgentDrivenHighwater
+                             .Select(h => new { h.Tenant, h.SessionId, h.Turns, h.Chars, h.Generation }))
+                    _agentDrivenHighWater[(new TenantId(row.Tenant), row.SessionId)] =
+                        new Counters { Turns = row.Turns, Characters = row.Chars, Generation = row.Generation };
+
+                foreach (var row in db.TokenHighwater
+                             .Select(h => new
+                             {
+                                 h.Tenant, h.SessionId, h.InputTokens, h.OutputTokens,
+                                 h.CacheReadTokens, h.CacheCreationTokens, h.Generation,
+                             }))
+                    _tokenHighWater[(new TenantId(row.Tenant), row.SessionId)] = new TokenCounters
+                    {
+                        Input = row.InputTokens, Output = row.OutputTokens, CacheRead = row.CacheReadTokens,
+                        CacheCreation = row.CacheCreationTokens, Generation = row.Generation,
+                    };
+
+                foreach (var row in db.WingmanSessions.Select(w => new { w.Tenant, w.SessionId }))
+                    _wingmanSessions.Add((new TenantId(row.Tenant), row.SessionId));
+
+                foreach (var row in db.AgentsSeeded.Select(a => new { a.Tenant, a.SessionId }))
+                    _agentsSeeded.Add((new TenantId(row.Tenant), row.SessionId));
+
+                foreach (var row in db.RepoIdentities.Select(i => new { i.Tenant, i.RepoId, i.RepoDisplay }))
                 {
-                    Input = r.GetInt64(2), Output = r.GetInt64(3), CacheRead = r.GetInt64(4), CacheCreation = r.GetInt64(5),
-                    Generation = r.GetInt64(6),
-                });
-            Read("SELECT tenant, session_id FROM wingman_session", r => _wingmanSessions.Add((new TenantId(r.GetString(0)), r.GetString(1))));
-            Read("SELECT tenant, session_id FROM agents_seeded", r => _agentsSeeded.Add((new TenantId(r.GetString(0)), r.GetString(1))));
-            Read("SELECT tenant, repo_id, repo_display FROM repo_identity", r =>
-            {
-                var t = new TenantId(r.GetString(0)); var id = r.GetInt64(1); var d = r.GetString(2);
-                IdsFor(t, IdentityKind.Repo)[d] = id; _repoDisplay[id] = d;
-            });
-            Read("SELECT tenant, agent_id, agent_display FROM agent_identity", r =>
-            {
-                var t = new TenantId(r.GetString(0)); var id = r.GetInt64(1); var d = r.GetString(2);
-                IdsFor(t, IdentityKind.Agent)[d] = id; _agentDisplay[id] = d;
-            });
-            Read("SELECT tenant, model_id, model_display FROM model_identity", r =>
-            {
-                var t = new TenantId(r.GetString(0)); var id = r.GetInt64(1); var d = r.GetString(2);
-                IdsFor(t, IdentityKind.Model)[d] = id; _modelDisplay[id] = d;
-            });
-            Read("SELECT tenant, checkout_id, checkout_display FROM checkout_identity", r =>
-            {
-                var t = new TenantId(r.GetString(0)); var id = r.GetInt64(1); var d = r.GetString(2);
-                IdsFor(t, IdentityKind.Checkout)[d] = id; _checkoutDisplay[id] = d;
-            });
+                    IdsFor(new TenantId(row.Tenant), IdentityKind.Repo)[row.RepoDisplay] = row.RepoId;
+                    _repoDisplay[row.RepoId] = row.RepoDisplay;
+                }
+
+                foreach (var row in db.AgentIdentities.Select(i => new { i.Tenant, i.AgentId, i.AgentDisplay }))
+                {
+                    IdsFor(new TenantId(row.Tenant), IdentityKind.Agent)[row.AgentDisplay] = row.AgentId;
+                    _agentDisplay[row.AgentId] = row.AgentDisplay;
+                }
+
+                foreach (var row in db.ModelIdentities.Select(i => new { i.Tenant, i.ModelId, i.ModelDisplay }))
+                {
+                    IdsFor(new TenantId(row.Tenant), IdentityKind.Model)[row.ModelDisplay] = row.ModelId;
+                    _modelDisplay[row.ModelId] = row.ModelDisplay;
+                }
+
+                foreach (var row in db.CheckoutIdentities.Select(i => new { i.Tenant, i.CheckoutId, i.CheckoutDisplay }))
+                {
+                    IdsFor(new TenantId(row.Tenant), IdentityKind.Checkout)[row.CheckoutDisplay] = row.CheckoutId;
+                    _checkoutDisplay[row.CheckoutId] = row.CheckoutDisplay;
+                }
+            }
             // repo_session and agent_session carry NO tenant column at schema version 5 - they are partitioned
             // indirectly, through a surrogate id minted per tenant. So the tenant the mirror key needs comes
             // from the identity table the id belongs to, by an explicit join: it is read FROM THE DATA, not
@@ -380,7 +445,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                           $"{_wingmanSessions.Count} wingman session(s), {_repoDisplay.Count} repo(s), {_agentDisplay.Count} agent(s), " +
                           $"{_modelDisplay.Count} model(s), {_checkoutDisplay.Count} checkout(s), {_agentsSeeded.Count} seeded, " +
                           $"{_agentsSinceUtc.Count} tenant(s) with an agents-since stamp, " +
-                          $"modelsSince='{_modelsSinceUtc}' from {_db.Path}");
+                          $"modelsSince='{_modelsSinceUtc}' from {_db?.Path ?? "the statistics store's context factory (hosted)"}");
         }
     }
 
@@ -1331,51 +1396,19 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     private static string HourKey(DateTime utc) =>
         utc.ToUniversalTime().ToString(HourFormat, System.Globalization.CultureInfo.InvariantCulture);
 
-    // ---- Plumbing. Every statement on the RAW path passes through here, which is what makes
-    // RawStatementsExecuted honest about that path - see the property for what it does NOT count. ----
-
-    private void Execute(string sql, SqliteTransaction? tx, params (string Name, object Value)[] args)
-    {
-        using var cmd = _db.Connection.CreateCommand();
-        if (tx is not null) cmd.Transaction = tx;
-        cmd.CommandText = sql;
-        foreach (var (n, v) in args) cmd.Parameters.AddWithValue(n, v);
-        cmd.ExecuteNonQuery();
-        RawStatementsExecuted++;
-    }
-
-    // ---- Read plumbing. Every read passes through here so StatementsExecuted is honest; every WRITE goes
-    // through GatewayStatsWriter, which counts its own and is added in. ----
-
-    private long ExecuteScalarLong(string sql, SqliteTransaction? tx, params (string Name, object Value)[] args)
-    {
-        using var cmd = _db.Connection.CreateCommand();
-        if (tx is not null) cmd.Transaction = tx;
-        cmd.CommandText = sql;
-        foreach (var (n, v) in args) cmd.Parameters.AddWithValue(n, v);
-        var result = cmd.ExecuteScalar();
-        RawStatementsExecuted++;
-        return result is null or DBNull ? 0 : Convert.ToInt64(result);
-    }
-
-    private void Read(string sql, Action<SqliteDataReader> onRow, params (string Name, object Value)[] args)
-    {
-        using var cmd = _db.Connection.CreateCommand();
-        cmd.CommandText = sql;
-        foreach (var (n, v) in args) cmd.Parameters.AddWithValue(n, v);
-        using var reader = cmd.ExecuteReader();
-        RawStatementsExecuted++;
-        while (reader.Read()) onRow(reader);
-    }
-
-    private string? ReadScalarString(string sql, params (string Name, object Value)[] args)
-    {
-        using var cmd = _db.Connection.CreateCommand();
-        cmd.CommandText = sql;
-        foreach (var (n, v) in args) cmd.Parameters.AddWithValue(n, v);
-        RawStatementsExecuted++;
-        return cmd.ExecuteScalar() as string;
-    }
+    // ---- Plumbing. THERE IS NO RAW PATH LEFT. ----
+    //
+    // Four helpers used to live here - Execute, ExecuteScalarLong, Read and ReadScalarString - each building
+    // a SqliteCommand on the connection GatewayStatsDatabase owns. Three had already lost their last caller
+    // when the writer took the write path; the fourth, Read, served LoadMirror and is now Entity Framework
+    // like every other read in this class. They are DELETED rather than left in place because a
+    // SqliteCommand helper sitting in a provider-neutral type is an invitation: the next read that is a
+    // little awkward to express gets written against it, and the hosted Gateway - which has no SQLite
+    // connection at all - gets a NullReferenceException at the one moment it is asked for statistics.
+    //
+    // RawStatementsExecuted therefore stays at zero for the process lifetime and is kept, at zero,
+    // deliberately: StatementsExecuted is what the write-path tests count, and it is the sum, so leaving the
+    // term visible says "the raw path executed nothing" rather than hiding that there ever was one.
 
     public void Dispose()
     {

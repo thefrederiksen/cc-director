@@ -126,7 +126,7 @@ public static class StatsPageEndpoint
         // over the SingleTenantContext, which always resolves the single Local tenant; on hosted it resolves
         // the authenticated device key's tenant and the route answers 403 when there is none - never Local.
         Tenancy.HostedTenantBoundary tenantBoundary,
-        GatewaySessionConcurrencyStats? concurrency = null,
+        ISessionConcurrencyRecorder? concurrency = null,
         // Issue #2017: the per-tenant settings resolver. The display time zone is read for the caller's tenant
         // (TimeZone(tenant)) instead of the process-global config. Null (older callers, tests) keeps the global
         // read, byte-identical to before.

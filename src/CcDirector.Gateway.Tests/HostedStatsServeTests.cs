@@ -10,27 +10,45 @@ using CcDirector.Core.Tenancy;
 using CcDirector.Gateway;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Stats;
+using CcDirector.Gateway.Stats.Data;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// Issue #1848 deny retirement: the DevThrottle Stats feed now SERVES the caller's own tenant on the hosted
-/// Gateway. The aggregator behind it is tenant-partitioned (MTR-08 - every map keyed by (tenant, ...)), so
-/// there is a correct per-tenant answer, and <c>GET /stats/data</c> resolves the CALLER's tenant and serves
-/// only that tenant's totals.
+/// THE HOSTED GATEWAY SERVES A TENANT ITS OWN STATISTICS, FROM POSTGRESQL (issue #1174).
 ///
-/// This is the hostile A/B proof the retirement owes, on a real HOSTED GatewayHost with TWO fully enrolled
-/// tenants and one unbound device:
-///   1. SERVE - the data route answers 200 (not the old 404 refusal) for an enrolled tenant.
-///   2. FAIL CLOSED - the SAME route answers 403 for a device whose key resolves to NO tenant, NEVER the
-///      Local partition. A request that cannot be attributed to a tenant is refused, not served a wrong one.
-///   3. ISOLATED - turns fed for tenant A are visible to A's read and INVISIBLE to B's read of the same feed.
-///      One account's repos, agents, models and token spend never reach another's.
+/// WHAT THIS FILE USED TO SAY, AND WHY IT CHANGED. These tests used to PIN the degraded state: on hosted,
+/// <c>/stats</c> and <c>/stats/data</c> answered a named 503 and served nothing, and the comments explained
+/// that the database-backed read path "has not been wired yet". They were honest about the shipped contract
+/// and they were right to be. That wiring has now landed - the read AND the write path - so the pins come
+/// out and the routes are held to what they are for.
+///
+/// IT RUNS AGAINST A REAL POSTGRESQL, NOT A FAKE, and that is the point rather than thoroughness for its own
+/// sake. What is being proved is that a hosted Gateway serves one account its own numbers and never
+/// another's; a fake store would prove that the code passes a tenant around, which is a different and much
+/// weaker claim. The whole class is gated on <c>CC_GATEWAY_TEST_PG_STATS_CONNECTION</c> - the restricted-role
+/// connection <c>scripts/pg-stats-proof-rig.ps1</c> hands out, whose grants mirror the hosted role's measured
+/// grants and no more - and reports SKIPPED when it is unset, so the ordinary run and continuous integration
+/// touch no database. Stand it up with your OWN instance and port:
+///
+///     powershell -NoProfile -File scripts\pg-stats-proof-rig.ps1 -Instance &lt;yours&gt; -Port &lt;yours&gt; -Verb up
+///
+/// The three facts, on a real HOSTED GatewayHost with TWO fully enrolled tenants and one unbound device:
+///   1. SERVE - the data route answers 200 with the caller's OWN totals, read back out of PostgreSQL.
+///   2. ISOLATED - turns fed for tenant A are visible on A's read and INVISIBLE on B's read of the same feed.
+///   3. FAIL CLOSED - a caller who cannot be attributed to a tenant is REFUSED, never served the Local
+///      partition.
+///
+/// And the law the wiring must not have broken on its way in: a hosted Gateway still opens NO local
+/// statistics file. That is asserted here too, because "serve on hosted" would be an easy thing to deliver
+/// by quietly re-enabling the file that caused the 2026-07-30 outage.
 ///
 /// Self-host is unchanged and is the control in <see cref="HostedStatsSelfHostControlTests"/> below.
 /// </summary>
@@ -38,10 +56,31 @@ namespace CcDirector.Gateway.Tests;
 public sealed class HostedStatsServeTests : IAsyncLifetime
 {
     private const string Token = "test-token-stats-serve";
+    private const string ConnectionEnvVar = "CC_GATEWAY_TEST_PG_STATS_CONNECTION";
+
+    /// <summary>Tenant A's repository. Distinctive on purpose: a leak check that greps for a common word
+    /// would pass on a body that never mentioned tenant A at all.</summary>
+    private const string TenantARepo = "thefrederiksen/alpha-only-repo";
+
+    /// <summary>A Fact that skips itself when the rig is not up, so the ordinary SQLite run is unaffected.
+    /// Skip rather than a silent pass: a green that touched no database would be a green that proves
+    /// nothing, and this is the class where that matters most.</summary>
+    private sealed class RequiresPostgresStatsFactAttribute : FactAttribute
+    {
+        public RequiresPostgresStatsFactAttribute()
+        {
+            if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(ConnectionEnvVar)))
+                Skip = $"Set {ConnectionEnvVar} (scripts\\pg-stats-proof-rig.ps1 -Verb up) to prove the hosted " +
+                       "statistics serve against real PostgreSQL.";
+        }
+    }
+
+    private static string? ConfiguredConnection => Environment.GetEnvironmentVariable(ConnectionEnvVar);
 
     private readonly string _root;
     private readonly string? _priorRoot;
     private readonly string? _priorHosted;
+    private readonly string? _priorStatsConnection;
     private readonly string _instancesDir =
         Path.Combine(Path.GetTempPath(), "cc-stats-serve-" + Guid.NewGuid().ToString("N"));
 
@@ -60,10 +99,18 @@ public sealed class HostedStatsServeTests : IAsyncLifetime
         _priorHosted = Environment.GetEnvironmentVariable("CC_GATEWAY_HOSTED");
         Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", "1");
         Assert.True(GatewayHostedMode.IsHosted);
+
+        // Point the SHIPPED selector at the rig, by the same environment variable a hosted deployment sets.
+        // Nothing here constructs a store by hand: the Gateway resolves, opens and migrates it on its own
+        // startup path, which is the path under test.
+        _priorStatsConnection = Environment.GetEnvironmentVariable(StatsConnectionSelection.StatsConnectionEnvVar);
+        Environment.SetEnvironmentVariable(StatsConnectionSelection.StatsConnectionEnvVar, ConfiguredConnection);
     }
 
     public async Task InitializeAsync()
     {
+        ResetSchema();
+
         _gateway = new GatewayHost(port: GatewayHost.OperatingSystemAssignedPort, token: Token, authEnabled: true,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
@@ -84,6 +131,27 @@ public sealed class HostedStatsServeTests : IAsyncLifetime
         _httpUnbound.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", unboundKey);
     }
 
+    /// <summary>
+    /// Drop the statistics schema so this run starts from nothing and the Gateway's own startup path
+    /// recreates it. The rig's database is long-lived on purpose, so without this a fact could pass on rows
+    /// a previous run left behind - and "tenant A sees its own numbers" is exactly the claim that inherited
+    /// rows would make look true.
+    /// </summary>
+    private static void ResetSchema()
+    {
+        var connection = ConfiguredConnection!;
+        var database = new NpgsqlConnectionStringBuilder(connection).Database ?? "";
+        if (!database.StartsWith("ccpg", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                $"Refusing to drop the statistics schema in '{database}': these tests DROP a schema, so the " +
+                $"database must be a throwaway one whose name begins with 'ccpg'. Point {ConnectionEnvVar} at " +
+                "a rig database (scripts\\pg-stats-proof-rig.ps1).");
+
+        var options = new DbContextOptionsBuilder<GatewayStatsDbContext>().UseNpgsql(connection).Options;
+        using var ctx = new GatewayStatsDbContext(options);
+        ctx.Database.ExecuteSqlRaw($"DROP SCHEMA IF EXISTS {GatewayStatsDbContext.PostgresSchema} CASCADE");
+    }
+
     private HttpClient Enrolled(string deviceId, string subject, string email, out TenantId tenant)
     {
         var key = _gateway.Devices.Register(deviceId, "MA").DeviceKey;
@@ -97,110 +165,162 @@ public sealed class HostedStatsServeTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
-        _httpA.Dispose();
-        _httpB.Dispose();
-        _httpUnbound.Dispose();
-        await _gateway.StopAsync();
+        _httpA?.Dispose();
+        _httpB?.Dispose();
+        _httpUnbound?.Dispose();
+        if (_gateway is not null) await _gateway.StopAsync();
+        Environment.SetEnvironmentVariable(StatsConnectionSelection.StatsConnectionEnvVar, _priorStatsConnection);
         Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", _priorHosted);
         Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _priorRoot);
         try { if (Directory.Exists(_instancesDir)) Directory.Delete(_instancesDir, true); } catch { /* best effort */ }
         try { if (Directory.Exists(_root)) Directory.Delete(_root, true); } catch { /* best effort */ }
     }
 
+    /// <summary>Fold a distinctive tally for one tenant through the SAME aggregator the read serves from -
+    /// the production write path, into PostgreSQL, under that tenant's partition.</summary>
+    private void Feed(TenantId tenant, string sessionId, string repo, long turns)
+    {
+        Assert.NotNull(_gateway.InputStats);
+        _gateway.InputStats!.ObserveSnapshot(new[]
+        {
+            new SessionDto
+            {
+                SessionId = sessionId,
+                Name = sessionId,
+                ActivityState = "Working",
+                RepoPath = repo,
+                InputStats = new InputStatsDto
+                {
+                    Buckets = { new InputStatBucketDto { Modality = "voice", Surface = "phone", Turns = turns, Characters = turns * 100 } },
+                },
+            },
+        }, DateTime.UtcNow, tenant);
+    }
+
     /// <summary>
-    /// THE HOSTED FEED IS UNAVAILABLE WITH A NAMED REASON - the CURRENT contract, changed by the no-SQLite
-    /// remediation, and this test says so rather than pretending otherwise.
+    /// THE WIRING ITSELF: a hosted Gateway with a healthy PostgreSQL statistics store HAS both observers -
+    /// and still opens no local statistics file.
     ///
-    /// This route used to answer 200 here, served from the file-backed aggregator (issue #1848 retired the
-    /// deny). The 2026-07-30 outage remediation then made a hosted Gateway open NO statistics file, ever, so
-    /// there is no aggregator on hosted - and the DATABASE-backed read path that replaces it has not been
-    /// wired yet. Until it is, the shipped hosted behaviour is the deliberate degraded state: 503, JSON, a
-    /// named reason, and NO data - never a vanished route (which reads as a broken deploy) and never a 200
-    /// carrying the Local partition. The serve-again wiring is tracked as its own issue; when it lands, this
-    /// test goes back to asserting 200 with the caller's own tenant totals.
+    /// Asserted before anything is served, because every fact below is meaningless if the Gateway quietly
+    /// fell back to having no statistics: it would answer the old 503 and the isolation facts would pass by
+    /// serving nobody anything.
     /// </summary>
-    [Fact]
-    public async Task The_stats_feed_on_hosted_is_unavailable_with_a_named_reason_and_serves_no_data()
+    [RequiresPostgresStatsFact]
+    public void The_hosted_gateway_has_a_database_backed_statistics_store_and_no_local_file()
     {
-        var resp = await _httpA.GetAsync("stats/data");
+        Assert.True(_gateway.StatsStore.IsAvailable);
+        Assert.NotNull(_gateway.StatsStore.Factory);
 
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, resp.StatusCode);
-        Assert.Equal("application/json", resp.Content.Headers.ContentType?.MediaType);
-        var text = await resp.Content.ReadAsStringAsync();
-        using var doc = System.Text.Json.JsonDocument.Parse(text);
-        Assert.False(doc.RootElement.GetProperty("available").GetBoolean());
-        Assert.False(string.IsNullOrWhiteSpace(doc.RootElement.GetProperty("reason").GetString()));
-        // The unavailable envelope must carry NO statistics - a 503 that leaked totals would be worse than
-        // the 200 it replaced.
-        Assert.DoesNotContain("\"buckets\"", text, StringComparison.Ordinal);
-        Assert.DoesNotContain("\"turns\"", text, StringComparison.Ordinal);
-    }
+        // Both halves. The READ path (the aggregator) and the WRITE path's concurrency recorder - the review
+        // found both unwired, and wiring only the read path would serve a tenant an empty page for ever.
+        Assert.NotNull(_gateway.InputStats);
+        Assert.NotNull(_gateway.SessionConcurrency);
+        Assert.IsType<GatewaySessionConcurrencyStore>(_gateway.SessionConcurrency);
 
-    /// <summary>The page route rides the same availability gate as the feed: on hosted, with no statistics
-    /// store wired, /stats answers the named 503 rather than vanishing or redirecting to a Cockpit page
-    /// whose feed cannot serve. The self-host redirect to /your-throttle is pinned by the self-host control
-    /// class below.</summary>
-    [Fact]
-    public async Task The_stats_page_on_hosted_answers_the_same_named_unavailable_state()
-    {
-        using var handler = new HttpClientHandler { AllowAutoRedirect = false };
-        using var raw = new HttpClient(handler) { BaseAddress = _httpA.BaseAddress };
-        raw.DefaultRequestHeaders.Authorization = _httpA.DefaultRequestHeaders.Authorization;
-        var resp = await raw.GetAsync("stats");
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, resp.StatusCode);
-        Assert.False(string.IsNullOrWhiteSpace(await resp.Content.ReadAsStringAsync()));
+        // THE LAW THE WIRING MUST NOT HAVE BROKEN. No gateway-stats.db, and no concurrency JSON document,
+        // anywhere under this Gateway's storage root.
+        var files = Directory.Exists(_root)
+            ? Directory.GetFiles(_root, "*", SearchOption.AllDirectories).Select(Path.GetFileName).ToList()
+            : new List<string?>();
+        Assert.DoesNotContain("gateway-stats.db", files);
+        Assert.DoesNotContain("gateway-concurrency-stats.json", files);
     }
 
     /// <summary>
-    /// FAIL CLOSED: the data route answers 403 for a device whose key resolves to NO tenant. Never a 200 with
-    /// the Local partition's data, and never the old 404 - a bound-but-unattributable caller is refused with
-    /// the tenant-required 403, which is the whole reason the feed is safe to serve on shared infrastructure.
+    /// SERVE: an enrolled tenant gets 200 and its OWN totals, read back out of PostgreSQL.
+    ///
+    /// The seeded numbers themselves are asserted, not merely the shape: an empty-but-well-formed payload is
+    /// what a wired-but-not-working read path produces, and it would satisfy a shape check exactly.
     /// </summary>
-    [Fact]
-    public async Task The_stats_feed_refuses_an_unresolved_tenant_with_401()
+    [RequiresPostgresStatsFact]
+    public async Task The_stats_feed_serves_an_enrolled_tenant_its_own_totals_from_postgresql()
     {
-        var resp = await _httpUnbound.GetAsync("stats/data");
-        // MTR-14B: unbound-on-hosted denied at the auth gate (401), before the route's tenant-boundary 403.
-        Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
-        var text = await resp.Content.ReadAsStringAsync();
-        Assert.DoesNotContain("\"turns\"", text, StringComparison.Ordinal);
+        Feed(_tenantA, "s-alpha", TenantARepo, turns: 7);
+
+        var resp = await _httpA.GetAsync("stats/data");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal("application/json", resp.Content.Headers.ContentType?.MediaType);
+
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        var root = doc.RootElement;
+
+        var bucket = Assert.Single(root.GetProperty("buckets").EnumerateArray());
+        Assert.Equal("voice", bucket.GetProperty("modality").GetString());
+        Assert.Equal("phone", bucket.GetProperty("surface").GetString());
+        Assert.Equal(7, bucket.GetProperty("turns").GetInt64());
+        Assert.Equal(700, bucket.GetProperty("characters").GetInt64());
+
+        var repo = Assert.Single(root.GetProperty("repos").EnumerateArray());
+        Assert.Equal("alpha-only-repo", repo.GetProperty("repoName").GetString());
+        Assert.Equal(7, repo.GetProperty("turns").GetInt64());
     }
 
-    /// <summary>Control: with no key the host-wide auth gate still refuses first, so the retirement did not
-    /// open the route to anonymous callers.</summary>
-    [Fact]
+    /// <summary>
+    /// ISOLATED: the numbers fed for tenant A are invisible to tenant B on the same feed. This is the fact
+    /// the hosted serve is only safe because of, so it is asserted in its STRONG form - A's distinctive
+    /// repository name must not appear anywhere in B's response body, and B's own totals must be empty.
+    /// </summary>
+    [RequiresPostgresStatsFact]
+    public async Task One_tenants_numbers_are_invisible_to_another_on_the_same_feed()
+    {
+        Feed(_tenantA, "s-alpha", TenantARepo, turns: 7);
+
+        // A sees them.
+        using (var a = JsonDocument.Parse(await (await _httpA.GetAsync("stats/data")).Content.ReadAsStringAsync()))
+            Assert.NotEmpty(a.RootElement.GetProperty("buckets").EnumerateArray());
+
+        // B does not - and this is a 200 that serves B's OWN (empty) partition, never a 200 carrying A's.
+        var respB = await _httpB.GetAsync("stats/data");
+        Assert.Equal(HttpStatusCode.OK, respB.StatusCode);
+        var bodyB = await respB.Content.ReadAsStringAsync();
+
+        Assert.DoesNotContain("alpha-only-repo", bodyB, StringComparison.Ordinal);
+        using var b = JsonDocument.Parse(bodyB);
+        Assert.Empty(b.RootElement.GetProperty("buckets").EnumerateArray());
+        Assert.Empty(b.RootElement.GetProperty("repos").EnumerateArray());
+    }
+
+    /// <summary>
+    /// FAIL CLOSED: a caller who cannot be attributed to a tenant is REFUSED, never served the Local
+    /// partition. The denial happens at the auth gate on hosted (MTR-14B: an unbound device key is an invalid
+    /// credential there, so 401 arrives before the route's tenant-boundary 403), and the body carries no
+    /// statistics either way.
+    /// </summary>
+    [RequiresPostgresStatsFact]
+    public async Task The_stats_feed_refuses_a_caller_who_resolves_to_no_tenant()
+    {
+        Feed(_tenantA, "s-alpha", TenantARepo, turns: 7);
+
+        var resp = await _httpUnbound.GetAsync("stats/data");
+        Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
+
+        var text = await resp.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("\"turns\"", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("alpha-only-repo", text, StringComparison.Ordinal);
+    }
+
+    /// <summary>Control: with no key the host-wide auth gate still refuses first, so serving on hosted did
+    /// not open the route to anonymous callers.</summary>
+    [RequiresPostgresStatsFact]
     public async Task An_unauthenticated_caller_is_still_rejected()
     {
         using var noAuth = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
         Assert.Equal(HttpStatusCode.Unauthorized, (await noAuth.GetAsync("stats/data")).StatusCode);
     }
 
-    /// <summary>
-    /// ISOLATION, in the shape the current hosted contract allows it to be asserted. The strong form of this
-    /// test - feed tenant A a distinctive bucket, read it back on A's feed, prove it invisible on B's - needs
-    /// an aggregator, and a hosted Gateway now has NONE by design (it never opens a statistics file; that is
-    /// the 2026-07-30 remediation). What remains assertable, and still worth pinning, is the pair of facts
-    /// that make a leak impossible in the shipped state: the hosted Gateway holds no local statistics store
-    /// AT ALL, and neither tenant's feed serves data - the same named 503 for both, with no totals in the
-    /// body. When the database-backed hosted read path is wired (its own issue), the strong form comes back.
-    /// </summary>
-    [Fact]
-    public async Task No_tenants_turns_can_leak_because_hosted_holds_no_local_statistics_at_all()
+    /// <summary>The page route no longer answers the named 503 either: with the feed serving, <c>/stats</c>
+    /// redirects to the Cockpit page that reads it, exactly as it does on self-host. A 503 here would send an
+    /// account holder to a dead end on a Gateway whose statistics are working.</summary>
+    [RequiresPostgresStatsFact]
+    public async Task The_stats_page_redirects_to_the_cockpit_page_that_reads_the_feed()
     {
-        // The mechanism a leak would need is absent by design on hosted.
-        Assert.Null(_gateway.InputStats);
-        Assert.Null(_gateway.SessionConcurrency);
+        using var handler = new HttpClientHandler { AllowAutoRedirect = false };
+        using var raw = new HttpClient(handler) { BaseAddress = _httpA.BaseAddress };
+        raw.DefaultRequestHeaders.Authorization = _httpA.DefaultRequestHeaders.Authorization;
 
-        // And both tenants receive the identical named unavailable state, with no data in it.
-        foreach (var http in new[] { _httpA, _httpB })
-        {
-            var resp = await http.GetAsync("stats/data");
-            Assert.Equal(HttpStatusCode.ServiceUnavailable, resp.StatusCode);
-            var text = await resp.Content.ReadAsStringAsync();
-            Assert.DoesNotContain("\"buckets\"", text, StringComparison.Ordinal);
-            Assert.DoesNotContain("\"repos\"", text, StringComparison.Ordinal);
-            Assert.DoesNotContain("alpha-only-repo", text, StringComparison.Ordinal);
-        }
+        var resp = await raw.GetAsync("stats");
+        Assert.Equal(HttpStatusCode.Found, resp.StatusCode);
+        Assert.Equal("/your-throttle", resp.Headers.Location!.ToString());
     }
 }
 
