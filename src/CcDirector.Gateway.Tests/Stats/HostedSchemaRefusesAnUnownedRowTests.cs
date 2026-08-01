@@ -70,7 +70,18 @@ public sealed class HostedSchemaRefusesAnUnownedRowTests
                 $"Refusing to drop the statistics schema in '{database}': it must be a throwaway rig database " +
                 "whose name begins with 'ccpg'.");
 
-        var options = new DbContextOptionsBuilder<GatewayStatsDbContext>().UseNpgsql(Connection).Options;
+        // CONFIGURED THE WAY GatewayStatsStore CONFIGURES IT, and both lines are load-bearing. A plain
+        // UseNpgsql leaves Entity Framework looking for migrations in the assembly that holds the context -
+        // which is the SQLITE chain - so Migrate() runs the wrong chain against PostgreSQL and stops with
+        // "the model has pending changes". That is what happened on the first run of this file, and the
+        // failure was the test's, not the schema's.
+        var options = new DbContextOptionsBuilder<GatewayStatsDbContext>()
+            .UseNpgsql(Connection, npg =>
+            {
+                npg.MigrationsAssembly("CcDirector.Gateway.Migrations.Postgres");
+                npg.MigrationsHistoryTable("__EFMigrationsHistory", GatewayStatsDbContext.PostgresSchema);
+            })
+            .Options;
         using var ctx = new GatewayStatsDbContext(options);
         ctx.Database.ExecuteSqlRaw($"DROP SCHEMA IF EXISTS {GatewayStatsDbContext.PostgresSchema} CASCADE");
         ctx.Database.Migrate();

@@ -10,6 +10,7 @@ using CcDirector.Gateway.Pairing;
 using CcDirector.Gateway.Stats;
 using CcDirector.Gateway.Streaming;
 using CcDirector.Gateway.Tenancy;
+using Microsoft.Data.Sqlite;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.SignalR;
@@ -101,7 +102,7 @@ public sealed class StatisticsFailureIsContainedOnTheHotPathTests : IDisposable
         instancesDirectory: Path.Combine(_root, "instances"),
         workListsPath: Path.Combine(_root, "worklists", "worklists.json"),
         snoozePath: Path.Combine(_root, "snooze", "snooze.json"),
-        inputStatsPath: Path.Combine(_root, "gateway-stats.db"));
+        inputStatsPath: StatsDbPath);
 
     /// <summary>Put one live, freshly-served session on the roster, so the statistics fold has a subject.
     /// Registering the connection AND applying the snapshot is what makes the serve FRESH - the roster only
@@ -117,16 +118,52 @@ public sealed class StatisticsFailureIsContainedOnTheHotPathTests : IDisposable
     }
 
     /// <summary>
-    /// Break the statistics store the way a runtime failure breaks it: the store was fine at startup and is
-    /// not fine now. Disposing the aggregator closes the SQLite connection it owns, so every subsequent
-    /// context, transaction and statement raises - which is the same class of fault as a lock timeout, a
-    /// dropped connection or a full disk, and the one the failure review says escapes.
+    /// Break the statistics store the way a runtime failure breaks it: it was fine at startup and is not
+    /// fine now. Every later write raises, which is the class of fault - lock timeout, dropped connection,
+    /// full disk - the failure review says escapes into the roster and the hub.
+    ///
+    /// WHY NOT JUST DISPOSE THE AGGREGATOR, which is what this method did first and which DOES NOT WORK.
+    /// Disposing it closes the SQLite connection it owns, and a closed connection is not a broken one:
+    /// Entity Framework simply opens it again on the next context and the write SUCCEEDS. The fixture
+    /// injected nothing, the roster answered 200 because there was no fault to contain, and the failure
+    /// count stayed at zero. The three containment facts would have looked like a pass on a green run had
+    /// the control not been there - `TheSameFault_IsFatal_WhenItIsNotContained` asserted the injected fault
+    /// throws, and it correctly reported that it did not. That is the control doing its whole job: without
+    /// it this file would have claimed to prove containment while proving nothing at all.
+    ///
+    /// So the fault is now injected in the database rather than in the connection: a SECOND connection to
+    /// the same file drops the tables the write path needs. The aggregator's own connection stays open and
+    /// perfectly healthy, and every statement it issues fails with "no such table" - a real runtime error
+    /// arriving after startup, which is exactly the shape being contained.
     /// </summary>
-    private static void BreakTheStatisticsStoreAfterStartup(GatewayHost gateway)
+    private void BreakTheStatisticsStoreAfterStartup(GatewayHost gateway)
     {
         Assert.NotNull(gateway.InputStats);
-        gateway.InputStats!.Dispose();
+
+        using var connection = new SqliteConnection($"Data Source={StatsDbPath}");
+        connection.Open();
+
+        var tables = new List<string>();
+        using (var read = connection.CreateCommand())
+        {
+            read.CommandText = "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'";
+            using var reader = read.ExecuteReader();
+            while (reader.Read()) tables.Add(reader.GetString(0));
+        }
+
+        // The fixture must know it actually broke something. An empty list would mean the file was not the
+        // one under test, and every assertion after this would be measuring nothing.
+        Assert.NotEmpty(tables);
+        foreach (var table in tables)
+        {
+            using var drop = connection.CreateCommand();
+            drop.CommandText = $"DROP TABLE IF EXISTS \"{table}\"";
+            drop.ExecuteNonQuery();
+        }
+        _out.WriteLine($"FAULT INJECTED: dropped {tables.Count} table(s) from {StatsDbPath}");
     }
+
+    private string StatsDbPath => Path.Combine(_root, "gateway-stats.db");
 
     [Fact]
     public async Task AStatisticsWriteFailure_DoesNotFaultTheRoster_AndIsCountedAndLogged()
@@ -282,6 +319,69 @@ public sealed class StatisticsFailureIsContainedOnTheHotPathTests : IDisposable
         var line = Assert.Single(lines, l => l.Contains("[StatsObservation] CONTAINED", StringComparison.Ordinal));
         _out.WriteLine(line);
         Assert.Contains("callSite=DirectorHub.RemoveSession", line, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// THE HUB'S PUSH PATH, which had containment but no failing-path proof - the same gap that produced
+    /// finding 1 one method over. A containment nothing exercises is a claim, and this file has already
+    /// demonstrated that facts riding an unproven fault can be green over nothing.
+    ///
+    /// PushDelta applies the session to the store BEFORE folding statistics, so an escaping failure reports
+    /// the push as failed after it has in fact landed.
+    /// </summary>
+    [Fact]
+    public async Task AStatisticsWriteFailure_DoesNotFaultTheHubsPushPath()
+    {
+        await using var gateway = NewGateway();
+        await gateway.StartAsync();
+        Assert.NotNull(gateway.InputStats);
+
+        var ctx = new FakeHubCallerContext("conn-push");
+        var hub = new DirectorHub(gateway.PushedSessions, gateway.Registry, gateway.InputStatsHandle,
+            new GatewayStreamRegistry(),
+            new HostedTenantBoundary(new SingleTenantContext(), new DeviceRegistry())) { Context = ctx };
+
+        hub.Hello(new DirectorStreamHello { DirectorId = DirectorId, Version = "test" });
+        hub.PushDelta(1, SessionWithATally("s-push", turns: 2));
+        Assert.Equal(0, gateway.InputStats!.Health.FailureCount);
+
+        BreakTheStatisticsStoreAfterStartup(gateway);
+
+        IReadOnlyList<string> lines;
+        Exception? thrown;
+        using (var log = FileLog.RedirectForTests())
+        {
+            thrown = Record.Exception(() => hub.PushDelta(2, SessionWithATally("s-push", turns: 9)));
+            lines = log.DrainAndReadLines();
+        }
+
+        Assert.Null(thrown);
+
+        // The push itself still landed - containment must not have swallowed the actual work.
+        Assert.Contains(gateway.PushedSessions.GetLastKnown(TenantId.Local, DirectorId).Sessions,
+            s => s.SessionId == "s-push");
+
+        Assert.Equal(1, gateway.InputStats.Health.FailureCount);
+        var line = Assert.Single(lines, l => l.Contains("[StatsObservation] CONTAINED", StringComparison.Ordinal));
+        _out.WriteLine(line);
+        Assert.Contains("callSite=DirectorHub.PushDelta", line, StringComparison.Ordinal);
+    }
+
+    /// <summary>The control for the hub push path: the same broken store, called the way PushDelta called it
+    /// before the containment, throws.</summary>
+    [Fact]
+    public async Task TheSamePushFault_IsFatal_WhenItIsNotContained()
+    {
+        await using var gateway = NewGateway();
+        await gateway.StartAsync();
+        Assert.NotNull(gateway.InputStats);
+
+        BreakTheStatisticsStoreAfterStartup(gateway);
+
+        var thrown = Record.Exception(() =>
+            gateway.InputStats!.Observe(SessionWithATally("s-push-uncontained", turns: 6), DateTime.UtcNow, TenantId.Local));
+        Assert.NotNull(thrown);
+        _out.WriteLine($"UNCONTAINED PushDelta fold: {thrown!.GetType().Name}: {thrown.Message}");
     }
 
     /// <summary>The control for the hub path, the same shape as the roster one: the same broken store,
