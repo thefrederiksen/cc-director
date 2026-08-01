@@ -40,14 +40,36 @@ public sealed class LaunchService
     /// Build a ProcessStartInfo for the given launch request. No real spawn - pure,
     /// unit-testable seam.
     /// </summary>
-    public ProcessStartInfo BuildStartInfo(LaunchRequest request)
+    public ProcessStartInfo BuildStartInfo(LaunchRequest request) =>
+        BuildStartInfoFor(request, CurrentPlatform);
+
+    /// <summary>The platform this launcher is running on, as the launch rules see it.</summary>
+    internal static LaunchPlatform CurrentPlatform =>
+        OperatingSystem.IsWindows() ? LaunchPlatform.Windows
+        : OperatingSystem.IsMacOS() ? LaunchPlatform.MacOs
+        : LaunchPlatform.Linux;
+
+    /// <summary>
+    /// <see cref="BuildStartInfo"/> with the platform passed in rather than read from the machine.
+    ///
+    /// This seam exists because of inspection finding M03-I2-02, and the finding was as much about
+    /// the TESTS as about the code. Every non-Windows launch test began by returning early on a
+    /// Windows host, so on the machine this repository is built and tested on they all passed
+    /// without running - a silent skip that reads as coverage. Worse, the production code sent
+    /// EVERY non-Windows path down the macOS arm, so there was no Linux behaviour to cover even if
+    /// they had run. With the platform as an argument, all three arms are exercised on any one
+    /// machine, and the Linux desktop-entry handoff is proven rather than assumed.
+    /// </summary>
+    internal ProcessStartInfo BuildStartInfoFor(LaunchRequest request, LaunchPlatform platform)
     {
         ArgumentNullException.ThrowIfNull(request);
         if (string.IsNullOrWhiteSpace(request.Path))
             throw new ArgumentException("Path must not be empty.", nameof(request));
 
-        if (!OperatingSystem.IsWindows())
+        if (platform == LaunchPlatform.MacOs)
             return BuildStartInfoMac(request);
+        if (platform == LaunchPlatform.Linux)
+            return BuildStartInfoLinux(request);
 
         if (!File.Exists(request.Path))
             throw new FileNotFoundException($"Executable not found: {request.Path}", request.Path);
@@ -157,6 +179,109 @@ public sealed class LaunchService
     }
 
     /// <summary>
+    /// The Linux half of <see cref="BuildStartInfo"/>.
+    ///
+    /// The case that matters is the desktop entry, because on Linux that IS what the application
+    /// catalogue contains (inspection finding M03-I2-02). A ".desktop" file describes a program; it
+    /// is not the program, and running it as an executable does nothing. So the entry is read and
+    /// the command on its own Exec line is started instead.
+    ///
+    /// The security property Phase 1 established is preserved exactly: what runs is decided by the
+    /// catalogued file ON THIS MACHINE and nothing else. The caller named a catalogue entry; the
+    /// entry named its program. A hosted caller cannot supply arguments or a working directory at
+    /// all - the Gateway refuses those before the request reaches any launcher - and the arguments a
+    /// self-host caller may still pass are added as separate argument-list entries, never
+    /// concatenated into a command string where they could be re-read as extra words.
+    /// </summary>
+    private static ProcessStartInfo BuildStartInfoLinux(LaunchRequest request)
+    {
+        var ext = Path.GetExtension(request.Path).ToUpperInvariant();
+        if (ext is ".CMD" or ".BAT")
+            throw new NotSupportedException($"Windows batch files cannot be launched on Linux: {request.Path}");
+
+        if (!File.Exists(request.Path))
+            throw new FileNotFoundException($"Executable not found: {request.Path}", request.Path);
+
+        if (ext == ".DESKTOP")
+            return BuildStartInfoLinuxDesktopEntry(request);
+
+        if (ext == ".SH")
+        {
+            // Route shell scripts through bash so a missing execute bit never fails the launch -
+            // the same rule the macOS arm uses, for the same reason.
+            var script = new ProcessStartInfo
+            {
+                FileName = "/bin/bash",
+                WorkingDirectory = request.Cwd ?? Path.GetDirectoryName(request.Path) ?? "",
+                UseShellExecute = false,
+            };
+            script.ArgumentList.Add(request.Path);
+            foreach (var arg in SplitArguments(request.Args ?? ""))
+                script.ArgumentList.Add(arg);
+            return script;
+        }
+
+        // A plain executable named directly. This is the form that worked before the catalogue
+        // allowlist landed and it still works: the launcher runs with no controlling terminal, so
+        // the child starts with clean standard input and output.
+        var psi = new ProcessStartInfo
+        {
+            FileName = request.Path,
+            WorkingDirectory = request.Cwd ?? Path.GetDirectoryName(request.Path) ?? "",
+            UseShellExecute = false,
+        };
+        foreach (var arg in SplitArguments(request.Args ?? ""))
+            psi.ArgumentList.Add(arg);
+        return psi;
+    }
+
+    /// <summary>
+    /// Turn a catalogued Linux desktop entry into the process start it describes. See
+    /// <see cref="DesktopEntry"/> for why this is the fix for a deleted capability rather than a
+    /// widening of the allowlist.
+    /// </summary>
+    private static ProcessStartInfo BuildStartInfoLinuxDesktopEntry(LaunchRequest request)
+    {
+        var entry = DesktopEntry.Read(request.Path);
+
+        if (!string.Equals(entry.Type, "Application", StringComparison.Ordinal))
+            throw new NotSupportedException(
+                $"Only a Type=Application desktop entry names a program to start. '{request.Path}' is " +
+                $"Type={entry.Type}, which describes a link or a directory, so there is nothing to launch.");
+
+        if (entry.Terminal)
+            throw new NotSupportedException(
+                $"'{request.Path}' is a Terminal=true desktop entry: it must be run inside a terminal " +
+                "emulator, and which emulator this machine uses is not something the launcher can " +
+                "determine. Trying a list of likely ones would start the program under whichever " +
+                "happened to be installed, or silently start it with no terminal at all. Launch it " +
+                "from a session instead.");
+
+        if (entry.Exec is null)
+            throw new InvalidOperationException(
+                $"'{request.Path}' has no Exec line, so it names no program to start.");
+
+        var argv = DesktopEntry.ParseExec(entry.Exec);
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = argv[0],
+            // Path= in the entry is the working directory its author chose for the program. A
+            // self-host caller may still override it; a hosted caller cannot supply one at all.
+            WorkingDirectory = request.Cwd ?? entry.WorkingDirectory ?? "",
+            UseShellExecute = false,
+        };
+        for (var i = 1; i < argv.Count; i++)
+            psi.ArgumentList.Add(argv[i]);
+        foreach (var arg in SplitArguments(request.Args ?? ""))
+            psi.ArgumentList.Add(arg);
+
+        FileLog.Write($"[LaunchService] desktop entry {request.Path} starts {argv[0]} " +
+                      $"with {psi.ArgumentList.Count} arguments");
+        return psi;
+    }
+
+    /// <summary>
     /// Split a single argument string into argv entries: whitespace separates, double
     /// quotes group. Needed on macOS where /usr/bin/open and /bin/bash take an argument
     /// LIST (ProcessStartInfo.ArgumentList), while the request carries one string.
@@ -203,6 +328,18 @@ public sealed class LaunchService
 
     /// <summary>PIDs of processes launched since this service instance was created.</summary>
     public IReadOnlyList<int> LaunchedPids => _launched.Keys.ToList();
+}
+
+/// <summary>
+/// The operating system a launch decision is being made for. Passed in rather than read from the
+/// machine so every arm is testable on any one build machine - see
+/// <see cref="LaunchService.BuildStartInfoFor"/>.
+/// </summary>
+internal enum LaunchPlatform
+{
+    Windows,
+    MacOs,
+    Linux,
 }
 
 /// <summary>A request to launch an executable.</summary>

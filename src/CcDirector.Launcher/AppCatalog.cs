@@ -36,6 +36,7 @@ public sealed class AppCatalog
     private const int MaximumDepth = 6;
 
     private readonly IReadOnlyList<(string Root, string Source)>? _rootsOverride;
+    private readonly LaunchPlatform _platform;
 
     /// <summary>The production catalogue, reading this machine's real application directories.</summary>
     public AppCatalog() : this(null) { }
@@ -45,7 +46,24 @@ public sealed class AppCatalog
     /// searched the real Start Menu would assert on whatever the machine running it happens to have installed,
     /// which is a test of the machine rather than of the catalogue.
     /// </summary>
-    public AppCatalog(IReadOnlyList<(string Root, string Source)>? roots) => _rootsOverride = roots;
+    public AppCatalog(IReadOnlyList<(string Root, string Source)>? roots)
+        : this(roots, LaunchService.CurrentPlatform) { }
+
+    /// <summary>
+    /// Build a catalogue that decides what counts as an installed application by the platform passed in
+    /// rather than by the machine it is running on.
+    ///
+    /// Inspection finding M03-I2-02: the Linux half of this catalogue - the half that yields ".desktop"
+    /// entries - could not be exercised at all from the Windows machine this repository is built on,
+    /// because <see cref="IsAppFile"/> read the operating system directly. So the handoff from a
+    /// catalogue entry to a started process was never tested on the platform where the entry is a data
+    /// file rather than a program, which is exactly where it was broken.
+    /// </summary>
+    internal AppCatalog(IReadOnlyList<(string Root, string Source)>? roots, LaunchPlatform platform)
+    {
+        _rootsOverride = roots;
+        _platform = platform;
+    }
 
     /// <summary>
     /// Search the catalogue. An empty query returns everything, up to the limit.
@@ -213,7 +231,7 @@ public sealed class AppCatalog
         foreach (var (root, source) in Roots())
         {
             if (!Directory.Exists(root)) continue;
-            foreach (var app in WalkRoot(root, source, skipped))
+            foreach (var app in WalkRoot(root, source, skipped, _platform))
             {
                 if (seenPaths.Add(app.Path))
                     found.Add(app);
@@ -235,7 +253,7 @@ public sealed class AppCatalog
             yield break;
         }
 
-        if (OperatingSystem.IsWindows())
+        if (_platform == LaunchPlatform.Windows)
         {
             yield return (Environment.GetFolderPath(Environment.SpecialFolder.StartMenu), "start-menu-user");
             yield return (Environment.GetFolderPath(Environment.SpecialFolder.CommonStartMenu), "start-menu-machine");
@@ -244,7 +262,7 @@ public sealed class AppCatalog
 
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
-        if (OperatingSystem.IsMacOS())
+        if (_platform == LaunchPlatform.MacOs)
         {
             yield return ("/Applications", "applications");
             yield return ("/System/Applications", "applications-system");
@@ -267,7 +285,8 @@ public sealed class AppCatalog
     /// condition rather than a fault. It is recorded in <paramref name="skipped"/> and reported to the caller,
     /// so an incomplete catalogue announces itself instead of looking like a shorter one.
     /// </summary>
-    private static IEnumerable<InstalledAppDto> WalkRoot(string root, string source, List<string> skipped)
+    private static IEnumerable<InstalledAppDto> WalkRoot(
+        string root, string source, List<string> skipped, LaunchPlatform platform)
     {
         var queue = new Queue<(string Directory, int Depth)>();
         queue.Enqueue((root, 0));
@@ -289,7 +308,7 @@ public sealed class AppCatalog
 
             foreach (var entry in entries)
             {
-                if (IsAppBundle(entry))
+                if (IsAppBundle(entry, platform))
                 {
                     yield return new InstalledAppDto
                     {
@@ -307,7 +326,7 @@ public sealed class AppCatalog
                     continue;
                 }
 
-                if (IsAppFile(entry))
+                if (IsAppFile(entry, platform))
                 {
                     yield return new InstalledAppDto
                     {
@@ -321,20 +340,18 @@ public sealed class AppCatalog
     }
 
     /// <summary>True for a macOS application bundle, which is a directory that must be treated as one item.</summary>
-    private static bool IsAppBundle(string path) =>
-        OperatingSystem.IsMacOS()
+    internal static bool IsAppBundle(string path, LaunchPlatform platform) =>
+        platform == LaunchPlatform.MacOs
         && path.EndsWith(".app", StringComparison.OrdinalIgnoreCase)
         && Directory.Exists(path);
 
-    /// <summary>True for a file that represents a startable application on this operating system.</summary>
-    private static bool IsAppFile(string path)
+    /// <summary>True for a file that represents a startable application on the given operating system.</summary>
+    internal static bool IsAppFile(string path, LaunchPlatform platform) => platform switch
     {
-        if (OperatingSystem.IsWindows())
-            return path.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase);
-        if (OperatingSystem.IsMacOS())
-            return false;
-        return path.EndsWith(".desktop", StringComparison.OrdinalIgnoreCase);
-    }
+        LaunchPlatform.Windows => path.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase),
+        LaunchPlatform.MacOs => false,
+        _ => path.EndsWith(".desktop", StringComparison.OrdinalIgnoreCase),
+    };
 
     /// <summary>
     /// True for a symbolic link or junction. These are stepped over so a link pointing at an ancestor cannot
