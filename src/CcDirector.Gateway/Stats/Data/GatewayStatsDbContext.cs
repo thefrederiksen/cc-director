@@ -469,6 +469,23 @@ public sealed class GatewayStatsDbContext : DbContext
                 // The pattern is anchored at both ends, so it constrains EVERY character rather than
                 // asserting that one acceptable character exists somewhere - the mistake the previous
                 // version made in miniature.
+                //
+                // THIS IS DELIBERATELY NARROWER THAN TenantId, AND IF YOU ARE READING THIS BECAUSE OF A
+                // CONSTRAINT VIOLATION, START HERE. TenantId only TRIMS its input - it does not lower-case
+                // it and it does not restrict the character set - so `new TenantId("Alice")` is a perfectly
+                // legal tenant that this column will REFUSE. That gap is intentional and was accepted with
+                // its eyes open, on three grounds: no production path can produce such a value (the four
+                // construction sites are Local, System, the Guid mint, and SkillStore's library partition,
+                // and every one of them yields lower-case); the failure mode is LOUD and lands at
+                // development time as a named constraint violation on insert, never as silent
+                // mispartitioning or a wrong-tenant read; and the alternative - matching TenantId exactly -
+                // is the denylist that failed three times.
+                //
+                // So a violation here does NOT mean the schema is broken. It means a writer used a tenant
+                // spelling production has never produced. Fix the caller if the value came from a test or a
+                // new code path that should be minting properly; widen this pattern only if a real
+                // production mint has started producing a spelling it excludes - and if you widen it, widen
+                // the allowlist, never soften it back into "not whitespace".
                 entityType.AddCheckConstraint(TenantNotEmptyConstraint(table), "\"tenant\" ~ '^[a-z0-9-]+$'");
             }
         }

@@ -4,7 +4,32 @@
 
 namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 {
-    /// <inheritdoc />
+    /// <summary>
+    /// Replaces the tenant guard on every statistics table with an ALLOWLIST of the characters a tenant
+    /// may contain: <c>^[a-z0-9-]+$</c>, anchored at both ends.
+    ///
+    /// WHY AN ALLOWLIST. Three previous predicates each tried to exclude whitespace and each left a gap -
+    /// <c>tenant &lt;&gt; ''</c> passed a space, <c>btrim(tenant) &lt;&gt; ''</c> passed a tab (PostgreSQL's
+    /// one-argument btrim strips only the space character), and <c>tenant ~ '[^[:space:]]'</c> passed the
+    /// four characters .NET calls whitespace and POSIX does not: U+0085, U+00A0, U+2007, U+202F. Mirroring
+    /// one runtime's idea of whitespace with another's does not converge. An allowlist refuses every
+    /// spelling that names nobody, including ones nobody has thought of, as a side effect.
+    ///
+    /// The set is DERIVED from the four production construction sites: <c>TenantId.Local</c> ("local"),
+    /// <c>TenantId.System</c> ("system"), a real account (<c>Guid.NewGuid().ToString()</c>, lower-case hex
+    /// and hyphens), and SkillStore's library partition, which is whichever of Local or System was ambient.
+    ///
+    /// IT IS DELIBERATELY NARROWER THAN <c>TenantId</c>. TenantId only TRIMS - it does not lower-case and
+    /// does not restrict characters - so <c>new TenantId("Alice")</c> is legal in the product and refused
+    /// here. Accepted knowingly: no production path yields such a value, and the failure mode is a named
+    /// constraint violation at insert, loud and at development time, rather than silent mispartitioning or
+    /// a wrong-tenant read.
+    ///
+    /// SO IF YOU ARE HERE BECAUSE OF A VIOLATION: the schema is probably not broken. A writer used a
+    /// spelling production has never produced. Fix the caller, unless a real production mint has genuinely
+    /// started producing something this excludes - in which case widen the allowlist, and never soften it
+    /// back into "not whitespace".
+    /// </summary>
     public partial class TenantIsAnAllowlistedSpelling : Migration
     {
         /// <inheritdoc />
