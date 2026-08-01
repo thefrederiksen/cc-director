@@ -437,26 +437,39 @@ public sealed class GatewayStatsDbContext : DbContext
                 var table = entityType.GetTableName();
                 if (table is null) continue;
 
-                // THE TENANT MUST CONTAIN A NON-WHITESPACE CHARACTER. Not "is not empty", which is a
-                // spelling of the invariant rather than the invariant.
+                // AN ALLOWLIST OF THE CHARACTERS A TENANT CAN CONTAIN - not a denylist of the ones it
+                // cannot. This is the third predicate here and the first one of the right SHAPE, and the
+                // reason the previous two failed is worth more than either of them.
                 //
-                // This predicate has now been wrong twice, in the same direction, and both are worth
-                // recording because the second one is the subtler trap. The first version was
-                // `tenant <> ''`, which refuses the empty string and nothing else - an inspector stood up
-                // the restricted-role rig, applied this exact chain, inserted a tenant of THREE SPACES and
-                // read it back at length 3. The second version was `btrim("tenant") <> ''`, which looks
-                // like it closes that - and does, for SPACES. PostgreSQL's one-argument btrim strips the
-                // SPACE CHARACTER ONLY, so a tab or a newline sailed straight through a constraint whose
-                // name says non-empty. The acceptance fact that covers tab and newline is what caught it,
-                // and it exists because the first fix taught us to test the case that got through rather
-                // than the case we had just fixed.
+                // WHAT WENT WRONG THREE TIMES. `tenant <> ''` refused the empty string only; an inspector
+                // inserted THREE SPACES and read them back. `btrim("tenant") <> ''` closed that for
+                // SPACES, because PostgreSQL's one-argument btrim strips the space character and nothing
+                // else; a tab walked through. `"tenant" ~ '[^[:space:]]'` closed tab and newline, and an
+                // inspector then enumerated all twenty-five characters .NET calls whitespace, found FOUR
+                // that POSIX does not - U+0085, U+00A0, U+2007, U+202F - and inserted chr(160) as a real
+                // row's tenant, reading it back at length 1.
                 //
-                // A regular expression asks the question directly: does this value contain at least one
-                // character that is not whitespace? [:space:] is the POSIX class, so it covers space, tab,
-                // newline, carriage return, form feed and vertical tab without enumerating them here and
-                // getting the list wrong a third time. TenantId rejects a whitespace tenant, and now so
-                // does the schema.
-                entityType.AddCheckConstraint(TenantNotEmptyConstraint(table), "\"tenant\" ~ '[^[:space:]]'");
+                // Each attempt narrowed the gap and none closed it, because the shape was wrong: a denylist
+                // has to enumerate every bad value, and we were trying to mirror .NET's idea of whitespace
+                // with a different engine's idea of it. Those two sets do not agree and Unicode keeps
+                // supplying more members. An allowlist inverts the burden - every whitespace spelling,
+                // including ones nobody has thought of yet, is refused as a SIDE EFFECT of not being an
+                // allowed character.
+                //
+                // THE DERIVATION, from the code rather than from assumption. A tenant is not free text; it
+                // is a minted value with exactly three provenances:
+                //   - TenantId.Local  = "local"                    (self-host, and the column default)
+                //   - TenantId.System = "system"                   (reserved, hosted non-account rows)
+                //   - a real account  = Guid.NewGuid().ToString()  (TenantRegistry.MintOrLookupBySubject)
+                // The only other production construction is SkillStore's library partition, which is
+                // whichever of Local or System was ambient, so it adds no new spelling. The union of
+                // characters across all three is lower-case letters, digits and the hyphen, and .NET's
+                // Guid "D" format is lower-case hex with hyphens, so nothing minted can fall outside it.
+                //
+                // The pattern is anchored at both ends, so it constrains EVERY character rather than
+                // asserting that one acceptable character exists somewhere - the mistake the previous
+                // version made in miniature.
+                entityType.AddCheckConstraint(TenantNotEmptyConstraint(table), "\"tenant\" ~ '^[a-z0-9-]+$'");
             }
         }
 

@@ -1,3 +1,4 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Stats.Data;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -170,23 +171,80 @@ public sealed class HostedSchemaRefusesAnUnownedRowTests
         Assert.Equal(0L, Convert.ToInt64(count.ExecuteScalar()));
     }
 
-    /// <summary>Tab and newline are whitespace too, and a predicate that handled only the space character
-    /// would pass the fact above while leaving the hole open one keystroke over.</summary>
+    /// <summary>
+    /// EVERY CHARACTER .NET CALLS WHITESPACE, walked one at a time - not a hand-picked handful.
+    ///
+    /// This is the fact the previous three predicates each failed, and hand-picking is exactly how they
+    /// survived. `tenant &lt;&gt; ''` passed a space. `btrim(tenant) &lt;&gt; ''` passed a tab. And
+    /// `tenant ~ '[^[:space:]]'` passed FOUR characters that .NET calls whitespace and POSIX does not -
+    /// U+0085, U+00A0, U+2007, U+202F - one of which an inspector inserted as a real row's tenant and read
+    /// back at length 1.
+    ///
+    /// So the test enumerates the set from <see cref="char.IsWhiteSpace(char)"/> itself rather than from a
+    /// list somebody typed. If a future runtime adds a character to that set, this fact walks it too,
+    /// without anyone remembering to come back. The allowlist predicate refuses all of them as a side
+    /// effect of not allowing them, which is why an allowlist is the right shape and a denylist never was.
+    /// </summary>
     [RequiresPostgresStatsFact]
-    public void An_insert_whose_tenant_is_a_tab_or_newline_is_refused()
+    public void Every_character_dotnet_calls_whitespace_is_refused_as_a_tenant()
     {
-        foreach (var (spelling, label) in new[] { ("\t", "tab"), ("\n", "newline"), (" \t \n ", "mixed") })
+        var whitespace = Enumerable.Range(0, char.MaxValue + 1)
+            .Select(c => (char)c)
+            .Where(char.IsWhiteSpace)
+            .ToList();
+
+        // The enumeration must be REAL. A bug that produced an empty list would make this fact pass
+        // having asserted nothing at all - the same shape of vacuous green the controls exist to stop.
+        Assert.True(whitespace.Count >= 20,
+            $"expected .NET to report around 25 whitespace characters, got {whitespace.Count}");
+        _out.WriteLine($"walking {whitespace.Count} whitespace characters: " +
+                       string.Join(" ", whitespace.Select(c => "U+" + ((int)c).ToString("X4"))));
+
+        using var connection = Open();
+        var accepted = new List<string>();
+
+        foreach (var c in whitespace)
         {
-            using var connection = Open();
             using var cmd = connection.CreateCommand();
             cmd.CommandText =
                 $"INSERT INTO {GatewayStatsDbContext.PostgresSchema}.stat_delta " +
                 "(tenant, hour_utc, session_id, modality, surface, is_voice, repo_id, wingman, turns, chars) " +
                 "VALUES (@t, '2026-08-01T12', 's-ws', 'typed', 'desktop', false, 1, false, 1, 1)";
+            cmd.Parameters.AddWithValue("t", c.ToString());
+
+            try
+            {
+                cmd.ExecuteNonQuery();
+                accepted.Add("U+" + ((int)c).ToString("X4"));
+            }
+            catch (PostgresException ex) when (ex.SqlState == "23514")
+            {
+                // Refused by the named check constraint, which is the whole point.
+                Assert.Equal(GatewayStatsDbContext.TenantNotEmptyConstraint("stat_delta"), ex.ConstraintName);
+            }
+        }
+
+        Assert.True(accepted.Count == 0,
+            "these characters are whitespace to .NET and were STORED as a tenant: " + string.Join(", ", accepted));
+    }
+
+    /// <summary>The same walk, for a whitespace character embedded in an otherwise plausible tenant - a
+    /// value that CONTAINS a legal character would satisfy any predicate asking merely whether one exists,
+    /// which is what the anchored allowlist is for.</summary>
+    [RequiresPostgresStatsFact]
+    public void A_tenant_with_whitespace_inside_an_otherwise_legal_value_is_refused()
+    {
+        using var connection = Open();
+        foreach (var spelling in new[] { "loc al", "local\t", " local", "local x", "local\n" })
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText =
+                $"INSERT INTO {GatewayStatsDbContext.PostgresSchema}.stat_delta " +
+                "(tenant, hour_utc, session_id, modality, surface, is_voice, repo_id, wingman, turns, chars) " +
+                "VALUES (@t, '2026-08-01T12', 's-inner', 'typed', 'desktop', false, 1, false, 1, 1)";
             cmd.Parameters.AddWithValue("t", spelling);
 
             var thrown = Assert.ThrowsAny<PostgresException>(() => cmd.ExecuteNonQuery());
-            _out.WriteLine($"{label} TENANT refused: {thrown.SqlState} {thrown.ConstraintName}");
             Assert.Equal("23514", thrown.SqlState);
         }
     }
@@ -196,22 +254,40 @@ public sealed class HostedSchemaRefusesAnUnownedRowTests
     /// typo in the column list, a schema that never got created, a constraint that is simply wrong. A row
     /// that DOES name its owner must still be stored.
     /// </summary>
-    [RequiresPostgresStatsFact]
-    public void A_row_that_names_its_owner_is_still_stored()
+    /// <param name="tenant">EVERY SPELLING PRODUCTION ACTUALLY MINTS, and the reason the list is exactly
+    /// these three is in the constraint's own derivation: TenantId.Local, TenantId.System, and a real
+    /// account, which is <c>Guid.NewGuid().ToString()</c> from TenantRegistry. An allowlist is only safe
+    /// if it admits everything legitimate, so refusing one of these would be a far worse defect than the
+    /// one being fixed - and this is the fact that would say so.</param>
+    [Theory]
+    [InlineData("local")]
+    [InlineData("system")]
+    [InlineData("9f2c1b7e-4d3a-4c5e-8b6f-0a1d2e3f4a5b")]
+    public void A_row_whose_tenant_is_a_spelling_production_mints_is_still_stored(string tenant)
     {
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(ConnectionEnvVar)))
+            return;   // same gate as the facts above; a Theory cannot carry the custom attribute's Skip.
+
+        // The spelling is a REAL TenantId, not merely a string this test likes the look of - so a pattern
+        // that drifted away from what TenantId accepts would fail here rather than pass quietly.
+        Assert.True(new TenantId(tenant).IsValid);
+
         using var connection = Open();
         using (var insert = connection.CreateCommand())
         {
             insert.CommandText =
                 $"INSERT INTO {GatewayStatsDbContext.PostgresSchema}.stat_delta " +
                 "(tenant, hour_utc, session_id, modality, surface, is_voice, repo_id, wingman, turns, chars) " +
-                "VALUES ('tenant-alpha', '2026-08-01T12', 's-owned', 'typed', 'desktop', false, 1, false, 3, 30)";
+                "VALUES (@t, '2026-08-01T12', @s, 'typed', 'desktop', false, 1, false, 3, 30)";
+            insert.Parameters.AddWithValue("t", tenant);
+            insert.Parameters.AddWithValue("s", "s-owned-" + tenant);
             Assert.Equal(1, insert.ExecuteNonQuery());
         }
 
         using var read = connection.CreateCommand();
         read.CommandText =
-            $"SELECT turns FROM {GatewayStatsDbContext.PostgresSchema}.stat_delta WHERE session_id = 's-owned'";
+            $"SELECT turns FROM {GatewayStatsDbContext.PostgresSchema}.stat_delta WHERE session_id = @s";
+        read.Parameters.AddWithValue("s", "s-owned-" + tenant);
         Assert.Equal(3L, Convert.ToInt64(read.ExecuteScalar()));
     }
 }
