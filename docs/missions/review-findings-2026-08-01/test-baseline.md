@@ -77,14 +77,14 @@ So the Architect has ruled that W1's gate additionally requires **the six hosted
 TRX as EXECUTED and passed, with the PostgreSQL rig up**, recorded here as evidence. A skipped fact does
 not gate this work.
 
-## W1's FINAL gate run - GREEN, post-rebase, with the rig up
+## W1's FINAL gate - GREEN, post-rebase onto b6fbf15c6, with the rig up
 
 Run from a clean tree rebuilt at the committed state, rig `rf` on port 55436, both connection variables
 set.
 
 | Project | Outcome | Total | vs baseline | Executed | Failed | Skipped |
 |---|---|---|---|---|---|---|
-| CcDirector.Gateway.Tests | Completed | 5172 | 5153 (+19) | 5166 | 0 | 6 |
+| CcDirector.Gateway.Tests | Completed | 5173 | 5153 (+20) | 5167 | 0 | 6 |
 | CcDirector.Core.Tests | Completed | 4196 | 4179 (+17, main added tests) | 4188 | 0 | 8 |
 | CcDirector.Avalonia.Tests | Completed | 353 | 353 (=) | 353 | 0 | 0 |
 | CcDirector.Launcher.Tests | Completed | 110 | 110 (=) | 110 | 0 | 0 |
@@ -92,10 +92,18 @@ set.
 | CcDirector.Engine.Tests | Completed | 63 | 63 (=) | 63 | 0 | 0 |
 | CcDirector.Terminal.Avalonia.Tests | Completed | 24 | 24 (=) | 24 | 0 | 0 |
 
-**The number that matters is EXECUTED, not total.** The Gateway suite executed 5166 against the
-baseline's 5113 - FIFTY-THREE more tests actually ran - because the baseline run had no rig and skipped
+**The Gateway row comes from a SECOND run, and here is why.** The first post-rebase run's Gateway test
+host CRASHED twenty-one minutes in - 2,671 tests missing under a console line reading
+`Passed! - Failed: 0`; see `evidence-a-false-green-caught-in-the-wild.md`, which also records the crash
+fingerprint that was written down BEFORE the re-run and the verdict evaluated against it. The other six
+projects are from that same run and are unaffected: `test-local.ps1` starts each project as its OWN
+process, so a Gateway host crash cannot touch them, and all six reported `Completed` at their expected
+counts. The Gateway suite alone was re-run.
+
+**The number that matters is EXECUTED, not total.** The Gateway suite executed 5167 against the
+baseline's 5113 - FIFTY-FOUR more tests actually ran - because the baseline run had no rig and skipped
 every PostgreSQL-gated fact. Skips fell from 40 to 6. A gate that only compared totals would have shrugged
-at +19; the executed count is what shows the hosted work was exercised at all.
+at +20; the executed count is what shows the hosted work was exercised at all.
 
 **The hosted facts EXECUTED rather than skipped**, which is the whole point of the stronger gate:
 
@@ -109,8 +117,10 @@ at +19; the executed count is what shows the hosted work was exercised at all.
   remove), three uncontained controls, and the log assertion.
 - 1 in `ALateStatisticsStoreReachesTheRosterTests` - a store published AFTER route mapping still records
   from the roster.
+- 1 in `TheRejectedChainUpgradesToTipTests` - a database at the REJECTED round-three migration state
+  upgrades to tip and gains the allowlist.
 
-All twenty-four passed.
+All twenty-five passed.
 
 **The 6 remaining Gateway skips are unrelated to this work** and are named here so nobody has to guess:
 five live main-database proofs waiting on `CC_GATEWAY_DB_CONNECTION` (a different variable from the

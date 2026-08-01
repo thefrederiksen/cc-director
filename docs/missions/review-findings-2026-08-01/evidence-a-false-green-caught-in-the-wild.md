@@ -123,6 +123,24 @@ If none holds, it is the known host-crash mode this suite has exhibited before, 
 this entry records that the judgement was made against criteria fixed in advance rather than chosen to
 fit the outcome.
 
+## The verdict, evaluated against those criteria
+
+The re-run completed: `outcome="Completed"`, total 5173, executed 5167, 0 failed.
+
+| Criterion, as written above | Result |
+|---|---|
+| 1. Last class is `LauncherRegistryEndpointTests` again | **NO** - it is `NetDiagMonitorTests`, finishing 19:55:11 |
+| 2. Executed within ~100 of 2476 | **NO** - executed 5167, a difference of 2,691 |
+| 3. Any of this mission's classes last to report, or failing | **NO** - 25 mission facts, 0 non-passed |
+
+**NOT the same place, on all three.** The two fixtures the crash never reached -
+`TheRejectedChainUpgradesToTipTests` and `ALateStatisticsStoreReachesTheRosterTests` - both ran and
+passed this time, so the part of the suite that was never exercised when the host died is now covered.
+
+The crash is therefore recorded as the known host-crash mode rather than a defect in this branch, and
+that conclusion was reached by evaluating conditions written down before the second data point existed.
+Had any of the three held, this section would say FINDING and the work would have stopped.
+
 ---
 
 ## The artifact
