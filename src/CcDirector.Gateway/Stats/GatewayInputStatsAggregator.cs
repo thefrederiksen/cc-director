@@ -1412,7 +1412,9 @@ public sealed class GatewayInputStatsAggregator : IDisposable
 
     public void Dispose()
     {
-        if (_ownsDatabase) _db.Dispose();
+        // Null on the hosted path - there is no file to own, and the context factory belongs to the
+        // statistics store, which disposes it.
+        if (_ownsDatabase) _db?.Dispose();
     }
 }
 

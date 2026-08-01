@@ -1013,11 +1013,15 @@ public sealed class GatewayHost : IAsyncDisposable
         // the incident that makes writing it there unacceptable - and instead gets the database-backed store
         // over the SAME pooled factory the aggregator above uses. Hosted with no usable store gets nothing,
         // which every consumer already renders as an absent series rather than a zero.
-        SessionConcurrency = GatewayHostedMode.IsHosted || GatewayHostedMode.IsHostedImage
-            ? (StatsStore.Factory is { } concurrencyFactory
+        // Written as a statement rather than a nested conditional deliberately: the two branches return two
+        // unrelated concrete types and only the interface relates them, which is exactly the kind of
+        // expression whose meaning depends on the reader knowing how a target-typed conditional resolves.
+        if (GatewayHostedMode.IsHosted || GatewayHostedMode.IsHostedImage)
+            SessionConcurrency = StatsStore.Factory is { } concurrencyFactory
                 ? new Stats.GatewaySessionConcurrencyStore(concurrencyFactory)
-                : null)
-            : new Stats.GatewaySessionConcurrencyStats();
+                : null;
+        else
+            SessionConcurrency = new Stats.GatewaySessionConcurrencyStats();
         // Epic #1159 step A: when a machine passes the eviction horizon (or unregisters gracefully), forget
         // what it pushed. The pushed store keeps a Director's sessions across a disconnect on purpose - that
         // is what lets the roster serve a machine whose tunnel is down - so this is the one place those
