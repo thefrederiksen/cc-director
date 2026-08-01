@@ -74,7 +74,20 @@ public sealed class CleanInstallCliAuthenticationTests : IAsyncLifetime
     {
         var python = FindPython();
         if (python is null)
-            return; // no Python on this machine; the resolver's unit tests still cover the logic
+        {
+            // This is the acceptance row for the whole cross-language credential fix: it is the only
+            // test that drives the REAL Python command line against a REAL host. Returning green when
+            // Python is absent made it report success on a machine where it never ran - a check that
+            // cannot fail is not a check. Continuous integration always has Python, so its absence
+            // there is a genuine failure of the environment the acceptance depends on, and is now
+            // loud. On a developer machine without Python it stays a pass, but says so.
+            Assert.True(Environment.GetEnvironmentVariable("CI") is null,
+                "Python was not found, so the real command-line acceptance never ran. In CI this must " +
+                "never happen: this test is the cross-language proof and a silent pass hides its absence.");
+            Console.WriteLine("[CleanInstallCliAuthenticationTests] SKIPPED: no Python on this machine; " +
+                "the cross-language acceptance row did NOT run. The resolver unit tests still cover the logic.");
+            return;
+        }
 
         // Arrangement sanity: the layout is the clean named-default one. The host minted its secret
         // under the INSTANCE home, its registration (with this process's pid and the bound port)
