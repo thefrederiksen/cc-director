@@ -47,7 +47,11 @@ public sealed class TerminalSessionRecorder : IDisposable
     private bool _started;
     private bool _disposed;
 
-    public TerminalSessionRecorder(SessionManager sessionManager, string? root = null, long maxBytesPerSession = 8L * 1024 * 1024, bool captureEnabled = true)
+    // captureEnabled defaults to FALSE so that the safe state is the free one: the shipped product
+    // records nothing unless the operator turns it on, and a future call site that forgets the flag
+    // inherits that posture instead of silently recording. Production passes
+    // SessionRecordingConfig.IsEnabled() explicitly; this default is the backstop, not the policy.
+    public TerminalSessionRecorder(SessionManager sessionManager, string? root = null, long maxBytesPerSession = 8L * 1024 * 1024, bool captureEnabled = false)
     {
         _sessionManager = sessionManager;
         _root = root ?? CcStorage.SessionRecordings();
