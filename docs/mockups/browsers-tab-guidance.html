@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Browsers tab - guidance redesign mockup</title>
+<style>
+  :root{
+    --bg:#1e1e1e;
+    --panel:#252526;
+    --panel2:#2d2d30;
+    --input:#1b1b1c;
+    --border:#3c3c3c;
+    --border-strong:#505052;
+    --text:#e6e6e6;
+    --muted:#9a9a9a;
+    --faint:#777;
+    --blue:#0f6cbd;
+    --blue-hi:#4a9eff;
+    --amber:#f0b848;
+    --edge:#1aa1b8;
+    --danger:#e06c6c;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;background:#121212;color:var(--text);
+    font-family:"Segoe UI",system-ui,sans-serif;font-size:13px;
+    display:flex;flex-direction:column;align-items:center;gap:18px;
+    padding:28px 16px 60px;
+  }
+  h1.page{font-size:18px;margin:0;font-weight:600;}
+  .caption{color:var(--muted);max-width:900px;text-align:center;line-height:1.55;}
+  .caption b{color:var(--text);}
+  .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:center;}
+  .toolbar button{
+    background:var(--panel2);color:var(--text);border:1px solid var(--border-strong);
+    padding:7px 14px;border-radius:5px;cursor:pointer;font-size:12px;
+  }
+  .toolbar button.active{background:var(--blue);border-color:var(--blue-hi);}
+
+  /* ---- the settings window ---- */
+  .window{
+    width:1040px;background:var(--bg);border:1px solid #000;border-radius:6px;
+    box-shadow:0 18px 50px rgba(0,0,0,.6);overflow:hidden;
+  }
+  .titlebar{padding:12px 18px 0;font-weight:600;font-size:14px;}
+  .tabs{display:flex;gap:26px;padding:14px 18px 0;font-size:16px;color:var(--faint);}
+  .tabs .on{color:var(--text);border-bottom:2px solid var(--blue-hi);padding-bottom:5px;}
+  .body{padding:16px 18px 22px;min-height:620px;}
+  .footer{
+    display:flex;justify-content:space-between;align-items:center;
+    padding:12px 18px 16px;border-top:1px solid #2a2a2a;
+  }
+  .footer a{color:var(--blue-hi);text-decoration:none;font-size:12px;}
+
+  /* ---- shared bits ---- */
+  .btn{
+    background:var(--panel2);color:var(--text);border:1px solid var(--border-strong);
+    padding:7px 14px;border-radius:4px;font-size:12px;cursor:pointer;
+  }
+  .btn.primary{background:var(--blue);border-color:var(--blue);}
+  .btn.big{padding:10px 20px;font-size:13px;font-weight:600;}
+  .sectionhead{font-weight:600;font-size:13px;margin:0 0 6px;}
+  .sub{color:var(--muted);font-size:12px;line-height:1.6;}
+
+  /* ---- EMPTY STATE ---- */
+  .hero{max-width:760px;}
+  .hero h2{font-size:22px;margin:2px 0 8px;font-weight:600;}
+  .hero p{color:var(--muted);font-size:13px;line-height:1.65;margin:0 0 14px;}
+  .hero p b{color:var(--text);font-weight:600;}
+
+  .cards3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:20px 0 8px;}
+  .card{
+    background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:14px 16px;
+  }
+  .card .num{
+    width:22px;height:22px;border-radius:50%;background:var(--blue);color:#fff;
+    display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;margin-bottom:9px;
+  }
+  .card h4{margin:0 0 5px;font-size:13px;font-weight:600;}
+  .card p{margin:0;color:var(--muted);font-size:12px;line-height:1.55;}
+
+  .rolestrip{
+    background:var(--panel);border:1px solid var(--border);border-radius:6px;
+    padding:16px;margin-top:18px;
+  }
+  .roles{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px;}
+  .role{
+    background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:11px 12px;
+    display:flex;gap:10px;align-items:flex-start;
+  }
+  .avatar{
+    width:26px;height:26px;border-radius:5px;flex:0 0 26px;
+    display:flex;align-items:center;justify-content:center;font-weight:600;font-size:13px;color:#fff;
+  }
+  .role .nm{font-weight:600;font-size:12px;}
+  .role .dt{color:var(--faint);font-size:11px;line-height:1.5;margin-top:2px;}
+
+  .callout{
+    display:flex;gap:11px;background:rgba(240,184,72,.07);
+    border:1px solid rgba(240,184,72,.35);border-radius:6px;padding:12px 14px;margin-top:18px;
+  }
+  .callout .ic{color:var(--amber);font-weight:700;font-size:13px;line-height:1.5;}
+  .callout p{margin:0;font-size:12px;line-height:1.6;color:#d8d2c6;}
+  .callout p b{color:var(--amber);font-weight:600;}
+
+  .cta{display:flex;align-items:center;gap:14px;margin-top:22px;}
+  .cta .hint{color:var(--faint);font-size:12px;}
+
+  /* ---- NEW BROWSER PANEL ---- */
+  .createpanel{
+    background:var(--panel);border:1px solid var(--border);border-radius:6px;
+    display:grid;grid-template-columns:1fr 340px;
+  }
+  .createleft{padding:18px 20px;}
+  .createright{
+    padding:18px 20px;border-left:1px solid var(--border);background:#212122;
+    border-radius:0 6px 6px 0;
+  }
+  label.fld{display:block;font-size:12px;font-weight:600;margin:0 0 5px;}
+  .field{
+    width:100%;background:var(--input);border:1px solid var(--border-strong);color:var(--text);
+    padding:9px 11px;border-radius:4px;font-size:13px;font-family:inherit;
+  }
+  .field::placeholder{color:#5f5f5f;}
+  .helptext{color:var(--faint);font-size:11px;margin:6px 0 0;line-height:1.5;}
+  .chips{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;}
+  .chip{
+    background:var(--panel2);border:1px solid var(--border-strong);border-radius:11px;
+    padding:3px 10px;font-size:11px;color:var(--muted);cursor:pointer;
+  }
+  .row2{display:grid;grid-template-columns:1fr 200px;gap:14px;margin-top:16px;}
+  select.field{appearance:none;background-image:linear-gradient(45deg,transparent 50%,#999 50%),linear-gradient(135deg,#999 50%,transparent 50%);background-position:calc(100% - 16px) 52%,calc(100% - 11px) 52%;background-size:5px 5px;background-repeat:no-repeat;}
+  .steps{list-style:none;margin:10px 0 0;padding:0;}
+  .steps li{display:flex;gap:10px;padding:0 0 14px;}
+  .steps .n{
+    width:19px;height:19px;flex:0 0 19px;border-radius:50%;background:var(--panel2);
+    border:1px solid var(--border-strong);color:var(--muted);
+    display:flex;align-items:center;justify-content:center;font-size:11px;
+  }
+  .steps .tx{font-size:12px;line-height:1.55;color:var(--muted);}
+  .steps .tx b{color:var(--text);font-weight:600;display:block;margin-bottom:1px;}
+  .reassure{
+    margin-top:4px;padding-top:12px;border-top:1px solid var(--border);
+    font-size:11px;color:var(--faint);line-height:1.6;
+  }
+  .actions{display:flex;gap:9px;margin-top:20px;}
+
+  /* ---- SIGN IN ---- */
+  .modalwrap{padding:40px 0;display:flex;justify-content:center;}
+  .modal{
+    width:620px;background:var(--panel);border:1px solid var(--border-strong);border-radius:7px;
+    box-shadow:0 20px 60px rgba(0,0,0,.7);overflow:hidden;
+  }
+  .modal h3{margin:0;padding:15px 20px;font-size:14px;border-bottom:1px solid var(--border);}
+  .modalbody{padding:18px 20px;}
+  .modalbody p{margin:0 0 13px;font-size:12.5px;line-height:1.65;color:var(--muted);}
+  .modalbody p b{color:var(--text);font-weight:600;}
+  .choice{
+    display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:15px 0;
+  }
+  .opt{background:var(--panel2);border:1px solid var(--border-strong);border-radius:6px;padding:12px 13px;}
+  .opt h5{margin:0 0 5px;font-size:12px;font-weight:600;}
+  .opt p{margin:0;font-size:11.5px;color:var(--faint);line-height:1.55;}
+  .modalfoot{display:flex;justify-content:flex-end;gap:9px;padding:13px 20px;border-top:1px solid var(--border);}
+
+  /* ---- POPULATED ---- */
+  .slimbar{
+    display:flex;gap:12px;align-items:flex-start;background:var(--panel);
+    border:1px solid var(--border);border-radius:6px;padding:12px 15px;margin-bottom:14px;
+  }
+  .slimbar .tx{font-size:12px;color:var(--muted);line-height:1.6;flex:1;}
+  .slimbar .tx b{color:var(--text);}
+  .slimbar a{color:var(--blue-hi);text-decoration:none;white-space:nowrap;font-size:12px;}
+  .toprow{display:flex;gap:9px;margin-bottom:14px;}
+  .browserrow{
+    display:flex;align-items:center;gap:12px;background:var(--panel);
+    border:1px solid var(--border);border-radius:6px;padding:12px 14px;margin-bottom:9px;
+  }
+  .browserrow .meta{flex:1;}
+  .browserrow .nm{font-weight:600;font-size:13px;display:flex;align-items:center;gap:8px;}
+  .tag{background:var(--panel2);border:1px solid var(--border-strong);border-radius:3px;font-size:10px;padding:1px 6px;color:var(--muted);}
+  .browserrow .dt{color:var(--muted);font-size:11.5px;margin-top:3px;}
+  .pill{background:var(--border);color:#ccc;border-radius:10px;font-size:11px;padding:3px 11px;}
+  .pill.green{background:#2ea043;color:#08130a;}
+  .trash{color:var(--danger);cursor:pointer;font-size:14px;}
+
+  .screen{display:none;}
+  .screen.on{display:block;}
+</style>
+</head>
+<body>
+
+<h1 class="page">Browsers tab &mdash; guidance redesign</h1>
+<div class="caption">
+  Four screens. The <b>empty state</b> is where the teaching goes, because it is the only moment we
+  have the user's full attention and the whole window free. <b>New browser</b> says what is about to
+  happen before it happens. <b>Sign in</b> is where the one real catch lands. <b>With browsers</b>
+  shows the explanation shrinking to a single line once it has done its job.
+</div>
+
+<div class="toolbar">
+  <button class="active" onclick="show(0,this)">1 &middot; Empty (first run)</button>
+  <button onclick="show(1,this)">2 &middot; New browser</button>
+  <button onclick="show(2,this)">3 &middot; Sign in once</button>
+  <button onclick="show(3,this)">4 &middot; With browsers</button>
+</div>
+
+<!-- ================= SCREEN 1 : EMPTY ================= -->
+<div class="window screen on">
+  <div class="titlebar">Director Settings</div>
+  <div class="tabs"><span>Account</span><span>Gateway</span><span>Agents</span><span class="on">Browsers</span><span>Directories</span><span>Advanced</span><span>Tools</span></div>
+  <div class="body">
+
+    <div class="hero">
+      <h2>Give your agents a browser of their own</h2>
+      <p>
+        A browser here is a <b>real, signed-in browser your agents can drive</b> &mdash; click things,
+        read pages, fill forms &mdash; through Browser Harness. It is not a scraper and not a
+        headless shell. It is Chrome or Edge, running on this machine, that an agent controls
+        like a person would.
+      </p>
+      <p>
+        It is <b>not your everyday browser</b>, and that is deliberate. Chrome and Edge now refuse to
+        be remote-controlled on your main profile, and they encrypt its saved logins so they cannot be
+        copied out. So DevThrottle creates a separate, dedicated profile instead &mdash; which is also
+        the arrangement you want: your agent gets exactly the accounts you give it, and nothing else.
+      </p>
+    </div>
+
+    <div class="cards3">
+      <div class="card">
+        <div class="num">1</div>
+        <h4>You create it</h4>
+        <p>DevThrottle makes a fresh, dedicated browser profile in its own folder. Your everyday
+           Chrome and Edge are never touched.</p>
+      </div>
+      <div class="card">
+        <div class="num">2</div>
+        <h4>You sign it in, once</h4>
+        <p>It opens and you log in by hand &mdash; DevThrottle never types your credentials. The
+           login then lasts for months.</p>
+      </div>
+      <div class="card">
+        <div class="num">3</div>
+        <h4>Any agent attaches</h4>
+        <p>From then on any agent on this machine drives it with one command. No sign-in, no
+           re-auth, no captcha loop.</p>
+      </div>
+    </div>
+
+    <div class="rolestrip">
+      <p class="sectionhead">Make one for each role you want an agent to act as</p>
+      <div class="sub">
+        The useful way to think about it is to mirror the separation you already keep in your own
+        head &mdash; work, personal, a particular client. Name each one after the identity it holds,
+        and you always know what an agent can reach when you point it at that browser.
+      </div>
+      <div class="roles">
+        <div class="role">
+          <div class="avatar" style="background:var(--blue)">W</div>
+          <div><div class="nm">Work</div><div class="dt">Company Google account, internal tools, the ticket tracker</div></div>
+        </div>
+        <div class="role">
+          <div class="avatar" style="background:var(--edge)">C</div>
+          <div><div class="nm">Acme Corp</div><div class="dt">One client only &mdash; their portal and dashboards, nothing else</div></div>
+        </div>
+        <div class="role">
+          <div class="avatar" style="background:#8a63d2">P</div>
+          <div><div class="nm">Personal</div><div class="dt">Your own accounts, kept well away from anything work</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout">
+      <div class="ic">!</div>
+      <p>
+        <b>It starts completely empty.</b> A new browser here is signed in to nothing at all &mdash;
+        it does not inherit your existing tabs, bookmarks or logins. You choose what goes in it:
+        sign in to a Google or Microsoft account to bring a whole profile across, or just sign in to
+        the individual websites you want the agent to reach. Whatever you sign in is exactly what
+        your agents can drive &mdash; nothing else.
+      </p>
+    </div>
+
+    <div class="cta">
+      <button class="btn primary big">+ Create your first browser</button>
+      <span class="hint">Takes about a minute, most of it you signing in.</span>
+    </div>
+
+  </div>
+  <div class="footer"><a>Open config.json</a><div><button class="btn primary">Save and Close</button> <button class="btn">Cancel</button></div></div>
+</div>
+
+<!-- ================= SCREEN 2 : NEW BROWSER ================= -->
+<div class="window screen">
+  <div class="titlebar">Director Settings</div>
+  <div class="tabs"><span>Account</span><span>Gateway</span><span>Agents</span><span class="on">Browsers</span><span>Directories</span><span>Advanced</span><span>Tools</span></div>
+  <div class="body">
+
+    <p class="sectionhead" style="font-size:15px;margin-bottom:3px;">New browser</p>
+    <div class="sub" style="margin-bottom:16px;">
+      You are about to create a brand new, empty browser profile &mdash; not a copy of one you
+      already use.
+    </div>
+
+    <div class="createpanel">
+      <div class="createleft">
+        <label class="fld">What will this browser be signed in as?</label>
+        <input class="field" placeholder="Work">
+        <p class="helptext">
+          Name it after the identity it will hold, not what you plan to do with it. &ldquo;Work&rdquo;
+          and &ldquo;Acme Corp&rdquo; tell you what an agent can reach; &ldquo;testing&rdquo; and
+          &ldquo;browser 2&rdquo; will not, six weeks from now.
+        </p>
+        <div class="chips">
+          <span class="chip">Work</span><span class="chip">Personal</span>
+          <span class="chip">Acme Corp</span><span class="chip">Research</span>
+        </div>
+
+        <div class="row2">
+          <div>
+            <label class="fld">Which browser</label>
+            <select class="field">
+              <option>Chrome</option><option>Edge</option><option>Brave</option><option>Opera</option>
+            </select>
+            <p class="helptext">Only browsers found on this machine are listed. Pick the one whose
+              account you want to sign in to &mdash; otherwise it makes no difference.</p>
+          </div>
+          <div></div>
+        </div>
+
+        <div class="actions">
+          <button class="btn primary">Create and sign in</button>
+          <button class="btn">Cancel</button>
+        </div>
+      </div>
+
+      <div class="createright">
+        <p class="sectionhead">What happens when you click Create</p>
+        <ul class="steps">
+          <li><span class="n">1</span><span class="tx"><b>A new browser window opens</b>
+            Empty, with its own profile folder. Your everyday browser keeps running, untouched.</span></li>
+          <li><span class="n">2</span><span class="tx"><b>You sign in, by hand</b>
+            Whatever you want the agent to reach. DevThrottle never types your credentials and
+            never sees them.</span></li>
+          <li><span class="n">3</span><span class="tx"><b>You tell us you are done</b>
+            The browser is then listed here as ready, and any agent on this machine can drive it.</span></li>
+        </ul>
+        <div class="reassure">
+          Nothing here touches the Chrome or Edge you use yourself &mdash; not its tabs, not its
+          bookmarks, not its logins. You can delete this browser at any time and it takes its own
+          folder with it.
+        </div>
+      </div>
+    </div>
+
+  </div>
+  <div class="footer"><a>Open config.json</a><div><button class="btn primary">Save and Close</button> <button class="btn">Cancel</button></div></div>
+</div>
+
+<!-- ================= SCREEN 3 : SIGN IN ================= -->
+<div class="window screen">
+  <div class="titlebar">Director Settings</div>
+  <div class="tabs"><span>Account</span><span>Gateway</span><span>Agents</span><span class="on">Browsers</span><span>Directories</span><span>Advanced</span><span>Tools</span></div>
+  <div class="body" style="opacity:.35;">
+    <div class="toprow"><button class="btn primary">+ New browser</button><button class="btn">Refresh</button></div>
+    <div class="browserrow"><div class="avatar" style="background:var(--blue)">C</div>
+      <div class="meta"><div class="nm">Work</div><div class="dt">Chrome &mdash; not signed in yet &nbsp;(port 9310)</div></div>
+      <span class="pill">Needs sign-in</span></div>
+  </div>
+
+  <div class="modalwrap" style="margin-top:-330px;">
+    <div class="modal">
+      <h3>Sign in once &mdash; &ldquo;Work&rdquo;</h3>
+      <div class="modalbody">
+        <p>
+          A <b>&ldquo;Work&rdquo;</b> window has just opened. Sign in <b>by hand</b> in that window.
+          DevThrottle never types your credentials.
+        </p>
+        <p>This browser is empty right now. What you sign in is exactly what your agents will be able
+           to reach &mdash; so sign in to whichever of these fits:</p>
+
+        <div class="choice">
+          <div class="opt">
+            <h5>A Google account</h5>
+            <p>Brings a whole profile across at once &mdash; mail, calendar, drive, and anything
+               that account already signs you in to.</p>
+          </div>
+          <div class="opt">
+            <h5>Just the individual sites</h5>
+            <p>Keeps this browser to exactly the handful of websites you want an agent to touch,
+               and nothing more.</p>
+          </div>
+        </div>
+
+        <p style="font-size:11.5px;color:var(--faint);margin-bottom:0;">
+          The logins are kept in this browser's own folder, apart from your everyday browser, and
+          last until the account signs them out. You can come back and sign in to more later.
+        </p>
+      </div>
+      <div class="modalfoot">
+        <button class="btn">Not yet</button>
+        <button class="btn primary">Done &mdash; I am signed in</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer"><a>Open config.json</a><div><button class="btn primary">Save and Close</button> <button class="btn">Cancel</button></div></div>
+</div>
+
+<!-- ================= SCREEN 4 : POPULATED ================= -->
+<div class="window screen">
+  <div class="titlebar">Director Settings</div>
+  <div class="tabs"><span>Account</span><span>Gateway</span><span>Agents</span><span class="on">Browsers</span><span>Directories</span><span>Advanced</span><span>Tools</span></div>
+  <div class="body">
+
+    <div class="slimbar">
+      <div class="tx">
+        <b>Real, signed-in browsers your agents can drive.</b> Each one is a dedicated profile with
+        its own logins &mdash; your everyday browser is never touched. Add one per role you want an
+        agent to act as.
+      </div>
+      <a>How this works &rsaquo;</a>
+    </div>
+
+    <div class="toprow">
+      <button class="btn primary">+ New browser</button>
+      <button class="btn">Refresh</button>
+    </div>
+
+    <div class="browserrow">
+      <div class="avatar" style="background:var(--blue)">C</div>
+      <div class="meta"><div class="nm">Center Consulting <span class="tag">Rename</span></div>
+        <div class="dt">Chrome &mdash; soren@centerconsulting.com &nbsp;(port 9310)</div></div>
+      <span class="pill green">Ready</span><button class="btn">Attach</button>
+      <button class="btn">Stop</button><span class="trash">&#128465;</span>
+    </div>
+    <div class="browserrow">
+      <div class="avatar" style="background:var(--blue)">C</div>
+      <div class="meta"><div class="nm">Private <span class="tag">Rename</span></div>
+        <div class="dt">Chrome &mdash; soren@duksrevo.com &nbsp;(port 9311)</div></div>
+      <span class="pill">Stopped</span><button class="btn">Start</button><span class="trash">&#128465;</span>
+    </div>
+    <div class="browserrow">
+      <div class="avatar" style="background:var(--edge)">E</div>
+      <div class="meta"><div class="nm">mindzie <span class="tag">Rename</span></div>
+        <div class="dt">Edge &mdash; soren.frederiksen@mindzie.com &nbsp;(port 9312)</div></div>
+      <span class="pill">Stopped</span><button class="btn">Start</button><span class="trash">&#128465;</span>
+    </div>
+    <div class="browserrow">
+      <div class="avatar" style="background:var(--blue)">C</div>
+      <div class="meta"><div class="nm">Agent browser <span class="tag">Rename</span></div>
+        <div class="dt">Chrome &mdash; checking&hellip; &nbsp;(port 9313)</div></div>
+      <span class="pill">Checking&hellip;</span>
+    </div>
+
+    <div class="sub" style="margin-top:16px;">
+      A browser you no longer recognise is a browser you should delete &mdash; it still holds whatever
+      it was signed in to.
+    </div>
+
+  </div>
+  <div class="footer"><a>Open config.json</a><div><button class="btn primary">Save and Close</button> <button class="btn">Cancel</button></div></div>
+</div>
+
+<script>
+  function show(i, btn){
+    document.querySelectorAll('.screen').forEach((s,n)=>s.classList.toggle('on', n===i));
+    document.querySelectorAll('.toolbar button').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    window.scrollTo({top:0,behavior:'smooth'});
+  }
+</script>
+</body>
+</html>

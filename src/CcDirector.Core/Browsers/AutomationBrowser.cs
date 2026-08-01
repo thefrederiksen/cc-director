@@ -17,7 +17,7 @@ namespace CcDirector.Core.Browsers;
 /// the <c>BU_NAME</c> the harness attaches with and as the on-disk sub-directory name. Never changes,
 /// even when <paramref name="Name"/> is edited.</param>
 /// <param name="Name">Human-facing, user-editable label (e.g. "Center Consulting").</param>
-/// <param name="Kind">Which Chromium browser this drives (Chrome or Edge).</param>
+/// <param name="Kind">Which Chromium browser this drives (see <see cref="BrowserKind"/>).</param>
 /// <param name="UserDataDir">This browser's dedicated <c>--user-data-dir</c> (absolute path). Never a
 /// real personal profile - always a folder DevThrottle created under <see cref="Storage.CcStorage.Browsers"/>.</param>
 /// <param name="Port">The fixed <c>--remote-debugging-port</c> this browser always launches on, so the
@@ -51,6 +51,19 @@ public enum AutomationBrowserStatus
 
     /// <summary>The browser is running AND has been signed in - fully drivable by an agent.</summary>
     Ready,
+
+    /// <summary>
+    /// Not asked yet. Everything a browser IS - its name, browser, port, folder, attach command,
+    /// signed-in account - is read from local files in microseconds, but whether it is RUNNING costs a
+    /// probe of its debug port, and that probe is the slow part on some machines. This status lets a
+    /// surface show the browsers it has immediately and fill the running/stopped answer in when it
+    /// arrives, instead of holding the whole list hostage to the probe.
+    ///
+    /// It is a DISPLAY state, never a stored one: nothing writes it to the registry and no decision is
+    /// made from it. A surface showing Checking must offer no action, because "Start" on a browser that
+    /// turns out to be running is the wrong button.
+    /// </summary>
+    Checking,
 }
 
 /// <summary>

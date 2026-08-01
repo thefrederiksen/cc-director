@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Linq;
 using System.Threading.Tasks;
@@ -24,8 +25,13 @@ public partial class BrowserSettingsView : UserControl
     public event EventHandler? Changed;
 
     private IReadOnlyList<AutomationBrowserView> _views = Array.Empty<AutomationBrowserView>();
+    private ObservableCollection<BrowserCardViewModel> _cards = new();
     private readonly HashSet<string> _renamingIds = new(StringComparer.OrdinalIgnoreCase);
     private bool _refreshing;
+
+    /// <summary>Bumped by every refresh. A status probe carries the generation it started under and
+    /// drops its result if a newer refresh has replaced the list underneath it.</summary>
+    private int _refreshGeneration;
 
     public BrowserSettingsView()
     {
@@ -40,23 +46,34 @@ public partial class BrowserSettingsView : UserControl
         CreateNameBox.Focus();
     }
 
-    /// <summary>Re-read the registry, probe live status, and repaint the whole tab.</summary>
+    /// <summary>
+    /// Re-read the registry and repaint the tab, in TWO passes.
+    ///
+    /// The list itself is local file data and costs microseconds, so it paints immediately with every
+    /// browser's real name, browser, port and account. Whether each one is RUNNING is the only slow
+    /// fact - it needs a probe of that browser's debug port, and on a machine whose network stack does
+    /// not refuse a dead port promptly that probe takes seconds. So each browser shows "Checking..."
+    /// and its own row is swapped in the moment its own probe answers. Nothing waits for anything else.
+    ///
+    /// This replaces a single pass that probed every browser before painting anything, which left the
+    /// whole tab blank behind "Checking browsers..." for as long as the slowest probe took.
+    /// </summary>
     public async Task RefreshAsync()
     {
         if (_refreshing) return;
         _refreshing = true;
+        var generation = ++_refreshGeneration;
         try
         {
-            StatusText.Text = "Checking browsers...";
-
+            var previous = _views;
             var harnessInstalled = false;
             IReadOnlyList<AutomationBrowserView> views = Array.Empty<AutomationBrowserView>();
             IReadOnlyList<BrowserInfo> installed = Array.Empty<BrowserInfo>();
-            await Task.Run(async () =>
+            await Task.Run(() =>
             {
                 harnessInstalled = AutomationBrowserViewFold.IsHarnessInstalled();
                 installed = BrowserLauncher.DetectBrowsers();
-                views = await AutomationBrowserViewFold.ListAsync().ConfigureAwait(false);
+                views = AutomationBrowserViewFold.ListPending(previous);
             });
 
             _views = views;
@@ -71,22 +88,90 @@ public partial class BrowserSettingsView : UserControl
             CreateKindCombo.SelectedItem = kinds.Contains(selected ?? "") ? selected : kinds.FirstOrDefault();
             NewBrowserButton.IsEnabled = kinds.Count > 0;
             if (kinds.Count == 0)
-                StatusText.Text = "No Chrome or Edge installation was found on this machine, so no browser can be created.";
+                // Named from the enum rather than spelled out, so this sentence cannot go stale the
+                // next time a browser is added - a list that says "Chrome or Edge" on a build that also
+                // supports Brave tells someone to install a browser they may already have.
+                StatusText.Text =
+                    $"None of the browsers DevThrottle can drive ({string.Join(", ", Enum.GetNames<BrowserKind>())}) "
+                    + "was found on this machine, so no browser can be created.";
 
-            BrowserCards.ItemsSource = views.Select(v => new BrowserCardViewModel(v)
+            _cards = new ObservableCollection<BrowserCardViewModel>(views.Select(v => new BrowserCardViewModel(v)
             {
                 IsRenaming = _renamingIds.Contains(v.Id),
-            }).ToList();
+            }));
+            BrowserCards.ItemsSource = _cards;
         }
         catch (Exception ex)
         {
             FileLog.Write($"[BrowserSettingsView] RefreshAsync FAILED: {ex.Message}");
             StatusText.Text = $"Could not read the browsers list: {ex.Message}";
+            return;
         }
         finally
         {
             _refreshing = false;
         }
+
+        // The list is on screen; now find out which of them are running. Deliberately NOT awaited into
+        // the paint above - that is the whole point.
+        await ProbeStatusesAsync(generation);
+    }
+
+    /// <summary>
+    /// Probe every listed browser CONCURRENTLY and swap each row in as its own answer arrives. A
+    /// browser that answers in milliseconds is not made to wait behind one that takes seconds.
+    ///
+    /// <paramref name="generation"/> is the refresh this probe run belongs to. A result is dropped when
+    /// a newer refresh has started, because by then the rows it would update belong to a list that no
+    /// longer exists - writing into it would resurrect a browser the user just removed, or paint a
+    /// status onto the wrong row.
+    /// </summary>
+    private async Task ProbeStatusesAsync(int generation)
+    {
+        var browsers = _views;
+        if (browsers.Count == 0) return;
+
+        await Task.WhenAll(browsers.Select(async pending =>
+        {
+            AutomationBrowserView probed;
+            try
+            {
+                probed = await Task.Run(() => AutomationBrowserViewFold.FoldAsync(AutomationBrowserRegistry.Get(pending.Id)));
+            }
+            catch (Exception ex)
+            {
+                // One browser that cannot be probed (removed mid-refresh, unreadable entry) leaves its
+                // own row saying "Checking..." and takes nothing else down with it.
+                FileLog.Write($"[BrowserSettingsView] ProbeStatusesAsync: id={pending.Id} failed (non-fatal): {ex.Message}");
+                return;
+            }
+
+            if (generation != _refreshGeneration) return;
+            ApplyProbedView(probed);
+        }));
+    }
+
+    /// <summary>Swap one browser's finished view into the list, keeping its position and any in-progress
+    /// rename. Called on the UI thread - Avalonia marshals the await continuation back to it.</summary>
+    private void ApplyProbedView(AutomationBrowserView probed)
+    {
+        _views = _views.Select(v => v.Id == probed.Id ? probed : v).ToList();
+
+        var index = IndexOfCard(probed.Id);
+        if (index < 0) return;
+
+        _cards[index] = new BrowserCardViewModel(probed)
+        {
+            IsRenaming = _renamingIds.Contains(probed.Id),
+        };
+    }
+
+    private int IndexOfCard(string id)
+    {
+        for (var i = 0; i < _cards.Count; i++)
+            if (_cards[i].Id == id)
+                return i;
+        return -1;
     }
 
     private async Task RefreshAndNotifyAsync()
@@ -102,7 +187,7 @@ public partial class BrowserSettingsView : UserControl
     private BrowserCardViewModel? CardFor(object? sender)
     {
         var id = (sender as Button)?.Tag as string;
-        return (BrowserCards.ItemsSource as IEnumerable<BrowserCardViewModel>)?.FirstOrDefault(c => c.Id == id);
+        return _cards.FirstOrDefault(c => c.Id == id);
     }
 
     // ---- header actions ----
@@ -407,14 +492,16 @@ public partial class BrowserSettingsView : UserControl
 
             ShowStart = view.Status == AutomationBrowserStatus.Stopped;
             ShowSignIn = view.Status == AutomationBrowserStatus.NeedsSignIn;
+            // Stop is offered for the two states we KNOW are running - never merely for "not stopped",
+            // which would put a Stop button on a browser whose status we have not established yet.
+            ShowStop = view.Status is AutomationBrowserStatus.Ready or AutomationBrowserStatus.NeedsSignIn;
             ShowAttach = view.Status == AutomationBrowserStatus.Ready;
-            ShowStop = view.Status != AutomationBrowserStatus.Stopped;
 
-            // The pill's color IS the fold's dot color; only the text contrast is chosen here.
-            PillBackground = view.Status == AutomationBrowserStatus.Stopped
-                ? PillGreyBg
-                : StatusPalette.BrushFor(view.DotColor);
-            PillForeground = view.Status == AutomationBrowserStatus.Stopped ? PillLightText : PillDarkText;
+            // The pill's color IS the fold's dot color; only the text contrast is chosen here. Checking
+            // wears the same quiet grey as stopped: it is the absence of an answer, not a fourth state.
+            var quiet = view.Status is AutomationBrowserStatus.Stopped or AutomationBrowserStatus.Checking;
+            PillBackground = quiet ? PillGreyBg : StatusPalette.BrushFor(view.DotColor);
+            PillForeground = quiet ? PillLightText : PillDarkText;
         }
 
         public string Id { get; }

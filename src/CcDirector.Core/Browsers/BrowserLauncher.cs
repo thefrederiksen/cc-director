@@ -5,11 +5,21 @@ using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Browsers;
 
-/// <summary>The Chromium browsers we can launch a specific profile in.</summary>
+/// <summary>
+/// The Chromium browsers we can launch a specific profile in.
+///
+/// Chromium is the whole list, and that is a capability boundary rather than a preference: a browser
+/// is drivable here only because it speaks the Chrome DevTools Protocol on a
+/// <c>--remote-debugging-port</c>, which is how browser-harness attaches. Firefox (WebDriver BiDi) and
+/// Safari (WebKit remote inspector) speak neither, so they cannot be added by listing them here - they
+/// would need a second protocol backend.
+/// </summary>
 public enum BrowserKind
 {
     Chrome,
-    Edge
+    Edge,
+    Brave,
+    Opera
 }
 
 /// <summary>
@@ -70,6 +80,7 @@ public static class BrowserLauncher
     internal static IReadOnlyList<(BrowserKind Kind, string DisplayName, string[] ExeCandidates, string UserDataDir)> WindowsCandidates()
     {
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var roamingAppData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
         var programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
 
@@ -90,6 +101,27 @@ public static class BrowserLauncher
                     Path.Combine(programFiles, "Microsoft", "Edge", "Application", "msedge.exe"),
                 },
                 Path.Combine(localAppData, "Microsoft", "Edge", "User Data")),
+            (BrowserKind.Brave, "Brave",
+                new[]
+                {
+                    Path.Combine(programFiles, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+                    Path.Combine(programFilesX86, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+                    Path.Combine(localAppData, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+                },
+                Path.Combine(localAppData, "BraveSoftware", "Brave-Browser", "User Data")),
+            // Opera breaks the pattern twice, so neither line is a copy of the ones above. Its
+            // installer defaults to a PER-USER install under Local\Programs (the all-users location is
+            // the option, not the default), which is why that candidate is first. And its profile lives
+            // in ROAMING AppData with no "User Data" level - a Chrome-shaped guess here would look
+            // right and find nothing.
+            (BrowserKind.Opera, "Opera",
+                new[]
+                {
+                    Path.Combine(localAppData, "Programs", "Opera", "opera.exe"),
+                    Path.Combine(programFiles, "Opera", "opera.exe"),
+                    Path.Combine(programFilesX86, "Opera", "opera.exe"),
+                },
+                Path.Combine(roamingAppData, "Opera Software", "Opera Stable")),
         };
     }
 
@@ -126,12 +158,21 @@ public static class BrowserLauncher
             (BrowserKind.Edge, "Microsoft Edge",
                 BundlePaths(home, "Microsoft Edge.app", "Microsoft Edge"),
                 Path.Combine(appSupport, "Microsoft Edge")),
+            (BrowserKind.Brave, "Brave",
+                BundlePaths(home, "Brave Browser.app", "Brave Browser"),
+                Path.Combine(appSupport, "BraveSoftware", "Brave-Browser")),
+            // Opera names its support folder by bundle id, not by product name, so this one is not
+            // guessable from the pattern the other three follow.
+            (BrowserKind.Opera, "Opera",
+                BundlePaths(home, "Opera.app", "Opera"),
+                Path.Combine(appSupport, "com.operasoftware.Opera")),
         };
     }
 
     /// <summary>
     /// Returns the Chromium browsers found at their standard install locations, in a stable order
-    /// (Chrome, then Edge). A browser is "installed" when one of its candidate exe paths exists.
+    /// (Chrome, Edge, Brave, Opera - most-used first, which is also the order the pickers show and the
+    /// first-run wizard prefers). A browser is "installed" when one of its candidate exe paths exists.
     /// </summary>
     public static IReadOnlyList<BrowserInfo> DetectBrowsers()
     {

@@ -30,16 +30,23 @@ internal static class BrowserSignInFlow
         // user who signs in to nothing gets a browser their agents cannot do anything useful with.
         // Both routes are named because both are legitimate - a browser account carries everything at
         // once, and per-site logins keep the profile to just the accounts it is meant to reach.
-        var accountKind = view.Browser.Equals("Edge", StringComparison.OrdinalIgnoreCase)
-            ? "a Microsoft account"
-            : "a Google account";
+        //
+        // Only Chrome and Edge HAVE that carry-everything account. Naming one for Brave or Opera would
+        // send someone looking for a thing their browser does not have, so those are told the one route
+        // that is real for them.
+        var whatToSignInTo = AccountRoute(view.Browser) is { } accountKind
+            ? $"Sign in to whatever you want this browser to reach: {accountKind} to bring your profile "
+              + "across, or just the individual websites you want an agent to use."
+            : "Sign in to the individual websites you want an agent to use - this browser has no single "
+              + "account that carries a profile across.";
 
         var dialog = new ConfirmDialog(
             "Sign in once",
-            $"A \"{view.Name}\" window just opened on its sign-in page. Sign in by hand in that window - "
+            // Not "on its sign-in page": Brave and Opera open on their start page, because they have no
+            // account page to open. Saying so would send someone looking for a form that is not there.
+            $"A \"{view.Name}\" window just opened. Sign in by hand in that window - "
             + "DevThrottle never types your credentials.\n\n"
-            + $"Sign in to whatever you want this browser to reach: {accountKind} to bring your profile "
-            + "across, or just the individual websites you want an agent to use. Whatever is signed in "
+            + $"{whatToSignInTo} Whatever is signed in "
             + "here is what your agents can drive - nothing else.\n\n"
             + "The logins are kept in this browser's own profile, apart from your everyday browser, and "
             + "last until the account signs them out.\n\n"
@@ -56,4 +63,17 @@ internal static class BrowserSignInFlow
 
         return confirmed;
     }
+
+    /// <summary>
+    /// The name of the browser account that carries a whole signed-in profile across in one go, or
+    /// null for a browser that has no such thing. Matched on the same text the view carries
+    /// (<see cref="BrowserKind"/>'s name), so a new browser lands in the null branch and gets the
+    /// per-site instruction rather than being told to sign in to someone else's account.
+    /// </summary>
+    internal static string? AccountRoute(string browser) => browser switch
+    {
+        _ when browser.Equals(nameof(BrowserKind.Chrome), StringComparison.OrdinalIgnoreCase) => "a Google account",
+        _ when browser.Equals(nameof(BrowserKind.Edge), StringComparison.OrdinalIgnoreCase) => "a Microsoft account",
+        _ => null,
+    };
 }

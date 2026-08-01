@@ -37,6 +37,10 @@ public partial class BrowsersRailGroup : UserControl
     private bool _expanded = true;
     private bool _refreshing;
 
+    /// <summary>Bumped by every refresh. A status probe carries the generation it started under and
+    /// drops its result if a newer refresh has replaced the list underneath it.</summary>
+    private int _refreshGeneration;
+
     public BrowsersRailGroup()
     {
         InitializeComponent();
@@ -55,21 +59,29 @@ public partial class BrowsersRailGroup : UserControl
     }
 
     /// <summary>
-    /// Re-read the registry, probe each browser's live status, and repaint the group. Safe to call
-    /// from anywhere; overlapping calls collapse into one.
+    /// Re-read the registry and repaint the group, then find out which browsers are running.
+    ///
+    /// The rows come from local files and paint immediately; each browser's running/stopped answer
+    /// costs a probe of its debug port and arrives after, on its own. Rows already on screen keep their
+    /// last known status while the fresh probe runs - this method is also driven by a timer, and
+    /// blinking every row to "Checking..." on each tick would read as instability.
+    ///
+    /// Safe to call from anywhere; overlapping calls collapse into one.
     /// </summary>
     public async Task RefreshAsync()
     {
         if (_refreshing) return;
         _refreshing = true;
+        var generation = ++_refreshGeneration;
         try
         {
+            var previous = _views;
             var harnessInstalled = false;
             IReadOnlyList<AutomationBrowserView> views = Array.Empty<AutomationBrowserView>();
-            await Task.Run(async () =>
+            await Task.Run(() =>
             {
                 harnessInstalled = AutomationBrowserViewFold.IsHarnessInstalled();
-                views = await AutomationBrowserViewFold.ListAsync().ConfigureAwait(false);
+                views = AutomationBrowserViewFold.ListPending(previous);
             });
 
             _views = views;
@@ -80,11 +92,45 @@ public partial class BrowsersRailGroup : UserControl
         {
             FileLog.Write($"[BrowsersRailGroup] RefreshAsync FAILED: {ex.Message}");
             Notified?.Invoke(this, $"Could not read the browsers list: {ex.Message}");
+            return;
         }
         finally
         {
             _refreshing = false;
         }
+
+        await ProbeStatusesAsync(generation);
+    }
+
+    /// <summary>
+    /// Probe every listed browser CONCURRENTLY and repaint as each answer arrives. Results from a
+    /// superseded refresh are dropped: by then the rows they would update belong to a list that no
+    /// longer exists.
+    /// </summary>
+    private async Task ProbeStatusesAsync(int generation)
+    {
+        var listed = _views;
+        if (listed.Count == 0) return;
+
+        await Task.WhenAll(listed.Select(async pending =>
+        {
+            AutomationBrowserView probed;
+            try
+            {
+                probed = await Task.Run(() => AutomationBrowserViewFold.FoldAsync(AutomationBrowserRegistry.Get(pending.Id)));
+            }
+            catch (Exception ex)
+            {
+                // One browser that cannot be probed leaves its own row on its last known status and
+                // takes nothing else down with it.
+                FileLog.Write($"[BrowsersRailGroup] ProbeStatusesAsync: id={pending.Id} failed (non-fatal): {ex.Message}");
+                return;
+            }
+
+            if (generation != _refreshGeneration) return;
+            _views = _views.Select(v => v.Id == probed.Id ? probed : v).ToList();
+            Render(_views, _harnessInstalled);
+        }));
     }
 
     private void Render(IReadOnlyList<AutomationBrowserView> views, bool harnessInstalled)
@@ -105,7 +151,9 @@ public partial class BrowsersRailGroup : UserControl
             DotBrush = StatusPalette.BrushFor(v.DotColor),
             // Dimmed advertising rows when the harness is missing: discoverable, not operable.
             RowOpacity = harnessInstalled ? 1.0 : 0.45,
-            ActionVisible = harnessInstalled,
+            // No action while the status is still unknown: every action here depends on whether the
+            // browser is running, and the fold gives an empty label for exactly that reason.
+            ActionVisible = harnessInstalled && v.Status != AutomationBrowserStatus.Checking,
             ActionLabel = v.ActionLabel,
             ActionForeground = v.Status == AutomationBrowserStatus.NeedsSignIn ? AmberBrush : AccentBrush,
             ActionToolTip = v.Status switch

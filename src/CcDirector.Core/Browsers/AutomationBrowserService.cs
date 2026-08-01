@@ -383,11 +383,27 @@ public static class AutomationBrowserService
 
     private static string VersionUrl(int port) => $"http://127.0.0.1:{port}/json/version";
 
-    /// <summary>The sign-in landing page appropriate to the browser's identity provider.</summary>
-    private static string AccountUrl(BrowserKind kind) => kind switch
+    /// <summary>
+    /// The sign-in landing page appropriate to the browser's identity provider.
+    ///
+    /// Chrome and Edge each have a browser account that carries a whole profile across in one sign-in,
+    /// so landing on it is a real shortcut. Brave and Opera have no such account - Brave Sync is a
+    /// pairing code and an Opera account syncs bookmarks, neither of which signs the profile in to
+    /// anything an agent will drive. For those two the honest landing is the browser's own start page:
+    /// the window comes up focused and the human signs in to the sites this profile is FOR, which is
+    /// what the sign-in dialog's copy tells them to do.
+    ///
+    /// Exhaustive on purpose: a fifth browser added to <see cref="BrowserKind"/> without a decision
+    /// made here should fail loudly at this seam rather than quietly land someone on a page chosen for
+    /// a different browser.
+    /// </summary>
+    internal static string AccountUrl(BrowserKind kind) => kind switch
     {
         BrowserKind.Chrome => "https://accounts.google.com/",
         BrowserKind.Edge => "https://login.live.com/",
-        _ => "https://www.google.com/",
+        BrowserKind.Brave => "https://search.brave.com/",
+        BrowserKind.Opera => "https://www.opera.com/",
+        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind,
+            $"No sign-in landing page has been chosen for {kind}. Add one to AccountUrl."),
     };
 }

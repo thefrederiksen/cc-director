@@ -1995,16 +1995,18 @@ public partial class FirstRunWizardDialog : Window
     }
 
     /// <summary>
-    /// Which browser to set up. Chrome first because it is what most people have signed in to, Edge
-    /// otherwise. THROWS when neither is installed, naming both - there is nothing to substitute.
+    /// Which browser to set up: the first one installed, in DetectBrowsers' own most-used-first order
+    /// (Chrome, then Edge, then the rest). Taking that order rather than naming browsers here means a
+    /// machine with only Brave or only Opera now gets set up instead of being told to install Chrome.
+    /// THROWS when none of them is installed, naming all of them - there is nothing to substitute.
     /// </summary>
     private static BrowserKind PickBrowserKind()
     {
         var installed = BrowserLauncher.DetectBrowsers();
-        if (installed.Any(b => b.Kind == BrowserKind.Chrome)) return BrowserKind.Chrome;
-        if (installed.Any(b => b.Kind == BrowserKind.Edge)) return BrowserKind.Edge;
+        if (installed.Count > 0) return installed[0].Kind;
         throw new InvalidOperationException(
-            "Neither Chrome nor Edge is installed on this machine, so there is no browser to set up. "
+            $"None of the browsers DevThrottle can drive ({string.Join(", ", Enum.GetNames<BrowserKind>())}) "
+            + "is installed on this machine, so there is no browser to set up. "
             + "Install one, then set browsers up from the Browsers group in the left rail.");
     }
 
