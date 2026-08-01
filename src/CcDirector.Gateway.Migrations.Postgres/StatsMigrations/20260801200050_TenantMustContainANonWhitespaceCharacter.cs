@@ -5,7 +5,7 @@
 namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 {
     /// <inheritdoc />
-    public partial class TenantNonEmptyIsTrimBased : Migration
+    public partial class TenantMustContainANonWhitespaceCharacter : Migration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
@@ -99,103 +99,103 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
                 name: "ck_wingman_session_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "wingman_session",
-                sql: "btrim(\"tenant\") <> ''");
+                sql: "\"tenant\" ~ '[^[:space:]]'");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_token_highwater_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "token_highwater",
-                sql: "btrim(\"tenant\") <> ''");
+                sql: "\"tenant\" ~ '[^[:space:]]'");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_token_delta_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "token_delta",
-                sql: "btrim(\"tenant\") <> ''");
+                sql: "\"tenant\" ~ '[^[:space:]]'");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_stat_delta_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "stat_delta",
-                sql: "btrim(\"tenant\") <> ''");
+                sql: "\"tenant\" ~ '[^[:space:]]'");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_session_highwater_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "session_highwater",
-                sql: "btrim(\"tenant\") <> ''");
+                sql: "\"tenant\" ~ '[^[:space:]]'");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_repo_identity_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "repo_identity",
-                sql: "btrim(\"tenant\") <> ''");
+                sql: "\"tenant\" ~ '[^[:space:]]'");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_model_identity_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "model_identity",
-                sql: "btrim(\"tenant\") <> ''");
+                sql: "\"tenant\" ~ '[^[:space:]]'");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_meta_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "meta",
-                sql: "btrim(\"tenant\") <> ''");
+                sql: "\"tenant\" ~ '[^[:space:]]'");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_ConcurrencyPeaks_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "concurrency_peak",
-                sql: "btrim(\"tenant\") <> ''");
+                sql: "\"tenant\" ~ '[^[:space:]]'");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_ConcurrencyHourMembers_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "concurrency_hour_member",
-                sql: "btrim(\"tenant\") <> ''");
+                sql: "\"tenant\" ~ '[^[:space:]]'");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_ConcurrencyHours_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "concurrency_hour",
-                sql: "btrim(\"tenant\") <> ''");
+                sql: "\"tenant\" ~ '[^[:space:]]'");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_checkout_identity_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "checkout_identity",
-                sql: "btrim(\"tenant\") <> ''");
+                sql: "\"tenant\" ~ '[^[:space:]]'");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_agents_seeded_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "agents_seeded",
-                sql: "btrim(\"tenant\") <> ''");
+                sql: "\"tenant\" ~ '[^[:space:]]'");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_agent_identity_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "agent_identity",
-                sql: "btrim(\"tenant\") <> ''");
+                sql: "\"tenant\" ~ '[^[:space:]]'");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_agent_driven_highwater_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "agent_driven_highwater",
-                sql: "btrim(\"tenant\") <> ''");
+                sql: "\"tenant\" ~ '[^[:space:]]'");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_agent_driven_delta_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "agent_driven_delta",
-                sql: "btrim(\"tenant\") <> ''");
+                sql: "\"tenant\" ~ '[^[:space:]]'");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_agent_delta_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "agent_delta",
-                sql: "btrim(\"tenant\") <> ''");
+                sql: "\"tenant\" ~ '[^[:space:]]'");
         }
 
         /// <inheritdoc />
@@ -290,103 +290,103 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
                 name: "ck_wingman_session_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "wingman_session",
-                sql: "\"tenant\" <> ''");
+                sql: "btrim(\"tenant\") <> ''");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_token_highwater_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "token_highwater",
-                sql: "\"tenant\" <> ''");
+                sql: "btrim(\"tenant\") <> ''");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_token_delta_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "token_delta",
-                sql: "\"tenant\" <> ''");
+                sql: "btrim(\"tenant\") <> ''");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_stat_delta_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "stat_delta",
-                sql: "\"tenant\" <> ''");
+                sql: "btrim(\"tenant\") <> ''");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_session_highwater_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "session_highwater",
-                sql: "\"tenant\" <> ''");
+                sql: "btrim(\"tenant\") <> ''");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_repo_identity_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "repo_identity",
-                sql: "\"tenant\" <> ''");
+                sql: "btrim(\"tenant\") <> ''");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_model_identity_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "model_identity",
-                sql: "\"tenant\" <> ''");
+                sql: "btrim(\"tenant\") <> ''");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_meta_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "meta",
-                sql: "\"tenant\" <> ''");
+                sql: "btrim(\"tenant\") <> ''");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_ConcurrencyPeaks_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "concurrency_peak",
-                sql: "\"tenant\" <> ''");
+                sql: "btrim(\"tenant\") <> ''");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_ConcurrencyHourMembers_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "concurrency_hour_member",
-                sql: "\"tenant\" <> ''");
+                sql: "btrim(\"tenant\") <> ''");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_ConcurrencyHours_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "concurrency_hour",
-                sql: "\"tenant\" <> ''");
+                sql: "btrim(\"tenant\") <> ''");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_checkout_identity_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "checkout_identity",
-                sql: "\"tenant\" <> ''");
+                sql: "btrim(\"tenant\") <> ''");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_agents_seeded_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "agents_seeded",
-                sql: "\"tenant\" <> ''");
+                sql: "btrim(\"tenant\") <> ''");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_agent_identity_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "agent_identity",
-                sql: "\"tenant\" <> ''");
+                sql: "btrim(\"tenant\") <> ''");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_agent_driven_highwater_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "agent_driven_highwater",
-                sql: "\"tenant\" <> ''");
+                sql: "btrim(\"tenant\") <> ''");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_agent_driven_delta_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "agent_driven_delta",
-                sql: "\"tenant\" <> ''");
+                sql: "btrim(\"tenant\") <> ''");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_agent_delta_tenant_not_empty",
                 schema: "gateway_stats",
                 table: "agent_delta",
-                sql: "\"tenant\" <> ''");
+                sql: "btrim(\"tenant\") <> ''");
         }
     }
 }

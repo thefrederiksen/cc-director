@@ -437,13 +437,26 @@ public sealed class GatewayStatsDbContext : DbContext
                 var table = entityType.GetTableName();
                 if (table is null) continue;
 
-                // TRIM-BASED, not <> ''. The first version of this constraint refused the empty string and
-                // nothing else, which left a hole an inspector walked straight through: it stood up the
-                // restricted-role rig, applied this exact chain, inserted a tenant of THREE SPACES, and read
-                // it back at length 3. A whitespace tenant is not a tenant - TenantId itself rejects one -
-                // so a schema that accepts it is not enforcing the invariant it claims to, it is enforcing a
-                // spelling of it. btrim collapses every all-whitespace value to '' before the comparison.
-                entityType.AddCheckConstraint(TenantNotEmptyConstraint(table), "btrim(\"tenant\") <> ''");
+                // THE TENANT MUST CONTAIN A NON-WHITESPACE CHARACTER. Not "is not empty", which is a
+                // spelling of the invariant rather than the invariant.
+                //
+                // This predicate has now been wrong twice, in the same direction, and both are worth
+                // recording because the second one is the subtler trap. The first version was
+                // `tenant <> ''`, which refuses the empty string and nothing else - an inspector stood up
+                // the restricted-role rig, applied this exact chain, inserted a tenant of THREE SPACES and
+                // read it back at length 3. The second version was `btrim("tenant") <> ''`, which looks
+                // like it closes that - and does, for SPACES. PostgreSQL's one-argument btrim strips the
+                // SPACE CHARACTER ONLY, so a tab or a newline sailed straight through a constraint whose
+                // name says non-empty. The acceptance fact that covers tab and newline is what caught it,
+                // and it exists because the first fix taught us to test the case that got through rather
+                // than the case we had just fixed.
+                //
+                // A regular expression asks the question directly: does this value contain at least one
+                // character that is not whitespace? [:space:] is the POSIX class, so it covers space, tab,
+                // newline, carriage return, form feed and vertical tab without enumerating them here and
+                // getting the list wrong a third time. TenantId rejects a whitespace tenant, and now so
+                // does the schema.
+                entityType.AddCheckConstraint(TenantNotEmptyConstraint(table), "\"tenant\" ~ '[^[:space:]]'");
             }
         }
 
