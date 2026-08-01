@@ -55,9 +55,17 @@
 
             <ScrollViewer x:Name="RecoPage" IsVisible="False" VerticalScrollBarVisibility="Auto">
                 <StackPanel Margin="14" Spacing="8">
-                    <TextBlock Text="Recommendations" Foreground="#CCCCCC" FontSize="14" FontWeight="SemiBold" />
-                    <TextBlock Text="What the background scan suggests, in plain language. Nothing here happens without you."
-                               Foreground="#888888" FontSize="11" TextWrapping="Wrap" MaxWidth="560" />
+                    <Grid ColumnDefinitions="*,Auto">
+                        <StackPanel Grid.Column="0" Spacing="3">
+                            <TextBlock Text="Recommendations" Foreground="#CCCCCC" FontSize="14" FontWeight="SemiBold" />
+                            <TextBlock Text="What the background scan suggests, in plain language. Nothing here happens without you."
+                                       Foreground="#888888" FontSize="11" TextWrapping="Wrap" MaxWidth="560" />
+                        </StackPanel>
+                        <Button Grid.Column="1" x:Name="CopyAllRecoButton" Content="Copy all" Background="#0E639C"
+                                Foreground="White" FontSize="11" Padding="12,4" VerticalAlignment="Top"
+                                Click="CopyAllReco_Click"
+                                ToolTip.Tip="Copy every recommendation as text, ready to paste into an agent" />
+                    </Grid>
                     <TextBlock x:Name="RecoEmptyText" Text="Nothing to recommend - your repositories look tidy."
                                Foreground="#22C55E" FontSize="12" IsVisible="False" Margin="0,6,0,0" />
                     <ItemsControl x:Name="RecoList">
@@ -74,9 +82,10 @@
                                             <StackPanel Orientation="Horizontal" Spacing="7" Margin="0,6,0,0">
                                                 <Button Content="Show me" Background="#3C3C3C" Foreground="#CCCCCC"
                                                         FontSize="11" Padding="10,3" Click="RecoShow_Click" />
-                                                <Button Content="Hand to an agent" Background="#0E639C" Foreground="White"
-                                                        FontSize="11" Padding="10,3" IsVisible="{Binding HasRepo}"
-                                                        Click="RecoHandOff_Click" />
+                                                <Button Content="Copy" Background="#0E639C" Foreground="White"
+                                                        FontSize="11" Padding="10,3"
+                                                        Click="RecoCopy_Click"
+                                                        ToolTip.Tip="Copy this recommendation as text, ready to paste into an agent" />
                                             </StackPanel>
                                         </StackPanel>
                                     </Grid>

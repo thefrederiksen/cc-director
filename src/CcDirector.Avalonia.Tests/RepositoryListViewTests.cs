@@ -131,4 +131,19 @@ public class RepositoryListViewTests
         });
         Assert.Equal("3 on disk · 1 with uncommitted work · 2 worktrees to reap", summary);
     }
+
+    /// <summary>
+    /// Copy report stays clickable mid-scan - a greyed-out button cannot explain itself, and the
+    /// report labels itself PARTIAL instead (which is the only warning that survives the paste).
+    /// The single disabled case is an empty list, where the screen shows "Scanning repositories..."
+    /// rather than rows, so no dead button sits beside visible content.
+    /// </summary>
+    [Theory]
+    [InlineData(22, true)]  // mid-scan with rows on screen - copyable, and the report says PARTIAL
+    [InlineData(70, true)]  // finished
+    [InlineData(0, false)]  // nothing on screen yet - genuinely nothing to copy
+    public void CopyReport_IsOfferedWheneverThereAreRows(int count, bool expected)
+    {
+        Assert.Equal(expected, RepositoryListView.CanCopyReport(count));
+    }
 }

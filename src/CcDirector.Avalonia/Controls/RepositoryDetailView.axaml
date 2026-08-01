@@ -78,8 +78,9 @@
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
                     <Button x:Name="OpenVsCodeButton" Content="Open in VS Code" Background="#3C3C3C" Foreground="#CCCCCC"
                             FontSize="11" Padding="10,4" Click="OpenVsCodeButton_Click" />
-                    <Button x:Name="HandToAgentButton" Content="Hand to an agent" Background="#0E639C" Foreground="White"
-                            FontSize="11" FontWeight="SemiBold" Padding="10,4" Click="HandToAgentButton_Click" />
+                    <Button x:Name="CopyReportButton" Content="Copy report" Background="#0E639C" Foreground="White"
+                            FontSize="11" FontWeight="SemiBold" Padding="10,4" Click="CopyReportButton_Click"
+                            ToolTip.Tip="Copy this repository's state and what to do about it, ready to paste into an agent" />
                 </StackPanel>
                 <StackPanel Spacing="2">
                     <StackPanel Orientation="Horizontal" Spacing="8">

@@ -55,11 +55,20 @@ public partial class RepositoryListView : UserControl
 
     private RepositoryMonitor? _monitor;
 
+    /// <summary>True while the copy button is showing its "Copied" confirmation - renders leave it alone.</summary>
+    private bool _copying;
+
     /// <summary>Raised when the user clicks Refresh; the host triggers the monitor to rescan.</summary>
     public event Action? RefreshRequested;
 
     /// <summary>Raised when a repository row is clicked - the host opens its detail screen.</summary>
     public event Action<string>? RepoOpenRequested;
+
+    /// <summary>
+    /// The registered root folders, named in the copied report so a pasted report says where the
+    /// scan looked. Supplied by the host; empty when the roots are not known.
+    /// </summary>
+    public Func<IReadOnlyList<string>>? RootsProvider { get; set; }
 
     private void RepoRow_PointerPressed(object? sender, global::Avalonia.Input.PointerPressedEventArgs e)
     {
@@ -117,6 +126,46 @@ public partial class RepositoryListView : UserControl
 
     private void RefreshButton_Click(object? sender, RoutedEventArgs e) => RefreshRequested?.Invoke();
 
+    /// <summary>
+    /// Put the whole scan on the clipboard as a report the owner pastes into whichever agent they
+    /// like. Copying mid-scan is ALLOWED: a greyed-out button cannot say why it is greyed out, and
+    /// the header explaining the scan sits at the other end of the row. Instead the report declares
+    /// itself PARTIAL - which is also the only warning that survives the paste into an agent.
+    /// </summary>
+    private async void CopyReportButton_Click(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button || _monitor is null)
+            return;
+        var monitor = _monitor;
+        bool scanning = monitor.IsScanning;
+        _copying = true;
+        try
+        {
+            var snapshot = monitor.Snapshot();
+            var report = RepoReportBuilder.BuildAll(
+                snapshot,
+                RecommendationEngine.Evaluate(snapshot),
+                RootsProvider?.Invoke(),
+                progress: new ScanProgress(scanning, monitor.ScanDone, monitor.ScanTotal));
+            await CopyToClipboard.RunAsync(
+                button, report, "Copy report",
+                scanning ? "a PARTIAL repository report" : "the repository report",
+                confirmation: scanning ? "Copied - partial" : "Copied");
+        }
+        catch (Exception ex)
+        {
+            // A failure says so ON THE BUTTON: a silent no-op would leave the owner believing the
+            // copy worked and pasting whatever was on the clipboard before.
+            FileLog.Write($"[RepositoryListView] CopyReportButton_Click FAILED: {ex}");
+            await CopyToClipboard.FlashAsync(button, "Copy failed", "Copy report");
+        }
+        finally
+        {
+            _copying = false;
+            RenderFromMonitor();
+        }
+    }
+
     private void RenderFromMonitor()
     {
         if (_monitor is null)
@@ -143,7 +192,19 @@ public partial class RepositoryListView : UserControl
         SummaryText.Text = scanning
             ? $"Scanning... {_monitor.ScanDone} of {_monitor.ScanTotal}"
             : BuildSummary(statuses);
+
+        // Left alone while it is showing its "Copied" confirmation.
+        if (!_copying)
+            CopyReportButton.IsEnabled = CanCopyReport(statuses.Count);
     }
+
+    /// <summary>
+    /// Pure gate for the copy button (unit-tested). Only an EMPTY list disables it - there is
+    /// genuinely nothing to copy, and at that point the screen shows "Scanning repositories..."
+    /// instead of a list, so no dead button sits beside visible content. A scan in progress does
+    /// NOT disable it; that report is copyable and labels itself PARTIAL.
+    /// </summary>
+    internal static bool CanCopyReport(int repositoryCount) => repositoryCount > 0;
 
     // ----- pure builders (unit-tested without a UI) -----
 
@@ -178,49 +239,14 @@ public partial class RepositoryListView : UserControl
         };
     }
 
-    internal static string ProviderLabel(RepoProvider p) => p switch
-    {
-        RepoProvider.GitHub => "GitHub",
-        RepoProvider.AzureDevOps => "Azure DevOps",
-        RepoProvider.Other => "Git",
-        _ => "local",
-    };
-
     private static string SubPathFor(RepositoryStatus s) =>
         s.Org is { Length: > 0 } ? $"{s.Org} · {s.Path}" : s.Path;
 
-    internal static string WhereText(RepositoryStatus s) =>
-        s.IsClean ? "clean" : $"{s.UncommittedCount} uncommitted";
-
-    internal static string SyncText(RepositoryStatus s)
-    {
-        if (s.IsDetachedHead)
-            return "detached HEAD";
-
-        var parts = new List<string>();
-        if (s.AheadCount > 0) parts.Add($"ahead {s.AheadCount}");
-        if (s.BehindCount > 0) parts.Add($"behind {s.BehindCount}");
-        if (s.BehindMainCount > 0) parts.Add($"behind main {s.BehindMainCount}");
-        return parts.Count == 0 ? "up to date" : string.Join(", ", parts);
-    }
-
-    internal static string WorktreeText(RepositoryStatus s)
-    {
-        if (s.WorktreeCount == 0)
-            return "no worktrees";
-
-        var parts = new List<string> { $"{s.WorktreeCount} worktree{(s.WorktreeCount == 1 ? "" : "s")}" };
-        if (s.WorktreesSafeToReap > 0) parts.Add($"{s.WorktreesSafeToReap} safe");
-        if (s.WorktreesInUse > 0) parts.Add($"{s.WorktreesInUse} in use");
-        if (s.WorktreesNeedAttention > 0) parts.Add($"{s.WorktreesNeedAttention} attention");
-        return string.Join(" · ", parts);
-    }
-
-    internal static string BuildSummary(IReadOnlyList<RepositoryStatus> statuses)
-    {
-        int repos = statuses.Count;
-        int dirty = statuses.Count(s => !s.IsClean);
-        int reap = statuses.Sum(s => s.WorktreesSafeToReap);
-        return $"{repos} on disk · {dirty} with uncommitted work · {reap} worktrees to reap";
-    }
+    // The wording itself lives in Core (RepositoryStatusText) so this screen and the report the
+    // owner copies can never describe the same repository differently.
+    internal static string ProviderLabel(RepoProvider p) => RepositoryStatusText.ProviderLabel(p);
+    internal static string WhereText(RepositoryStatus s) => RepositoryStatusText.Where(s);
+    internal static string SyncText(RepositoryStatus s) => RepositoryStatusText.Sync(s);
+    internal static string WorktreeText(RepositoryStatus s) => RepositoryStatusText.Worktrees(s);
+    internal static string BuildSummary(IReadOnlyList<RepositoryStatus> statuses) => RepositoryStatusText.Summary(statuses);
 }

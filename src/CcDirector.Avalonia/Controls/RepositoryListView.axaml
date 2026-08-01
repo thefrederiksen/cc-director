@@ -63,8 +63,13 @@
             <Grid ColumnDefinitions="*,Auto">
                 <TextBlock Grid.Column="0" x:Name="SummaryText" Text="" Foreground="#AAAAAA" FontSize="12"
                            VerticalAlignment="Center" />
-                <Button Grid.Column="1" x:Name="RefreshButton" Content="Refresh" Background="#3C3C3C"
-                        Foreground="#CCCCCC" Padding="12,4" FontSize="11" Click="RefreshButton_Click" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+                    <Button x:Name="CopyReportButton" Content="Copy report" Background="#0E639C"
+                            Foreground="White" Padding="12,4" FontSize="11" Click="CopyReportButton_Click"
+                            ToolTip.Tip="Copy every repository and recommendation as text, ready to paste into an agent" />
+                    <Button x:Name="RefreshButton" Content="Refresh" Background="#3C3C3C"
+                            Foreground="#CCCCCC" Padding="12,4" FontSize="11" Click="RefreshButton_Click" />
+                </StackPanel>
             </Grid>
         </Border>
 
