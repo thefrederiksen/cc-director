@@ -247,6 +247,39 @@ worse than no comment, because the next reader spends their scepticism somewhere
 
 ---
 
+## Land the mission's own record
+
+**The paper trail is part of the work. The Architect lands it on `main` the same way and by the same
+authority as the code - as the last slice, before the report. A mission that reported but never
+committed its record is not finished.**
+
+The record is the brief, the design rulings, the running state note, the handoff notes, the
+inspections, the fix reports, and the evidence files the proofs rest on. If a phase produced it and a
+later reader would need it to know what happened, it is record.
+
+**Why this is a rule and not a tidiness preference.** Law 2 says work that exists in one place is work
+you are one crash away from losing - and then applies it only to code. The record is exempt by
+omission, and it is the part this document's own machinery runs on. The Architect stays lean by
+holding its state in durable files instead of its context, and a fresh Manager is rebuilt from the
+handoff note. Files that were never committed are not durable; they are one disk. The reset strategy
+above is worth exactly what the record behind it is worth.
+
+Measured rather than asserted: as of 2026-08-01, `docs/missions/` in the product repository had been
+committed three times in its whole history, and every one was somebody sweeping up after missions that
+had already reported and gone - most recently 49 files across two missions, in one pull request.
+Nothing here made the record anybody's job, so it was nobody's, and it refilled within days.
+
+**Write it inside the mission worktree.** A record written into the shared checkout is stranded by
+construction: the worktree goes away when the mission ends, the shared tree was never the mission's to
+commit, and the files sit there untracked until an unrelated agent notices months of them at once.
+This is ONE worktree per mission, applied to the paper as well as the code.
+
+**A running mission's record is not yours to sweep.** If you are clearing someone else's leftovers,
+find out what is still seated first and leave those files alone - they land when that mission reports.
+Define what you are touching mechanically, not by eye.
+
+---
+
 ## The QA report - the one time you bother the owner
 
 Written for the owner, not for the repository. Plain English, no abbreviations, no process.
