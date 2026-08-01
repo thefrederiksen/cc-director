@@ -127,6 +127,13 @@ public sealed class GatewayStatsDbContext : DbContext
     /// durability for the in-memory dedup sets, nothing else.</summary>
     public DbSet<ConcurrencyHourMemberEntity> ConcurrencyHourMembers => Set<ConcurrencyHourMemberEntity>();
 
+    /// <summary>
+    /// The check constraint name for one table's non-empty tenant guard. Named per table because a
+    /// PostgreSQL constraint name is unique within its schema, and named deterministically so a migration
+    /// and the model always agree on it.
+    /// </summary>
+    public static string TenantNotEmptyConstraint(string table) => $"ck_{table}_tenant_not_empty";
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -401,6 +408,36 @@ public sealed class GatewayStatsDbContext : DbContext
                 foreach (var property in entityType.GetProperties())
                     if (property.ClrType == typeof(string))
                         property.SetCollation("C");
+
+            // 3. NO TENANT DEFAULT, AND NO EMPTY TENANT. This is the multi-tenant schema, and it must not
+            //    accept a row whose owner was not stated.
+            //
+            //    THE DEFAULT stays on SQLite and goes here, and the asymmetry is the point rather than an
+            //    inconsistency. Self-host has exactly one tenant, so a "local" default there is harmless by
+            //    construction, and removing it would force a table rebuild on every statistics file already
+            //    on disk to buy nothing. On the shared hosted schema the same default is FAIL-OPEN: a writer
+            //    that omits the tenant column has its row quietly filed under Local instead of being
+            //    refused, which is silent mispartitioning of one customer's numbers into another partition.
+            //
+            //    THE CHECK CONSTRAINT closes the other half, and without it dropping the default would be
+            //    half a fix. The tenant property initialises to an empty string, so a write that forgets to
+            //    set it does not send NULL and collide with the missing default - it sends '' and is stored
+            //    as a perfectly valid value naming nobody. Unattributed is unattributed either way, so the
+            //    schema refuses both: absent (no default, NOT NULL) and empty (this constraint).
+            //
+            //    Applied to every table that HAS a tenant column, including the ones that never carried a
+            //    default, because the empty-string hole was never about the default.
+            foreach (var entityType in modelBuilder.Model.GetEntityTypes())
+            {
+                var tenant = entityType.FindProperty(nameof(Entities.StatDeltaEntity.Tenant));
+                if (tenant is null || tenant.ClrType != typeof(string)) continue;
+
+                tenant.SetDefaultValue(null);
+
+                var table = entityType.GetTableName();
+                if (table is null) continue;
+                entityType.AddCheckConstraint(TenantNotEmptyConstraint(table), "\"tenant\" <> ''");
+            }
         }
 
         ConcurrencyStatsModel.Configure(modelBuilder);
