@@ -39,6 +39,18 @@ public sealed class GatewayTestSuiteLockTests
     [Fact]
     public void TheLockIsHeldWhileTestsRun()
     {
+        if (GatewayTestSuiteLock.QualificationBypassActive)
+        {
+            // A qualification run (issue #1156 step 4) SUSPENDS the serialization property on purpose -
+            // that is the experiment. The honest assertion here is that the suspension was explicit and
+            // recorded, never that the lock is somehow both bypassed and held.
+            Assert.False(
+                GatewayTestSuiteLock.IsHeld,
+                "The qualification bypass is active yet the lock is also held - the bypass and the "
+                + "acquisition path both ran, which means Acquire's ruling is broken.");
+            return;
+        }
+
         Assert.True(
             GatewayTestSuiteLock.IsHeld,
             "This run does not hold the per-user Gateway test lock, so nothing is stopping a second "
@@ -48,6 +60,15 @@ public sealed class GatewayTestSuiteLockTests
     [Fact]
     public void ASecondExclusiveOpenIsRefused_WhichIsWhatBlocksAConcurrentRun()
     {
+        if (GatewayTestSuiteLock.QualificationBypassActive)
+        {
+            // Under the qualification bypass this process holds no handle, so the exclusivity this test
+            // proves has no subject - and probing the real lock file here would race whatever ordinary
+            // run may legitimately hold it on this machine during a soak. Nothing to prove in this mode;
+            // the bypass itself is asserted by TheLockIsHeldWhileTestsRun.
+            return;
+        }
+
         // The exact open a second run would attempt. Share modes are per-handle, not per-process, so this
         // is refused inside the holding process too - which makes it a real proof of exclusivity rather
         // than a restatement of a flag we set ourselves.
@@ -97,6 +118,15 @@ public sealed class GatewayTestSuiteLockTests
 
         // Same file this run holds - that is the property being pinned.
         Assert.Equal(GatewayTestSuiteLock.LockFilePath, asAnotherRunWouldComputeIt);
+
+        if (GatewayTestSuiteLock.QualificationBypassActive)
+        {
+            // The path-identity half above still holds and was asserted. The refused-open half needs
+            // "this held lock" as its subject, and a qualification run (issue #1156 step 4) holds
+            // nothing - whether the open is refused depends on whichever ordinary run happens to hold
+            // the real file right now, which is not this test's property to pin.
+            return;
+        }
 
         // And therefore the open that run would attempt is refused by the operating system. Under the
         // defect the recomputed path was a DIFFERENT file, this open succeeded, and two suites ran side
@@ -169,6 +199,14 @@ public sealed class GatewayTestSuiteLockTests
     [Fact]
     public void TheLockFileNamesThisProcess_SoABlockedRunCanSayWhoIsBlockingIt()
     {
+        if (GatewayTestSuiteLock.QualificationBypassActive)
+        {
+            // A qualification run (issue #1156 step 4) never writes the lock file, so "names THIS
+            // process" has no subject: the file holds whichever ordinary run last held the real lock.
+            // The diagnostics-writing property is still proven by every ordinary run of this suite.
+            return;
+        }
+
         // Read exactly the way a blocked run reads it: read-only, sharing everything, while the holder
         // still has the file open for writing.
         using var stream = new FileStream(
@@ -183,5 +221,89 @@ public sealed class GatewayTestSuiteLockTests
             StringComparison.Ordinal);
         Assert.Contains("acquiredUtc=", text, StringComparison.Ordinal);
         Assert.Contains("session=", text, StringComparison.Ordinal);
+    }
+
+    // ---- The qualification ruling (issue #1156 step 4) ----
+    // Pure-value tests, the same way the lock path is tested: every branch of the ruling is provable
+    // without touching process environment, so nothing here can be perturbed by a real soak running
+    // on the machine at the same time.
+
+    private static (string Name, string? Value)[] NoLiveProof() => new (string, string?)[]
+    {
+        ("CC_GATEWAY_TEST_PG_CONNECTION", null),
+        ("CC_GATEWAY_TEST_PG_STATS_CONNECTION", null),
+        ("CC_GATEWAY_DB_CONNECTION", null),
+    };
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Qualification_AbsentOrBlank_TakesTheLockAsAlways(string? value)
+    {
+        Assert.Equal(
+            GatewayTestSuiteLock.QualificationRuling.NotRequested,
+            GatewayTestSuiteLock.RuleOnQualification(value, NoLiveProof()));
+    }
+
+    [Theory]
+    [InlineData("1")]
+    [InlineData("true")]
+    [InlineData("isolated-worktree-soak ")] // trailing space: close is not exact
+    [InlineData("ISOLATED-WORKTREE-SOAK")]
+    public void Qualification_WrongToken_RefusesRatherThanSilentlySerializing(string value)
+    {
+        // The dangerous fallback would be taking the locked path: a soak whose runs never actually
+        // overlapped produces thousands of clean host starts that certify nothing.
+        Assert.Equal(
+            GatewayTestSuiteLock.QualificationRuling.RefuseWrongToken,
+            GatewayTestSuiteLock.RuleOnQualification(value, NoLiveProof()));
+    }
+
+    [Fact]
+    public void Qualification_ExactTokenAndNoLiveProof_Bypasses()
+    {
+        Assert.Equal(
+            GatewayTestSuiteLock.QualificationRuling.Bypass,
+            GatewayTestSuiteLock.RuleOnQualification(GatewayTestSuiteLock.QualificationToken, NoLiveProof()));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void Qualification_AnyLiveProofVariable_FailsClosed(int position)
+    {
+        var vars = NoLiveProof();
+        vars[position] = (vars[position].Name, "Host=localhost;Database=ccpgsomething");
+
+        Assert.Equal(
+            GatewayTestSuiteLock.QualificationRuling.RefuseLiveProof,
+            GatewayTestSuiteLock.RuleOnQualification(GatewayTestSuiteLock.QualificationToken, vars));
+    }
+
+    [Fact]
+    public void Qualification_WhitespaceLiveProofValue_CountsAsUnset()
+    {
+        // The skip logic throughout the proof classes treats whitespace as unset; the bypass ruling must
+        // agree, or a stray space would refuse a soak the proofs themselves would have skipped cleanly.
+        var vars = NoLiveProof();
+        vars[1] = (vars[1].Name, "   ");
+
+        Assert.Equal(
+            GatewayTestSuiteLock.QualificationRuling.Bypass,
+            GatewayTestSuiteLock.RuleOnQualification(GatewayTestSuiteLock.QualificationToken, vars));
+    }
+
+    [Fact]
+    public void Qualification_TheLiveProofList_NamesTheVariablesTheProofClassesActuallyRead()
+    {
+        // The fail-closed list is only as good as its names. Two of the three are declared by the classes
+        // that read them; pin all three so a rename there breaks here instead of silently un-guarding.
+        Assert.Contains("CC_GATEWAY_TEST_PG_CONNECTION", GatewayTestSuiteLock.LiveProofEnvVars);
+        Assert.Contains("CC_GATEWAY_TEST_PG_STATS_CONNECTION", GatewayTestSuiteLock.LiveProofEnvVars);
+        Assert.Contains(
+            CcDirector.Gateway.Data.GatewayDatabase.PostgresConnectionEnvVar,
+            GatewayTestSuiteLock.LiveProofEnvVars);
     }
 }
