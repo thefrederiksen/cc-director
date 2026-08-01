@@ -134,8 +134,9 @@ public partial class ToolsView : UserControl
         {
             PathFaultExplanation.Text =
                 "This Director's own command-line tools are not installed and working, so PATH order is "
-                + $"not the problem: there is nothing here to point at yet ({check.OwnDetail}) Installing "
-                + "them is the repair; repointing PATH on its own would change nothing.";
+                + "not the problem - there is nothing here to point at yet. "
+                + $"{check.OwnDetail} Installing them is the repair; putting an empty directory on PATH "
+                + "would change nothing.";
             PathFaultFixButton.Content = "Install tools, then repoint PATH";
             PathFaultFixButton.IsVisible = true;
         }
@@ -166,9 +167,14 @@ public partial class ToolsView : UserControl
     {
         try
         {
-            // Immediate feedback before any awaited work (responsive-UI rule).
+            // Immediate feedback before any awaited work (responsive-UI rule), and it has to name the
+            // step actually starting: installing the tools takes minutes, and "Repointing PATH..."
+            // sitting there through all of it describes work that has not begun.
+            var installFirst = _fleetToolCheck is { OwnToolsAreMissingOrBroken: true };
             PathFaultFixButton.IsEnabled = false;
-            PathFaultProgress.Text = "Repointing PATH...";
+            PathFaultProgress.Text = installFirst
+                ? "Installing this Director's tools..."
+                : "Repointing PATH...";
 
             // The directory the verdict named as ours. Re-deriving it here from a different source is how
             // the banner and the check come to disagree about which directory the repair is even for.
@@ -182,9 +188,8 @@ public partial class ToolsView : UserControl
 
             // When the fault is that we have no working tools of our own, install them BEFORE touching
             // PATH. Repointing first would put an empty directory in front and report success.
-            if (_fleetToolCheck is { OwnToolsAreMissingOrBroken: true })
+            if (installFirst)
             {
-                PathFaultProgress.Text = "Installing this Director's tools...";
                 var progress = new Progress<string>(message => PathFaultProgress.Text = message);
                 var installed = await Task.Run(() =>
                     new CcDirector.Setup.Engine.ToolUpdater(CcDirector.Setup.Engine.InstallLayout.Default())

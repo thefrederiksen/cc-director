@@ -87,23 +87,49 @@ public static class FleetToolPathRepair
         }
     }
 
+    /// <summary>
+    /// The user PATH exactly as it is STORED, with every %VARIABLE% intact.
+    ///
+    /// Public because it is the only safe way to read it, and more than one component needs to.
+    /// <c>Environment.GetEnvironmentVariable("Path", User)</c> returns the value with variables
+    /// already expanded; anything that reads it that way and writes the result back bakes today's
+    /// expansion into the user's PATH permanently and silently destroys every variable reference in
+    /// it. That is not a hypothetical - it is what the install finalizer did until this was shared.
+    /// </summary>
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    public static string ReadUserPathRaw()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(UserEnvironmentKey)
+            ?? throw new IOException($"The user environment registry key ({UserEnvironmentKey}) is not readable.");
+        return key.GetValue(PathValueName, "", RegistryValueOptions.DoNotExpandEnvironmentNames) as string ?? "";
+    }
+
+    /// <summary>
+    /// Write the user PATH back, keeping it expandable when it carries variables. Pass a value that
+    /// came from <see cref="ReadUserPathRaw"/> and was edited without expanding anything.
+    /// </summary>
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    public static void WriteUserPathRaw(string value)
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(UserEnvironmentKey, writable: true)
+            ?? throw new IOException($"The user environment registry key ({UserEnvironmentKey}) is not writable.");
+
+        // A value holding %VARIABLE% must be stored as ExpandString or the variables stop resolving.
+        var kind = value.Contains('%') ? RegistryValueKind.ExpandString : key.GetValueKind(PathValueName);
+        key.SetValue(PathValueName, value, kind);
+    }
+
     // PutFirstOnPath refuses every non-Windows caller before reaching here; this states that for the
     // platform analyzer, which cannot see the guard across the method boundary.
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     private static string RepairPersistedPath(string binDir)
     {
-        using var key = Registry.CurrentUser.OpenSubKey(UserEnvironmentKey, writable: true)
-            ?? throw new IOException($"The user environment registry key ({UserEnvironmentKey}) is not readable.");
-
-        // DoNotExpandEnvironmentNames is the whole point: %USERPROFILE% must survive as %USERPROFILE%.
-        var raw = key.GetValue(PathValueName, "", RegistryValueOptions.DoNotExpandEnvironmentNames) as string ?? "";
-        var kind = raw.Contains('%') ? RegistryValueKind.ExpandString : key.GetValueKind(PathValueName);
-
+        var raw = ReadUserPathRaw();
         var rewrite = Rewrite(raw, binDir);
         if (string.Equals(raw, rewrite.Path, StringComparison.Ordinal))
             return $"{binDir} was already first on the user PATH, and nothing superseded was left behind it.";
 
-        key.SetValue(PathValueName, rewrite.Path, kind);
+        WriteUserPathRaw(rewrite.Path);
 
         var removed = rewrite.Removed.Count == 0
             ? "Nothing else needed removing."
