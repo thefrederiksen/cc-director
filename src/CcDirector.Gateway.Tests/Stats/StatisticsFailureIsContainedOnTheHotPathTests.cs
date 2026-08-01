@@ -1,9 +1,18 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Security.Claims;
 using System.Text.Json;
 using CcDirector.Core.Tenancy;
+using CcDirector.Core.Utilities;
 using CcDirector.Gateway;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Pairing;
+using CcDirector.Gateway.Stats;
+using CcDirector.Gateway.Streaming;
+using CcDirector.Gateway.Tenancy;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.SignalR;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -172,6 +181,151 @@ public sealed class StatisticsFailureIsContainedOnTheHotPathTests : IDisposable
         Assert.False(string.IsNullOrWhiteSpace(gateway.InputStats.Health.LastError));
         _out.WriteLine($"CONTAINED: observer={gateway.InputStats.Health.Observer} " +
                        $"failures={gateway.InputStats.Health.FailureCount} error={gateway.InputStats.Health.LastError}");
+    }
+
+    /// <summary>
+    /// SHOUTED WHERE AN OPERATOR CAN HEAR IT - asserted against the REAL logging seam, not against the
+    /// counter.
+    ///
+    /// The counter and the log are two different claims and only one of them was being checked. An earlier
+    /// version of the fact above was called "AndLogged" while asserting nothing about any log, so deleting
+    /// the production `FileLog.Write` inside the containment left it green - the test named the property it
+    /// did not test, which is worse than not claiming it. `FileLog.RedirectForTests` swaps in an isolated
+    /// writer and drains it synchronously, so this reads the line the operator would read.
+    /// </summary>
+    [Fact]
+    public async Task TheContainedFailure_IsWrittenToTheRealLog_NamingTheObserverAndTheCallSite()
+    {
+        await using var gateway = NewGateway();
+        await gateway.StartAsync();
+        Assert.NotNull(gateway.InputStats);
+
+        PushOneLiveSession(gateway, "s-logged", turns: 3);
+
+        using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{gateway.Port}/") };
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", Token);
+        Assert.Equal(HttpStatusCode.OK, (await http.GetAsync("sessions")).StatusCode);
+
+        BreakTheStatisticsStoreAfterStartup(gateway);
+        Assert.True(gateway.PushedSessions.ApplySnapshot(
+            TenantId.Local, DirectorId, "conn-1", 2, new[] { SessionWithATally("s-logged", turns: 11) }));
+
+        IReadOnlyList<string> lines;
+        HttpStatusCode status;
+        using (var log = FileLog.RedirectForTests())
+        {
+            status = (await http.GetAsync("sessions")).StatusCode;
+            lines = log.DrainAndReadLines();
+        }
+
+        Assert.Equal(HttpStatusCode.OK, status);
+
+        // The line itself, and the three things it has to carry for an operator to act on it: that a
+        // statistics failure was contained, WHICH observer, and WHICH hot path was protected.
+        var contained = lines.Where(l => l.Contains("[StatsObservation] CONTAINED", StringComparison.Ordinal)).ToList();
+        foreach (var l in contained) _out.WriteLine(l);
+        var line = Assert.Single(contained);
+        Assert.Contains("observer=input-stats", line, StringComparison.Ordinal);
+        Assert.Contains("callSite=GET /sessions roster fold", line, StringComparison.Ordinal);
+        Assert.Contains("error=", line, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// THE HUB'S REMOVE PATH, which an inspection found uncontained after the snapshot and delta paths were
+    /// covered - so the claim "a statistics failure can no longer break the Director hub" was false as
+    /// written, and the fixture that was supposed to prove it only ever drove HTTP.
+    ///
+    /// `Forget` reads like in-memory cleanup and is not: it clears the mirror and then goes to the database
+    /// writer to delete the stored high-water rows, so it fails for exactly the reasons the other two
+    /// observations fail. It also runs AFTER `ApplyRemove` has already committed the authoritative removal,
+    /// which is the partial-success shape - the Director told its push failed when the session had in fact
+    /// been removed.
+    /// </summary>
+    [Fact]
+    public async Task AStatisticsDeleteFailure_DoesNotFaultTheHubsRemovePath()
+    {
+        await using var gateway = NewGateway();
+        await gateway.StartAsync();
+        Assert.NotNull(gateway.InputStats);
+
+        var ctx = new FakeHubCallerContext("conn-hub");
+        var hub = new DirectorHub(gateway.PushedSessions, gateway.Registry, gateway.InputStatsHandle,
+            new GatewayStreamRegistry(),
+            new HostedTenantBoundary(new SingleTenantContext(), new DeviceRegistry())) { Context = ctx };
+
+        hub.Hello(new DirectorStreamHello { DirectorId = DirectorId, Version = "test" });
+        // A push first, so the session HAS a high-water row. Forget on a session the store never recorded
+        // writes nothing, and a delete that never happens cannot fail - the fixture would prove nothing.
+        hub.PushSnapshot(1, new[] { SessionWithATally("s-hub", turns: 5) });
+        Assert.Equal(0, gateway.InputStats!.Health.FailureCount);
+
+        BreakTheStatisticsStoreAfterStartup(gateway);
+
+        IReadOnlyList<string> lines;
+        Exception? thrown;
+        using (var log = FileLog.RedirectForTests())
+        {
+            thrown = Record.Exception(() => hub.RemoveSession(2, "s-hub"));
+            lines = log.DrainAndReadLines();
+        }
+
+        // THE CLAIM: the hub invocation completes. Before the containment this threw out of RemoveSession,
+        // after the removal had already been applied.
+        Assert.Null(thrown);
+
+        // The removal itself still happened - containment must not have swallowed the actual work.
+        Assert.DoesNotContain(gateway.PushedSessions.GetLastKnown(TenantId.Local, DirectorId).Sessions,
+            s => s.SessionId == "s-hub");
+
+        // And it shouted, naming this call site rather than one of the two that were already covered.
+        Assert.Equal(1, gateway.InputStats.Health.FailureCount);
+        var line = Assert.Single(lines, l => l.Contains("[StatsObservation] CONTAINED", StringComparison.Ordinal));
+        _out.WriteLine(line);
+        Assert.Contains("callSite=DirectorHub.RemoveSession", line, StringComparison.Ordinal);
+    }
+
+    /// <summary>The control for the hub path, the same shape as the roster one: the same broken store,
+    /// called the way RemoveSession called it before the containment, throws.</summary>
+    [Fact]
+    public async Task TheSameDeleteFault_IsFatal_WhenItIsNotContained()
+    {
+        await using var gateway = NewGateway();
+        await gateway.StartAsync();
+        Assert.NotNull(gateway.InputStats);
+
+        gateway.InputStats!.ObserveSnapshot(
+            new[] { SessionWithATally("s-forget", turns: 4) }, DateTime.UtcNow, TenantId.Local);
+
+        BreakTheStatisticsStoreAfterStartup(gateway);
+
+        var thrown = Record.Exception(() => gateway.InputStats!.Forget("s-forget", TenantId.Local));
+        Assert.NotNull(thrown);
+        _out.WriteLine($"UNCONTAINED Forget: {thrown!.GetType().Name}: {thrown.Message}");
+    }
+
+    /// <summary>The minimum a hub invocation needs: a connection id and an HttpContext, because the tenant
+    /// boundary resolves a connection's tenant through it exactly as a real SignalR negotiate does.</summary>
+    private sealed class FakeHubCallerContext : HubCallerContext
+    {
+        public FakeHubCallerContext(string connectionId)
+        {
+            ConnectionId = connectionId;
+            Features.Set<Microsoft.AspNetCore.Http.Connections.Features.IHttpContextFeature>(
+                new HttpContextFeatureImpl { HttpContext = new DefaultHttpContext() });
+        }
+
+        private sealed class HttpContextFeatureImpl : Microsoft.AspNetCore.Http.Connections.Features.IHttpContextFeature
+        {
+            public HttpContext? HttpContext { get; set; }
+        }
+
+        public override string ConnectionId { get; }
+        public override string? UserIdentifier => null;
+        public override ClaimsPrincipal? User => null;
+        public override IDictionary<object, object?> Items { get; } = new Dictionary<object, object?>();
+        public override IFeatureCollection Features { get; } = new FeatureCollection();
+        public override CancellationToken ConnectionAborted => CancellationToken.None;
+        public override void Abort() { }
     }
 
     /// <summary>

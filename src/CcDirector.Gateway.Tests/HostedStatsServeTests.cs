@@ -15,6 +15,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using Xunit;
@@ -176,25 +177,75 @@ public sealed class HostedStatsServeTests : IAsyncLifetime
         try { if (Directory.Exists(_root)) Directory.Delete(_root, true); } catch { /* best effort */ }
     }
 
-    /// <summary>Fold a distinctive tally for one tenant through the SAME aggregator the read serves from -
-    /// the production write path, into PostgreSQL, under that tenant's partition.</summary>
-    private void Feed(TenantId tenant, string sessionId, string repo, long turns)
+    /// <summary>
+    /// Put a distinctive tally into a tenant's statistics THROUGH THE PRODUCTION INGRESS - never by calling
+    /// the aggregator.
+    ///
+    /// WHY THIS MATTERS MORE THAN IT LOOKS. The first version of these tests called
+    /// `_gateway.InputStats.ObserveSnapshot(...)` directly and then read the answer back from the endpoint
+    /// backed by that same in-process object. An inspection pointed out what that leaves green: disconnect
+    /// the production write call sites in `GatewayEndpoints` and `DirectorHub` entirely, and the test still
+    /// passes, because the test was the writer. It also never established that a single byte reached
+    /// PostgreSQL - an aggregator that kept the value in memory satisfied every assertion.
+    ///
+    /// So the numbers now travel the route a real Director's numbers travel: a registered Director with a
+    /// live connection pushes a roster carrying the tally, and `GET /sessions` - the production fold, on the
+    /// request thread, under the caller's resolved tenant - is what writes. That one call also drives the
+    /// concurrency recorder, so both halves of the surface are fed by the same production path.
+    /// </summary>
+    private async Task FeedThroughProductionIngress(
+        HttpClient http, TenantId tenant, string directorId, string sessionId, string repo, long turns)
     {
-        Assert.NotNull(_gateway.InputStats);
-        _gateway.InputStats!.ObserveSnapshot(new[]
+        _gateway.Registry.RegisterFromStream(directorId, "MACHINE-" + directorId, "soren", "1.0", pid: 4321,
+            startedAt: DateTime.UtcNow, tenant: tenant);
+        _gateway.PushedSessions.RegisterConnection(tenant, directorId, "conn-" + directorId);
+        Assert.True(_gateway.PushedSessions.ApplySnapshot(tenant, directorId, "conn-" + directorId, 1, new[]
         {
             new SessionDto
             {
                 SessionId = sessionId,
                 Name = sessionId,
                 ActivityState = "Working",
+                StatusColor = "blue",
+                LastActivityAt = DateTime.UtcNow,
                 RepoPath = repo,
                 InputStats = new InputStatsDto
                 {
                     Buckets = { new InputStatBucketDto { Modality = "voice", Surface = "phone", Turns = turns, Characters = turns * 100 } },
                 },
             },
-        }, DateTime.UtcNow, tenant);
+        }));
+
+        // THE PRODUCTION FOLD. A roster read by this tenant, through the real auth gate and the real route.
+        var roster = await http.GetAsync("sessions");
+        Assert.Equal(HttpStatusCode.OK, roster.StatusCode);
+        using var body = JsonDocument.Parse(await roster.Content.ReadAsStringAsync());
+        Assert.Contains(body.RootElement.EnumerateArray(),
+            s => s.GetProperty("sessionId").GetString() == sessionId);
+    }
+
+    /// <summary>A reader that shares NOTHING with the Gateway's own aggregator except the database: its own
+    /// pooled connection factory, its own mirror, loaded from the rows on disk. A value that only ever lived
+    /// in the Gateway's memory is invisible to it.</summary>
+    private static IDbContextFactory<GatewayStatsDbContext> FreshFactory()
+    {
+        var services = new ServiceCollection();
+        services.AddPooledDbContextFactory<GatewayStatsDbContext>(o => o.UseNpgsql(ConfiguredConnection!));
+        return services.BuildServiceProvider().GetRequiredService<IDbContextFactory<GatewayStatsDbContext>>();
+    }
+
+    /// <summary>The turns actually stored in PostgreSQL for one tenant, summed straight off the append-only
+    /// delta ledger every all-time total is derived from. Raw SQL on purpose: it is the one reading in this
+    /// file that no object under test can influence.</summary>
+    private static long StoredTurns(TenantId tenant)
+    {
+        using var connection = new NpgsqlConnection(ConfiguredConnection);
+        connection.Open();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText =
+            $"SELECT COALESCE(SUM(turns), 0) FROM {GatewayStatsDbContext.PostgresSchema}.stat_delta WHERE tenant = @t";
+        cmd.Parameters.AddWithValue("t", tenant.Value);
+        return Convert.ToInt64(cmd.ExecuteScalar());
     }
 
     /// <summary>
@@ -213,6 +264,8 @@ public sealed class HostedStatsServeTests : IAsyncLifetime
 
         // Both halves. The READ path (the aggregator) and the WRITE path's concurrency recorder - the review
         // found both unwired, and wiring only the read path would serve a tenant an empty page for ever.
+        // The TYPE is asserted here only as a wiring fact; a no-op of the right type would satisfy it, which
+        // is why the facts below assert real numbers out of the database instead.
         Assert.NotNull(_gateway.InputStats);
         Assert.NotNull(_gateway.SessionConcurrency);
         Assert.IsType<GatewaySessionConcurrencyStore>(_gateway.SessionConcurrency);
@@ -227,6 +280,66 @@ public sealed class HostedStatsServeTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// THE ROUND TRIP: numbers pushed through the production ingress are READ BACK OUT OF POSTGRESQL, by a
+    /// reader that shares nothing with the Gateway but the database.
+    ///
+    /// This is the fact the headline claim rests on, and it is asserted three ways so that no single
+    /// substitution satisfies it: the raw delta ledger (no object under test can influence it), a FRESH
+    /// aggregator over its own connection pool (proves a cold reader recovers the value, which is what a
+    /// restarted container does), and the served feed itself.
+    /// </summary>
+    [RequiresPostgresStatsFact]
+    public async Task Numbers_pushed_through_production_ingress_come_back_out_of_postgresql()
+    {
+        Assert.Equal(0, StoredTurns(_tenantA));
+
+        await FeedThroughProductionIngress(_httpA, _tenantA, "dir-a", "s-alpha", TenantARepo, turns: 7);
+
+        // 1. THE ROWS. Straight off the append-only ledger, by raw SQL over a separate connection.
+        Assert.Equal(7, StoredTurns(_tenantA));
+
+        // 2. A COLD READER. Its own pooled factory, its own mirror loaded from those rows - it has never
+        //    seen the Gateway's in-memory state, so a value that never left memory is invisible to it.
+        using var coldReader = new GatewayInputStatsAggregator(FreshFactory());
+        var recovered = coldReader.CurrentTotals(_tenantA);
+        var recoveredBucket = Assert.Single(recovered.Buckets);
+        Assert.Equal(7, recoveredBucket.Turns);
+        Assert.Equal(700, recoveredBucket.Characters);
+        Assert.Equal("voice", recoveredBucket.Modality);
+
+        // 3. AND THE SERVED FEED agrees with both.
+        using var doc = JsonDocument.Parse(await (await _httpA.GetAsync("stats/data")).Content.ReadAsStringAsync());
+        Assert.Equal(7, Assert.Single(doc.RootElement.GetProperty("buckets").EnumerateArray())
+            .GetProperty("turns").GetInt64());
+    }
+
+    /// <summary>
+    /// The concurrency half, given a REAL NUMBER rather than a type check. The same production roster read
+    /// that folds the input tally also drives the concurrency recorder, so one live session must show up as
+    /// one live session on the feed - and a no-op recorder of the correct type fails here.
+    /// </summary>
+    [RequiresPostgresStatsFact]
+    public async Task The_hosted_concurrency_recorder_serves_a_real_number_from_the_database()
+    {
+        await FeedThroughProductionIngress(_httpA, _tenantA, "dir-a", "s-alpha", TenantARepo, turns: 7);
+
+        using var doc = JsonDocument.Parse(await (await _httpA.GetAsync("stats/data")).Content.ReadAsStringAsync());
+        var concurrency = doc.RootElement.GetProperty("concurrency");
+        Assert.Equal(JsonValueKind.Object, concurrency.ValueKind);
+
+        // One session was live when the roster was folded, so the live series must say so - current and
+        // all-time peak both at least one. A recorder that stored nothing reports zero here.
+        Assert.True(concurrency.GetProperty("live").GetProperty("allTimeMax").GetInt32() >= 1,
+            "the hosted concurrency recorder reported no all-time peak after a live roster was folded");
+
+        // And it is in the DATABASE, not only in the recorder's shadow: a fresh store over its own factory
+        // rehydrates the same peak.
+        var coldPeak = new GatewaySessionConcurrencyStore(FreshFactory()).Snapshot(DateTime.UtcNow, _tenantA);
+        Assert.True(coldPeak.Live.AllTimeMax >= 1,
+            "a cold concurrency reader saw no peak, so the fold never reached PostgreSQL");
+    }
+
+    /// <summary>
     /// SERVE: an enrolled tenant gets 200 and its OWN totals, read back out of PostgreSQL.
     ///
     /// The seeded numbers themselves are asserted, not merely the shape: an empty-but-well-formed payload is
@@ -235,7 +348,7 @@ public sealed class HostedStatsServeTests : IAsyncLifetime
     [RequiresPostgresStatsFact]
     public async Task The_stats_feed_serves_an_enrolled_tenant_its_own_totals_from_postgresql()
     {
-        Feed(_tenantA, "s-alpha", TenantARepo, turns: 7);
+        await FeedThroughProductionIngress(_httpA, _tenantA, "dir-a", "s-alpha", TenantARepo, turns: 7);
 
         var resp = await _httpA.GetAsync("stats/data");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
@@ -263,7 +376,7 @@ public sealed class HostedStatsServeTests : IAsyncLifetime
     [RequiresPostgresStatsFact]
     public async Task One_tenants_numbers_are_invisible_to_another_on_the_same_feed()
     {
-        Feed(_tenantA, "s-alpha", TenantARepo, turns: 7);
+        await FeedThroughProductionIngress(_httpA, _tenantA, "dir-a", "s-alpha", TenantARepo, turns: 7);
 
         // A sees them.
         using (var a = JsonDocument.Parse(await (await _httpA.GetAsync("stats/data")).Content.ReadAsStringAsync()))
@@ -289,7 +402,7 @@ public sealed class HostedStatsServeTests : IAsyncLifetime
     [RequiresPostgresStatsFact]
     public async Task The_stats_feed_refuses_a_caller_who_resolves_to_no_tenant()
     {
-        Feed(_tenantA, "s-alpha", TenantARepo, turns: 7);
+        await FeedThroughProductionIngress(_httpA, _tenantA, "dir-a", "s-alpha", TenantARepo, turns: 7);
 
         var resp = await _httpUnbound.GetAsync("stats/data");
         Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);

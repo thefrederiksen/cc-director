@@ -3215,17 +3215,15 @@ public sealed class GatewayHost : IAsyncDisposable
         // Mapped only when there IS an aggregator. When statistics are unavailable the two routes answer
         // 503 with the named reason instead of not existing at all: a surface that vanishes reads as a
         // broken deploy, and the reason is what tells an operator whether to fix a setting or a database.
-        if (InputStats is not null)
-        {
-            Stats.StatsPageEndpoint.Map(_app, InputStats, _tenantBoundary, SessionConcurrency, _tenantSettingsResolver, _sessionHistory);
-        }
-        else
-        {
-            var statsUnavailable = InputStatsHandle.UnavailableReason ?? "Statistics are unavailable.";
-            _app.MapGet("/stats", () => Results.Text(statsUnavailable, "text/plain", statusCode: 503));
-            _app.MapGet("/stats/data", () => Results.Json(
-                new { available = false, reason = statsUnavailable }, statusCode: 503));
-        }
+        // MAPPED ONCE, DECIDED PER REQUEST. The routes used to be chosen here from whether an aggregator
+        // existed at startup - the real feed, or two lambdas answering a permanent 503. That is a second
+        // place the hosted late-open decision was frozen: a statistics store that finished opening a moment
+        // after the startup deadline could report itself available while these two routes went on answering
+        // 503 for the life of the process. The handle is passed in instead and asked on each request, so the
+        // routes start serving the moment there is something to serve, and still answer the named 503 with
+        // the store's own reason while there is not.
+        Stats.StatsPageEndpoint.Map(_app, InputStatsHandle, _tenantBoundary, () => SessionConcurrency,
+            _tenantSettingsResolver, _sessionHistory);
 
         // The prompt log (issue #1551): Directors push what they captured to POST /prompts, and anyone
         // wanting history reads GET /prompts. It lives here, not on a Director, because the Gateway is
