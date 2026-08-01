@@ -16,8 +16,10 @@ public sealed class RecommendationRowItem
     public string Body { get; init; } = "";
     public string Why { get; init; } = "";
     public string? RepoPath { get; init; }
-    public bool HasRepo => RepoPath is { Length: > 0 };
     public IBrush StripeBrush { get; init; } = Brushes.Gray;
+
+    /// <summary>The recommendation this card renders, kept so Copy can build its report from the model.</summary>
+    public Recommendation Source { get; init; } = new();
 
     public static RecommendationRowItem From(Recommendation r) => new()
     {
@@ -25,6 +27,7 @@ public sealed class RecommendationRowItem
         Body = r.Body,
         Why = r.Why,
         RepoPath = r.RepoPath,
+        Source = r,
         StripeBrush = r.Severity switch
         {
             1 => new SolidColorBrush(Color.Parse("#22C55E")),
@@ -54,9 +57,6 @@ public partial class RepositoriesView : UserControl
     private RootDirectoryStore? _store;
     private Action? _onRefresh;
 
-    /// <summary>The owner chose a hand-off on a repo; the host spawns a session with the brief staged.</summary>
-    public event Action<string, string>? HandToAgentRequested;
-
     /// <summary>Live sessions provider, forwarded to the detail's worktrees panel.</summary>
     public Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<LiveSessionRef>>>? LiveSessionsProvider
     {
@@ -83,8 +83,8 @@ public partial class RepositoriesView : UserControl
             FileLog.Write("[RepositoriesView] Attach");
             ReposPage.RefreshRequested += onRefreshRequested;
             ReposPage.RepoOpenRequested += OpenDetail;
+            ReposPage.RootsProvider = () => _store?.Roots.Select(r => r.Path).ToList() ?? new List<string>();
             DetailPage.BackRequested += CloseDetail;
-            DetailPage.HandToAgentRequested += (path, brief) => HandToAgentRequested?.Invoke(path, brief);
             ReposPage.Attach(monitor);
             _attached = true;
         }
@@ -155,6 +155,7 @@ public partial class RepositoriesView : UserControl
         RecoEmptyText.IsVisible = recs.Count == 0;
         RecoBadgeText.Text = recs.Count.ToString();
         RecoBadge.IsVisible = recs.Count > 0;
+        CopyAllRecoButton.IsVisible = recs.Count > 0;
     }
 
     private void RecoShow_Click(object? sender, RoutedEventArgs e)
@@ -167,24 +168,71 @@ public partial class RepositoriesView : UserControl
             ShowPage("repos"); // the fleet-wide reap summary: the list shows where the safe worktrees are
     }
 
-    private async void RecoHandOff_Click(object? sender, RoutedEventArgs e)
+    /// <summary>
+    /// Copy one recommendation - with the repository it is about - for pasting into an agent.
+    ///
+    /// The card on screen was folded from an EARLIER snapshot, so it is re-derived from ONE
+    /// snapshot taken now and everything in the report is built from that same snapshot. Mixing
+    /// the two produced a report whose headline said "1 worktree, 336 MB" over a table listing
+    /// five: the card was rendered at "7 of 30" while the table came from a later scan.
+    /// </summary>
+    private async void RecoCopy_Click(object? sender, RoutedEventArgs e)
     {
+        if (_monitor is null || sender is not Button button || button.DataContext is not RecommendationRowItem row)
+            return;
+
         try
         {
-            if (_monitor is null || (sender as Button)?.DataContext is not RecommendationRowItem row || row.RepoPath is null)
+            var snapshot = _monitor.Snapshot();
+            var current = RecommendationEngine.Evaluate(snapshot)
+                .FirstOrDefault(r => r.Kind == row.Source.Kind && IsSameSubject(r.RepoPath, row.Source.RepoPath));
+            if (current is null)
+            {
+                // It stopped applying between render and click - copying the stale card would be a lie.
+                FileLog.Write($"[RepositoriesView] recommendation no longer applies: {row.Source.Kind} {row.RepoPath}");
+                await CopyToClipboard.FlashAsync(button, "No longer applies", "Copy");
+                RenderRecommendations();
                 return;
-            var repo = _monitor.FindForPath(row.RepoPath);
-            var window = TopLevel.GetTopLevel(this) as Window;
-            if (repo is null || window is null)
-                return;
-            var dialog = new global::CcDirector.Avalonia.HandToAgentDialog(repo);
-            var brief = await dialog.ShowDialog<string?>(window);
-            if (!string.IsNullOrWhiteSpace(brief))
-                HandToAgentRequested?.Invoke(row.RepoPath, brief);
+            }
+
+            var repo = current.RepoPath is { Length: > 0 } path
+                ? snapshot.FirstOrDefault(r => RepositoryStatusText.SamePath(r.Path, path))
+                : null;
+            var report = RepoReportBuilder.BuildRecommendation(current, repo, snapshot);
+            await CopyToClipboard.RunAsync(button, report, "Copy", "the recommendation");
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[RepositoriesView] RecoHandOff_Click FAILED: {ex.Message}");
+            FileLog.Write($"[RepositoriesView] RecoCopy_Click FAILED: {ex}");
+            await CopyToClipboard.FlashAsync(button, "Copy failed", "Copy");
+        }
+    }
+
+    /// <summary>
+    /// Two recommendations are about the same subject when they name the same repository - or when
+    /// NEITHER names one, which is the fleet-wide reap summary. That second case is why this is not
+    /// just <see cref="RepositoryStatusText.SamePath"/>, where empty never matches empty.
+    /// </summary>
+    private static bool IsSameSubject(string? a, string? b) =>
+        a is { Length: > 0 } || b is { Length: > 0 }
+            ? RepositoryStatusText.SamePath(a, b)
+            : true;
+
+    /// <summary>Copy every recommendation on this page - the recommendations only, not the whole list.</summary>
+    private async void CopyAllReco_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_monitor is null || sender is not Button button)
+            return;
+        try
+        {
+            var snapshot = _monitor.Snapshot();
+            var report = RepoReportBuilder.BuildRecommendations(RecommendationEngine.Evaluate(snapshot), snapshot);
+            await CopyToClipboard.RunAsync(button, report, "Copy all", "all recommendations");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[RepositoriesView] CopyAllReco_Click FAILED: {ex}");
+            await CopyToClipboard.FlashAsync(button, "Copy failed", "Copy all");
         }
     }
 

@@ -78,9 +78,6 @@ public partial class RepositoryDetailView : UserControl
     /// <summary>Back to the repository list.</summary>
     public event Action? BackRequested;
 
-    /// <summary>The owner chose a hand-off; the host spawns a session in the repo with this brief staged.</summary>
-    public event Action<string, string>? HandToAgentRequested; // (repoPath, brief)
-
     /// <summary>Live sessions provider, forwarded to the worktrees panel (in-use + reap guard).</summary>
     public Func<CancellationToken, Task<IReadOnlyList<LiveSessionRef>>>? LiveSessionsProvider
     {
@@ -141,29 +138,10 @@ public partial class RepositoryDetailView : UserControl
         RepoStats.Text = HeaderStats(_current);
     }
 
-    /// <summary>Pure header line (unit-tested).</summary>
-    internal static string HeaderStats(RepositoryStatus s)
-    {
-        var parts = new List<string> { $"branch {s.Branch}" };
-        parts.Add(s.IsClean ? "clean" : $"{s.UncommittedCount} uncommitted{DirtyDays(s)}");
-        if (s.AheadCount > 0 || s.BehindCount > 0) parts.Add($"ahead {s.AheadCount} / behind {s.BehindCount}");
-        if (s.BehindMainCount > 0) parts.Add($"behind main {s.BehindMainCount}");
-        if (s.WorktreeCount > 0) parts.Add($"{s.WorktreeCount} worktree(s), {FormatBytes(s.WorktreeBytes)}");
-        return string.Join(" · ", parts);
-    }
-
-    private static string DirtyDays(RepositoryStatus s)
-        => s.DirtySinceUtc is { } since
-            ? $" for {(int)Math.Max(0, (DateTime.UtcNow - since).TotalDays)} day(s)"
-            : "";
-
-    internal static string FormatBytes(long bytes) => bytes switch
-    {
-        >= 1_073_741_824 => $"{bytes / 1_073_741_824.0:0.0} GB",
-        >= 1_048_576 => $"{bytes / 1_048_576.0:0} MB",
-        > 0 => $"{bytes / 1024.0:0} KB",
-        _ => "0 KB",
-    };
+    // Wording lives in Core (RepositoryStatusText) so this header and the copied report describe the
+    // repository with the same words.
+    internal static string HeaderStats(RepositoryStatus s) => RepositoryStatusText.HeaderStats(s);
+    internal static string FormatBytes(long bytes) => RepositoryStatusText.FormatBytes(bytes);
 
     // ----- tabs -----
 
@@ -446,23 +424,37 @@ public partial class RepositoryDetailView : UserControl
         }
     }
 
-    private async void HandToAgentButton_Click(object? sender, RoutedEventArgs e)
+    /// <summary>
+    /// Put this one repository on the clipboard - its state, its worktrees, its recommendations, and
+    /// the task they imply - for the owner to paste into whichever agent they choose. The product
+    /// does not pick the agent; the clipboard is the hand-off.
+    /// </summary>
+    private async void CopyReportButton_Click(object? sender, RoutedEventArgs e)
     {
+        if (sender is not Button button || _monitor is null || _repoPath is null)
+            return;
+
+        // ONE snapshot for both the repository and its recommendations: the header was rendered
+        // earlier, and pairing a stale repo with fresh recommendations produces a report that
+        // disagrees with itself.
         try
         {
-            if (_repoPath is null || _current is null)
+            var snapshot = _monitor.Snapshot();
+            var repo = snapshot.FirstOrDefault(r => RepositoryStatusText.SamePath(r.Path, _repoPath));
+            if (repo is null)
+            {
+                FileLog.Write($"[RepositoryDetailView] copy refused - repository no longer in the model: {_repoPath}");
+                await CopyToClipboard.FlashAsync(button, "Repository is gone", "Copy report");
                 return;
-            var window = TopLevel.GetTopLevel(this) as Window;
-            if (window is null)
-                return;
-            var dialog = new global::CcDirector.Avalonia.HandToAgentDialog(_current);
-            var brief = await dialog.ShowDialog<string?>(window);
-            if (!string.IsNullOrWhiteSpace(brief))
-                HandToAgentRequested?.Invoke(_repoPath, brief);
+            }
+
+            var report = RepoReportBuilder.BuildOne(repo, RecommendationEngine.Evaluate(snapshot));
+            await CopyToClipboard.RunAsync(button, report, "Copy report", $"the report for {repo.Name}");
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[RepositoryDetailView] HandToAgentButton_Click FAILED: {ex.Message}");
+            FileLog.Write($"[RepositoryDetailView] CopyReportButton_Click FAILED: {ex}");
+            await CopyToClipboard.FlashAsync(button, "Copy failed", "Copy report");
         }
     }
 }

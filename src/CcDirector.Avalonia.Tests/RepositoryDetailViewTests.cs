@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using CcDirector.Avalonia.Controls;
 using CcDirector.Core.Git;
 using Xunit;
@@ -208,18 +210,22 @@ public class RepositoryDetailRenderTests
         Assert.NotNull(view);
     }
 
+    /// <summary>
+    /// The detail header's copy button is the hand-off: no dialog, no agent picker, no spawned
+    /// session - one click puts this repository's report on the clipboard.
+    /// </summary>
     [AvaloniaFact]
-    public void HandToAgentDialog_Constructs_AndBuildsABrief()
+    public void DetailHeader_OffersCopyReport_AndNoHandOffDialog()
     {
-        var repo = new RepositoryStatus
-        {
-            Path = "/repo", Name = "widget", Branch = "main",
-            IsClean = false, UncommittedCount = 7, Success = true,
-        };
-        var dialog = new global::CcDirector.Avalonia.HandToAgentDialog(repo);
-        dialog.Show();
+        var view = new RepositoryDetailView();
+        var window = new Window { Content = view, Width = 900, Height = 620 };
+        window.Show();
         Dispatcher.UIThread.RunJobs();
 
-        Assert.NotNull(dialog);
+        var copy = view.GetVisualDescendants().OfType<Button>()
+            .FirstOrDefault(b => (b.Content as string) == "Copy report");
+        Assert.NotNull(copy);
+        Assert.DoesNotContain(view.GetVisualDescendants().OfType<Button>(),
+            b => (b.Content as string) == "Hand to an agent");
     }
 }
