@@ -217,9 +217,6 @@ public sealed class CensusRouteTenancyProbeTests : IAsyncLifetime
                      $"gateway/skills/{sid}/files/{fileName}",
                      $"gateway/skills/{sid}/versions",
                      $"gateway/skills/{sid}/versions/1",
-                     // The traversal-shaped file name, on the catch-all leg: the census verdict is that
-                     // this is a database key and never a path, so it must reach nothing either.
-                     $"gateway/skills/{sid}/files/../../{fileName}",
                  })
         {
             var resp = await Send("GET", path, _keyA, null);
@@ -230,6 +227,29 @@ public sealed class CensusRouteTenancyProbeTests : IAsyncLifetime
             Assert.DoesNotContain(body, text, StringComparison.Ordinal);
             Assert.DoesNotContain(fileContent, text, StringComparison.Ordinal);
         }
+
+        // THE TRAVERSAL-SHAPED FILE NAME, ON THE CATCH-ALL LEG (inspection finding I1-04).
+        //
+        // This used to ride in the loop above as "gateway/skills/{id}/files/../../{name}" and it proved
+        // NOTHING: HttpClient resolved the dot segments before sending, so the server saw
+        // /gateway/skills/{name}, a different route answered, and its 404 satisfied the assertion. The
+        // catch-all leg this row is named after never ran. It is now sent WITHOUT canonicalization, so
+        // the escape reaches the handler under test, and the test asserts that it did.
+        var traversal = $"gateway/skills/{sid}/files/../../{fileName}";
+        var travResp = await SendRaw("GET", traversal, _keyA);
+        var travText = await travResp.Content.ReadAsStringAsync();
+        _out.WriteLine($"CROSS   GET /{traversal} (tenant A, uncanonicalized) -> {(int)travResp.StatusCode} {travText}");
+
+        // The request went out with the dot segments intact - if this fails, the probe is back to
+        // testing the wrong route and its refusal below would be meaningless.
+        Assert.Contains("/files/../../", travResp.RequestMessage!.RequestUri!.OriginalString, StringComparison.Ordinal);
+
+        // The census verdict for this row is that the file name is a DATABASE KEY and never a path, so a
+        // traversal-shaped key is simply a key that matches nothing. Tightened from "404 or 400": the
+        // refusal must be the ordinary not-found, and it must not disclose either seeded secret.
+        Assert.Equal(HttpStatusCode.NotFound, travResp.StatusCode);
+        Assert.DoesNotContain(body, travText, StringComparison.Ordinal);
+        Assert.DoesNotContain(fileContent, travText, StringComparison.Ordinal);
 
         // INDEPENDENT RE-READ: B's skill is untouched by A's attempts.
         var stillThere = await Json(await Send("GET", $"gateway/skills/{sid}", _keyB, null),
@@ -269,13 +289,44 @@ public sealed class CensusRouteTenancyProbeTests : IAsyncLifetime
                 $"{method} /{path}: tenant A must be refused, got {(int)resp.StatusCode}; body was: {text}");
         }
 
-        // A's clone attempt of B's id: whatever it answers, it must not have produced a copy of B's
-        // content in A's partition - the clone path is the one write that READS the named skill.
+        // A's clone attempt of B's id - the clone path is the one write that READS the named skill.
+        //
+        // Inspection finding I1-04: the clone RESPONSE used to go unasserted entirely. Only the later
+        // "no stolen copy" read was checked, which a missing or completely inert clone handler passes
+        // just as happily as a working one that correctly refused. The response is now asserted.
         var clone = await Send("POST", $"gateway/skills/{sid}/clone?newId=stolen-copy", _keyA, "{}");
-        _out.WriteLine($"CROSS   POST clone (tenant A) -> {(int)clone.StatusCode} {await clone.Content.ReadAsStringAsync()}");
+        var cloneText = await clone.Content.ReadAsStringAsync();
+        _out.WriteLine($"CROSS   POST clone (tenant A) -> {(int)clone.StatusCode} {cloneText}");
+        Assert.False(clone.IsSuccessStatusCode,
+            $"clone of another tenant's skill must not succeed, got {(int)clone.StatusCode}; body was: {cloneText}");
+        Assert.DoesNotContain(body, cloneText, StringComparison.Ordinal);
+
         var stolen = await Send("GET", "gateway/skills/stolen-copy", _keyA, null);
         var stolenText = await stolen.Content.ReadAsStringAsync();
         Assert.DoesNotContain(body, stolenText, StringComparison.Ordinal);
+
+        // THE LIVE CONTROL FOR CLONE (inspection finding I1-04). A refusal only means something if the
+        // same operation demonstrably WORKS for the owner. B clones its own skill and the copy really
+        // carries the body - so the handler is present, reachable and functional, and A's refusal above
+        // is a refusal rather than an inert route answering everyone the same way.
+        var ownerClone = await Send("POST", $"gateway/skills/{sid}/clone?newId=bobs-own-copy", _keyB, "{}");
+        _out.WriteLine($"CONTROL POST clone (owner B) -> {(int)ownerClone.StatusCode} {await ownerClone.Content.ReadAsStringAsync()}");
+        Assert.True(ownerClone.IsSuccessStatusCode,
+            $"the owner's own clone must succeed or this control proves nothing, got {(int)ownerClone.StatusCode}");
+        var ownerCopyBody = await Send("GET", "gateway/skills/bobs-own-copy/body", _keyB, null);
+        Assert.Equal(HttpStatusCode.OK, ownerCopyBody.StatusCode);
+        Assert.Contains(body, await ownerCopyBody.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+
+        // THE LIVE CONTROL FOR ENABLE AND DISABLE (inspection finding I1-04). These two verbs were in
+        // the cross-tenant loop above but were never shown to do anything at all, so a route that had
+        // been removed would have satisfied the security assertion. The owner drives both here.
+        foreach (var verb in new[] { "disable", "enable" })
+        {
+            var ownerToggle = await Send("POST", $"gateway/skills/{sid}/{verb}", _keyB, "{}");
+            _out.WriteLine($"CONTROL POST /gateway/skills/{{id}}/{verb} (owner B) -> {(int)ownerToggle.StatusCode}");
+            Assert.True(ownerToggle.IsSuccessStatusCode,
+                $"the owner's own {verb} must succeed or A's refusal of it proves nothing, got {(int)ownerToggle.StatusCode}");
+        }
 
         // INDEPENDENT RE-READ: B's skill survived every attempt, still published, still readable.
         var survivor = await Json(await Send("GET", $"gateway/skills/{sid}", _keyB, null),
@@ -403,6 +454,32 @@ public sealed class CensusRouteTenancyProbeTests : IAsyncLifetime
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
         if (body is not null)
             req.Content = new StringContent(body, Encoding.UTF8, "application/json");
+        return _http.SendAsync(req);
+    }
+
+    /// <summary>
+    /// Send <paramref name="path"/> WITHOUT client-side path canonicalization, so a traversal-shaped
+    /// request arrives at the server in the shape it was written.
+    ///
+    /// Inspection finding I1-04 exists because of this exact trap. A probe built as
+    /// <c>gateway/skills/{id}/files/../../{name}</c> and handed to <see cref="HttpClient"/> never tests
+    /// what it looks like it tests: <see cref="Uri"/> resolves the dot segments BEFORE the request goes
+    /// out, so the server receives <c>/gateway/skills/{name}</c> and a DIFFERENT route answers. The
+    /// probe then passed on the wrong route's reply, and the catch-all file leg it named was never
+    /// executed at all. Percent-encoding the dots is not enough on its own either, because
+    /// <see cref="Uri"/> unescapes and then normalizes them.
+    ///
+    /// <see cref="UriCreationOptions.DangerousDisablePathAndQueryCanonicalization"/> is the supported way
+    /// to stop that, and it is exactly what a probe of a traversal defence needs: the escape must reach
+    /// the handler under test, or the green means nothing.
+    /// </summary>
+    private Task<HttpResponseMessage> SendRaw(string method, string path, string bearer)
+    {
+        var absolute = new Uri(
+            _http.BaseAddress!.ToString().TrimEnd('/') + "/" + path.TrimStart('/'),
+            new UriCreationOptions { DangerousDisablePathAndQueryCanonicalization = true });
+        var req = new HttpRequestMessage(new HttpMethod(method), absolute);
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
         return _http.SendAsync(req);
     }
 }
