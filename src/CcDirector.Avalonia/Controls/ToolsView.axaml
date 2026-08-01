@@ -30,6 +30,54 @@
             </Grid>
         </Border>
 
+        <!-- ============ PATH fault banner ============
+             Shown ONLY when the cc-devthrottle a spawned session would reach cannot drive this
+             Director. It is a banner rather than a row on the cc-devthrottle tool because the tool is
+             not broken - it is the wrong COPY, from another install. Saying "cc-devthrottle failed"
+             here would repeat the misattribution the whole check exists to kill. Hidden when healthy;
+             a permanently-present card becomes furniture. -->
+        <Border x:Name="PathFaultBanner" DockPanel.Dock="Top" IsVisible="False"
+                Background="#3A1D1D" BorderBrush="#B54A4A" BorderThickness="0,0,0,1" Padding="16,12">
+            <StackPanel Orientation="Vertical" Spacing="10">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock Text="(!)" Foreground="#FF8A8A" FontSize="13" FontWeight="Bold"
+                               VerticalAlignment="Center" />
+                    <TextBlock Text="Sessions cannot reach this Director"
+                               Foreground="#FFDADA" FontSize="13" FontWeight="SemiBold"
+                               VerticalAlignment="Center" />
+                </StackPanel>
+
+                <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto" >
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="Your PATH gives"
+                               Foreground="#C99A9A" FontSize="11" Margin="0,0,12,2" />
+                    <TextBlock Grid.Row="0" Grid.Column="1" x:Name="PathFaultResolved" Text=""
+                               Foreground="#EFCFCF" FontSize="11"
+                               FontFamily="Consolas,monospace" TextWrapping="Wrap" Margin="0,0,0,2" />
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="This Director is"
+                               Foreground="#C99A9A" FontSize="11" Margin="0,0,12,0" />
+                    <TextBlock Grid.Row="1" Grid.Column="1" x:Name="PathFaultExpected" Text=""
+                               Foreground="#EFCFCF" FontSize="11"
+                               FontFamily="Consolas,monospace" TextWrapping="Wrap" />
+                </Grid>
+
+                <TextBlock x:Name="PathFaultExplanation" Text="" Foreground="#E0B8B8" FontSize="11"
+                           TextWrapping="Wrap" />
+
+                <StackPanel Orientation="Horizontal" Spacing="12">
+                    <Button x:Name="PathFaultFixButton" Content="Repoint PATH to this install"
+                            Click="PathFaultFixButton_Click"
+                            Background="#B54A4A" Foreground="White"
+                            BorderThickness="0" Cursor="Hand" Padding="14,6" FontSize="12" />
+                    <TextBlock x:Name="PathFaultProgress" Text="" Foreground="#E0B8B8" FontSize="11"
+                               VerticalAlignment="Center" />
+                </StackPanel>
+
+                <!-- The two things a reversible change to shared machine state has to say up front. -->
+                <TextBlock Foreground="#B08585" FontSize="10" TextWrapping="Wrap"
+                           Text="Nothing is deleted. The other install stays on PATH behind this one. Sessions already running keep the old PATH until they restart." />
+            </StackPanel>
+        </Border>
+
         <!-- ============ Session-first hint: this page is a dashboard; everything is scriptable ============ -->
         <Border DockPanel.Dock="Top" Background="#1B2A33"
                 BorderBrush="#264E5E" BorderThickness="0,0,0,1" Padding="16,7">
