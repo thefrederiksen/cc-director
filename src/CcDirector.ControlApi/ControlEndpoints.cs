@@ -1765,8 +1765,8 @@ internal static class ControlEndpoints
             .Select(ResolveRealPath)
             .Where(r => r is not null)
             .Select(r => NormalizeDirectoryPath(r!))
-            .Any(r => string.Equals(realFullTrimmed, r, PathContainmentComparison)
-                      || realFullTrimmed.StartsWith(ContainmentPrefix(r), PathContainmentComparison));
+            .Any(r => string.Equals(realFullTrimmed, r, PathIdentityComparison)
+                      || realFullTrimmed.StartsWith(ContainmentPrefix(r), PathIdentityComparison));
         if (!containedForReal)
             throw new UnauthorizedAccessException($"directory is outside this Director's session working directories: {full}");
 
@@ -2221,10 +2221,13 @@ internal static class ControlEndpoints
         if (realFull is null || realDir is null)
             return null;
         var realDirTrimmed = NormalizeDirectoryPath(realDir);
-        if (!realFull.StartsWith(ContainmentPrefix(realDirTrimmed), PathContainmentComparison))
+        if (!realFull.StartsWith(ContainmentPrefix(realDirTrimmed), PathIdentityComparison))
             return null;
 
-        return full;
+        // And the same last gate as the session-file read: an in-folder HARD LINK named
+        // "innocent.png" passes the bare-name test, the extension test and both prefix tests while
+        // naming a file that also lives outside the screenshots folder (M03-I2-01).
+        return RefuseUnlessSingleName(full);
     }
 
     /// <summary>
@@ -2272,9 +2275,43 @@ internal static class ControlEndpoints
         if (realRoot is null || realFull is null)
             return null; // identity not establishable (an unresolvable reparse point, a cycle) - refuse
         var realRootTrimmed = NormalizeDirectoryPath(realRoot);
-        if (!realFull.StartsWith(ContainmentPrefix(realRootTrimmed), PathContainmentComparison))
+        if (!realFull.StartsWith(ContainmentPrefix(realRootTrimmed), PathIdentityComparison))
             return null;
 
+        // Everything above decides where the NAME is. This decides whether the name is the only one
+        // (M03-I2-01). A hard link is a second directory entry for the same file object and carries
+        // no reparse-point attribute, so nothing above can see it: the in-root alias resolves to
+        // itself, passes containment, and the read serves a file that also lives outside the root.
+        // A file with more than one name cannot be proven to be inside anything, so it is refused,
+        // and so is a file whose name count cannot be established.
+        return RefuseUnlessSingleName(full);
+    }
+
+    /// <summary>
+    /// The last gate of the file-containment decision: return <paramref name="full"/> only when the
+    /// filesystem says this file has exactly ONE name. See <see cref="FilesystemIdentity"/> for why a
+    /// second name defeats every path-based containment test ever written.
+    /// </summary>
+    private static string? RefuseUnlessSingleName(string full)
+    {
+        // A path with no file behind it has no identity to alias and serves nothing; the caller's own
+        // existence check answers it as an ordinary not-found. Asking the filesystem how many names a
+        // missing file has would turn every not-found into a containment refusal, which is a worse
+        // answer to debug and would deny a session file the moment it is deleted.
+        if (!File.Exists(full))
+            return full;
+
+        var singleName = FilesystemIdentity.HasExactlyOneName(full);
+        if (singleName is null)
+        {
+            FileLog.Write($"[ControlEndpoints] REFUSED {full}: the number of names this file has could not be established");
+            return null;
+        }
+        if (singleName == false)
+        {
+            FileLog.Write($"[ControlEndpoints] REFUSED {full}: the file has more than one name, so it cannot be shown to live inside the allowed root");
+            return null;
+        }
         return full;
     }
 
@@ -2328,6 +2365,25 @@ internal static class ControlEndpoints
     internal static StringComparison PathContainmentComparisonFor(bool windowsFileSystem) =>
         windowsFileSystem ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
+    /// <summary>
+    /// Comparison for the containment decision made on RESOLVED paths - always ordinal, on every
+    /// platform, because both sides have already been folded to the spelling the filesystem itself
+    /// uses (<see cref="FilesystemIdentity.CanonicalPath"/>).
+    ///
+    /// This is the second half of inspection finding M03-I2-01. The platform-wide ignore-case rule
+    /// above is right about the DEFAULT Windows filesystem and wrong about a directory carrying the
+    /// NTFS per-directory case-sensitive flag, where "repo" and "REPO" are two different directories
+    /// and an ignore-case prefix test accepts the wrong one as inside. Comparing canonical spellings
+    /// ordinally decides correctly under either rule, and needs no guess about which rule applies:
+    /// on a case-insensitive parent every spelling folds onto the one real name, and on a
+    /// case-sensitive parent the two names fold to themselves and stay distinct.
+    ///
+    /// <see cref="PathContainmentComparison"/> is kept for the cheap LEXICAL pre-filter that runs
+    /// before anything touches the filesystem. That pre-filter is deliberately the more permissive
+    /// of the two on Windows: it only has to avoid resolving obvious nonsense, and the resolved
+    /// comparison below is what actually decides.
+    /// </summary>
+    internal static StringComparison PathIdentityComparison => StringComparison.Ordinal;
 
     /// <summary>
     /// Resolve <paramref name="path"/> to its REAL filesystem identity: every symbolic link,
@@ -2341,6 +2397,23 @@ internal static class ControlEndpoints
     /// so a non-existent suffix is kept lexically (the caller's own existence checks handle it).
     /// </summary>
     internal static string? ResolveRealPath(string path)
+    {
+        var resolved = ResolveLinkChain(path);
+        if (resolved is null)
+            return null;
+
+        // Fold the result to the spelling the filesystem itself uses. On Windows that is what makes
+        // the containment comparison ORDINAL and therefore correct on a per-directory case-sensitive
+        // parent, which the platform supports and the old ignore-case rule got wrong (M03-I2-01).
+        // Everywhere else this returns the path unchanged.
+        return FilesystemIdentity.CanonicalPath(resolved);
+    }
+
+    /// <summary>
+    /// The link-following half of <see cref="ResolveRealPath"/>: every existing component walked,
+    /// every resolvable reparse point followed. See there for the contract.
+    /// </summary>
+    private static string? ResolveLinkChain(string path)
     {
         // More link hops than this is a cycle (a link pointing back at its own ancestor) or an
         // absurd chain; either way the identity is not establishable - refuse.
