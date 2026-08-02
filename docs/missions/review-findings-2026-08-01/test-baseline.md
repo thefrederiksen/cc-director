@@ -159,3 +159,56 @@ projects will report totals ABOVE the numbers in the table at the top of this do
 or above, never equal.** A count higher than baseline means main moved; it is only a finding when the
 count FALLS, which is what a silently-stopped suite looks like. Do not "fix" a high count by lowering
 the baseline.
+
+---
+
+## W2's gate - GREEN, on `9037fc981` plus the prompt-delete erasure
+
+Run detached from a clean tree at `06c79eb5a`, started 2026-08-01 22:22 local, finished 23:08. No
+PostgreSQL rig: `CC_GATEWAY_TEST_PG_CONNECTION`, `CC_GATEWAY_TEST_PG_STATS_CONNECTION` and
+`CC_GATEWAY_DB_CONNECTION` were all unset, so every PostgreSQL-gated fact reported SKIPPED. **W2's own
+acceptance rides on none of them** - `session_history` is the main Gateway database, which the ordinary
+suite runs on SQLite - so unlike W1 this item's facts EXECUTE in the ordinary run. That is asserted from
+the TRX below, not assumed.
+
+| Project | Outcome | Total | vs baseline | Executed | Failed | Skipped |
+|---|---|---|---|---|---|---|
+| CcDirector.Gateway.Tests | Completed | 5176 | 5173 (+3, see below) | 5121 | 0 | 55 |
+| CcDirector.Core.Tests | Completed | 4196 | 4196 (=) | 4188 | 0 | 8 |
+| CcDirector.Avalonia.Tests | Completed | 353 | 353 (=) | 353 | 0 | 0 |
+| CcDirector.Launcher.Tests | Completed | 110 | 110 (=) | 110 | 0 | 0 |
+| CcDirector.HostedAgent.Tests | Completed | 88 | 88 (=) | 88 | 0 | 0 |
+| CcDirector.Engine.Tests | Completed | 63 | 63 (=) | 63 | 0 | 0 |
+| CcDirector.Terminal.Avalonia.Tests | Completed | 24 | 24 (=) | 24 | 0 | 0 |
+
+**The five W2 facts show EXECUTED and Passed in the TRX**, which is what the amendment above requires
+and what a skip would have hollowed out: `Erasing_clears_all_seven_prompt_derived_columns_resets_the_metadata_and_drops_the_rollups`,
+`The_erasure_reaches_only_the_erasing_tenants_rows`, `A_second_erasure_honestly_reports_nothing_to_do`,
+`Deleting_the_prompt_history_also_erases_the_copy_the_gateway_derived_from_it`, and
+`A_delete_with_nothing_derived_reports_zero_and_still_succeeds`.
+
+### The +3 is +5 minus 2, and the 2 are accounted for exactly
+
+W2 adds FIVE test methods, so a naive reading expects 5178 and gets 5176. Two short is the shape of a
+silently-stopped suite, so it was chased rather than shrugged at, and it is fully explained:
+
+- The branch's discovered test set was diffed against `origin/main`'s, from a build of each: **exactly
+  the five new methods, and nothing removed.** Discovery, not execution, so it costs a build rather than
+  an hour of the machine-wide lock.
+- The baseline row of 5173 was measured **with the statistics rig UP**.
+  `HostedSchemaRefusesAnUnownedRowTests.A_row_whose_tenant_is_a_spelling_production_mints_is_still_stored`
+  is a THEORY with three `InlineData` rows, which expands to three cases when the rig is up and collapses
+  to ONE skipped case when it is not. That is the two: 5173 with the rig, 5171 without it, plus five is
+  5176. No residue.
+
+**The lesson worth keeping: a theory's row count is part of the total, and gating a theory changes the
+total without any test being lost.** Comparing a no-rig run against a rig-up baseline therefore
+under-counts by the number of gated theory rows, every time. It is not drift and it is not a collapse -
+but it can only be told apart from a collapse by naming which theory and how many rows, which is why the
+number above is written out rather than waved at.
+
+### One commit on this branch is later than the gate run
+
+`d73e5d2e3` adds a comment naming the concurrent-ingest window and was written after the run. It is
+COMMENT-ONLY - ten added lines, none removed, one file, verified on both sides of the diff - so it
+cannot move a test. The gated tree and the landing tree differ by nothing that can execute.
