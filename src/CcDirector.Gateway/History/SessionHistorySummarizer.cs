@@ -78,19 +78,22 @@ public sealed class SessionHistorySummarizer
         {
             ct.ThrowIfCancellationRequested();
             var isPartial = string.Equals(row.EndingKind, SessionHistoryEndings.Interrupted, StringComparison.Ordinal);
+            // The moment this pass STARTED. Declared OUT here so the failure writer in the catch below
+            // carries it too: that writer is guarded by the same watermark predicate as the success
+            // writer, and a value it cannot see would mean the guard could not be applied to it.
+            // It is also the honest stand-in when a transcript turns out to be empty - there is no
+            // material to date in that case, and the write carries no member content at all.
+            var passStartedUtc = DateTime.UtcNow;
+            var materialReadAtUtc = passStartedUtc;
             try
             {
-                // The moment this pass STARTED, kept only as the upper bound for a transcript that turns
-                // out to be empty - there is no material to date in that case, and "now" is the honest
-                // stand-in for a write that carries no member content at all.
-                var passStartedUtc = DateTime.UtcNow;
                 var transcript = BuildTranscript(tenant, row);
                 // THE AGE OF THE MATERIAL, not the moment it was read. A read time is honestly recent even
                 // when every record behind it is pre-delete, which is exactly how an erased summary came
                 // back: erase stamps and clears, the files are deleted a moment later, and a summariser
                 // starting inside that gap reads the still-present old records. The store refuses this
                 // write when the account erased at or after the OLDEST record it is made of.
-                var materialReadAtUtc = transcript.OldestMaterialUtc ?? passStartedUtc;
+                materialReadAtUtc = transcript.OldestMaterialUtc ?? passStartedUtc;
                 if (transcript.TotalChars < MinCharsForModelCall)
                 {
                     _store.StoreGeneratedSummary(row.SessionId, SessionHistorySummaryKinds.None, isPartial,
@@ -105,7 +108,7 @@ public sealed class SessionHistorySummarizer
                 if (parsed is null)
                 {
                     FileLog.Write($"[SessionHistorySummarizer] unparseable model reply for session={row.SessionId}");
-                    _store.NoteSummaryFailure(row.SessionId);
+                    _store.NoteSummaryFailure(row.SessionId, materialReadAtUtc);
                     settled++;
                     continue;
                 }
@@ -122,7 +125,7 @@ public sealed class SessionHistorySummarizer
             catch (Exception ex)
             {
                 FileLog.Write($"[SessionHistorySummarizer] summarise FAILED for session={row.SessionId}: {ex.Message}");
-                _store.NoteSummaryFailure(row.SessionId);
+                _store.NoteSummaryFailure(row.SessionId, materialReadAtUtc);
                 settled++;
             }
         }

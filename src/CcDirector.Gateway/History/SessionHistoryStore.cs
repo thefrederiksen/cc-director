@@ -53,6 +53,9 @@ public sealed class SessionHistoryStore
                     TenantId = ctx.ActiveTenant!,
                     SessionId = session.SessionId,
                     StartedAtUtc = Utc(session.CreatedAt),
+                    // OUR clock, stamped once: the seal route's admission bound must not be a value a
+                    // caller supplies. See SessionHistoryEntity.FirstSeenAtUtc.
+                    FirstSeenAtUtc = nowUtc,
                 };
                 ctx.SessionHistory.Add(entity);
                 FileLog.Write($"[SessionHistoryStore] first sight: session={session.SessionId} repo={session.RepoName}");
@@ -497,23 +500,23 @@ public sealed class SessionHistoryStore
     /// generated. Returns false when no row exists, or when this account erased at or after the point the
     /// sealed material could only have come from.
     ///
-    /// THE MATERIAL TIME IS THE ROW'S OWN <see cref="SessionHistoryEntity.StartedAtUtc"/>, and NO CALLER
-    /// SUPPLIES IT. That is a correction: the previous version took a material time as an argument, and the
-    /// endpoint - having nothing better - substituted the moment the request ARRIVED. Arrival time is always
-    /// newer than an erasure that already happened, so every seal was admitted after every delete, including
-    /// a seal composed from the conversation the member had just erased. A parameter that the only real
-    /// caller can fill in only with "now" is not a guard; it is a guard-shaped hole, and the test that
-    /// covered it passed a backdated value the endpoint never produces.
+    /// ADMISSION USES A SERVER-OWNED TIME: <see cref="SessionHistoryEntity.FirstSeenAtUtc"/>, stamped by this
+    /// Gateway when it first saw the session. Two corrections led here and both are worth keeping.
     ///
-    /// So the comparison uses the oldest moment the seal's material could date from: the session's own
-    /// start. A seal carries no provenance (that is why sealed rows are erased at all), so the safe bound is
-    /// the WHOLE life of the session it describes. The consequence, stated rather than discovered: a session
-    /// that began before an erasure can never seal afterwards. That is the correct side to err on - the
-    /// member has just erased the prompts that session's farewell would be written from - and a session
-    /// started after the erasure seals normally.
+    /// First the seal took a material time as an ARGUMENT, and the endpoint - having nothing better -
+    /// substituted the moment the request arrived, which is always newer than an erasure that already
+    /// happened. Every seal was admitted after every delete.
     ///
-    /// Being a per-row comparison, it is also one statement with no parameter to spoof, no clock to skew,
-    /// and nothing for a caller to get wrong.
+    /// Then it used the row's <c>StartedAtUtc</c>, which removed the parameter but not the problem: that
+    /// value is the DIRECTOR'S measured start, pushed over the wire. A caller reporting a start after the
+    /// erasure would be admitted, so admission still rode a clock we do not own. The lesson is the one this
+    /// mission keeps relearning - "no caller passes it" is not the same as "no caller controls it".
+    ///
+    /// So the bound is the first moment THIS GATEWAY observed the session. A seal carries no provenance, so
+    /// the safe bound is the whole life of the session as we saw it. The consequence, stated rather than
+    /// discovered: a session this Gateway first saw before an erasure can never seal afterwards. That is the
+    /// correct side to err on - the member has just erased the prompts that farewell would be written from -
+    /// and a session first seen after the erasure seals normally.
     /// </summary>
     public bool SealSummary(string sessionId, SealSessionSummaryRequest request)
     {
@@ -532,7 +535,7 @@ public sealed class SessionHistoryStore
             using var ctx = _db.CreateContext();
             var written = ctx.SessionHistory
                 .Where(e => e.SessionId == sessionId
-                            && !ctx.PromptErasureWatermarks.Any(w => w.ErasedAtUtc >= e.StartedAtUtc))
+                            && !ctx.PromptErasureWatermarks.Any(w => w.ErasedAtUtc >= e.FirstSeenAtUtc))
                 .ExecuteUpdate(s => s
                     .SetProperty(e => e.SummaryKind, SessionHistorySummaryKinds.Sealed)
                     .SetProperty(e => e.SummaryIsPartial, false)
@@ -626,21 +629,49 @@ public sealed class SessionHistoryStore
     /// <summary>
     /// Count one failed summarisation attempt. At <see cref="MaxSummaryAttempts"/> the summary is
     /// marked unavailable - the record stands without one rather than billing a broken path forever.
+    ///
+    /// CONDITIONAL ON THE WATERMARK, exactly like <see cref="StoreGeneratedSummary"/>, and it was not
+    /// before. This is the failure twin of the writer that was already guarded, and it was missed because
+    /// it carries no prompt prose - which made it look harmless. It is not:
+    ///
+    ///  - it undoes the erasure's metadata reset, putting an attempt count and possibly an "unavailable"
+    ///    kind back on a row the delete had cleared; and
+    ///  - WORSE THAN THE METADATA, it can leave the row permanently unable to become pending again.
+    ///    <see cref="PendingSummaries"/> only offers rows with no kind and attempts under the cap, so a
+    ///    failure writer that lands after an erasure can push a cleared row straight back to the cap, or
+    ///    stamp "unavailable" on it, and nothing will ever summarise that session again. The erasure's
+    ///    self-healing property - reset, re-summarise from an empty log, settle honestly as "none" -
+    ///    depended on this row being reachable.
+    ///
+    /// <paramref name="materialReadAtUtc"/> is the same value the successful write carries: when the
+    /// summariser READ the material this attempt was made from.
     /// </summary>
-    public void NoteSummaryFailure(string sessionId)
+    public void NoteSummaryFailure(string sessionId, DateTime materialReadAtUtc)
     {
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            var entity = ctx.SessionHistory.FirstOrDefault(e => e.SessionId == sessionId);
-            if (entity is null) return;
-            entity.SummaryAttempts++;
-            if (entity.SummaryAttempts >= MaxSummaryAttempts && string.IsNullOrEmpty(entity.SummaryKind))
+            // Two conditional statements rather than one, because the "unavailable" stamp depends on the
+            // NEW attempt count. Both carry the watermark predicate, so an erasure between them stops the
+            // second exactly as it stops the first.
+            var counted = ctx.SessionHistory
+                .Where(e => e.SessionId == sessionId
+                            && !ctx.PromptErasureWatermarks.Any(w => w.ErasedAtUtc >= materialReadAtUtc))
+                .ExecuteUpdate(s => s.SetProperty(e => e.SummaryAttempts, e => e.SummaryAttempts + 1));
+            if (counted == 0)
             {
-                entity.SummaryKind = SessionHistorySummaryKinds.Unavailable;
-                FileLog.Write($"[SessionHistoryStore] summary marked unavailable after {entity.SummaryAttempts} attempts: session={sessionId}");
+                FileLog.Write($"[SessionHistoryStore] summary failure NOT counted (no row, or erased since the material was read): session={sessionId}");
+                return;
             }
-            ctx.SaveChanges();
+
+            var markedUnavailable = ctx.SessionHistory
+                .Where(e => e.SessionId == sessionId
+                            && e.SummaryAttempts >= MaxSummaryAttempts
+                            && (e.SummaryKind == null || e.SummaryKind == "")
+                            && !ctx.PromptErasureWatermarks.Any(w => w.ErasedAtUtc >= materialReadAtUtc))
+                .ExecuteUpdate(s => s.SetProperty(e => e.SummaryKind, SessionHistorySummaryKinds.Unavailable));
+            if (markedUnavailable > 0)
+                FileLog.Write($"[SessionHistoryStore] summary marked unavailable after {MaxSummaryAttempts} attempts: session={sessionId}");
         }
     }
 

@@ -258,7 +258,7 @@ public sealed class SessionHistoryStoreTests : IDisposable
         for (var i = 0; i < SessionHistoryStore.MaxSummaryAttempts; i++)
         {
             Assert.Single(store.PendingSummaries(now.AddMinutes(5), 10));
-            store.NoteSummaryFailure("s1");
+            store.NoteSummaryFailure("s1", DateTime.UtcNow);
         }
 
         Assert.Empty(store.PendingSummaries(now.AddMinutes(5), 10));
@@ -352,7 +352,7 @@ public sealed class SessionHistoryStoreTests : IDisposable
             "Built the erasure and proved it.",
             new[] { "the erasure" }, new[] { "nothing yet" }, new[] { "prompt-delete-erases" },
             new[] { "2378" }, new[] { "abc1234" }, DateTime.UtcNow);
-        store.NoteSummaryFailure("s1");
+        store.NoteSummaryFailure("s1", DateTime.UtcNow);
         store.SaveRollup("thefrederiksen/devthrottle", now.Date, "A paragraph made of those summaries.", "hash1", 0, now, DateTime.UtcNow);
 
         // Every one of the ten fields carries something first - an erasure test over empty columns

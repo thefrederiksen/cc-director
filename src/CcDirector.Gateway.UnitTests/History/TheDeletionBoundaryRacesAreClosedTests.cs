@@ -244,7 +244,10 @@ public sealed class TheDeletionBoundaryRacesAreClosedTests : IDisposable
             Assert.Null(row.SummaryText);
             Assert.Null(row.SummaryKind);
 
-            // Control: a session that BEGAN after the erasure seals normally over the same endpoint.
+            // A CALLER-CONTROLLED START NO LONGER BUYS ADMISSION. This session claims it began after the
+            // erasure - the exact value the previous rule trusted - but this Gateway first saw it now, and
+            // "now" is after the erasure, so it seals. The point of the assertion below is not that it
+            // succeeds but that the value deciding it is OURS: see the refusal fact that follows.
             store.UpsertLive("dir-1", Session(id: "s2", created: DateTime.UtcNow.AddSeconds(1)), DateTime.UtcNow);
             var ok = await client.PostAsJsonAsync("/history/sessions/s2/summary", new SealSessionSummaryRequest
             {
@@ -260,5 +263,74 @@ public sealed class TheDeletionBoundaryRacesAreClosedTests : IDisposable
             await app.StopAsync();
             await app.DisposeAsync();
         }
+    }
+
+    /// <summary>
+    /// The round-four correction, and the lesson under it: removing the PARAMETER was not the same as
+    /// removing the caller's control. Admission moved to the row's <c>StartedAtUtc</c> - which reads like a
+    /// server fact and is not one. It is the DIRECTOR'S measured start, pushed over the wire, so a Director
+    /// reporting a start in the future would have had a pre-erasure session admitted.
+    ///
+    /// Admission now uses the first moment THIS GATEWAY saw the session, which we stamp with our own clock
+    /// and never move. This fact drives exactly the attack: a session we saw long before the erasure,
+    /// re-pushed claiming it started a minute from now.
+    /// </summary>
+    [Fact]
+    public void A_director_claiming_a_future_start_cannot_get_a_pre_erasure_session_sealed()
+    {
+        var db = _harness.Open();
+        var store = new SessionHistoryStore(db);
+        var weSawItLongAgo = DateTime.UtcNow.AddHours(-3);
+        store.UpsertLive("dir-1", Session(created: weSawItLongAgo), weSawItLongAgo);
+
+        store.ErasePromptDerived();
+
+        // The Director re-pushes the same session claiming it started in the future.
+        store.UpsertLive("dir-1", Session(created: DateTime.UtcNow.AddMinutes(1)), DateTime.UtcNow);
+
+        Assert.False(store.SealSummary("s1", new SealSessionSummaryRequest
+        {
+            Summary = "A farewell for a session we saw before the member's delete.",
+        }));
+        using var ctx = db.CreateContext();
+        Assert.Null(ctx.SessionHistory.AsNoTracking().Single(e => e.SessionId == "s1").SummaryText);
+    }
+
+    /// <summary>
+    /// FINDING 4. The failure writer was an unguarded read-modify-save, and it looked harmless because it
+    /// carries no prompt prose. It is not harmless: it puts the attempt count and possibly an "unavailable"
+    /// kind back on a row the erasure cleared, and because PendingSummaries only offers rows with no kind
+    /// and attempts under the cap, it can leave the row PERMANENTLY unable to become pending again. The
+    /// erasure's self-healing property - reset, re-summarise from an empty log, settle honestly as "none" -
+    /// depended on that row still being reachable.
+    /// </summary>
+    [Fact]
+    public void A_failed_summarisation_from_before_the_delete_cannot_re_arm_the_metadata_it_cleared()
+    {
+        var db = _harness.Open();
+        var store = new SessionHistoryStore(db);
+        var now = DateTime.UtcNow;
+        store.UpsertLive("dir-1", Session(), now);
+        store.RecordEnding("s1", SessionHistoryEndings.Finished, crashed: false, now);
+
+        // A summarisation pass that started before the delete, and failed after it.
+        var materialReadAtUtc = DateTime.UtcNow;
+        store.ErasePromptDerived();
+        store.NoteSummaryFailure("s1", materialReadAtUtc);
+
+        using (var ctx = db.CreateContext())
+        {
+            var row = ctx.SessionHistory.AsNoTracking().Single(e => e.SessionId == "s1");
+            Assert.Equal(0, row.SummaryAttempts);
+            Assert.Null(row.SummaryKind);
+        }
+
+        // And the row is still reachable by the sweep, which is the property that actually matters.
+        Assert.Contains(store.PendingSummaries(DateTime.UtcNow.AddMinutes(1), 10), r => r.SessionId == "s1");
+
+        // Control: a failure whose material is newer than the delete IS counted.
+        store.NoteSummaryFailure("s1", DateTime.UtcNow.AddSeconds(1));
+        using (var ctx = db.CreateContext())
+            Assert.Equal(1, ctx.SessionHistory.AsNoTracking().Single(e => e.SessionId == "s1").SummaryAttempts);
     }
 }

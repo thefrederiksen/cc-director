@@ -799,6 +799,9 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.Property<string>("FirstPromptLine")
                         .HasColumnType("text");
 
+                    b.Property<DateTime>("FirstSeenAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<long?>("InputCharacterCount")
                         .HasColumnType("bigint");
 
