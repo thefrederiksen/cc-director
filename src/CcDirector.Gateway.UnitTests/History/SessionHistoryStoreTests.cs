@@ -420,8 +420,9 @@ public sealed class SessionHistoryStoreTests : IDisposable
 
         var erased = alpha.ErasePromptDerived();
 
-        Assert.Equal(1, erased.SessionRows);
-        Assert.Equal(1, erased.RollupRows);
+        // Beta's data FIRST, before the counts: the counts are the endpoint's report, and a report is
+        // not the thing it reports on. An assertion order that trips on the number first would hide
+        // which rows actually went, which is the only question this test exists to answer.
         using (var ctx = betaDb.CreateContext())
         {
             Assert.Equal("beta's own words",
@@ -433,6 +434,9 @@ public sealed class SessionHistoryStoreTests : IDisposable
         {
             Assert.Null(ctx.SessionHistory.AsNoTracking().Single(e => e.SessionId == "alpha-1").FirstPromptLine);
         }
+        Assert.Empty(alpha.ReadRollups(now.Date, now.Date));
+        Assert.Equal(1, erased.SessionRows);
+        Assert.Equal(1, erased.RollupRows);
     }
 
     /// <summary>
