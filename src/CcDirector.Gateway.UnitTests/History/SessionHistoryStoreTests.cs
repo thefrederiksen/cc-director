@@ -2,6 +2,7 @@ using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.History;
 using CcDirector.Gateway.Tests.Data;
+using Microsoft.EntityFrameworkCore;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests.History;
@@ -322,6 +323,138 @@ public sealed class SessionHistoryStoreTests : IDisposable
         var rollup = Assert.Single(store.ReadRollups(day, day));
         Assert.Equal("Worked on work history, updated.", rollup.SummaryText);
         Assert.Equal("hash2", rollup.InputHash);
+    }
+
+    // ---- The prompt-delete erasure (mission work item W2) ------------------------------------------
+
+    /// <summary>
+    /// The fact the whole work item exists for. Before this, <c>DELETE /prompts</c> removed the prompt
+    /// files and left the derived copy sitting in <c>session_history</c> for another ninety days, served
+    /// on the History page - while the endpoint's own documentation said the delete WAS the erasure.
+    ///
+    /// Asserted against the raw COLUMNS rather than the folded record on purpose: the fold hides
+    /// <c>FirstPromptLine</c> behind a description that falls back to the repository name, so a
+    /// DTO-level assertion would pass over a row whose prompt line was still in the database.
+    /// </summary>
+    [Fact]
+    public void Erasing_clears_all_seven_prompt_derived_columns_resets_the_metadata_and_drops_the_rollups()
+    {
+        var db = _harness.Open();
+        var store = new SessionHistoryStore(db);
+        var now = DateTime.UtcNow;
+        store.UpsertLive("dir-1", Session(name: null), now);
+        store.SetFirstPrompt("s1", "Erase the derived copy when the member deletes their prompts");
+        store.SealSummary("s1", new SealSessionSummaryRequest
+        {
+            Summary = "Built the erasure and proved it.",
+            WhatWasBuilt = new[] { "the erasure" },
+            LeftUnverified = new[] { "nothing yet" },
+            Branches = new[] { "prompt-delete-erases" },
+            PullRequests = new[] { "2378" },
+            Commits = new[] { "abc1234" },
+        });
+        store.NoteSummaryFailure("s1");
+        store.SaveRollup("thefrederiksen/devthrottle", now.Date, "A paragraph made of those summaries.", "hash1", 0, now);
+
+        // Every one of the ten fields carries something first - an erasure test over empty columns
+        // proves only that null stayed null.
+        using (var ctx = db.CreateContext())
+        {
+            var before = ctx.SessionHistory.AsNoTracking().Single(e => e.SessionId == "s1");
+            Assert.NotNull(before.FirstPromptLine);
+            Assert.NotNull(before.SummaryText);
+            Assert.NotNull(before.WhatWasBuiltJson);
+            Assert.NotNull(before.LeftUnverifiedJson);
+            Assert.NotNull(before.BranchesJson);
+            Assert.NotNull(before.PullRequestsJson);
+            Assert.NotNull(before.CommitsJson);
+            Assert.NotNull(before.SummaryKind);
+            Assert.Equal(1, before.SummaryAttempts);
+        }
+
+        var erased = store.ErasePromptDerived();
+
+        Assert.Equal(1, erased.SessionRows);
+        Assert.Equal(1, erased.RollupRows);
+        using (var ctx = db.CreateContext())
+        {
+            var after = ctx.SessionHistory.AsNoTracking().Single(e => e.SessionId == "s1");
+            Assert.Null(after.FirstPromptLine);
+            Assert.Null(after.SummaryText);
+            Assert.Null(after.WhatWasBuiltJson);
+            Assert.Null(after.LeftUnverifiedJson);
+            Assert.Null(after.BranchesJson);
+            Assert.Null(after.PullRequestsJson);
+            Assert.Null(after.CommitsJson);
+            // Reset, not left claiming a summary that no longer exists.
+            Assert.Null(after.SummaryKind);
+            Assert.False(after.SummaryIsPartial);
+            Assert.Equal(0, after.SummaryAttempts);
+            // The row itself SURVIVES - this is an erasure of prompt-derived content, not of the
+            // member's session record. The repository and the timing are not prompt material.
+            Assert.Equal(@"D:\repos\devthrottle", after.RepoPath);
+        }
+        Assert.Empty(store.ReadRollups(now.Date.AddDays(-1), now.Date.AddDays(1)));
+    }
+
+    /// <summary>
+    /// The erasure runs under the ambient tenant's query filter, so it can only reach the erasing
+    /// account's rows. Without this, one member exercising their delete would quietly erase every
+    /// other account's history - the worst possible way for this fix to be wrong.
+    /// </summary>
+    [Fact]
+    public void The_erasure_reaches_only_the_erasing_tenants_rows()
+    {
+        var alphaDb = _harness.Open(new FixedTenantContext(new TenantId("alpha")));
+        var betaDb = _harness.Open(new FixedTenantContext(new TenantId("beta")));
+        var alpha = new SessionHistoryStore(alphaDb);
+        var beta = new SessionHistoryStore(betaDb);
+        var now = DateTime.UtcNow;
+
+        alpha.UpsertLive("dir-1", Session(id: "alpha-1", name: null), now);
+        alpha.SetFirstPrompt("alpha-1", "alpha's own words");
+        alpha.SaveRollup("alpha/repo", now.Date, "alpha's paragraph", "h", 0, now);
+        beta.UpsertLive("dir-9", Session(id: "beta-1", name: null), now);
+        beta.SetFirstPrompt("beta-1", "beta's own words");
+        beta.SaveRollup("beta/repo", now.Date, "beta's paragraph", "h", 0, now);
+
+        var erased = alpha.ErasePromptDerived();
+
+        Assert.Equal(1, erased.SessionRows);
+        Assert.Equal(1, erased.RollupRows);
+        using (var ctx = betaDb.CreateContext())
+        {
+            Assert.Equal("beta's own words",
+                ctx.SessionHistory.AsNoTracking().Single(e => e.SessionId == "beta-1").FirstPromptLine);
+        }
+        Assert.Equal("beta's paragraph",
+            Assert.Single(beta.ReadRollups(now.Date, now.Date)).SummaryText);
+        using (var ctx = alphaDb.CreateContext())
+        {
+            Assert.Null(ctx.SessionHistory.AsNoTracking().Single(e => e.SessionId == "alpha-1").FirstPromptLine);
+        }
+    }
+
+    /// <summary>
+    /// The counts describe rows that actually carried something. A count of "every row I matched"
+    /// would report work on a second delete that erased nothing, and a member reading "erased 400
+    /// rows" twice has been told something false about their own data.
+    /// </summary>
+    [Fact]
+    public void A_second_erasure_honestly_reports_nothing_to_do()
+    {
+        var store = NewStore();
+        var now = DateTime.UtcNow;
+        store.UpsertLive("dir-1", Session(name: null), now);
+        store.SetFirstPrompt("s1", "the only prompt");
+
+        Assert.Equal(1, store.ErasePromptDerived().SessionRows);
+
+        var second = store.ErasePromptDerived();
+        Assert.Equal(0, second.SessionRows);
+        Assert.Equal(0, second.RollupRows);
+        // The row is still there, and still readable as a session record.
+        Assert.Single(store.ReadRange(now.AddDays(-1), now.AddDays(1)));
     }
 
     [Fact]

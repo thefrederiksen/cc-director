@@ -31,8 +31,11 @@ public sealed class PromptEndpointsTests : IAsyncLifetime
         _app.Urls.Add("http://127.0.0.1:0");
 
         // Self-host-only harness: this host never runs hosted, so there is no boundary to pass. The
-        // parameter is required (finding CR-7), so the absence is stated rather than defaulted.
-        PromptEndpoints.Map(_app, new GatewayPromptLog(_dir), tenantBoundary: null);
+        // parameter is required (finding CR-7), so the absence is stated rather than defaulted. The
+        // history store is absent for the same reason and stated the same way - this harness has no
+        // database at all, so its delete has nothing derived to erase and honestly reports zero. The
+        // erasure itself is proved over a real database in PromptDeleteErasesTheDerivedCopyTests.
+        PromptEndpoints.Map(_app, new GatewayPromptLog(_dir), tenantBoundary: null, historyStore: null);
         await _app.StartAsync();
 
         _client = new HttpClient { BaseAddress = new Uri(_app.Urls.First()) };

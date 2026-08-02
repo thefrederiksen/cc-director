@@ -286,6 +286,75 @@ public sealed class SessionHistoryStore
     }
 
     /// <summary>
+    /// Erase every prompt-derived field this database holds for the CURRENT tenant, as part of
+    /// <c>DELETE /prompts</c> (the account data right, CR-3b). The prompt log is the single copy of the
+    /// prompts themselves; this removes the copies the Gateway DERIVED from them, which is what makes
+    /// the delete an erasure rather than a partial one.
+    ///
+    /// What goes, and why it is this list rather than the obvious one:
+    ///
+    ///  - The SEVEN prompt-derived columns on <c>session_history</c>. <see cref="SessionHistoryEntity.FirstPromptLine"/>
+    ///    is the copy everyone notices - the first 200 characters of the member's own prompt. The other six
+    ///    (<see cref="SessionHistoryEntity.SummaryText"/> and the four JSON lists beside it) come out of the
+    ///    same summariser reading the same prompt log, so they are the same material at one remove. Leaving
+    ///    them would erase the quote and keep the paraphrase.
+    ///  - The three summary METADATA fields are RESET, not cleared to nothing meaningful: a row still
+    ///    claiming a summary exists with nothing behind it is a smaller lie of the same kind. Reset also
+    ///    makes the row eligible for the sweep again, which now finds an empty prompt log and settles it
+    ///    honestly as "none" - the erasure is self-healing rather than something later work can undo.
+    ///  - The <c>session_history_rollups</c> rows are DELETED outright. They carry a written paragraph
+    ///    derived from those same session summaries and cached per repository per day, so erasing the seven
+    ///    columns and leaving them would keep serving the erased words as prose on the History page for up
+    ///    to ninety days. The staleness hash is not a defence: eventually-recomputed is a promise about the
+    ///    future, not an erasure now. Anything recomputed after this point is recomputed without the material.
+    ///
+    /// TENANT-SCOPED by the global query filter, exactly like every other operation here - both statements
+    /// can only reach the ambient tenant's rows, and the caller enters that scope.
+    ///
+    /// LOUD ON FAILURE by design, matching <c>GatewayPromptLog.DeleteAll</c>: an erasure that half-happened
+    /// must surface to the caller as an error, never as a success with content left behind. There is no
+    /// catch here on purpose.
+    ///
+    /// The counts describe rows that ACTUALLY CARRIED something: a row already free of prompt-derived
+    /// content is not counted, so a second delete honestly reports nothing to do.
+    /// </summary>
+    public PromptDerivedErasure ErasePromptDerived()
+    {
+        lock (_gate)
+        {
+            using var ctx = _db.CreateContext();
+
+            var sessions = ctx.SessionHistory
+                .Where(e => e.FirstPromptLine != null
+                            || e.SummaryText != null
+                            || e.WhatWasBuiltJson != null
+                            || e.LeftUnverifiedJson != null
+                            || e.BranchesJson != null
+                            || e.PullRequestsJson != null
+                            || e.CommitsJson != null
+                            || e.SummaryKind != null
+                            || e.SummaryIsPartial
+                            || e.SummaryAttempts != 0)
+                .ExecuteUpdate(s => s
+                    .SetProperty(e => e.FirstPromptLine, (string?)null)
+                    .SetProperty(e => e.SummaryText, (string?)null)
+                    .SetProperty(e => e.WhatWasBuiltJson, (string?)null)
+                    .SetProperty(e => e.LeftUnverifiedJson, (string?)null)
+                    .SetProperty(e => e.BranchesJson, (string?)null)
+                    .SetProperty(e => e.PullRequestsJson, (string?)null)
+                    .SetProperty(e => e.CommitsJson, (string?)null)
+                    .SetProperty(e => e.SummaryKind, (string?)null)
+                    .SetProperty(e => e.SummaryIsPartial, false)
+                    .SetProperty(e => e.SummaryAttempts, 0));
+
+            var rollups = ctx.SessionHistoryRollups.ExecuteDelete();
+
+            FileLog.Write($"[SessionHistoryStore] ErasePromptDerived: cleared {sessions} session row(s), deleted {rollups} rollup row(s)");
+            return new PromptDerivedErasure(sessions, rollups);
+        }
+    }
+
+    /// <summary>
     /// The session seals its own record on a clean shutdown - its account wins over anything the
     /// Gateway generated. Returns false when no row exists for the session.
     /// </summary>
@@ -533,6 +602,15 @@ public sealed class SessionHistoryStore
             _ => DateTime.SpecifyKind(value, DateTimeKind.Utc),
         };
 }
+
+/// <summary>
+/// What <see cref="SessionHistoryStore.ErasePromptDerived"/> actually removed, so the delete endpoint can
+/// report it rather than assert it. Both counts are rows that CARRIED something: zeroes mean there was
+/// nothing derived left to erase, which is what a second delete should say.
+/// </summary>
+/// <param name="SessionRows">Rows on <c>session_history</c> whose prompt-derived fields were cleared.</param>
+/// <param name="RollupRows">Rows deleted from <c>session_history_rollups</c>.</param>
+public sealed record PromptDerivedErasure(int SessionRows, int RollupRows);
 
 /// <summary>
 /// How the sessions born in one window came to exist (devthrottle_internal issue #982), as counted by
