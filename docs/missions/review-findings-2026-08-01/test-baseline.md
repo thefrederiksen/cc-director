@@ -92,13 +92,29 @@ set.
 | CcDirector.Engine.Tests | Completed | 63 | 63 (=) | 63 | 0 | 0 |
 | CcDirector.Terminal.Avalonia.Tests | Completed | 24 | 24 (=) | 24 | 0 | 0 |
 
-**The Gateway row comes from a SECOND run, and here is why.** The first post-rebase run's Gateway test
-host CRASHED twenty-one minutes in - 2,671 tests missing under a console line reading
-`Passed! - Failed: 0`; see `evidence-a-false-green-caught-in-the-wild.md`, which also records the crash
-fingerprint that was written down BEFORE the re-run and the verdict evaluated against it. The other six
-projects are from that same run and are unaffected: `test-local.ps1` starts each project as its OWN
-process, so a Gateway host crash cannot touch them, and all six reported `Completed` at their expected
-counts. The Gateway suite alone was re-run.
+**THE ROWS COME FROM TWO RUNS, AND HERE IS EXACTLY WHICH.** A reader finding two timestamps and no
+explanation would reasonably assume something was hidden, so:
+
+- **The six non-Gateway rows** are from the post-rebase run of `cc5bce077`. That run's GATEWAY host
+  crashed twenty-one minutes in - 2,671 tests missing under a console line reading `Passed! - Failed: 0`,
+  recorded in `evidence-a-false-green-caught-in-the-wild.md` along with the crash fingerprint written down
+  BEFORE the re-run and the verdict evaluated against it. The other six were untouched by that crash and
+  all reported `Completed` at their expected counts.
+- **The Gateway row** is from a later run of `0a4951cc3`, after the round-five fixes.
+
+**Why the split is sound rather than convenient.** `test-local.ps1` starts each project as its OWN
+process, writing its own TRX. A Gateway test host cannot corrupt another project's run or its results
+file, which is why the crash could not reach the six - and it is the same reasoning that makes it correct
+to re-run the Gateway suite ALONE for a change confined to `CcDirector.Gateway.Tests`. The six projects
+contain no line that the round-five delta can execute. A single uninterrupted run would buy the
+appearance of one artifact, not more evidence, at the cost of an hour on the machine-wide suite lock.
+
+**Why the Gateway suite was re-run in full rather than the changed test alone.** The changed test drops
+and rebuilds the `gateway_stats` schema on a rig that every other PostgreSQL fact in that suite shares.
+An isolated pass cannot see a break in the other sixty-five facts that use it - the dependency is not in
+the code, it is in the database. All 66 PostgreSQL-touching facts are accounted for in this run: 61
+passed, and the 5 not executed are the live main-database proofs waiting on a variable this run
+deliberately did not set.
 
 **The number that matters is EXECUTED, not total.** The Gateway suite executed 5167 against the
 baseline's 5113 - FIFTY-FOUR more tests actually ran - because the baseline run had no rig and skipped
