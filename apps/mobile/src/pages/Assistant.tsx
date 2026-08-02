@@ -238,6 +238,7 @@ export function Assistant() {
           nothing to release the screen for - the same reason the Cockpit composer leaves it unwired. */}
       {dictating && (
         <DictationDialog
+          surface="mobile"
           showInsert={mode === "chat"}
           onInsert={onDictateInsert}
           onSend={(text) => assistant.sendText(text)}

@@ -100,6 +100,10 @@ export interface CapturedUtterance {
   /** The microphone's stable identifier - the value quality measurements are grouped by. Optional
    *  for the same reason as the label. */
   deviceId?: string;
+  /** Which shell recorded it ("cockpit" / "mobile"), so the capture-health measurement is filed under
+   *  the surface the user was actually in. Optional: an unlabelled caller still delivers every word,
+   *  it just lands under the generic browser tag. */
+  surface?: string;
 }
 
 /** Callbacks so the host can react to the rare hard failure (durable storage unavailable). A normal send
@@ -155,6 +159,10 @@ export async function backgroundTranscribeAndSend(
   let sourceBytes: number | undefined;
   let uploadBlob = captured.blob;
   let captureWarning: string | undefined;
+  // The Send path's tag for this surface. "mobile" yields "mobile-send" - byte-identical to the tag
+  // this path has always written - so the existing capture-health history stays comparable while the
+  // Cockpit finally gets a tag of its own instead of being counted as a phone.
+  const sendSurface = `${captured.surface ?? "browser"}-send`;
   try {
     const transcoded = await blobToWav16kMono(captured.blob);
     decodedSeconds = transcoded.decodedSeconds;
@@ -165,7 +173,7 @@ export async function backgroundTranscribeAndSend(
       decodedSeconds: transcoded.decodedSeconds,
       sourceBytes: transcoded.sourceBytes,
     };
-    logCaptureHealth("mobile-send", health);
+    logCaptureHealth(sendSurface, health);
     // Material capture loss must not ship SILENTLY on Send the way it currently did (the Insert/Pause paths
     // already warn and park). We cannot park a fire-and-forget Send - the screen is gone and the words the
     // mic DID capture should still be delivered - so instead the deficit rides along as a caution shown with
@@ -194,6 +202,7 @@ export async function backgroundTranscribeAndSend(
     decodedSeconds,
     sourceBytes,
     captureWarning,
+    surface: sendSurface,
     before: hooks.composeParts?.before ?? "",
     after: hooks.composeParts?.after ?? "",
     prefix: captured.prefixText ?? "",
@@ -492,6 +501,9 @@ async function driveRecord(rec: PendingDictation, opts: DriveOptions): Promise<v
       clientRecordedMs: rec.recordedMs,
       clientDecodedSeconds: rec.decodedSeconds,
       clientSourceBytes: rec.sourceBytes,
+      // Read from the durable record, not recomputed, so a clip resumed after a reload is still filed
+      // under the surface that actually recorded it.
+      clientSurface: rec.surface,
     });
 
     if (outcome.terminal) {

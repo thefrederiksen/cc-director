@@ -56,6 +56,14 @@ vi.mock("@devthrottle/client-core/dictation/recorder", () => {
     level() {
       return 0;
     }
+    // The liveness clocks the dialog's animation loop reads every frame. Zero = a healthy microphone,
+    // so the live capture alarm stays quiet and this file keeps testing what it is about.
+    msSinceLastAudio() {
+      return 0;
+    }
+    msSinceMeterMoved() {
+      return 0;
+    }
     dispose() {}
   }
   return { MicRecorder, rmsLevel: () => 0 };

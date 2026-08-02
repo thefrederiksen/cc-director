@@ -21,13 +21,31 @@ namespace CcDirector.Gateway.Api;
 internal static class MobileCaptureHealthLog
 {
     /// <summary>
+    /// The surface tag to log: the one the client reported, or <paramref name="fallback"/> (this path's
+    /// historical literal) when the client did not report one - an older client, or a clip that was
+    /// queued on device before the tag existed. Never trusts the value raw: it arrives from a browser
+    /// and is written into a log line, so it is trimmed, bounded, and stripped of anything that could
+    /// forge a second log entry or a field separator. A value that survives none of that falls back.
+    /// </summary>
+    public static string SurfaceOr(string? reported, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(reported)) return fallback;
+        var cleaned = new string(reported.Trim()
+            .Where(c => char.IsLetterOrDigit(c) || c == '-' || c == '_')
+            .Take(40).ToArray());
+        return cleaned.Length == 0 ? fallback : cleaned;
+    }
+
+    /// <summary>
     /// Log one capture-health measurement when the client supplied it. A null <paramref name="recordedMs"/>
     /// means the client did not opt in (or its on-device decode failed), so there is nothing to record and
     /// this is a no-op.
     /// </summary>
     /// <param name="uploadId">The upload id, used to correlate the measurement with the turn.</param>
-    /// <param name="source">Surface tag: "mobile" for the Voice-mode path, "mobile-send" for the durable
-    /// Terminal/Chat Send path, so the two surfaces are told apart in the log.</param>
+    /// <param name="source">Surface tag, from <see cref="SurfaceOr"/>: which shell recorded the clip and
+    /// by which path ("cockpit" / "mobile" for the Voice-mode path, "cockpit-send" / "mobile-send" for the
+    /// durable Terminal/Chat Send path). Both the shell and the path must be distinguishable here, because
+    /// a tag that names only the path is what hid the Cockpit's own audio loss inside the phone's numbers.</param>
     /// <param name="recordedMs">Recording wall-clock the client measured; null when the client did not opt in.</param>
     /// <param name="decodedSeconds">Decoded audio duration the client measured; the deficit yardstick.</param>
     /// <param name="sourceBytes">Size of the client's source (compressed) blob, for reference only.</param>

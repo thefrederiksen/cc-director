@@ -79,6 +79,16 @@ vi.mock("@devthrottle/client-core/dictation/recorder", () => {
     level() {
       return 0;
     }
+    // The liveness clocks the dialog's animation loop reads. Zero = a healthy microphone, so the live
+    // capture alarm stays quiet and this file keeps testing what it is about (the Send path). They are
+    // here rather than omitted because the loop calls them on every frame: a fake without them is one
+    // scheduled animation frame away from throwing, and the failure would look like a Send bug.
+    msSinceLastAudio() {
+      return 0;
+    }
+    msSinceMeterMoved() {
+      return 0;
+    }
     dispose() {}
   }
   return { MicRecorder, rmsLevel: () => 0 };

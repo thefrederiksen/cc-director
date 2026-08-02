@@ -137,6 +137,17 @@
   font-size: 13px;
 }
 
+/* The LIVE alarm: the microphone has stopped delivering audio, or we are hearing nothing at all,
+   RIGHT NOW. Louder than the amber post-clip caution above because it is the only one the user can
+   still act on - words are being lost while it is on screen. Reuses the recording red so it reads as
+   the same urgency as the RECORDING state itself. */
+.dictate-warning-live {
+  background: rgba(220, 80, 70, 0.14);
+  border-color: rgba(220, 80, 70, 0.55);
+  color: #f0a19a;
+  font-weight: 600;
+}
+
 .dictate-error {
   margin-top: 8px;
   padding: 10px 12px;

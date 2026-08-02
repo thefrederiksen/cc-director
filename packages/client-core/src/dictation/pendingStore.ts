@@ -32,6 +32,11 @@ export interface PendingDictation {
    *  shown with the delivered `done` status (the Send path's equivalent of the dialog's dropped-audio
    *  warning, so a Send that dropped audio is never silent). Absent on a clean capture. */
   captureWarning?: string;
+  /** The capture-health surface tag for this clip ("cockpit-send" / "mobile-send"), stamped when the
+   *  clip was recorded and stored durably so a resume after a reload still files the measurement under
+   *  the shell that actually recorded it. Absent on records written before this field existed - the
+   *  Gateway then falls back to the tag that path has always used. */
+  surface?: string;
   /** Typed text before the caret (Terminal Speak compose); empty for the voice case. */
   before: string;
   /** Typed text after the caret; empty for the voice case. */

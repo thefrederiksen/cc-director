@@ -514,6 +514,7 @@ export function VoiceMode() {
           background, so the queue is the next stop, not this page. */}
       {responding && (
         <DictationDialog
+          surface="mobile"
           showInsert={false}
           onSend={onRespondText}
           onSendAudio={(captured) => {

@@ -1688,6 +1688,10 @@ export interface UtteranceCaptureHealth {
   recordedMs: number;
   decodedSeconds: number;
   sourceBytes: number;
+  /** Which shell measured it ("cockpit" / "mobile"). The Gateway files the measurement under this
+   *  rather than a hardcoded literal, which is what makes per-surface audio loss visible at all.
+   *  Omitted by an older client; the Gateway then falls back to the tag this path always used. */
+  surface?: string;
 }
 
 // The largest a single upload chunk may be. A long recording is uploaded as several chunks of at
@@ -1754,6 +1758,7 @@ export async function transcribeUtterance(
       clientRecordedMs: health?.recordedMs,
       clientDecodedSeconds: health?.decodedSeconds,
       clientSourceBytes: health?.sourceBytes,
+      clientSurface: health?.surface,
     }),
     signal,
   });
@@ -1848,6 +1853,10 @@ export interface DictationUploadArgs {
   clientRecordedMs?: number;
   clientDecodedSeconds?: number;
   clientSourceBytes?: number;
+  /** Which shell recorded the clip ("cockpit-send" / "mobile-send"). The Gateway files the
+   *  capture-health measurement under this instead of a hardcoded literal, so per-surface audio loss
+   *  can actually be told apart in the log. Omitted by an older client; the Gateway then falls back. */
+  clientSurface?: string;
 }
 
 /** The honest, plain-English line for a dictation whose delivery is paused because the connection
@@ -1933,6 +1942,7 @@ export async function uploadDictationToSession(
     clientRecordedMs: args.clientRecordedMs,
     clientDecodedSeconds: args.clientDecodedSeconds,
     clientSourceBytes: args.clientSourceBytes,
+    clientSurface: args.clientSurface,
   };
   const complete = (): Promise<Response> =>
     gatewayFetch(`/dictation/${id}/complete`, {
