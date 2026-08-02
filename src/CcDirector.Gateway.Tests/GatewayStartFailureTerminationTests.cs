@@ -92,52 +92,61 @@ public sealed class GatewayStartFailureTerminationTests
     // The reviewer reverted the two UseNpgsql lines and the DescribeFailure call and every test stayed
     // green. These close the DELETION case at both sites by reading the compiled IL.
     //
-    // WHAT THESE DO NOT CATCH, stated plainly rather than implied: they prove the bounding helper and the
-    // redacting describer are CALLED on those paths. They cannot prove which value reaches UseNpgsql, so a
-    // mutation that keeps the call and passes the raw connection string instead of the bounded one stays
-    // green. That is a dataflow property, and proving it needs an integration test against a real server
-    // (PostgresProviderProofTests is where such a proof belongs) rather than a metadata scan. Claiming
-    // otherwise is what made the first version of this file decoration.
+    // WHAT AN IL GUARD CANNOT DO, stated in full rather than as the one limitation that came to mind first.
+    // An earlier version of this note said only that dataflow is unprovable; that was narrower than the
+    // truth and would have read as considered while leaving three other holes unmentioned:
+    //
+    //  1. PRESENCE IS NOT REACHABILITY. It proves the call instruction exists in the compiled method. It
+    //     proves nothing about whether execution ever gets there - a call behind a condition that is never
+    //     true is still in the IL. This is the same defect as the swallowed exception one level up, which
+    //     is why the termination path also has an end-to-end test above that drives the real sequence and
+    //     asserts the resulting state. Where a guard below has no such end-to-end partner, it is proving
+    //     the weaker property, and that is a real gap rather than a technicality.
+    //  2. PRESENCE IS NOT DATAFLOW. It cannot prove WHICH value reaches UseNpgsql, so a mutation that keeps
+    //     the call and passes the raw connection string stays green. Proving that needs an integration test
+    //     against a real server, where PostgresProviderProofTests lives.
+    //  3. PRESENCE IS NOT ORDER. Nothing here proves the bounding happens BEFORE the provider is built.
+    //
+    // Hole (4) - a call sitting in some unrelated method of the same type - is closed below by scoping each
+    // scan to the ONE method that must make the call, rather than to the whole type. That hole was not
+    // hypothetical: the first version of the termination guard scanned the whole GatewayWorker type and was
+    // satisfied by the constructor's Environment.Exit(0), so deleting the failure-path exit left it green.
 
-    private static List<string> CallsIn(Type type, string? methodName = null)
+    private static List<string> CallsInMethod(Type type, string methodName)
     {
         var module = ModuleDefinition.ReadModule(type.Assembly.Location);
         var target = module.GetType(type.FullName);
         Assert.NotNull(target);
+
+        var methods = target!.Methods.Where(m => m.Name == methodName && m.HasBody).ToList();
+        Assert.True(methods.Count > 0, $"no method body named '{methodName}' on {type.FullName}");
+
         var calls = new List<string>();
-        foreach (var t in new[] { target! }.Concat(target!.NestedTypes))
-        {
-            foreach (var m in t.Methods)
-            {
-                if (!m.HasBody) continue;
-                if (methodName is not null && !m.Name.Contains(methodName) && !t.Name.Contains(methodName)) continue;
-                foreach (var i in m.Body.Instructions)
-                {
-                    if ((i.OpCode == OpCodes.Call || i.OpCode == OpCodes.Callvirt)
-                        && i.Operand is MethodReference r)
-                        calls.Add($"{r.DeclaringType.Name}::{r.Name}");
-                }
-            }
-        }
+        foreach (var m in methods)
+            foreach (var i in m.Body.Instructions)
+                if ((i.OpCode == OpCodes.Call || i.OpCode == OpCodes.Callvirt) && i.Operand is MethodReference r)
+                    calls.Add($"{r.DeclaringType.Name}::{r.Name}");
         return calls;
     }
 
     [Fact]
-    public void TheGatewayStore_BoundsItsPoolAndRedactsItsFailures()
+    public void TheGatewayStoreConstructor_BoundsItsPoolAndRedactsItsFailures()
     {
-        var calls = CallsIn(typeof(GatewayDatabase));
+        // Scoped to the CONSTRUCTOR, which is where both calls belong. Moving either into a helper that
+        // nothing calls would keep a type-wide scan green.
+        var calls = CallsInMethod(typeof(GatewayDatabase), ".ctor");
         Assert.Contains(calls, c => c == "GatewayDatabase::WithBoundedPool");
         Assert.Contains(calls, c => c == "GatewayDatabase::DescribeFailure");
     }
 
     [Fact]
-    public void TheStatisticsStore_BoundsItsPoolToo()
+    public void TheStatisticsStoreProvider_BoundsItsPoolToo()
     {
         // The second Npgsql pool in every container - the one that roughly doubled the connection demand
-        // and turned a slow post-swap boot into a refused one.
+        // and turned a slow post-swap boot into a refused one. Scoped to BuildProvider for the same reason.
         var statsStore = typeof(GatewayDatabase).Assembly.GetType("CcDirector.Gateway.Stats.Data.GatewayStatsStore");
         Assert.NotNull(statsStore);
-        Assert.Contains(CallsIn(statsStore!), c => c == "GatewayDatabase::WithBoundedPool");
+        Assert.Contains(CallsInMethod(statsStore!, "BuildProvider"), c => c == "GatewayDatabase::WithBoundedPool");
     }
 
 }
@@ -161,6 +170,51 @@ public sealed class GatewayConnectionStringRedactionTests
     // The secret is placed in KEYWORD position because that is the position Npgsql echoes. Measured:
     // "SUPERSECRET=x" throws "Couldn't set supersecret (Parameter 'supersecret')". The value position does
     // not echo, so a test using it would pass whether or not the boundary existed.
+
+    /// <summary>
+    /// THE END-TO-END LINK, and the one an IL guard cannot give. An IL guard proves the exit call exists in
+    /// the assembly; it proves nothing about whether anything ever REACHES it - which is the same defect as
+    /// the swallowed exception, one level up. So this drives the real path: a Gateway whose database cannot
+    /// be opened must leave <see cref="GatewayService.StartAsync"/> in the state the termination decision
+    /// reads.
+    ///
+    /// It runs the production sequence, not a stand-in: GatewayService.StartAsync -> new GatewayHost ->
+    /// GatewayDatabase throws -> the catch at GatewayService.cs:133 -> DiagnoseStartFailureAsync ->
+    /// SetState(Failed). If anything in that chain ever catches and returns without recording the failure,
+    /// State is no longer Failed, MustTerminate returns false, and the process would go back to hanging -
+    /// which is exactly the regression this asserts against.
+    ///
+    /// The connection string is UNPARSEABLE rather than merely unreachable so the failure lands before
+    /// GatewayDatabase's retry window and the test costs no ninety-second wait.
+    /// </summary>
+    [Fact]
+    public async Task ADatabaseThatCannotBeOpened_LeavesTheServiceInTheStateTerminationReads()
+    {
+        var previous = Environment.GetEnvironmentVariable(GatewayDatabase.PostgresConnectionEnvVar);
+        // A port nothing else in the suite uses; the Gateway never gets far enough to bind it.
+        var service = new GatewayService(new GatewayServiceOptions
+        {
+            Port = 59_317,
+            Managed = false,
+            RegisterAutostart = false,
+            ModeLabel = "test",
+        });
+        try
+        {
+            Environment.SetEnvironmentVariable(GatewayDatabase.PostgresConnectionEnvVar, "unparseable=x");
+
+            await service.StartAsync();
+
+            Assert.Equal(GatewayServiceState.Failed, service.State);
+            // And therefore the decision the worker makes on that state ends the process.
+            Assert.True(GatewayWorker.MustTerminate(service.State));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(GatewayDatabase.PostgresConnectionEnvVar, previous);
+            service.Dispose();
+        }
+    }
 
     [Fact]
     public void AnUnparseableConnectionString_NeverPutsItsTextInTheError()

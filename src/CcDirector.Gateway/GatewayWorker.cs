@@ -80,12 +80,25 @@ public sealed class GatewayWorker : BackgroundService
             // Ending the process is already this host's established way of stopping (see the constructor's
             // ShutdownRequested handler); this is the same act with a failure code.
             //
-            // WHAT HAPPENS DURING A LONG DATABASE OUTAGE: the container exits, the platform restarts it, it
-            // retries the database for the bounded window in GatewayDatabase and exits again. That is a
-            // restart loop, and it is the correct behaviour - the service recovers by itself the moment the
-            // database answers, instead of sitting dead until somebody notices. It cannot spin: each attempt
-            // spends the full retry window before giving up, so a container lives at least that long, which
-            // bounds restarts to roughly one per retry-window-plus-boot rather than a tight loop.
+            // WHAT HAPPENS AFTERWARDS: the container exits, the platform restarts it, and if the cause is
+            // still there it exits again. That restart loop is correct either way - the service recovers by
+            // itself the moment the cause clears, instead of sitting dead until somebody notices - but its
+            // RATE depends on which failure it is, and the two differ a lot:
+            //
+            //  - a database that is reachable but REFUSING connections goes through GatewayDatabase's retry
+            //    window, so that container lives at least that long before exiting. Restarts are paced by
+            //    the window plus boot.
+            //  - a MISCONFIGURATION fails before the retry loop is ever entered - a blank connection string,
+            //    or one the parser rejects, both of which throw above it - and so does any non-database
+            //    startup failure. Those exit within seconds of boot, and the restarts are correspondingly
+            //    rapid.
+            //
+            // An earlier version of this comment claimed the retry window bounded EVERY case. It does not,
+            // and the difference matters to whoever reads a crash-looping container: a fast loop means a
+            // misconfiguration, a slow one means the database. Whether App Service itself throttles repeated
+            // container restarts has NOT been checked, so nothing here relies on it. In both cases the site
+            // is already down; what termination changes is that the platform can recover it automatically
+            // instead of waiting out a live process and killing its healthy neighbour.
             FileLog.Write($"[GatewayWorker] Gateway FAILED to start ({_service.StatusText}); ending the process "
                 + $"with exit code {StartFailureExitCode} so the platform restarts this container instead of "
                 + "waiting out a live process that will never bind a port.");
