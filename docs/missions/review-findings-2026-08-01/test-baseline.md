@@ -212,3 +212,59 @@ number above is written out rather than waved at.
 `d73e5d2e3` adds a comment naming the concurrent-ingest window and was written after the run. It is
 COMMENT-ONLY - ten added lines, none removed, one file, verified on both sides of the diff - so it
 cannot move a test. The gated tree and the landing tree differ by nothing that can execute.
+
+---
+
+## W2's SECOND gate - GREEN, and this is the one that describes what lands
+
+The seal exemption and the generated-SQL assertion are real source changes, so the first gate no longer
+described the branch and a second run was owed. Detached, clean tree, started 2026-08-01 23:35,
+finished 00:15. Same rig state as the first run: no PostgreSQL connection variables set, so the same 55
+PostgreSQL-gated facts skipped, none of them W2's.
+
+| Project | Outcome | Total | vs the first gate | Executed | Failed | Skipped |
+|---|---|---|---|---|---|---|
+| CcDirector.Gateway.Tests | Completed | 5181 | 5176 (+5, the five new facts) | 5126 | 0 | 55 |
+| CcDirector.Core.Tests | Completed | 4196 | 4196 (=) | 4188 | 0 | 8 |
+| CcDirector.Avalonia.Tests | Completed | 353 | 353 (=) | 353 | 0 | 0 |
+| CcDirector.Launcher.Tests | Completed | 110 | 110 (=) | 110 | 0 | 0 |
+| CcDirector.HostedAgent.Tests | Completed | 88 | 88 (=) | 88 | 0 | 0 |
+| CcDirector.Engine.Tests | Completed | 63 | 63 (=) | 63 | 0 | 0 |
+| CcDirector.Terminal.Avalonia.Tests | Completed | 24 | 24 (=) | 24 | 0 | 0 |
+
+The arithmetic closes exactly this time - +5 for five added facts, no residue - because both runs were
+measured in the SAME rig state, which is the whole lesson of the section above.
+
+**All TEN W2 facts EXECUTED and passed**, read from the TRX by name: the five from the first gate plus
+`A_sealed_farewell_survives_the_erasure_but_its_prompt_line_does_not`,
+`A_row_that_never_got_a_summary_kind_is_still_reset`, `The_reported_count_is_rows_changed_counted_once_each`,
+`Every_statement_the_erasure_issues_names_the_tenant_in_its_where_clause`, and its control
+`The_same_statement_without_the_filter_has_no_tenant_predicate_which_is_how_we_know_the_check_works`.
+Zero non-passed results that were not skips.
+
+### The rebase onto v1.9.6, and why it did NOT earn a third gate
+
+Main moved to `546998b53` (the v1.9.6 release) while this ran. Ruling 7a's refinement governs: rebase to
+keep ancestry current, re-gate only on plausible INTERACTION. The release was checked here rather than
+taken on trust - two files, a `<Version>1.9.5</Version>` to `1.9.6` line in `Directory.Build.props` and a
+new release-notes page, nothing under `src`, `scripts` or `tools`. The props file was read rather than
+just listed, because it feeds every project's build and a property like `LangVersion` would NOT be inert.
+A grep for any source or test asserting a version string found only generated `obj/` AssemblyInfo files.
+
+So the branch was rebased and NOT re-gated, and the claim is checkable rather than asserted:
+
+```
+git diff <gated tip> <rebased tip> -- src/ scripts/ tools/   ->  empty
+git diff <gated tip> <rebased tip>                           ->  the release's 2 files, +40 -1
+git merge-base --is-ancestor 546998b53 HEAD                  ->  yes
+```
+
+**The tree that was measured and the tree that lands are byte-identical everywhere a test can reach.**
+The rebased tree was also built once, because `Directory.Build.props` is a build input and a malformed
+one would break the build without any test being involved.
+
+### Two commits on this branch post-date their gate, both comment-only
+
+`d73e5d2e3` (the concurrent-ingest window) and `2c751cf77` / `c379c02c8` after the rebase (why the three
+statements are not in one transaction). Each is one file, additions only, every added line a comment,
+verified on both sides of the diff. Neither can move a test.
