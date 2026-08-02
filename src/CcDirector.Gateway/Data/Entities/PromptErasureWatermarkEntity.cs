@@ -27,12 +27,9 @@ namespace CcDirector.Gateway.Data.Entities;
 /// meant to erase. A watermark that a restart forgets would let those through, and the guard would fail
 /// OPEN and silently.
 ///
-/// WHAT IT DOES NOT COVER, stated because the gap is real. The prompt log now consults this watermark at
-/// the door and refuses records DATED at or before the erasure, so the ordinary retry is kept out. What it
-/// cannot judge is a record dated AFTER the erasure: the Gateway keeps no ledger of what it has already
-/// seen, so such a record is indistinguishable from a prompt the member sent a second ago, and it is
-/// admitted. A Director whose clock runs ahead produces exactly that shape. Closing it means the Director
-/// honouring the delete rather than retrying at all - issue #2380.
+/// WHAT IT DOES NOT COVER is clause 3 of the DELETE RULE, which lives in <see cref="Prompts.PromptEndpoints"/>
+/// and is not restated here. In short: this watermark is what lets the log refuse material it can TELL is
+/// older. Read the rule for what that does and does not promise.
 /// </summary>
 public sealed class PromptErasureWatermarkEntity : TenantScopedEntity
 {

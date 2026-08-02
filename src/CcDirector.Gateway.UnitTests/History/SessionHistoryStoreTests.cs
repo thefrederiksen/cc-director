@@ -518,7 +518,7 @@ public sealed class SessionHistoryStoreTests : IDisposable
     /// The previous version of this fact passed a backdated material time straight to the store. That value
     /// was cooperative: the real endpoint could only ever supply the ARRIVAL moment, which has the opposite
     /// sign, so the test passed while every seal was admitted after every delete. There is now no parameter
-    /// to get wrong, and the endpoint path is proved over HTTP in TheDeletionBoundaryRacesAreClosedTests.
+    /// to get wrong, and the endpoint path is proved over HTTP in TheDeletionBoundaryGuardsTests.
     /// </summary>
     [Fact]
     public void A_seal_is_refused_for_a_session_that_began_before_the_erasure()

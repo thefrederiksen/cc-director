@@ -10,49 +10,48 @@ namespace CcDirector.Gateway.Prompts;
 /// <summary>
 /// The Gateway's prompt-log front door (issue #1551).
 ///
-/// POST /prompts - a Director pushes what it captured. This is the SERVICE-SIDE copy and the only one
-/// DevThrottle holds, which is why the write is acknowledged with a real count rather than
-/// fire-and-forget.
+/// POST /prompts - a Director pushes what it captured. GET /prompts - anyone asking for history asks
+/// here, because the Gateway already has the whole fleet's record. GET /prompts/export and
+/// DELETE /prompts - the account data rights (CR-3b, devthrottle_internal issue #1180). All are
+/// tenant-scoped; none can name another account's partition.
 ///
-/// It is NOT the only copy in the world, and this comment used to say it was. A Director also keeps
-/// prompt-derived text in local files on the member's own machine - a first-prompt snippet and per-turn
-/// summaries in its own session-history JSON, and an expected-first-prompt in <c>sessions.json</c> and its
-/// backup - and those survive restarts. Issue #2380 tracks bringing them within the delete. The
-/// distinction matters and is not a technicality: a copy DevThrottle holds on its own servers and a file
-/// on the member's own disk are different things to a member, and the wording on /privacy says so
-/// separately rather than blurring them.
+/// ==================================================================================================
+/// THE DELETE RULE. THIS IS THE ONLY PLACE IT IS STATED. Everywhere else - the store, the log, the
+/// watermark entity, the tests, /privacy and the data map - says its own local fact and POINTS HERE for
+/// the rule. Four inspection rounds found the same defect each time: a careful paragraph told the truth
+/// while a summary line, a table cell or a test name stated an absolute the code falsified. That is what
+/// happens when a rule is restated in eight places - the restatements drift, and every round found the
+/// ones the last round had not named. One statement cannot disagree with itself.
 ///
-/// GET /prompts  - anyone asking for history asks here. That is the point of the log living on the
-/// Gateway: it already has the whole fleet's record, so nothing has to go hunting across machines.
+/// FOUR CLAUSES. A sentence anywhere in this product about what the delete does must be one of these,
+/// or must not be written:
 ///
-/// GET /prompts/export and DELETE /prompts - the account data rights (CR-3b, devthrottle_internal issue
-/// #1180). Export returns the requesting account's ENTIRE prompt history as a downloadable JSON document;
-/// delete removes every one of that account's daily files AND every copy the Gateway derived from them
-/// (<see cref="History.SessionHistoryStore.ErasePromptDerived"/>). Both are tenant-scoped exactly like the
-/// verbs above; neither can name another account's partition.
+///  1. ON THE SERVICE SIDE IT IS IMMEDIATE AND COMPLETE IN THE ORDINARY CASE. It deletes this account's
+///     prompt-log files (the Gateway keeps no backup of them) and erases what the Gateway derived from
+///     them: the seven prompt-derived columns on <c>session_history</c>, the three summary metadata
+///     fields, and the cached daily roll-ups. Sealed summaries go with the rest - arriving through the
+///     seal route is an operation, not a provenance, so nothing establishes that a farewell was not
+///     composed from the member's own prompts.
 ///
-/// A SEALED SUMMARY IS ERASED WITH THE REST, and that reverses what this comment said for two rounds. The
-/// exemption rested on the seal being the session's own farewell rather than prompt material - but the seal
-/// route accepts whatever prose it is sent, with no material time and no provenance, so nothing establishes
-/// that. Arriving through the seal route is an OPERATION, not a provenance. Keeping content that MAY be the
-/// member's prompts is the worse error, and the exemption would have kept it through every later delete.
+///  2. IT IS NOT A DISTRIBUTED TRANSACTION. Work already in flight can land after it: a Director
+///     mid-delivery, a summarisation already running writing its own bookkeeping, an interrupted roll-up
+///     write leaving a paragraph that is never served and that the next delete removes. These are
+///     bounded, they settle, and none of them is a standing second copy. Closing them properly means
+///     cross-process locking and provider-specific atomicity, which is deliberately not in this work.
 ///
-/// THE DELETE IS TWO STORES, AND THEY HAVE DIFFERENT TRUTHS. Say them separately or one of them is a lie:
+///  3. AFTERWARDS THE SERVICE REFUSES MATERIAL IT CAN TELL IS OLDER - records dated at or before the
+///     erasure, which is what an ordinary retry sends. It CANNOT tell when the timestamp comes from a
+///     caller whose clock is wrong: a record dated after the erasure is indistinguishable from a prompt
+///     sent a second ago and is admitted. "Material we can tell is older is refused" is the whole
+///     promise; "it cannot come back" is not.
 ///
-///  - The prompt log is FILES. The Gateway makes no backup of them, so deleting them removes DevThrottle's
-///    copy at once. Afterwards <see cref="GatewayPromptLog.Append"/> refuses records DATED at or before the
-///    erasure - which is what a Director retrying an old batch usually sends - but a record DATED after it
-///    is admitted, because nothing here can distinguish that from a prompt the member sent a second ago.
-///    So the honest sentence is "material we can tell is older is refused", never "it cannot come back".
-///    It also does not reach the Director's own local files on the member's machine (issues #2380, #2381).
-///  - The derived copies are DATABASE ROWS. They are erased from the live database immediately, and they
-///    carry the same seven-day platform backup tail that every database-stored class already discloses.
+///  4. IT DOES NOT REACH THE MEMBER'S OWN MACHINE AT ALL. The Director keeps prompt text locally in
+///     several places, and the list is OPEN rather than exhaustive - five independent searches have each
+///     found another one. Openness is not licence to omit a store already proved. Issues #2380 (bring
+///     them within the delete) and #2381 (the operational logs have no retention) track the work.
 ///
-/// The version of this comment before the erasure existed said the delete WAS the erasure while the
-/// derived copy sat in <c>session_history</c> for another ninety days, served on the History page. The
-/// sentence was the more expensive half of that defect: an engineer reading it had no reason to look.
-/// Whichever way this behaviour changes next, these two paragraphs change WITH it or they become the
-/// same trap again.
+/// If the behaviour changes, THIS BLOCK changes, and everything else keeps pointing here.
+/// ==================================================================================================
 ///
 /// TENANT-SCOPED (issue #1848). "The whole fleet's record" means the REQUESTING ACCOUNT'S fleet. Both verbs
 /// resolve the request's tenant from the authenticated device key with the same seam the cockpit read path
@@ -150,7 +149,8 @@ public static class PromptEndpoints
             // the log first and the same failure leaves the copy orphaned - the exact state this work
             // exists to remove, and now with no source left to prove what it was.
             //
-            // A CONCURRENT INGEST IS NOT LOCKED OUT, and it no longer needs to be. The version of this
+            // See the DELETE RULE at the top of this file; this comment adds only what is local to the
+            // ordering here. A CONCURRENT INGEST IS NOT LOCKED OUT. The version of this
             // comment before the inspection argued the window was harmless because any racing material
             // must have been sent DURING the member's own delete. That was FALSE, and worth recording as
             // a lesson rather than quietly deleting: the Director's ingest deliberately RETRIES records

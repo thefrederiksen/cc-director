@@ -307,9 +307,11 @@ public sealed class SessionHistoryStore
     }
 
     /// <summary>
-    /// Erase every prompt-derived field this database holds for the CURRENT tenant, as part of
-    /// <c>DELETE /prompts</c> (the account data right, CR-3b). This removes the copies the Gateway DERIVED
-    /// from the member's prompts, which is what makes the delete an erasure rather than a partial one.
+    /// Erase the prompt-derived fields this database holds for the CURRENT tenant, as part of
+    /// <c>DELETE /prompts</c> (the account data right, CR-3b).
+    ///
+    /// THE PROMISE THIS SERVES IS THE DELETE RULE in <see cref="Prompts.PromptEndpoints"/> - four clauses,
+    /// stated once, deliberately not restated here. What follows is only what is local to THIS method.
     ///
     /// What goes:
     ///
@@ -533,6 +535,23 @@ public sealed class SessionHistoryStore
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
+            // THIS OVER-REFUSES, DELIBERATELY, AND HERE IS EXACTLY WHAT IT COSTS. Admission is keyed to
+            // when this Gateway first saw the SESSION, not to when the seal's material was written - so a
+            // session that STARTED before the member's delete and ENDED after it has its farewell refused,
+            // even though that farewell describes work done entirely after the delete and is genuinely new
+            // material. That is a real loss and it is not an oversight.
+            //
+            // It is the safe direction. The seal route carries no provenance of any kind: nothing in the
+            // request establishes where its prose came from, and the whole reason sealed rows are erased at
+            // all is that a farewell may be composed from the member's own prompts. Bounding admission by
+            // the session's whole observed life is the only bound available that a caller cannot move.
+            //
+            // And it is cheap NOW, which was not true before seals were erased on delete: a refused seal
+            // leaves a row the background summariser can still fill in later from material that postdates
+            // the erasure. The member loses the session's own words about itself, not the record of it.
+            //
+            // A reader who arrives here because a farewell is missing has found the answer: it was refused
+            // because this Gateway first saw that session before the account erased its prompt history.
             var written = ctx.SessionHistory
                 .Where(e => e.SessionId == sessionId
                             && !ctx.PromptErasureWatermarks.Any(w => w.ErasedAtUtc >= e.FirstSeenAtUtc))

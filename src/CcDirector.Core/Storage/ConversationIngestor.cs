@@ -377,8 +377,10 @@ public interface IPromptSink
 /// index would slide.
 ///
 /// This is a watermark, not a log: it holds hashes and never text. The Director keeps no copy of the
-/// conversation; this only records what it has already handed to the Gateway, so a restart cannot
-/// re-push a whole history.
+/// PUSHED CONVERSATION RECORD; this only tracks what has already been handed to the Gateway, so a
+/// restart cannot re-push a whole history. (It keeps prompt text in several LOCAL files - see the
+/// DELETE RULE in the Gateway's PromptEndpoints, clause 4, and issues #2380, #2381 and #2393. The
+/// unqualified version of this sentence has now been wrong in four separate comments.)
 ///
 /// Because the file outlives the process, every key written into it must be computable identically by
 /// the NEXT process - see <see cref="ContentHash"/>. Anything seeded per process reads as a miss after

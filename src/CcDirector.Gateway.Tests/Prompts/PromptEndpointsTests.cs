@@ -157,7 +157,7 @@ public sealed class PromptEndpointsTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Delete_erases_the_history_and_a_read_afterwards_finds_nothing()
+    public async Task Delete_removes_the_prompt_files_and_a_read_afterwards_finds_nothing()
     {
         var now = DateTime.UtcNow;
         await _client.PostAsJsonAsync("/prompts", new PromptIngestRequest
@@ -171,7 +171,10 @@ public sealed class PromptEndpointsTests : IAsyncLifetime
         var ack = await del.Content.ReadFromJsonAsync<DeleteResponse>();
         Assert.Equal(2, ack!.DeletedFiles);
 
-        // The proof the exit row asks for: the rows are GONE, from both the ranged read and the export.
+        // The rows are GONE from both the ranged read and the export. NOTE WHAT THIS FACT DOES AND DOES
+        // NOT SAY: this harness has no database, so it covers the prompt FILES only. The name used to say
+        // "erases the history", which read as the whole delete rule - see that rule in PromptEndpoints, and
+        // the derived-copy half in PromptDeleteErasesTheDerivedCopyTests.
         var after = await _client.GetFromJsonAsync<PromptsResponse>($"/prompts?from={Day(now.AddDays(-3))}&to={Day(now)}");
         Assert.Equal(0, after!.Count);
         var export = await (await _client.GetAsync("/prompts/export")).Content.ReadFromJsonAsync<ExportResponse>();
