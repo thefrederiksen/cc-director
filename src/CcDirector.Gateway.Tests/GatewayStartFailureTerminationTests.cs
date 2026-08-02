@@ -61,25 +61,26 @@ public sealed class GatewayStartFailureTerminationTests
     [Fact]
     public void ExecuteAsync_ConsultsThePolicyAndEndsTheProcess()
     {
+        // SCOPED TO THE ExecuteAsync STATE MACHINE, not the whole type. The type also contains
+        // Environment.Exit(0) from the constructor's ShutdownRequested handler, so a type-wide check stayed
+        // GREEN when the failure-path exit was deleted - it was decoration, and mutation testing caught it.
+        // The async body compiles into a nested <ExecuteAsync>d__N; the constructor's lambda does not.
         var module = ModuleDefinition.ReadModule(typeof(GatewayWorker).Assembly.Location);
         var worker = module.GetType(typeof(GatewayWorker).FullName);
         Assert.NotNull(worker);
 
-        // The async body is compiled into a nested state machine; scan the worker type and its nested types.
+        var stateMachine = worker!.NestedTypes.FirstOrDefault(n => n.Name.Contains("ExecuteAsync"));
+        Assert.NotNull(stateMachine);
+
         var calls = new List<string>();
-        foreach (var type in new[] { worker }.Concat(worker!.NestedTypes))
+        foreach (var method in stateMachine!.Methods)
         {
-            foreach (var method in type.Methods)
+            if (!method.HasBody) continue;
+            foreach (var instruction in method.Body.Instructions)
             {
-                if (!method.HasBody) continue;
-                foreach (var instruction in method.Body.Instructions)
-                {
-                    if (instruction.OpCode == OpCodes.Call || instruction.OpCode == OpCodes.Callvirt)
-                    {
-                        if (instruction.Operand is MethodReference called)
-                            calls.Add($"{called.DeclaringType.FullName}::{called.Name}");
-                    }
-                }
+                if ((instruction.OpCode == OpCodes.Call || instruction.OpCode == OpCodes.Callvirt)
+                    && instruction.Operand is MethodReference called)
+                    calls.Add($"{called.DeclaringType.FullName}::{called.Name}");
             }
         }
 
