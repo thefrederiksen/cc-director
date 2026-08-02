@@ -499,6 +499,43 @@ Ancestry: `origin/main` is an ancestor of the code branch. The WORDING repositor
 `416fe07` (a landing-page change touching no file this branch touches), so that branch was rebased -
 rebase for ancestry, no re-gate, the rule applied without asking.
 
+---
+
+## W2's NINTH gate - GREEN, covering the claim-set sweep AND the rebase onto `06ab4042d`
+
+The eighth run produced nothing (see the abort recorded above), so this one carries both the sweep and the
+rebase - which is what the Architect ordered when the plausible-interaction call was corrected: main and
+this branch both edit `OmittedTenantBoundaryFailClosedTests.cs`, and a SHARED FILE is plausible
+interaction by definition whatever the regions.
+
+| Project | Outcome | Total | vs gate seven | Executed | Failed | Skipped |
+|---|---|---|---|---|---|---|
+| CcDirector.Gateway.Tests | Completed | 5229 | 5201 (+28, ALL from main) | 5174 | 0 | 55 |
+| CcDirector.Core.Tests | Completed | 4213 | 4196 (+17, ALL from main) | 4205 | 0 | 8 |
+| CcDirector.Avalonia.Tests | Completed | 353 | 353 (=) | 353 | 0 | 0 |
+| CcDirector.Launcher.Tests | Completed | 110 | 110 (=) | 110 | 0 | 0 |
+| CcDirector.HostedAgent.Tests | Completed | 88 | 88 (=) | 88 | 0 | 0 |
+| CcDirector.Engine.Tests | Completed | 63 | 63 (=) | 63 | 0 | 0 |
+| CcDirector.Terminal.Avalonia.Tests | Completed | 24 | 24 (=) | 24 | 0 | 0 |
+
+**Both rises are main's and none is this branch's**, which is checkable rather than asserted: the claim-set
+sweep added no tests at all - it renamed two test classes and one test, and changed comments - so this
+branch's own expected total was unchanged at 5201. `06ab4042d` adds `FleetSpawnNamedDirectorTests` and
+extends `RegistryDirectorTargetResolverTests`; 26 facts from those two classes are present in this run's
+TRX, with the remainder of the +28 in the nine other Gateway test files that commit edits. Core rose by
+its `DirectorHandleTests`.
+
+**31 W2 facts EXECUTED and passed**, nothing in the suite anything other than passed or skipped.
+
+### The shared file, resolved by nothing
+
+`OmittedTenantBoundaryFailClosedTests.cs` needed no hand resolution - the rebase merged it cleanly because
+the two changes sit 300 lines apart. Verified individually rather than trusted from the clean-rebase
+message: main's `ResolveAsync(string machine, string? director, CancellationToken ct)` is at line 611, and
+this branch's two `historyStore: null` arguments are at 296 and 306. The rebased tree builds with no
+warnings, so the interaction the shared file made plausible did not materialise - which is worth recording
+as the outcome of a re-gate, not as a reason the re-gate was unnecessary.
+
 ### Two commits on this branch post-date their gate, both comment-only
 
 `d73e5d2e3` (the concurrent-ingest window) and `2c751cf77` / `c379c02c8` after the rebase (why the three
