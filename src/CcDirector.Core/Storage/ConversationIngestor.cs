@@ -22,7 +22,13 @@ namespace CcDirector.Core.Storage;
 ///   and the answer is already there rather than scattered across machines; and it is what moves to the
 ///   server, so the log moves with it.
 ///
-/// The Director keeps NO copy. Whatever the Gateway accepted is the record.
+/// The Director keeps no PROMPT-LOG copy: it does not retain the conversation record it pushes, so
+/// whatever the Gateway accepted is the record for THAT store, and an unaccepted message must not be
+/// marked done. That is a statement about this pipeline and nothing more - it was written unqualified
+/// and an inspection was right to call it false as a general claim. The Director holds prompt text in
+/// several LOCAL files: session-history snippets and turn summaries, pending and queued prompt text in
+/// sessions.json and its backup, vault handover archives, and its own operational logs. Issue #2380
+/// tracks bringing those within the member's delete; issue #2381 tracks the logs having no retention.
 ///
 /// Trigger: the same one TurnReviewLogger uses - a session flipping to
 /// <see cref="ActivityState.WaitingForInput"/>, i.e. our own detector deciding the agent is done and
@@ -51,7 +57,7 @@ public sealed class ConversationIngestor : IDisposable
     ///
     /// Without it the watermark check is a check-then-act race: an ingest reads AlreadyWritten, pushes
     /// over HTTP, and only marks the messages afterwards - because it must not mark before the Gateway
-    /// accepts (the Director keeps no copy). Two ingests of one source that start inside that window
+    /// accepts - the Director keeps no copy of THIS record). Two ingests of one source that start inside that window
     /// both see "not written", and BOTH push. Every message is duplicated in a Gateway log that appends
     /// blindly and never dedupes. The trigger fires per turn end on a Task.Run, so two quick turn ends
     /// are all it takes.

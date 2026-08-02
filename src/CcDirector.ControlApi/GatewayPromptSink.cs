@@ -13,9 +13,11 @@ namespace CcDirector.ControlApi;
 /// reports.
 ///
 /// Honest about failure: <see cref="PushAsync"/> returns false when the Gateway did not confirm the
-/// write. The Director keeps no copy of the conversation, so the caller must not mark those messages
-/// done - they stay unrecorded and are retried at the next turn end, where they are still readable
-/// from the agent's transcript. This is why the push is acknowledged with a count instead of being
+/// write. The Director keeps no copy of the conversation RECORD it pushes, so the caller must not mark
+/// those messages done - they stay unrecorded and are retried at the next turn end, where they are still
+/// readable from the agent's transcript. (That is about this record only. The Director does hold prompt
+/// text in local files - session history, sessions.json, vault handovers, its own logs - see issues
+/// #2380 and #2381; this comment used to say "no copy" without qualification and that was false.) This is why the push is acknowledged with a count instead of being
 /// fire-and-forget.
 /// </summary>
 public sealed class GatewayPromptSink : IPromptSink
@@ -51,7 +53,7 @@ public sealed class GatewayPromptSink : IPromptSink
 
             // Anything less than all of them is a failure. The Gateway's Append swallows per-record
             // write failures and reports a truthful count of what it stored, so a short count means
-            // those messages exist nowhere: the Director keeps no copy. Saying true here would have
+            // that record exists nowhere: the Director does not retain the pushed conversation. Saying true here would have
             // ConversationIngestor mark them done and the next ingest skip them - silent, permanent
             // loss. The false path re-sends at the next turn end, and a duplicate on failure recovery
             // is a far better trade than a hole in the only record.

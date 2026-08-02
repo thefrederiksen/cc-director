@@ -40,10 +40,11 @@ namespace CcDirector.Gateway.Prompts;
 /// THE DELETE IS TWO STORES, AND THEY HAVE DIFFERENT TRUTHS. Say them separately or one of them is a lie:
 ///
 ///  - The prompt log is FILES. The Gateway makes no backup of them, so deleting them removes DevThrottle's
-///    copy at once, and afterwards <see cref="GatewayPromptLog.Append"/> REFUSES records it can tell are
-///    older than the erasure, so a Director retrying an old batch cannot repopulate it. It does not reach
-///    the Director's own local files on the member's machine (issues #2380 and #2381), and it cannot judge
-///    a record first seen after the erasure that is dated after it.
+///    copy at once. Afterwards <see cref="GatewayPromptLog.Append"/> refuses records DATED at or before the
+///    erasure - which is what a Director retrying an old batch usually sends - but a record DATED after it
+///    is admitted, because nothing here can distinguish that from a prompt the member sent a second ago.
+///    So the honest sentence is "material we can tell is older is refused", never "it cannot come back".
+///    It also does not reach the Director's own local files on the member's machine (issues #2380, #2381).
 ///  - The derived copies are DATABASE ROWS. They are erased from the live database immediately, and they
 ///    carry the same seven-day platform backup tail that every database-stored class already discloses.
 ///
