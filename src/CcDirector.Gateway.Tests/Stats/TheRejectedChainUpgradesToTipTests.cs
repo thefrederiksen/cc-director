@@ -29,11 +29,23 @@ namespace CcDirector.Gateway.Tests.Stats;
 ///   - the migration history names <c>20260801200050_TenantMustContainANonWhitespaceCharacter</c>, a
 ///     migration id the tip chain no longer contains.
 ///
-/// Those two facts ARE the state - they are what a database migrated by the rejected chain would hold, and
-/// they are what the upgrade has to cope with. The second is the interesting one: the repository's
-/// migrations README warns specifically that a history row naming an id the chain no longer has can make
-/// Entity Framework treat a migration as pending and re-run its <c>Up()</c> against a schema that already
-/// exists. That is exactly the shape being tested.
+/// WHAT THIS REPRODUCES, AND WHAT IT DOES NOT - stated narrowly, because an earlier version of this
+/// comment claimed to reproduce "what a database migrated by the rejected chain would hold" and that was
+/// too strong. It reproduces the two properties the upgrade actually has to cope with: the schema shape
+/// (the round-three predicate under the round-three constraint names) and the history NAMING an id the tip
+/// chain no longer contains. It does NOT reproduce that database byte for byte - most visibly, the real
+/// rejected assembly recorded <c>ProductVersion</c> 9.0.2 and this fixture necessarily records whatever
+/// the CURRENT assembly writes, because it is the current assembly doing the writing.
+///
+/// The second property is the interesting one: the repository's migrations README warns specifically that
+/// a history row naming an id the chain no longer has can make Entity Framework treat a migration as
+/// pending and re-run its <c>Up()</c> against a schema that already exists. That is the shape being tested,
+/// and it does not depend on the product version.
+///
+/// The STRONGER evidence for the same question is not here at all: an independent inspection built the
+/// real c5089c5f7 migration assembly, applied it from nothing, and upgraded it to tip with no
+/// reconstruction of any kind - and it worked. This fact is the cheap regression guard that runs on every
+/// gate; that was the proof.
 /// </summary>
 public sealed class TheRejectedChainUpgradesToTipTests
 {
@@ -151,9 +163,39 @@ public sealed class TheRejectedChainUpgradesToTipTests
         // names the tip leaf - which is precisely what a database migrated by that chain would hold.
         Execute(connection,
             $"DELETE FROM {schema}.\"__EFMigrationsHistory\" WHERE \"MigrationId\" LIKE '%TenantIsAnAllowlistedSpelling'");
+        // THE PRODUCT VERSION IS DERIVED FROM THE ROWS ALREADY IN THE TABLE, never typed.
+        //
+        // It was typed once, as "10.0.0", and it was wrong: the real rejected assembly recorded 9.0.2, which
+        // an inspector established by BUILDING that assembly and querying the history it wrote. A literal in
+        // a fixture is a fact nobody re-checks, and this is the third reconstruction error in the one test
+        // whose purpose is to end this uncertainty - so the value now comes from the sibling rows Entity
+        // Framework has just written, and is asserted to match them. A fourth drift is not unlikely; it is
+        // unexpressible, because there is no longer a place to type the wrong thing.
+        string productVersion;
+        using (var read = connection.CreateCommand())
+        {
+            read.CommandText = $"SELECT DISTINCT \"ProductVersion\" FROM {schema}.\"__EFMigrationsHistory\"";
+            var versions = new List<string>();
+            using (var reader = read.ExecuteReader())
+                while (reader.Read()) versions.Add(reader.GetString(0));
+
+            // One value, or the reconstruction is incoherent before it starts.
+            productVersion = Assert.Single(versions);
+        }
+        _out.WriteLine($"history rows written by this assembly report ProductVersion {productVersion}; " +
+                       "the fabricated row will carry the same value");
+
         Execute(connection,
             $"INSERT INTO {schema}.\"__EFMigrationsHistory\" (\"MigrationId\", \"ProductVersion\") " +
-            $"VALUES ('{RejectedLeafMigrationId}', '10.0.0')");
+            $"VALUES ('{RejectedLeafMigrationId}', '{productVersion}')");
+
+        // And the table is still internally consistent afterwards - the fabricated row did not introduce a
+        // second version, which is the specific way the typed literal was wrong.
+        using (var check = connection.CreateCommand())
+        {
+            check.CommandText = $"SELECT COUNT(DISTINCT \"ProductVersion\") FROM {schema}.\"__EFMigrationsHistory\"";
+            Assert.Equal(1L, Convert.ToInt64(check.ExecuteScalar()));
+        }
 
         // ---- 2. THE STATE IS REAL: the rejected predicate really does accept the character that defeated
         //         it. Without this the upgrade below could be fixing a state that was never broken.
