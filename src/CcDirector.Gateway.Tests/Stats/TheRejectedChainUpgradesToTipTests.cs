@@ -21,31 +21,30 @@ namespace CcDirector.Gateway.Tests.Stats;
 /// the last unproven edge on this work, and this fact closes it. Round three proved the analogous case for
 /// an earlier collapse; nobody has proved this one.
 ///
-/// WHAT "THE REJECTED STATE" IS, AND HOW IT IS BUILT. Faithfully, and by reconstruction rather than by
-/// running the old assembly, which no longer exists in this build:
+/// THIS IS NOT A RECONSTRUCTION OF THAT DATABASE, AND IT CANNOT BE ONE. Four versions of this comment
+/// tried to describe it as one, each more carefully than the last, and the attempt was doomed from the
+/// start for a structural reason rather than through insufficient care: every predecessor row in the
+/// history here is written by the CURRENT assembly, so the table carries today's product version no matter
+/// what is done about the one fabricated row. A fixture that runs today's code cannot produce a database
+/// that yesterday's code wrote.
 ///
-///   - the schema carries the round-three predicate, <c>"tenant" ~ '[^[:space:]]'</c>, under the same
-///     constraint NAMES the tip uses, and
-///   - the migration history names <c>20260801200050_TenantMustContainANonWhitespaceCharacter</c>, a
-///     migration id the tip chain no longer contains.
+/// WHAT IT ACTUALLY PROVES, which is narrower and is still worth having: the tip chain tolerates a history
+/// that NAMES the rejected migration id. That is the property the repository's migrations README warns
+/// about - a history row naming an id the chain no longer contains can make Entity Framework treat a
+/// migration as pending and re-run its <c>Up()</c> against a schema that already exists - and it is a real
+/// regression guard, cheap enough to run on every gate.
 ///
-/// WHAT THIS REPRODUCES, AND WHAT IT DOES NOT - stated narrowly, because an earlier version of this
-/// comment claimed to reproduce "what a database migrated by the rejected chain would hold" and that was
-/// too strong. It reproduces the two properties the upgrade actually has to cope with: the schema shape
-/// (the round-three predicate under the round-three constraint names) and the history NAMING an id the tip
-/// chain no longer contains. It does NOT reproduce that database byte for byte - most visibly, the real
-/// rejected assembly recorded <c>ProductVersion</c> 9.0.2 and this fixture necessarily records whatever
-/// the CURRENT assembly writes, because it is the current assembly doing the writing.
+/// So the schema is wound back to the round-three predicate under the round-three constraint names, and
+/// the history is made to name <c>20260801200050_TenantMustContainANonWhitespaceCharacter</c>.
 ///
-/// The second property is the interesting one: the repository's migrations README warns specifically that
-/// a history row naming an id the chain no longer has can make Entity Framework treat a migration as
-/// pending and re-run its <c>Up()</c> against a schema that already exists. That is the shape being tested,
-/// and it does not depend on the product version.
+/// THE PRODUCT VERSION IS NOT HISTORICAL AND IS NOT ASSERTED. The real rejected assembly recorded 9.0.2;
+/// this fixture records whatever today's assembly writes. Nothing here checks it against the historical
+/// value, because nothing here could. It is decoration, and it is not evidence of anything.
 ///
-/// The STRONGER evidence for the same question is not here at all: an independent inspection built the
-/// real c5089c5f7 migration assembly, applied it from nothing, and upgraded it to tip with no
-/// reconstruction of any kind - and it worked. This fact is the cheap regression guard that runs on every
-/// gate; that was the proof.
+/// WHERE THE REAL EVIDENCE IS. An independent inspection built the genuine c5089c5f7 migration assembly,
+/// applied it from nothing, and upgraded it to tip with NO reconstruction of any kind - and it worked.
+/// That is the proof that the transition is sound. This fact is the regression guard that keeps it sound;
+/// it is not the proof, and it should not be cited as one.
 /// </summary>
 public sealed class TheRejectedChainUpgradesToTipTests
 {
@@ -160,17 +159,22 @@ public sealed class TheRejectedChainUpgradesToTipTests
         }
 
         // The history now names the REJECTED leaf, an id the tip chain does not contain, and no longer
-        // names the tip leaf - which is precisely what a database migrated by that chain would hold.
+        // names the tip leaf. That naming is the property under test; it is not a claim that the table
+        // matches what the rejected chain wrote - see the class summary for why it cannot.
         Execute(connection,
             $"DELETE FROM {schema}.\"__EFMigrationsHistory\" WHERE \"MigrationId\" LIKE '%TenantIsAnAllowlistedSpelling'");
-        // THE PRODUCT VERSION IS DERIVED FROM THE ROWS ALREADY IN THE TABLE, never typed.
+        // The product version for the fabricated row is taken from the rows already in the table, so the
+        // history stays internally consistent instead of carrying two versions.
         //
-        // It was typed once, as "10.0.0", and it was wrong: the real rejected assembly recorded 9.0.2, which
-        // an inspector established by BUILDING that assembly and querying the history it wrote. A literal in
-        // a fixture is a fact nobody re-checks, and this is the third reconstruction error in the one test
-        // whose purpose is to end this uncertainty - so the value now comes from the sibling rows Entity
-        // Framework has just written, and is asserted to match them. A fourth drift is not unlikely; it is
-        // unexpressible, because there is no longer a place to type the wrong thing.
+        // THAT IS ALL IT DOES, AND THE PREVIOUS COMMENT HERE OVERSOLD IT. It said a further drift was
+        // "unexpressible". It is not: this reads whatever the current assembly wrote and copies it, so if a
+        // future package made that value change, this would faithfully copy the new wrong thing and the
+        // one-distinct-value check below would still pass. The safeguard cannot detect the error it was
+        // written to discuss - it proves internal uniformity and nothing else.
+        //
+        // The value is not asserted against the historical one because it cannot be. See the class summary:
+        // the fixture proves the tip chain tolerates a history NAMING the rejected id, and the product
+        // version is decoration.
         string productVersion;
         using (var read = connection.CreateCommand())
         {
@@ -179,7 +183,7 @@ public sealed class TheRejectedChainUpgradesToTipTests
             using (var reader = read.ExecuteReader())
                 while (reader.Read()) versions.Add(reader.GetString(0));
 
-            // One value, or the reconstruction is incoherent before it starts.
+            // One value, or the table is incoherent before the fabricated row is added.
             productVersion = Assert.Single(versions);
         }
         _out.WriteLine($"history rows written by this assembly report ProductVersion {productVersion}; " +
@@ -190,7 +194,7 @@ public sealed class TheRejectedChainUpgradesToTipTests
             $"VALUES ('{RejectedLeafMigrationId}', '{productVersion}')");
 
         // And the table is still internally consistent afterwards - the fabricated row did not introduce a
-        // second version, which is the specific way the typed literal was wrong.
+        // second version. Internal consistency only; it says nothing about the historical value.
         using (var check = connection.CreateCommand())
         {
             check.CommandText = $"SELECT COUNT(DISTINCT \"ProductVersion\") FROM {schema}.\"__EFMigrationsHistory\"";
