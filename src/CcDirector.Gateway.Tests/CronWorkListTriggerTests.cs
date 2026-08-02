@@ -162,7 +162,7 @@ public sealed class CronWorkListTriggerTests : IDisposable
     {
         private readonly string? _directorId;
         public FakeResolver(string? directorId) { _directorId = directorId; }
-        public Task<DirectorTargetResult> ResolveAsync(string machine, CancellationToken ct) =>
+        public Task<DirectorTargetResult> ResolveAsync(string machine, string? director, CancellationToken ct) =>
             Task.FromResult(string.IsNullOrEmpty(_directorId)
                 ? new DirectorTargetResult(null, "no director on machine")
                 : new DirectorTargetResult(_directorId, null));

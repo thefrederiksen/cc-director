@@ -130,6 +130,28 @@ The Director names the session at birth and returns the final id and name. See t
 skill for the full flag set (`--agent`, `--role`, `--mission`, `--machine`, `--controlled-by`, and the
 display-name convention).
 
+### Opening a session on ONE particular Director
+
+`--machine` names a computer, and one computer runs several named Director instances - so it lands on
+whichever the Gateway lists first. When you were told to use a specific Director, name it:
+
+```
+cc-devthrottle director list          # names, machines, and the Director id to use
+cc-devthrottle session spawn D:\Repos\myrepo \
+  --director 6f0a2b41-1c33-4f9e-9a10-2b7d5e8c1234 \
+  --name "myrepo - fix auth bug #123"
+```
+
+`--director` takes the Director id or its display name and needs no `--machine` - a Director
+identifies the computer it runs on. Prefer the id: it survives a rename and cannot collide with a
+second Director sharing a name. A person handing you a Director will usually paste its toolbar Copy
+output, which is three lines - `Director:`, `Director ID:`, `Machine:`. Take the id from there and
+use it verbatim.
+
+An unregistered name fails loudly, and a name matching two Directors fails listing both. Neither
+falls back to another Director - if you get one of those errors, run `director list` and pick, rather
+than dropping the flag and spawning wherever.
+
 ## Closing a session (including closing yourself)
 
 A session can close itself. When an agent has finished its work and nothing is waiting on the

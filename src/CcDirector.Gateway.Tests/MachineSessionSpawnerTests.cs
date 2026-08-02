@@ -23,13 +23,15 @@ public sealed class MachineSessionSpawnerTests
         private readonly DirectorTargetResult _result;
         public int ResolveCount { get; private set; }
         public string? LastMachine { get; private set; }
+        public string? LastDirector { get; private set; }
 
         public StubResolver(DirectorTargetResult result) => _result = result;
 
-        public Task<DirectorTargetResult> ResolveAsync(string machine, CancellationToken ct)
+        public Task<DirectorTargetResult> ResolveAsync(string machine, string? director, CancellationToken ct)
         {
             ResolveCount++;
             LastMachine = machine;
+            LastDirector = director;
             return Task.FromResult(_result);
         }
     }
@@ -66,6 +68,42 @@ public sealed class MachineSessionSpawnerTests
         Assert.Equal("d-new", seenDirectorId);
         Assert.Same(request, seenReq);
         Assert.Equal("MACHINE_A", resolver.LastMachine);
+    }
+
+    // A spawn that named ONE Director must reach the resolver as a named target. The spawner is the only
+    // thing between the request body and the resolve, so if it drops req.Director the resolve quietly
+    // falls back to "first Director on the machine" - which on a machine running several instances lands
+    // the session somewhere else and reports success. That failure is invisible from the caller's side:
+    // it gets a session id back either way.
+    [Fact]
+    public async Task Spawn_RequestNamesADirector_ThatNamePinsTheResolve()
+    {
+        var resolver = new StubResolver(new DirectorTargetResult("d-slot-5", null));
+        var spawner = new MachineSessionSpawner(resolver, (directorId, req, ct) =>
+            Task.FromResult<(bool, SessionDto?, string?)>((true, new SessionDto { SessionId = "sid-1" }, null)));
+
+        var request = new NewSessionRequest { RepoPath = @"C:\repo", Director = "North build" };
+        var (ok, _, _, directorId) = await spawner.SpawnOnMachineAsync("MACHINE_A", request, CancellationToken.None);
+
+        Assert.True(ok);
+        Assert.Equal("North build", resolver.LastDirector);
+        Assert.Equal("d-slot-5", directorId);
+    }
+
+    // The other direction of the same guard: an ORDINARY machine spawn must NOT arrive at the resolver
+    // carrying a name. A resolver handed a stray name pins to it and stops launching on demand, so a
+    // cron job or a plain --machine spawn would fail on a machine whose Director is not running yet.
+    [Fact]
+    public async Task Spawn_RequestNamesNoDirector_ResolvesByMachineAlone()
+    {
+        var resolver = new StubResolver(new DirectorTargetResult("d-first", null));
+        var spawner = new MachineSessionSpawner(resolver, (directorId, req, ct) =>
+            Task.FromResult<(bool, SessionDto?, string?)>((true, new SessionDto { SessionId = "sid-2" }, null)));
+
+        await spawner.SpawnOnMachineAsync(
+            "MACHINE_A", new NewSessionRequest { RepoPath = @"C:\repo" }, CancellationToken.None);
+
+        Assert.True(string.IsNullOrEmpty(resolver.LastDirector));
     }
 
     [Fact]

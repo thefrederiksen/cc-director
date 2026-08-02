@@ -608,7 +608,7 @@ public sealed class OmittedTenantBoundaryFailClosedTests : IAsyncLifetime
 
     private sealed class UnusedResolver : IDirectorTargetResolver
     {
-        public Task<DirectorTargetResult> ResolveAsync(string machine, CancellationToken ct)
+        public Task<DirectorTargetResult> ResolveAsync(string machine, string? director, CancellationToken ct)
             => throw new NotSupportedException("the launcher list route never resolves a spawn target");
     }
 

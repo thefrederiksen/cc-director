@@ -624,7 +624,7 @@ internal sealed class MachineGroupProbeHost : IAsyncDisposable
     {
         public int ResolveCount { get; private set; }
 
-        public Task<DirectorTargetResult> ResolveAsync(string machine, CancellationToken ct)
+        public Task<DirectorTargetResult> ResolveAsync(string machine, string? director, CancellationToken ct)
         {
             ResolveCount++;
             return Task.FromResult(new DirectorTargetResult("d-probe", null));

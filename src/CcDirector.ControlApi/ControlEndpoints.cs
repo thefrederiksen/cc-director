@@ -11,6 +11,7 @@ using CcDirector.Core.Claude;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Fleet;
 using CcDirector.Core.History;
+using CcDirector.Core.Instances;
 using CcDirector.Core.Network;
 using CcDirector.Core.Security;
 using CcDirector.Core.Sessions;
@@ -680,6 +681,129 @@ internal static class ControlEndpoints
             }
         });
 
+        // Resolve a named Director - id or display name - to exactly ONE registered Director, or to the
+        // failure to report. Used by POST /fleet/spawn before it chooses the local or the relay leg.
+        //
+        // The registry is the Gateway's, because it is the only list that contains anything but this
+        // process. A machine, when the caller gave one, NARROWS the match - it is how a display name that
+        // two machines happen to share is disambiguated, and it means a target naming this Director but a
+        // different machine is a contradiction that fails rather than quietly honoring one half of it.
+        async Task<(string? DirectorId, string? MachineName, IResult? Failure)> ResolveNamedDirectorAsync(
+            string named, string? machine, CancellationToken ct)
+        {
+            var machineIsThisOne = string.IsNullOrEmpty(machine)
+                || string.Equals(machine, "local", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(machine, Environment.MachineName, StringComparison.OrdinalIgnoreCase);
+
+            // THIS DIRECTOR'S OWN ID NEEDS NO REGISTRY. An id is issued by the system and unique in the
+            // fleet, and id matching wins over display names everywhere, so a caller naming this exact id
+            // can only mean this process - which is holding the request and can say so first-hand.
+            //
+            // This is not the local-first shortcut the review removed. That one matched a NAME, which is
+            // free text a sibling can also hold, so answering it locally was a guess. An id cannot be
+            // held by a sibling. Consulting the Gateway for it would make a provably-correct local spawn
+            // depend on a healthy roster - failing during a Gateway outage, and during the ordinary lag
+            // before a just-started Director appears in the list, with "no Director is registered", which
+            // would be false: it is the one answering you.
+            if (DirectorHandle.MatchesId(named, directorId) && machineIsThisOne)
+            {
+                FileLog.Write($"[ControlEndpoints] ResolveNamedDirectorAsync: '{named}' is this Director's own id");
+                return (directorId, Environment.MachineName, null);
+            }
+
+            var gw = gatewayClientProvider?.Invoke();
+            if (gw is not { IsEnabled: true })
+            {
+                // With no Gateway there is no fleet: this process is the only Director it could possibly
+                // reach, so it is the only candidate - and being the only candidate, its display name
+                // cannot be ambiguous either. Anything else genuinely cannot be resolved from here, and
+                // says so. (An id naming this Director was already answered above.)
+                if (DirectorHandle.MatchesDisplayName(named, InstanceContext.DisplayName) && machineIsThisOne)
+                    return (directorId, Environment.MachineName, null);
+
+                FileLog.Write($"[ControlEndpoints] ResolveNamedDirectorAsync: '{named}' is not this Director and no Gateway is configured");
+                return (null, null, Results.Json(
+                    new { error = $"Cannot start a session on Director '{named}': no Gateway is configured on this Director, so it can see no Director but itself." },
+                    statusCode: StatusCodes.Status502BadGateway));
+            }
+
+            List<DirectorDto> known;
+            try
+            {
+                known = await gw.ListDirectorsAsync(ct);
+            }
+            catch (Exception ex)
+            {
+                // An unreachable Gateway is NOT an unknown Director. Reporting it as one would send the
+                // caller looking for a name that is perfectly correct.
+                FileLog.Write($"[ControlEndpoints] ResolveNamedDirectorAsync FAILED: '{named}': {ex.Message}");
+                return (null, null, Results.Json(
+                    new { error = $"Cannot start a session on Director '{named}': the Gateway could not be reached to find out which Director that is. {ex.Message}" },
+                    statusCode: StatusCodes.Status502BadGateway));
+            }
+
+            var matches = DirectorHandle
+                .Pick(known, named, d => d.DirectorId, d => d.DisplayName)
+                .Where(d => string.IsNullOrEmpty(machine)
+                         || string.Equals(d.MachineName, machine, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            var on = string.IsNullOrEmpty(machine) ? "" : $" on '{machine}'";
+
+            if (matches.Count == 0)
+            {
+                FileLog.Write($"[ControlEndpoints] ResolveNamedDirectorAsync: no Director '{named}'{on}");
+                return (null, null, Results.BadRequest(new
+                {
+                    error = $"no Director '{named}'{on} is registered. It is either not running or is named "
+                          + "something else - list what is registered with: cc-devthrottle director list",
+                }));
+            }
+
+            if (matches.Count > 1)
+            {
+                var listed = string.Join(", ", matches.Select(m => $"{m.DirectorId} ({m.MachineName})"));
+                FileLog.Write($"[ControlEndpoints] ResolveNamedDirectorAsync: '{named}'{on} is ambiguous: {listed}");
+                return (null, null, Results.BadRequest(new
+                {
+                    error = $"'{named}'{on} names {matches.Count} Directors ({listed}). Name one by its Director id.",
+                }));
+            }
+
+            return (matches[0].DirectorId, matches[0].MachineName, null);
+        }
+
+        // GET /fleet/directors - every Director this account has registered, on every machine. The list
+        // behind `cc-devthrottle director list`, and the one an agent reads to turn a Director name it was
+        // given into something it can spawn on.
+        //
+        // A Gateway relay with no local fallback, for the same reason /fleet/machines is one: this Director
+        // knows only itself, and answering a fleet-wide question with a list of one would read as "there is
+        // only one Director" rather than "I cannot see the others from here".
+        app.MapGet("/fleet/directors", async (CancellationToken ct) =>
+        {
+            FileLog.Write("[ControlEndpoints] GET /fleet/directors");
+            var gw = gatewayClientProvider?.Invoke();
+            if (gw is not { IsEnabled: true })
+            {
+                FileLog.Write("[ControlEndpoints] GET /fleet/directors: no Gateway configured");
+                return Results.Json(new { error = "No Gateway is configured, so this Director cannot see the other Directors." },
+                    statusCode: StatusCodes.Status502BadGateway);
+            }
+            try
+            {
+                var directors = await gw.ListDirectorsAsync(ct);
+                FileLog.Write($"[ControlEndpoints] GET /fleet/directors: {directors.Count} Directors");
+                return Results.Json(directors);
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[ControlEndpoints] /fleet/directors relay FAILED: {ex.Message}");
+                return Results.Json(new { error = $"Cannot reach the Gateway: {ex.Message}" },
+                    statusCode: StatusCodes.Status502BadGateway);
+            }
+        });
+
         async Task<IResult> RelayMachineQueryAsync(string machine, string verb, HttpContext ctx, CancellationToken ct)
         {
             var gw = gatewayClientProvider?.Invoke();
@@ -920,12 +1044,18 @@ internal static class ControlEndpoints
             }
         });
 
-        // POST /fleet/spawn - "start a session on another computer". The body is a NewSessionRequest whose
-        // Machine field selects the target: empty / "local" / this Director's own machine name spawns
-        // LOCALLY (unchanged local behavior); any other machine name routes the spawn through the Gateway to
-        // a Director on that machine (first available, auto-launched if none is running). A remote spawn
-        // FAILS LOUD when no Gateway is configured or the machine is off / unreachable - it NEVER falls back
-        // to a local spawn.
+        // POST /fleet/spawn - "start a session on another computer, or on one particular Director". The body
+        // is a NewSessionRequest whose Machine and Director fields select the target:
+        //
+        //   Director set   -> ONE named Director (by id or display name). Naming THIS Director spawns
+        //                     locally; naming another routes to it through the Gateway, which pins the
+        //                     create to that Director and never substitutes another or launches one.
+        //   Machine only   -> empty / "local" / this machine spawns LOCALLY; any other machine name routes
+        //                     through the Gateway to a Director on that machine (first available,
+        //                     auto-launched if none is running).
+        //
+        // A remote spawn FAILS LOUD when no Gateway is configured or the target is off / unreachable - it
+        // NEVER falls back to a local spawn.
         app.MapPost("/fleet/spawn", async (NewSessionRequest req, CancellationToken ct) =>
         {
             if (req is null || string.IsNullOrWhiteSpace(req.RepoPath))
@@ -942,9 +1072,52 @@ internal static class ControlEndpoints
                 req.OriginSurface = SessionOriginSurfaces.Cli;
 
             var machine = req.Machine?.Trim();
-            var isLocal = string.IsNullOrEmpty(machine)
-                || string.Equals(machine, "local", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(machine, Environment.MachineName, StringComparison.OrdinalIgnoreCase);
+            var named = req.Director?.Trim();
+
+            bool isLocal;
+            // The id we expect the session to land on, once a named target has been RESOLVED. Null for an
+            // ordinary machine spawn, which names no Director and therefore has nothing to check.
+            string? expectedDirectorId = null;
+
+            if (string.IsNullOrEmpty(named))
+            {
+                isLocal = string.IsNullOrEmpty(machine)
+                    || string.Equals(machine, "local", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(machine, Environment.MachineName, StringComparison.OrdinalIgnoreCase);
+            }
+            else
+            {
+                // A NAMED target is RESOLVED AGAINST THE FLEET BEFORE the local leg is chosen - never by
+                // asking "is that name mine?" first.
+                //
+                // Deciding locally first looks equivalent and is not: display names are unrestricted text,
+                // so this Director and a remote one can BOTH be called "Build box". A local-first check
+                // claims that name, spawns here, and reports success - the caller is never told there were
+                // two, and `--machine REMOTE` would not save them either, because a local-first branch has
+                // no reason to look at the machine. Silently landing on the wrong Director is the exact
+                // failure this whole feature exists to prevent, so the fleet decides and the local leg is
+                // just "the resolved Director happens to be me".
+                var resolved = await ResolveNamedDirectorAsync(named, machine, ct);
+                if (resolved.Failure is not null)
+                    return resolved.Failure;
+
+                expectedDirectorId = resolved.DirectorId;
+                machine = resolved.MachineName;
+                isLocal = string.Equals(expectedDirectorId, directorId, StringComparison.OrdinalIgnoreCase);
+
+                // PIN THE RELAY TO THE RESOLVED ID, not the name the caller typed. The Gateway resolves
+                // this field again on its side, so relaying a display name means the name is resolved
+                // TWICE, against two reads of the registry taken at different moments - and a name is
+                // not a stable handle. If the Director holding it disconnects between the two reads and
+                // a sibling on the same machine carries the same name, the second resolve legitimately
+                // finds the sibling and the session opens there. Substituting the id makes the second
+                // resolve an exact identity match on the Director this one chose, so the two cannot
+                // disagree, and it is the same value the post-relay check compares against.
+                req.Director = expectedDirectorId;
+
+                FileLog.Write($"[ControlEndpoints] POST /fleet/spawn: director '{named}' resolved to " +
+                              $"{expectedDirectorId} on machine={machine} (local={isLocal})");
+            }
 
             if (isLocal)
             {
@@ -1079,6 +1252,55 @@ internal static class ControlEndpoints
             try
             {
                 var dto = await gw.SpawnOnMachineAsync(machine!, req, ct);
+
+                // A Gateway that predates Director targeting IGNORES req.Director and hands the create to
+                // the machine's FIRST Director. That is the exact failure this feature exists to prevent,
+                // and it is invisible from here: the reply is an ordinary 201 with a session id. So check
+                // it. The reply says which Director took the session, and the caller named one - when they
+                // disagree, say so instead of reporting a success that went somewhere else.
+                //
+                // A BLANK returned id fails the check too, and that is the important half. SessionDto's
+                // DirectorId defaults to empty, so "no id" is a shape an older or partial Gateway really
+                // does return - and skipping the check on it would fail OPEN in precisely the case the
+                // check exists for: an old Gateway, which is the one least likely to fill the field in.
+                // Silence is not evidence of correct placement.
+                //
+                // The session IS running, so this reports rather than pretending it is not: rolling that
+                // back would mean killing a session on a Director the caller did not choose, on the word
+                // of one field. Naming what came back is what lets them decide.
+                if (expectedDirectorId is not null
+                    && !string.Equals(dto.DirectorId, expectedDirectorId, StringComparison.OrdinalIgnoreCase))
+                {
+                    // Two different reports, because the response proves two different things. A
+                    // DIFFERENT id is proof the session went elsewhere. A MISSING id proves only that
+                    // placement cannot be confirmed - a Gateway may honor the target and still omit the
+                    // field - so saying "it is too old and picked the machine's first one" would state a
+                    // cause that was never observed, and could send the caller to close a session that
+                    // is exactly where they asked for it.
+                    var mismatched = !string.IsNullOrWhiteSpace(dto.DirectorId);
+                    var error = mismatched
+                        ? $"Session {dto.SessionId} was started, but NOT on Director '{named}' "
+                          + $"({expectedDirectorId}) - it landed on {dto.DirectorId}. The Gateway does not "
+                          + "honor a named Director and picked the machine's first one. Update the Gateway, "
+                          + "or close that session and start it from the Director you want."
+                        : $"Session {dto.SessionId} was started, but it CANNOT BE CONFIRMED to be on "
+                          + $"Director '{named}' ({expectedDirectorId}): the Gateway did not say which "
+                          + "Director took it. It may be correctly placed - an older Gateway both ignores "
+                          + "the target and omits this field, so check where the session actually opened "
+                          + "before closing it.";
+
+                    FileLog.Write($"[ControlEndpoints] POST /fleet/spawn: asked for Director '{named}' " +
+                                  $"({expectedDirectorId}); Gateway returned " +
+                                  (mismatched ? $"a different Director {dto.DirectorId}" : "no Director id"));
+
+                    return Results.Json(new
+                    {
+                        error,
+                        sessionId = dto.SessionId,
+                        directorId = dto.DirectorId,
+                    }, statusCode: StatusCodes.Status502BadGateway);
+                }
+
                 return Results.Json(dto, statusCode: StatusCodes.Status201Created);
             }
             catch (Exception ex)

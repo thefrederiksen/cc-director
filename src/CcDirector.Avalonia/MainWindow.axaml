@@ -77,10 +77,12 @@
                 <!-- Right group: this Director's identity + global destinations + Settings -->
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
                             Spacing="2" VerticalAlignment="Center">
-                    <!-- Director connection info (machine name + port + copy for agents).
-                         This identifies the WHOLE application's Director (its Control API
-                         address), so it belongs on the app-wide toolbar, not in the
-                         per-session blue header. Always visible, even with no session. -->
+                    <!-- WHICH Director this is: its own name, plus a Copy that hands another
+                         agent the command to open a session on it. This identifies the WHOLE
+                         application's Director, so it belongs on the app-wide toolbar, not in
+                         the per-session blue header. Always visible, even with no session.
+                         (It showed the machine name and Control API port until nothing reached
+                         a Director by port any more, and one machine ran several Directors.) -->
                     <StackPanel x:Name="DirectorInfoPanel" Orientation="Horizontal"
                                 VerticalAlignment="Center" Margin="0,0,4,0">
                         <TextBlock x:Name="DirectorInfoText"
@@ -99,7 +101,7 @@
                                 Foreground="White"
                                 BorderThickness="0"
                                 Cursor="Hand"
-                                ToolTip.Tip="Copy Control API URL so other agents can reach this Director" />
+                                ToolTip.Tip="Copy this Director's name, id, and machine - paste it to an agent so it can reach this Director" />
                     </StackPanel>
 
                     <Border Width="1" Height="18" Background="#3C3C3C"

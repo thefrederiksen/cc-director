@@ -67,9 +67,11 @@ public sealed class DirectorCronWorkListRunner : ICronWorkListRunner
             return CronWorkListOutcome.AlreadyClaimed;
         }
 
-        // Resolve the target MACHINE to a Director (launching one if none is running, #503).
+        // Resolve the target MACHINE to a Director (launching one if none is running, #503). A cron job
+        // targets a machine and no particular Director, so it names none and keeps the launch-on-demand
+        // behavior it has always had.
         var machine = job.Target.Machine;
-        var target = await _resolver.ResolveAsync(machine, ct);
+        var target = await _resolver.ResolveAsync(machine, director: null, ct);
         // Tunnel-only: a resolved DirectorId is the target; a blank control endpoint is still reachable
         // over the tunnel. Fail only on the resolver's error or a missing DirectorId, NOT on an endpoint
         // (the same stale REST-era guard issue #1727 removed from the machine-session spawn path).

@@ -168,7 +168,7 @@ public sealed class LauncherAutoStartTenantScopeTests
             launchTimeout: TimeSpan.FromMilliseconds(50),
             pollInterval: TimeSpan.FromMilliseconds(10));
 
-        await resolver.ResolveAsync(Machine, CancellationToken.None);
+        await resolver.ResolveAsync(Machine, director: null, CancellationToken.None);
 
         Assert.Equal(Bob, seenByLauncher);
     }
@@ -188,7 +188,7 @@ public sealed class LauncherAutoStartTenantScopeTests
             pollInterval: TimeSpan.FromMilliseconds(10));
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => resolver.ResolveAsync(Machine, CancellationToken.None));
+            () => resolver.ResolveAsync(Machine, director: null, CancellationToken.None));
         Assert.Contains("no tenant scope", ex.Message, StringComparison.OrdinalIgnoreCase);
 
         // And it denied BEFORE reaching out to any machine.

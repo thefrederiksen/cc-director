@@ -645,7 +645,8 @@ COMMANDS:
   session list     List every session in the fleet.
   session whoami   Show this session's own fleet identity.
   session rename   Rename a session, defaulting to the current session.
-  session spawn    Open a new session on the local Director.
+  session spawn    Open a new session - here, on another computer, or on one named Director.
+  director list    List every Director this account runs, with the id --director accepts.
   message send     Send a message to one session, or broadcast with all.
   message ask      Ask one session a question and print its answer.
   skill list       List every skill in the fleet library.
@@ -743,13 +744,43 @@ OPTIONS:
   --agent TEXT          Agent CLI: ClaudeCode (default), Pi, Codex, Gemini, OpenCode, Grok, Copilot, RawCli
   --prompt TEXT         First prompt to send once the session is ready
   --name TEXT           Custom display name for the session
-  --type TEXT           Session type: Developer, Implementation, Discuss, Product, QA, Support
+  --purpose TEXT        What the session is FOR; used to build the name when --name is omitted
+  --machine TEXT        Start it on ANOTHER COMPUTER: the Gateway routes to a Director there
+  --director TEXT       Start it on ONE named Director, by Director id or display name
   --command TEXT        For --agent RawCli: the executable to run (e.g. cmd, pwsh)
   --command-args TEXT   For --agent RawCli: arguments for the command
 ```
 
 Prints the new session's short id and full GUID; the session then appears in
 `cc-devthrottle session list`. A non-existent repository path exits non-zero with a clear error.
+
+**`--machine` picks a computer; `--director` picks a Director.** They are not the same question. One
+computer runs several named Director instances, so `--machine SOREN_NORTH` resolves to whichever
+Director on that machine the Gateway lists first - fine when any will do, a coin toss when it will
+not. `--director` names exactly one, by its Director id or its display name, and needs no
+`--machine`: a Director identifies the computer it runs on.
+
+A named Director that is not registered fails loudly naming it, and a display name that matches two
+Directors fails listing both. Neither ever falls back to another Director, and neither auto-launches
+one (`--machine` does) - a session opened quietly on the wrong Director is the failure this exists to
+prevent, and nothing in the reply would reveal it.
+
+Giving both narrows rather than overrides: `--machine` filters the Directors a name may match, which
+is how you disambiguate a display name two machines share. Naming a Director together with a machine
+it does not run on is therefore a contradiction and fails - the alternative is honouring half of what
+you asked for without saying which half.
+
+```
+USAGE: cc-devthrottle director list [OPTIONS]
+
+OPTIONS:
+  --json -j  Output raw JSON.
+```
+
+Lists every Director this account is running, on every machine: its name, its machine, and its
+Director id. Prefer the **id** when handing a target to another agent - it survives a rename and
+cannot collide with a second Director sharing a display name. A Director's own toolbar has a Copy
+button that puts those same three facts on the clipboard, for pasting to an agent.
 
 ### Skill Commands
 

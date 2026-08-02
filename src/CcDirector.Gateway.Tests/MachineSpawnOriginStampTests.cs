@@ -45,7 +45,7 @@ public sealed class MachineSpawnOriginStampTests : IDisposable
     /// <summary>A resolver that always finds a Director, so the relay reaches the create step.</summary>
     private sealed class AlwaysFound : IDirectorTargetResolver
     {
-        public Task<DirectorTargetResult> ResolveAsync(string machine, CancellationToken ct)
+        public Task<DirectorTargetResult> ResolveAsync(string machine, string? director, CancellationToken ct)
             => Task.FromResult(new DirectorTargetResult("dir-1", null));
     }
 

@@ -400,6 +400,39 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     }
 
     /// <summary>
+    /// Every Director this tenant has registered (GET /directors), across all its machines - the list a
+    /// caller needs to turn a Director NAME into the machine it runs on, and the list behind
+    /// <c>cc-devthrottle director list</c>. One machine may appear several times: each named instance
+    /// registers its own Director.
+    /// </summary>
+    public async Task<List<DirectorDto>> ListDirectorsAsync(CancellationToken ct = default)
+    {
+        FileLog.Write("[GatewayClient] ListDirectorsAsync: GET /directors");
+        if (!_config.IsEnabled)
+        {
+            // Logged BEFORE the guard rather than after it: a method that throws before its own entry
+            // line leaves no trace it was ever called, which is the case a reader most needs to see.
+            FileLog.Write("[GatewayClient] ListDirectorsAsync FAILED: no Gateway is configured");
+            throw new InvalidOperationException("Gateway is not configured; cannot list Directors.");
+        }
+        try
+        {
+            using var resp = await _http.GetAsync("directors", ct);
+            if (!resp.IsSuccessStatusCode)
+                throw await RelayFailureAsync(resp, "GET /directors", ct);
+            var list = await resp.Content.ReadFromJsonAsync<List<DirectorDto>>(ct)
+                       ?? throw new InvalidOperationException("Gateway GET /directors returned an unparsable body.");
+            FileLog.Write($"[GatewayClient] ListDirectorsAsync: {list.Count} Directors");
+            return list;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayClient] ListDirectorsAsync FAILED: {ex.Message}");
+            throw;
+        }
+    }
+
+    /// <summary>
     /// The launchers this tenant has registered (GET /launchers) - the list of machines it can search and
     /// start things on. NULL on 404, which on this route means a Gateway that still has the launcher family
     /// denied rather than one that never had it.

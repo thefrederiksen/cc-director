@@ -19,7 +19,7 @@ public sealed class DirectorCronSessionStarterTests
     {
         private readonly DirectorTargetResult _result;
         public StubResolver(DirectorTargetResult result) => _result = result;
-        public Task<DirectorTargetResult> ResolveAsync(string machine, CancellationToken ct) =>
+        public Task<DirectorTargetResult> ResolveAsync(string machine, string? director, CancellationToken ct) =>
             Task.FromResult(_result);
     }
 

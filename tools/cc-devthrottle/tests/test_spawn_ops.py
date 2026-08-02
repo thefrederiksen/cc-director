@@ -145,3 +145,54 @@ def test_an_explicit_controller_does_not_change_who_made_the_call(monkeypatch, c
     _spawn(monkeypatch, cc_session="sess-A", controlled_by="explicit-manager-id")
     assert captured.get("controllerSessionId") == "explicit-manager-id"
     assert captured.get("parentSessionId") == "sess-A"
+
+
+# ---- --director: naming ONE Director instead of a computer -------------------------------------
+#
+# A machine runs several named Director instances, so --machine lands on whichever the Gateway
+# resolves first. --director names one. The CLI's whole job here is to pass the name through
+# untouched: it holds no copy of the matching rule, so these assert the wire body, which is the
+# only thing it actually decides.
+
+
+def test_director_is_sent_on_the_wire(monkeypatch, captured):
+    monkeypatch.delenv("CC_SESSION_ID", raising=False)
+    session_ops.spawn_session(
+        repo="C:/repo", agent="ClaudeCode", prompt=None, name="n", purpose=None,
+        command=None, command_args=None, director_target="North build",
+    )
+    assert captured.get("director") == "North build"
+    # No --machine needed: a named Director identifies its own machine, and the floor resolves it.
+    assert captured.get("machine") == ""
+
+
+def test_director_and_machine_can_be_sent_together(monkeypatch, captured):
+    monkeypatch.delenv("CC_SESSION_ID", raising=False)
+    session_ops.spawn_session(
+        repo="C:/repo", agent="ClaudeCode", prompt=None, name="n", purpose=None,
+        command=None, command_args=None, machine="SOREN_NORTH",
+        director_target="6f0a2b41-1c33-4f9e-9a10-2b7d5e8c1234",
+    )
+    assert captured.get("machine") == "SOREN_NORTH"
+    assert captured.get("director") == "6f0a2b41-1c33-4f9e-9a10-2b7d5e8c1234"
+
+
+def test_an_ordinary_spawn_names_no_director(monkeypatch, captured):
+    # The other direction: an untargeted spawn must not arrive carrying a name, or the Gateway would
+    # pin to it and stop launching a Director on demand.
+    _spawn(monkeypatch, cc_session=None)
+    assert captured.get("director") == ""
+
+
+def test_the_director_flag_reaches_spawn_session(monkeypatch, tmp_path):
+    # The wiring itself: typer option -> spawn_session. Asserted through the CLI because the flag
+    # name and the (deliberately differently-named) parameter are only connected in cli.py - a
+    # mismatch there is invisible to every test that calls spawn_session directly.
+    import src.cli as cli_module
+
+    seen = {}
+    monkeypatch.setattr(cli_module, "spawn_session", lambda *a, **k: seen.update(args=a, kwargs=k))
+    result = runner.invoke(
+        app, ["session", "spawn", str(tmp_path), "--name", "n", "--director", "North build"])
+    assert result.exit_code == 0, result.output
+    assert "North build" in seen["args"]

@@ -88,6 +88,48 @@ def list_machines(json_output: bool) -> None:
     console.print(f"{len(rows)} machines")
 
 
+def list_directors(json_output: bool) -> None:
+    """Every Director this account is running, on every machine - and how to name one.
+
+    A machine can appear several times: each named Director instance registers its own row. The NAME
+    column is what a person reads; the DIRECTOR ID is what `session spawn --director` should carry,
+    because it survives a rename and cannot collide with a second Director called the same thing.
+    """
+    rows: List[Dict[str, Any]] = _call("fleet/directors") or []
+    if json_output:
+        print(json.dumps(rows, indent=2))
+        return
+
+    if not rows:
+        console.print(
+            "No Directors are registered. A Director appears here once it is running and has "
+            "connected to the Gateway."
+        )
+        return
+
+    table = Table(show_header=True, header_style="bold", box=box.ASCII)
+    table.add_column("NAME")
+    table.add_column("MACHINE")
+    # The id is the whole point of this table - it is what you paste into --director - so it WRAPS
+    # rather than truncating. An ellipsised GUID looks like a value and is not one: pasting it fails
+    # at the far end with "no Director ... is registered", which reads as a fleet problem.
+    table.add_column("DIRECTOR ID", overflow="fold", no_wrap=False)
+    table.add_column("VERSION")
+    for row in rows:
+        machine_name = str(director.field(row, "machineName", "MachineName") or "-")
+        # An unnamed instance falls back to its machine name, exactly as the Director's own toolbar
+        # does - the alternative is a blank cell in the column you pick a Director from.
+        name = str(director.field(row, "displayName", "DisplayName") or "").strip() or machine_name
+        table.add_row(
+            name,
+            machine_name,
+            str(director.field(row, "directorId", "DirectorId") or "-"),
+            str(director.field(row, "version", "Version") or "-"),
+        )
+    console.print(table)
+    console.print(f"{len(rows)} Directors")
+
+
 def list_apps(machine: str, query: Optional[str], limit: int, json_output: bool) -> None:
     """What is installed on one machine."""
     path = f"fleet/machines/{machine}/apps?q={query or ''}&limit={limit}"

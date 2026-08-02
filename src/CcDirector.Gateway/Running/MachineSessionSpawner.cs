@@ -61,7 +61,12 @@ public sealed class MachineSessionSpawner
         if (req is null)
             throw new ArgumentNullException(nameof(req));
 
-        var target = await _resolver.ResolveAsync(machine, ct);
+        // req.Director, when set, names ONE Director and pins the resolve to it (machine alone resolves
+        // to the first Director on the machine, which on a machine running several named instances is a
+        // coin toss). Passed through the same single resolve-then-create path rather than a second one,
+        // so a targeted spawn keeps the tenant scoping, the mission stamping and the workflow seat it
+        // already had - the only thing that changes is WHICH Director gets the create.
+        var target = await _resolver.ResolveAsync(machine, req.Director, ct);
         // Tunnel-only: a resolved DirectorId IS the target - delivery is by id over the tunnel, so a
         // Director with a blank control endpoint is perfectly reachable. Fail only when the resolver
         // reported an error (machine off / unreachable / launch failed) or resolved no Director at all;
