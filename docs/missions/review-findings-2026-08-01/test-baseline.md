@@ -152,6 +152,30 @@ checking "no failures" - in the console OR in the TRX - would have called it gre
 It is worth reading before anyone proposes simplifying this gate to a failure count. The count comparison
 is not bureaucracy; it is the only thing standing between that console line and the hole underneath it.
 
+### A SECOND SHAPE of the same blind spot - an ABORT the console called Passed (2 August)
+
+The evidence file beside this one records a COLLAPSED COUNT that still reported `outcome=Completed`. On
+2 August the Gateway suite produced a different shape with the same blind spot, and the artifacts are kept
+beside this document as `evidence-aborted-run-console-said-passed.trx` and `.log`:
+
+| | First shape | Second shape |
+|---|---|---|
+| What happened | test host crashed, run continued | **run ABORTED** |
+| Console | `Passed! - Failed: 0` | `Passed! - Failed: 0, Passed: 4305, Total: 4355` |
+| TRX outcome | `Completed` | **`Failed`** |
+| Missing | 519 (and 2,671 in the W1 instance) | **846** |
+| Caught by | the COUNT against baseline | the OUTCOME |
+
+**Neither is caught by the console line, and neither is caught by the other's field.** A gate checking
+only the outcome passes the first; a gate checking only failures passes both. Outcome AND count against a
+baseline is the pair, and it is the pair because these two shapes exist.
+
+The run's own RunInfo names it: `The active test run was aborted. Reason: Test host process crashed`.
+
+Three occurrences in two days is a rate rather than an anecdote, so the instability itself is now filed as
+**devthrottle#2396** with these artifacts attached to it - the point of that issue being not that a test is
+flaky but that nothing except this gate rule stood between three crashed runs and three reported passes.
+
 ### Baselines will be EXCEEDED from here, and that is not drift
 
 `origin/main` has since added tests to `CcDirector.Core.Tests` and the setup-engine tests, so those
