@@ -109,4 +109,26 @@ public sealed class DirectorDto
 
     /// <summary>Why the last advertised-endpoint probe failed (issue #325). Null while reachable.</summary>
     public string? AdvertisedEndpointError { get; set; }
+
+    /// <summary>
+    /// When this Director told the Gateway it was shutting down ON PURPOSE - the tunnel farewell
+    /// (<c>DirectorHub.DirectorStopping</c>), stamped by <c>DirectorRegistry.MarkStopped</c>. Null while the
+    /// Director is running, and null again from its next Hello.
+    ///
+    /// WHY THIS EXISTS. A Director's registration outlives the process by design: the entry is deliberately
+    /// NOT dropped when its tunnel closes (a dead machine's cached roster has to survive a reconnect blip, and
+    /// a Gateway-owned snooze still has to be able to fire against it), and the only thing that finally removes
+    /// it is the eviction horizon a day later. The graceful <c>DELETE /directors/{id}/registration</c> that used
+    /// to clear it belongs to the legacy same-machine discovery plane and is refused outright on hosted, so on
+    /// the tunnel-only architecture NOTHING cleared a registration on shutdown. Every orderly stop therefore
+    /// left an entry the Gateway went on expecting to reach for twenty-four hours, and reported as unreachable
+    /// the whole time.
+    ///
+    /// The farewell already arrived - it just only told the work-history recorder. This is the same signal,
+    /// read by discovery: a Director that said goodbye is NOT RUNNING, which is a different fact from one that
+    /// cannot be reached, and only the second is a problem worth showing the owner. A Director that dies
+    /// without saying goodbye still has no stamp here and still reads unreachable, which is exactly the case
+    /// the owner wants to see.
+    /// </summary>
+    public DateTime? StoppedAtUtc { get; set; }
 }

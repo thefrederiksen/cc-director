@@ -446,6 +446,84 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
         Assert.False(string.IsNullOrEmpty(err.Error), "machineError.Error should be populated");
     }
 
+    /// <summary>
+    /// A DIRECTOR THAT SAID GOODBYE IS NOT AN UNREACHABLE MACHINE, and the roster read has to say so.
+    ///
+    /// This is the end-to-end shape of the defect that started this: a shut-down Director's registration
+    /// survives for a day (it is deliberately not deleted), so every roster read for that day reported it
+    /// offline, put it in machineErrors, and the Fleet Map counted that row and called it a machine. Here the
+    /// machine also carries a LIVE Director pushing a session - the whole point, because that is the fleet the
+    /// map was lying about.
+    ///
+    /// Revert-prove: remove the <c>d.StoppedAtUtc is not null</c> branch from the roster read in
+    /// GatewayEndpoints and this goes red on the machineErrors assertion, after the positive controls above
+    /// it have passed.
+    /// </summary>
+    [Fact]
+    public async Task A_director_that_said_goodbye_is_not_an_error_and_not_a_dead_machine()
+    {
+        var live = await StartFake("SOREN_NORTH", "soren", new[]
+        {
+            Sample("s1", "ClaudeCode", "repo", "Working", "blue"),
+        });
+        var slot5 = await StartFake("SOREN_NORTH", "soren", sessions: null, connected: false);
+        await Register(live);
+        await Register(slot5);
+
+        // Positive control: BEFORE the farewell this is exactly the reported-unreachable case - one offline
+        // Director, in machineErrors, with a banner. Without this the assertions below would also pass if the
+        // Director had simply never been registered.
+        var before = await GetEnvelope();
+        Assert.Contains(before.MachineErrors, m => m.DirectorId == slot5.DirectorId);
+        Assert.Equal(DirectorReachabilityDto.StateOffline,
+            Assert.Single(before.Directors, d => d.DirectorId == slot5.DirectorId).State);
+        Assert.NotNull(before.UnreachableBanner);
+        // ...and even THEN it is reported as a director, never as the machine - the live Director is on it.
+        Assert.Contains("director could not be reached", before.UnreachableBanner);
+        Assert.DoesNotContain("machine could not be reached", before.UnreachableBanner);
+
+        // The goodbye.
+        _gateway.Registry.MarkStopped(CcDirector.Core.Tenancy.TenantId.Local, slot5.DirectorId);
+
+        var after = await GetEnvelope();
+        Assert.DoesNotContain(after.MachineErrors, m => m.DirectorId == slot5.DirectorId);
+        Assert.Equal(DirectorReachabilityDto.StateStopped,
+            Assert.Single(after.Directors, d => d.DirectorId == slot5.DirectorId).State);
+        Assert.Null(after.UnreachableBanner);
+
+        // The live Director on the same machine is untouched throughout - its session is still served.
+        Assert.Equal("s1", Assert.Single(after.Sessions).SessionId);
+        Assert.Equal(DirectorReachabilityDto.StateOnline,
+            Assert.Single(after.Directors, d => d.DirectorId == live.DirectorId).State);
+    }
+
+    /// <summary>
+    /// The Gateway ships the finished presentation with every reachability row, so no client re-derives what
+    /// a state means. A stopped Director is "Not running" and is NOT offered as free capacity: its tunnel
+    /// went with the process, so a start could not be delivered.
+    /// </summary>
+    [Fact]
+    public async Task The_envelope_carries_the_gateways_finished_presentation()
+    {
+        var live = await StartFake("SOREN_NORTH", "soren", new[] { Sample("s1", "ClaudeCode", "repo", "Working", "blue") });
+        var slot5 = await StartFake("SOREN_NORTH", "soren", sessions: null, connected: false);
+        await Register(live);
+        await Register(slot5);
+        _gateway.Registry.MarkStopped(CcDirector.Core.Tenancy.TenantId.Local, slot5.DirectorId);
+
+        var env = await GetEnvelope();
+
+        var stopped = Assert.Single(env.Directors, d => d.DirectorId == slot5.DirectorId);
+        Assert.Equal("Not running", stopped.StateLabel);
+        Assert.False(stopped.CanStartSession);
+        Assert.Equal("No sessions - this director is not running", stopped.EmptySlotText);
+
+        var online = Assert.Single(env.Directors, d => d.DirectorId == live.DirectorId);
+        Assert.Equal("", online.StateLabel);
+        Assert.True(online.CanStartSession);
+        Assert.False(online.DataIsStale);
+    }
+
     [Fact]
     public async Task Flat_response_drops_failed_directors_silently()
     {
@@ -785,7 +863,9 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
 
     private sealed record EnvelopeResponse(
         [property: JsonPropertyName("sessions")] List<SessionDto> Sessions,
-        [property: JsonPropertyName("machineErrors")] List<MachineErrorDto> MachineErrors
+        [property: JsonPropertyName("machineErrors")] List<MachineErrorDto> MachineErrors,
+        [property: JsonPropertyName("directors")] List<DirectorReachabilityDto> Directors,
+        [property: JsonPropertyName("unreachableBanner")] string? UnreachableBanner
     );
 
     /// <summary>
@@ -809,7 +889,12 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
         var fakeIds = _fakes.Select(f => f.DirectorId).ToHashSet();
         return new EnvelopeResponse(
             body!.Sessions.Where(s => fakeIds.Contains(s.DirectorId)).ToList(),
-            body.MachineErrors.Where(m => fakeIds.Contains(m.DirectorId)).ToList()
+            body.MachineErrors.Where(m => fakeIds.Contains(m.DirectorId)).ToList(),
+            (body.Directors ?? new()).Where(d => fakeIds.Contains(d.DirectorId)).ToList(),
+            // The banner is one fleet-wide sentence and cannot be filtered to this class's fakes. It is safe
+            // to assert on because the discovery directory is isolated per test class, so nothing but these
+            // fakes is ever in the registry.
+            body.UnreachableBanner
         );
     }
 

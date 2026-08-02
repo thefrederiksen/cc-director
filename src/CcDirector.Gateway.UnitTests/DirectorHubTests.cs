@@ -141,6 +141,43 @@ public sealed class DirectorHubTests : IDisposable
         Assert.True(reg.Contains("s1")); // the armed snooze survived a rejected snapshot
     }
 
+    // ---------- The clean-shutdown farewell reaches DISCOVERY, not only work history ----------
+    // It used to tell the history recorder alone, so the registry went on expecting a Director that had
+    // announced it was leaving - and reported it unreachable until the 24-hour eviction horizon swept it.
+    // Revert-prove: delete the MarkStopped line from DirectorHub.DirectorStopping and the first of these
+    // goes red at the stamp, after its positive control has passed.
+
+    [Fact]
+    public void TheFarewell_RetiresTheRegistration()
+    {
+        var (hub, _) = NewHub("conn-1");
+        hub.Hello(Hello("dir-A"));
+        // Positive control: registered and RUNNING before the goodbye, so the assertion below cannot pass
+        // against an entry that was never created.
+        Assert.Null(_registry.Get(CcDirector.Core.Tenancy.TenantId.Local, "dir-A")!.StoppedAtUtc);
+
+        hub.DirectorStopping();
+
+        Assert.NotNull(_registry.Get(CcDirector.Core.Tenancy.TenantId.Local, "dir-A")!.StoppedAtUtc);
+    }
+
+    /// <summary>
+    /// A DISCONNECT IS NOT A GOODBYE. Only an explicit farewell retires a registration; a Director that dies
+    /// without one - a force-kill, a crash, a power cut - stays "expected", which is exactly the case the
+    /// owner needs reported as unreachable. Losing this distinction would silence the real fault along with
+    /// the false one.
+    /// </summary>
+    [Fact]
+    public async Task ADisconnectWithoutAFarewell_LeavesTheRegistrationExpected()
+    {
+        var (hub, _) = NewHub("conn-1");
+        hub.Hello(Hello("dir-A"));
+
+        await hub.OnDisconnectedAsync(new Exception("the machine went away"));
+
+        Assert.Null(_registry.Get(CcDirector.Core.Tenancy.TenantId.Local, "dir-A")!.StoppedAtUtc);
+    }
+
     private static DirectorStreamHello Hello(string directorId) => new() { DirectorId = directorId, Version = "test" };
 
     private static SessionDto Session(string id, string state = "Working") => new() { SessionId = id, ActivityState = state };

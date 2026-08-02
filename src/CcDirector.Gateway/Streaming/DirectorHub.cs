@@ -361,6 +361,12 @@ public sealed class DirectorHub : Hub
     /// never says goodbye is caught by the history sweep's silence rule instead ("interrupted") - the
     /// two rulings are exactly what tells a clean stop from a power cut. Older Directors simply never
     /// call this; nothing here is required for the stream to function.
+    ///
+    /// THE SAME GOODBYE ALSO RETIRES THE REGISTRATION. It used to tell only the history recorder, so
+    /// discovery went on expecting a Director that had politely announced it was leaving - and reported
+    /// it "unreachable" for the full day until the eviction horizon swept it. One signal, both readers:
+    /// history rules the work rows, the registry marks the entry not-running. Best-effort, exactly like
+    /// the history call beside it: a farewell that cannot be recorded must never fail the shutdown.
     /// </summary>
     public void DirectorStopping()
     {
@@ -368,6 +374,7 @@ public sealed class DirectorHub : Hub
         using var tenantScope = EnterBoundTenantScope();
         FileLog.Write($"[DirectorHub] DirectorStopping: director={directorId} conn={Short(Context.ConnectionId)}");
         _sessionHistory?.ObserveDirectorStopping(RequireBoundTenant(), directorId);
+        _registry.MarkStopped(RequireBoundTenant(), directorId);
     }
 
     public override Task OnConnectedAsync()

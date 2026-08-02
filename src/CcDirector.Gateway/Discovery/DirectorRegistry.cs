@@ -351,6 +351,9 @@ public sealed class DirectorRegistry : IDisposable
                 SchemaVersion = 1,
                 LastSeen = now,
                 Source = "stream",
+                // StoppedAtUtc is deliberately NOT merged from the existing entry - a Hello IS the statement
+                // that this Director is running, so the previous process's farewell must not survive into it.
+                // Leaving it to the merge above would mean a restarted Director stayed "not running" forever.
             };
             existed = existing is not null;
             _directors[key] = dto;
@@ -395,6 +398,34 @@ public sealed class DirectorRegistry : IDisposable
             if (!_directors.TryGetValue(key, out var existing)) return false;
             existing.LastSeen = DateTime.UtcNow;
         }
+        return true;
+    }
+
+    /// <summary>
+    /// Record that this tenant's Director said goodbye - the tunnel farewell sent at the start of an orderly
+    /// shutdown (<c>DirectorHub.DirectorStopping</c>). Stamps <see cref="DirectorDto.StoppedAtUtc"/> so the
+    /// roster read can tell a Director that STOPPED from one it cannot REACH. Returns false when this tenant
+    /// has no entry for the id.
+    ///
+    /// It does NOT remove the entry, and that is the point. Dropping a Director the moment its tunnel closes
+    /// is the behaviour <c>OnDisconnectedAsync</c> deliberately does not have (a brief reconnect must not flap
+    /// the roster, and the machine's cached sessions have to outlive the gap); this marks the entry instead, so
+    /// everything that depends on it surviving is untouched and only the VERDICT about it changes.
+    ///
+    /// Keyed by (tenant, id) like every other write here, so a farewell can only ever reach the entry belonging
+    /// to the tenant whose authenticated connection sent it. Written in place under the liveness gate, exactly
+    /// as <see cref="Heartbeat"/> is, so the stale sweep's re-read sees this stamp rather than racing it.
+    /// </summary>
+    public bool MarkStopped(TenantId tenant, string directorId)
+    {
+        if (string.IsNullOrEmpty(directorId) || !tenant.IsValid) return false;
+        var key = new DirectorKey(tenant, directorId);
+        lock (_livenessGate)
+        {
+            if (!_directors.TryGetValue(key, out var existing)) return false;
+            existing.StoppedAtUtc = DateTime.UtcNow;
+        }
+        FileLog.Write($"[DirectorRegistry] MarkStopped: tenant={tenant.Value}, id={directorId} (said goodbye; not running, not unreachable)");
         return true;
     }
 

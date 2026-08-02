@@ -13,9 +13,11 @@ import {
   ENDPOINT_STATE_UNREACHABLE_BY_NAME,
   getFleetDirectors,
   getSessionsEnvelope,
+  type DirectorReachability,
   type FleetDirector,
   type MachineError,
 } from "@devthrottle/client-core/fleet/fleetClient";
+import { canStartSessionOn } from "../fleet/directorPresentation";
 import type { SessionDto } from "@devthrottle/client-core/api/client";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 import { getGatewaySettings } from "@devthrottle/client-core/settings/settingsClient";
@@ -129,6 +131,10 @@ export function ScheduleView() {
   const [directors, setDirectors] = useState<FleetDirector[]>([]);
   const [sessions, setSessions] = useState<SessionDto[]>([]);
   const [machineErrors, setMachineErrors] = useState<MachineError[]>([]);
+  // The per-Director reachability from the same envelope. A Director that was SHUT DOWN is absent from
+  // machineErrors, because nothing failed - but a job pointed at it could not run either, so the picker
+  // has to know about it too.
+  const [directorReach, setDirectorReach] = useState<DirectorReachability[]>([]);
   const [machineFilter, setMachineFilter] = useState("");
   const [showDirectorPicker, setShowDirectorPicker] = useState(false);
 
@@ -193,6 +199,7 @@ export function ScheduleView() {
       setDirectors(dirs);
       setSessions(env.sessions);
       setMachineErrors(env.machineErrors);
+      setDirectorReach(env.directors);
     } catch {
       /* the picker degrades to "no machines known" rather than blocking the form */
     }
@@ -422,11 +429,17 @@ export function ScheduleView() {
     return machines.filter((m) => m.toLowerCase().includes(f));
   }, [machines, machineFilter]);
 
+  // "Cannot be given work right now", which is what this picker actually needs to know - not "is
+  // something wrong". A shut-down Director answers no to the first and no to the second, so it is asked
+  // through canStartSessionOn (the Gateway's own ruling) rather than through the failure list.
   const isUnreachable = useCallback(
     (d: FleetDirector): boolean =>
       d.advertisedEndpointState === ENDPOINT_STATE_UNREACHABLE_BY_NAME ||
-      machineErrors.some((e) => (e.directorId ?? "").toLowerCase() === (d.directorId ?? "").toLowerCase()),
-    [machineErrors],
+      machineErrors.some((e) => (e.directorId ?? "").toLowerCase() === (d.directorId ?? "").toLowerCase()) ||
+      !canStartSessionOn(
+        directorReach.find((r) => (r.directorId ?? "").toLowerCase() === (d.directorId ?? "").toLowerCase()),
+      ),
+    [machineErrors, directorReach],
   );
 
   // The searchable text of a job: name, machine, repository, and the prompt text - so the search box

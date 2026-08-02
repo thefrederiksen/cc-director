@@ -1043,6 +1043,20 @@ internal static class GatewayEndpoints
                     linkState = DirectorReachabilityDto.StateWobbly;
                     reason = "no recent push from this director";
                 }
+                else if (d.StoppedAtUtc is not null)
+                {
+                    // IT SAID GOODBYE. The tunnel is down because the process ended on purpose and told us so
+                    // (DirectorHub.DirectorStopping -> DirectorRegistry.MarkStopped), not because anything
+                    // failed. Reported as its own state so it is never counted as a machine we cannot reach:
+                    // the registration outlives the process by a day, and calling that whole day "unreachable"
+                    // turned every orderly shutdown into a standing warning about a healthy machine.
+                    //
+                    // The stamp is cleared by the next Hello, so a Director that comes back is online again on
+                    // its first push - and one that dies WITHOUT a farewell never had a stamp, so it still
+                    // reads offline, which is the case actually worth showing.
+                    linkState = DirectorReachabilityDto.StateStopped;
+                    reason = "director was shut down";
+                }
                 else
                 {
                     linkState = DirectorReachabilityDto.StateOffline;
@@ -1053,7 +1067,7 @@ internal static class GatewayEndpoints
                         : "director not connected to the tunnel";
                 }
 
-                reachability.Add(new DirectorReachabilityDto
+                var reachRow = new DirectorReachabilityDto
                 {
                     DirectorId = d.DirectorId,
                     MachineName = d.MachineName ?? "",
@@ -1066,11 +1080,18 @@ internal static class GatewayEndpoints
                     LastSeenUtc = known.AsOfUtc,
                     LastSeenAgeSeconds = ageSeconds,
                     Error = reason,
-                });
+                };
+                // Every judgement the client would otherwise make about what this state MEANS - the badge word,
+                // whether the rows are last-known, whether a start could be delivered, what to print when there
+                // are no sessions - is folded on here, once (CLAUDE.md rule 7).
+                FleetReachabilityFold.Describe(reachRow);
+                reachability.Add(reachRow);
 
-                // machineErrors keeps its historical meaning - "the Gateway cannot reach this machine" - and so
+                // machineErrors keeps its historical meaning - "the Gateway cannot reach this director" - and so
                 // keeps its historical membership: offline only. It is no longer a statement that the machine's
-                // sessions were dropped, because they were not.
+                // sessions were dropped, because they were not; and a STOPPED director is not in it at all,
+                // because nothing failed. Note the noun: these rows are per-DIRECTOR, which is why the banner
+                // built from them is folded by FleetReachabilityFold rather than counted by a view.
                 if (linkState == DirectorReachabilityDto.StateOffline)
                 {
                     machineErrors.Add(new MachineErrorDto
@@ -1385,9 +1406,20 @@ internal static class GatewayEndpoints
             if (envelope == true)
             {
                 // Issue #1215: the envelope also carries the per-Director reachability (Online / Wobbly /
-                // Offline with a last-seen age), so the Cockpit renders the three states in place. machineErrors
-                // is retained unchanged for back-compat (an Offline Director appears in both).
-                return Results.Json(new { sessions = all, machineErrors, directors = reachability });
+                // Offline / Not running, with a last-seen age), so the Cockpit renders the states in place.
+                // machineErrors is retained unchanged for back-compat (an Offline Director appears in both).
+                //
+                // unreachableBanner is the FLEET-LEVEL verdict, folded here rather than counted by a view: a
+                // machine is called unreachable only when every Director on it is, and a single dead slot on a
+                // healthy machine is reported as the slot it is. Null when there is nothing wrong. A client
+                // prints it verbatim; there is nothing left for it to decide.
+                return Results.Json(new
+                {
+                    sessions = all,
+                    machineErrors,
+                    directors = reachability,
+                    unreachableBanner = FleetReachabilityFold.UnreachableBanner(reachability),
+                });
             }
             return Results.Json(all);
         })

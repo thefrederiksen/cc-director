@@ -92,13 +92,19 @@ export interface MachineError {
 // serves every session it last knew about, whatever its age, so all three states carry sessions and the
 // state decides only how they are RENDERED. A session leaves the roster when its Director says so or
 // when the machine passes the Gateway's eviction horizon - never because a display timer ran out.
+//  - "stopped": it said goodbye. The Director sent the tunnel farewell at the start of an orderly
+//    shutdown, so its registration is retired and its absence is EXPECTED - not a fault, and never
+//    counted as a machine the Gateway cannot reach. A Director that dies without a farewell has no such
+//    stamp and still reads "offline", which is the case actually worth showing.
 export const REACHABILITY_ONLINE = "online";
 export const REACHABILITY_WOBBLY = "wobbly";
 export const REACHABILITY_OFFLINE = "offline";
+export const REACHABILITY_STOPPED = "stopped";
 export type ReachabilityState =
   | typeof REACHABILITY_ONLINE
   | typeof REACHABILITY_WOBBLY
-  | typeof REACHABILITY_OFFLINE;
+  | typeof REACHABILITY_OFFLINE
+  | typeof REACHABILITY_STOPPED;
 
 // One Director's reachability presentation in the roster envelope (issue #1215). The Cockpit joins a
 // session to its Director by directorId (also stamped on SessionDto.directorId) to decide how to render
@@ -122,6 +128,22 @@ export interface DirectorReachability {
   lastSeenAgeSeconds?: number | null;
   /** The last poll's failure reason for wobbly/offline; null while online. */
   error?: string | null;
+  /**
+   * THE GATEWAY'S FINISHED PRESENTATION for this Director (CLAUDE.md rule 7). The four fields below are
+   * rendered, never re-derived: the Cockpit used to map the state string to a badge word, a placeholder
+   * sentence, whether a button appeared, and whether a card dimmed - four judgements about what a state
+   * MEANS, made in a view file, in three separate places. Absent from an older Gateway, where the
+   * `??` fallbacks beside each use keep the historical rendering.
+   *
+   * The badge word; empty while online (a healthy Director wears no badge).
+   */
+  stateLabel?: string;
+  /** True when the rows are last-known rather than confirmed - dim the cards and show the age. */
+  dataIsStale?: boolean;
+  /** True when a start could actually be delivered down this Director's tunnel. */
+  canStartSession?: boolean;
+  /** The line to print where this Director has no sessions, saying why there are none. */
+  emptySlotText?: string;
 }
 
 // The envelope shape GET /sessions returns with ?envelope=true: the live sessions, the machines that
@@ -131,8 +153,15 @@ export interface DirectorReachability {
 export interface SessionsEnvelope {
   sessions: SessionDto[];
   machineErrors: MachineError[];
-  /** Per-Director reachability for the Online / Wobbly / Offline rendering (issue #1215). */
+  /** Per-Director reachability for the Online / Wobbly / Offline / Not running rendering (issue #1215). */
   directors: DirectorReachability[];
+  /**
+   * The fleet-wide warning line, folded on the Gateway and printed VERBATIM, or null when nothing is
+   * wrong. It replaces counting machineErrors in the view: those rows are per-DIRECTOR, so a view that
+   * counted them and printed the word "machine" announced a dead machine whenever any one slot on it was
+   * unreachable - while fifteen sessions on that machine were pushing every few seconds.
+   */
+  unreachableBanner: string | null;
 }
 
 // GET /sessions?envelope=true - the roster plus the unreachable-machine list and per-Director
@@ -154,6 +183,7 @@ export async function getSessionsEnvelope(signal?: AbortSignal): Promise<Session
     sessions: body.sessions ?? [],
     machineErrors: body.machineErrors ?? [],
     directors: body.directors ?? [],
+    unreachableBanner: body.unreachableBanner ?? null,
   };
 }
 

@@ -21,7 +21,7 @@ function director(directorId: string, state: DirectorReachability["state"], extr
 }
 
 function envelope(sessions: SessionDto[], directors: DirectorReachability[] = []): SessionsEnvelope {
-  return { sessions, machineErrors: [], directors };
+  return { sessions, machineErrors: [], directors, unreachableBanner: null };
 }
 
 describe("roster keep-and-mark retention merge", () => {

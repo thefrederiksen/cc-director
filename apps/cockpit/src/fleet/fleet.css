@@ -496,6 +496,18 @@
   font-size: 13px;
 }
 
+/* The same shape as .dpage-error, in the neutral surface colours: a statement of fact that needs no
+   alarm. A Director that was shut down on purpose is not a failure, and must not be dressed as one. */
+.dpage-note {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
 .dtbl-empty {
   margin-top: 16px;
   padding: 24px;
@@ -662,6 +674,13 @@
 
 .dstat-err {
   color: var(--attention);
+  font-weight: 600;
+}
+
+/* A Director that was shut down on purpose. Dimmed, not coloured: it is a fact to notice, never a
+   fault to chase, and giving it a warning colour is what made every orderly shutdown look like one. */
+.dstat-idle {
+  color: var(--text-dim);
   font-weight: 600;
 }
 

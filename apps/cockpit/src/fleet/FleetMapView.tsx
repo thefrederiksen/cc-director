@@ -9,6 +9,12 @@ import {
   REACHABILITY_WOBBLY,
   type DirectorReachability,
 } from "@devthrottle/client-core/fleet/fleetClient";
+import {
+  canStartSessionOn,
+  directorStateLabel,
+  emptySlotTextOf,
+  isDataStale,
+} from "./directorPresentation";
 import { useSharedRoster } from "@devthrottle/client-core/fleet/rosterStore";
 import { repoBasename, repoIdentity, relativeTime } from "./format";
 import {
@@ -119,9 +125,9 @@ interface Lane {
 
 export function FleetMapView() {
   const navigate = useNavigate();
-  // The sessions, the unreachable-machine list, and the per-Director reachability all come from the ONE
-  // shared roster store; lastError is its keep-last banner text. No poll of its own.
-  const { sessions, machineErrors, directors, error: lastError } = useSharedRoster();
+  // The sessions, the Gateway's unreachable verdict, and the per-Director reachability all come from the
+  // ONE shared roster store; lastError is its keep-last banner text. No poll of its own.
+  const { sessions, machineErrors, directors, unreachableBanner, error: lastError } = useSharedRoster();
   const [pivot, setPivotState] = useState<Pivot>(initialPivot);
   // Persist the choice so the map reopens on it (see initialPivot). Wraps the raw setter so every
   // pivot change - from any button - writes through to storage.
@@ -285,14 +291,13 @@ export function FleetMapView() {
 
       {lastError !== null && <div className="fmap-error">{lastError}</div>}
 
-      {machineErrors.length > 0 && (
-        <div className="fmap-warn">
-          {machineErrors.length} machine{machineErrors.length === 1 ? "" : "s"} unreachable on the last sweep:{" "}
-          {machineErrors
-            .map((m) => (m.machineName ?? "").trim())
-            .filter((n) => n.length > 0)
-            .join(", ") || "(unknown)"}
-        </div>
+      {/* THE GATEWAY'S SENTENCE, PRINTED VERBATIM. This used to count the rows in machineErrors and call
+          each one a machine. Those rows are per-DIRECTOR, so one shut-down slot on SOREN_NORTH announced
+          "1 machine unreachable" while three other Directors on that machine were pushing fifteen live
+          sessions every few seconds. Whether a machine is unreachable - which needs EVERY Director on it
+          to be - is a verdict, and verdicts are folded once on the Gateway (FleetReachabilityFold). */}
+      {unreachableBanner !== null && unreachableBanner.length > 0 && (
+        <div className="fmap-warn">{unreachableBanner}</div>
       )}
 
       {sessions === null && lastError === null && <div className="fmap-empty">Loading the fleet...</div>}
@@ -484,13 +489,12 @@ function LanePanel({ lane, pivot, onOpen, onNewSession, headRef }: LanePanelProp
 
   // Director pivot (devthrottle_internal#1177): the lane IS one Director, carrying its own reachability
   // entry, so the head takes over what the machine pivot's Director sub-header does - state the tunnel
-  // condition, offer "+ New session" only while it could be honoured (withheld offline, kept wobbly,
-  // hidden for the unaddressable "(unknown)" lane), and render an idle lane as a free slot.
+  // condition, offer "+ New session" only while it could be honoured (hidden too for the unaddressable
+  // "(unknown)" lane), and say why an idle lane is idle. Every one of those is the Gateway's ruling, read.
   const directorLane = pivot === "director";
   const laneReach = directorLane ? lane.directors[0] : undefined;
-  const laneOffline = directorLane && laneReach?.state === REACHABILITY_OFFLINE;
-  const laneWobbly = directorLane && laneReach?.state === REACHABILITY_WOBBLY;
-  const laneLastSeen = laneOffline || laneWobbly ? reachabilityLastSeen(laneReach?.lastSeenAgeSeconds) : "";
+  const laneStateLabel = directorLane ? directorStateLabel(laneReach) : "";
+  const laneLastSeen = laneStateLabel.length > 0 ? reachabilityLastSeen(laneReach?.lastSeenAgeSeconds) : "";
 
   return (
     <section className="fmap-lane">
@@ -498,12 +502,12 @@ function LanePanel({ lane, pivot, onOpen, onNewSession, headRef }: LanePanelProp
         <span className="fmap-lane-k">{lane.kindLabel}</span>
         <span className="fmap-lane-t">{lane.title}</span>
         {lane.subtitle.length > 0 && <span className="fmap-lane-sub">{lane.subtitle}</span>}
-        {(laneOffline || laneWobbly) && (
+        {laneStateLabel.length > 0 && (
           <span className="fmap-subhead-state">
-            {laneLastSeen.length > 0 ? `${laneOffline ? "Offline" : "Wobbly"} - ${laneLastSeen}` : laneOffline ? "Offline" : "Wobbly"}
+            {laneLastSeen.length > 0 ? `${laneStateLabel} - ${laneLastSeen}` : laneStateLabel}
           </span>
         )}
-        {directorLane && lane.key !== "(unknown)" && !laneOffline && (
+        {directorLane && lane.key !== "(unknown)" && canStartSessionOn(laneReach) && (
           <button
             type="button"
             className="fmap-subhead-new"
@@ -525,11 +529,7 @@ function LanePanel({ lane, pivot, onOpen, onNewSession, headRef }: LanePanelProp
         {directorGroups !== null
           ? directorGroups.map((dg) => <DirectorSubGroup key={dg.key} group={dg} pivot={pivot} onOpen={onOpen} onNewSession={onNewSession} />)
           : directorLane && lane.sessions.length === 0
-          ? (
-            <div className="fmap-freeslot">
-              {laneOffline ? "No sessions - machine unreachable" : "No sessions - free slot"}
-            </div>
-          )
+          ? <div className="fmap-freeslot">{emptySlotTextOf(laneReach)}</div>
           : <LaneCards sessions={lane.sessions} pivot={pivot} onOpen={onOpen} />}
       </div>
     </section>
@@ -539,17 +539,17 @@ function LanePanel({ lane, pivot, onOpen, onNewSession, headRef }: LanePanelProp
 // One Director sub-group inside a machine lane (machine pivot): its sessions, or the placeholder line
 // that says why there are none.
 //
-// AN UNREACHABLE MACHINE IS DIMMED AND DATED, NEVER DROPPED. Its Directors used to be filtered out of
-// the lane fold entirely, so a machine whose tunnel went down disappeared from the map - which is the
+// AN UNREACHABLE DIRECTOR IS DIMMED AND DATED, NEVER DROPPED. Directors used to be filtered out of the
+// lane fold entirely when their tunnel went down, so the machine disappeared from the map - the same
 // delete-instead-of-dim defect the Gateway has stopped committing (it now serves that machine's sessions
-// with their age). The sub-header therefore states the machine's state and when it was last heard, the
-// cards below it already dim themselves (NodeCard), and the placeholder says "unreachable" rather than
-// claiming free capacity.
+// with their age). The sub-header therefore states the Director's condition and when it was last heard,
+// the cards below it dim themselves (NodeCard), and the placeholder says why there are no sessions
+// rather than claiming free capacity.
 //
-// The "+ New session" action is WITHHELD while the tunnel is down, and only then. Starting a session is
-// routed to the Director over that tunnel, so the button could not be honoured - and a button that
-// cannot do what it says reads as the app being broken. A wobbly Director keeps it: its tunnel is up,
-// only its last push is late, so the command still lands.
+// NOTE THE NOUN. This sub-header is a DIRECTOR, and it used to say "machine unreachable" - on a machine
+// that could be running three other Directors and fifteen live sessions. What each state means, what it
+// is called, and whether "+ New session" could be honoured are all the Gateway's ruling now; this
+// component reads them and lays them out.
 function DirectorSubGroup({
   group,
   pivot,
@@ -561,24 +561,30 @@ function DirectorSubGroup({
   onOpen: (sid: string) => void;
   onNewSession: (directorId: string) => void;
 }) {
-  const state = group.reachability?.state;
-  const offline = state === REACHABILITY_OFFLINE;
-  const wobbly = state === REACHABILITY_WOBBLY;
-  const lastSeen = offline || wobbly ? reachabilityLastSeen(group.reachability?.lastSeenAgeSeconds) : "";
-  const stateWord = offline ? "Offline" : "Wobbly";
+  const reach = group.reachability;
+  const state = reach?.state;
+  const label = directorStateLabel(reach);
+  const lastSeen = label.length > 0 ? reachabilityLastSeen(reach?.lastSeenAgeSeconds) : "";
   return (
     <div className="fmap-dgroup">
-      <div className={`fmap-subhead${offline ? " fmap-subhead-offline" : ""}${wobbly ? " fmap-subhead-wobbly" : ""}`}>
+      <div
+        className={
+          "fmap-subhead" +
+          (state === REACHABILITY_OFFLINE ? " fmap-subhead-offline" : "") +
+          (state === REACHABILITY_WOBBLY ? " fmap-subhead-wobbly" : "")
+        }
+      >
         <span className="fmap-subhead-label">{group.label}</span>
-        {(offline || wobbly) && (
+        {label.length > 0 && (
           <span className="fmap-subhead-state">
-            {lastSeen.length > 0 ? `${stateWord} - ${lastSeen}` : stateWord}
+            {lastSeen.length > 0 ? `${label} - ${lastSeen}` : label}
           </span>
         )}
         {/* Start a new session on THIS Director, using the same dialog the Sessions tab opens (only
             pre-targeted here). Hidden for an unidentified Director - it is not an addressable slot, so
-            there is nothing to start a session on - and for an offline one, whose tunnel is down. */}
-        {group.key !== "(unknown)" && !offline && (
+            there is nothing to start a session on - and whenever the Gateway says a start could not be
+            delivered, because a button that cannot do what it says reads as the app being broken. */}
+        {group.key !== "(unknown)" && canStartSessionOn(reach) && (
           <button
             type="button"
             className="fmap-subhead-new"
@@ -593,9 +599,7 @@ function DirectorSubGroup({
       {group.sessions.length > 0 ? (
         <LaneCards sessions={group.sessions} pivot={pivot} onOpen={onOpen} />
       ) : (
-        <div className="fmap-freeslot">
-          {offline ? "No sessions - machine unreachable" : "No sessions - free slot"}
-        </div>
+        <div className="fmap-freeslot">{emptySlotTextOf(reach)}</div>
       )}
     </div>
   );
@@ -655,17 +659,22 @@ function NodeCard({
   // (FleetRoleResolver), because a session's controller may live on another Director entirely.
   const sessionRole = (s.sessionRole ?? "").trim();
   const showRole = sessionRole.length > 0 && sessionRole.toLowerCase() !== "standalone";
-  // Reachability of the owning Director (issue #1215): a Wobbly/Offline machine dims its cards in place.
+  // Reachability of the owning Director (issue #1215): a Director that did not answer this refresh dims
+  // its cards in place and dates them - its rows are the last thing it said, not a confirmed state. WHICH
+  // states those are is the Gateway's ruling (isDataStale), read here; the two class names below stay
+  // keyed to the specific state because they are styling, not meaning.
   const reach = reachabilityFor(directors, s.directorId);
   const wobbly = reach?.state === REACHABILITY_WOBBLY;
   const offline = reach?.state === REACHABILITY_OFFLINE;
-  const lastSeen = wobbly || offline ? reachabilityLastSeen(reach?.lastSeenAgeSeconds) : "";
+  const lastSeen = isDataStale(reach) ? reachabilityLastSeen(reach?.lastSeenAgeSeconds) : "";
   const cls =
     "fmap-card" +
     (color === "red" ? " needs" : "") +
     (depth > 0 ? " fmap-card-child" : "") +
     (wobbly ? " fmap-card-wobbly" : "") +
-    (offline ? " fmap-card-offline" : "");
+    // Anything the Gateway calls stale that is not specifically wobbly dims like an offline card: a
+    // stopped Director's leftover rows are last-known too, and must not read as live.
+    (isDataStale(reach) && !wobbly ? " fmap-card-offline" : "");
 
   // The card tags carry the two hierarchy coordinates NOT already implied by the lane the card sits in.
   const tags = cardTags(s, pivot);

@@ -1237,8 +1237,20 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     }
 
     /// <summary>
-    /// Gracefully unregister. Best-effort: a failing DELETE is logged but does not
-    /// throw - the Gateway will sweep the stale entry within 60 s anyway.
+    /// Gracefully unregister over the LEGACY same-machine discovery plane. Best-effort: a failing DELETE is
+    /// logged and does not throw.
+    ///
+    /// DO NOT READ THIS AS THE SHUTDOWN GOODBYE - it is not, on any Gateway a Director talks to today. The
+    /// endpoint is refused outright on a hosted Gateway (GatewayEndpoints returns
+    /// LegacyDiscoveryPlaneUnavailable), and even where it is allowed it resolves the id in the Local tenant
+    /// partition only. The tunnel-era goodbye is <c>GatewayStreamClient.NotifyDirectorStoppingAsync</c>, which
+    /// retires the registration through <c>DirectorRegistry.MarkStopped</c>.
+    ///
+    /// This comment used to say the Gateway "will sweep the stale entry within 60 s anyway", which read as
+    /// "an unregistration that fails costs nothing". The eviction horizon is TWENTY-FOUR HOURS
+    /// (DirectorRegistry.DefaultEvictionHorizon), so for a full day the Gateway went on expecting a Director
+    /// that had already gone - and every roster read reported it unreachable. A stale reassurance in a comment
+    /// is how a hole stays open: it answers the question the next reader was about to ask.
     /// </summary>
     public async Task StopAsync()
     {

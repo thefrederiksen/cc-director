@@ -154,10 +154,19 @@ public sealed class RosterCompletenessFoldTests
         Assert.False(complete);
     }
 
+    // The paired values that pin this against the CLIENT'S formatter (reachabilityLastSeen in client-core),
+    // which now prints an age for the SAME Director one line away from a sentence written here. Every case
+    // below is one where the two used to disagree, or a boundary where they could drift apart again: 89
+    // seconds read "89s" here and "1m" there; 1896 seconds read "32m" here (rounded) and "31m" there
+    // (truncated); 4000 seconds read "67m" here and "1h" there. The rule is now the client's, in both.
     [Theory]
     [InlineData(30, "30s")]
-    [InlineData(89, "89s")]
+    [InlineData(59, "59s")]
+    [InlineData(89, "1m")]
     [InlineData(240, "4m")]
+    [InlineData(1896, "31m")]
+    [InlineData(3599, "59m")]
+    [InlineData(4000, "1h")]
     [InlineData(7200, "2h")]
     public void Age_readsInTheCoarsestUsefulUnit(double seconds, string expected)
         => Assert.Equal(expected, RosterCompleteness.DescribeAge(seconds));

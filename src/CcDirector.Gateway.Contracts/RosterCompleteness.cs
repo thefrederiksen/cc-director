@@ -116,11 +116,23 @@ public static class RosterCompleteness
         return $"{count}, so something that started there may not be in this list yet - {string.Join("; ", named)}";
     }
 
-    /// <summary>A coarse, human age for a last-seen gap. Deliberately vague - the precision is not the point.</summary>
+    /// <summary>
+    /// A coarse, human age for a last-seen gap. Deliberately vague - the precision is not the point.
+    ///
+    /// THE RULE IS THE CLIENTS' RULE, deliberately: truncate, and change unit at 60 seconds and at one hour.
+    /// It matches <c>reachabilityLastSeen</c> in client-core exactly, because the two now appear ON THE SAME
+    /// SCREEN - the Fleet Map's warning line is written here, and the age beside the very Director it names is
+    /// written there. They used to differ in both rounding and thresholds, so one Director could read
+    /// "last seen 32m ago" in the banner and "last seen 31m ago" in its own lane, one line apart. An age that
+    /// contradicts itself in two places is worse than a vague one: the reader stops trusting either.
+    ///
+    /// Two languages means two copies of the rule; there is no third. Keep them equal - the paired cases in
+    /// RosterCompletenessFoldTests and fleetClient's own tests pin the values where they used to diverge.
+    /// </summary>
     public static string DescribeAge(double seconds)
     {
-        if (seconds < 90) return $"{Math.Round(seconds)}s";
-        if (seconds < 5400) return $"{Math.Round(seconds / 60)}m";
-        return $"{Math.Round(seconds / 3600)}h";
+        if (seconds < 60) return $"{Math.Round(seconds)}s";
+        if (seconds < 3600) return $"{Math.Floor(seconds / 60)}m";
+        return $"{Math.Floor(seconds / 3600)}h";
     }
 }
