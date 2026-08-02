@@ -310,8 +310,8 @@ public sealed class SessionHistoryStore
     /// Erase the prompt-derived fields this database holds for the CURRENT tenant, as part of
     /// <c>DELETE /prompts</c> (the account data right, CR-3b).
     ///
-    /// THE PROMISE THIS SERVES IS THE DELETE RULE in <see cref="Prompts.PromptEndpoints"/> - four clauses,
-    /// stated once, deliberately not restated here. What follows is only what is local to THIS method.
+    /// What follows describes only what this method does. The member-facing promise is published on
+    /// /privacy and is deliberately not characterised anywhere in this codebase.
     ///
     /// What goes:
     ///

@@ -105,7 +105,7 @@ public sealed class TheDeletionBoundaryGuardsTests : IDisposable
     /// summariser happened to read it. This drives the real summariser inside exactly that window.
     /// </summary>
     [Fact]
-    public async Task A_summariser_reading_the_still_present_file_after_the_stamp_cannot_write_its_summary()
+    public async Task A_summariser_reading_the_still_present_file_after_the_stamp_does_not_write_its_summary()
     {
         var store = new SessionHistoryStore(_harness.Open());
         var log = new GatewayPromptLog(_promptDir, tenant => store.PromptErasureWatermarkUtc(tenant));
@@ -201,6 +201,12 @@ public sealed class TheDeletionBoundaryGuardsTests : IDisposable
         // ...and it is unreachable.
         Assert.Empty(store.ReadRollups(day, day));
 
+        // ...and the NEXT erasure removes it from the table, which is what makes the retention bounded
+        // rather than permanent. The name says "never served"; this is the half that says "and not kept".
+        store.ErasePromptDerived();
+        using (var raw = db.CreateContext())
+            Assert.Empty(raw.SessionHistoryRollups.AsNoTracking().ToList());
+
         // Control: a paragraph whose material is newer than the erasure IS served.
         store.SaveRollup("thefrederiksen/devthrottle", day, "A later paragraph.", "hash2", 0,
             DateTime.UtcNow, DateTime.UtcNow.AddSeconds(1));
@@ -281,7 +287,7 @@ public sealed class TheDeletionBoundaryGuardsTests : IDisposable
     /// re-pushed claiming it started a minute from now.
     /// </summary>
     [Fact]
-    public void A_director_claiming_a_future_start_cannot_get_a_pre_erasure_session_sealed()
+    public void A_director_claiming_a_future_start_does_not_get_a_pre_erasure_session_sealed()
     {
         var db = _harness.Open();
         var store = new SessionHistoryStore(db);
@@ -310,7 +316,7 @@ public sealed class TheDeletionBoundaryGuardsTests : IDisposable
     /// depended on that row still being reachable.
     /// </summary>
     [Fact]
-    public void A_failed_summarisation_from_before_the_delete_cannot_re_arm_the_metadata_it_cleared()
+    public void A_failed_summarisation_from_before_the_delete_does_not_re_arm_the_metadata_it_cleared()
     {
         var db = _harness.Open();
         var store = new SessionHistoryStore(db);

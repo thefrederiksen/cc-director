@@ -27,9 +27,8 @@ namespace CcDirector.Gateway.Data.Entities;
 /// meant to erase. A watermark that a restart forgets would let those through, and the guard would fail
 /// OPEN and silently.
 ///
-/// WHAT IT DOES NOT COVER is clause 3 of the DELETE RULE, which lives in <see cref="Prompts.PromptEndpoints"/>
-/// and is not restated here. In short: this watermark is what lets the log refuse material it can TELL is
-/// older. Read the rule for what that does and does not promise.
+/// This row is what lets the writers above compare material against a delete. What the delete promises
+/// the member is published on /privacy and is not characterised here.
 /// </summary>
 public sealed class PromptErasureWatermarkEntity : TenantScopedEntity
 {

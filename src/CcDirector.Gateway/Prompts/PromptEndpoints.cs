@@ -11,47 +11,19 @@ namespace CcDirector.Gateway.Prompts;
 /// The Gateway's prompt-log front door (issue #1551).
 ///
 /// POST /prompts - a Director pushes what it captured. GET /prompts - anyone asking for history asks
-/// here, because the Gateway already has the whole fleet's record. GET /prompts/export and
-/// DELETE /prompts - the account data rights (CR-3b, devthrottle_internal issue #1180). All are
-/// tenant-scoped; none can name another account's partition.
+/// here. GET /prompts/export and DELETE /prompts - the account data rights (CR-3b,
+/// devthrottle_internal issue #1180). All are tenant-scoped; none can name another account's partition.
 ///
-/// ==================================================================================================
-/// THE DELETE RULE. THIS IS THE ONLY PLACE IT IS STATED. Everywhere else - the store, the log, the
-/// watermark entity, the tests, /privacy and the data map - says its own local fact and POINTS HERE for
-/// the rule. Four inspection rounds found the same defect each time: a careful paragraph told the truth
-/// while a summary line, a table cell or a test name stated an absolute the code falsified. That is what
-/// happens when a rule is restated in eight places - the restatements drift, and every round found the
-/// ones the last round had not named. One statement cannot disagree with itself.
+/// WHAT THE DELETE PROMISES THE MEMBER IS NOT DESCRIBED HERE, AND MAY NOT BE. It is published on the
+/// /privacy page and that is the only statement of it. Six inspections found the same defect each time -
+/// a comment, a table cell or a test name characterising the whole guarantee in words that drifted from
+/// the others - so the rule now is structural rather than editorial: a comment describes what its own
+/// function does and nothing further. A comment that cannot make a claim about the guarantee cannot
+/// contradict it.
 ///
-/// FOUR CLAUSES. A sentence anywhere in this product about what the delete does must be one of these,
-/// or must not be written:
-///
-///  1. ON THE SERVICE SIDE IT IS IMMEDIATE AND COMPLETE IN THE ORDINARY CASE. It deletes this account's
-///     prompt-log files (the Gateway keeps no backup of them) and erases what the Gateway derived from
-///     them: the seven prompt-derived columns on <c>session_history</c>, the three summary metadata
-///     fields, and the cached daily roll-ups. Sealed summaries go with the rest - arriving through the
-///     seal route is an operation, not a provenance, so nothing establishes that a farewell was not
-///     composed from the member's own prompts.
-///
-///  2. IT IS NOT A DISTRIBUTED TRANSACTION. Work already in flight can land after it: a Director
-///     mid-delivery, a summarisation already running writing its own bookkeeping, an interrupted roll-up
-///     write leaving a paragraph that is never served and that the next delete removes. These are
-///     bounded, they settle, and none of them is a standing second copy. Closing them properly means
-///     cross-process locking and provider-specific atomicity, which is deliberately not in this work.
-///
-///  3. AFTERWARDS THE SERVICE REFUSES MATERIAL IT CAN TELL IS OLDER - records dated at or before the
-///     erasure, which is what an ordinary retry sends. It CANNOT tell when the timestamp comes from a
-///     caller whose clock is wrong: a record dated after the erasure is indistinguishable from a prompt
-///     sent a second ago and is admitted. "Material we can tell is older is refused" is the whole
-///     promise; "it cannot come back" is not.
-///
-///  4. IT DOES NOT REACH THE MEMBER'S OWN MACHINE AT ALL. The Director keeps prompt text locally in
-///     several places, and the list is OPEN rather than exhaustive - five independent searches have each
-///     found another one. Openness is not licence to omit a store already proved. Issues #2380 (bring
-///     them within the delete) and #2381 (the operational logs have no retention) track the work.
-///
-/// If the behaviour changes, THIS BLOCK changes, and everything else keeps pointing here.
-/// ==================================================================================================
+/// An earlier version of this block tried to BE the canonical statement, with every other site pointing
+/// at it. That could not work: a customer-facing privacy page cannot take its promise from a source
+/// comment, so the claim that everything pointed here was itself false.
 ///
 /// TENANT-SCOPED (issue #1848). "The whole fleet's record" means the REQUESTING ACCOUNT'S fleet. Both verbs
 /// resolve the request's tenant from the authenticated device key with the same seam the cockpit read path
@@ -149,19 +121,9 @@ public static class PromptEndpoints
             // the log first and the same failure leaves the copy orphaned - the exact state this work
             // exists to remove, and now with no source left to prove what it was.
             //
-            // See the DELETE RULE at the top of this file; this comment adds only what is local to the
-            // ordering here. A CONCURRENT INGEST IS NOT LOCKED OUT. The version of this
-            // comment before the inspection argued the window was harmless because any racing material
-            // must have been sent DURING the member's own delete. That was FALSE, and worth recording as
-            // a lesson rather than quietly deleting: the Director's ingest deliberately RETRIES records
-            // it previously failed to deliver, so a push landing here can carry prompts from weeks ago -
-            // exactly the ones the member just erased. The reasoning was comfortable and wrong, and it
-            // was reasoning about a race rather than closing one.
-            //
-            // What closes it is the erasure watermark (PromptErasureWatermarkEntity): the derived-content
-            // writers refuse material older than the delete, so an ingest arriving mid-delete or long
-            // afterwards cannot put erased words back. The prompt LOG can still accept a retried old
-            // record - that is a decision about the Director-held copies, tracked in issue #2380.
+            // Order: derived copies first, then the files. If the pair fails half way, the recoverable
+            // state is a copy whose source still exists rather than an orphan with nothing left to prove
+            // what it was.
             var erased = historyStore is null
                 ? new History.PromptDerivedErasure(0, 0)
                 : EraseDerived(historyStore, tenant.Value, tenantBoundary);

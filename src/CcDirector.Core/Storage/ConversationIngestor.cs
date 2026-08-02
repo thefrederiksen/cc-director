@@ -22,13 +22,9 @@ namespace CcDirector.Core.Storage;
 ///   and the answer is already there rather than scattered across machines; and it is what moves to the
 ///   server, so the log moves with it.
 ///
-/// The Director keeps no PROMPT-LOG copy: it does not retain the conversation record it pushes, so
-/// whatever the Gateway accepted is the record for THAT store, and an unaccepted message must not be
-/// marked done. That is a statement about this pipeline and nothing more - it was written unqualified
-/// and an inspection was right to call it false as a general claim. The Director holds prompt text in
-/// several LOCAL files: session-history snippets and turn summaries, pending and queued prompt text in
-/// sessions.json and its backup, vault handover archives, and its own operational logs. Issue #2380
-/// tracks bringing those within the member's delete; issue #2381 tracks the logs having no retention.
+/// This pipeline retains nothing: whatever the Gateway accepted is the record for THIS store, which is
+/// why an unaccepted message must not be marked done. Nothing here describes what the product as a whole
+/// keeps.
 ///
 /// Trigger: the same one TurnReviewLogger uses - a session flipping to
 /// <see cref="ActivityState.WaitingForInput"/>, i.e. our own detector deciding the agent is done and
@@ -376,11 +372,8 @@ public interface IPromptSink
 /// role + text hash - NOT a message index, because agents rewrite and compact their transcripts and an
 /// index would slide.
 ///
-/// This is a watermark, not a log: it holds hashes and never text. The Director keeps no copy of the
-/// PUSHED CONVERSATION RECORD; this only tracks what has already been handed to the Gateway, so a
-/// restart cannot re-push a whole history. (It keeps prompt text in several LOCAL files - see the
-/// DELETE RULE in the Gateway's PromptEndpoints, clause 4, and issues #2380, #2381 and #2393. The
-/// unqualified version of this sentence has now been wrong in four separate comments.)
+/// This is a watermark, not a log: it holds hashes and never text. It tracks what has already been
+/// handed to the Gateway, so a restart cannot re-push a whole history.
 ///
 /// Because the file outlives the process, every key written into it must be computable identically by
 /// the NEXT process - see <see cref="ContentHash"/>. Anything seeded per process reads as a miss after

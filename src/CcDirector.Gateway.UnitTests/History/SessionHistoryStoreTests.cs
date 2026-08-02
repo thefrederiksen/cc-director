@@ -476,7 +476,7 @@ public sealed class SessionHistoryStoreTests : IDisposable
     /// The fields are seeded through the real seal route so this is the actual shape a sealed row has.
     /// </summary>
     [Fact]
-    public void A_sealed_summary_is_erased_too_because_the_seal_route_proves_nothing_about_its_source()
+    public void A_sealed_summary_is_erased_with_the_rest()
     {
         var db = _harness.Open();
         var store = new SessionHistoryStore(db);
@@ -521,7 +521,7 @@ public sealed class SessionHistoryStoreTests : IDisposable
     /// to get wrong, and the endpoint path is proved over HTTP in TheDeletionBoundaryGuardsTests.
     /// </summary>
     [Fact]
-    public void A_seal_is_refused_for_a_session_that_began_before_the_erasure()
+    public void A_seal_is_refused_for_a_session_the_gateway_first_saw_before_the_erasure()
     {
         var db = _harness.Open();
         var store = new SessionHistoryStore(db);
