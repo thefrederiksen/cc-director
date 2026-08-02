@@ -341,6 +341,63 @@ deliberately NEW material and so never exercised a retry at all.
 the test could not express the condition it was supposed to rule out - one process cannot show a
 two-process race, and freshly-appended material cannot show a retry.
 
+---
+
+## W2's FIFTH gate - GREEN, after the round-three rejection
+
+Seven findings, four of them boundary races between two operations. Detached, clean tree, 2026-08-02
+10:30 to 11:12. Same rig state as every previous run.
+
+| Project | Outcome | Total | vs the fourth gate | Executed | Failed | Skipped |
+|---|---|---|---|---|---|---|
+| CcDirector.Gateway.Tests | Completed | 5199 | 5194 (+5) | 5144 | 0 | 55 |
+| CcDirector.Core.Tests | Completed | 4196 | 4196 (=) | 4188 | 0 | 8 |
+| CcDirector.Avalonia.Tests | Completed | 353 | 353 (=) | 353 | 0 | 0 |
+| CcDirector.Launcher.Tests | Completed | 110 | 110 (=) | 110 | 0 | 0 |
+| CcDirector.HostedAgent.Tests | Completed | 88 | 88 (=) | 88 | 0 | 0 |
+| CcDirector.Engine.Tests | Completed | 63 | 63 (=) | 63 | 0 | 0 |
+| CcDirector.Terminal.Avalonia.Tests | Completed | 24 | 24 (=) | 24 | 0 | 0 |
+
+The +5 is four new boundary facts plus one seal fact that split from an existing one. **28 erasure facts
+EXECUTED and passed**, and nothing in the whole suite was anything other than passed or skipped.
+
+### The rebase onto `aa8a8401e`, stated exactly
+
+Rebased, NOT re-gated: the commit is one Avalonia XAML file keeping badges clear of a scrollbar, which
+this branch cannot interact with. Checked here rather than taken on trust - `git show --stat` is one file,
+and nothing outside `src/CcDirector.Avalonia/`.
+
+```
+git merge-base --is-ancestor aa8a8401e HEAD                    ->  yes
+git diff --name-only <gated tip> <rebased tip>                 ->  ToolsView.axaml, and nothing else
+git diff <gated tip> <rebased tip> -- src/ scripts/ tools/
+        ':(exclude)...ToolsView.axaml'                         ->  EMPTY
+grep -rl ToolsView --include=*.cs src/*.Tests/                 ->  no test source references it
+```
+
+**So the difference between the tree that was measured and the tree that lands is one XAML file that no
+test in the gated set can reach.** That is a weaker statement than the v1.9.6 rebase, where the delta was
+a version string and a documentation page, and it is written out rather than rounded to "no executable
+difference" - the file IS under `src/`, and saying otherwise would be the kind of convenient summary this
+mission keeps catching.
+
+### The naming rule, proved mechanically rather than by eye
+
+Round three found a prohibited assistant-family name nine times in fixtures this branch added - after
+three green gates and two inspections that each scanned for naming and passed it, because they scanned
+COMMIT MESSAGES rather than added source lines.
+
+The check that catches it, run over the ADDED lines of the full diff in both repositories:
+
+```
+git diff origin/main...HEAD | grep "^+" | grep -v "^+++" | grep -ciE '<the prohibited set>'
+```
+
+Result: **0** in `devthrottle` and **0** in `devthrottle_internal`, added lines and commit messages, case
+sensitive and insensitive. **And the detector was validated before its zero was believed**: fed the exact
+line that was there, it returns 1. A zero from an unvalidated pattern proves the grep ran, not that the
+branch is clean - which is precisely how the earlier scans passed.
+
 ### Two commits on this branch post-date their gate, both comment-only
 
 `d73e5d2e3` (the concurrent-ingest window) and `2c751cf77` / `c379c02c8` after the rebase (why the three
