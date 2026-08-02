@@ -90,13 +90,25 @@ public sealed class GatewayDatabase : IDisposable
     /// </summary>
     internal static string WithBoundedPool(string connectionString, int maxPoolSize)
     {
-        var builder = new NpgsqlConnectionStringBuilder(connectionString);
-        // Both spellings are accepted in a connection string; Npgsql canonicalises on parse, but ask for
-        // both rather than depending on which form the operator wrote.
-        if (builder.ContainsKey("Maximum Pool Size") || builder.ContainsKey("MaxPoolSize"))
-            return connectionString;
-        builder.MaxPoolSize = maxPoolSize;
-        return builder.ConnectionString;
+        // "Did the operator state a pool size?" must be asked of the RAW string, not of the Npgsql
+        // builder. NpgsqlConnectionStringBuilder pre-populates every keyword it knows with that
+        // keyword's default, so ContainsKey("Maximum Pool Size") is TRUE even for a connection string
+        // that never mentions pooling - which quietly turned this entire cap into a no-op. Its own test
+        // caught that (expected 10, got Npgsql's default 100); this is the repair.
+        //
+        // A plain DbConnectionStringBuilder holds ONLY the keys the string actually carries, so it can
+        // answer the question honestly. Npgsql accepts both spellings and ignores spaces, so both are
+        // checked with spacing and underscores removed.
+        var stated = new System.Data.Common.DbConnectionStringBuilder { ConnectionString = connectionString };
+        foreach (string key in stated.Keys)
+        {
+            var normalised = key.Replace(" ", "").Replace("_", "");
+            if (normalised.Equals("maximumpoolsize", StringComparison.OrdinalIgnoreCase)
+                || normalised.Equals("maxpoolsize", StringComparison.OrdinalIgnoreCase))
+                return connectionString;
+        }
+
+        return new NpgsqlConnectionStringBuilder(connectionString) { MaxPoolSize = maxPoolSize }.ConnectionString;
     }
 
     /// <summary>
