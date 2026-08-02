@@ -271,13 +271,26 @@ public sealed class SessionHistoryStore
         }
     }
 
-    /// <summary>Set the first-prompt description source, once. Later prompts never overwrite it.</summary>
-    public void SetFirstPrompt(string sessionId, string line)
+    /// <summary>
+    /// Set the first-prompt description source, once. Later prompts never overwrite it.
+    ///
+    /// <paramref name="promptSentAtUtc"/> is WHEN THE MEMBER SENT THE PROMPT, not when this call happens,
+    /// and a prompt sent before an erasure is refused. The two differ by more than microseconds: the
+    /// Director's ingest deliberately retries records it previously failed to deliver, so a push arriving
+    /// today can carry prompts from last week - including the ones the member just asked to erase.
+    /// Comparing the moment of writing would let exactly those through.
+    /// </summary>
+    public void SetFirstPrompt(string sessionId, string line, DateTime promptSentAtUtc)
     {
         if (string.IsNullOrWhiteSpace(line)) return;
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
+            if (ErasedSince(ctx, promptSentAtUtc))
+            {
+                FileLog.Write($"[SessionHistoryStore] SetFirstPrompt REFUSED (prompt predates this account's erasure): session={sessionId}");
+                return;
+            }
             var entity = ctx.SessionHistory.FirstOrDefault(e => e.SessionId == sessionId);
             if (entity is null || !string.IsNullOrEmpty(entity.FirstPromptLine)) return;
             entity.FirstPromptLine = line;
@@ -349,8 +362,41 @@ public sealed class SessionHistoryStore
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            return EraseWithin(ctx);
+            var erased = EraseWithin(ctx);
+            StampErasureWatermark(ctx);
+            return erased;
         }
+    }
+
+    /// <summary>
+    /// Record that this tenant has erased, so the prompt-derived writers can refuse material older than
+    /// this moment. See <see cref="PromptErasureWatermarkEntity"/> for why the erasure is not finished
+    /// without it.
+    ///
+    /// STAMPED AFTER the clears, not before. A writer racing the statements above is caught either way,
+    /// because its material predates every one of them. Stamping first would additionally refuse a writer
+    /// whose material was read in the microseconds AFTER the stamp and BEFORE the clear - a write that is
+    /// resurrecting nothing, because the clear had not happened when it read.
+    ///
+    /// Kept out of <see cref="EraseWithin"/> deliberately: that method exists so a test can capture the
+    /// SQL of the BULK statements, which are the ones that can reach many rows and therefore the ones
+    /// whose tenant predicate has to be proved. This row is keyed BY the tenant, so it cannot name another
+    /// account's row even in principle - a different risk, and not one that proof is about.
+    /// </summary>
+    private static void StampErasureWatermark(GatewayDbContext ctx)
+    {
+        var nowUtc = DateTime.UtcNow;
+        var watermark = ctx.PromptErasureWatermarks.FirstOrDefault();
+        if (watermark is null)
+        {
+            watermark = new PromptErasureWatermarkEntity { TenantId = ctx.ActiveTenant! };
+            ctx.PromptErasureWatermarks.Add(watermark);
+        }
+        // Only ever forward. A clock that stepped backwards must not lower a member's erasure line.
+        if (nowUtc > watermark.ErasedAtUtc)
+            watermark.ErasedAtUtc = nowUtc;
+        ctx.SaveChanges();
+        FileLog.Write($"[SessionHistoryStore] prompt-erasure watermark stamped: {watermark.ErasedAtUtc:O}");
     }
 
     /// <summary>
@@ -429,6 +475,34 @@ public sealed class SessionHistoryStore
     }
 
     /// <summary>
+    /// When this tenant last erased their prompt history, or null if they never have. Material older than
+    /// this must not be written into the prompt-derived fields - see <see cref="PromptErasureWatermarkEntity"/>.
+    /// </summary>
+    public DateTime? PromptErasureWatermarkUtc()
+    {
+        lock (_gate)
+        {
+            using var ctx = _db.CreateContext();
+            return ctx.PromptErasureWatermarks.AsNoTracking().FirstOrDefault()?.ErasedAtUtc;
+        }
+    }
+
+    /// <summary>
+    /// True when material read at <paramref name="materialReadAtUtc"/> predates this tenant's erasure and
+    /// must not be written back. Read on the SAME context as the write that follows it, so the check and
+    /// the write cannot straddle a context boundary.
+    ///
+    /// The comparison is "at or before", not "before": two events in the same tick cannot be ordered, and
+    /// the safe direction is to refuse. Refusing a write costs a summary that regenerates on the next
+    /// sweep; accepting one costs the member content they asked to be rid of.
+    /// </summary>
+    private static bool ErasedSince(GatewayDbContext ctx, DateTime materialReadAtUtc)
+    {
+        var erasedAtUtc = ctx.PromptErasureWatermarks.AsNoTracking().FirstOrDefault()?.ErasedAtUtc;
+        return erasedAtUtc is { } stamp && materialReadAtUtc <= stamp;
+    }
+
+    /// <summary>
     /// The session seals its own record on a clean shutdown - its account wins over anything the
     /// Gateway generated. Returns false when no row exists for the session.
     /// </summary>
@@ -479,15 +553,30 @@ public sealed class SessionHistoryStore
         }
     }
 
-    /// <summary>Store a Gateway-generated summary (or the honest "none"/"unavailable" verdicts).
-    /// Never overwrites a sealed summary - the session's own account wins.</summary>
+    /// <summary>
+    /// Store a Gateway-generated summary (or the honest "none"/"unavailable" verdicts).
+    /// Never overwrites a sealed summary - the session's own account wins.
+    ///
+    /// <paramref name="materialReadAtUtc"/> is when the summariser READ the prompt log this summary was
+    /// made from, and a summary made from material older than an erasure is refused. Summarisation takes
+    /// seconds to minutes - a model call in the middle - so a pass that began before a delete lands well
+    /// after it, and would write the member's erased words straight back. The metadata reset makes that
+    /// worse rather than better: it moves the kind to null, which is exactly the state the sealed guard
+    /// below stops refusing.
+    /// </summary>
     public void StoreGeneratedSummary(string sessionId, string summaryKind, bool isPartial, string? summaryText,
         IReadOnlyList<string>? whatWasBuilt, IReadOnlyList<string>? leftUnverified,
-        IReadOnlyList<string>? branches, IReadOnlyList<string>? pullRequests, IReadOnlyList<string>? commits)
+        IReadOnlyList<string>? branches, IReadOnlyList<string>? pullRequests, IReadOnlyList<string>? commits,
+        DateTime materialReadAtUtc)
     {
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
+            if (ErasedSince(ctx, materialReadAtUtc))
+            {
+                FileLog.Write($"[SessionHistoryStore] StoreGeneratedSummary REFUSED (material predates this account's erasure): session={sessionId}");
+                return;
+            }
             var entity = ctx.SessionHistory.FirstOrDefault(e => e.SessionId == sessionId);
             if (entity is null) return;
             if (string.Equals(entity.SummaryKind, SessionHistorySummaryKinds.Sealed, StringComparison.Ordinal))
@@ -620,12 +709,25 @@ public sealed class SessionHistoryStore
         }
     }
 
-    /// <summary>Insert or replace one cached roll-up row.</summary>
-    public void SaveRollup(string repoKey, DateTime dayUtc, string? summaryText, string inputHash, int attempts, DateTime nowUtc)
+    /// <summary>
+    /// Insert or replace one cached roll-up row.
+    ///
+    /// <paramref name="materialReadAtUtc"/> is when the inputs this paragraph was written from were read.
+    /// A roll-up pass snapshots the day's session summaries, asks a model, and saves afterwards, so one
+    /// that began before an erasure would recreate a deleted row out of pre-delete text - and the row it
+    /// recreates is the one the History page shows as prose.
+    /// </summary>
+    public void SaveRollup(string repoKey, DateTime dayUtc, string? summaryText, string inputHash, int attempts,
+        DateTime nowUtc, DateTime materialReadAtUtc)
     {
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
+            if (ErasedSince(ctx, materialReadAtUtc))
+            {
+                FileLog.Write($"[SessionHistoryStore] SaveRollup REFUSED (material predates this account's erasure): repo={repoKey} day={dayUtc:yyyy-MM-dd}");
+                return;
+            }
             var day = dayUtc.Date;
             var entity = ctx.SessionHistoryRollups.FirstOrDefault(r => r.RepoKey == repoKey && r.DayUtc == day);
             if (entity is null)

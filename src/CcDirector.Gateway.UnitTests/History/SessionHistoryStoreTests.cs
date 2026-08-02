@@ -230,7 +230,7 @@ public sealed class SessionHistoryStoreTests : IDisposable
             Branches = new[] { "feat/2194-work-history" },
         });
         store.StoreGeneratedSummary("s1", SessionHistorySummaryKinds.Generated, isPartial: true,
-            "A generated account that must not win.", null, null, null, null, null);
+            "A generated account that must not win.", null, null, null, null, null, DateTime.UtcNow);
 
         Assert.True(sealedOk);
         var row = Assert.Single(store.ReadRange(now.AddDays(-1), now.AddDays(1)));
@@ -305,8 +305,8 @@ public sealed class SessionHistoryStoreTests : IDisposable
         var now = DateTime.UtcNow;
         store.UpsertLive("dir-1", Session(name: null), now);
 
-        store.SetFirstPrompt("s1", "Read the mission brief and build the History page");
-        store.SetFirstPrompt("s1", "A later prompt that must not overwrite");
+        store.SetFirstPrompt("s1", "Read the mission brief and build the History page", DateTime.UtcNow);
+        store.SetFirstPrompt("s1", "A later prompt that must not overwrite", DateTime.UtcNow);
 
         var row = Assert.Single(store.ReadRange(now.AddDays(-1), now.AddDays(1)));
         Assert.Equal("Read the mission brief and build the History page", row.DescriptionLine);
@@ -317,8 +317,8 @@ public sealed class SessionHistoryStoreTests : IDisposable
     {
         var store = NewStore();
         var day = DateTime.UtcNow.Date;
-        store.SaveRollup("thefrederiksen/devthrottle", day, "Worked on work history.", "hash1", 0, DateTime.UtcNow);
-        store.SaveRollup("thefrederiksen/devthrottle", day, "Worked on work history, updated.", "hash2", 0, DateTime.UtcNow);
+        store.SaveRollup("thefrederiksen/devthrottle", day, "Worked on work history.", "hash1", 0, DateTime.UtcNow, DateTime.UtcNow);
+        store.SaveRollup("thefrederiksen/devthrottle", day, "Worked on work history, updated.", "hash2", 0, DateTime.UtcNow, DateTime.UtcNow);
 
         var rollup = Assert.Single(store.ReadRollups(day, day));
         Assert.Equal("Worked on work history, updated.", rollup.SummaryText);
@@ -347,13 +347,13 @@ public sealed class SessionHistoryStoreTests : IDisposable
         var store = new SessionHistoryStore(db);
         var now = DateTime.UtcNow;
         store.UpsertLive("dir-1", Session(name: null), now);
-        store.SetFirstPrompt("s1", "Erase the derived copy when the member deletes their prompts");
+        store.SetFirstPrompt("s1", "Erase the derived copy when the member deletes their prompts", DateTime.UtcNow);
         store.StoreGeneratedSummary("s1", SessionHistorySummaryKinds.Generated, isPartial: true,
             "Built the erasure and proved it.",
             new[] { "the erasure" }, new[] { "nothing yet" }, new[] { "prompt-delete-erases" },
-            new[] { "2378" }, new[] { "abc1234" });
+            new[] { "2378" }, new[] { "abc1234" }, DateTime.UtcNow);
         store.NoteSummaryFailure("s1");
-        store.SaveRollup("thefrederiksen/devthrottle", now.Date, "A paragraph made of those summaries.", "hash1", 0, now);
+        store.SaveRollup("thefrederiksen/devthrottle", now.Date, "A paragraph made of those summaries.", "hash1", 0, now, DateTime.UtcNow);
 
         // Every one of the ten fields carries something first - an erasure test over empty columns
         // proves only that null stayed null.
@@ -411,11 +411,11 @@ public sealed class SessionHistoryStoreTests : IDisposable
         var now = DateTime.UtcNow;
 
         alpha.UpsertLive("dir-1", Session(id: "alpha-1", name: null), now);
-        alpha.SetFirstPrompt("alpha-1", "alpha's own words");
-        alpha.SaveRollup("alpha/repo", now.Date, "alpha's paragraph", "h", 0, now);
+        alpha.SetFirstPrompt("alpha-1", "alpha's own words", DateTime.UtcNow);
+        alpha.SaveRollup("alpha/repo", now.Date, "alpha's paragraph", "h", 0, now, DateTime.UtcNow);
         beta.UpsertLive("dir-9", Session(id: "beta-1", name: null), now);
-        beta.SetFirstPrompt("beta-1", "beta's own words");
-        beta.SaveRollup("beta/repo", now.Date, "beta's paragraph", "h", 0, now);
+        beta.SetFirstPrompt("beta-1", "beta's own words", DateTime.UtcNow);
+        beta.SaveRollup("beta/repo", now.Date, "beta's paragraph", "h", 0, now, DateTime.UtcNow);
 
         var erased = alpha.ErasePromptDerived();
 
@@ -436,6 +436,11 @@ public sealed class SessionHistoryStoreTests : IDisposable
         Assert.Empty(alpha.ReadRollups(now.Date, now.Date));
         Assert.Equal(1, erased.SessionRows);
         Assert.Equal(1, erased.RollupRows);
+        // The erasure watermark is one account's fact too. If beta could see alpha's, beta's own
+        // summariser would start refusing writes it should make - the guard failing in the quiet
+        // direction, where nothing errors and content simply stops appearing.
+        Assert.NotNull(alpha.PromptErasureWatermarkUtc());
+        Assert.Null(beta.PromptErasureWatermarkUtc());
     }
 
     /// <summary>
@@ -449,7 +454,7 @@ public sealed class SessionHistoryStoreTests : IDisposable
         var store = NewStore();
         var now = DateTime.UtcNow;
         store.UpsertLive("dir-1", Session(name: null), now);
-        store.SetFirstPrompt("s1", "the only prompt");
+        store.SetFirstPrompt("s1", "the only prompt", DateTime.UtcNow);
 
         Assert.Equal(1, store.ErasePromptDerived().SessionRows);
 
@@ -477,7 +482,7 @@ public sealed class SessionHistoryStoreTests : IDisposable
         var store = new SessionHistoryStore(db);
         var now = DateTime.UtcNow;
         store.UpsertLive("dir-1", Session(name: null), now);
-        store.SetFirstPrompt("s1", "the member's own prompt, which goes");
+        store.SetFirstPrompt("s1", "the member's own prompt, which goes", DateTime.UtcNow);
         store.SealSummary("s1", new SealSessionSummaryRequest
         {
             Summary = "The session's own farewell, which stays.",
@@ -515,7 +520,7 @@ public sealed class SessionHistoryStoreTests : IDisposable
         var now = DateTime.UtcNow;
         store.UpsertLive("dir-1", Session(name: null), now);
         store.StoreGeneratedSummary("s1", SessionHistorySummaryKinds.Generated, isPartial: true,
-            "A generated account, read out of the prompt log.", null, null, null, null, null);
+            "A generated account, read out of the prompt log.", null, null, null, null, null, DateTime.UtcNow);
         // Put the row back in the state that has no kind, with a live attempt counter behind it.
         using (var seed = db.CreateContext())
         {
@@ -550,12 +555,12 @@ public sealed class SessionHistoryStoreTests : IDisposable
 
         // Carries both - one row, one count.
         store.UpsertLive("dir-1", Session(id: "both", name: null), now);
-        store.SetFirstPrompt("both", "a prompt");
+        store.SetFirstPrompt("both", "a prompt", DateTime.UtcNow);
         store.StoreGeneratedSummary("both", SessionHistorySummaryKinds.Generated, isPartial: false,
-            "a generated summary", null, null, null, null, null);
+            "a generated summary", null, null, null, null, null, DateTime.UtcNow);
         // Carries only a prompt line.
         store.UpsertLive("dir-1", Session(id: "prompt-only", name: null), now);
-        store.SetFirstPrompt("prompt-only", "another prompt");
+        store.SetFirstPrompt("prompt-only", "another prompt", DateTime.UtcNow);
         // Sealed, and nothing else on it: nothing to erase, so nothing to count.
         store.UpsertLive("dir-1", Session(id: "sealed-only", name: null), now);
         store.SealSummary("sealed-only", new SealSessionSummaryRequest { Summary = "a farewell" });

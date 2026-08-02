@@ -80,11 +80,16 @@ public sealed class SessionHistorySummarizer
             var isPartial = string.Equals(row.EndingKind, SessionHistoryEndings.Interrupted, StringComparison.Ordinal);
             try
             {
+                // Stamped BEFORE the read, so it is never later than the material it describes. Everything
+                // this pass writes for this row carries it, and the store refuses the write if the member
+                // erased their prompts after this moment - which is the whole point, because the model call
+                // below can take minutes and a delete can land inside it.
+                var materialReadAtUtc = DateTime.UtcNow;
                 var transcript = BuildTranscript(tenant, row);
                 if (transcript.TotalChars < MinCharsForModelCall)
                 {
                     _store.StoreGeneratedSummary(row.SessionId, SessionHistorySummaryKinds.None, isPartial,
-                        summaryText: null, null, null, null, null, null);
+                        summaryText: null, null, null, null, null, null, materialReadAtUtc);
                     settled++;
                     continue;
                 }
@@ -102,7 +107,7 @@ public sealed class SessionHistorySummarizer
 
                 _store.StoreGeneratedSummary(row.SessionId, SessionHistorySummaryKinds.Generated, isPartial,
                     parsed.Summary, parsed.WhatWasBuilt, parsed.LeftUnverified,
-                    parsed.Branches, parsed.PullRequests, parsed.Commits);
+                    parsed.Branches, parsed.PullRequests, parsed.Commits, materialReadAtUtc);
                 settled++;
             }
             catch (OperationCanceledException)
@@ -127,6 +132,11 @@ public sealed class SessionHistorySummarizer
     public async Task<int> RefreshRollupsAsync(TenantId tenant, DateTime fromDayUtc, DateTime toDayUtc,
         int maxRollups, CancellationToken ct)
     {
+        // Stamped BEFORE the inputs are read, for the same reason as the per-session pass: everything this
+        // pass saves is made of the session summaries read on the next line, and if the member erases their
+        // prompts while the model is writing the paragraph, the store refuses the save rather than
+        // recreating a deleted row out of pre-delete text.
+        var materialReadAtUtc = DateTime.UtcNow;
         var groups = RollupGroups(_store.ReadRange(fromDayUtc.Date, toDayUtc.Date.AddDays(1).AddTicks(-1)),
             fromDayUtc.Date, toDayUtc.Date);
         if (groups.Count == 0) return 0;
@@ -156,7 +166,7 @@ public sealed class SessionHistorySummarizer
                 var text = reply.Text?.Trim();
                 if (string.IsNullOrWhiteSpace(text))
                     throw new InvalidOperationException("the model returned an empty roll-up");
-                _store.SaveRollup(group.RepoKey, group.Day, text, group.InputHash, attempts, DateTime.UtcNow);
+                _store.SaveRollup(group.RepoKey, group.Day, text, group.InputHash, attempts, DateTime.UtcNow, materialReadAtUtc);
                 written++;
             }
             catch (OperationCanceledException)
@@ -166,7 +176,7 @@ public sealed class SessionHistorySummarizer
             catch (Exception ex)
             {
                 FileLog.Write($"[SessionHistorySummarizer] roll-up FAILED for {group.RepoKey} {group.Day:yyyy-MM-dd}: {ex.Message}");
-                _store.SaveRollup(group.RepoKey, group.Day, summaryText: null, group.InputHash, attempts + 1, DateTime.UtcNow);
+                _store.SaveRollup(group.RepoKey, group.Day, summaryText: null, group.InputHash, attempts + 1, DateTime.UtcNow, materialReadAtUtc);
                 written++;
             }
         }

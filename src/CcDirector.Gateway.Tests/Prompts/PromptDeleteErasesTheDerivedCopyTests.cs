@@ -115,7 +115,7 @@ public sealed class PromptDeleteErasesTheDerivedCopyTests : IAsyncLifetime
         Assert.Equal(TheMembersOwnWords, FirstPromptLineInTheDatabase());
         var rollupDay = DateTime.UtcNow.Date;
         _store.SaveRollup("thefrederiksen/devthrottle", rollupDay,
-            $"A day summarised from prompts including: {TheMembersOwnWords}", "hash", 0, DateTime.UtcNow);
+            $"A day summarised from prompts including: {TheMembersOwnWords}", "hash", 0, DateTime.UtcNow, DateTime.UtcNow);
 
         var del = await _client.DeleteAsync("/prompts");
 

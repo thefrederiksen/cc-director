@@ -642,6 +642,22 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.ToTable("mission_notes", (string)null);
                 });
 
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.PromptErasureWatermarkEntity", b =>
+                {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime>("ErasedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("TenantId");
+
+                    b.HasIndex("TenantId");
+
+                    b.ToTable("prompt_erasure_watermarks", (string)null);
+                });
+
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.PushSubscriptionEntity", b =>
                 {
                     b.Property<string>("TenantId")
