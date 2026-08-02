@@ -163,7 +163,34 @@ public sealed class GatewayDatabase : IDisposable
             _path = RedactConnectionTarget(pgConn!);
 
             // Bound the connection pool before anything opens it (issue #2383). See DefaultMaxPoolSize.
-            var boundedConn = WithBoundedPool(pgConn!, DefaultMaxPoolSize);
+            //
+            // INSIDE A REDACTING BOUNDARY, because this parses a credentialed string and the caller writes
+            // whatever escapes straight to disk: GatewayService.StartAsync catches every startup exception
+            // and logs ex.Message verbatim. Npgsql's parser echoes the offending KEYWORD back in its
+            // message - measured: a connection string carrying "SUPERSECRET=x" throws
+            // "Couldn't set supersecret (Parameter 'supersecret')" - so a garbled string whose credential
+            // fragment lands in keyword position puts that fragment in the log. The value position does not
+            // echo; the keyword position does, and a mangled connection string is exactly the case where a
+            // secret ends up somewhere it was never meant to be. (A case-SENSITIVE check for the leak misses
+            // it, because the keyword is lowercased on the way out. That nearly hid this.)
+            //
+            // The original exception is deliberately NOT kept as an InnerException: the whole point is that
+            // its message must not survive to be written by anything downstream. The type name is preserved
+            // in the redacted message, which is what a diagnosis actually needs.
+            string boundedConn;
+            try
+            {
+                boundedConn = WithBoundedPool(pgConn!, DefaultMaxPoolSize);
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write("[GatewayDatabase] Open FAILED: the connection string could not be parsed "
+                    + $"({ex.GetType().Name}); its text is withheld because the parser echoes part of it.");
+                throw new InvalidOperationException(
+                    $"The Gateway PostgreSQL connection string could not be parsed ({ex.GetType().Name}). " +
+                    "Its text is deliberately not reproduced here - the parser's own message can echo part of " +
+                    "the string, which may carry credentials. Check " + PostgresConnectionEnvVar + " and restart.");
+            }
 
             FileLog.Write($"[GatewayDatabase] Open: provider=Postgres target={_path}");
 
