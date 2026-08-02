@@ -130,6 +130,16 @@ public static class PromptEndpoints
             // background sweep re-derives from material the member has not yet asked to be rid of. Delete
             // the log first and the same failure leaves the copy orphaned - the exact state this work
             // exists to remove, and now with no source left to prove what it was.
+            //
+            // NOT CLOSED, and named rather than left for someone to discover: this delete is not
+            // serialized against a CONCURRENT ingest. A prompt that arrives between the erasure and the
+            // file delete can still leave a first-prompt line behind, and one arriving just after the
+            // whole delete leaves a derived line whose source file was never stored. Both windows are
+            // milliseconds wide and neither can resurrect erased content - the material is a prompt the
+            // member sent DURING their own delete, not one they asked to be rid of - so this ships as a
+            // known gap rather than a lock spanning a file store and a database. Closing it properly
+            // means the delete refusing ingest for its duration, which is the same shape as the
+            // containment race already scheduled for the next phase.
             var erased = historyStore is null
                 ? new History.PromptDerivedErasure(0, 0)
                 : EraseDerived(historyStore, tenant.Value, tenantBoundary);
