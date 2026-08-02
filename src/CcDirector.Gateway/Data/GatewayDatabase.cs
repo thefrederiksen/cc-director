@@ -56,9 +56,16 @@ public sealed class GatewayDatabase : IDisposable
     // it and does not rethrow - so on its own this retry only changes how long the container takes to
     // reach a silent, portless hang. What actually ends the process is GatewayWorker seeing the failed
     // state afterwards and exiting; see MustTerminate there. This window's only job is to ride out
-    // transient contention, and it must stay well inside the platform's 230-second start limit so it
-    // cannot delay that exit into the platform's own timeout: 90 seconds of retry plus the rest of boot
-    // leaves ample headroom, and the measured recovery case resolved in far less.
+    // transient contention, and it is INTENDED to stay well inside the platform's 230-second start limit
+    // so it does not delay that exit into the platform's own timeout: 90 seconds of retry plus the rest
+    // of boot is intended to leave headroom, and the measured recovery case resolved in far less.
+    //
+    // Intended, not guaranteed, and the difference is real. The deadline is only tested AFTER an attempt
+    // returns, so it bounds how many attempts are made and not how long one takes. An attempt runs
+    // GetPendingMigrations and Migrate synchronously, and Migrate takes a database-wide lock with no lock
+    // timeout and no command timeout (see the note further down), so a single attempt can block past both
+    // this window and the platform limit. That residual case is tracked separately as issue #2395; it is
+    // not addressed here, and nothing in this file should be read as ruling it out.
     private static readonly TimeSpan PostgresOpenRetryWindow = TimeSpan.FromSeconds(90);
     private const int PostgresOpenFirstDelayMs = 1_000;
     private const int PostgresOpenMaxDelayMs = 10_000;
