@@ -348,13 +348,21 @@ jobs:
           # 8 seconds after the swap always measured 0.0s and always missed it.
           # It is stopped at the end of this job and its log handed to the `watch` job as an artifact, which
           # resumes polling and joins the two records. See "Hand the production poll record to the watch job".
+          # SAMPLE FAST (issue #2383). The bar this deploy is judged against is a ONE-SECOND outage, and
+          # an instrument that samples once a second cannot resolve it: a gap shorter than the interval
+          # falls entirely between two samples and reads as a clean 0.0s. That is a null result being
+          # mistaken for proof, and it is the difference between "we measured no outage" and "we could
+          # not have seen one". The cadence is the sleep PLUS the request round trip plus the process
+          # spawns below, so it is not 0.1s in practice - which is exactly why the analysis step measures
+          # the ACHIEVED interval from these timestamps and prints it beside the verdict. A run that could
+          # not resolve the bar says so itself rather than presenting a confident zero.
           ( while :; do
               t=$(date +%s.%N)
-              body=$(curl -s -m 5 -w '\n%{http_code}' "${GATEWAY_URL}/healthz" 2>/dev/null || printf '\n000')
+              body=$(curl -s -m 2 -w '\n%{http_code}' "${GATEWAY_URL}/healthz" 2>/dev/null || printf '\n000')
               code=$(printf '%s' "$body" | tail -n1)
               commit=$(printf '%s' "$body" | sed '$d' | jq -r '.commit // empty' 2>/dev/null || echo "")
               echo "$t $code ${commit:-none}" >> "$LOG"
-              sleep 1
+              sleep 0.1
             done ) & POLL=$!
           echo "$POLL" > /tmp/swap-poll.pid
 
@@ -519,13 +527,21 @@ jobs:
         if: needs.deploy.outputs.readiness_outcome == 'healthy'
         run: |
           LOG=/tmp/watch-poll.log; : > "$LOG"
+          # SAMPLE FAST (issue #2383). The bar this deploy is judged against is a ONE-SECOND outage, and
+          # an instrument that samples once a second cannot resolve it: a gap shorter than the interval
+          # falls entirely between two samples and reads as a clean 0.0s. That is a null result being
+          # mistaken for proof, and it is the difference between "we measured no outage" and "we could
+          # not have seen one". The cadence is the sleep PLUS the request round trip plus the process
+          # spawns below, so it is not 0.1s in practice - which is exactly why the analysis step measures
+          # the ACHIEVED interval from these timestamps and prints it beside the verdict. A run that could
+          # not resolve the bar says so itself rather than presenting a confident zero.
           ( while :; do
               t=$(date +%s.%N)
-              body=$(curl -s -m 5 -w '\n%{http_code}' "${GATEWAY_URL}/healthz" 2>/dev/null || printf '\n000')
+              body=$(curl -s -m 2 -w '\n%{http_code}' "${GATEWAY_URL}/healthz" 2>/dev/null || printf '\n000')
               code=$(printf '%s' "$body" | tail -n1)
               commit=$(printf '%s' "$body" | sed '$d' | jq -r '.commit // empty' 2>/dev/null || echo "")
               echo "$t $code ${commit:-none}" >> "$LOG"
-              sleep 1
+              sleep 0.1
             done ) & echo "$!" > /tmp/watch-poll.pid
           echo "Watch-side poller started at $(date -u +%H:%M:%S)."
 
@@ -705,6 +721,41 @@ jobs:
 
           echo "--- site state samples ---"; cat "$STATE_LOG"
           echo "Longest unavailable stretch: ${longest}s   Total unavailable: ${total}s"
+
+          # THE INSTRUMENT'S OWN RESOLUTION, reported beside the verdict (issue #2383). A measured outage
+          # of 0.0s is a NULL result, and a null is only ever as strong as the instrument behind it: if the
+          # samples were 1.2s apart, "no gap" cannot rule out a one-second outage - which is precisely the
+          # bar this deploy is held to. So every run states the sampling interval it actually achieved, and
+          # a run too coarse to resolve the bar says so instead of presenting a confident zero.
+          #
+          # No heredoc here on purpose: a heredoc terminator has to sit at column 0, which would end this
+          # YAML block scalar early and break the whole workflow file.
+          gaps=$(awk '{ if (p != "") printf "%.4f\n", $1 - p; p = $1 }' "$LOG" | sort -n)
+          if [ -z "$gaps" ]; then
+            # Fewer than two samples means there is no interval at all. That is not a fine resolution, it
+            # is NO measurement, and it must never read as the healthy case - which is precisely the
+            # confusion this reporting exists to prevent.
+            echo "Sampling: $(wc -l < "$LOG" 2>/dev/null || echo 0) sample(s) - too few to measure an interval."
+            echo "NOTE: the availability record is UNUSABLE for judging the one-second bar. Fewer than two"
+            echo "      samples means no gap could have been observed at all."
+            echo "sample_median_interval=unmeasured" >> "$GITHUB_OUTPUT"
+            echo "sample_max_interval=unmeasured" >> "$GITHUB_OUTPUT"
+          else
+            samples=$(printf '%s\n' "$gaps" | wc -l); samples=$((samples + 1))
+            med_gap=$(printf '%s\n' "$gaps" | awk '{ a[NR] = $1 } END { printf "%.3f", a[int((NR + 1) / 2)] }')
+            max_gap=$(printf '%s\n' "$gaps" | awk 'END { printf "%.3f", $1 }')
+            echo "Sampling: ${samples} samples, median interval ${med_gap}s, worst interval ${max_gap}s"
+            echo "sample_median_interval=${med_gap}" >> "$GITHUB_OUTPUT"
+            echo "sample_max_interval=${max_gap}" >> "$GITHUB_OUTPUT"
+            if awk -v m="$max_gap" 'BEGIN { exit !(m > 1.0) }'; then
+              echo "NOTE: the worst gap between samples was ${max_gap}s, which is COARSER than the one-second"
+              echo "      bar. A 0.0s reading from this run does not rule out an outage shorter than that."
+              echo "      The join between the deploy and watch jobs is the usual reason - it is a real hole"
+              echo "      in the record, roughly ten to thirty seconds wide, and it is declared not hidden."
+            else
+              echo "Resolution is finer than the one-second bar, so a 0.0s reading is meaningful at that bar."
+            fi
+          fi
           echo "true_outage_seconds=$longest" >> "$GITHUB_OUTPUT"
           echo "total_unavailable_seconds=$total" >> "$GITHUB_OUTPUT"
           echo "site_state_left_running=${bad_state:-no}" >> "$GITHUB_OUTPUT"
