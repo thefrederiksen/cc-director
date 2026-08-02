@@ -31,17 +31,19 @@ namespace CcDirector.Gateway.Prompts;
 /// (<see cref="History.SessionHistoryStore.ErasePromptDerived"/>). Both are tenant-scoped exactly like the
 /// verbs above; neither can name another account's partition.
 ///
-/// ONE THING THE DELETE DELIBERATELY DOES NOT TOUCH: a summary a session SEALED itself. That is the
-/// session's own farewell, submitted through the seal verb and never read out of the prompt log, so it is
-/// not prompt material - and a delete that removes more than it claims is a different false claim, not a
-/// safer one. The member's first prompt line goes from a sealed row like any other; only the sealed
-/// summary stays.
+/// A SEALED SUMMARY IS ERASED WITH THE REST, and that reverses what this comment said for two rounds. The
+/// exemption rested on the seal being the session's own farewell rather than prompt material - but the seal
+/// route accepts whatever prose it is sent, with no material time and no provenance, so nothing establishes
+/// that. Arriving through the seal route is an OPERATION, not a provenance. Keeping content that MAY be the
+/// member's prompts is the worse error, and the exemption would have kept it through every later delete.
 ///
 /// THE DELETE IS TWO STORES, AND THEY HAVE DIFFERENT TRUTHS. Say them separately or one of them is a lie:
 ///
 ///  - The prompt log is FILES. The Gateway makes no backup of them, so deleting them removes DevThrottle's
-///    copy at once - final, immediate, not queued. It does not reach the Director's own local files on
-///    the member's machine (issue #2380).
+///    copy at once, and afterwards <see cref="GatewayPromptLog.Append"/> REFUSES records it can tell are
+///    older than the erasure, so a Director retrying an old batch cannot repopulate it. It does not reach
+///    the Director's own local files on the member's machine (issues #2380 and #2381), and it cannot judge
+///    a record first seen after the erasure that is dated after it.
 ///  - The derived copies are DATABASE ROWS. They are erased from the live database immediately, and they
 ///    carry the same seven-day platform backup tail that every database-stored class already discloses.
 ///
