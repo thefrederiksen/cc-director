@@ -3,6 +3,7 @@ using System;
 using CcDirector.Gateway.Stats.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 {
     [DbContext(typeof(GatewayStatsDbContext))]
-    partial class GatewayStatsDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260801170503_TenantRequiredNoDefaultAndNonEmpty")]
+    partial class TenantRequiredNoDefaultAndNonEmpty
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -58,7 +61,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.ToTable("agent_delta", "gateway_stats", t =>
                         {
-                            t.HasCheckConstraint("ck_agent_delta_tenant_not_empty", "\"tenant\" ~ '^[a-z0-9-]+$'");
+                            t.HasCheckConstraint("ck_agent_delta_tenant_not_empty", "\"tenant\" <> ''");
                         });
                 });
 
@@ -93,7 +96,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.ToTable("agent_driven_delta", "gateway_stats", t =>
                         {
-                            t.HasCheckConstraint("ck_agent_driven_delta_tenant_not_empty", "\"tenant\" ~ '^[a-z0-9-]+$'");
+                            t.HasCheckConstraint("ck_agent_driven_delta_tenant_not_empty", "\"tenant\" <> ''");
                         });
                 });
 
@@ -133,7 +136,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.ToTable("agent_driven_highwater", "gateway_stats", t =>
                         {
-                            t.HasCheckConstraint("ck_agent_driven_highwater_tenant_not_empty", "\"tenant\" ~ '^[a-z0-9-]+$'");
+                            t.HasCheckConstraint("ck_agent_driven_highwater_tenant_not_empty", "\"tenant\" <> ''");
                         });
                 });
 
@@ -166,7 +169,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.ToTable("agent_identity", "gateway_stats", t =>
                         {
-                            t.HasCheckConstraint("ck_agent_identity_tenant_not_empty", "\"tenant\" ~ '^[a-z0-9-]+$'");
+                            t.HasCheckConstraint("ck_agent_identity_tenant_not_empty", "\"tenant\" <> ''");
                         });
                 });
 
@@ -202,7 +205,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.ToTable("agents_seeded", "gateway_stats", t =>
                         {
-                            t.HasCheckConstraint("ck_agents_seeded_tenant_not_empty", "\"tenant\" ~ '^[a-z0-9-]+$'");
+                            t.HasCheckConstraint("ck_agents_seeded_tenant_not_empty", "\"tenant\" <> ''");
                         });
                 });
 
@@ -235,7 +238,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.ToTable("checkout_identity", "gateway_stats", t =>
                         {
-                            t.HasCheckConstraint("ck_checkout_identity_tenant_not_empty", "\"tenant\" ~ '^[a-z0-9-]+$'");
+                            t.HasCheckConstraint("ck_checkout_identity_tenant_not_empty", "\"tenant\" <> ''");
                         });
                 });
 
@@ -275,7 +278,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.ToTable("concurrency_hour", "gateway_stats", t =>
                         {
-                            t.HasCheckConstraint("ck_concurrency_hour_tenant_not_empty", "\"tenant\" ~ '^[a-z0-9-]+$'");
+                            t.HasCheckConstraint("ck_ConcurrencyHours_tenant_not_empty", "\"tenant\" <> ''");
                         });
                 });
 
@@ -305,7 +308,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.ToTable("concurrency_hour_member", "gateway_stats", t =>
                         {
-                            t.HasCheckConstraint("ck_concurrency_hour_member_tenant_not_empty", "\"tenant\" ~ '^[a-z0-9-]+$'");
+                            t.HasCheckConstraint("ck_ConcurrencyHourMembers_tenant_not_empty", "\"tenant\" <> ''");
                         });
                 });
 
@@ -336,7 +339,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.ToTable("concurrency_peak", "gateway_stats", t =>
                         {
-                            t.HasCheckConstraint("ck_concurrency_peak_tenant_not_empty", "\"tenant\" ~ '^[a-z0-9-]+$'");
+                            t.HasCheckConstraint("ck_ConcurrencyPeaks_tenant_not_empty", "\"tenant\" <> ''");
                         });
                 });
 
@@ -362,7 +365,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.ToTable("meta", "gateway_stats", t =>
                         {
-                            t.HasCheckConstraint("ck_meta_tenant_not_empty", "\"tenant\" ~ '^[a-z0-9-]+$'");
+                            t.HasCheckConstraint("ck_meta_tenant_not_empty", "\"tenant\" <> ''");
                         });
                 });
 
@@ -395,7 +398,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.ToTable("model_identity", "gateway_stats", t =>
                         {
-                            t.HasCheckConstraint("ck_model_identity_tenant_not_empty", "\"tenant\" ~ '^[a-z0-9-]+$'");
+                            t.HasCheckConstraint("ck_model_identity_tenant_not_empty", "\"tenant\" <> ''");
                         });
                 });
 
@@ -428,7 +431,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.ToTable("repo_identity", "gateway_stats", t =>
                         {
-                            t.HasCheckConstraint("ck_repo_identity_tenant_not_empty", "\"tenant\" ~ '^[a-z0-9-]+$'");
+                            t.HasCheckConstraint("ck_repo_identity_tenant_not_empty", "\"tenant\" <> ''");
                         });
                 });
 
@@ -494,7 +497,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.ToTable("session_highwater", "gateway_stats", t =>
                         {
-                            t.HasCheckConstraint("ck_session_highwater_tenant_not_empty", "\"tenant\" ~ '^[a-z0-9-]+$'");
+                            t.HasCheckConstraint("ck_session_highwater_tenant_not_empty", "\"tenant\" <> ''");
                         });
                 });
 
@@ -575,7 +578,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.ToTable("stat_delta", "gateway_stats", t =>
                         {
-                            t.HasCheckConstraint("ck_stat_delta_tenant_not_empty", "\"tenant\" ~ '^[a-z0-9-]+$'");
+                            t.HasCheckConstraint("ck_stat_delta_tenant_not_empty", "\"tenant\" <> ''");
                         });
                 });
 
@@ -630,7 +633,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.ToTable("token_delta", "gateway_stats", t =>
                         {
-                            t.HasCheckConstraint("ck_token_delta_tenant_not_empty", "\"tenant\" ~ '^[a-z0-9-]+$'");
+                            t.HasCheckConstraint("ck_token_delta_tenant_not_empty", "\"tenant\" <> ''");
                         });
                 });
 
@@ -686,7 +689,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.ToTable("token_highwater", "gateway_stats", t =>
                         {
-                            t.HasCheckConstraint("ck_token_highwater_tenant_not_empty", "\"tenant\" ~ '^[a-z0-9-]+$'");
+                            t.HasCheckConstraint("ck_token_highwater_tenant_not_empty", "\"tenant\" <> ''");
                         });
                 });
 
@@ -706,7 +709,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.StatsMigrations
 
                     b.ToTable("wingman_session", "gateway_stats", t =>
                         {
-                            t.HasCheckConstraint("ck_wingman_session_tenant_not_empty", "\"tenant\" ~ '^[a-z0-9-]+$'");
+                            t.HasCheckConstraint("ck_wingman_session_tenant_not_empty", "\"tenant\" <> ''");
                         });
                 });
 #pragma warning restore 612, 618

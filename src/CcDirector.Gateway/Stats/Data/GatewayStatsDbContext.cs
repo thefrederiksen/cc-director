@@ -127,6 +127,13 @@ public sealed class GatewayStatsDbContext : DbContext
     /// durability for the in-memory dedup sets, nothing else.</summary>
     public DbSet<ConcurrencyHourMemberEntity> ConcurrencyHourMembers => Set<ConcurrencyHourMemberEntity>();
 
+    /// <summary>
+    /// The check constraint name for one table's non-empty tenant guard. Named per table because a
+    /// PostgreSQL constraint name is unique within its schema, and named deterministically so a migration
+    /// and the model always agree on it.
+    /// </summary>
+    public static string TenantNotEmptyConstraint(string table) => $"ck_{table}_tenant_not_empty";
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -401,8 +408,105 @@ public sealed class GatewayStatsDbContext : DbContext
                 foreach (var property in entityType.GetProperties())
                     if (property.ClrType == typeof(string))
                         property.SetCollation("C");
+
         }
 
         ConcurrencyStatsModel.Configure(modelBuilder);
+
+        // SQLITE IS UNTOUCHED BY ALL OF THIS, exactly as it is by the block above: a self-host
+        // gateway-stats.db is already on disk carrying the tenant default, and removing it there would
+        // force a table rebuild on every existing file to buy nothing on a single-tenant install.
+        if (Database.IsNpgsql())
+        {
+            // THE TENANT GUARD IS APPLIED HERE, AFTER ConcurrencyStatsModel.Configure, AND THE ORDER IS
+            // LOAD-BEARING. It used to sit inside the PostgreSQL block above, which runs BEFORE the
+            // concurrency entities are given their table names - so entityType.GetTableName() returned the
+            // DbSet-derived default for those three, and their constraints were created as
+            // ck_ConcurrencyPeaks_tenant_not_empty rather than ck_concurrency_peak_tenant_not_empty. The
+            // constraints still guarded the right tables, so nothing was unprotected - but the name did not
+            // match what TenantNotEmptyConstraint() returns, which makes the helper wrong for those tables and
+            // would send anyone reading a violation to a constraint that does not exist under that name.
+            // Found by the migration-transition proof, which tried to drop the constraints by their computed
+            // names and could not.
+            // 3. NO TENANT DEFAULT, AND NO EMPTY TENANT. This is the multi-tenant schema, and it must not
+            //    accept a row whose owner was not stated.
+            //
+            //    THE DEFAULT stays on SQLite and goes here, and the asymmetry is the point rather than an
+            //    inconsistency. Self-host has exactly one tenant, so a "local" default there is harmless by
+            //    construction, and removing it would force a table rebuild on every statistics file already
+            //    on disk to buy nothing. On the shared hosted schema the same default is FAIL-OPEN: a writer
+            //    that omits the tenant column has its row quietly filed under Local instead of being
+            //    refused, which is silent mispartitioning of one customer's numbers into another partition.
+            //
+            //    THE CHECK CONSTRAINT closes the other half, and without it dropping the default would be
+            //    half a fix. The tenant property initialises to an empty string, so a write that forgets to
+            //    set it does not send NULL and collide with the missing default - it sends '' and is stored
+            //    as a perfectly valid value naming nobody. Unattributed is unattributed either way, so the
+            //    schema refuses both: absent (no default, NOT NULL) and empty (this constraint).
+            //
+            //    Applied to every table that HAS a tenant column, including the ones that never carried a
+            //    default, because the empty-string hole was never about the default.
+            foreach (var entityType in modelBuilder.Model.GetEntityTypes())
+            {
+                var tenant = entityType.FindProperty(nameof(Entities.StatDeltaEntity.Tenant));
+                if (tenant is null || tenant.ClrType != typeof(string)) continue;
+
+                tenant.SetDefaultValue(null);
+
+                var table = entityType.GetTableName();
+                if (table is null) continue;
+
+                // AN ALLOWLIST OF THE CHARACTERS A TENANT CAN CONTAIN - not a denylist of the ones it
+                // cannot. This is the third predicate here and the first one of the right SHAPE, and the
+                // reason the previous two failed is worth more than either of them.
+                //
+                // WHAT WENT WRONG THREE TIMES. `tenant <> ''` refused the empty string only; an inspector
+                // inserted THREE SPACES and read them back. `btrim("tenant") <> ''` closed that for
+                // SPACES, because PostgreSQL's one-argument btrim strips the space character and nothing
+                // else; a tab walked through. `"tenant" ~ '[^[:space:]]'` closed tab and newline, and an
+                // inspector then enumerated all twenty-five characters .NET calls whitespace, found FOUR
+                // that POSIX does not - U+0085, U+00A0, U+2007, U+202F - and inserted chr(160) as a real
+                // row's tenant, reading it back at length 1.
+                //
+                // Each attempt narrowed the gap and none closed it, because the shape was wrong: a denylist
+                // has to enumerate every bad value, and we were trying to mirror .NET's idea of whitespace
+                // with a different engine's idea of it. Those two sets do not agree and Unicode keeps
+                // supplying more members. An allowlist inverts the burden - every whitespace spelling,
+                // including ones nobody has thought of yet, is refused as a SIDE EFFECT of not being an
+                // allowed character.
+                //
+                // THE DERIVATION, from the code rather than from assumption. A tenant is not free text; it
+                // is a minted value with exactly three provenances:
+                //   - TenantId.Local  = "local"                    (self-host, and the column default)
+                //   - TenantId.System = "system"                   (reserved, hosted non-account rows)
+                //   - a real account  = Guid.NewGuid().ToString()  (TenantRegistry.MintOrLookupBySubject)
+                // The only other production construction is SkillStore's library partition, which is
+                // whichever of Local or System was ambient, so it adds no new spelling. The union of
+                // characters across all three is lower-case letters, digits and the hyphen, and .NET's
+                // Guid "D" format is lower-case hex with hyphens, so nothing minted can fall outside it.
+                //
+                // The pattern is anchored at both ends, so it constrains EVERY character rather than
+                // asserting that one acceptable character exists somewhere - the mistake the previous
+                // version made in miniature.
+                //
+                // THIS IS DELIBERATELY NARROWER THAN TenantId, AND IF YOU ARE READING THIS BECAUSE OF A
+                // CONSTRAINT VIOLATION, START HERE. TenantId only TRIMS its input - it does not lower-case
+                // it and it does not restrict the character set - so `new TenantId("Alice")` is a perfectly
+                // legal tenant that this column will REFUSE. That gap is intentional and was accepted with
+                // its eyes open, on three grounds: no production path can produce such a value (the four
+                // construction sites are Local, System, the Guid mint, and SkillStore's library partition,
+                // and every one of them yields lower-case); the failure mode is LOUD and lands at
+                // development time as a named constraint violation on insert, never as silent
+                // mispartitioning or a wrong-tenant read; and the alternative - matching TenantId exactly -
+                // is the denylist that failed three times.
+                //
+                // So a violation here does NOT mean the schema is broken. It means a writer used a tenant
+                // spelling production has never produced. Fix the caller if the value came from a test or a
+                // new code path that should be minting properly; widen this pattern only if a real
+                // production mint has started producing a spelling it excludes - and if you widen it, widen
+                // the allowlist, never soften it back into "not whitespace".
+                entityType.AddCheckConstraint(TenantNotEmptyConstraint(table), "\"tenant\" ~ '^[a-z0-9-]+$'");
+            }
+        }
     }
 }

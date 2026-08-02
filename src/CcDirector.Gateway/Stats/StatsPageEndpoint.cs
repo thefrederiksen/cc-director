@@ -119,14 +119,27 @@ public static class StatsPageEndpoint
     /// compose onto it). The hosted deny is gone: the data route serves the caller's own tenant's totals and
     /// answers 403 when no tenant resolves.
     /// </summary>
+    /// <summary>Convenience for callers that already hold a settled aggregator - the self-host probe hosts
+    /// and the unit tests. Production passes the handle, because on hosted the answer can change.</summary>
     public static RouteGroupBuilder Map(IEndpointRouteBuilder outer, GatewayInputStatsAggregator aggregator,
+        Tenancy.HostedTenantBoundary tenantBoundary,
+        ISessionConcurrencyRecorder? concurrency = null,
+        Settings.TenantSettingsResolver? tenantSettings = null,
+        History.SessionHistoryStore? sessionHistory = null) =>
+        Map(outer, InputStatsHandle.Available(aggregator), tenantBoundary, () => concurrency, tenantSettings,
+            sessionHistory);
+
+    public static RouteGroupBuilder Map(IEndpointRouteBuilder outer, InputStatsHandle statistics,
         // The tenant boundary the data route resolves the CALLER's tenant through. REQUIRED AND NON-NULLABLE
         // (finding I1-01), and moved AHEAD of the optional tail so it cannot sit in a defaulted position: a
         // forgotten boundary must be a compile error, never a silent default. Self-host callers construct it
         // over the SingleTenantContext, which always resolves the single Local tenant; on hosted it resolves
         // the authenticated device key's tenant and the route answers 403 when there is none - never Local.
         Tenancy.HostedTenantBoundary tenantBoundary,
-        GatewaySessionConcurrencyStats? concurrency = null,
+        // A FUNCTION, not an instance, for the same reason the handle replaced the aggregator above: on
+        // hosted the recorder arrives when the statistics store publishes its factory, which may be after
+        // startup. Capturing the instance here would freeze that decision a third time.
+        Func<ISessionConcurrencyRecorder?> concurrency,
         // Issue #2017: the per-tenant settings resolver. The display time zone is read for the caller's tenant
         // (TimeZone(tenant)) instead of the process-global config. Null (older callers, tests) keeps the global
         // read, byte-identical to before.
@@ -144,6 +157,16 @@ public static class StatsPageEndpoint
 
         app.MapGet("/stats/data", (HttpContext ctx) =>
         {
+            // ASKED PER REQUEST. On hosted this can be null now and non-null in a moment, when a statistics
+            // store that opened past the startup deadline publishes its factory. The named 503 is what the
+            // route answers meanwhile - never a vanished route, which reads as a broken deploy, and never a
+            // 200 carrying somebody else's partition.
+            var aggregator = statistics.Aggregator;
+            if (aggregator is null)
+                return Results.Json(
+                    new { available = false, reason = statistics.UnavailableReason ?? "Statistics are unavailable." },
+                    statusCode: 503);
+
             // Serve the CALLER's own tenant's totals (the aggregator is tenant-partitioned, MTR-08). On the
             // hosted Gateway the tenant comes from the authenticated device key; a request with no bound tenant
             // is refused (403), NEVER served the Local partition. On self-host the sole tenant is Local.
@@ -168,7 +191,7 @@ public static class StatsPageEndpoint
                 wingman = aggregator.WingmanUsage(tenant),
                 // DevThrottle Stats: fleet concurrency (both series: live loaded/running, and actively
                 // working). Null until the aggregator is wired (old callers / tests).
-                concurrency = concurrency?.Snapshot(DateTime.UtcNow, tenant),
+                concurrency = concurrency()?.Snapshot(DateTime.UtcNow, tenant),
                 // DevThrottle Stats (private Repos page): the per-repository all-time tally, ranked
                 // most-driven first, so the owner can see where development actually happens. Same
                 // owner-only auth as the rest of this feed; rendered on a SEPARATE page from Your Throttle
@@ -217,7 +240,12 @@ public static class StatsPageEndpoint
         // Your Throttle page outside the Cockpit shell. Anyone still opening /stats lands on the
         // real page. A temporary (302) redirect on purpose - browsers do not cache it, so the
         // destination can change without stranding old bookmarks.
-        app.MapGet("/stats", () => Results.Redirect("/your-throttle"));
+        // The page rides the same per-request availability gate as the feed. Redirecting a caller to a
+        // Cockpit page whose feed cannot serve is a dead end, so while there is no aggregator this answers
+        // the named 503 in plain text - and it starts redirecting the moment there is one.
+        app.MapGet("/stats", () => statistics.Aggregator is null
+            ? Results.Text(statistics.UnavailableReason ?? "Statistics are unavailable.", "text/plain", statusCode: 503)
+            : Results.Redirect("/your-throttle"));
 
         return app;
     }

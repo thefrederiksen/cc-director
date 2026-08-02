@@ -20,26 +20,55 @@ namespace CcDirector.Gateway.Stats;
 /// </summary>
 public sealed class InputStatsHandle
 {
-    private InputStatsHandle(GatewayInputStatsAggregator? aggregator, string? unavailableReason)
+    // The settled answer, for the two fixed states. Null in the deferred state, where the answer is asked
+    // for rather than stored - see Deferred below.
+    private readonly GatewayInputStatsAggregator? _settledAggregator;
+    private readonly string? _settledReason;
+    private readonly LateStatsObservers? _late;
+
+    private InputStatsHandle(GatewayInputStatsAggregator? aggregator, string? unavailableReason,
+        LateStatsObservers? late)
     {
-        Aggregator = aggregator;
-        UnavailableReason = unavailableReason;
+        _settledAggregator = aggregator;
+        _settledReason = unavailableReason;
+        _late = late;
     }
 
-    /// <summary>The aggregator, or null when statistics are unavailable.</summary>
-    public GatewayInputStatsAggregator? Aggregator { get; }
+    /// <summary>
+    /// The aggregator, or null when statistics are unavailable.
+    ///
+    /// READ IT EVERY TIME; DO NOT CACHE THE RESULT IN A FIELD. In the deferred state this is a question,
+    /// not a stored value: a hosted store whose PostgreSQL open ran past the startup deadline publishes its
+    /// factory later, and this property is where that late arrival becomes visible. A caller that reads it
+    /// once at construction and keeps the answer reintroduces exactly the defect the deferred state exists
+    /// to fix.
+    /// </summary>
+    public GatewayInputStatsAggregator? Aggregator => _late is not null ? _late.Aggregator : _settledAggregator;
 
     /// <summary>Why there is no aggregator, or null when there is one. Operator-facing, credential-free.</summary>
-    public string? UnavailableReason { get; }
+    public string? UnavailableReason => _late is not null
+        ? (_late.Aggregator is null ? _late.Reason : null)
+        : _settledReason;
 
-    /// <summary>Whether statistics are being recorded and served.</summary>
+    /// <summary>Whether statistics are being recorded and served. Re-asked on every call, like
+    /// <see cref="Aggregator"/>.</summary>
     public bool IsAvailable => Aggregator is not null;
 
     /// <summary>Statistics are available, on this aggregator.</summary>
     public static InputStatsHandle Available(GatewayInputStatsAggregator aggregator) =>
-        new(aggregator, null);
+        new(aggregator, null, null);
 
-    /// <summary>Statistics are unavailable, for this named reason.</summary>
+    /// <summary>Statistics are unavailable, for this named reason, and that will not change while this
+    /// process runs - a self-host file that could not be opened, or a hosted deployment with no statistics
+    /// connection configured at all.</summary>
     public static InputStatsHandle Unavailable(string reason) =>
-        new(null, reason);
+        new(null, reason, null);
+
+    /// <summary>
+    /// The answer is NOT YET KNOWN and must be asked for each time. Used on hosted, where the statistics
+    /// store is allowed to publish its context factory after the startup deadline has passed; see
+    /// <see cref="LateStatsObservers"/> for why freezing the answer at construction was a defect.
+    /// </summary>
+    public static InputStatsHandle Deferred(LateStatsObservers late) =>
+        new(null, null, late ?? throw new ArgumentNullException(nameof(late)));
 }

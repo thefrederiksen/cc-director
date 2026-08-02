@@ -140,10 +140,14 @@ public sealed class NoSqliteOnHostedArchitectureTests
                   .Any(c => c.Contains("HostedSqliteGuard::EnsureNotHosted", StringComparison.Ordinal))),
 
         ["GatewayInputStatsAggregator"] = new(
-            "Reads and writes through the connection GatewayStatsDatabase already opened; it opens none of " +
-            "its own. It is gated exactly as well as that store is: the store's constructor refuses on " +
-            "hosted, so this type can never be handed a connection there - and GatewayHost.OpenInputStats " +
-            "additionally never constructs it on hosted at all.",
+            "Two constructors, one SQLite reach. The SELF-HOST constructor reads and writes through the " +
+            "connection GatewayStatsDatabase already opened and opens none of its own, so it is gated " +
+            "exactly as well as that store is: the store's constructor refuses on hosted, so this type can " +
+            "never be handed a connection there. The HOSTED constructor (issue #1174) takes " +
+            "GatewayStatsStore's context factory and touches no connection at all - which is why " +
+            "GatewayHost.OpenInputStats DOES now construct this type on hosted, over PostgreSQL. Note that " +
+            "this entry's earlier reason said the opposite - that it was never constructed on hosted - and " +
+            "that clause was retired WITH the wiring rather than left to be read as still true.",
             ConditionKind.RequiresToStayTrue,
             "It still obtains its connection FROM GatewayStatsDatabase (the runtime-guarded opener) and " +
             "still opens none of its own.",
