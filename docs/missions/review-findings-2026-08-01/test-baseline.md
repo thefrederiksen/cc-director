@@ -263,6 +263,45 @@ git merge-base --is-ancestor 546998b53 HEAD                  ->  yes
 The rebased tree was also built once, because `Directory.Build.props` is a build input and a malformed
 one would break the build without any test being involved.
 
+---
+
+## W2's THIRD gate - GREEN, after the inspection rejection
+
+The inspection rejected W2 with four findings, one of them a correctness defect (an erasure could be
+undone by a writer that started before it). Fixing it added a table, a migration for each provider, a
+guard in three writers, and five facts, so the second gate stopped describing the branch and a third run
+was owed. Detached, clean tree, 2026-08-02 00:59 to 02:24. Same rig state as the other two runs.
+
+| Project | Outcome | Total | vs the second gate | Executed | Failed | Skipped |
+|---|---|---|---|---|---|---|
+| CcDirector.Gateway.Tests | Completed | 5186 | 5181 (+5, the five race facts) | 5131 | 0 | 55 |
+| CcDirector.Core.Tests | Completed | 4196 | 4196 (=) | 4188 | 0 | 8 |
+| CcDirector.Avalonia.Tests | Completed | 353 | 353 (=) | 353 | 0 | 0 |
+| CcDirector.Launcher.Tests | Completed | 110 | 110 (=) | 110 | 0 | 0 |
+| CcDirector.HostedAgent.Tests | Completed | 88 | 88 (=) | 88 | 0 | 0 |
+| CcDirector.Engine.Tests | Completed | 63 | 63 (=) | 63 | 0 | 0 |
+| CcDirector.Terminal.Avalonia.Tests | Completed | 24 | 24 (=) | 24 | 0 | 0 |
+
+**All FIFTEEN W2 facts EXECUTED and passed**, read from the TRX by name, and no result in the whole suite
+was anything other than Passed or skipped. `origin/main` is an ancestor of the tip, so no rebase was owed
+this round.
+
+**The Gateway suite took 1 hour 23 minutes** against a typical nine, because a release worktree and other
+work were competing for the machine. Two processor readings a minute apart showed it working throughout.
+That is the fourth time this week elapsed time alone would have called a healthy run hung.
+
+### The new facts are CONCURRENT, which is why the previous two gates could be green over a real defect
+
+Every W2 fact before this round was sequential, and all ten stayed green while a delete could be undone
+seconds after it succeeded. The defect was not subtle once seen - a summarisation in flight writes the
+prompt-derived fields back, and the metadata reset is what re-arms it - but no sequential fact can see it,
+because it needs two things happening at once.
+
+The fact that catches it holds a REAL summarisation open across a REAL delete: the model call blocks on a
+completion source until the erasure has run, then releases. With the guard removed it fails with the
+member's erased summary back in the column. **A test that cannot express the timing cannot fail on it, and
+a suite full of such tests reads exactly like a suite that has checked.**
+
 ### Two commits on this branch post-date their gate, both comment-only
 
 `d73e5d2e3` (the concurrent-ingest window) and `2c751cf77` / `c379c02c8` after the rebase (why the three
