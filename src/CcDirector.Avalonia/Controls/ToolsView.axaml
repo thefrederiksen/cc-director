@@ -121,7 +121,11 @@
                     </ListBox.Styles>
                     <ListBox.ItemTemplate>
                         <DataTemplate>
-                            <Grid ColumnDefinitions="*,Auto" Margin="10,7">
+                            <!-- The right margin is a gutter for the scrollbar. This app keeps
+                                 scrollbars visible at all times (App.axaml) and Avalonia paints
+                                 the bar OVER the content, so a row that runs to its own edge puts
+                                 the status badge underneath the bar. -->
+                            <Grid ColumnDefinitions="*,Auto" Margin="10,7,20,7">
                                 <StackPanel Grid.Column="0">
                                     <TextBlock Text="{Binding Name}" Foreground="#DDDDDD"
                                                FontSize="13" FontWeight="Medium" />
@@ -183,7 +187,10 @@
 
                         <!-- Overview -->
                         <TabItem Header="Overview">
-                            <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,10,0,0">
+                            <!-- Padding, not Margin: it insets the CONTENT from the always-visible
+                                 scrollbar, which is painted over the content area. -->
+                            <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,10,0,0"
+                                          Padding="0,0,20,0">
                                 <StackPanel Spacing="10">
                                     <TextBlock x:Name="DetailDescription" Text="" Foreground="#CCCCCC"
                                                FontSize="13" TextWrapping="Wrap" />
@@ -227,7 +234,8 @@
 
                         <!-- Tests -->
                         <TabItem Header="Tests">
-                            <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,10,0,0">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,10,0,0"
+                                          Padding="0,0,20,0">
                                 <StackPanel Spacing="6">
                                     <TextBlock x:Name="TestsHint" Foreground="#777777" FontSize="11"
                                                Text="Click Run Tests to execute the read-only health checks." />
@@ -254,7 +262,8 @@
 
                         <!-- Skills -->
                         <TabItem Header="Skills">
-                            <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,10,0,0">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,10,0,0"
+                                          Padding="0,0,20,0">
                                 <StackPanel Spacing="6">
                                     <TextBlock Foreground="#777777" FontSize="11"
                                                Text="Claude Code skills that drive or use this tool." />
