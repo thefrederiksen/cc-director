@@ -169,7 +169,6 @@ public sealed class SessionHistoryRecorder
     {
         try
         {
-            var receivedAtUtc = DateTime.UtcNow;
             foreach (var group in records.Where(r => string.Equals(r.Role, "user", StringComparison.OrdinalIgnoreCase)
                                                      && !string.IsNullOrEmpty(r.SessionId))
                                           .GroupBy(r => r.SessionId, StringComparer.Ordinal))
@@ -178,14 +177,13 @@ public sealed class SessionHistoryRecorder
                 if (_firstPromptHandled.ContainsKey(memoKey)) continue;
                 var first = group.OrderBy(r => r.TsUtc).First();
                 var line = SessionHistoryFold.FirstPromptLine(first.Text);
-                // The PROMPT'S OWN timestamp CLAMPED to when we received it, not now. Ingest retries
-                // records it previously failed to deliver, so this can be an old prompt arriving late -
-                // possibly one the member has since erased - and the Director's clock is not ours to
-                // trust. The same clamp the prompt log applies at the door, for the same reason and by
-                // the same rule, so the two cannot disagree about how old a record is.
+                // The PROMPT'S OWN claimed timestamp, judged by the SAME rule the prompt log applies at
+                // the door, so the two cannot disagree about how old a record is. Ingest retries records
+                // it previously failed to deliver, so this can be an old prompt arriving late - possibly
+                // one the member has since erased - and the store refuses it in that case.
                 if (line is not null)
                     _store.SetFirstPrompt(group.Key, line,
-                        Prompts.GatewayPromptLog.MaterialTimeUtc(first, receivedAtUtc));
+                        Prompts.GatewayPromptLog.ClaimedMaterialTimeUtc(first));
                 _firstPromptHandled[memoKey] = 1;
             }
         }

@@ -159,13 +159,43 @@ public sealed class GatewayPromptLog
     }
 
     /// <summary>
-    /// When a record's material came into existence, as far as this Gateway can honestly tell: the
-    /// Director's own timestamp, CLAMPED to when we received it. The clamp only ever moves a time
-    /// BACKWARDS, so it cannot refuse a legitimate record - it removes the one direction a wrong clock
-    /// could exploit, which is stamping old material into the future to walk it past an erasure.
+    /// The time the CALLER claims this record's material dates from - used for the admission decision, and
+    /// deliberately NOT clamped.
+    ///
+    /// This replaces a <c>min(TsUtc, receivedAt)</c> clamp and a comment claiming the clamp "cannot refuse
+    /// anything legitimate". That claim was FALSE and the inspection was right to say so: min() keeps the
+    /// caller's value whenever it is the older one, so a Director whose clock runs BEHIND has its genuinely
+    /// new prompts dated into the past and refused.
+    ///
+    /// The honest position, stated rather than engineered around: the only evidence the Gateway has about
+    /// whether material existed before an erasure is what the caller says about it, and neither direction
+    /// of a wrong clock can be corrected from here.
+    ///
+    ///  - A caller claiming its material is OLD is believed, because that claim is against its interest and
+    ///    refusing is the direction that cannot resurrect anything. A clock running behind therefore loses
+    ///    prompts from the log until it is corrected. Nothing is destroyed: the prompt is still on the
+    ///    member's machine, the refusal is logged with a count, and a corrected clock re-delivers.
+    ///  - A caller claiming its material is NEW is admitted, and a clock running ahead can therefore walk an
+    ///    old retried record past an erasure. That is the limit named in the wording and in
+    ///    <see cref="PromptErasureWatermarkEntity"/>, and it is why the Director-side erasure exists as
+    ///    separate work.
+    ///
+    /// The receipt time is still used - for the FILE DAY (see <see cref="FileDayUtc"/>) and by the derived
+    /// writers - because those are decisions about OUR storage rather than about the member's history.
     /// </summary>
-    public static DateTime MaterialTimeUtc(PromptRecord record, DateTime receivedAtUtc)
-        => record.TsUtc < receivedAtUtc ? record.TsUtc : receivedAtUtc;
+    public static DateTime ClaimedMaterialTimeUtc(PromptRecord record) => record.TsUtc;
+
+    /// <summary>
+    /// Which daily file a record lands in: its own day, CLAMPED to our receipt day.
+    ///
+    /// Retention deletes by the date parsed out of the file NAME, so an unclamped caller timestamp a year in
+    /// the future produces a file that survives a year past the published maximum - the caller choosing our
+    /// retention. Clamping only ever pulls a future-dated file back to today; a record honestly dated in the
+    /// past keeps its own day, so ranged reads over past days are unchanged and its file ages out earlier
+    /// rather than later.
+    /// </summary>
+    public static DateTime FileDayUtc(PromptRecord record, DateTime receivedAtUtc)
+        => record.TsUtc.Date < receivedAtUtc.Date ? record.TsUtc.Date : receivedAtUtc.Date;
 
     /// <summary>The daily file a message at <paramref name="utcNow"/> lands in, for one tenant.</summary>
     public string FileFor(TenantId tenant, DateTime utcNow)
@@ -201,28 +231,40 @@ public sealed class GatewayPromptLog
         try
         {
             var receivedAtUtc = DateTime.UtcNow;
-            var erasedAtUtc = _erasureWatermarkUtc?.Invoke(tenant);
-            if (erasedAtUtc is { } erased)
+            var kept = records as IReadOnlyList<PromptRecord> ?? records.ToList();
+
+            // THE WHOLE DECIDE-AND-WRITE SEQUENCE IS INSIDE THE TENANT'S GATE, and so is DeleteAll. That is
+            // the round-three correction: the watermark used to be read outside the gate and the append made
+            // separately, so a delete could stamp and remove the files between the two and the old batch
+            // landed afterwards. Inside one gate the two orders are the only ones possible, and both are
+            // safe - either this append completes first and the delete that follows removes what it wrote,
+            // or the delete completes first and the watermark read below refuses the batch.
+            lock (gate)
             {
-                var all = records as IReadOnlyCollection<PromptRecord> ?? records.ToList();
-                var kept = all.Where(r => MaterialTimeUtc(r, receivedAtUtc) > erased).ToList();
-                if (kept.Count != all.Count)
-                    FileLog.Write($"[GatewayPromptLog] Append REFUSED {all.Count - kept.Count} record(s) older than this account's erasure: tenant={tenant.ToLogString()}");
-                if (kept.Count == 0) return 0;
-                records = kept;
-            }
-            // Group by day so a batch spanning midnight (or a backfill spanning months) lands in the
-            // right daily files rather than all in today's.
-            foreach (var day in records.GroupBy(r => r.TsUtc.Date))
-            {
-                var lines = day.Select(r => JsonSerializer.Serialize(r, JsonOpts)).ToList();
-                var path = FileFor(tenant, day.Key);
-                lock (gate)
+                var erasedAtUtc = _erasureWatermarkUtc?.Invoke(tenant);
+                if (erasedAtUtc is { } erased)
                 {
+                    var admitted = kept.Where(r => ClaimedMaterialTimeUtc(r) > erased).ToList();
+                    if (admitted.Count != kept.Count)
+                        FileLog.Write($"[GatewayPromptLog] Append REFUSED {kept.Count - admitted.Count} record(s) dated at or before this account's erasure: tenant={tenant.ToLogString()}");
+                    if (admitted.Count == 0) return 0;
+                    kept = admitted;
+                }
+
+                // Group by day so a batch spanning midnight (or a backfill spanning months) lands in the
+                // right daily files rather than all in today's - but the day is CLAMPED to our own receipt
+                // date. Retention deletes by the date in the file NAME, so a caller timestamp far in the
+                // future would otherwise create a file that ages out long after the published maximum. The
+                // clamp only pulls such a file back to today; an honestly past-dated record still lands in
+                // its own day and is still swept on time.
+                foreach (var day in kept.GroupBy(r => FileDayUtc(r, receivedAtUtc)))
+                {
+                    var lines = day.Select(r => JsonSerializer.Serialize(r, JsonOpts)).ToList();
+                    var path = FileFor(tenant, day.Key);
                     Directory.CreateDirectory(directory);
                     File.AppendAllLines(path, lines);
+                    written += lines.Count;
                 }
-                written += lines.Count;
             }
         }
         catch (Exception ex)

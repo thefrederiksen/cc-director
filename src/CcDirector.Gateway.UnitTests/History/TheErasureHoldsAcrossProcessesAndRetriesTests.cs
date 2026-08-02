@@ -273,53 +273,75 @@ public sealed class TheErasureHoldsAcrossProcessesAndRetriesTests : IDisposable
     }
 
     /// <summary>
-    /// A Director clock running AHEAD must not be able to walk material past an erasure that happened
-    /// after the Gateway received it. The record here is received BEFORE the delete and stamped an hour
-    /// into the future: judged by the Director's claim it beats the watermark and is admitted, which is
-    /// the trick; judged by the Gateway's own receipt time it does not. The clamp only ever moves a time
-    /// backwards, so it cannot refuse anything legitimate - the acceptance control above still passes.
+    /// Admission is decided on the time the CALLER CLAIMS the material dates from, unclamped - and this
+    /// fact pins the cost of that, because the previous version of this code clamped to receipt time and
+    /// carried a comment claiming the clamp "cannot refuse anything legitimate". That was false: a clamp to
+    /// the OLDER of the two values keeps a slow clock's mistake, so a Director running behind has genuinely
+    /// new prompts dated into the past and REFUSED.
+    ///
+    /// The behaviour is kept, because believing a caller that says its material is old is the direction
+    /// that cannot resurrect anything - but it is a real cost and it is asserted here rather than described
+    /// as impossible. Nothing is destroyed: the prompt is still on the member's machine and a corrected
+    /// clock re-delivers.
     /// </summary>
     [Fact]
-    public void A_fast_director_clock_cannot_walk_material_the_gateway_already_had_past_the_erasure()
+    public void A_slow_clock_gets_its_new_prompts_refused_which_is_the_accepted_cost_of_believing_the_caller()
     {
         var store = new SessionHistoryStore(_harness.Open());
-        var receivedAtUtc = DateTime.UtcNow;
-        var skewed = Record(receivedAtUtc.AddHours(1), TheMembersOwnWords);
-        store.UpsertLive("dir-1", Session(), receivedAtUtc);
-
-        // What the Gateway judges this record by: its own receipt time, not the Director's claim.
-        var material = GatewayPromptLog.MaterialTimeUtc(skewed, receivedAtUtc);
-        Assert.Equal(receivedAtUtc, material);
-        Assert.True(skewed.TsUtc > material, "the unclamped claim is what would have beaten the watermark");
-
+        var log = new GatewayPromptLog(_promptDir, tenant => store.PromptErasureWatermarkUtc(tenant));
+        store.UpsertLive("dir-1", Session(), DateTime.UtcNow);
         store.ErasePromptDerived();
 
-        store.SetFirstPrompt("s1", TheMembersOwnWords, material);
-        using (var ctx = _harness.Open().CreateContext())
-            Assert.Null(ctx.SessionHistory.AsNoTracking().Single(e => e.SessionId == "s1").FirstPromptLine);
+        // Sent a moment ago by the member; the Director's clock is an hour behind, so it is dated before
+        // the erasure that has just happened.
+        var slow = Record(DateTime.UtcNow.AddHours(-1), "A prompt the member sent AFTER the delete");
 
-        // And the unclamped value is exactly what would have got through, which is why the clamp is the
-        // fix rather than a tidy-up. Asserted so that removing the clamp fails this fact rather than
-        // quietly widening the door.
-        store.SetFirstPrompt("s1", TheMembersOwnWords, skewed.TsUtc);
-        using (var ctx = _harness.Open().CreateContext())
-            Assert.Equal(TheMembersOwnWords,
-                ctx.SessionHistory.AsNoTracking().Single(e => e.SessionId == "s1").FirstPromptLine);
+        Assert.Equal(0, log.Append(TenantId.Local, new[] { slow }));
+        Assert.Empty(log.ReadAll(TenantId.Local));
     }
 
     /// <summary>
-    /// WHAT THE CLAMP DOES NOT DECIDE, pinned so nobody mistakes it for covered. A record the Gateway
-    /// receives for the FIRST time after an erasure, carrying a timestamp after that erasure, is accepted -
-    /// because the Gateway has no evidence distinguishing it from a prompt the member sent a second ago.
-    /// A Director whose clock runs ahead and retries an old record produces exactly that shape.
-    ///
-    /// This is not a defect in the clamp; it is the limit of what a receiving service can know about
-    /// material it did not see the first time. Closing it means the Director honouring the delete rather
-    /// than retrying at all - issue #2380 - and the customer-facing wording says the service refuses
-    /// material it can tell is older, not that resurrection is impossible.
+    /// A far-future caller timestamp must not choose our retention. Retention deletes by the date in the
+    /// FILE NAME, so an unclamped future date would create a file that ages out long after the published
+    /// ninety-day maximum - the caller setting our policy. The file day is clamped to our receipt day; a
+    /// record honestly dated in the past keeps its own day and is swept earlier, not later.
     /// </summary>
     [Fact]
-    public void A_record_first_seen_after_the_erasure_and_dated_after_it_is_accepted_and_that_is_the_known_limit()
+    public void A_future_dated_record_lands_in_todays_file_so_retention_still_reaches_it()
+    {
+        var log = new GatewayPromptLog(_promptDir);
+        var receivedAtUtc = DateTime.UtcNow;
+        var future = Record(receivedAtUtc.AddDays(400), "A prompt claiming to be from next year");
+        var past = Record(receivedAtUtc.AddDays(-3), "A prompt honestly from three days ago");
+
+        Assert.Equal(receivedAtUtc.Date, GatewayPromptLog.FileDayUtc(future, receivedAtUtc));
+        Assert.Equal(past.TsUtc.Date, GatewayPromptLog.FileDayUtc(past, receivedAtUtc));
+
+        log.Append(TenantId.Local, new[] { future, past });
+
+        var files = Directory.GetFiles(_promptDir, "conversation-*.jsonl", SearchOption.AllDirectories)
+            .Select(Path.GetFileName)
+            .Distinct()
+            .OrderBy(f => f)
+            .ToList();
+        Assert.Contains($"conversation-{receivedAtUtc:yyyyMMdd}.jsonl", files);
+        Assert.Contains($"conversation-{past.TsUtc:yyyyMMdd}.jsonl", files);
+        Assert.DoesNotContain($"conversation-{future.TsUtc:yyyyMMdd}.jsonl", files);
+    }
+
+    /// <summary>
+    /// WHAT THE ADMISSION RULE DOES NOT DECIDE, pinned so nobody mistakes it for covered. A record dated
+    /// AFTER an erasure is accepted, because the Gateway has no evidence distinguishing it from a prompt
+    /// the member sent a second ago - it keeps no ledger of what it has seen before. A Director whose clock
+    /// runs ahead and retries an old record produces exactly that shape.
+    ///
+    /// This is the limit of what a receiving service can know about material it did not see the first time.
+    /// Closing it means the Director honouring the delete rather than retrying at all - issue #2380 - and
+    /// the customer-facing wording says the service refuses material it can TELL is older rather than
+    /// claiming resurrection is impossible.
+    /// </summary>
+    [Fact]
+    public void A_record_dated_after_the_erasure_is_accepted_and_that_is_the_known_limit()
     {
         var store = new SessionHistoryStore(_harness.Open());
         var log = new GatewayPromptLog(_promptDir, tenant => store.PromptErasureWatermarkUtc(tenant));

@@ -903,6 +903,9 @@ namespace CcDirector.Gateway.Data.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<DateTime>("MaterialReadAtUtc")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("SummaryText")
                         .HasColumnType("TEXT");
 

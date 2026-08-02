@@ -105,12 +105,12 @@ public static class HistoryEndpoints
 
             using (EnterScope(tenant.Value, tenantBoundary))
             {
-                // The seal request carries no material time - it is caller-supplied prose with no
-                // provenance at all - so the Gateway's own RECEIPT time is the material time. A seal that
-                // arrives after an erasure is material this Gateway first saw after the erasure, and
-                // refusing it is the safe direction: the alternative accepts text that may be the very
-                // prompts the member just deleted.
-                var sealedOk = store.SealSummary(sessionId, request, DateTime.UtcNow);
+                // No material time is passed, and that is the fix for the round-three finding rather than
+                // an omission: this endpoint had nothing to supply but the ARRIVAL moment, which is always
+                // newer than an erasure that already happened - so the guard admitted every seal after
+                // every delete. The store now compares the watermark against the SESSION'S OWN START,
+                // which no caller can influence.
+                var sealedOk = store.SealSummary(sessionId, request);
                 if (!sealedOk)
                     return Results.NotFound(new { error = "no history record for that session, or this account erased since" });
                 FileLog.Write($"[HistoryEndpoints] summary sealed: tenant={tenant.Value.ToLogString()}, session={sessionId}");

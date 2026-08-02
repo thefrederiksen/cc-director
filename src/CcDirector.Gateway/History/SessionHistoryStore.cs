@@ -494,21 +494,28 @@ public sealed class SessionHistoryStore
 
     /// <summary>
     /// The session seals its own record on a clean shutdown - its account wins over anything the Gateway
-    /// generated. Returns false when no row exists for the session, or when this account has erased since
-    /// the seal's material could have been gathered.
+    /// generated. Returns false when no row exists, or when this account erased at or after the point the
+    /// sealed material could only have come from.
     ///
-    /// THIS ROUTE CARRIES NO PROVENANCE, which is why it is watermarked like the others and why sealed rows
-    /// are no longer exempt from the erasure. It accepts caller-supplied prose and all five lists with no
-    /// material time at all; nothing here establishes the text did not come from the member's prompts.
-    /// Without the watermark, a seal composed before a delete could land after it and repopulate every
-    /// summary column - and the old exemption would then have preserved it through every later delete.
+    /// THE MATERIAL TIME IS THE ROW'S OWN <see cref="SessionHistoryEntity.StartedAtUtc"/>, and NO CALLER
+    /// SUPPLIES IT. That is a correction: the previous version took a material time as an argument, and the
+    /// endpoint - having nothing better - substituted the moment the request ARRIVED. Arrival time is always
+    /// newer than an erasure that already happened, so every seal was admitted after every delete, including
+    /// a seal composed from the conversation the member had just erased. A parameter that the only real
+    /// caller can fill in only with "now" is not a guard; it is a guard-shaped hole, and the test that
+    /// covered it passed a backdated value the endpoint never produces.
     ///
-    /// <paramref name="materialTimeUtc"/> is the caller's best statement of when the sealed material was
-    /// gathered, clamped by the caller to the Gateway's receipt time. The seal request carries no such
-    /// field, so the route supplies receipt time: a seal that arrives after an erasure is material the
-    /// Gateway first saw after the erasure, and refusing it is the safe direction.
+    /// So the comparison uses the oldest moment the seal's material could date from: the session's own
+    /// start. A seal carries no provenance (that is why sealed rows are erased at all), so the safe bound is
+    /// the WHOLE life of the session it describes. The consequence, stated rather than discovered: a session
+    /// that began before an erasure can never seal afterwards. That is the correct side to err on - the
+    /// member has just erased the prompts that session's farewell would be written from - and a session
+    /// started after the erasure seals normally.
+    ///
+    /// Being a per-row comparison, it is also one statement with no parameter to spoof, no clock to skew,
+    /// and nothing for a caller to get wrong.
     /// </summary>
-    public bool SealSummary(string sessionId, SealSessionSummaryRequest request, DateTime materialTimeUtc)
+    public bool SealSummary(string sessionId, SealSessionSummaryRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
         if (string.IsNullOrWhiteSpace(request.Summary))
@@ -525,7 +532,7 @@ public sealed class SessionHistoryStore
             using var ctx = _db.CreateContext();
             var written = ctx.SessionHistory
                 .Where(e => e.SessionId == sessionId
-                            && !ctx.PromptErasureWatermarks.Any(w => w.ErasedAtUtc >= materialTimeUtc))
+                            && !ctx.PromptErasureWatermarks.Any(w => w.ErasedAtUtc >= e.StartedAtUtc))
                 .ExecuteUpdate(s => s
                     .SetProperty(e => e.SummaryKind, SessionHistorySummaryKinds.Sealed)
                     .SetProperty(e => e.SummaryIsPartial, false)
@@ -540,7 +547,7 @@ public sealed class SessionHistoryStore
                 FileLog.Write($"[SessionHistoryStore] summary sealed by the session: session={sessionId}");
                 return true;
             }
-            FileLog.Write($"[SessionHistoryStore] seal not stored (no row, or erased since): session={sessionId}");
+            FileLog.Write($"[SessionHistoryStore] seal not stored (no row, or this account erased after the session began): session={sessionId}");
             return false;
         }
     }
@@ -724,8 +731,14 @@ public sealed class SessionHistoryStore
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
+            // NEVER SERVE A PARAGRAPH WHOSE MATERIAL PREDATES THE ACCOUNT'S ERASURE. The insert path cannot
+            // be one conditional statement (an INSERT carries no WHERE portably), so a paragraph computed
+            // before a delete can land after it and its compensating delete can be interrupted. This
+            // predicate is what makes that orphan harmless rather than merely rare: it is unreachable from
+            // the moment it exists, and the next erasure or the retention prune removes it.
             return ctx.SessionHistoryRollups.AsNoTracking()
-                .Where(r => r.DayUtc >= fromDayUtc.Date && r.DayUtc <= toDayUtc.Date)
+                .Where(r => r.DayUtc >= fromDayUtc.Date && r.DayUtc <= toDayUtc.Date
+                            && !ctx.PromptErasureWatermarks.Any(w => w.ErasedAtUtc >= r.MaterialReadAtUtc))
                 .ToList();
         }
     }
@@ -764,7 +777,8 @@ public sealed class SessionHistoryStore
                     .SetProperty(r => r.SummaryText, text)
                     .SetProperty(r => r.InputHash, inputHash)
                     .SetProperty(r => r.Attempts, attempts)
-                    .SetProperty(r => r.ComputedAtUtc, nowUtc));
+                    .SetProperty(r => r.ComputedAtUtc, nowUtc)
+                    .SetProperty(r => r.MaterialReadAtUtc, materialReadAtUtc));
             if (updated > 0) return;
 
             if (ctx.SessionHistoryRollups.Any(r => r.RepoKey == repoKey && r.DayUtc == day))
@@ -784,6 +798,7 @@ public sealed class SessionHistoryStore
                 InputHash = inputHash,
                 Attempts = attempts,
                 ComputedAtUtc = nowUtc,
+                MaterialReadAtUtc = materialReadAtUtc,
             });
             ctx.SaveChanges();
 

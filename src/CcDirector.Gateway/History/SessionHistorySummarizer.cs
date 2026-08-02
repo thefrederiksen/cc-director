@@ -80,12 +80,17 @@ public sealed class SessionHistorySummarizer
             var isPartial = string.Equals(row.EndingKind, SessionHistoryEndings.Interrupted, StringComparison.Ordinal);
             try
             {
-                // Stamped BEFORE the read, so it is never later than the material it describes. Everything
-                // this pass writes for this row carries it, and the store refuses the write if the member
-                // erased their prompts after this moment - which is the whole point, because the model call
-                // below can take minutes and a delete can land inside it.
-                var materialReadAtUtc = DateTime.UtcNow;
+                // The moment this pass STARTED, kept only as the upper bound for a transcript that turns
+                // out to be empty - there is no material to date in that case, and "now" is the honest
+                // stand-in for a write that carries no member content at all.
+                var passStartedUtc = DateTime.UtcNow;
                 var transcript = BuildTranscript(tenant, row);
+                // THE AGE OF THE MATERIAL, not the moment it was read. A read time is honestly recent even
+                // when every record behind it is pre-delete, which is exactly how an erased summary came
+                // back: erase stamps and clears, the files are deleted a moment later, and a summariser
+                // starting inside that gap reads the still-present old records. The store refuses this
+                // write when the account erased at or after the OLDEST record it is made of.
+                var materialReadAtUtc = transcript.OldestMaterialUtc ?? passStartedUtc;
                 if (transcript.TotalChars < MinCharsForModelCall)
                 {
                     _store.StoreGeneratedSummary(row.SessionId, SessionHistorySummaryKinds.None, isPartial,
@@ -225,7 +230,18 @@ public sealed class SessionHistorySummarizer
 
     // ----- prompts and parsing -----
 
-    private sealed record Transcript(string Text, int TotalChars);
+    /// <summary>
+    /// A session's transcript, plus <paramref name="OldestMaterialUtc"/> - the timestamp of the OLDEST record
+    /// it is made of, or null when it is made of nothing.
+    ///
+    /// That field is the round-three correction. The summariser used to carry the moment it READ the log,
+    /// and a read time says nothing about the age of what was read: a summariser that starts after an
+    /// erasure has stamped but before the prompt FILES are deleted reads pre-delete records and stamps an
+    /// honestly recent time, so its summary was accepted and the erased words came back after the request
+    /// had already returned success. Judging by the oldest record closes it, because that value moves with
+    /// the material rather than with the clock.
+    /// </summary>
+    private sealed record Transcript(string Text, int TotalChars, DateTime? OldestMaterialUtc);
 
     private Transcript BuildTranscript(TenantId tenant, SessionHistoryEntity row)
     {
@@ -238,6 +254,9 @@ public sealed class SessionHistorySummarizer
             .Where(r => string.Equals(r.SessionId, row.SessionId, StringComparison.OrdinalIgnoreCase))
             .OrderBy(r => r.TsUtc)
             .ToList();
+        // The OLDEST record decides, not the newest and not the clock: a summary made of ten fresh records
+        // and one pre-delete record still contains the pre-delete one.
+        DateTime? oldestMaterialUtc = records.Count == 0 ? null : records[0].TsUtc;
 
         var sb = new StringBuilder();
         foreach (var r in records)
@@ -248,13 +267,13 @@ public sealed class SessionHistorySummarizer
         }
         var full = sb.ToString();
         if (full.Length <= MaxTranscriptChars)
-            return new Transcript(full, full.Length);
+            return new Transcript(full, full.Length, oldestMaterialUtc);
 
         // Keep the opening (what was asked) and the tail (how it ended); elide the middle loudly.
         const int head = MaxTranscriptChars / 3;
         var tail = MaxTranscriptChars - head;
         var elided = full[..head] + "\n\n[... transcript elided for length ...]\n\n" + full[^tail..];
-        return new Transcript(elided, full.Length);
+        return new Transcript(elided, full.Length, oldestMaterialUtc);
     }
 
     private static string SessionPrompt(SessionHistoryEntity row, string transcript)

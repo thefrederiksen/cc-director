@@ -228,7 +228,7 @@ public sealed class SessionHistoryStoreTests : IDisposable
             WhatWasBuilt = new[] { "History page" },
             LeftUnverified = new[] { "kill-survival proof" },
             Branches = new[] { "feat/2194-work-history" },
-        }, DateTime.UtcNow);
+        });
         store.StoreGeneratedSummary("s1", SessionHistorySummaryKinds.Generated, isPartial: true,
             "A generated account that must not win.", null, null, null, null, null, DateTime.UtcNow);
 
@@ -244,7 +244,7 @@ public sealed class SessionHistoryStoreTests : IDisposable
     [Fact]
     public void Sealing_an_unknown_session_reports_not_found()
     {
-        Assert.False(NewStore().SealSummary("ghost", new SealSessionSummaryRequest { Summary = "x" }, DateTime.UtcNow));
+        Assert.False(NewStore().SealSummary("ghost", new SealSessionSummaryRequest { Summary = "x" }));
     }
 
     [Fact]
@@ -491,7 +491,7 @@ public sealed class SessionHistoryStoreTests : IDisposable
             Branches = new[] { "prompt-delete-erases" },
             PullRequests = new[] { "2379" },
             Commits = new[] { "abc1234" },
-        }, DateTime.UtcNow));
+        }));
 
         var erased = store.ErasePromptDerived();
 
@@ -511,33 +511,36 @@ public sealed class SessionHistoryStoreTests : IDisposable
     }
 
     /// <summary>
-    /// A seal prepared before a delete must not land after it. The seal request carries no material time,
-    /// so the route supplies the Gateway's receipt time and the store refuses anything at or before the
-    /// erasure - and the refusal is reported to the caller rather than swallowed.
+    /// A seal is judged by the SESSION'S OWN START, and no caller supplies a time. A session that began
+    /// before an erasure can never seal afterwards - its farewell would be written from the conversation
+    /// the member has just erased - and a session that began after it seals normally.
+    ///
+    /// The previous version of this fact passed a backdated material time straight to the store. That value
+    /// was cooperative: the real endpoint could only ever supply the ARRIVAL moment, which has the opposite
+    /// sign, so the test passed while every seal was admitted after every delete. There is now no parameter
+    /// to get wrong, and the endpoint path is proved over HTTP in TheDeletionBoundaryRacesAreClosedTests.
     /// </summary>
     [Fact]
-    public void A_seal_arriving_after_a_delete_is_refused()
+    public void A_seal_is_refused_for_a_session_that_began_before_the_erasure()
     {
         var db = _harness.Open();
         var store = new SessionHistoryStore(db);
-        var now = DateTime.UtcNow;
-        store.UpsertLive("dir-1", Session(name: null), now);
+        var before = DateTime.UtcNow.AddHours(-2);
+        store.UpsertLive("dir-1", Session(id: "older", name: null, createdAt: before), before);
 
         store.ErasePromptDerived();
 
-        // The seal was composed before the delete; it reaches the Gateway after it.
-        var accepted = store.SealSummary("s1", new SealSessionSummaryRequest
+        Assert.False(store.SealSummary("older", new SealSessionSummaryRequest
         {
-            Summary = "Composed before the delete, delivered after it.",
-        }, now.AddMinutes(-1));
+            Summary = "Composed from the conversation the member just erased.",
+        }));
+        using (var ctx = db.CreateContext())
+            Assert.Null(ctx.SessionHistory.AsNoTracking().Single(e => e.SessionId == "older").SummaryText);
 
-        Assert.False(accepted);
-        using var ctx = db.CreateContext();
-        Assert.Null(ctx.SessionHistory.AsNoTracking().Single(e => e.SessionId == "s1").SummaryText);
-
-        // Control: a seal whose material the Gateway saw after the delete is the session's to record.
-        Assert.True(store.SealSummary("s1", new SealSessionSummaryRequest { Summary = "After." },
-            DateTime.UtcNow.AddSeconds(1)));
+        // Control: a session that started AFTER the erasure seals normally.
+        store.UpsertLive("dir-1", Session(id: "newer", name: null, createdAt: DateTime.UtcNow.AddSeconds(1)),
+            DateTime.UtcNow);
+        Assert.True(store.SealSummary("newer", new SealSessionSummaryRequest { Summary = "After." }));
     }
 
     /// <summary>
