@@ -23,6 +23,14 @@ namespace CcDirector.Gateway.Api;
 
 internal static class GatewayEndpoints
 {
+    /// <summary>
+    /// Web-shaped options for the few places this file has to READ a JSON body a Director produced. The
+    /// Director serializes verb results web-shaped (camelCase), so a default-cased reader would silently
+    /// deserialize every property to null - a body that parsed and said nothing, which is worse than one
+    /// that failed.
+    /// </summary>
+    private static readonly JsonSerializerOptions JsonWeb = new(JsonSerializerDefaults.Web);
+
     /// <param name="onSessionState">Issue #186: receives every session-state observation
     /// (doorbell ping or heartbeat snapshot entry) as (directorId, sessionId, newState).
     /// The host feeds these to the turn-end watcher (voice auto-refresh, issue #549).</param>
@@ -1824,6 +1832,218 @@ internal static class GatewayEndpoints
                 return Results.StatusCode(StatusCodes.Status502BadGateway);
             return Results.Content(body, "application/json");
         });
+
+        // Issue #2387: attach a session that ALREADY EXISTS to a Mission - or DETACH it. Sessions could only
+        // ever be attached in the instant they were spawned (`session spawn --mission`), so a Mission could
+        // only group work somebody planned in advance, which is the work that least needs grouping. The case
+        // that found this was a release push that grew from one seat to about a dozen over a day: every one of
+        // them was the same body of work and not one was foreseeable at spawn.
+        //
+        // THE TENANT GATE, and it is the whole reason this route is written out longhand rather than folded in
+        // beside /role. Missions are TENANT-SCOPED (devthrottle_internal issue #1039): a mission NAME is free
+        // text a person typed - customer and project names - and a shared hosted store once served every
+        // account's list to every account. This route is a WRITE that names a mission by id, so it must not
+        // become the way back in. It follows GET /missions/{mid} exactly:
+        //   1. Resolve the CALLER's own tenant from the authenticated device key, server-side. A request that
+        //      binds to no tenant is REFUSED (403) - never served the Local partition.
+        //   2. Resolve the mission INSIDE that tenant. Another account's mission id resolves to nothing, and
+        //      "someone else owns it" answers identically to "nobody has it", so the id cannot even be probed.
+        //   3. Only then locate the session, which is itself tenant-scoped by LocateSessionForRequestAsync.
+        // The mission is resolved BEFORE the session on purpose: the refusal is then a property of the tenant
+        // gate alone, and cannot be confused with (or accidentally satisfied by) a Director being offline.
+        //
+        // The Gateway sends the RESOLVED NAME down with the id, so the Director stamps the attachment directly
+        // instead of consulting its own local mission store - which is a different set and would reject a
+        // mission that is real and owned (the failure #1548 fixed on the spawn path).
+        if (missions is not null)
+        {
+            app.MapPost("/sessions/{sid}/mission", async (HttpContext ctx, string sid, SetMissionRequest req, CancellationToken ct) =>
+            {
+                var tenant = ResolveReadTenant(ctx, tenantBoundary);
+                if (tenant is null)
+                {
+                    FileLog.Write($"[GatewayEndpoints] POST /sessions/{sid}/mission DENIED - no tenant is bound to this request");
+                    return Results.Json(new { error = "no tenant is bound to this request" },
+                        statusCode: StatusCodes.Status403Forbidden);
+                }
+
+                // Null/absent mission id DETACHES. Nothing to resolve, and nothing to leak.
+                var payload = new SetMissionRequest { MissionId = req?.MissionId };
+                if (req?.MissionId is Guid missionId)
+                {
+                    var mission = missions.Get(tenant.Value, missionId);
+                    if (mission is null)
+                    {
+                        FileLog.Write($"[GatewayEndpoints] POST /sessions/{sid}/mission: mission {missionId} is unknown to this tenant");
+                        return Results.BadRequest(new
+                        {
+                            error = $"unknown mission '{missionId}'. List the missions with: cc-devthrottle mission list",
+                        });
+                    }
+                    payload.MissionName = mission.MissionName;
+                }
+
+                var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
+                if (session is null || director is null)
+                    return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
+
+                // ===== THE SEAT MOVES WITH THE MISSION =====
+                //
+                // A Mission is not only a record - it is also a RUN of the built-in "mission" workflow, and a
+                // mission-scoped spawn seats the session on that run and records it in the run's participant
+                // ledger. The seat is what pins the CONDUCT the agent was told to follow. So changing only the
+                // mission link would leave a session DISPLAYED under one mission while GOVERNED by the one it
+                // left, taking its conduct from a mission it is no longer in - and it would do that in exactly
+                // the case this feature was built for. The seat therefore moves here, in the same call.
+                //
+                // THE RULE, and its one exception:
+                //  * A seat that IS a run of the mission being left BELONGS to that mission, and follows it.
+                //  * A seat the caller chose independently (spawned with an explicit --workflow-run that is
+                //    not this mission's run) was never the mission's to take, and is PRESERVED untouched.
+                //  * A session with no seat at all has nothing to preserve, so it simply gains the
+                //    destination mission's seat.
+                //
+                // This decision is made HERE and nowhere else. Whether a run belongs to a mission is a fact
+                // about the run store, which only the Gateway holds; a Director asked to decide it would have
+                // to guess. The Director is sent a finished answer (MoveSeat plus the run to sit on) and
+                // applies it in the same verb as the mission, so the two can never land apart.
+                //
+                // The session facts below are read from the located DTO, which is FRESH by construction: a
+                // session whose Director has not pushed inside the freshness window is answered 503 by
+                // SessionUnavailable above rather than served, so this is a current read and not a snapshot
+                // of unknown age.
+                //
+                // ON THE RUN STORE AND TENANCY, because it looks like a hole and is not. The run store is not
+                // itself partitioned by tenant, so both lookups below reach it by a bare id. Neither id is
+                // caller-supplied: the destination is a mission this route has ALREADY resolved inside the
+                // caller's own tenant, and the held run comes off the session DTO, which the tenant-scoped
+                // locator produced. A caller therefore cannot steer either lookup at a run it does not own.
+                // That the store would answer a foreign id if one reached it is a pre-existing property of
+                // that store and is not made reachable here.
+                var currentRunId = session.WorkflowRunId;
+                var seatIsTheMissions = true;   // no seat -> nothing to preserve
+                if (currentRunId is Guid heldRun)
+                {
+                    // Does the run the session sits on belong to the mission it is in? Only then is it the
+                    // mission's seat. A run whose MissionId does not match (or a run that has since been
+                    // removed) is treated as the caller's own and left alone - the conservative direction:
+                    // preserving a seat we are unsure about is recoverable, silently discarding one is not.
+                    var heldRunRecord = workflowRuns?.Get(heldRun);
+                    seatIsTheMissions = heldRunRecord?.MissionId is Guid ownerMission
+                        && session.MissionId is Guid currentMission
+                        && ownerMission == currentMission;
+                }
+
+                Guid? previousRunId = null;
+                string? seatNote = null;
+                if (seatIsTheMissions)
+                {
+                    previousRunId = currentRunId;
+                    payload.MoveSeat = true;
+                    // The destination mission's run, or none when detaching or when the mission is UNGOVERNED
+                    // (created while the owner had the mission workflow switched off). A mission with no run
+                    // seats nobody, so the session correctly ends up unseated rather than keeping the old seat.
+                    if (payload.MissionId is Guid destination && workflowRuns is not null)
+                    {
+                        var destinationRun = workflowRuns.List(missionId: destination, limit: 1).FirstOrDefault();
+                        if (destinationRun is not null && destinationRun.WorkflowEnabled)
+                        {
+                            payload.WorkflowRunId = destinationRun.Id;
+                            payload.WorkflowId = destinationRun.WorkflowId;
+                            payload.WorkflowVersion = destinationRun.WorkflowVersion;
+                        }
+                        else if (destinationRun is not null)
+                        {
+                            // The owner switched this workflow OFF. The spawn path already refuses to seat
+                            // onto a disabled workflow; a move must not sneak a seat in through the side door.
+                            FileLog.Write($"[GatewayEndpoints] POST /sessions/{sid}/mission: mission {destination}'s " +
+                                          $"workflow is OFF - the session moves UNSEATED");
+                            seatNote = "The destination mission's workflow is switched off, so the session "
+                                     + "moved with no workflow seat and is governed by no conduct.";
+                        }
+                        else
+                        {
+                            seatNote = "The destination mission has no workflow run of its own, so the session "
+                                     + "moved with no workflow seat.";
+                        }
+                    }
+                }
+                else
+                {
+                    FileLog.Write($"[GatewayEndpoints] POST /sessions/{sid}/mission: session {sid} sits on run " +
+                                  $"{currentRunId} which is not its mission's run - the seat is the caller's own and is PRESERVED");
+                    seatNote = "The session's workflow seat was left alone: it sits on a run that is not this "
+                             + "mission's, so the seat was never the mission's to move.";
+                }
+
+                FileLog.Write($"[GatewayEndpoints] POST /sessions/{sid}/mission: mission={payload.MissionId?.ToString() ?? "(detach)"} " +
+                              $"moveSeat={payload.MoveSeat} run={payload.WorkflowRunId?.ToString() ?? "(none)"} director={director.DirectorId}");
+                // Tunnel-only. The Ok stream body is the updated SessionDto JSON; a null or non-Ok result collapses to 502.
+                var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "attach-mission", sid, payload, ct, machineName: director.MachineName);
+                var body = streamResult is not null && streamResult.Ok ? streamResult.BodyJson : null;
+                if (body is null)
+                    return TunnelFailure(streamResult);
+
+                // THE PARTICIPANT LEDGER, after the session write has SUCCEEDED and never before. The ledger is
+                // the persisted record of which sessions a run governed; updating it first would book a move
+                // that might not happen. Leaving is recorded (LeftUtc), not erased - that the session WAS in
+                // the run is true and stays true.
+                //
+                // A ledger write that fails is reported LOUDLY and does not fail the call: the mission and the
+                // seat - the things a human reads and the agent is governed by - are already correct, and
+                // answering 502 here would tell the caller nothing moved when in fact it did. The gap it
+                // leaves is a stale participant row, which is visible in the run and repairable; claiming the
+                // move failed is not.
+                if (payload.MoveSeat && workflowRuns is not null)
+                {
+                    try
+                    {
+                        if (previousRunId is Guid leaving && leaving != payload.WorkflowRunId)
+                            workflowRuns.Patch(leaving, new PatchWorkflowRunRequest
+                            {
+                                LeaveSessionIds = new List<string> { sid },
+                            });
+
+                        if (payload.WorkflowRunId is Guid joining && joining != previousRunId)
+                            workflowRuns.Patch(joining, new PatchWorkflowRunRequest
+                            {
+                                AddParticipants = new List<WorkflowRunParticipantDto>
+                                {
+                                    new()
+                                    {
+                                        SessionId = sid,
+                                        AgentKind = session.Agent ?? "",
+                                        Role = session.ExplicitRole ?? "",
+                                        Machine = director.MachineName ?? "",
+                                    },
+                                },
+                            });
+                    }
+                    catch (Exception ex)
+                    {
+                        FileLog.Write($"[GatewayEndpoints] POST /sessions/{sid}/mission: the session moved, but the " +
+                                      $"workflow-run participant ledger was NOT updated: {ex.Message}");
+                        seatNote = "The mission and the workflow seat both moved, but this run's participant "
+                                 + "list could not be updated, so it may still show the session as active.";
+                    }
+                }
+
+                // The seat OUTCOME travels with the result, because only this process knows it: the seat the
+                // session held before the call, and whether it belonged to the mission it left, are facts the
+                // caller never had. A caller left to infer "did the seat move?" from the new state alone would
+                // have to compare against a value it does not hold, and would report a PRESERVED seat as a
+                // moved one.
+                return Results.Json(new MissionAttachResultDto
+                {
+                    Session = JsonSerializer.Deserialize<SessionDto>(body, JsonWeb),
+                    SeatMoved = payload.MoveSeat && previousRunId != payload.WorkflowRunId,
+                    PreviousWorkflowRunId = previousRunId,
+                    SeatNote = seatNote,
+                });
+            });
+
+            FileLog.Write("[GatewayEndpoints] mapped POST /sessions/{sid}/mission (attach an existing session to a Mission)");
+        }
 
         // Record (or clear) the Gateway-owned snooze for this session - "park / un-park" (hold) (Snooze
         // Length mission, docs/architecture/snooze-length-mission-2026-07-11.md). Snooze IS the hold: the

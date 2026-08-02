@@ -198,6 +198,44 @@ _ACTIONS = [
         "args": [],
     },
     {
+        "id": "mission-list",
+        "description": "List the Missions on the Gateway - the named bodies of work sessions attach to.",
+        "command": "cc-devthrottle mission list",
+        "mutatesState": False,
+        "args": [],
+    },
+    {
+        "id": "mission-create",
+        "description": "Create a Mission record on the Gateway and print its id.",
+        "command": 'cc-devthrottle mission create "<name>"',
+        "mutatesState": True,
+        "args": [{"name": "name", "required": True}],
+    },
+    {
+        # Discoverable on purpose. The gap this closed (issue #2387) was that a mission could only be
+        # joined in the instant a session was spawned, so a body of work that GREW - which is most of
+        # them - could never be shown as one. An agent that cannot find this verb is back in that
+        # position, so it belongs in the list an agent reads, not only in the help text.
+        "id": "mission-attach",
+        "description": (
+            "Attach a session that already exists to a Mission, moving it if it already had one. "
+            "Add --with-children to bring everything that session controls."
+        ),
+        "command": "cc-devthrottle mission attach <session> <mission>",
+        "mutatesState": True,
+        "args": [
+            {"name": "session", "required": True},
+            {"name": "mission", "required": True},
+        ],
+    },
+    {
+        "id": "mission-detach",
+        "description": "Detach a session from its Mission, leaving it attached to nothing.",
+        "command": "cc-devthrottle mission detach <session>",
+        "mutatesState": True,
+        "args": [{"name": "session", "required": True}],
+    },
+    {
         "id": "machine-list",
         "description": (
             "List the computers this account can search and start applications on. A computer appears "
@@ -1168,7 +1206,8 @@ def spawn(
         help="Attach the new session to a Mission by its id at spawn (mission-as-first-class-unit-of-work). "
         "The Mission must already exist (create one with 'cc-devthrottle mission create'); an unknown "
         "Mission is rejected by the Director. A mission spawn also auto-seats the session on the "
-        "mission's workflow run.",
+        "mission's workflow run. Omitted, a session spawned with a controlling session INHERITS that "
+        "session's mission (and says so); pass 'none' to opt out and start attached to nothing.",
     ),
     workflow_run: Optional[str] = typer.Option(
         None,
@@ -1202,6 +1241,36 @@ def mission_list(
 ) -> None:
     """List every Mission record on the Gateway."""
     mission_ops.list_missions(json_output)
+
+
+@mission_app.command("attach")
+def mission_attach(
+    session: str = typer.Argument(
+        ..., help="The session to attach: its number, an id prefix, or part of its name."
+    ),
+    mission: str = typer.Argument(
+        ..., help="The Mission to attach it to: its id, an id prefix, or part of its name."
+    ),
+    with_children: bool = typer.Option(
+        False,
+        "--with-children",
+        help="Also attach every session this one controls, all the way down. Off by default: a "
+        "controlling session routinely commissions work that is NOT part of its own mission, and a "
+        "bulk re-parent cannot be undone in one step.",
+    ),
+) -> None:
+    """Attach a session that already exists to a Mission (moving it if it already had one)."""
+    mission_ops.attach_session(session, mission, with_children)
+
+
+@mission_app.command("detach")
+def mission_detach(
+    session: str = typer.Argument(
+        ..., help="The session to detach: its number, an id prefix, or part of its name."
+    ),
+) -> None:
+    """Detach a session from its Mission, leaving it attached to nothing."""
+    mission_ops.detach_session(session)
 
 
 @diag_app.command("network")

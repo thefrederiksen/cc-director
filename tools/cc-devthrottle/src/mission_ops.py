@@ -6,6 +6,12 @@ FLEET-level concept - they span Directors and machines and nest - so their sourc
 the GATEWAY, like fleet messaging and scheduling, not on any one Director (Gateway Cleanup mission,
 Wave 4b). These commands create and list Mission records via the Gateway Control API
 (POST /missions, GET /missions), mirroring the schedule command style.
+
+ATTACH AND DETACH (issue #2387) go a different way, and deliberately: through this machine's own
+Director, at POST /fleet/mission. A session lives on a Director, so attaching one is a session write
+and follows the same route every other session verb takes - local target attached directly, remote
+target relayed by the Gateway to the owning Director over the tunnel. Going straight to the Gateway
+from here would work only for sessions on other machines, which is the wrong half.
 """
 
 from __future__ import annotations
@@ -131,6 +137,47 @@ class MissionClient:
         return list(data) if isinstance(data, list) else []
 
 
+def _resolve_mission(query: str) -> Dict[str, Any]:
+    """Resolve a Mission by full id, id prefix, or a case-insensitive name match.
+
+    'mission list' prints SHORT ids, so requiring the full identifier would mean copying it out of a
+    JSON dump every time. Only the typing is relaxed: the id that finally reaches the Gateway is the
+    full one from the caller's OWN mission list, and the Gateway resolves it inside the caller's own
+    tenant regardless of what was typed here.
+    """
+    try:
+        missions = MissionClient().list_all()
+    except GatewayError as err:
+        console.print(f"[red]Error:[/red] {err}")
+        raise typer.Exit(1)
+
+    wanted = query.strip()
+    lowered = wanted.lower()
+    exact = [m for m in missions if (_field(m, "missionId", "MissionId") or "").lower() == lowered]
+    if exact:
+        return exact[0]
+
+    matches = [
+        m for m in missions
+        if (_field(m, "missionId", "MissionId") or "").lower().startswith(lowered)
+        or lowered in (_field(m, "missionName", "MissionName") or "").lower()
+    ]
+    if not matches:
+        console.print(
+            f"[red]No mission matches '{wanted}'.[/red] "
+            "Run cc-devthrottle mission list to see the missions on the Gateway."
+        )
+        raise typer.Exit(1)
+    if len(matches) > 1:
+        console.print(f"[yellow]'{wanted}' is ambiguous - {len(matches)} missions match:[/yellow]")
+        for m in matches:
+            mid = _field(m, "missionId", "MissionId") or "-"
+            console.print(f"  {_short_id(mid)}  {_field(m, 'missionName', 'MissionName') or '-'}")
+        console.print("Re-run with a longer id prefix or the exact name.")
+        raise typer.Exit(1)
+    return matches[0]
+
+
 def _field(record: Dict[str, Any], *names: str) -> Optional[str]:
     """First present, non-empty value among the given key spellings (camel/Pascal case)."""
     for name in names:
@@ -196,3 +243,236 @@ def list_missions(json_output: bool) -> None:
         parent = _field(mission, "parentMissionId", "ParentMissionId") or "-"
         table.add_row(_short_id(mid) if mid else "-", name, parent)
     console.print(table)
+
+
+# ===== Attach and detach (issue #2387) =====================================================
+#
+# THE RULES, settled here and written up in
+# docs/new_architecture/mission-as-first-class-unit-of-work.md. Each one had to be decided because
+# somebody will hit it, and an implied answer is one that gets re-litigated at the worst moment:
+#
+#  * Attaching is a MOVE, not a one-way door. A session that already carries a mission is
+#    re-pointed by the same command, and the command says which mission it LEFT. The shape of a
+#    mission is discovered as it runs, so the first classification is always a guess; a one-way
+#    attach makes every wrong guess permanent until the session is killed.
+#  * Detaching is supported. No mission is the ORDINARY state of a session, so returning to it must
+#    not require inventing a mission to park the session in.
+#  * Attaching a controlling session does NOT drag its children along by default. A controller
+#    routinely commissions sessions for unrelated work - a reviewer for one pull request, an
+#    investigation seat for something else - and a silent bulk re-parent cannot be undone in one
+#    step. --with-children asks for it explicitly, walks the controlling relationship all the way
+#    down, and NAMES every session it moves rather than reporting a count.
+
+
+def _controlled_subtree(sessions: List[Dict[str, Any]], root_id: str) -> List[Dict[str, Any]]:
+    """Every session controlled by root_id, transitively (children, their children, and so on).
+
+    Transitive rather than one level: the shape this exists for is Architect -> Manager -> Workers,
+    where stopping at the first level would attach the Manager and leave the Workers behind - which
+    reads as "it worked" while producing exactly the split view the whole feature is meant to end.
+    """
+    by_controller: Dict[str, List[Dict[str, Any]]] = {}
+    for s in sessions:
+        controller = (_field(s, "controllerSessionId", "ControllerSessionId") or "").lower()
+        if controller:
+            by_controller.setdefault(controller, []).append(s)
+
+    found: List[Dict[str, Any]] = []
+    seen = {root_id.lower()}
+    frontier = [root_id.lower()]
+    while frontier:
+        current = frontier.pop()
+        for child in by_controller.get(current, []):
+            child_id = (_field(child, "sessionId", "SessionId") or "").lower()
+            # A cycle cannot happen through legitimate spawns, but a corrupted roster must not hang
+            # the command line, so a session is only ever visited once.
+            if not child_id or child_id in seen:
+                continue
+            seen.add(child_id)
+            found.append(child)
+            frontier.append(child_id)
+    return found
+
+
+def _apply_mission(session_id: str, mission_id: Optional[str]) -> Dict[str, Any]:
+    """Attach (or detach, on a null mission id) one session through this Director's POST /fleet/mission."""
+    from cc_shared import director  # local import: keeps this module importable without a Director
+
+    body: Dict[str, Any] = {"toSessionId": session_id}
+    if mission_id:
+        body["missionId"] = mission_id
+    return director.post_json("fleet/mission", body)
+
+
+def _previous_mission(
+    resp: Dict[str, Any], roster_row: Dict[str, Any]
+) -> tuple[Optional[str], Optional[str]]:
+    """The mission a session was on BEFORE the call: (id, name), or (None, None).
+
+    Two sources, in order of authority. A LOCAL target's Director read the attachment off the live
+    session immediately before changing it, so its answer is exact and is used whenever it is there.
+    A REMOTE target is relayed through the Gateway to a Director that this machine never talked to
+    about that session, so nothing on the return path knows what it left - and the roster row the
+    caller was just resolved against does. That row is a snapshot rather than a live read, which is
+    the honest limit of what the second source can claim.
+
+    This is a display line, not a decision: it names what the session left so a move is visible.
+    Nothing branches on it, so the weaker source costs accuracy in the wording and nothing else.
+    """
+    exact_id = _field(resp, "previousMissionId", "PreviousMissionId")
+    if exact_id:
+        return exact_id, _field(resp, "previousMissionName", "PreviousMissionName")
+    return (
+        _field(roster_row, "missionId", "MissionId"),
+        _field(roster_row, "missionName", "MissionName"),
+    )
+
+
+def _seat_moved(resp: Dict[str, Any]) -> bool:
+    """True when the call also moved (or cleared) the session's workflow seat."""
+    value = resp.get("seatMoved", resp.get("SeatMoved"))
+    return bool(value)
+
+
+def _conduct_command(resp: Dict[str, Any]) -> Optional[str]:
+    """The exact command that re-reads the conduct the session is now seated under, or None.
+
+    Named in full rather than left as placeholders. A instruction with blanks in it makes the human go
+    and find two values somewhere else, at the one moment they have been told something is out of step -
+    which is how a warning gets skipped.
+    """
+    workflow = _field(resp, "workflowId", "WorkflowId")
+    version = resp.get("workflowVersion", resp.get("WorkflowVersion"))
+    if not workflow or version is None:
+        return None
+    return f"cc-devthrottle workflow instructions {workflow} --version {version}"
+
+
+def _print_seat_note(resp: Dict[str, Any]) -> None:
+    """Print the Director's sentence about the seat, when it had one to add.
+
+    Passed through verbatim rather than re-worded here. What happened to the seat is decided at the
+    Gateway; a client that paraphrased it would be writing its own account of a decision it did not
+    make, and that is how a surface starts saying something plausible instead of something true.
+    """
+    note = _field(resp, "seatNote", "SeatNote")
+    if note:
+        console.print(f"[yellow]Note:[/yellow] {note}")
+
+
+def _session_label(session: Dict[str, Any]) -> str:
+    from cc_shared import director
+
+    sid = _field(session, "sessionId", "SessionId") or ""
+    name = _field(session, "name", "Name") or "(unnamed)"
+    return f"{name} ({director.short_id(sid)})"
+
+
+def attach_session(target: str, mission_query: str, with_children: bool) -> None:
+    """Attach an EXISTING session (and optionally everything it controls) to a Mission."""
+    from cc_shared import director
+
+    from . import session_ops
+
+    mission = _resolve_mission(mission_query)
+    mission_id = _field(mission, "missionId", "MissionId")
+    mission_name = _field(mission, "missionName", "MissionName") or "(unnamed)"
+    if not mission_id:
+        console.print("[red]Error:[/red] the Gateway returned a mission with no id.")
+        raise typer.Exit(1)
+
+    chosen = session_ops.resolve_session(target, command_name="cc-devthrottle mission attach")
+    session_id = _field(chosen, "sessionId", "SessionId")
+
+    targets = [chosen]
+    if with_children:
+        sessions, _, _, _ = session_ops.fleet_or_exit()
+        targets.extend(_controlled_subtree(sessions, session_id))
+        console.print(
+            f"Attaching {len(targets)} session(s) to mission [bold]{mission_name}[/bold] "
+            f"({_short_id(mission_id)}):"
+        )
+        for s in targets:
+            console.print(f"  {_session_label(s)}")
+
+    failed = 0
+    seat_moved_any = False
+    # The command that re-reads the conduct the sessions are NOW under. Filled from the first move that
+    # reports a workflow and version; the placeholder stands only when the destination seats nobody, which
+    # is the case where there is no conduct to re-read anyway.
+    seat_conduct = "cc-devthrottle workflow instructions <workflow> --version <version>"
+    for s in targets:
+        sid = _field(s, "sessionId", "SessionId")
+        try:
+            resp = _apply_mission(sid, mission_id)
+        except director.DirectorError as err:
+            # Keep going. A partial attach is honest and repeatable; abandoning the rest of the tree
+            # because one session's Director is unreachable would leave the pod split with no record
+            # of where it stopped.
+            console.print(f"[red]Failed:[/red] {_session_label(s)} - {err}")
+            failed += 1
+            continue
+
+        previous_id, previous = _previous_mission(resp, s)
+        moved_from = ""
+        if previous_id and previous_id.lower() != mission_id.lower():
+            moved_from = f" (moved from {previous or _short_id(previous_id)})"
+        console.print(
+            f"[green]Attached[/green] {_session_label(s)} to {mission_name}{moved_from}."
+        )
+        if _seat_moved(resp):
+            seat_moved_any = True
+            seat_conduct = _conduct_command(resp) or seat_conduct
+        _print_seat_note(resp)
+
+    if seat_moved_any:
+        # THE HONEST LIMIT, and it has to be said every time the seat moves. A mission is also a run of
+        # the mission workflow, and the seat pins the conduct the agent follows - moving it corrects the
+        # RECORD (what the fleet shows, what governs the session, who the run lists) but it cannot reach
+        # back into a running agent's context and replace the conduct it was handed at birth. Only telling
+        # the session does that. Saying nothing here would leave a human believing a move was complete
+        # when the agent is still working to the old rules.
+        console.print(
+            "[yellow]Note:[/yellow] the workflow seat moved with the mission, but a session that is "
+            "already running still holds the conduct it was given at birth. Tell it to fetch its "
+            f"conduct again: {seat_conduct}"
+        )
+
+    if failed:
+        raise typer.Exit(1)
+
+
+def detach_session(target: str) -> None:
+    """Detach a session from whatever Mission it is attached to."""
+    from cc_shared import director
+
+    from . import session_ops
+
+    chosen = session_ops.resolve_session(target, command_name="cc-devthrottle mission detach")
+    session_id = _field(chosen, "sessionId", "SessionId")
+
+    try:
+        resp = _apply_mission(session_id, None)
+    except director.DirectorError as err:
+        console.print(f"[red]Error:[/red] {err}")
+        raise typer.Exit(1)
+
+    previous_id, previous = _previous_mission(resp, chosen)
+    if not previous_id:
+        # Say what is true rather than claiming a change: the session was already attached to nothing.
+        console.print(f"{_session_label(chosen)} was not attached to a mission; nothing changed.")
+        _print_seat_note(resp)
+        return
+    console.print(
+        f"[green]Detached[/green] {_session_label(chosen)} from {previous or _short_id(previous_id)}."
+    )
+    if _seat_moved(resp):
+        # Detach clears the mission's seat with it. A session that has LEFT a mission cannot still be
+        # governed by that mission's workflow run, and cannot still sit in its participant list as active
+        # - so the seat goes too, and the human is told, because the session it names is now running
+        # under no workflow conduct at all.
+        console.print(
+            "Its workflow seat was cleared with the mission: it is no longer governed by that "
+            "mission's workflow run."
+        )
+    _print_seat_note(resp)

@@ -241,6 +241,93 @@ public sealed class FleetRoleResponse
 }
 
 /// <summary>
+/// Body of POST /fleet/mission on the Director (issue #2387). Attaches a session that ALREADY EXISTS to a
+/// Mission - the counterpart of <c>session spawn --mission</c>, which could only attach in the instant a
+/// session was born. Until this existed a Mission could only ever group work somebody planned in advance,
+/// which is the work that least needs grouping: a mission's real shape is discovered as it runs.
+///
+/// A LOCAL target is attached directly (the Gateway resolves the mission NAME first, as it does for a local
+/// mission-scoped spawn); a target on another machine is relayed through the Gateway
+/// (POST /sessions/{sid}/mission), which routes it to the owning Director over the tunnel.
+/// </summary>
+public sealed class FleetMissionRequest
+{
+    /// <summary>Target session GUID anywhere in the fleet (defaults, at the command line, to the caller).</summary>
+    public string ToSessionId { get; set; } = "";
+
+    /// <summary>
+    /// The Mission to attach to. Null or absent DETACHES the session, clearing its attachment - the same
+    /// clearing convention <see cref="FleetRoleRequest.Role"/> uses for an explicit role. Detaching is
+    /// deliberately supported: no mission is the ordinary state of a session, so returning to it must not
+    /// require inventing a mission to park the session in.
+    /// </summary>
+    public Guid? MissionId { get; set; }
+}
+
+/// <summary>Response from POST /fleet/mission.</summary>
+public sealed class FleetMissionResponse
+{
+    /// <summary>True when the attachment (or detachment) was applied.</summary>
+    public bool Applied { get; set; }
+
+    /// <summary>The target session's GUID.</summary>
+    public string SessionId { get; set; } = "";
+
+    /// <summary>The Mission the session is attached to after the call, or null when it was detached.</summary>
+    public Guid? MissionId { get; set; }
+
+    /// <summary>The attached Mission's display name after the call, or null when detached.</summary>
+    public string? MissionName { get; set; }
+
+    /// <summary>
+    /// The Mission the session was attached to BEFORE the call, or null when it had none. Returned so the
+    /// command line can say what the session LEFT: attaching is a move, and a move that reports only its
+    /// destination hides the fact that anything was displaced.
+    /// </summary>
+    public Guid? PreviousMissionId { get; set; }
+
+    /// <summary>The previous Mission's display name, or null when the session had no mission.</summary>
+    public string? PreviousMissionName { get; set; }
+
+    /// <summary>
+    /// The workflow RUN the session is seated on after the call, or null when it is seated on nothing.
+    ///
+    /// A Mission is also a run of the built-in "mission" workflow, and the seat is what pins the CONDUCT the
+    /// agent follows - so a move that changed the mission and left the seat behind would show a session under
+    /// one mission while it was governed by another. The seat therefore travels with the mission, and this
+    /// field plus <see cref="SeatMoved"/> report what happened to it.
+    /// </summary>
+    public Guid? WorkflowRunId { get; set; }
+
+    /// <summary>
+    /// The seated run's workflow id and PINNED version after the call, or null when the session ended up
+    /// seated on nothing. Reported so a caller telling a running session to re-read its conduct can name
+    /// the exact workflow and version rather than handing the human a command with blanks in it to go and
+    /// fill in from somewhere else.
+    /// </summary>
+    public string? WorkflowId { get; set; }
+
+    /// <summary>The seated run's pinned version after the call. See <see cref="WorkflowId"/>.</summary>
+    public int? WorkflowVersion { get; set; }
+
+    /// <summary>
+    /// True when this call also moved (or cleared) the session's workflow seat. False when the seat was left
+    /// alone - either because it was a run the caller chose independently, which was never the mission's to
+    /// take, or because the session ended up on the same run it was already sitting on.
+    /// </summary>
+    public bool SeatMoved { get; set; }
+
+    /// <summary>
+    /// A plain sentence about the seat when there is something the caller must know that the two fields above
+    /// cannot say - most importantly that no seat could be moved at all. Null when there is nothing to add.
+    /// </summary>
+    public string? SeatNote { get; set; }
+
+    /// <summary>Error message when Applied is false.</summary>
+    public string? Error { get; set; }
+}
+
+/// <summary>
 /// Body of POST /fleet/done on the Director (issue #1490). Flags a session anywhere in the fleet for
 /// asynchronous teardown by its owning Director's deletion reaper: flagged locally when the target lives on
 /// this machine, otherwise relayed through the Gateway (POST /sessions/{sid}/request-deletion). Restores the

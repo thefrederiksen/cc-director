@@ -140,6 +140,23 @@ def _resolve_target(target: str, *, command_name: str) -> Dict[str, Any]:
     return matches[0]
 
 
+def resolve_session(target: str, *, command_name: str) -> Dict[str, Any]:
+    """Resolve one session from the fleet roster, or print why it could not and exit.
+
+    The public door onto the shared resolver above, for sibling command modules (mission attach and
+    detach) that address a session exactly the way the session verbs do - by number, id prefix, or
+    name. It exists so those commands cannot grow a second, subtly different way to name a session:
+    one resolver means one answer to "which session did you mean", including the caveats about a
+    roster that may be incomplete.
+    """
+    return _resolve_target(target, command_name=command_name)
+
+
+def fleet_or_exit() -> Tuple[List[Dict[str, Any]], Optional[bool], Optional[str], Optional[str]]:
+    """The fleet roster, or a printed error and exit - the public door onto the shared fetch."""
+    return _get_fleet()
+
+
 def resolve_target_or_current(target: Optional[str]) -> str:
     """Return the requested session id, defaulting to this session."""
     if target is None or not target.strip():
@@ -583,6 +600,36 @@ def ask_session(target: str, question: str, timeout_ms: int) -> None:
     console.print(answer if answer else "(the target produced no output)")
 
 
+def _controller_mission(controller_session_id: str) -> Optional[Dict[str, Any]]:
+    """The controlling session's roster row, when it exists AND carries a mission; else None.
+
+    Returns the whole row rather than the id so the caller can name the session the mission came
+    from. Missing controller, or a controller attached to nothing, is a plain None - those are
+    ordinary and there is nothing to report.
+
+    A roster this process cannot READ is different, and is reported rather than swallowed: the
+    spawn proceeds unattached (refusing to open a session because an optional grouping could not be
+    looked up would be worse than the ungrouped session), but the human is told, in that order, so
+    the missing mission is never a mystery. One 'mission attach' fixes it afterwards - which is the
+    whole point of this issue existing.
+    """
+    try:
+        sessions, _, _, _ = director.get_fleet()
+    except director.DirectorError as err:
+        console.print(
+            "[yellow]Warning:[/yellow] could not read the fleet list to inherit the controlling "
+            f"session's mission, so the new session starts attached to no mission: {err}"
+        )
+        return None
+
+    wanted = controller_session_id.strip().lower()
+    for s in sessions:
+        if director.field(s, "sessionId", "SessionId").lower() != wanted:
+            continue
+        return s if director.field(s, "missionId", "MissionId") else None
+    return None
+
+
 def spawn_session(
     repo: str,
     agent: str,
@@ -676,8 +723,27 @@ def spawn_session(
     if role:
         body["role"] = role
     # Mission attach at spawn: forward the Mission id; the Director resolves+validates it (unknown -> 400).
-    if mission:
+    #
+    # INHERITANCE (issue #2387). With no --mission, a session that has a CONTROLLER inherits that
+    # controller's mission. Default ON, because the fleet already records the relationship and the case
+    # that found this gap - a release push that grew from one seat to about a dozen in a day - would have
+    # been grouped for free: every one of those sessions was spawned by a seat that already belonged to
+    # the mission. Making it opt-in would mean the grouping only ever happens when somebody remembers,
+    # which is the same failure as attach-at-birth in a different coat.
+    #
+    # Three things keep it honest. An explicit --mission always WINS (it is stated intent, not a
+    # default). --mission none is the OPT-OUT, spelled the same way --controlled-by none is, for the
+    # deliberate case of a child that is not part of its controller's work. And it is never SILENT: the
+    # inheritance is printed, naming the mission and the session it came from, so a wrong inheritance is
+    # visible immediately and one 'mission detach' away.
+    inherited_from: Optional[Dict[str, Any]] = None
+    mission_opt_out = mission is not None and mission.strip().lower() == "none"
+    if mission and not mission_opt_out:
         body["missionId"] = mission
+    elif not mission_opt_out and controller_session_id:
+        inherited_from = _controller_mission(controller_session_id)
+        if inherited_from:
+            body["missionId"] = director.field(inherited_from, "missionId", "MissionId")
     # Workflow seat at spawn (Workflows phase 5b): forward the run id; the Gateway validates it and
     # stamps the workflow id + pinned version, and the seated session's preamble tells the agent to
     # fetch its conduct at exactly that version. A mission spawn auto-seats without this flag.
@@ -716,6 +782,21 @@ def spawn_session(
     label = director.field(resp, "name", "Name") or name or short
     console.print(f"[green]Opened[/green] session {short} ({label}).")
     console.print(f"id: {sid}")
+    if inherited_from is not None:
+        # Never silent. An inherited mission the caller did not ask for is only safe if they can see
+        # it happened, so name the mission AND the session it came from, and say how to undo it.
+        mission_label = (
+            director.field(inherited_from, "missionName", "MissionName")
+            or director.short_id(director.field(inherited_from, "missionId", "MissionId"))
+        )
+        controller_label = (
+            director.field(inherited_from, "name", "Name")
+            or director.short_id(director.field(inherited_from, "sessionId", "SessionId"))
+        )
+        console.print(
+            f"Attached to mission [bold]{mission_label}[/bold], inherited from its controlling "
+            f"session {controller_label}. Undo with: cc-devthrottle mission detach {short}"
+        )
     console.print(
         f'Message it:  cc-devthrottle message send {short} "<message>"'
         f'   |   Ask it:  cc-devthrottle message ask {short} "<question>"'
