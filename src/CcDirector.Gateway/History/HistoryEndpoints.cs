@@ -105,9 +105,14 @@ public static class HistoryEndpoints
 
             using (EnterScope(tenant.Value, tenantBoundary))
             {
-                var sealedOk = store.SealSummary(sessionId, request);
+                // The seal request carries no material time - it is caller-supplied prose with no
+                // provenance at all - so the Gateway's own RECEIPT time is the material time. A seal that
+                // arrives after an erasure is material this Gateway first saw after the erasure, and
+                // refusing it is the safe direction: the alternative accepts text that may be the very
+                // prompts the member just deleted.
+                var sealedOk = store.SealSummary(sessionId, request, DateTime.UtcNow);
                 if (!sealedOk)
-                    return Results.NotFound(new { error = "no history record for that session" });
+                    return Results.NotFound(new { error = "no history record for that session, or this account erased since" });
                 FileLog.Write($"[HistoryEndpoints] summary sealed: tenant={tenant.Value.ToLogString()}, session={sessionId}");
                 return Results.Ok(new { sealedRecord = true });
             }

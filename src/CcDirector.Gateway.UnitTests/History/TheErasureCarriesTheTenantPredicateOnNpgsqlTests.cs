@@ -154,11 +154,13 @@ public sealed class TheErasureCarriesTheTenantPredicateOnNpgsqlTests
             SessionHistoryStore.EraseWithin(ctx);
         }
 
-        // The count, the two updates, the delete. Asserted so that a future change which adds a fourth
-        // statement cannot slip past the per-statement check below by simply not being looked at.
-        Assert.Equal(4, capture.Captured.Count);
+        // The count, the clearing update, the roll-up delete. Asserted so that a future change which adds a
+        // statement cannot slip past the per-statement check below by simply not being looked at. It was
+        // four until the seal exemption was reversed: the prompt line and the summary needed separate
+        // updates only while sealed rows were spared, and one predicate covers both now.
+        Assert.Equal(3, capture.Captured.Count);
         Assert.Single(capture.Captured, s => s.Sql.TrimStart().StartsWith("SELECT count", StringComparison.OrdinalIgnoreCase));
-        Assert.Equal(2, capture.Captured.Count(s => s.Sql.TrimStart().StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase)));
+        Assert.Single(capture.Captured, s => s.Sql.TrimStart().StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase));
         Assert.Single(capture.Captured, s => s.Sql.TrimStart().StartsWith("DELETE", StringComparison.OrdinalIgnoreCase));
 
         foreach (var statement in capture.Captured)

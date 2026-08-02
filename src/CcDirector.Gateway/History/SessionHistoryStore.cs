@@ -1,3 +1,4 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Data;
@@ -274,191 +275,207 @@ public sealed class SessionHistoryStore
     /// <summary>
     /// Set the first-prompt description source, once. Later prompts never overwrite it.
     ///
-    /// <paramref name="promptSentAtUtc"/> is WHEN THE MEMBER SENT THE PROMPT, not when this call happens,
-    /// and a prompt sent before an erasure is refused. The two differ by more than microseconds: the
-    /// Director's ingest deliberately retries records it previously failed to deliver, so a push arriving
-    /// today can carry prompts from last week - including the ones the member just asked to erase.
-    /// Comparing the moment of writing would let exactly those through.
+    /// ONE CONDITIONAL STATEMENT. Every condition - the row exists, it has no line yet, and this account has
+    /// not erased since the prompt was sent - lives in the WHERE clause, so the database decides them
+    /// together with the write. The previous version read the watermark, then read the row, then wrote:
+    /// three operations with two windows between them, guarded by a lock that is an INSTANCE lock. The
+    /// hosted Gateway is documented to run two overlapping containers during a slot swap, so that lock
+    /// protected nothing that mattered.
+    ///
+    /// <paramref name="materialTimeUtc"/> is WHEN THE MEMBER SENT THE PROMPT, clamped by the caller to the
+    /// Gateway's own receipt time - not when this call happens. The Director's ingest retries records it
+    /// previously failed to deliver, so a push arriving today can carry prompts from last week, including
+    /// ones the member has since erased.
     /// </summary>
-    public void SetFirstPrompt(string sessionId, string line, DateTime promptSentAtUtc)
+    public void SetFirstPrompt(string sessionId, string line, DateTime materialTimeUtc)
     {
         if (string.IsNullOrWhiteSpace(line)) return;
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            if (ErasedSince(ctx, promptSentAtUtc))
-            {
-                FileLog.Write($"[SessionHistoryStore] SetFirstPrompt REFUSED (prompt predates this account's erasure): session={sessionId}");
-                return;
-            }
-            var entity = ctx.SessionHistory.FirstOrDefault(e => e.SessionId == sessionId);
-            if (entity is null || !string.IsNullOrEmpty(entity.FirstPromptLine)) return;
-            entity.FirstPromptLine = line;
-            ctx.SaveChanges();
+            var written = ctx.SessionHistory
+                .Where(e => e.SessionId == sessionId
+                            && (e.FirstPromptLine == null || e.FirstPromptLine == "")
+                            && !ctx.PromptErasureWatermarks.Any(w => w.ErasedAtUtc >= materialTimeUtc))
+                .ExecuteUpdate(s => s.SetProperty(e => e.FirstPromptLine, line));
+            if (written == 0)
+                FileLog.Write($"[SessionHistoryStore] SetFirstPrompt wrote nothing (no row, already set, or erased since): session={sessionId}");
         }
     }
 
     /// <summary>
     /// Erase every prompt-derived field this database holds for the CURRENT tenant, as part of
-    /// <c>DELETE /prompts</c> (the account data right, CR-3b). The prompt log is the single copy of the
-    /// prompts themselves; this removes the copies the Gateway DERIVED from them, which is what makes
-    /// the delete an erasure rather than a partial one.
+    /// <c>DELETE /prompts</c> (the account data right, CR-3b). This removes the copies the Gateway DERIVED
+    /// from the member's prompts, which is what makes the delete an erasure rather than a partial one.
     ///
-    /// What goes, and why it is this list rather than the obvious one:
+    /// What goes:
     ///
-    ///  - <see cref="SessionHistoryEntity.FirstPromptLine"/> ALWAYS, on every row. It is the first 200
-    ///    characters of the member's own prompt, and it is prompt material whatever else the row holds.
-    ///  - The summary content - <see cref="SessionHistoryEntity.SummaryText"/> and the FIVE JSON lists
-    ///    beside it (what was built, left unverified, branches, pull requests, commits) - on every row
-    ///    EXCEPT a SEALED one (see below). Those come out of the same summariser
-    ///    reading the same prompt log, so they are the same material at one remove; leaving them would
-    ///    erase the quote and keep the paraphrase.
-    ///  - The three summary METADATA fields are RESET on the same rows, not cleared to nothing meaningful:
-    ///    a row still claiming a summary exists with nothing behind it is a smaller lie of the same kind.
-    ///    Reset also makes the row eligible for the sweep again, which now finds an empty prompt log and
-    ///    settles it honestly as "none" - the erasure is self-healing rather than something later work can undo.
-    ///  - The <c>session_history_rollups</c> rows are DELETED outright. They carry a written paragraph
-    ///    derived from those same session summaries and cached per repository per day, so erasing the
-    ///    columns and leaving them would keep serving the erased words as prose on the History page for up
-    ///    to ninety days. The staleness hash is not a defence: eventually-recomputed is a promise about the
-    ///    future, not an erasure now. Deleting them costs the member nothing they cannot get back - the row
-    ///    is a CACHE, and the sweep recomputes it from whatever survives, which is the point.
+    ///  - <see cref="SessionHistoryEntity.FirstPromptLine"/> on every row - the first 200 characters of the
+    ///    member's own prompt.
+    ///  - The summary content on every row - <see cref="SessionHistoryEntity.SummaryText"/> and the FIVE
+    ///    JSON lists beside it (what was built, left unverified, branches, pull requests, commits).
+    ///  - The three summary METADATA fields, RESET rather than left claiming a summary that is not there.
+    ///    Reset also makes the row eligible for the sweep again, which finds an empty prompt log and settles
+    ///    it honestly as "none".
+    ///  - The <c>session_history_rollups</c> rows, DELETED outright. They cache a written paragraph derived
+    ///    from those same session summaries, so leaving them would keep serving the erased words as prose
+    ///    for up to ninety days. They are a CACHE and the sweep recomputes them from whatever survives.
     ///
-    /// A SEALED SUMMARY SURVIVES, and this is a correction to how this method was first written.
-    /// A sealed summary is the SESSION'S OWN farewell, submitted through <see cref="SealSummary"/>: it was
-    /// never read out of the prompt log, so it is not prompt material. Erasing it would make the delete
-    /// remove MORE than it claims, which is not a safer error than removing less - it is a different false
-    /// claim, and a member who asked to delete prompt history has not asked to lose a farewell they never
-    /// associated with prompts.
+    /// A SEALED SUMMARY IS ERASED TOO, and that REVERSES how this method was written for two rounds. It is
+    /// worth reading why, because the mistake was not in the code:
     ///
-    /// That exemption is only sound because <c>SummaryKind</c> faithfully tracks the SOURCE of the content
-    /// currently in the row, which two independent guards in THIS class make true - both on the store, so it
-    /// is a property of the data rather than of one code path:
+    /// A sealed summary arrives through <see cref="SealSummary"/> from the session itself, and the earlier
+    /// reasoning was that a farewell the session wrote is not prompt material, so erasing it would remove
+    /// more than the delete claims. The verification offered for that was that <c>SummaryKind</c> reliably
+    /// tracks which WRITER wrote the row - which is TRUE, and is the wrong question. What the exemption
+    /// needed was that the CONTENT is not prompt-derived, and nothing establishes that: the seal route takes
+    /// caller-supplied prose and all five lists with no material time and no provenance of any kind. Arriving
+    /// through the seal route is an OPERATION, not a provenance. A seal composed from the member's own
+    /// prompts is accepted exactly like any other.
     ///
-    ///  1. <see cref="PendingSummaries"/> only offers rows whose kind is null or empty, so the summariser is
-    ///     never even handed a sealed row; and
-    ///  2. <see cref="StoreGeneratedSummary"/> returns early on a sealed row, so a direct call writes nothing.
+    /// So the exemption was retaining content that MAY be the member's prompts, permanently, because every
+    /// later delete would exempt it again. Retaining prompt material is the worse error, so the seal goes
+    /// with the rest.
     ///
-    /// And in the other order - generated first, sealed afterwards - <see cref="SealSummary"/> overwrites the
-    /// text and ALL FIVE lists from the seal request (absent lists become null), so no generated remnant can
-    /// survive underneath a seal. <see cref="SessionHistoryEntity.SummaryAttempts"/> is the one field a sealed
-    /// row keeps: it is a counter of summariser attempts, not content, and it says nothing about any prompt.
-    ///
-    /// If a future change lets generated text land on a sealed row, this exemption becomes a hole and the
-    /// erasure silently starts retaining prompt material. The guards above are the thing to check.
-    ///
-    /// TENANT-SCOPED by the global query filter, exactly like every other operation here - all three
-    /// statements can only reach the ambient tenant's rows, and the caller enters that scope.
+    /// TENANT-SCOPED by the global query filter, exactly like every other operation here.
     ///
     /// LOUD ON FAILURE by design, matching <c>GatewayPromptLog.DeleteAll</c>: an erasure that half-happened
-    /// must surface to the caller as an error, never as a success with content left behind. There is no
-    /// catch here on purpose.
+    /// must surface to the caller as an error, never as a success with content left behind.
     ///
-    /// The counts describe rows that ACTUALLY CARRIED something: a row already free of erasable content -
-    /// including a sealed row with nothing but its seal - is not counted, so a second delete honestly
-    /// reports nothing to do.
+    /// The counts describe rows that ACTUALLY CARRIED something, so a second delete honestly reports
+    /// nothing to do.
     /// </summary>
     public PromptDerivedErasure ErasePromptDerived()
     {
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            var erased = EraseWithin(ctx);
+            // STAMPED FIRST, which reverses the earlier order and is the safer direction under a race.
+            // A writer blocked by a stamp that is slightly early is CORRECT - its material is older than a
+            // delete that is about to happen anyway. A writer admitted by a stamp that is late is the bug.
+            // The old order optimised for the harmless case and left the harmful one open.
             StampErasureWatermark(ctx);
-            return erased;
+            return EraseWithin(ctx);
         }
     }
 
     /// <summary>
-    /// Record that this tenant has erased, so the prompt-derived writers can refuse material older than
-    /// this moment. See <see cref="PromptErasureWatermarkEntity"/> for why the erasure is not finished
-    /// without it.
+    /// Record that this tenant has erased, so the prompt-derived writers refuse material older than this
+    /// moment. See <see cref="PromptErasureWatermarkEntity"/>.
     ///
-    /// STAMPED AFTER the clears, not before. A writer racing the statements above is caught either way,
-    /// because its material predates every one of them. Stamping first would additionally refuse a writer
-    /// whose material was read in the microseconds AFTER the stamp and BEFORE the clear - a write that is
-    /// resurrecting nothing, because the clear had not happened when it read.
+    /// ONE CONDITIONAL STATEMENT, not a read-compare-save. The previous version read the row, compared in
+    /// memory and issued an unconditional save, which is only monotonic within one process: two Gateways
+    /// racing could let the older value win, LOWERING a member's erasure line - the one direction that
+    /// admits resurrected material. The database now does the comparison, so the guarantee holds however
+    /// many processes are stamping.
     ///
-    /// Kept out of <see cref="EraseWithin"/> deliberately: that method exists so a test can capture the
-    /// SQL of the BULK statements, which are the ones that can reach many rows and therefore the ones
-    /// whose tenant predicate has to be proved. This row is keyed BY the tenant, so it cannot name another
-    /// account's row even in principle - a different risk, and not one that proof is about.
+    /// The insert is the one part that cannot be conditional in a single portable statement, so it races
+    /// with another process's insert. That race is decided by the primary key - one insert wins, the other
+    /// throws - and the loser then runs the same conditional update, which is exactly the outcome wanted.
     /// </summary>
     private static void StampErasureWatermark(GatewayDbContext ctx)
     {
         var nowUtc = DateTime.UtcNow;
-        var watermark = ctx.PromptErasureWatermarks.FirstOrDefault();
-        if (watermark is null)
+        var raised = ctx.PromptErasureWatermarks
+            .Where(w => w.ErasedAtUtc < nowUtc)
+            .ExecuteUpdate(s => s.SetProperty(w => w.ErasedAtUtc, nowUtc));
+        if (raised == 0 && !ctx.PromptErasureWatermarks.Any())
         {
-            watermark = new PromptErasureWatermarkEntity { TenantId = ctx.ActiveTenant! };
-            ctx.PromptErasureWatermarks.Add(watermark);
+            try
+            {
+                ctx.PromptErasureWatermarks.Add(new PromptErasureWatermarkEntity
+                {
+                    TenantId = ctx.ActiveTenant!,
+                    ErasedAtUtc = nowUtc,
+                });
+                ctx.SaveChanges();
+            }
+            catch (DbUpdateException)
+            {
+                // Another Gateway inserted first. Raise its value instead - never lower it.
+                ctx.ChangeTracker.Clear();
+                ctx.PromptErasureWatermarks
+                    .Where(w => w.ErasedAtUtc < nowUtc)
+                    .ExecuteUpdate(s => s.SetProperty(w => w.ErasedAtUtc, nowUtc));
+            }
         }
-        // Only ever forward. A clock that stepped backwards must not lower a member's erasure line.
-        if (nowUtc > watermark.ErasedAtUtc)
-            watermark.ErasedAtUtc = nowUtc;
-        ctx.SaveChanges();
-        FileLog.Write($"[SessionHistoryStore] prompt-erasure watermark stamped: {watermark.ErasedAtUtc:O}");
+        FileLog.Write($"[SessionHistoryStore] prompt-erasure watermark stamped: {nowUtc:O}");
     }
 
     /// <summary>
-    /// The erasure's three statements, over a context the caller supplies. Split out from
+    /// When this tenant last erased their prompt history, or null if they never have. A reader for tests
+    /// and diagnostics: the guards themselves never read it separately, because a separate read is exactly
+    /// the window this mechanism had to close.
+    /// </summary>
+    public DateTime? PromptErasureWatermarkUtc()
+    {
+        lock (_gate)
+        {
+            using var ctx = _db.CreateContext();
+            return ctx.PromptErasureWatermarks.AsNoTracking().FirstOrDefault()?.ErasedAtUtc;
+        }
+    }
+
+    /// <summary>
+    /// The same reading for an EXPLICITLY named tenant, for the prompt log's door check. The ingest path
+    /// appends to a file partition addressed by tenant and does not enter the ambient scope, so a read that
+    /// depended on ambient state would silently answer for the wrong account - the quiet direction, where
+    /// nothing errors and material is simply admitted or refused against somebody else's erasure.
+    /// </summary>
+    public DateTime? PromptErasureWatermarkUtc(TenantId tenant)
+    {
+        lock (_gate)
+        {
+            using var ctx = _db.CreateContext(tenant);
+            return ctx.PromptErasureWatermarks.AsNoTracking().FirstOrDefault()?.ErasedAtUtc;
+        }
+    }
+
+    /// <summary>
+    /// The erasure's bulk statements, over a context the caller supplies. Split out from
     /// <see cref="ErasePromptDerived"/> for ONE reason: it lets a test drive these exact statements against
     /// the Npgsql provider and capture the SQL Entity Framework generates for them, so the claim that the
     /// tenant predicate survives translation is checked against the product's own statements rather than a
     /// re-typed copy of them in a test. A copy would prove the copy.
     ///
-    /// Not a general-purpose seam: it does no locking and enters no scope, so <see cref="ErasePromptDerived"/>
-    /// remains the only way the product calls it.
+    /// Not a general-purpose seam: it does no locking, enters no scope and does not stamp the watermark, so
+    /// <see cref="ErasePromptDerived"/> remains the only way the product calls it.
     /// </summary>
     internal static PromptDerivedErasure EraseWithin(GatewayDbContext ctx)
     {
-            // NO EXPLICIT TRANSACTION ACROSS THE THREE STATEMENTS, which a reader will reasonably ask
-            // about. Each bulk statement carries its own, so a failure part way through leaves a row with
-            // some fields cleared and some not. That state is always LESS content than before and never
-            // more - no statement here writes anything - the exception reaches the caller as a 500, and
-            // the prompt log is still intact because the files are deleted after this returns. It is also
-            // RESUMABLE without any bookkeeping: every predicate matches on the content still present, so
-            // repeating the delete finishes exactly the part that did not happen. That is a stronger
-            // property than atomicity for this operation, and it is the reason a transaction was not
-            // added rather than an oversight.
+            // NO EXPLICIT TRANSACTION across these statements. Each carries its own, so a failure part way
+            // through leaves a row with some fields cleared and some not - always LESS content than before
+            // and never more, since no statement here writes content. The exception reaches the caller as a
+            // 500, and the operation is RESUMABLE without bookkeeping: every predicate matches on the
+            // content still present, so repeating the delete finishes exactly the part that did not happen.
             //
-            // COUNTED FIRST, and separately from the two updates, because one row can carry both a prompt
-            // line and a summary: adding the two row counts would report one row as two. This is a count of
-            // DISTINCT rows about to change, taken under the same write lock the updates run under.
+            // COUNTED FIRST because one row can carry both a prompt line and a summary, and adding the two
+            // update counts would report one row as two.
             var sessions = ctx.SessionHistory
                 .Count(e => e.FirstPromptLine != null
-                            || (e.SummaryKind != SessionHistorySummaryKinds.Sealed
-                                && (e.SummaryText != null
-                                    || e.WhatWasBuiltJson != null
-                                    || e.LeftUnverifiedJson != null
-                                    || e.BranchesJson != null
-                                    || e.PullRequestsJson != null
-                                    || e.CommitsJson != null
-                                    || e.SummaryKind != null
-                                    || e.SummaryIsPartial
-                                    || e.SummaryAttempts != 0)));
+                            || e.SummaryText != null
+                            || e.WhatWasBuiltJson != null
+                            || e.LeftUnverifiedJson != null
+                            || e.BranchesJson != null
+                            || e.PullRequestsJson != null
+                            || e.CommitsJson != null
+                            || e.SummaryKind != null
+                            || e.SummaryIsPartial
+                            || e.SummaryAttempts != 0);
 
-            // The prompt line goes from EVERY row, sealed or not - it is the prompt itself.
-            ctx.SessionHistory
-                .Where(e => e.FirstPromptLine != null)
-                .ExecuteUpdate(s => s.SetProperty(e => e.FirstPromptLine, (string?)null));
-
-            // The summary content and its metadata go from every row EXCEPT a sealed one. A row whose kind
-            // is null or empty is NOT sealed and is included - Entity Framework's C# null semantics make
-            // `!= "sealed"` true for a null column, which is the behaviour wanted here and is pinned by a
-            // test over a row that failed summarisation and never got a kind.
-            ctx.SessionHistory
-                .Where(e => e.SummaryKind != SessionHistorySummaryKinds.Sealed
-                            && (e.SummaryText != null
-                                || e.WhatWasBuiltJson != null
-                                || e.LeftUnverifiedJson != null
-                                || e.BranchesJson != null
-                                || e.PullRequestsJson != null
-                                || e.CommitsJson != null
-                                || e.SummaryKind != null
-                                || e.SummaryIsPartial
-                                || e.SummaryAttempts != 0))
+            var cleared = ctx.SessionHistory
+                .Where(e => e.FirstPromptLine != null
+                            || e.SummaryText != null
+                            || e.WhatWasBuiltJson != null
+                            || e.LeftUnverifiedJson != null
+                            || e.BranchesJson != null
+                            || e.PullRequestsJson != null
+                            || e.CommitsJson != null
+                            || e.SummaryKind != null
+                            || e.SummaryIsPartial
+                            || e.SummaryAttempts != 0)
                 .ExecuteUpdate(s => s
+                    .SetProperty(e => e.FirstPromptLine, (string?)null)
                     .SetProperty(e => e.SummaryText, (string?)null)
                     .SetProperty(e => e.WhatWasBuiltJson, (string?)null)
                     .SetProperty(e => e.LeftUnverifiedJson, (string?)null)
@@ -471,65 +488,60 @@ public sealed class SessionHistoryStore
 
             var rollups = ctx.SessionHistoryRollups.ExecuteDelete();
 
-            FileLog.Write($"[SessionHistoryStore] ErasePromptDerived: cleared {sessions} session row(s), deleted {rollups} rollup row(s)");
+            FileLog.Write($"[SessionHistoryStore] ErasePromptDerived: cleared {cleared} session row(s), deleted {rollups} rollup row(s)");
             return new PromptDerivedErasure(sessions, rollups);
     }
 
     /// <summary>
-    /// When this tenant last erased their prompt history, or null if they never have. Material older than
-    /// this must not be written into the prompt-derived fields - see <see cref="PromptErasureWatermarkEntity"/>.
-    /// </summary>
-    public DateTime? PromptErasureWatermarkUtc()
-    {
-        lock (_gate)
-        {
-            using var ctx = _db.CreateContext();
-            return ctx.PromptErasureWatermarks.AsNoTracking().FirstOrDefault()?.ErasedAtUtc;
-        }
-    }
-
-    /// <summary>
-    /// True when material read at <paramref name="materialReadAtUtc"/> predates this tenant's erasure and
-    /// must not be written back. Read on the SAME context as the write that follows it, so the check and
-    /// the write cannot straddle a context boundary.
+    /// The session seals its own record on a clean shutdown - its account wins over anything the Gateway
+    /// generated. Returns false when no row exists for the session, or when this account has erased since
+    /// the seal's material could have been gathered.
     ///
-    /// The comparison is "at or before", not "before": two events in the same tick cannot be ordered, and
-    /// the safe direction is to refuse. Refusing a write costs a summary that regenerates on the next
-    /// sweep; accepting one costs the member content they asked to be rid of.
+    /// THIS ROUTE CARRIES NO PROVENANCE, which is why it is watermarked like the others and why sealed rows
+    /// are no longer exempt from the erasure. It accepts caller-supplied prose and all five lists with no
+    /// material time at all; nothing here establishes the text did not come from the member's prompts.
+    /// Without the watermark, a seal composed before a delete could land after it and repopulate every
+    /// summary column - and the old exemption would then have preserved it through every later delete.
+    ///
+    /// <paramref name="materialTimeUtc"/> is the caller's best statement of when the sealed material was
+    /// gathered, clamped by the caller to the Gateway's receipt time. The seal request carries no such
+    /// field, so the route supplies receipt time: a seal that arrives after an erasure is material the
+    /// Gateway first saw after the erasure, and refusing it is the safe direction.
     /// </summary>
-    private static bool ErasedSince(GatewayDbContext ctx, DateTime materialReadAtUtc)
-    {
-        var erasedAtUtc = ctx.PromptErasureWatermarks.AsNoTracking().FirstOrDefault()?.ErasedAtUtc;
-        return erasedAtUtc is { } stamp && materialReadAtUtc <= stamp;
-    }
-
-    /// <summary>
-    /// The session seals its own record on a clean shutdown - its account wins over anything the
-    /// Gateway generated. Returns false when no row exists for the session.
-    /// </summary>
-    public bool SealSummary(string sessionId, SealSessionSummaryRequest request)
+    public bool SealSummary(string sessionId, SealSessionSummaryRequest request, DateTime materialTimeUtc)
     {
         ArgumentNullException.ThrowIfNull(request);
         if (string.IsNullOrWhiteSpace(request.Summary))
             throw new ArgumentException("A sealed summary needs prose; an empty seal records nothing.", nameof(request));
 
+        var text = request.Summary.Trim();
+        var built = SessionHistoryFold.ToJsonList(request.WhatWasBuilt);
+        var unverified = SessionHistoryFold.ToJsonList(request.LeftUnverified);
+        var branches = SessionHistoryFold.ToJsonList(request.Branches);
+        var pullRequests = SessionHistoryFold.ToJsonList(request.PullRequests);
+        var commits = SessionHistoryFold.ToJsonList(request.Commits);
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            var entity = ctx.SessionHistory.FirstOrDefault(e => e.SessionId == sessionId);
-            if (entity is null) return false;
-
-            entity.SummaryKind = SessionHistorySummaryKinds.Sealed;
-            entity.SummaryIsPartial = false;
-            entity.SummaryText = request.Summary.Trim();
-            entity.WhatWasBuiltJson = SessionHistoryFold.ToJsonList(request.WhatWasBuilt);
-            entity.LeftUnverifiedJson = SessionHistoryFold.ToJsonList(request.LeftUnverified);
-            entity.BranchesJson = SessionHistoryFold.ToJsonList(request.Branches);
-            entity.PullRequestsJson = SessionHistoryFold.ToJsonList(request.PullRequests);
-            entity.CommitsJson = SessionHistoryFold.ToJsonList(request.Commits);
-            ctx.SaveChanges();
-            FileLog.Write($"[SessionHistoryStore] summary sealed by the session: session={sessionId}");
-            return true;
+            var written = ctx.SessionHistory
+                .Where(e => e.SessionId == sessionId
+                            && !ctx.PromptErasureWatermarks.Any(w => w.ErasedAtUtc >= materialTimeUtc))
+                .ExecuteUpdate(s => s
+                    .SetProperty(e => e.SummaryKind, SessionHistorySummaryKinds.Sealed)
+                    .SetProperty(e => e.SummaryIsPartial, false)
+                    .SetProperty(e => e.SummaryText, text)
+                    .SetProperty(e => e.WhatWasBuiltJson, built)
+                    .SetProperty(e => e.LeftUnverifiedJson, unverified)
+                    .SetProperty(e => e.BranchesJson, branches)
+                    .SetProperty(e => e.PullRequestsJson, pullRequests)
+                    .SetProperty(e => e.CommitsJson, commits));
+            if (written > 0)
+            {
+                FileLog.Write($"[SessionHistoryStore] summary sealed by the session: session={sessionId}");
+                return true;
+            }
+            FileLog.Write($"[SessionHistoryStore] seal not stored (no row, or erased since): session={sessionId}");
+            return false;
         }
     }
 
@@ -556,43 +568,51 @@ public sealed class SessionHistoryStore
 
     /// <summary>
     /// Store a Gateway-generated summary (or the honest "none"/"unavailable" verdicts).
-    /// Never overwrites a sealed summary - the session's own account wins.
     ///
-    /// <paramref name="materialReadAtUtc"/> is when the summariser READ the prompt log this summary was
-    /// made from, and a summary made from material older than an erasure is refused. Summarisation takes
-    /// seconds to minutes - a model call in the middle - so a pass that began before a delete lands well
-    /// after it, and would write the member's erased words straight back. The metadata reset makes that
-    /// worse rather than better: it moves the kind to null, which is exactly the state the sealed guard
-    /// below stops refusing.
+    /// ONE CONDITIONAL STATEMENT, for the reason given on <see cref="SetFirstPrompt"/>: the sealed check and
+    /// the watermark check are in the WHERE clause of the update that writes, so no other process can slip
+    /// an erasure between deciding and writing.
+    ///
+    /// A SEALED ROW IS STILL NOT OVERWRITTEN by the generator - the session's own account wins over anything
+    /// the Gateway wrote. That is a product rule about who wins, and it is unrelated to erasure: sealed rows
+    /// ARE erased by <see cref="ErasePromptDerived"/> now, because the seal route carries no provenance.
+    ///
+    /// <paramref name="materialReadAtUtc"/> is when the summariser read the prompt log this summary was made
+    /// from. It is NOT evidence that the material is recent - a re-read of retried pre-delete records
+    /// carries a fresh read time - which is why old material is now refused at INGEST rather than policed
+    /// here. This check remains as the second line of defence: it stops a summary that was already in
+    /// flight when the delete landed.
     /// </summary>
     public void StoreGeneratedSummary(string sessionId, string summaryKind, bool isPartial, string? summaryText,
         IReadOnlyList<string>? whatWasBuilt, IReadOnlyList<string>? leftUnverified,
         IReadOnlyList<string>? branches, IReadOnlyList<string>? pullRequests, IReadOnlyList<string>? commits,
         DateTime materialReadAtUtc)
     {
+        var text = string.IsNullOrWhiteSpace(summaryText) ? null : summaryText.Trim();
+        var built = SessionHistoryFold.ToJsonList(whatWasBuilt);
+        var unverified = SessionHistoryFold.ToJsonList(leftUnverified);
+        var branchesJson = SessionHistoryFold.ToJsonList(branches);
+        var pullRequestsJson = SessionHistoryFold.ToJsonList(pullRequests);
+        var commitsJson = SessionHistoryFold.ToJsonList(commits);
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            if (ErasedSince(ctx, materialReadAtUtc))
-            {
-                FileLog.Write($"[SessionHistoryStore] StoreGeneratedSummary REFUSED (material predates this account's erasure): session={sessionId}");
-                return;
-            }
-            var entity = ctx.SessionHistory.FirstOrDefault(e => e.SessionId == sessionId);
-            if (entity is null) return;
-            if (string.Equals(entity.SummaryKind, SessionHistorySummaryKinds.Sealed, StringComparison.Ordinal))
-                return;
-
-            entity.SummaryKind = summaryKind;
-            entity.SummaryIsPartial = isPartial;
-            entity.SummaryText = string.IsNullOrWhiteSpace(summaryText) ? null : summaryText.Trim();
-            entity.WhatWasBuiltJson = SessionHistoryFold.ToJsonList(whatWasBuilt);
-            entity.LeftUnverifiedJson = SessionHistoryFold.ToJsonList(leftUnverified);
-            entity.BranchesJson = SessionHistoryFold.ToJsonList(branches);
-            entity.PullRequestsJson = SessionHistoryFold.ToJsonList(pullRequests);
-            entity.CommitsJson = SessionHistoryFold.ToJsonList(commits);
-            ctx.SaveChanges();
-            FileLog.Write($"[SessionHistoryStore] summary stored: session={sessionId} kind={summaryKind} partial={isPartial}");
+            var written = ctx.SessionHistory
+                .Where(e => e.SessionId == sessionId
+                            && e.SummaryKind != SessionHistorySummaryKinds.Sealed
+                            && !ctx.PromptErasureWatermarks.Any(w => w.ErasedAtUtc >= materialReadAtUtc))
+                .ExecuteUpdate(s => s
+                    .SetProperty(e => e.SummaryKind, summaryKind)
+                    .SetProperty(e => e.SummaryIsPartial, isPartial)
+                    .SetProperty(e => e.SummaryText, text)
+                    .SetProperty(e => e.WhatWasBuiltJson, built)
+                    .SetProperty(e => e.LeftUnverifiedJson, unverified)
+                    .SetProperty(e => e.BranchesJson, branchesJson)
+                    .SetProperty(e => e.PullRequestsJson, pullRequestsJson)
+                    .SetProperty(e => e.CommitsJson, commitsJson));
+            FileLog.Write(written > 0
+                ? $"[SessionHistoryStore] summary stored: session={sessionId} kind={summaryKind} partial={isPartial}"
+                : $"[SessionHistoryStore] summary NOT stored (no row, sealed, or erased since the material was read): session={sessionId}");
         }
     }
 
@@ -713,39 +733,66 @@ public sealed class SessionHistoryStore
     /// <summary>
     /// Insert or replace one cached roll-up row.
     ///
+    /// The watermark comparison is IN the statements, like the other writers, but this one is an upsert and
+    /// an INSERT cannot carry a WHERE clause in one portable statement. So it is done in the order that
+    /// leaves no stale row behind:
+    ///
+    ///  1. A CONDITIONAL UPDATE for a row that already exists - watermark in the WHERE clause, atomic.
+    ///  2. If nothing was updated and no row exists, INSERT, then immediately a CONDITIONAL DELETE that
+    ///     removes what was just inserted if this account erased while it was being written.
+    ///
+    /// Step 2 can leave a row visible for the width of one statement if an erasure lands in that instant.
+    /// That is stated rather than hidden: it is a cached PARAGRAPH rather than the member's own text, and it
+    /// is gone by the time the next statement completes. The alternative is provider-specific raw SQL for a
+    /// conditional insert - a narrower window bought with two hand-written statements that nothing here can
+    /// check against each other.
+    ///
     /// <paramref name="materialReadAtUtc"/> is when the inputs this paragraph was written from were read.
-    /// A roll-up pass snapshots the day's session summaries, asks a model, and saves afterwards, so one
-    /// that began before an erasure would recreate a deleted row out of pre-delete text - and the row it
-    /// recreates is the one the History page shows as prose.
     /// </summary>
     public void SaveRollup(string repoKey, DateTime dayUtc, string? summaryText, string inputHash, int attempts,
         DateTime nowUtc, DateTime materialReadAtUtc)
     {
+        var day = dayUtc.Date;
+        var text = string.IsNullOrWhiteSpace(summaryText) ? null : summaryText.Trim();
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            if (ErasedSince(ctx, materialReadAtUtc))
+            var updated = ctx.SessionHistoryRollups
+                .Where(r => r.RepoKey == repoKey && r.DayUtc == day
+                            && !ctx.PromptErasureWatermarks.Any(w => w.ErasedAtUtc >= materialReadAtUtc))
+                .ExecuteUpdate(s => s
+                    .SetProperty(r => r.SummaryText, text)
+                    .SetProperty(r => r.InputHash, inputHash)
+                    .SetProperty(r => r.Attempts, attempts)
+                    .SetProperty(r => r.ComputedAtUtc, nowUtc));
+            if (updated > 0) return;
+
+            if (ctx.SessionHistoryRollups.Any(r => r.RepoKey == repoKey && r.DayUtc == day))
             {
-                FileLog.Write($"[SessionHistoryStore] SaveRollup REFUSED (material predates this account's erasure): repo={repoKey} day={dayUtc:yyyy-MM-dd}");
+                // The row is there and the conditional update did not take it: this account erased since the
+                // material was read. That is the refusal.
+                FileLog.Write($"[SessionHistoryStore] SaveRollup REFUSED (material predates this account's erasure): repo={repoKey} day={day:yyyy-MM-dd}");
                 return;
             }
-            var day = dayUtc.Date;
-            var entity = ctx.SessionHistoryRollups.FirstOrDefault(r => r.RepoKey == repoKey && r.DayUtc == day);
-            if (entity is null)
+
+            ctx.SessionHistoryRollups.Add(new SessionHistoryRollupEntity
             {
-                entity = new SessionHistoryRollupEntity
-                {
-                    TenantId = ctx.ActiveTenant!,
-                    RepoKey = repoKey,
-                    DayUtc = day,
-                };
-                ctx.SessionHistoryRollups.Add(entity);
-            }
-            entity.SummaryText = string.IsNullOrWhiteSpace(summaryText) ? null : summaryText.Trim();
-            entity.InputHash = inputHash;
-            entity.Attempts = attempts;
-            entity.ComputedAtUtc = nowUtc;
+                TenantId = ctx.ActiveTenant!,
+                RepoKey = repoKey,
+                DayUtc = day,
+                SummaryText = text,
+                InputHash = inputHash,
+                Attempts = attempts,
+                ComputedAtUtc = nowUtc,
+            });
             ctx.SaveChanges();
+
+            var undone = ctx.SessionHistoryRollups
+                .Where(r => r.RepoKey == repoKey && r.DayUtc == day
+                            && ctx.PromptErasureWatermarks.Any(w => w.ErasedAtUtc >= materialReadAtUtc))
+                .ExecuteDelete();
+            if (undone > 0)
+                FileLog.Write($"[SessionHistoryStore] SaveRollup UNDONE (this account erased while the row was inserted): repo={repoKey} day={day:yyyy-MM-dd}");
         }
     }
 

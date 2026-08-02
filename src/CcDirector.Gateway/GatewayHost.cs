@@ -996,7 +996,12 @@ public sealed class GatewayHost : IAsyncDisposable
             ? new Stats.LateStatsObservers(StatsStore)
             : null;
         InputStatsHandle = OpenInputStats(inputStatsPath, _hostedStatsObservers);
-        _promptLog = new Prompts.GatewayPromptLog(promptLogPath);
+        // The prompt log refuses material older than the account's erasure, and it asks the history store
+        // for that watermark THROUGH A DELEGATE, resolved at call time: the log is built here, long before
+        // the database, and a null field captured now would be a permanently open door. The tenant is
+        // passed explicitly because the ingest path does not enter the ambient scope.
+        _promptLog = new Prompts.GatewayPromptLog(promptLogPath,
+            tenant => _sessionHistory?.PromptErasureWatermarkUtc(tenant));
         // The self-host fleet concurrency record, which is the only one constructed eagerly. A hosted
         // Gateway never constructs it, so gateway-concurrency-stats.json is never written on that path -
         // see the SessionConcurrency property for the incident that makes writing it there unacceptable -

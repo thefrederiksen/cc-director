@@ -92,10 +92,20 @@ public sealed class GatewayPromptLog
     private object GateFor(TenantId tenant) => _gates.GetOrAdd(tenant, static _ => new object());
 
     /// <param name="directory">Override the log directory (tests). Defaults to the per-user location.</param>
-    public GatewayPromptLog(string? directory = null)
+    /// <summary>
+    /// <paramref name="erasureWatermarkUtc"/> answers "when did this account last erase its prompt
+    /// history", and <see cref="Append"/> refuses material older than that. It is a delegate rather than a
+    /// store reference because this class is a FILE store and has no database of its own; the Gateway wires
+    /// it to the history store, and a caller with no database at all (the self-host-only test harnesses)
+    /// passes null, which means no erasure is known and nothing is refused.
+    /// </summary>
+    public GatewayPromptLog(string? directory = null, Func<TenantId, DateTime?>? erasureWatermarkUtc = null)
     {
         _directory = string.IsNullOrWhiteSpace(directory) ? DefaultDirectory() : directory;
+        _erasureWatermarkUtc = erasureWatermarkUtc;
     }
+
+    private readonly Func<TenantId, DateTime?>? _erasureWatermarkUtc;
 
     /// <summary>The Gateway's prompt-log directory.</summary>
     public static string DefaultDirectory() => CcStorage.PromptLog();
@@ -148,6 +158,15 @@ public sealed class GatewayPromptLog
         return combined;
     }
 
+    /// <summary>
+    /// When a record's material came into existence, as far as this Gateway can honestly tell: the
+    /// Director's own timestamp, CLAMPED to when we received it. The clamp only ever moves a time
+    /// BACKWARDS, so it cannot refuse a legitimate record - it removes the one direction a wrong clock
+    /// could exploit, which is stamping old material into the future to walk it past an erasure.
+    /// </summary>
+    public static DateTime MaterialTimeUtc(PromptRecord record, DateTime receivedAtUtc)
+        => record.TsUtc < receivedAtUtc ? record.TsUtc : receivedAtUtc;
+
     /// <summary>The daily file a message at <paramref name="utcNow"/> lands in, for one tenant.</summary>
     public string FileFor(TenantId tenant, DateTime utcNow)
         => Path.Combine(DirectoryFor(tenant), $"conversation-{utcNow:yyyyMMdd}.jsonl");
@@ -155,6 +174,24 @@ public sealed class GatewayPromptLog
     /// <summary>
     /// Append messages pushed by a Director, into that Director's tenant partition. Returns how many were
     /// written. Never throws: a logging failure must not fail the Director's push.
+    ///
+    /// RECORDS OLDER THAN THIS ACCOUNT'S ERASURE ARE REFUSED AT THE DOOR, and that is the only version of
+    /// this guarantee that does not need every downstream consumer to be perfect forever. The Director
+    /// RETRIES records the Gateway did not accept, so after a delete an old batch can arrive and be stored
+    /// again; a summariser reading it afterwards has no way to tell - it stamps its own read time, which is
+    /// honestly recent, and writes a summary made of the member's erased prompts. Keeping the material out
+    /// is what stops that, rather than policing each thing that later reads the log.
+    ///
+    /// THE MATERIAL TIME IS CLAMPED to the Gateway's receipt time. <c>TsUtc</c> is supplied by the Director
+    /// and is not ours: a clock running ahead would otherwise stamp old prompts into the future and walk
+    /// them past the erasure. Clamping cannot make a record look OLDER than it is, so it never refuses
+    /// anything legitimate.
+    ///
+    /// WHAT THIS DOES NOT DECIDE: a record that arrives after the erasure carrying a time after the
+    /// erasure is accepted. If a Director's clock is ahead and it retries an old prompt, that record is
+    /// indistinguishable here from a prompt sent a second ago, and the Gateway has no evidence to tell them
+    /// apart. Closing that means the Director honouring the delete rather than retrying at all - issue
+    /// #2380 - and it is stated here rather than left as an unexplained edge.
     /// </summary>
     public int Append(TenantId tenant, IEnumerable<PromptRecord> records)
     {
@@ -163,6 +200,17 @@ public sealed class GatewayPromptLog
         var written = 0;
         try
         {
+            var receivedAtUtc = DateTime.UtcNow;
+            var erasedAtUtc = _erasureWatermarkUtc?.Invoke(tenant);
+            if (erasedAtUtc is { } erased)
+            {
+                var all = records as IReadOnlyCollection<PromptRecord> ?? records.ToList();
+                var kept = all.Where(r => MaterialTimeUtc(r, receivedAtUtc) > erased).ToList();
+                if (kept.Count != all.Count)
+                    FileLog.Write($"[GatewayPromptLog] Append REFUSED {all.Count - kept.Count} record(s) older than this account's erasure: tenant={tenant.ToLogString()}");
+                if (kept.Count == 0) return 0;
+                records = kept;
+            }
             // Group by day so a batch spanning midnight (or a backfill spanning months) lands in the
             // right daily files rather than all in today's.
             foreach (var day in records.GroupBy(r => r.TsUtc.Date))

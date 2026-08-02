@@ -228,7 +228,7 @@ public sealed class SessionHistoryStoreTests : IDisposable
             WhatWasBuilt = new[] { "History page" },
             LeftUnverified = new[] { "kill-survival proof" },
             Branches = new[] { "feat/2194-work-history" },
-        });
+        }, DateTime.UtcNow);
         store.StoreGeneratedSummary("s1", SessionHistorySummaryKinds.Generated, isPartial: true,
             "A generated account that must not win.", null, null, null, null, null, DateTime.UtcNow);
 
@@ -244,7 +244,7 @@ public sealed class SessionHistoryStoreTests : IDisposable
     [Fact]
     public void Sealing_an_unknown_session_reports_not_found()
     {
-        Assert.False(NewStore().SealSummary("ghost", new SealSessionSummaryRequest { Summary = "x" }));
+        Assert.False(NewStore().SealSummary("ghost", new SealSessionSummaryRequest { Summary = "x" }, DateTime.UtcNow));
     }
 
     [Fact]
@@ -466,44 +466,78 @@ public sealed class SessionHistoryStoreTests : IDisposable
     }
 
     /// <summary>
-    /// A summary the SESSION sealed is its own farewell, submitted through the seal verb and never read
-    /// out of the prompt log. It survives the delete, because a delete that erases more than it claims is
-    /// a different false claim rather than a safer one - a member deleting prompt history has not asked to
-    /// lose a farewell they never associated with prompts.
+    /// A SEALED summary is erased with everything else, and this REVERSES what this file asserted for two
+    /// rounds. The exemption rested on a verification that turned out to answer the wrong question: it
+    /// established that <c>SummaryKind</c> tracks which WRITER wrote the row, when what was needed was that
+    /// the CONTENT is not prompt-derived. The seal route takes caller-supplied prose with no material time
+    /// and no provenance of any kind, so a seal composed from the member's own prompts is accepted exactly
+    /// like any other - and the exemption would then have preserved it through every later delete.
     ///
-    /// The prompt LINE still goes from that same row: it is the member's prompt whatever else the row
-    /// holds. Both halves are asserted here, because a test that only checked the seal survived would pass
-    /// just as well over an exemption that spared the whole row.
+    /// The fields are seeded through the real seal route so this is the actual shape a sealed row has.
     /// </summary>
     [Fact]
-    public void A_sealed_farewell_survives_the_erasure_but_its_prompt_line_does_not()
+    public void A_sealed_summary_is_erased_too_because_the_seal_route_proves_nothing_about_its_source()
     {
         var db = _harness.Open();
         var store = new SessionHistoryStore(db);
         var now = DateTime.UtcNow;
         store.UpsertLive("dir-1", Session(name: null), now);
-        store.SetFirstPrompt("s1", "the member's own prompt, which goes", DateTime.UtcNow);
-        store.SealSummary("s1", new SealSessionSummaryRequest
+        store.SetFirstPrompt("s1", "the member's own prompt", now.AddMinutes(-1));
+        Assert.True(store.SealSummary("s1", new SealSessionSummaryRequest
         {
-            Summary = "The session's own farewell, which stays.",
+            Summary = "A farewell that may well be made of the member's prompts.",
             WhatWasBuilt = new[] { "the erasure" },
+            LeftUnverified = new[] { "nothing" },
             Branches = new[] { "prompt-delete-erases" },
-        });
-        store.NoteSummaryFailure("s1");
+            PullRequests = new[] { "2379" },
+            Commits = new[] { "abc1234" },
+        }, DateTime.UtcNow));
 
         var erased = store.ErasePromptDerived();
 
         using var ctx = db.CreateContext();
         var after = ctx.SessionHistory.AsNoTracking().Single(e => e.SessionId == "s1");
         Assert.Null(after.FirstPromptLine);
-        Assert.Equal("The session's own farewell, which stays.", after.SummaryText);
-        Assert.Equal(SessionHistorySummaryKinds.Sealed, after.SummaryKind);
-        Assert.Equal("[\"the erasure\"]", after.WhatWasBuiltJson);
-        Assert.Equal("[\"prompt-delete-erases\"]", after.BranchesJson);
-        // The attempt counter rides with the seal: it counts summariser tries, not content, and says
-        // nothing about any prompt.
-        Assert.Equal(1, after.SummaryAttempts);
+        Assert.Null(after.SummaryText);
+        Assert.Null(after.WhatWasBuiltJson);
+        Assert.Null(after.LeftUnverifiedJson);
+        Assert.Null(after.BranchesJson);
+        Assert.Null(after.PullRequestsJson);
+        Assert.Null(after.CommitsJson);
+        Assert.Null(after.SummaryKind);
         Assert.Equal(1, erased.SessionRows);
+        // The session RECORD survives - this erases prompt-derived content, not the member's history.
+        Assert.Equal(@"D:\repos\devthrottle", after.RepoPath);
+    }
+
+    /// <summary>
+    /// A seal prepared before a delete must not land after it. The seal request carries no material time,
+    /// so the route supplies the Gateway's receipt time and the store refuses anything at or before the
+    /// erasure - and the refusal is reported to the caller rather than swallowed.
+    /// </summary>
+    [Fact]
+    public void A_seal_arriving_after_a_delete_is_refused()
+    {
+        var db = _harness.Open();
+        var store = new SessionHistoryStore(db);
+        var now = DateTime.UtcNow;
+        store.UpsertLive("dir-1", Session(name: null), now);
+
+        store.ErasePromptDerived();
+
+        // The seal was composed before the delete; it reaches the Gateway after it.
+        var accepted = store.SealSummary("s1", new SealSessionSummaryRequest
+        {
+            Summary = "Composed before the delete, delivered after it.",
+        }, now.AddMinutes(-1));
+
+        Assert.False(accepted);
+        using var ctx = db.CreateContext();
+        Assert.Null(ctx.SessionHistory.AsNoTracking().Single(e => e.SessionId == "s1").SummaryText);
+
+        // Control: a seal whose material the Gateway saw after the delete is the session's to record.
+        Assert.True(store.SealSummary("s1", new SealSessionSummaryRequest { Summary = "After." },
+            DateTime.UtcNow.AddSeconds(1)));
     }
 
     /// <summary>
@@ -541,10 +575,9 @@ public sealed class SessionHistoryStoreTests : IDisposable
     }
 
     /// <summary>
-    /// The reported count is now taken by a SEPARATE query from the two updates that do the work, so it
-    /// can drift from them silently. This pins it: three rows, one of which is sealed with nothing else on
-    /// it and must not be counted, and one of which carries BOTH a prompt line and a summary and must be
-    /// counted ONCE rather than twice.
+    /// The reported count is taken by a separate query from the update that does the work, so it can drift
+    /// from it silently. This pins it: two rows carry something, one carries nothing, and the row carrying
+    /// BOTH a prompt line and a summary is counted ONCE rather than twice.
     /// </summary>
     [Fact]
     public void The_reported_count_is_rows_changed_counted_once_each()
@@ -555,22 +588,20 @@ public sealed class SessionHistoryStoreTests : IDisposable
 
         // Carries both - one row, one count.
         store.UpsertLive("dir-1", Session(id: "both", name: null), now);
-        store.SetFirstPrompt("both", "a prompt", DateTime.UtcNow);
+        store.SetFirstPrompt("both", "a prompt", now.AddMinutes(-1));
         store.StoreGeneratedSummary("both", SessionHistorySummaryKinds.Generated, isPartial: false,
             "a generated summary", null, null, null, null, null, DateTime.UtcNow);
         // Carries only a prompt line.
         store.UpsertLive("dir-1", Session(id: "prompt-only", name: null), now);
-        store.SetFirstPrompt("prompt-only", "another prompt", DateTime.UtcNow);
-        // Sealed, and nothing else on it: nothing to erase, so nothing to count.
-        store.UpsertLive("dir-1", Session(id: "sealed-only", name: null), now);
-        store.SealSummary("sealed-only", new SealSessionSummaryRequest { Summary = "a farewell" });
+        store.SetFirstPrompt("prompt-only", "another prompt", now.AddMinutes(-1));
+        // Carries nothing erasable at all: not counted.
+        store.UpsertLive("dir-1", Session(id: "bare", name: null), now);
 
         var erased = store.ErasePromptDerived();
 
         Assert.Equal(2, erased.SessionRows);
         using var ctx = db.CreateContext();
-        Assert.Equal("a farewell",
-            ctx.SessionHistory.AsNoTracking().Single(e => e.SessionId == "sealed-only").SummaryText);
+        Assert.Equal(3, ctx.SessionHistory.AsNoTracking().Count());
     }
 
     [Fact]
