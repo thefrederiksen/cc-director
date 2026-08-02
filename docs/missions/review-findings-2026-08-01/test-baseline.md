@@ -398,6 +398,60 @@ sensitive and insensitive. **And the detector was validated before its zero was 
 line that was there, it returns 1. A zero from an unvalidated pattern proves the grep ran, not that the
 branch is clean - which is precisely how the earlier scans passed.
 
+---
+
+## W2's SIXTH gate - BUILD FAILED, no tests ran. Recorded because it is the interesting one.
+
+Started 11:57, and it never executed a single test:
+
+```
+error MSB3027: Could not copy ... CcDirector.Gateway.dll ... Exceeded retry count of 10.
+             The file is locked by: "testhost (58852)"
+RESULT: BUILD FAILED - no tests were run.
+```
+
+**What caused it was mine.** A filtered test run had queued behind another session's suite; I stopped it
+to keep to one run at a time, and the `dotnet test` wrapper died while its TEST HOST survived, holding
+this worktree's output assemblies. The next build could not overwrite them.
+
+**Two things worth keeping:**
+
+1. **The script reported a failed build rather than a green over nothing.** That is the exact failure this
+   whole gate discipline exists for - a run that executes zero tests and prints something reassuring. It
+   printed `no tests were run`, and the TRX verdict block printed nothing to mistake for a pass.
+2. **Stopping a test run does not stop its test host.** Anyone killing a queued run needs to check for the
+   orphan afterwards, or the next build fails in a way that looks like a code problem and is not.
+
+The orphan was identified by BOTH process id and worktree path before anything was killed - three other
+test hosts were live at that moment, in `devthrottle-mission-attach`, `dt-dictation-audio` and
+`devthrottle-director-target`, and the machine-wide suite lock was held by another session's run. One
+process was killed, in this worktree, at 2.9 processor-seconds and idle.
+
+## W2's SEVENTH gate - GREEN, the round-four escalation
+
+Restarted 12:00 on a clean tree, finished 13:22. The Gateway suite took **1 hour 14 minutes** against a
+typical nine, sharing the machine with another session's full suite; processor readings a minute apart
+showed it working throughout.
+
+| Project | Outcome | Total | vs the fifth gate | Executed | Failed | Skipped |
+|---|---|---|---|---|---|---|
+| CcDirector.Gateway.Tests | Completed | 5201 | 5199 (+2) | 5146 | 0 | 55 |
+| CcDirector.Core.Tests | Completed | 4196 | 4196 (=) | 4188 | 0 | 8 |
+| CcDirector.Avalonia.Tests | Completed | 353 | 353 (=) | 353 | 0 | 0 |
+| CcDirector.Launcher.Tests | Completed | 110 | 110 (=) | 110 | 0 | 0 |
+| CcDirector.HostedAgent.Tests | Completed | 88 | 88 (=) | 88 | 0 | 0 |
+| CcDirector.Engine.Tests | Completed | 63 | 63 (=) | 63 | 0 | 0 |
+| CcDirector.Terminal.Avalonia.Tests | Completed | 24 | 24 (=) | 24 | 0 | 0 |
+
+The +2 is the two round-four facts, both EXECUTED and passed and named here so the pair can be checked
+rather than inferred: `A_director_claiming_a_future_start_cannot_get_a_pre_erasure_session_sealed` and
+`A_failed_summarisation_from_before_the_delete_cannot_re_arm_the_metadata_it_cleared`. **30 erasure facts
+executed and passed**, nothing in the suite anything other than passed or skipped.
+
+Ancestry: `origin/main` is an ancestor of the code branch. The WORDING repository's main moved to
+`416fe07` (a landing-page change touching no file this branch touches), so that branch was rebased -
+rebase for ancestry, no re-gate, the rule applied without asking.
+
 ### Two commits on this branch post-date their gate, both comment-only
 
 `d73e5d2e3` (the concurrent-ingest window) and `2c751cf77` / `c379c02c8` after the rebase (why the three
