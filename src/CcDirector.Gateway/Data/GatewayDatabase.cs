@@ -29,6 +29,44 @@ public sealed class GatewayDatabase : IDisposable
     /// the local install: the SQLite file behavior is unchanged.</summary>
     public const string PostgresConnectionEnvVar = "CC_GATEWAY_DB_CONNECTION";
 
+    // ---- opening PostgreSQL under deploy contention (issue #2383) --------------------------------
+    // On 2 August 2026 a deploy stopped the LIVE SITE for 38.5 seconds. Not because the swap was slow -
+    // the swap measured 0.0s, as every healthy deploy does - but because the container App Service
+    // starts after a swap got ONE refused PostgreSQL connection and treated it as terminal. The port
+    // bind sits behind this open, so nothing ever listened; the platform waited out its 230-second
+    // container start limit, found no listening port, and STOPPED THE SITE, killing the healthy
+    // container that had been serving throughout. Four minutes later the same image on the same worker
+    // opened the same database in 1.6 seconds.
+    //
+    // The refusal is contention, and it is structural rather than bad luck: a swap briefly runs FOUR
+    // Gateway containers (the warmed one, the old one, and the two new ones), each with two Npgsql
+    // pools, against a session-mode pooler in front of a server with max_connections=60. Post-swap
+    // boots had been blowing their deadlines on every deploy for days before one finally crossed from
+    // slow into refused.
+    //
+    // So: a refused connection is no longer proof the database is gone. The open is retried with
+    // backoff for a bounded window. This is NOT a fallback and does not weaken the fail-loud contract -
+    // it never reverts to SQLite, never starts without a database, and still throws at the end of the
+    // window. It only stops one refusal during the noisiest ninety seconds of a deploy from being
+    // mistaken for a dead database.
+    //
+    // The window is bounded well inside the platform's 230-second limit so a genuinely dead database
+    // still fails the container rather than hanging it: 90 seconds of retry plus the rest of boot
+    // leaves ample headroom, and the measured recovery case resolved in far less.
+    private static readonly TimeSpan PostgresOpenRetryWindow = TimeSpan.FromSeconds(90);
+    private const int PostgresOpenFirstDelayMs = 1_000;
+    private const int PostgresOpenMaxDelayMs = 10_000;
+
+    /// <summary>
+    /// Maximum Npgsql pool size for the Gateway store when the connection string does not set one.
+    /// Npgsql's default is 100; a Gateway container holds about four backends at rest, and the server
+    /// behind the pooler allows sixty connections in total. Four containers times two unbounded pools
+    /// is headroom nothing needs and is the pressure that produced the refusal above. An explicit value
+    /// in the connection string always wins - this is a ceiling for the unconfigured case, not an
+    /// override of the operator.
+    /// </summary>
+    internal const int DefaultMaxPoolSize = 10;
+
     private readonly string _path;
     private readonly bool _usePostgres;
     private readonly ITenantContext _tenant;
@@ -39,6 +77,46 @@ public sealed class GatewayDatabase : IDisposable
     /// <summary>The database file path (SQLite), for logging. On the Postgres path this is NOT a file - it
     /// holds a credential-redacted description of the connection target instead.</summary>
     public string Path => _path;
+
+    /// <summary>
+    /// Return <paramref name="connectionString"/> with an explicit maximum pool size, unless it already
+    /// carries one. Npgsql defaults to 100 connections per pool; the hosted server behind the pooler
+    /// allows sixty in total, and a deploy briefly runs four containers with two pools each. Capping the
+    /// unconfigured case removes that pressure without taking the decision away from an operator who
+    /// stated a value on purpose.
+    ///
+    /// Pure and internal so it can be tested without a database. It NEVER logs and never returns anything
+    /// to a caller that logs - the value is a credentialed connection string.
+    /// </summary>
+    internal static string WithBoundedPool(string connectionString, int maxPoolSize)
+    {
+        var builder = new NpgsqlConnectionStringBuilder(connectionString);
+        // Both spellings are accepted in a connection string; Npgsql canonicalises on parse, but ask for
+        // both rather than depending on which form the operator wrote.
+        if (builder.ContainsKey("Maximum Pool Size") || builder.ContainsKey("MaxPoolSize"))
+            return connectionString;
+        builder.MaxPoolSize = maxPoolSize;
+        return builder.ConnectionString;
+    }
+
+    /// <summary>
+    /// A log-safe description of a database open failure.
+    ///
+    /// The generic exception message is NEVER used: a malformed connection string is echoed back by the
+    /// parser, so stringifying the exception can leak credentials into a log. But when the server itself
+    /// answered, its <see cref="PostgresException.SqlState"/> and <see cref="PostgresException.MessageText"/>
+    /// are the server's own error code and text - they are produced by PostgreSQL, cannot contain the
+    /// client's connection string, and are the difference between "we know it said too_many_connections"
+    /// and the bare word "PostgresException", which is all the 2 August outage left behind.
+    ///
+    /// Pure and internal so the redaction contract can be tested directly.
+    /// </summary>
+    internal static string DescribeFailure(Exception ex)
+    {
+        return ex is PostgresException pg
+            ? $"{nameof(PostgresException)} SqlState={pg.SqlState} MessageText={pg.MessageText}"
+            : ex.GetType().Name;
+    }
 
     /// <param name="tenant">The ambient tenant context. On the local install this is
     /// <see cref="SingleTenantContext"/> and every row is the "local" tenant.</param>
@@ -72,75 +150,103 @@ public sealed class GatewayDatabase : IDisposable
             // database only) for logging, never the file path and never the credentials.
             _path = RedactConnectionTarget(pgConn!);
 
+            // Bound the connection pool before anything opens it (issue #2383). See DefaultMaxPoolSize.
+            var boundedConn = WithBoundedPool(pgConn!, DefaultMaxPoolSize);
+
             FileLog.Write($"[GatewayDatabase] Open: provider=Postgres target={_path}");
 
-            // Build the provider into a LOCAL first and only publish it to the readonly fields after Migrate()
-            // succeeds. If Migrate throws, the constructor never completes, so Dispose() can never run - the
-            // catch disposes the local provider itself, otherwise its pooled connections would leak.
-            ServiceProvider? provider = null;
-            try
+            // Retry the open for a bounded window rather than treating one refusal as a dead database.
+            // Every attempt builds a FRESH provider: a provider whose pool was created against a refusing
+            // server is not reusable, and disposing it between attempts is what stops a retry loop from
+            // leaking pooled connections into the very contention it is waiting out.
+            var deadline = DateTime.UtcNow + PostgresOpenRetryWindow;
+            var delayMs = PostgresOpenFirstDelayMs;
+            for (var attempt = 1; ; attempt++)
             {
-                var services = new ServiceCollection();
-                services.AddPooledDbContextFactory<GatewayDbContext>(o => o.UseNpgsql(pgConn, npg =>
+                // Build the provider into a LOCAL first and only publish it to the readonly fields after Migrate()
+                // succeeds. If Migrate throws, the constructor never completes, so Dispose() can never run - the
+                // catch disposes the local provider itself, otherwise its pooled connections would leak.
+                ServiceProvider? provider = null;
+                try
                 {
-                    npg.MigrationsAssembly("CcDirector.Gateway.Migrations.Postgres");
-                    npg.MigrationsHistoryTable("__EFMigrationsHistory", "gateway");
-                }));
-                provider = services.BuildServiceProvider();
-                var factory = provider.GetRequiredService<IDbContextFactory<GatewayDbContext>>();
+                    var services = new ServiceCollection();
+                    services.AddPooledDbContextFactory<GatewayDbContext>(o => o.UseNpgsql(boundedConn, npg =>
+                    {
+                        npg.MigrationsAssembly("CcDirector.Gateway.Migrations.Postgres");
+                        npg.MigrationsHistoryTable("__EFMigrationsHistory", "gateway");
+                    }));
+                    provider = services.BuildServiceProvider();
+                    var factory = provider.GetRequiredService<IDbContextFactory<GatewayDbContext>>();
 
-                using (var ctx = factory.CreateDbContext())
-                {
-                    // Apply the Postgres migration set (its own assembly + gateway-schema history table). No
-                    // PRAGMA journal_mode here - WAL is a SQLite-only setting and Postgres has its own WAL.
-                    //
-                    // ASK FIRST (issue #2203). Migrate() takes an EXCLUSIVE database-wide advisory lock before
-                    // it looks at whether there is anything to apply, and it holds that lock for the whole
-                    // call with no lock timeout and no command timeout. Every deploy runs two Gateway
-                    // containers against this one database, so the second one waits on the first: measured at
-                    // 43 seconds on a deploy carrying NO schema change, against 7 seconds with nothing else
-                    // running. That wait sits in front of the port bind, and when it pushes the bind past the
-                    // platform's 230-second startup deadline the platform stops the SITE - which is the
-                    // user-visible outage this issue is about.
-                    //
-                    // GetPendingMigrations() takes no lock: it reads the history table and compares. On a
-                    // code-only deploy - most deploys - the answer is "none" and we skip the locking call
-                    // entirely. This is NOT a fallback and it does not weaken the contract: when there ARE
-                    // migrations we still call Migrate() and still fail loudly if it throws. It only removes
-                    // a lock acquisition that had nothing to do.
-                    var pending = ctx.Database.GetPendingMigrations().ToList();
-                    if (pending.Count == 0)
+                    using (var ctx = factory.CreateDbContext())
                     {
-                        FileLog.Write("[GatewayDatabase] Migrate: no pending migrations - skipping Migrate() and its database-wide lock");
+                        // Apply the Postgres migration set (its own assembly + gateway-schema history table). No
+                        // PRAGMA journal_mode here - WAL is a SQLite-only setting and Postgres has its own WAL.
+                        //
+                        // ASK FIRST (issue #2203). Migrate() takes an EXCLUSIVE database-wide advisory lock before
+                        // it looks at whether there is anything to apply, and it holds that lock for the whole
+                        // call with no lock timeout and no command timeout. Every deploy runs two Gateway
+                        // containers against this one database, so the second one waits on the first: measured at
+                        // 43 seconds on a deploy carrying NO schema change, against 7 seconds with nothing else
+                        // running. That wait sits in front of the port bind, and when it pushes the bind past the
+                        // platform's 230-second startup deadline the platform stops the SITE - which is the
+                        // user-visible outage this issue is about.
+                        //
+                        // GetPendingMigrations() takes no lock: it reads the history table and compares. On a
+                        // code-only deploy - most deploys - the answer is "none" and we skip the locking call
+                        // entirely. This is NOT a fallback and it does not weaken the contract: when there ARE
+                        // migrations we still call Migrate() and still fail loudly if it throws. It only removes
+                        // a lock acquisition that had nothing to do.
+                        var pending = ctx.Database.GetPendingMigrations().ToList();
+                        if (pending.Count == 0)
+                        {
+                            FileLog.Write("[GatewayDatabase] Migrate: no pending migrations - skipping Migrate() and its database-wide lock");
+                        }
+                        else
+                        {
+                            FileLog.Write($"[GatewayDatabase] Migrate: {pending.Count} pending migration(s), applying: {string.Join(", ", pending)}");
+                            ctx.Database.Migrate();
+                            FileLog.Write($"[GatewayDatabase] Migrate: applied {pending.Count} migration(s)");
+                        }
                     }
-                    else
-                    {
-                        FileLog.Write($"[GatewayDatabase] Migrate: {pending.Count} pending migration(s), applying: {string.Join(", ", pending)}");
-                        ctx.Database.Migrate();
-                        FileLog.Write($"[GatewayDatabase] Migrate: applied {pending.Count} migration(s)");
-                    }
+
+                    _provider = provider;
+                    _factory = factory;
+
+                    FileLog.Write($"[GatewayDatabase] Open: ready, provider=Postgres target={_path}, attempt={attempt}");
+                    return;
                 }
+                catch (Exception ex)
+                {
+                    provider?.Dispose();
+                    // The provider's exception message can carry the raw connection string (a malformed one is
+                    // echoed back by the parser), so it is NEVER interpolated into the log or the thrown message.
+                    // DescribeFailure adds the SERVER's own error code and text when there is one - neither can
+                    // contain the connection string - so the next failure is diagnosable instead of being
+                    // recorded as the single word "PostgresException", which is what left the root cause of the
+                    // 2 August outage permanently unknowable. The full exception is preserved as the
+                    // InnerException without us stringifying it anywhere.
+                    var detail = DescribeFailure(ex);
+                    var remaining = deadline - DateTime.UtcNow;
+                    if (remaining <= TimeSpan.Zero)
+                    {
+                        FileLog.Write($"[GatewayDatabase] Open FAILED: provider=Postgres target={_path} "
+                            + $"after {attempt} attempt(s) over {PostgresOpenRetryWindow.TotalSeconds:F0}s: {detail}");
+                        throw new InvalidOperationException(
+                            $"The Gateway PostgreSQL database ('{_path}') could not be opened or migrated ({detail}) " +
+                            $"after {attempt} attempt(s) over {PostgresOpenRetryWindow.TotalSeconds:F0} seconds. " +
+                            "PostgreSQL is configured via " + PostgresConnectionEnvVar + ", so the Gateway will NOT " +
+                            "fall back to SQLite or to the old JSON stores. Fix the connection string, the server, or " +
+                            "the schema and restart the Gateway.", ex);
+                    }
 
-                _provider = provider;
-                _factory = factory;
-
-                FileLog.Write($"[GatewayDatabase] Open: ready, provider=Postgres target={_path}");
+                    var delay = TimeSpan.FromMilliseconds(Math.Min(delayMs, (int)remaining.TotalMilliseconds));
+                    FileLog.Write($"[GatewayDatabase] Open attempt {attempt} failed, retrying in {delay.TotalSeconds:F1}s "
+                        + $"({remaining.TotalSeconds:F0}s of the window left): provider=Postgres target={_path}: {detail}");
+                    Thread.Sleep(delay);
+                    delayMs = Math.Min(delayMs * 2, PostgresOpenMaxDelayMs);
+                }
             }
-            catch (Exception ex)
-            {
-                provider?.Dispose();
-                // The provider's exception message can carry the raw connection string (a malformed one is
-                // echoed back by the parser), so it is NEVER interpolated into the log or the thrown message.
-                // The redacted target plus the exception TYPE name is enough to diagnose; the full exception is
-                // preserved as the InnerException without us stringifying it anywhere.
-                FileLog.Write($"[GatewayDatabase] Open FAILED: provider=Postgres target={_path}: {ex.GetType().Name}");
-                throw new InvalidOperationException(
-                    $"The Gateway PostgreSQL database ('{_path}') could not be opened or migrated ({ex.GetType().Name}). " +
-                    "PostgreSQL is configured via " + PostgresConnectionEnvVar + ", so the Gateway will NOT " +
-                    "fall back to SQLite or to the old JSON stores. Fix the connection string, the server, or " +
-                    "the schema and restart the Gateway.", ex);
-            }
-            return;
         }
 
         _path = string.IsNullOrWhiteSpace(dbPath) ? CcStorage.GatewayDb() : dbPath!;

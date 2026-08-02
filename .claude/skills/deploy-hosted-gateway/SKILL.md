@@ -16,12 +16,21 @@ version numbers, release notes, tags, or the mailing list.
 
 ## What you must know first
 
+- **This workflow is the ONLY way to update the live Gateway.** Do not pin an
+  image, restart the site, change app settings, or touch the staging slot by hand
+  with `az`, and do not do it in the Azure Portal. Those paths skip the warmed
+  hand-off, the outage measurement and the refusals below, and a hand-driven
+  change is how you get an unmeasured outage on live sessions. If this workflow
+  cannot do what is needed, that is a gap to fix in the workflow, not to work
+  around. The emergency swap-back is also a workflow
+  (`rollback-hosted-gateway.yml`) - use it rather than swapping by hand.
 - **A person authorizes the go-live.** Starting this deploy pushes new code to
   the live service. Get an explicit go from the human before you start it. Do not
   start it on your own initiative.
-- **It deploys whatever commit you start it against.** By default that is the
-  current tip of `main`. There is no separate "staging" - main goes straight to
-  the live service when someone runs this.
+- **It will only ship green main.** The run refuses, in seconds and before it
+  touches anything, if it was started against any ref other than `refs/heads/main`,
+  or if the commit being shipped has a check that failed or has not finished. If it
+  refuses for a pending check, wait for continuous integration and start it again.
 - **It does not set up any infrastructure.** The Azure resource group, container
   registry, database connection, and storage are already provisioned and persist
   across deploys. This deploy only: rebuild the image, point the live service at
@@ -68,23 +77,21 @@ curl -s -m 20 -o /dev/null -w "HTTP %{http_code}\n" https://devthrottle-gw.azure
 
 A `200` means the live Gateway is up.
 
-**Expected gotcha - a brief blip right after restart.** For a minute or two after
-the restart, this check can return `502` or no response (`000`) while the fresh
-container boots and runs its database migrations. This is normal cold-start
-behavior, NOT a failed deploy. Do not panic and do not report failure. Poll every
-15 seconds until it returns `200`:
+**A blip here is NOT normal, and must not be waved through.** This used to say a
+minute or two of `502`/`000` was expected cold-start behaviour and told you not to
+report it. That was wrong, and it trained people to accept the exact failure that
+took the live service down for 38.5 seconds on 2 August 2026 (issue #2383).
 
-```
-for i in $(seq 1 12); do
-  code=$(curl -s -m 20 -o /dev/null -w "%{http_code}" https://devthrottle-gw.azurewebsites.net/healthz)
-  echo "attempt $i: HTTP $code"
-  [ "$code" = "200" ] && { echo RECOVERED; break; }
-  sleep 15
-done
-```
+The deploy is a **warmed slot swap**: the old instance keeps serving until the new
+one is proven healthy, so a healthy deploy has **no user-visible gap at all**.
+Three consecutive deploys measured `Longest unavailable stretch: 0.0s` over a
+ten-minute watch. There is no cold start on the user path, because the user is
+never moved onto a cold instance.
 
-If it is still not `200` after a few minutes, then it is a real problem - see
-Troubleshooting.
+So if `/healthz` does not answer `200` immediately after the run goes green,
+something went wrong with the hand-off. Say so; do not wait it out. The run itself
+now fails if the external outage exceeds five seconds, so a green run already
+means production stayed up.
 
 ### 5. Report plainly
 

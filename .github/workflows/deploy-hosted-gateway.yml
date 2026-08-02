@@ -41,6 +41,7 @@ on:
 permissions:
   id-token: write   # required for the Azure OIDC login
   contents: read
+  checks: read      # required to read the shipping commit's check runs (the green-only gate)
 
 env:
   AZURE_RG: rg-devthrottle-hosted-gateway
@@ -134,6 +135,75 @@ jobs:
       - name: Short SHA
         id: short
         run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      # ---- THE TWO GATES ON WHAT MAY REACH PRODUCTION ------------------------------------------
+      # This workflow is the ONLY supported way to update the live Gateway, so the conditions on what
+      # it will ship are the conditions on what can reach production at all. Both refusals are here,
+      # BEFORE the Azure login and the build, so a refused deploy costs seconds and touches nothing.
+      #
+      # 1. MAIN ONLY. workflow_dispatch will happily run against any branch or tag the caller picks,
+      #    which meant an unreviewed branch could be built and swapped into production without ever
+      #    having been merged. Production ships what is on main, or it does not ship.
+      - name: Refuse to deploy anything but main
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "REFUSED: this run was started against '$GITHUB_REF'."
+            echo "The live Gateway ships main and only main. Merge the change first, then deploy main."
+            exit 1
+          fi
+          echo "Ref check passed: deploying refs/heads/main at ${{ steps.short.outputs.short }}."
+
+      # 2. GREEN ONLY. Nothing previously checked that the commit being shipped had passing tests -
+      #    a red commit on main was as deployable as a green one. Ask GitHub for this exact commit's
+      #    check runs and refuse unless every completed one succeeded. A commit whose checks have not
+      #    finished is also refused: "not yet known to be good" is not "good", and the deploy can be
+      #    re-run in a few minutes. Queued or in-progress runs are reported so the refusal is
+      #    actionable rather than mysterious.
+      - name: Refuse to deploy a commit whose checks are not green
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+
+          # THIS run's own jobs are check runs on the same commit and are necessarily still in progress,
+          # so they must be excluded or the gate refuses itself. Exclude by RUN ID rather than by job
+          # name: the name is a human string that will be edited one day, and the failure mode of an
+          # out-of-date name here is a deploy that can never start.
+          all=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs" --paginate \
+                  --jq '.check_runs[] | [.name, .status, (.conclusion // ""), (.details_url // "")] | @tsv')
+
+          others=$(printf '%s\n' "$all" \
+                   | grep -v "/actions/runs/${GITHUB_RUN_ID}/" || true)
+
+          if [ -z "$others" ]; then
+            echo "REFUSED: commit ${sha} has no check runs of its own."
+            echo "Continuous integration must have run on this commit before it can ship."
+            exit 1
+          fi
+
+          echo "Checks on ${sha}:"
+          printf '%s\n' "$others" | awk -F'\t' '{ printf "  %s: %s %s\n", $1, $2, $3 }'
+
+          # neutral and skipped are passes: a check that deliberately did not apply to this commit has
+          # not failed it. Anything else completed and not successful is a refusal.
+          failed=$(printf '%s\n' "$others" \
+                   | awk -F'\t' '$2 == "completed" && $3 != "success" && $3 != "neutral" && $3 != "skipped" { print "  "$1" ("$3")" }')
+          pending=$(printf '%s\n' "$others" \
+                    | awk -F'\t' '$2 != "completed" { print "  "$1" ("$2")" }')
+
+          if [ -n "$failed" ]; then
+            echo "REFUSED: these checks did not pass on the commit being shipped:"
+            printf '%s\n' "$failed"
+            exit 1
+          fi
+          if [ -n "$pending" ]; then
+            echo "REFUSED: these checks have not finished on the commit being shipped:"
+            printf '%s\n' "$pending"
+            echo "Wait for continuous integration to finish, then start the deploy again."
+            exit 1
+          fi
+          echo "Check gate passed: every check on ${sha} is green."
 
       - name: Azure login (OIDC, no stored secret)
         uses: azure/login@v2
@@ -486,16 +556,33 @@ jobs:
       # and puts the SITE into Stopped. Two of the three were caught only because someone happened to be
       # polling by hand.
       #
-      # Two things are watched, because /healthz alone is not enough. Through the whole failing window the
-      # front door was still being served by the warmed instance, so an external poll looked perfect while
-      # the site was being driven to Stopped underneath it. The SITE STATE is the earlier and truer signal.
+      # Two things are watched, because neither alone is enough.
+      #
+      # CORRECTION (issue #2383). This comment used to claim the site state was "the earlier and truer
+      # signal". It is not, and trusting it would have hidden the worst outage we have had. On 2 August
+      # the platform genuinely stopped the site for 21 seconds - 12:57:49 to 12:58:10, spanning a sample
+      # at 12:57:50 - and EVERY site-state sample still read `Running`. The reason is that
+      # `az webapp show --query state` reports the DESIRED state in Azure Resource Manager (has anyone
+      # deliberately stopped this site), not whether a container is up. It cannot see a
+      # platform-initiated stop, which is the failure that actually takes production down.
+      #
+      # The EXTERNAL POLL is the signal that caught it, and it is the one the budget is judged on. The
+      # site-state sample stays because it is the only thing that catches a deliberate stop, and it costs
+      # nothing - but it is the weaker of the two and must not be read as a clean bill of health.
       # `az webapp show` READS; nothing in this step writes.
       - name: Watch production past the swap and measure the true outage
         id: outage
         if: needs.deploy.outputs.readiness_outcome == 'healthy'
         env:
           WATCH_SECONDS: '600'
-          MAX_ACCEPTABLE_OUTAGE_SECONDS: '30'
+          # FIVE, not thirty (issue #2383). A healthy deploy costs about ZERO - runs 30702895726,
+          # 30698993031 and 30679971846 each measured "Longest unavailable stretch: 0.0s" across the
+          # full watch - because the warmed hand-off is what the extra App Service tier was bought for.
+          # So this is not a cost curve to leave slack in: either the hand-off happened and the number
+          # is a rounding error, or it did not and the number is tens of seconds. Thirty sat squarely
+          # in the gap and would have passed a twenty-nine-second outage as a green deploy. Anything
+          # above a couple of seconds means the hand-off did not happen and is worth failing over.
+          MAX_ACCEPTABLE_OUTAGE_SECONDS: '5'
         run: |
           STATE_LOG=/tmp/site-state.log; : > "$STATE_LOG"
           echo "Watching for ${WATCH_SECONDS}s past the swap (the failure window is 2-4 minutes out)..."

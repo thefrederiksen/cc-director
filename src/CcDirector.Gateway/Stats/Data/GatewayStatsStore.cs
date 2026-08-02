@@ -430,6 +430,11 @@ public sealed class GatewayStatsStore : IDisposable
     /// <summary>Record that this store actually stored something, for the health surface.</summary>
     public void RecordSuccessfulWrite(DateTimeOffset whenUtc) => _health.RecordSuccessfulWrite(whenUtc);
 
+    /// <summary>Maximum Npgsql pool size for the statistics store when the connection string does not set
+    /// one. Lower than the main store's ceiling because statistics are the lighter workload; see
+    /// <see cref="CcDirector.Gateway.Data.GatewayDatabase.DefaultMaxPoolSize"/> for why either exists.</summary>
+    internal const int StatsMaxPoolSize = 5;
+
     /// <summary>
     /// Build the pooled context factory for the chosen provider.
     ///
@@ -444,8 +449,22 @@ public sealed class GatewayStatsStore : IDisposable
 
         if (choice.IsPostgres)
         {
+            // Bound this pool too (issue #2383). This is the SECOND Npgsql pool in every Gateway container -
+            // adding it roughly doubled the connections each container asks for, and a deploy briefly runs
+            // four containers against a session-mode pooler in front of a server that allows sixty
+            // connections in total. Unbounded, both pools default to a hundred each. Statistics are the
+            // lighter of the two workloads, so its ceiling is lower than the main store's. An explicit value
+            // in the connection string still wins.
+            //
+            // ConnectionString is null only when the source is NotConfigured, which IsPostgres excludes. If
+            // that invariant is ever broken this fails loud here rather than opening something unbounded.
+            var bounded = CcDirector.Gateway.Data.GatewayDatabase.WithBoundedPool(
+                choice.ConnectionString
+                    ?? throw new InvalidOperationException(
+                        $"Statistics store source is {choice.Source} (PostgreSQL) but carries no connection string."),
+                StatsMaxPoolSize);
             services.AddPooledDbContextFactory<GatewayStatsDbContext>(o =>
-                o.UseNpgsql(choice.ConnectionString, npg =>
+                o.UseNpgsql(bounded, npg =>
                 {
                     npg.MigrationsAssembly("CcDirector.Gateway.Migrations.Postgres");
                     npg.MigrationsHistoryTable("__EFMigrationsHistory", GatewayStatsDbContext.PostgresSchema);
