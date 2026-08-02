@@ -10,8 +10,17 @@ namespace CcDirector.Gateway.Prompts;
 /// <summary>
 /// The Gateway's prompt-log front door (issue #1551).
 ///
-/// POST /prompts - a Director pushes what it captured. The Director keeps no copy; this is the single
-/// copy, which is why the write is acknowledged with a real count rather than fire-and-forget.
+/// POST /prompts - a Director pushes what it captured. This is the SERVICE-SIDE copy and the only one
+/// DevThrottle holds, which is why the write is acknowledged with a real count rather than
+/// fire-and-forget.
+///
+/// It is NOT the only copy in the world, and this comment used to say it was. A Director also keeps
+/// prompt-derived text in local files on the member's own machine - a first-prompt snippet and per-turn
+/// summaries in its own session-history JSON, and an expected-first-prompt in <c>sessions.json</c> and its
+/// backup - and those survive restarts. Issue #2380 tracks bringing them within the delete. The
+/// distinction matters and is not a technicality: a copy DevThrottle holds on its own servers and a file
+/// on the member's own disk are different things to a member, and the wording on /privacy says so
+/// separately rather than blurring them.
 ///
 /// GET /prompts  - anyone asking for history asks here. That is the point of the log living on the
 /// Gateway: it already has the whole fleet's record, so nothing has to go hunting across machines.
@@ -30,8 +39,9 @@ namespace CcDirector.Gateway.Prompts;
 ///
 /// THE DELETE IS TWO STORES, AND THEY HAVE DIFFERENT TRUTHS. Say them separately or one of them is a lie:
 ///
-///  - The prompt log is FILES. The Director keeps no copy and the Gateway makes no backup of them, so
-///    deleting them removes the only copy at once - final, immediate, not queued.
+///  - The prompt log is FILES. The Gateway makes no backup of them, so deleting them removes DevThrottle's
+///    copy at once - final, immediate, not queued. It does not reach the Director's own local files on
+///    the member's machine (issue #2380).
 ///  - The derived copies are DATABASE ROWS. They are erased from the live database immediately, and they
 ///    carry the same seven-day platform backup tail that every database-stored class already discloses.
 ///
@@ -137,15 +147,18 @@ public static class PromptEndpoints
             // the log first and the same failure leaves the copy orphaned - the exact state this work
             // exists to remove, and now with no source left to prove what it was.
             //
-            // NOT CLOSED, and named rather than left for someone to discover: this delete is not
-            // serialized against a CONCURRENT ingest. A prompt that arrives between the erasure and the
-            // file delete can still leave a first-prompt line behind, and one arriving just after the
-            // whole delete leaves a derived line whose source file was never stored. Both windows are
-            // milliseconds wide and neither can resurrect erased content - the material is a prompt the
-            // member sent DURING their own delete, not one they asked to be rid of - so this ships as a
-            // known gap rather than a lock spanning a file store and a database. Closing it properly
-            // means the delete refusing ingest for its duration, which is the same shape as the
-            // containment race already scheduled for the next phase.
+            // A CONCURRENT INGEST IS NOT LOCKED OUT, and it no longer needs to be. The version of this
+            // comment before the inspection argued the window was harmless because any racing material
+            // must have been sent DURING the member's own delete. That was FALSE, and worth recording as
+            // a lesson rather than quietly deleting: the Director's ingest deliberately RETRIES records
+            // it previously failed to deliver, so a push landing here can carry prompts from weeks ago -
+            // exactly the ones the member just erased. The reasoning was comfortable and wrong, and it
+            // was reasoning about a race rather than closing one.
+            //
+            // What closes it is the erasure watermark (PromptErasureWatermarkEntity): the derived-content
+            // writers refuse material older than the delete, so an ingest arriving mid-delete or long
+            // afterwards cannot put erased words back. The prompt LOG can still accept a retried old
+            // record - that is a decision about the Director-held copies, tracked in issue #2380.
             var erased = historyStore is null
                 ? new History.PromptDerivedErasure(0, 0)
                 : EraseDerived(historyStore, tenant.Value, tenantBoundary);

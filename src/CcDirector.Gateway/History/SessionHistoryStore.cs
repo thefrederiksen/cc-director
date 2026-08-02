@@ -308,8 +308,9 @@ public sealed class SessionHistoryStore
     ///
     ///  - <see cref="SessionHistoryEntity.FirstPromptLine"/> ALWAYS, on every row. It is the first 200
     ///    characters of the member's own prompt, and it is prompt material whatever else the row holds.
-    ///  - The summary content - <see cref="SessionHistoryEntity.SummaryText"/> and the four JSON lists
-    ///    beside it - on every row EXCEPT a SEALED one (see below). Those come out of the same summariser
+    ///  - The summary content - <see cref="SessionHistoryEntity.SummaryText"/> and the FIVE JSON lists
+    ///    beside it (what was built, left unverified, branches, pull requests, commits) - on every row
+    ///    EXCEPT a SEALED one (see below). Those come out of the same summariser
     ///    reading the same prompt log, so they are the same material at one remove; leaving them would
     ///    erase the quote and keep the paraphrase.
     ///  - The three summary METADATA fields are RESET on the same rows, not cleared to nothing meaningful:
@@ -339,7 +340,7 @@ public sealed class SessionHistoryStore
     ///  2. <see cref="StoreGeneratedSummary"/> returns early on a sealed row, so a direct call writes nothing.
     ///
     /// And in the other order - generated first, sealed afterwards - <see cref="SealSummary"/> overwrites the
-    /// text and ALL FOUR lists from the seal request (absent lists become null), so no generated remnant can
+    /// text and ALL FIVE lists from the seal request (absent lists become null), so no generated remnant can
     /// survive underneath a seal. <see cref="SessionHistoryEntity.SummaryAttempts"/> is the one field a sealed
     /// row keeps: it is a counter of summariser attempts, not content, and it says nothing about any prompt.
     ///

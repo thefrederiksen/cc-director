@@ -19,9 +19,14 @@ namespace CcDirector.Gateway.Prompts;
 ///   else to begin with.
 ///
 /// The Director captures and pushes (it is the only thing that sees a prompt at all, and the only thing
-/// that knows whether it was typed or spoken and from which surface). It keeps NO copy - this is the
-/// single copy. Same shape as the existing stats spine, where the Director observes and
-/// GatewayInputStatsAggregator holds.
+/// that knows whether it was typed or spoken and from which surface). This is the SERVICE-SIDE copy and
+/// the only prompt log DevThrottle holds. Same shape as the existing stats spine, where the Director
+/// observes and GatewayInputStatsAggregator holds.
+///
+/// It is NOT the only copy in existence, and this comment claimed otherwise until an inspection went
+/// looking: a Director also keeps prompt-derived text in local files on the member's own machine - a
+/// first-prompt snippet and per-turn summaries in its own session history, and an expected-first-prompt
+/// in sessions.json and its backup. Issue #2380 tracks bringing those within the member's delete.
 ///
 /// One JSON line per message in a daily file: base/prompt-log/conversation-yyyyMMdd.jsonl.
 ///
@@ -240,8 +245,10 @@ public sealed class GatewayPromptLog
     }
 
     /// <summary>
-    /// Delete EVERY daily file in one tenant's partition - the account right-to-erasure. This is the single
-    /// copy (the Director keeps none), so when this returns the tenant's prompt history is gone. Deliberately
+    /// Delete EVERY daily file in one tenant's partition - the account right-to-erasure. This is
+    /// DevThrottle's only copy of the prompt log, so when this returns the service holds none of that
+    /// tenant's prompt history; the Director's own local files on the member's machine are a separate
+    /// matter and are not reached from here (issue #2380). Deliberately
     /// LOUD on failure, unlike <see cref="Append"/>: a delete the caller believes happened but did not is a
     /// broken promise about customer data, so an IO failure propagates and the endpoint reports it.
     /// Returns how many daily files were removed.
