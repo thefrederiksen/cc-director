@@ -39,6 +39,32 @@ type Stage = "connecting" | "recording" | "transcribing" | "paused" | "error";
 // "check your microphone" message rather than stranding the user on GETTING READY forever.
 const READY_TIMEOUT_MS = 6000;
 
+// ---- live capture alarms (the "half of what I said went missing" defect) -------------------------
+// Until now the ONLY loss check ran after the clip was finished (recorded wall-clock versus decoded
+// duration), which can tell the user their words are gone but never in time to save them. These two
+// thresholds watch the same failures WHILE the microphone is open, so a recording that has stopped
+// hearing the user says so on screen instead of quietly producing half a sentence.
+//
+// They watch two independent paths deliberately. MediaRecorder (what is captured) and the analyser
+// (what the bars draw) are separate audio graphs, so the common failure is exactly one of them dying:
+//   - no captured audio for CAPTURE_STALL_MS -> the recording itself has stalled; words are being lost
+//     right now. MediaRecorder delivers every 100ms while healthy, so this is thirty missed deliveries.
+//     Deliberately not tighter: dataavailable is delivered on the main thread, so a busy session view
+//     that blocks it for a second or two makes chunks arrive LATE without any audio being lost (the
+//     encoder keeps buffering), and crying loss over ordinary jank would teach the user to ignore the
+//     one alarm that matters. Still fast enough to stop and say it again.
+//   - a meter pinned at exactly zero for MIC_SILENT_MS -> we are hearing nothing at all. A live
+//     microphone in a quiet room never reads exact zero, so this is a dead meter (the Cockpit
+//     flat-bars defect) or a muted/absent microphone. Longer than the stall window because it is the
+//     less urgent of the two and must never fire on a genuine pause for thought.
+const CAPTURE_STALL_MS = 3000;
+const MIC_SILENT_MS = 5000;
+
+const CAPTURE_STALLED_MESSAGE =
+  "The microphone has stopped sending audio - what you are saying now is NOT being recorded. Stop and check your microphone, then say it again.";
+const MIC_SILENT_MESSAGE =
+  "Nothing is coming from your microphone. Check that it is not muted and that it is the device this page is using - your words may not be recorded.";
+
 export interface DictationDialogProps {
   /** Commit the transcript WITHOUT submitting (drop into the view's text box for editing). Required
    *  only when Insert is shown; ignored when showInsert is false. */
@@ -59,6 +85,13 @@ export interface DictationDialogProps {
    *  this false so the reply panel is Cancel / Pause / Send only - Send goes straight into the
    *  session, there is no "drop into a box" target. Defaults true for the Terminal/Chat Speak flow. */
   showInsert?: boolean;
+  /** Which shell mounted this dialog - "cockpit" or "mobile". It tags the capture-health measurements
+   *  this dialog reports, and it exists because those measurements were previously labelled "mobile"
+   *  from EVERY browser, so a Cockpit dictation on a desktop was filed as a phone dictation and the
+   *  Cockpit's own audio loss could not be seen in the data at all (which is how it went unnoticed
+   *  while issue #645 read the same log and concluded the web surfaces were healthy). Defaults to
+   *  "browser" so an unlabelled mount is honestly unlabelled rather than silently counted as a phone. */
+  surface?: string;
 }
 
 const BAR_COUNT = 9;
@@ -70,7 +103,14 @@ function formatElapsed(ms: number): string {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
-export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showInsert = true }: DictationDialogProps) {
+export function DictationDialog({
+  onInsert,
+  onSend,
+  onSendAudio,
+  onClose,
+  showInsert = true,
+  surface = "browser",
+}: DictationDialogProps) {
   const recorderRef = useRef<MicRecorder>(new MicRecorder());
   const accumulatedRef = useRef<string>(""); // committed segments; the box may be edited past this
   const busyRef = useRef<boolean>(false); // guards the transcribe window against double taps
@@ -99,6 +139,12 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
   const [errorText, setErrorText] = useState<string>("");
   const [elapsed, setElapsed] = useState<number>(0);
   const [levels, setLevels] = useState<number[]>(() => new Array(BAR_COUNT).fill(0));
+  // The LIVE alarm (capture stalled / hearing nothing), as opposed to captureWarning above, which is
+  // the sticky post-clip measurement. This one describes the microphone right now, so it clears by
+  // itself the moment audio comes back - a warning that outlived its cause would train the user to
+  // ignore it. Mirrored in a ref so the per-frame loop can compare without re-subscribing.
+  const [liveWarning, setLiveWarning] = useState<string>("");
+  const liveWarningRef = useRef<string>("");
 
   const clearReadyBackstop = useCallback(() => {
     if (readyTimeoutRef.current !== null) {
@@ -131,14 +177,24 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
     playReadyCue();
   }, [clearReadyBackstop]);
 
-  // ----- equalizer + timer animation (display only) -----
+  // ----- equalizer + timer animation, and the live capture alarm -----
+  // The alarm rides this loop rather than a timer of its own because the loop already runs once per
+  // frame for exactly as long as we are recording, so the two can never disagree about whether the
+  // microphone is supposed to be open.
   useEffect(() => {
+    // Leaving RECORDING (pause, transcribe, error, commit) retires any live alarm: it describes an
+    // open microphone, and there is no longer one to describe.
+    if (stage !== "recording" && liveWarningRef.current !== "") {
+      liveWarningRef.current = "";
+      setLiveWarning("");
+    }
     let raf = 0;
     const tick = () => {
       if (stage === "recording") {
         const now = performance.now();
         setElapsed(elapsedBeforeRef.current + (now - segmentStartRef.current));
-        const level = recorderRef.current.level();
+        const recorder = recorderRef.current;
+        const level = recorder.level();
         const next = new Array(BAR_COUNT).fill(0).map((_, i) => {
           // Centre bars react most, so it reads as an equalizer rather than a flat bar.
           const centre = (BAR_COUNT - 1) / 2;
@@ -146,6 +202,22 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
           return Math.min(1, level * (0.55 + falloff));
         });
         setLevels(next);
+
+        // Capture stalling is reported ahead of silence: it is the one that is actively losing the
+        // user's words, and a stalled recorder usually goes silent too, so reporting both at once
+        // would bury the message that matters under the one that merely follows from it.
+        const alarm =
+          recorder.msSinceLastAudio() > CAPTURE_STALL_MS
+            ? CAPTURE_STALLED_MESSAGE
+            : recorder.msSinceMeterMoved() > MIC_SILENT_MS
+              ? MIC_SILENT_MESSAGE
+              : "";
+        // Only on a CHANGE: this runs sixty times a second, and setting the same string every frame
+        // would re-render the dialog for no reason.
+        if (alarm !== liveWarningRef.current) {
+          liveWarningRef.current = alarm;
+          setLiveWarning(alarm);
+        }
       }
       raf = window.requestAnimationFrame(tick);
     };
@@ -209,7 +281,7 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
         decodedSeconds: transcoded.decodedSeconds,
         sourceBytes: transcoded.sourceBytes,
       };
-      logCaptureHealth("mobile", health);
+      logCaptureHealth(surface, health);
       // Material loss is surfaced to the USER, not just the console: the transcript may be missing
       // words, and a silent commit of truncated speech is exactly the failure mode this dialog
       // exists to prevent. The caller shows the warning and parks instead of auto-committing.
@@ -225,7 +297,9 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
     reportDictationQuality(nativeSamples, nativeSampleRate, device, "dictation-dialog");
 
     try {
-      const text = await transcribeUtterance(wav, health, undefined, (uploaded, total) => {
+      // The surface rides ALONGSIDE the measurement rather than inside it: capture-health is what was
+      // measured, the surface is who measured it, and only the upload needs both.
+      const text = await transcribeUtterance(wav, { ...health, surface }, undefined, (uploaded, total) => {
         // A short clip uploads in one chunk (no progress line needed); a long recording uploads in
         // several, so show which piece is going up before the "Transcribing..." wait.
         if (total > 1) setHint(`Uploading recording... ${uploaded} of ${total}`);
@@ -235,7 +309,7 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
       setHint(err instanceof Error ? err.message : "The transcription service had a problem and couldn't process your recording.");
       return null;
     }
-  }, []);
+  }, [surface]);
 
   const onPauseResume = useCallback(async () => {
     if (busyRef.current) return;
@@ -347,9 +421,10 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
       blob: captured,
       recordedMs: recorderRef.current.lastRecordedMs,
       prefixText: accumulatedRef.current,
+      surface,
     });
     onClose();
-  }, [stage, transcript, onSend, onSendAudio, onClose, commit]);
+  }, [stage, transcript, onSend, onSendAudio, onClose, commit, surface]);
 
   const onCancel = useCallback(() => {
     recorderRef.current.dispose();
@@ -408,6 +483,12 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
         )}
 
         <div className="dictate-hint" role="status">{hint}</div>
+
+        {/* The LIVE alarm sits above the sticky one: it is about the microphone right now, and it is
+            the only one the user can still act on. */}
+        {liveWarning !== "" && !isError && (
+          <div className="dictate-warning dictate-warning-live" role="alert">{liveWarning}</div>
+        )}
 
         {captureWarning !== "" && !isError && (
           <div className="dictate-warning" role="alert">{captureWarning}</div>

@@ -531,7 +531,8 @@ internal static class GatewayDictationEndpoint
             // helper. The assembled audio byte count is what the server actually transcribed. When the client
             // did not send its measurements this is a no-op. Fire-and-forget - never affects the outcome.
             MobileCaptureHealthLog.Persist(
-                uploadId, "mobile-send", req.ClientRecordedMs, req.ClientDecodedSeconds, req.ClientSourceBytes,
+                uploadId, MobileCaptureHealthLog.SurfaceOr(req.ClientSurface, "mobile-send"),
+                req.ClientRecordedMs, req.ClientDecodedSeconds, req.ClientSourceBytes,
                 audio.Length, transcript);
             // Compose the final message: any typed text the caret split the dictation around (before /
             // after), any earlier paused dictation segments already turned to text (prefix), and this
@@ -699,6 +700,11 @@ public sealed class DictationCompleteRequest
     public double? ClientRecordedMs { get; set; }
     public double? ClientDecodedSeconds { get; set; }
     public long? ClientSourceBytes { get; set; }
+    /// <summary>Which browser shell recorded the clip ("cockpit-send" / "mobile-send"). Every browser
+    /// used to be logged as "mobile-send" here, which is why per-surface audio loss could not be read
+    /// out of the log. Absent from an older client (or a clip queued before this shipped), which falls
+    /// back to the literal this path always wrote.</summary>
+    public string? ClientSurface { get; set; }
 }
 
 /// <summary>Terminal or retryable outcome of a dictation complete, mapped to an HTTP result.</summary>

@@ -240,3 +240,181 @@ describe("MicRecorder.level suspended-context guard", () => {
     expect(mic.level()).toBeGreaterThan(0);
   });
 });
+
+// ===== stop(): the tail is ASKED FOR, not assumed ==================================================
+// The owner's report was "it didn't finish to the end". MediaRecorder is specified to emit its
+// buffered audio before it fires stop, so resolving on onstop was already collecting the tail - but
+// that was a behaviour being trusted rather than an instruction being given, and the last words are
+// precisely what a user notices missing. These pin that stop() now flushes explicitly, that the
+// flushed bytes are in the returned clip, and that a flush which fails can never stop the stop.
+
+class StopFake {
+  state: "recording" | "inactive" | "paused" = "recording";
+  requestDataCalls = 0;
+  stopCalls = 0;
+  onstop: (() => void) | null = null;
+  /** Set by the test to emulate the browser delivering the buffered tail on requestData. */
+  onRequestData: (() => void) | null = null;
+  /** Set by the test to emulate audio the browser only delivers on stop itself. */
+  onStopDeliver: (() => void) | null = null;
+
+  requestData(): void {
+    this.requestDataCalls += 1;
+    this.onRequestData?.();
+  }
+
+  stop(): void {
+    this.stopCalls += 1;
+    this.onStopDeliver?.();
+    this.state = "inactive";
+    this.onstop?.();
+  }
+}
+
+function wireStop(fake: StopFake, chunks: Blob[]): MicRecorder {
+  const mic = new MicRecorder();
+  const anyMic = mic as unknown as { recorder: StopFake; mimeType: string; chunks: Blob[]; startedAt: number };
+  anyMic.recorder = fake;
+  anyMic.mimeType = "audio/webm";
+  anyMic.chunks = chunks;
+  anyMic.startedAt = performance.now();
+  return mic;
+}
+
+describe("MicRecorder.stop", () => {
+  it("flushes the buffered tail before stopping and returns it in the clip", async () => {
+    const fake = new StopFake();
+    const chunks: Blob[] = [bytes(3)]; // already delivered while recording
+    const mic = wireStop(fake, chunks);
+    // The production ondataavailable handler pushes the flushed chunk; emulate that.
+    fake.onRequestData = () => chunks.push(bytes(5));
+
+    const clip = await mic.stop();
+    expect(fake.requestDataCalls).toBe(1);
+    expect(fake.stopCalls).toBe(1);
+    expect(clip.size).toBe(8); // 3 delivered + 5 flushed tail - the last words are in
+  });
+
+  it("still includes audio the browser only delivers on stop itself", async () => {
+    // The flush and the spec's own stop-time delivery are additive, never either/or: whatever the
+    // flush did not take, stop still hands over, and both land in the clip in order.
+    const fake = new StopFake();
+    const chunks: Blob[] = [bytes(2)];
+    const mic = wireStop(fake, chunks);
+    fake.onRequestData = () => chunks.push(bytes(4));
+    fake.onStopDeliver = () => chunks.push(bytes(1));
+
+    const clip = await mic.stop();
+    expect(clip.size).toBe(7);
+  });
+
+  it("stops and returns the clip even when the tail flush throws", async () => {
+    // A recorder that went inactive between the state check and the flush must not strand the turn:
+    // everything already delivered is still the user's audio and still ships.
+    const fake = new StopFake();
+    fake.onRequestData = () => {
+      throw new Error("The MediaRecorder is in an invalid state.");
+    };
+    const mic = wireStop(fake, [bytes(6)]);
+
+    const clip = await mic.stop();
+    expect(fake.stopCalls).toBe(1);
+    expect(clip.size).toBe(6);
+  });
+
+  it("does not ask for a flush when the recorder is no longer recording", async () => {
+    const fake = new StopFake();
+    fake.state = "inactive"; // nothing is buffered in an inactive recorder
+    const mic = wireStop(fake, [bytes(9)]);
+
+    const clip = await mic.stop();
+    expect(fake.requestDataCalls).toBe(0);
+    expect(clip.size).toBe(9);
+  });
+});
+
+// ===== the liveness clocks ========================================================================
+// These are what let the dialog say "the microphone has stopped sending audio" WHILE the user is
+// still talking, instead of only measuring the loss after the clip is finished. Capture liveness and
+// meter liveness are tracked separately on purpose: they are two different audio graphs, and exactly
+// one of them dying is the common case (a dead meter over a healthy recording is the Cockpit
+// flat-bars defect; stalled capture over a live meter is audio genuinely going missing).
+
+function wireLive(state: "recording" | "inactive", lastChunkAgeMs: number, meterAgeMs: number): MicRecorder {
+  const mic = new MicRecorder();
+  const now = performance.now();
+  const anyMic = mic as unknown as {
+    recorder: { state: string };
+    lastChunkAt: number;
+    meterMovedAt: number;
+  };
+  anyMic.recorder = { state };
+  anyMic.lastChunkAt = now - lastChunkAgeMs;
+  anyMic.meterMovedAt = now - meterAgeMs;
+  return mic;
+}
+
+describe("MicRecorder liveness clocks", () => {
+  it("read zero when there is no live recorder, so a stopped mic never reads as stalled", () => {
+    const mic = new MicRecorder();
+    expect(mic.msSinceLastAudio()).toBe(0);
+    expect(mic.msSinceMeterMoved()).toBe(0);
+  });
+
+  it("read zero once the recorder has gone inactive", () => {
+    const mic = wireLive("inactive", 10_000, 10_000);
+    expect(mic.msSinceLastAudio()).toBe(0);
+    expect(mic.msSinceMeterMoved()).toBe(0);
+  });
+
+  it("report how long capture has been silent while recording", () => {
+    const mic = wireLive("recording", 3_000, 0);
+    expect(mic.msSinceLastAudio()).toBeGreaterThanOrEqual(3_000);
+    expect(mic.msSinceMeterMoved()).toBeLessThan(1_000);
+  });
+
+  it("report how long the meter has been pinned at zero while recording", () => {
+    const mic = wireLive("recording", 0, 5_000);
+    expect(mic.msSinceMeterMoved()).toBeGreaterThanOrEqual(5_000);
+    expect(mic.msSinceLastAudio()).toBeLessThan(1_000);
+  });
+
+  // A recorder whose analyser fills every sample with `fill`: 128 is the flat centre line a dead or
+  // muted graph reads (loudness exactly 0), anything else is real sound.
+  function wireMeter(fill: number, meterAgeMs: number): MicRecorder {
+    const mic = new MicRecorder();
+    const anyMic = mic as unknown as {
+      audioCtx: { state: string };
+      analyser: { getByteTimeDomainData: (b: Uint8Array) => void };
+      levelData: Uint8Array;
+      recorder: { state: string };
+      meterMovedAt: number;
+    };
+    anyMic.audioCtx = { state: "running" };
+    anyMic.analyser = {
+      getByteTimeDomainData: (buf: Uint8Array) => {
+        for (let i = 0; i < buf.length; i++) buf[i] = fill;
+      },
+    };
+    anyMic.levelData = new Uint8Array(8);
+    anyMic.recorder = { state: "recording" };
+    anyMic.meterMovedAt = performance.now() - meterAgeMs;
+    return mic;
+  }
+
+  it("treat a reading above zero as proof the meter is alive", () => {
+    // level() resets the meter clock only when the analyser actually reads something.
+    const mic = wireMeter(200, 5_000);
+    expect(mic.level()).toBeGreaterThan(0);
+    expect(mic.msSinceMeterMoved()).toBeLessThan(1_000);
+  });
+
+  it("leave the meter clock running when the analyser reads exact silence", () => {
+    // A dead graph reads the flat centre line forever, which is exactly zero. The clock must KEEP
+    // running through that - it is what turns dead bars into a reported fault rather than a drawing
+    // of silence, which is how the Cockpit meter lied for so long.
+    const mic = wireMeter(128, 5_000);
+    expect(mic.level()).toBe(0);
+    expect(mic.msSinceMeterMoved()).toBeGreaterThanOrEqual(5_000);
+  });
+});

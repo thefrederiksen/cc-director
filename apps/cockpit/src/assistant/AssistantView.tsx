@@ -229,6 +229,7 @@ export function AssistantView() {
           reason, issue #1210's fix). */}
       {dictating && (
         <DictationDialog
+          surface="cockpit"
           showInsert={mode === "chat"}
           onInsert={onDictateInsert}
           onSend={(text) => assistant.sendText(text)}

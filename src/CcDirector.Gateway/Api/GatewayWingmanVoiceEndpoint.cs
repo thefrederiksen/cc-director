@@ -1142,7 +1142,8 @@ internal static class GatewayWingmanVoiceEndpoint
     /// </summary>
     private static void PersistMobileCaptureHealth(string uploadId, UtteranceCompleteRequest req, int wavBytes, string? cleaned)
         => MobileCaptureHealthLog.Persist(
-            uploadId, "mobile", req.ClientRecordedMs, req.ClientDecodedSeconds, req.ClientSourceBytes, wavBytes, cleaned);
+            uploadId, MobileCaptureHealthLog.SurfaceOr(req.ClientSurface, "mobile"),
+            req.ClientRecordedMs, req.ClientDecodedSeconds, req.ClientSourceBytes, wavBytes, cleaned);
 
     /// <summary>Shape a <see cref="WingmanMenu"/> for the JSON response (camelCase the phone reads).</summary>
     private static object MenuJson(WingmanMenu m) => new
@@ -1258,4 +1259,10 @@ public sealed class UtteranceCompleteRequest
     public double? ClientRecordedMs { get; set; }
     public double? ClientDecodedSeconds { get; set; }
     public long? ClientSourceBytes { get; set; }
+
+    /// <summary>Which browser shell recorded the clip ("cockpit" / "mobile"). Every browser used to be
+    /// logged as "mobile" here, so a Cockpit dictation on a desktop was filed as a phone dictation and
+    /// the Cockpit's audio loss could not be separated out at all. Absent from an older client, which
+    /// falls back to the literal this path always wrote.</summary>
+    public string? ClientSurface { get; set; }
 }

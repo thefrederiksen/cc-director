@@ -116,6 +116,20 @@ export class MicRecorder {
   private startedAt = 0;
   private recordedMs = 0;
 
+  // ---- liveness clocks: what the recorder can no longer hear, WHILE it is still recording -------
+  // The post-clip capture-health check (recordedMs vs decoded duration) can only tell the user their
+  // words were lost AFTER they are gone. These two clocks make the same failures visible during the
+  // recording, when the user can still stop and say it again. They are deliberately independent:
+  // capture and the meter are two different audio paths (MediaRecorder vs the AnalyserNode), so
+  // exactly one of them dying is the common case and the pair tells them apart.
+  //
+  // Anchored at start() rather than at zero, so "nothing for N seconds" is measured from the moment the
+  // microphone opened rather than from the epoch (which would read as stalled on the very first frame).
+  // The thresholds themselves belong to the dialog that shows the alarm, not to the recorder.
+  private lastChunkAt = 0;
+  private meterMovedAt = 0;
+  private capturedBytes = 0;
+
   // The microphone's name and stable id, read at start() and deliberately NOT cleared when the
   // stream is released - the quality report is assembled after stop(), by which time the track is
   // gone. The label starts as the raw track label and is UPGRADED in the background by
@@ -157,6 +171,35 @@ export class MicRecorder {
   /** Wall-clock milliseconds the most recently stopped segment was capturing. 0 before the first stop. */
   get lastRecordedMs(): number {
     return this.recordedMs;
+  }
+
+  /** Total bytes of encoded audio delivered by the current segment. Proof that capture is producing
+   *  something, independent of what the level meter says. */
+  get capturedByteCount(): number {
+    return this.capturedBytes;
+  }
+
+  /**
+   * Milliseconds since MediaRecorder last delivered audio. While recording it delivers every
+   * CHUNK_MS, so a large value means capture has STALLED - the audio being spoken right now is not
+   * reaching the clip. Returns 0 when there is no live recorder, so a stopped or not-yet-started
+   * recorder never reads as stalled.
+   */
+  msSinceLastAudio(): number {
+    if (this.recorder === null || this.recorder.state !== "recording") return 0;
+    return performance.now() - this.lastChunkAt;
+  }
+
+  /**
+   * Milliseconds since the level meter last read above zero. A live microphone in a quiet room still
+   * reads above zero (room noise is never digital silence), so a large value means we are hearing
+   * literally nothing: either the meter's audio graph is dead (the defect that made the Cockpit bars
+   * sit flat while capture worked) or the microphone is muted or gone. Both are worth saying out
+   * loud, and neither should be drawn as "he was quiet". Returns 0 when there is no live recorder.
+   */
+  msSinceMeterMoved(): number {
+    if (this.recorder === null || this.recorder.state !== "recording") return 0;
+    return performance.now() - this.meterMovedAt;
   }
 
   /**
@@ -212,9 +255,17 @@ export class MicRecorder {
     // Reset the capture-health wall-clock; it is anchored at the FIRST real audio below, not here, so a
     // segment that never delivers a chunk reports recordedMs = 0 rather than a stale previous value.
     this.startedAt = 0;
+    // Anchor the liveness clocks at the moment the microphone opened, so the first frames of a fresh
+    // segment read as healthy rather than as a stall that never started.
+    this.lastChunkAt = performance.now();
+    this.meterMovedAt = this.lastChunkAt;
+    this.capturedBytes = 0;
     this.recorder.ondataavailable = (e) => {
       if (e.data && e.data.size > 0) {
         this.chunks.push(e.data);
+        // Capture is alive: this is the only honest proof of it, and it is independent of the meter.
+        this.lastChunkAt = performance.now();
+        this.capturedBytes += e.data.size;
         // The first real chunk is the honest "mic is capturing your voice" moment. Fire once.
         if (!this.captureLiveFired) {
           this.captureLiveFired = true;
@@ -303,12 +354,26 @@ export class MicRecorder {
     // While suspended the read below is the flat centre line and the meter honestly shows zero.
     if (this.audioCtx !== null && this.audioCtx.state === "suspended") void this.audioCtx.resume();
     this.analyser.getByteTimeDomainData(this.levelData);
-    return rmsLevel(this.levelData);
+    const level = rmsLevel(this.levelData);
+    // Any reading above zero proves the meter's audio graph is running. A suspended or otherwise dead
+    // context reads the flat centre line forever, which is exactly zero - so this clock, not the bar
+    // heights, is what tells a dead meter from a quiet room.
+    if (level > 0) this.meterMovedAt = performance.now();
+    return level;
   }
 
   /**
    * Stop the current segment and return the captured audio as one Blob. The microphone is
    * released here, so the next segment calls start() again (a fresh Resume segment).
+   *
+   * The buffered tail is ASKED FOR, not assumed. MediaRecorder is specified to emit its remaining
+   * audio as a final dataavailable before it fires stop, so resolving on onstop already collects the
+   * last words - but that is a behaviour we would be trusting rather than an instruction we gave, and
+   * the last words are exactly what the user notices missing ("it didn't finish to the end"). So we
+   * call requestData() first, which flushes what is buffered right now, and only then stop. The
+   * chunks are concatenated in order, so an extra flush chunk costs nothing and can never duplicate
+   * audio (requestData empties the buffer it emits). Both are inside the same promise, so onstop -
+   * which the browser fires after every delivery - still decides when the clip is complete.
    */
   async stop(): Promise<Blob> {
     const rec = this.recorder;
@@ -316,6 +381,15 @@ export class MicRecorder {
     const mime = this.mimeType || "audio/webm";
     const captured = await new Promise<Blob>((resolve) => {
       rec.onstop = () => resolve(new Blob(this.chunks, { type: mime }));
+      if (rec.state === "recording") {
+        try {
+          rec.requestData();
+        } catch (err) {
+          // The recorder went inactive between the state check and here. Nothing is buffered any
+          // more; stop() below still resolves with every chunk that was delivered.
+          console.warn(`[MicRecorder] stop: tail flush failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
       rec.stop();
     });
     // Freeze the segment wall-clock at stop, before releasing the stream, so capture-health can

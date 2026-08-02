@@ -391,6 +391,7 @@ export function SessionComposer({ sessionId, value, onChange, onQueued, focusHan
 
       {dictating && (
         <DictationDialog
+          surface="cockpit"
           onInsert={onDictateInsert}
           onSend={onDictateSend}
           onSendAudio={onDictateSendAudio}

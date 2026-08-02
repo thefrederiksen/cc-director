@@ -207,6 +207,7 @@ export function VoiceTab({ sessionId }: { sessionId: string | undefined }) {
           text synchronously, unchanged. */}
       {v.responding && (
         <DictationDialog
+          surface="cockpit"
           showInsert={false}
           onSend={(text) => void v.onRespondSend(text)}
           onSendAudio={v.onRespondSendAudio}

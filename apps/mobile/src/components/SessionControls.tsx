@@ -328,6 +328,7 @@ export function SessionControls({ sessionId, onFlash, onError, showKeyRows }: Se
 
       {dictating && (
         <DictationDialog
+          surface="mobile"
           onInsert={onDictateInsert}
           onSend={onDictateSend}
           onSendAudio={onDictateSendAudio}
