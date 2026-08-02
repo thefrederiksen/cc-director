@@ -365,6 +365,16 @@ public sealed class SessionHistoryStore
     /// </summary>
     internal static PromptDerivedErasure EraseWithin(GatewayDbContext ctx)
     {
+            // NO EXPLICIT TRANSACTION ACROSS THE THREE STATEMENTS, which a reader will reasonably ask
+            // about. Each bulk statement carries its own, so a failure part way through leaves a row with
+            // some fields cleared and some not. That state is always LESS content than before and never
+            // more - no statement here writes anything - the exception reaches the caller as a 500, and
+            // the prompt log is still intact because the files are deleted after this returns. It is also
+            // RESUMABLE without any bookkeeping: every predicate matches on the content still present, so
+            // repeating the delete finishes exactly the part that did not happen. That is a stronger
+            // property than atomicity for this operation, and it is the reason a transaction was not
+            // added rather than an oversight.
+            //
             // COUNTED FIRST, and separately from the two updates, because one row can carry both a prompt
             // line and a summary: adding the two row counts would report one row as two. This is a count of
             // DISTINCT rows about to change, taken under the same write lock the updates run under.
