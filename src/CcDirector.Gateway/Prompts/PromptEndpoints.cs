@@ -22,6 +22,12 @@ namespace CcDirector.Gateway.Prompts;
 /// (<see cref="History.SessionHistoryStore.ErasePromptDerived"/>). Both are tenant-scoped exactly like the
 /// verbs above; neither can name another account's partition.
 ///
+/// ONE THING THE DELETE DELIBERATELY DOES NOT TOUCH: a summary a session SEALED itself. That is the
+/// session's own farewell, submitted through the seal verb and never read out of the prompt log, so it is
+/// not prompt material - and a delete that removes more than it claims is a different false claim, not a
+/// safer one. The member's first prompt line goes from a sealed row like any other; only the sealed
+/// summary stays.
+///
 /// THE DELETE IS TWO STORES, AND THEY HAVE DIFFERENT TRUTHS. Say them separately or one of them is a lie:
 ///
 ///  - The prompt log is FILES. The Director keeps no copy and the Gateway makes no backup of them, so

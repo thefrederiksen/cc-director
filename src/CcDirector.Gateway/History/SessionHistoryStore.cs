@@ -293,50 +293,115 @@ public sealed class SessionHistoryStore
     ///
     /// What goes, and why it is this list rather than the obvious one:
     ///
-    ///  - The SEVEN prompt-derived columns on <c>session_history</c>. <see cref="SessionHistoryEntity.FirstPromptLine"/>
-    ///    is the copy everyone notices - the first 200 characters of the member's own prompt. The other six
-    ///    (<see cref="SessionHistoryEntity.SummaryText"/> and the four JSON lists beside it) come out of the
-    ///    same summariser reading the same prompt log, so they are the same material at one remove. Leaving
-    ///    them would erase the quote and keep the paraphrase.
-    ///  - The three summary METADATA fields are RESET, not cleared to nothing meaningful: a row still
-    ///    claiming a summary exists with nothing behind it is a smaller lie of the same kind. Reset also
-    ///    makes the row eligible for the sweep again, which now finds an empty prompt log and settles it
-    ///    honestly as "none" - the erasure is self-healing rather than something later work can undo.
+    ///  - <see cref="SessionHistoryEntity.FirstPromptLine"/> ALWAYS, on every row. It is the first 200
+    ///    characters of the member's own prompt, and it is prompt material whatever else the row holds.
+    ///  - The summary content - <see cref="SessionHistoryEntity.SummaryText"/> and the four JSON lists
+    ///    beside it - on every row EXCEPT a SEALED one (see below). Those come out of the same summariser
+    ///    reading the same prompt log, so they are the same material at one remove; leaving them would
+    ///    erase the quote and keep the paraphrase.
+    ///  - The three summary METADATA fields are RESET on the same rows, not cleared to nothing meaningful:
+    ///    a row still claiming a summary exists with nothing behind it is a smaller lie of the same kind.
+    ///    Reset also makes the row eligible for the sweep again, which now finds an empty prompt log and
+    ///    settles it honestly as "none" - the erasure is self-healing rather than something later work can undo.
     ///  - The <c>session_history_rollups</c> rows are DELETED outright. They carry a written paragraph
-    ///    derived from those same session summaries and cached per repository per day, so erasing the seven
+    ///    derived from those same session summaries and cached per repository per day, so erasing the
     ///    columns and leaving them would keep serving the erased words as prose on the History page for up
     ///    to ninety days. The staleness hash is not a defence: eventually-recomputed is a promise about the
-    ///    future, not an erasure now. Anything recomputed after this point is recomputed without the material.
+    ///    future, not an erasure now. Deleting them costs the member nothing they cannot get back - the row
+    ///    is a CACHE, and the sweep recomputes it from whatever survives, which is the point.
     ///
-    /// TENANT-SCOPED by the global query filter, exactly like every other operation here - both statements
-    /// can only reach the ambient tenant's rows, and the caller enters that scope.
+    /// A SEALED SUMMARY SURVIVES, and this is a correction to how this method was first written.
+    /// A sealed summary is the SESSION'S OWN farewell, submitted through <see cref="SealSummary"/>: it was
+    /// never read out of the prompt log, so it is not prompt material. Erasing it would make the delete
+    /// remove MORE than it claims, which is not a safer error than removing less - it is a different false
+    /// claim, and a member who asked to delete prompt history has not asked to lose a farewell they never
+    /// associated with prompts.
+    ///
+    /// That exemption is only sound because <c>SummaryKind</c> faithfully tracks the SOURCE of the content
+    /// currently in the row, which two independent guards in THIS class make true - both on the store, so it
+    /// is a property of the data rather than of one code path:
+    ///
+    ///  1. <see cref="PendingSummaries"/> only offers rows whose kind is null or empty, so the summariser is
+    ///     never even handed a sealed row; and
+    ///  2. <see cref="StoreGeneratedSummary"/> returns early on a sealed row, so a direct call writes nothing.
+    ///
+    /// And in the other order - generated first, sealed afterwards - <see cref="SealSummary"/> overwrites the
+    /// text and ALL FOUR lists from the seal request (absent lists become null), so no generated remnant can
+    /// survive underneath a seal. <see cref="SessionHistoryEntity.SummaryAttempts"/> is the one field a sealed
+    /// row keeps: it is a counter of summariser attempts, not content, and it says nothing about any prompt.
+    ///
+    /// If a future change lets generated text land on a sealed row, this exemption becomes a hole and the
+    /// erasure silently starts retaining prompt material. The guards above are the thing to check.
+    ///
+    /// TENANT-SCOPED by the global query filter, exactly like every other operation here - all three
+    /// statements can only reach the ambient tenant's rows, and the caller enters that scope.
     ///
     /// LOUD ON FAILURE by design, matching <c>GatewayPromptLog.DeleteAll</c>: an erasure that half-happened
     /// must surface to the caller as an error, never as a success with content left behind. There is no
     /// catch here on purpose.
     ///
-    /// The counts describe rows that ACTUALLY CARRIED something: a row already free of prompt-derived
-    /// content is not counted, so a second delete honestly reports nothing to do.
+    /// The counts describe rows that ACTUALLY CARRIED something: a row already free of erasable content -
+    /// including a sealed row with nothing but its seal - is not counted, so a second delete honestly
+    /// reports nothing to do.
     /// </summary>
     public PromptDerivedErasure ErasePromptDerived()
     {
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
+            return EraseWithin(ctx);
+        }
+    }
 
+    /// <summary>
+    /// The erasure's three statements, over a context the caller supplies. Split out from
+    /// <see cref="ErasePromptDerived"/> for ONE reason: it lets a test drive these exact statements against
+    /// the Npgsql provider and capture the SQL Entity Framework generates for them, so the claim that the
+    /// tenant predicate survives translation is checked against the product's own statements rather than a
+    /// re-typed copy of them in a test. A copy would prove the copy.
+    ///
+    /// Not a general-purpose seam: it does no locking and enters no scope, so <see cref="ErasePromptDerived"/>
+    /// remains the only way the product calls it.
+    /// </summary>
+    internal static PromptDerivedErasure EraseWithin(GatewayDbContext ctx)
+    {
+            // COUNTED FIRST, and separately from the two updates, because one row can carry both a prompt
+            // line and a summary: adding the two row counts would report one row as two. This is a count of
+            // DISTINCT rows about to change, taken under the same write lock the updates run under.
             var sessions = ctx.SessionHistory
-                .Where(e => e.FirstPromptLine != null
-                            || e.SummaryText != null
-                            || e.WhatWasBuiltJson != null
-                            || e.LeftUnverifiedJson != null
-                            || e.BranchesJson != null
-                            || e.PullRequestsJson != null
-                            || e.CommitsJson != null
-                            || e.SummaryKind != null
-                            || e.SummaryIsPartial
-                            || e.SummaryAttempts != 0)
+                .Count(e => e.FirstPromptLine != null
+                            || (e.SummaryKind != SessionHistorySummaryKinds.Sealed
+                                && (e.SummaryText != null
+                                    || e.WhatWasBuiltJson != null
+                                    || e.LeftUnverifiedJson != null
+                                    || e.BranchesJson != null
+                                    || e.PullRequestsJson != null
+                                    || e.CommitsJson != null
+                                    || e.SummaryKind != null
+                                    || e.SummaryIsPartial
+                                    || e.SummaryAttempts != 0)));
+
+            // The prompt line goes from EVERY row, sealed or not - it is the prompt itself.
+            ctx.SessionHistory
+                .Where(e => e.FirstPromptLine != null)
+                .ExecuteUpdate(s => s.SetProperty(e => e.FirstPromptLine, (string?)null));
+
+            // The summary content and its metadata go from every row EXCEPT a sealed one. A row whose kind
+            // is null or empty is NOT sealed and is included - Entity Framework's C# null semantics make
+            // `!= "sealed"` true for a null column, which is the behaviour wanted here and is pinned by a
+            // test over a row that failed summarisation and never got a kind.
+            ctx.SessionHistory
+                .Where(e => e.SummaryKind != SessionHistorySummaryKinds.Sealed
+                            && (e.SummaryText != null
+                                || e.WhatWasBuiltJson != null
+                                || e.LeftUnverifiedJson != null
+                                || e.BranchesJson != null
+                                || e.PullRequestsJson != null
+                                || e.CommitsJson != null
+                                || e.SummaryKind != null
+                                || e.SummaryIsPartial
+                                || e.SummaryAttempts != 0))
                 .ExecuteUpdate(s => s
-                    .SetProperty(e => e.FirstPromptLine, (string?)null)
                     .SetProperty(e => e.SummaryText, (string?)null)
                     .SetProperty(e => e.WhatWasBuiltJson, (string?)null)
                     .SetProperty(e => e.LeftUnverifiedJson, (string?)null)
@@ -351,7 +416,6 @@ public sealed class SessionHistoryStore
 
             FileLog.Write($"[SessionHistoryStore] ErasePromptDerived: cleared {sessions} session row(s), deleted {rollups} rollup row(s)");
             return new PromptDerivedErasure(sessions, rollups);
-        }
     }
 
     /// <summary>
