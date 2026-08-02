@@ -85,19 +85,29 @@ public sealed class GatewayWorker : BackgroundService
             // itself the moment the cause clears, instead of sitting dead until somebody notices - but its
             // RATE depends on which failure it is, and the two differ a lot:
             //
-            //  - a database that is reachable but REFUSING connections goes through GatewayDatabase's retry
-            //    window, so that container lives at least that long before exiting. Restarts are paced by
-            //    the window plus boot.
-            //  - a MISCONFIGURATION fails before the retry loop is ever entered - a blank connection string,
-            //    or one the parser rejects, both of which throw above it - and so does any non-database
-            //    startup failure. Those exit within seconds of boot, and the restarts are correspondingly
-            //    rapid.
+            // The line that separates them is whether the CONNECTION STRING PARSED, not what kind of
+            // problem it is:
             //
-            // An earlier version of this comment claimed the retry window bounded EVERY case. It does not,
-            // and the difference matters to whoever reads a crash-looping container: a fast loop means a
-            // misconfiguration, a slow one means the database. Whether App Service itself throttles repeated
-            // container restarts has NOT been checked, so nothing here relies on it. In both cases the site
-            // is already down; what termination changes is that the platform can recover it automatically
+            //  - anything that fails while OPENING OR MIGRATING the main store, once the connection string
+            //    has parsed, goes through GatewayDatabase's retry window. Its catch takes every exception,
+            //    so that is not only an unreachable or refusing server - a wrong password, a failed or
+            //    missing migration, and a provider fault are all retried too. Those containers live at
+            //    least the retry window before exiting, so restarts are paced by the window plus boot.
+            //  - only a connection string that is BLANK or UNPARSEABLE, which throws above the loop, and
+            //    any non-database startup failure, exit within seconds of boot. Those restart rapidly.
+            //
+            // So a SLOW loop does not mean the database is merely refusing connections, and reading it that
+            // way sends someone with a wrong password or a broken migration off to check network
+            // reachability. It means the string parsed and something after that kept failing; the Gateway
+            // log's own open-attempt lines say which, and DescribeFailure carries the server's SqlState
+            // when the server answered. A FAST loop means the string itself is unusable, or the failure was
+            // never the database at all.
+            //
+            // Two earlier versions of this comment were wrong in this same place - first claiming the retry
+            // window bounded every case, then claiming the slow case was reachability. Whether App Service
+            // itself throttles repeated container restarts has NOT been checked, so nothing here relies on
+            // it. In both cases the site is already down; what termination changes is that the platform can
+            // recover it automatically
             // instead of waiting out a live process and killing its healthy neighbour.
             FileLog.Write($"[GatewayWorker] Gateway FAILED to start ({_service.StatusText}); ending the process "
                 + $"with exit code {StartFailureExitCode} so the platform restarts this container instead of "

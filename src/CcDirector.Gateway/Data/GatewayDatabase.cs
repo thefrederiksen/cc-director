@@ -50,8 +50,14 @@ public sealed class GatewayDatabase : IDisposable
     // window. It only stops one refusal during the noisiest ninety seconds of a deploy from being
     // mistaken for a dead database.
     //
-    // The window is bounded well inside the platform's 230-second limit so a genuinely dead database
-    // still fails the container rather than hanging it: 90 seconds of retry plus the rest of boot
+    // WHAT THE RETRY DOES NOT DO, because an earlier version of this comment claimed it did and the
+    // claim was false: it does not make a dead database fail the container. The throw at the end of the
+    // window does not escape startup - GatewayService.StartAsync catches every startup exception, logs
+    // it and does not rethrow - so on its own this retry only changes how long the container takes to
+    // reach a silent, portless hang. What actually ends the process is GatewayWorker seeing the failed
+    // state afterwards and exiting; see MustTerminate there. This window's only job is to ride out
+    // transient contention, and it must stay well inside the platform's 230-second start limit so it
+    // cannot delay that exit into the platform's own timeout: 90 seconds of retry plus the rest of boot
     // leaves ample headroom, and the measured recovery case resolved in far less.
     private static readonly TimeSpan PostgresOpenRetryWindow = TimeSpan.FromSeconds(90);
     private const int PostgresOpenFirstDelayMs = 1_000;
