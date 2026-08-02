@@ -302,6 +302,45 @@ completion source until the erasure has run, then releases. With the guard remov
 member's erased summary back in the column. **A test that cannot express the timing cannot fail on it, and
 a suite full of such tests reads exactly like a suite that has checked.**
 
+---
+
+## W2's FOURTH gate - GREEN, after the round-two rejection
+
+The round-two inspection rejected W2 again: three of its four findings were ways erased material could
+still come back. Fixing them changed the mechanism substantially - the watermark comparison moved INTO
+the writes, old material is now refused at ingest, and the sealed-row exemption was reversed - so a fourth
+run was owed. Detached, clean tree, 2026-08-02 03:04 to 03:33. Same rig state as the other three.
+
+| Project | Outcome | Total | vs the third gate | Executed | Failed | Skipped |
+|---|---|---|---|---|---|---|
+| CcDirector.Gateway.Tests | Completed | 5194 | 5186 (+8) | 5139 | 0 | 55 |
+| CcDirector.Core.Tests | Completed | 4196 | 4196 (=) | 4188 | 0 | 8 |
+| CcDirector.Avalonia.Tests | Completed | 353 | 353 (=) | 353 | 0 | 0 |
+| CcDirector.Launcher.Tests | Completed | 110 | 110 (=) | 110 | 0 | 0 |
+| CcDirector.HostedAgent.Tests | Completed | 88 | 88 (=) | 88 | 0 | 0 |
+| CcDirector.Engine.Tests | Completed | 63 | 63 (=) | 63 | 0 | 0 |
+| CcDirector.Terminal.Avalonia.Tests | Completed | 24 | 24 (=) | 24 | 0 | 0 |
+
+**The +8 accounts exactly**: seven facts in the new cross-process and retry file, plus one, because the
+seal fact split in two when the exemption was reversed (sealed rows are erased; a seal arriving after a
+delete is refused). **All 23 erasure facts EXECUTED and passed**, and no result anywhere in the suite was
+anything other than passed or skipped. `origin/main` is an ancestor of both branch tips.
+
+### What the previous three green gates could not see
+
+Every erasure fact through gate three used ONE store instance, so the instance write lock excluded the
+very interleaving the mechanism was supposed to survive - and the hosted Gateway is documented to run two
+containers at once during a slot swap. The suite was green over a check-then-write race the whole time.
+
+The new facts use **two independent store instances over one database** and drive the interleave
+deliberately: process B decides, process A erases and stamps, then B writes. They also drive the REAL
+summariser over the REAL prompt log for the retry path, because the earlier "post-delete" control appended
+deliberately NEW material and so never exercised a retry at all.
+
+**Two rounds of green over the same defect, from tests that each looked reasonable.** The pattern in both:
+the test could not express the condition it was supposed to rule out - one process cannot show a
+two-process race, and freshly-appended material cannot show a retry.
+
 ### Two commits on this branch post-date their gate, both comment-only
 
 `d73e5d2e3` (the concurrent-ingest window) and `2c751cf77` / `c379c02c8` after the rebase (why the three
