@@ -448,6 +448,29 @@ rather than inferred: `A_director_claiming_a_future_start_cannot_get_a_pre_erasu
 `A_failed_summarisation_from_before_the_delete_cannot_re_arm_the_metadata_it_cleared`. **30 erasure facts
 executed and passed**, nothing in the suite anything other than passed or skipped.
 
+### The rebase onto `9567fcc29`, and why this one's delta is BIGGER than the last two
+
+Main then moved to `9567fcc29`, a dictation fix. Rebased, not re-gated - but this delta is not the
+"version string and a documentation page" of the v1.9.6 rebase, nor the "one XAML file no test reaches"
+of `aa8a8401e`, and rounding it to the same sentence would be dishonest. Stated exactly:
+
+- It adds **`src/CcDirector.Gateway.Tests/MobileCaptureHealthLogTests.cs`, carrying 8 facts**. The Gateway
+  total on the landing tree is therefore **expected to be 8 above the 5201 measured here** - from MAIN,
+  not from this branch. That is not measured in this document, because this gate ran before the rebase;
+  the rule is at-or-above, and a count rising because main added tests is not drift. The same thing
+  happened to `CcDirector.Core.Tests` earlier in the mission.
+- It also changes **three Gateway product files** (`GatewayDictationEndpoint`, `GatewayWingmanVoiceEndpoint`,
+  `MobileCaptureHealthLog`) plus the cockpit, mobile and client-core dictation paths.
+
+**So this gate did NOT execute main's 8 new facts, and did not exercise those three product files.** They
+arrive from main, where continuous integration gated them; that is the whole basis for accepting them here
+without an hour on the shared lock.
+
+What IS established: the rebase moved nothing under `Gateway/History`, `Gateway/Prompts`, `Gateway/Data`,
+`Core/Storage`, `Core/Sessions` or `ControlApi` - checked by diffing those paths between the gated tip and
+the rebased tip, which comes back empty - so nothing W2 changes was touched, and the rebased tree builds.
+`origin/main` and `9567fcc29` are both ancestors of the tip.
+
 Ancestry: `origin/main` is an ancestor of the code branch. The WORDING repository's main moved to
 `416fe07` (a landing-page change touching no file this branch touches), so that branch was rebased -
 rebase for ancestry, no re-gate, the rule applied without asking.
