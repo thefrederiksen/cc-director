@@ -27,7 +27,16 @@ cc-devthrottle session spawn D:\path\to\repo --purpose "implement #799"
 cc-devthrottle session spawn D:\path\to\repo --name "Frontend review"
 cc-devthrottle session spawn D:\path\to\repo --purpose "run the test suite" --agent ClaudeCode --prompt "Run the tests and report failures."
 cc-devthrottle session spawn D:\path\to\repo --name "frontend" --agent RawCli --command cmd
+cc-devthrottle director list
+cc-devthrottle session spawn D:\path\to\repo --name "build" --director "North build"
 ```
+
+`--machine <name>` starts the session on another COMPUTER; `--director <id-or-name>` starts it on ONE
+named Director. They answer different questions: a computer runs several named Director instances, so
+`--machine` lands on whichever is listed first. Name the Director when it has to be that one -
+`director list` gives you the id, and a Director's toolbar Copy button hands out its name, id, and
+machine for pasting. An unregistered or ambiguous name fails loudly and never falls back to another
+Director.
 
 Always name your session. On this fleet many sessions run in the SAME checkout, so a session with
 no name displays as the bare folder name and is impossible to tell apart. Lead with `--name`

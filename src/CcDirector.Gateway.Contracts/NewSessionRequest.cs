@@ -203,6 +203,32 @@ public sealed class NewSessionRequest
     public string? Machine { get; set; }
 
     /// <summary>
+    /// Optional target DIRECTOR for spawn routing - "start a session on THAT Director, not merely on
+    /// that computer". One machine runs several named Director instances, so <see cref="Machine"/>
+    /// alone cannot say which one: it resolves to the first available Director on the machine. This
+    /// field names ONE - by its Director id or its display name, matched case-insensitively, with the
+    /// ID WINNING outright when it matches - and the resolve is pinned to it.
+    ///
+    /// Those two handles and no others. The instance SLUG (the <c>--instance</c> value) is deliberately
+    /// not accepted: it is not carried on <see cref="DirectorDto"/>, so the Gateway could not resolve
+    /// it, and a handle that worked only when the target happened to be the local Director would fail
+    /// on the far side of the fleet for reasons the caller could not see.
+    ///
+    /// FAIL LOUD, NEVER SUBSTITUTE. A named Director that is not registered is an error naming it; a
+    /// name that matches two Directors is an error listing both. Neither falls back to another
+    /// Director, and neither auto-launches one: the caller asked for a specific Director, and quietly
+    /// starting a session somewhere else is exactly the wrong answer.
+    ///
+    /// <see cref="Machine"/>, when both are given, NARROWS the match rather than being overridden by
+    /// it. That is how a display name two machines happen to share is disambiguated - and it means a
+    /// Director named alongside a machine it does not run on is a contradiction that fails, rather
+    /// than one half of the caller's instruction being honored silently.
+    ///
+    /// Null or empty leaves machine routing exactly as it was.
+    /// </summary>
+    public string? Director { get; set; }
+
+    /// <summary>
     /// Scheduled-run auto-dismiss (issue #1200). When true, this session is an AUTOMATED run that should
     /// close ITSELF once it finishes with nothing that needs a human: the agent ends its run by emitting a
     /// <c>CC-DISMISS</c> verdict block (see <c>Session.DismissVerdict</c>), and on <c>done</c> the Gateway

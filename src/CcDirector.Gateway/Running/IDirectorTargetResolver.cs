@@ -1,3 +1,4 @@
+using CcDirector.Core.Instances;
 using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
@@ -15,14 +16,26 @@ namespace CcDirector.Gateway.Running;
 public sealed record DirectorTargetResult(string? DirectorId, string? Error);
 
 /// <summary>
-/// Resolves a cron job's target MACHINE to a runnable Director (epic #479, #503): picks the first
-/// reachable Director on that machine, and if none is running asks the launcher to start one and
-/// waits (bounded) for it to register. Behind an interface so the firing engine is unit-testable
-/// without a live registry/launcher. Production is <see cref="RegistryDirectorTargetResolver"/>.
+/// Resolves a spawn's target to a runnable Director (epic #479, #503).
+///
+/// TWO WAYS TO NAME THE TARGET, and they behave differently on purpose:
+///   - BY MACHINE (<paramref name="director"/> blank): picks the first reachable Director on that
+///     machine, and if none is running asks the launcher to start one and waits (bounded) for it to
+///     register. "Any Director on that computer will do."
+///   - BY DIRECTOR (<paramref name="director"/> set): pins the resolve to ONE named Director - by id
+///     or display name - and NEVER launches or substitutes. One machine runs several named instances,
+///     so the machine name alone cannot say which; a caller that named one meant that one.
+///
+/// Behind an interface so the firing engine is unit-testable without a live registry/launcher.
+/// Production is <see cref="RegistryDirectorTargetResolver"/>.
 /// </summary>
 public interface IDirectorTargetResolver
 {
-    Task<DirectorTargetResult> ResolveAsync(string machine, CancellationToken ct);
+    /// <param name="machine">The target machine. Blank is an error UNLESS <paramref name="director"/>
+    /// names a Director, which identifies its machine by itself.</param>
+    /// <param name="director">Optional Director id or display name. When set, the resolve is pinned to
+    /// that one Director: unknown or ambiguous is an error naming it, never another Director.</param>
+    Task<DirectorTargetResult> ResolveAsync(string machine, string? director, CancellationToken ct);
 }
 
 /// <summary>
@@ -79,15 +92,20 @@ public sealed class RegistryDirectorTargetResolver : IDirectorTargetResolver
         _pollInterval = pollInterval ?? TimeSpan.FromSeconds(3);
     }
 
-    public async Task<DirectorTargetResult> ResolveAsync(string machine, CancellationToken ct)
+    public async Task<DirectorTargetResult> ResolveAsync(string machine, string? director, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(machine))
-            return new DirectorTargetResult(null, "no target machine");
-
         // Resolve the tenant ONCE, at the top, and carry it through both the registry reads and the launch.
         // Reading it separately per step would let a resolve that starts in one scope finish in another, and
         // would leave the LAUNCH - the one step that reaches another machine - with no tenant at all.
         var tenant = RequireTenant();
+
+        // A NAMED Director answers the whole question, machine included, so it is resolved first and
+        // separately: no launcher, no first-available, no fallback of any kind.
+        if (!string.IsNullOrWhiteSpace(director))
+            return PickNamed(tenant, machine, director.Trim());
+
+        if (string.IsNullOrWhiteSpace(machine))
+            return new DirectorTargetResult(null, "no target machine");
 
         var d = PickReachable(tenant, machine);
         if (d is not null)
@@ -131,6 +149,56 @@ public sealed class RegistryDirectorTargetResolver : IDirectorTargetResolver
     /// longer requires a non-empty ControlEndpoint or an advertised-endpoint reachability state (both are
     /// artifacts of the deleted HTTP-dial path).
     /// </summary>
+    /// <summary>
+    /// Resolve ONE named Director - by id or by display name, case-insensitively - within the caller's
+    /// tenant, optionally narrowed to a machine. A named Director identifies its own machine, so
+    /// <paramref name="machine"/> is only a further filter and may be blank.
+    ///
+    /// THREE OUTCOMES, ALL LOUD. Exactly one match resolves. No match is an error naming what was asked
+    /// for - it is NOT "use another Director on that machine", and it is NOT a launch: the launcher
+    /// starts "a Director on a machine" and has no way to start a PARTICULAR named instance, so calling
+    /// it here would start the wrong one and then silently spawn the session there. Two matches is an
+    /// error listing both, because picking either would be a guess the caller cannot see.
+    /// </summary>
+    private DirectorTargetResult PickNamed(TenantId tenant, string? machine, string director)
+    {
+        // Same tenant confinement as the machine match: another tenant's Director may carry the same
+        // display name, and resolving to it would cross the partition on the caller's behalf.
+        //
+        // DirectorHandle.Pick applies ID PRECEDENCE - an exact id match wins outright and display names
+        // are not consulted - so a Director renamed to another's id cannot make that id ambiguous. It is
+        // the same rule the Director floor resolves with, from one implementation, because a floor and a
+        // Gateway that disagreed about what a name means would route a session somewhere the caller was
+        // never told about.
+        var candidates = DirectorHandle
+            .Pick(_listDirectors(tenant), director, x => x.DirectorId, x => x.DisplayName)
+            .Where(x => string.IsNullOrWhiteSpace(machine)
+                     || string.Equals(x.MachineName, machine, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var on = string.IsNullOrWhiteSpace(machine) ? "" : $" on '{machine}'";
+
+        if (candidates.Count == 0)
+        {
+            FileLog.Write($"[RegistryDirectorTargetResolver] no Director '{director}'{on} in tenant={tenant.Value}");
+            return new DirectorTargetResult(null,
+                $"no Director '{director}'{on} is registered. It is either not running or is named " +
+                "something else - list what is registered with: cc-devthrottle director list");
+        }
+
+        if (candidates.Count > 1)
+        {
+            var listed = string.Join(", ", candidates.Select(c => $"{c.DirectorId} ({c.MachineName})"));
+            FileLog.Write($"[RegistryDirectorTargetResolver] '{director}'{on} is ambiguous: {listed}");
+            return new DirectorTargetResult(null,
+                $"'{director}' names {candidates.Count} Directors ({listed}). Name one by its Director id.");
+        }
+
+        var chosen = candidates[0];
+        FileLog.Write($"[RegistryDirectorTargetResolver] '{director}' resolved to {chosen.DirectorId} on {chosen.MachineName}");
+        return new DirectorTargetResult(chosen.DirectorId, null);
+    }
+
     private DirectorDto? PickReachable(TenantId tenant, string machine)
     {
         // Confine the machine-name match to the caller's OWN tenant partition (audit H1, gap audit-e): a

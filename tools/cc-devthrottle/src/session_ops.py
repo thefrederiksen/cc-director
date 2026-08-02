@@ -598,8 +598,11 @@ def spawn_session(
     machine: Optional[str] = None,
     mission: Optional[str] = None,
     workflow_run: Optional[str] = None,
+    # NOT named `director`: this module's Director-client is imported under that name and a parameter
+    # would shadow it, breaking every director.post_json call in here.
+    director_target: Optional[str] = None,
 ) -> None:
-    """Open a new session on the local Director, or on another computer when a remote --machine is given."""
+    """Open a new session here, on another computer (--machine), or on one named Director (--director)."""
     # Automatic roles: a SESSION-initiated spawn (CC_SESSION_ID present) DEFAULTS to a Worker controlled by
     # the spawner, so it stays quiet and reports to its manager instead of nagging the human. The opt-out
     # (guard 1) is --standalone / --controlled-by none: a deliberate human-facing PEER with no controller. A
@@ -687,10 +690,18 @@ def spawn_session(
     # Director on that machine (first available, auto-launched if none is running). An off/unreachable machine
     # fails loudly (DirectorError -> red error + exit 1) with NO local fallback. The old POST /sessions route
     # was removed from the Director floor in the tunnel-only cut.
+    #
+    # --director names ONE Director instead of "some Director on that computer", which is the only way
+    # to be specific on a machine running several named instances. It is sent alongside the machine and
+    # settled at the Director floor: naming the LOCAL Director spawns locally, and naming another one
+    # routes to exactly it. Passed through verbatim - resolving a Director name here would mean this
+    # tool holding a second copy of the matching rule the Gateway already applies.
     target_machine = machine.strip() if machine else ""
+    target_director = director_target.strip() if director_target else ""
 
     try:
-        resp = director.post_json("fleet/spawn", {"machine": target_machine, **body})
+        resp = director.post_json(
+            "fleet/spawn", {"machine": target_machine, "director": target_director, **body})
     except director.DirectorError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)

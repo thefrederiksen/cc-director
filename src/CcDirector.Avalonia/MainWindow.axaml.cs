@@ -582,69 +582,49 @@ public partial class MainWindow : Window
         return dialog.WantsNewSession;
     }
 
-    private global::Avalonia.Threading.DispatcherTimer? _directorInfoTimer;
-
     private void InitDirectorInfo()
     {
         FileLog.Write("[MainWindow] InitDirectorInfo");
-        // The Director address lives on the always-visible app toolbar now, so it must
-        // resolve even though the Control API binds its port on a background task that may
-        // finish after the window loads. Set what we know now, then poll until the port is
-        // bound (it never changes once set), so the toolbar is never stuck on "...".
-        if (TrySetDirectorInfo())
-            return;
-
-        _directorInfoTimer = new global::Avalonia.Threading.DispatcherTimer
-        {
-            Interval = TimeSpan.FromMilliseconds(500),
-        };
-        _directorInfoTimer.Tick += (_, _) =>
-        {
-            if (TrySetDirectorInfo())
-            {
-                _directorInfoTimer?.Stop();
-                _directorInfoTimer = null;
-            }
-        };
-        _directorInfoTimer.Start();
+        // This Director's NAME, on the always-visible app toolbar - the one thing that tells this
+        // Director apart from the others on the same machine. It is known before the window opens
+        // (the instance is resolved in Program.Main), so there is nothing to wait for.
+        //
+        // It used to read "MACHINE:port" and poll until the Control API bound its port. Both are gone:
+        // the machine name cannot distinguish this Director from its neighbours, and nothing reaches a
+        // Director by port any more - the fleet goes through the Gateway.
+        DirectorInfoText.Text = DirectorHandle.Label(InstanceContext.DisplayName, Environment.MachineName);
     }
 
     /// <summary>
-    /// Sets the toolbar Director address from the Control API port. Returns true once the
-    /// port is bound (a real value was written), false while it is still starting.
+    /// Puts this Director's identity on the clipboard - name, id, machine - so it can be pasted to
+    /// another agent, which is then told what to do with it.
+    ///
+    /// This button used to copy the Control API URL, from when reaching a Director meant dialling its
+    /// port directly. Nothing does that now, so what it copied could not be used for anything.
     /// </summary>
-    private bool TrySetDirectorInfo()
-    {
-        var app = global::Avalonia.Application.Current as App;
-        var port = app?.ControlApiHost?.Port;
-        if (port is > 0)
-        {
-            DirectorInfoText.Text = $"{Environment.MachineName}:{port.Value}";
-            return true;
-        }
-        DirectorInfoText.Text = $"{Environment.MachineName}:...";
-        return false;
-    }
-
     private async void BtnCopyDirectorInfo_Click(object? sender, RoutedEventArgs e)
     {
         FileLog.Write("[MainWindow] BtnCopyDirectorInfo_Click");
         try
         {
             var app = global::Avalonia.Application.Current as App;
-            var port = app?.ControlApiHost?.Port;
-            if (port is null or 0)
+            var directorId = app?.ControlApiHost?.DirectorId;
+            if (string.IsNullOrWhiteSpace(directorId))
             {
-                ShowNotification("Control API not started yet.");
+                // No id yet means the Control API has not been constructed. The id is the whole point
+                // of the copy - handing over the other two lines without it identifies nothing.
+                ShowNotification("This Director has no id yet - it is still starting.");
                 return;
             }
-            var url = await Task.Run(() =>
-                TailscaleIdentity.ResolveAdvertisedControlApiEndpoint(port.Value));
+
+            var text = DirectorHandle.Identity(
+                InstanceContext.DisplayName, directorId, Environment.MachineName);
+
             var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
             if (clipboard == null) { ShowNotification("Clipboard unavailable."); return; }
-            await clipboard.SetTextAsync(url);
-            ShowNotification($"Copied: {url}");
-            FileLog.Write($"[MainWindow] BtnCopyDirectorInfo_Click: copied {url}");
+            await clipboard.SetTextAsync(text);
+            ShowNotification("Copied this Director's name, id, and machine.");
+            FileLog.Write($"[MainWindow] BtnCopyDirectorInfo_Click: copied identity of {directorId}");
             BtnCopyDirectorInfo.Content = "Copied!";
             await Task.Delay(1500);
             BtnCopyDirectorInfo.Content = "Copy";

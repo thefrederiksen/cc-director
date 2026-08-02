@@ -50,6 +50,11 @@ machine_app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
 )
+director_app = typer.Typer(
+    help="List the Directors this account is running, on every machine.",
+    add_completion=False,
+    no_args_is_help=True,
+)
 mission_app = typer.Typer(
     help="Create and list Missions (the unit of work sessions attach to).",
     add_completion=False,
@@ -100,6 +105,7 @@ app.add_typer(session_app, name="session")
 app.add_typer(repo_app, name="repo")
 app.add_typer(worktree_app, name="worktree")
 app.add_typer(machine_app, name="machine")
+app.add_typer(director_app, name="director")
 app.add_typer(mission_app, name="mission")
 app.add_typer(message_app, name="message")
 app.add_typer(settings_app, name="settings")
@@ -168,10 +174,28 @@ _ACTIONS = [
     },
     {
         "id": "session-spawn",
-        "description": "Open a new session on the local Director.",
-        "command": "cc-devthrottle session spawn <repo>",
+        "description": (
+            "Open a new session. By default on the local Director; --machine <name> starts it on "
+            "another computer, and --director <id-or-name> starts it on ONE named Director (a machine "
+            "runs several, and only this says which)."
+        ),
+        "command": "cc-devthrottle session spawn <repo> [--machine <name>] [--director <id-or-name>]",
         "mutatesState": True,
-        "args": [{"name": "repo", "required": True}],
+        "args": [
+            {"name": "repo", "required": True},
+            {"name": "machine", "required": False},
+            {"name": "director", "required": False},
+        ],
+    },
+    {
+        "id": "director-list",
+        "description": (
+            "List every Director this account is running, on every machine, with the id and name that "
+            "'session spawn --director' accepts. A machine appears once per named Director instance."
+        ),
+        "command": "cc-devthrottle director list",
+        "mutatesState": False,
+        "args": [],
     },
     {
         "id": "machine-list",
@@ -830,6 +854,16 @@ def machine_list(
     list_machines(json_output)
 
 
+@director_app.command("list")
+def director_list(
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output raw JSON."),
+) -> None:
+    """List every Director this account is running, with the id to pass to 'session spawn --director'."""
+    from .machine_ops import list_directors
+
+    list_directors(json_output)
+
+
 @machine_app.command("apps")
 def machine_apps(
     machine: str = typer.Argument(..., help="The computer to look on."),
@@ -1118,6 +1152,16 @@ def spawn(
         "machine (first available, auto-launched if none is running); an off/unreachable machine fails "
         "loudly with no local fallback.",
     ),
+    director: Optional[str] = typer.Option(
+        None,
+        "--director",
+        help="Start the session on ONE named Director, by its Director id or its display name. One "
+        "machine runs several Directors, so --machine alone lands on whichever is first; this lands on "
+        "the one you named, wherever it runs (no --machine needed - though giving one narrows which "
+        "Directors the name may match). A Director that is not running, or a name that matches two, "
+        "fails loudly - it never falls back to another Director. List them with "
+        "'cc-devthrottle director list'; a Director's own toolbar Copy button hands you its id.",
+    ),
     mission: Optional[str] = typer.Option(
         None,
         "--mission",
@@ -1134,10 +1178,10 @@ def spawn(
         "its PINNED version. Unknown run ids are rejected.",
     ),
 ) -> None:
-    """Open a new session on the local Director, or on another computer with --machine, and print its id."""
+    """Open a new session - here, on another computer with --machine, or on one Director with --director."""
     spawn_session(
         repo, agent, prompt, name, purpose, command, command_args, controlled_by, args, standalone, role,
-        machine, mission, workflow_run,
+        machine, mission, workflow_run, director,
     )
 
 
