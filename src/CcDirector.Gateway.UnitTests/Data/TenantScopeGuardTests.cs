@@ -129,6 +129,15 @@ public sealed class TenantScopeGuardTests : IDisposable
         //    would be circular in the same way. It carries no tenant content: one subject, one start, one end.
         //    Unlike EntitlementEntity this one IS written here, but only ever for the subject the caller has
         //    already been verified as, so a tenant cannot reach another tenant's row through it.
+        //
+        //  - SessionKeyEntity is the per-SESSION credential registry (Remove-the-network-port phase 1b), and
+        //    it is global for precisely the reason DeviceCredentialEntity is: an AUTH-RESOLUTION lookup, not
+        //    tenant data. A presented session key is resolved to its session by its SHA-256 hash BEFORE any
+        //    tenant is known, and the tenant is then READ OFF the matched row, which carries its own binding
+        //    as a column. Scoping the table would make that resolution circular. The binding itself never
+        //    comes from a client: it is written from the tenant the registering Director's tunnel bound to at
+        //    Hello, which came from that Director's authenticated device key - so a session key only ever
+        //    resolves to its OWN account, and both mutations (register, revoke) are scoped by that tenant.
         var allowedGlobalTables = new HashSet<Type>
         {
             typeof(TenantEntity),
@@ -136,6 +145,7 @@ public sealed class TenantScopeGuardTests : IDisposable
             typeof(AccountTrialEntity),
             typeof(DeviceCredentialEntity),
             typeof(DeviceImportMarkerEntity),
+            typeof(SessionKeyEntity),
         };
 
         var model = Model();
