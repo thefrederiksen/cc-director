@@ -72,7 +72,8 @@ the Gateway calling in, and can become pushes down the connection it already has
 | 1 | Gateway parity, proven with a session credential | DONE - finding below |
 | 1b | Session credentials on the Gateway (discovered in Phase 1) | DONE - see PHASE-1B-REPORT.md |
 | 2 | The command line tools talk to the Gateway | DONE - pass mark MET, see PHASE-2-REPORT.md |
-| 2b | Owner permission widening + the write paths | in progress |
+| 2b | Owner widening, the write paths, and the inspection fixes | in progress |
+| I1 | Independent inspection of 1b + 2 (Codex) | DONE - 8 proved defects, 4 high |
 | 3 | Session hooks stop needing an API | not started |
 | 4 | Lifecycle off HTTP | not started |
 | 5 | Delete the Director's listener | not started |
@@ -226,3 +227,37 @@ and has not been given - he declined twice and then said the fix is unnecessary 
 5 lands, that release carries the first-launch popup - a new user's setup wizard appearing frozen -
 and this approved two-line change is the only thing that would have prevented it. Flag at release
 time, not before.
+
+## Independent inspection of Phases 1b and 2 - 2026-08-03
+
+Codex, different family, own detached worktree, told to attack the mission's own reports rather than
+believe them. **Eight proved defects, four high.** Full report: `INSPECTION-1B-2.md`. The mission's own
+suites - 330 Python, 98 session-key, 14 reachability - all passed throughout. That is the point.
+
+The four high findings, all of which the mission's own testing missed:
+
+1. **The guard and the real routes disagree, so agents silently lose abilities.** Creating or updating
+   a skill or workflow, and nearly every schedule command, return 403. This is precisely the owner's
+   stated fear, present in the code. Its test passed because it pins a route that does not exist
+   (`POST /gateway/skills/move-session/draft`) instead of the `PUT` the client sends.
+2. **Registration is globally keyed on a bare session id.** A Director can register a session id owned
+   by another Director or another TENANT and commandeer the row - identity takeover within a tenant,
+   registry corruption across them. The hub derives the tenant correctly from the tunnel and then
+   never checks the session belongs to the bound Director.
+3. **Reap revocation is lossy.** The local hash is forgotten BEFORE the revoke is sent; the revoke
+   returns silently when the tunnel is down; the send is unawaited and swallowed on failure; and the
+   reconnect replay reads a set the entry was already removed from. A reaped session's key keeps
+   working until expiry - contradicting Phase 1b's own claim. Expiry is also taken from the Director's
+   clock with no Gateway-side maximum.
+4. **The Python transport forwards the session bearer across a cross-origin redirect**, proved at
+   runtime with two loopback servers. A redirect can disclose the credential to another origin.
+
+**The lesson, recorded because it will recur.** All four share one root: every suite validated its own
+piece in isolation and nothing crossed the boundary between them. The Python tests mock HTTP; the
+guard tests drive the guard directly; neither crosses the method-and-path matrix where the defect
+lives. The inspector's sharpest observation is that deleting the production revoke call leaves all 98
+session-key tests green - which says what those tests were worth.
+
+**Architect ruling:** all eight go to the Phase 2b Manager, guard widening folded into finding 1 since
+it is the same file, and **every fix must carry a test that fails without it**. No finding is closed
+by argument.
