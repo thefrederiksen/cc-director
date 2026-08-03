@@ -62,7 +62,11 @@ git rev-list --count <last-tag>..origin/main    # how many commits shipped
 - Confirm the release is cut from `origin/main`, and that your local branch is not
   behind it. The code you are documenting lives on `origin/main`; your working
   branch may not have it.
-- Confirm the mainline is green in continuous integration before going further.
+- Run the RELEASE gate locally and let it finish: `.\scripts\test-local.ps1 -Parked`. This is the
+  one run that includes the two parked suites (`Gateway.Tests`, `Core.Tests`), which the ordinary
+  gate skips. It replaces the old instruction to wait for a green continuous integration run.
+  It is not optional here: the release workflow runs ZERO tests, and a pushed tag cannot be
+  un-pushed, so a release is the one place "fix it forward" is not available.
 
 ### Step 2: Decide the version number
 
@@ -198,7 +202,9 @@ pull request. That is how v1.1.0 shipped (pull request #1489).
    The workflow publishes that file verbatim and FAILS if it is missing, so a tag
    pushed without it burns a whole build and cannot be un-pushed.
 2. Open a pull request that bumps `Directory.Build.props` to the new version, titled
-   `release: v<version> - <one-line summary>`. Merge it once it is green.
+   `release: v<version> - <one-line summary>`. Merge it once the local `-Parked` run from Step 1
+   is green and the review is clean - not on a continuous integration result, which is never
+   waited for.
 3. Create the tag `v<version>` on `main` at the merged bump commit and push it. That
    is the last manual act. Monitor the Actions run.
 

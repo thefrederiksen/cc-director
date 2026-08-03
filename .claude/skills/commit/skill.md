@@ -135,11 +135,17 @@ commit (Step 4), drive it home:
 
        .\scripts\test-local.ps1
 
-   It builds once and runs every test project, starting them together so the six that do not
-   serialize finish while the Gateway suite queues for its machine-wide lock. Use -Fast to skip
-   the Gateway suite when the change provably does not touch it, and say so in the pull request.
    Do NOT hand-roll a dotnet test invocation - the script is the one place the whole fleet gets
    faster when the suite improves.
+
+   KNOW WHAT THE DEFAULT RUN DOES NOT COVER. It runs the suites that fit the two-minute budget,
+   roughly 3400 tests. It does NOT run the two parked suites - Gateway.Tests (host-bound, takes a
+   machine-wide lock) and Core.Tests - which need -Parked. It runs NO web tests and NO Python
+   tests. And -Fast is a NO-OP retained for old callers; the default is already the fast run, so
+   passing it gates nothing and must never be cited as though it did.
+
+   If your change touches a parked suite, the browser shells or the Python toolbelt, run that
+   coverage yourself. A green default run is not evidence about code it never executed.
 
    If it is not green, fix it before opening a pull request. A red local run is a red change.
 
@@ -176,10 +182,9 @@ commit (Step 4), drive it home:
    FIX IT FORWARD IMMEDIATELY. That is the whole trade, and it only works if the red is actually
    chased - a red left standing turns the backstop into noise and then nobody looks at it at all.
 
-   Note what the local gate does NOT cover: test-local.ps1 runs the .NET suites only - no web
-   tests, no Python tests. If you touched the browser shells or the Python toolbelt, the answer
-   is in the "Build & Test (web)" and "Tool contracts (Python)" jobs, and fixing forward means
-   watching for those rather than walking away.
+   Chasing a red is not waiting for a green: nothing is held open pending a check, but the web
+   and Python jobs are the only place those tests run at all. If you touched the browser shells
+   or the Python toolbelt, merge without waiting and then go back and read that result.
 6. Park the checkout back on main:
    git checkout main && git pull
    If you worked in a worktree, remove it: git worktree remove ../<repo>-wt-<short-desc>.
@@ -192,7 +197,8 @@ Tell the user:
 - Pull request number and merge commit on main
 - Number of files changed
 - That the branch was deleted and the checkout is parked back on main, clean
-- Any exception (e.g. left open because checks are still running) WITH the reason
+- Any exception WITH the reason. "Checks are still running" is NOT one - nothing is ever left
+  open waiting for a check.
 
 ## Handling bypass requests
 

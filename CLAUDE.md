@@ -216,12 +216,22 @@ cross-platform change. That exception list is gone deliberately. Waiting fifty m
 answer you already have locally was the single largest source of dead time in this repository
 (issue #1156), and every exception written into the rule was an invitation to pay it again.
 
-1. **Run the local gate.** Use the script, not a hand-rolled `dotnet test`: it builds once and
-   starts every test project together, so the six that do not serialize finish while the Gateway
-   suite queues for its machine-wide lock. It is also the ONE place the whole fleet gets faster
-   when the suite improves - a convention each caller re-implements cannot be improved centrally.
-   `-Fast` skips the Gateway suite for a change that provably does not touch it; say so in the
-   pull request if you rely on it. A red local run is a red change - fix it before going further.
+1. **Run the local gate.** Use the script, not a hand-rolled `dotnet test` - it is the ONE place
+   the whole fleet gets faster when the suite improves, and a convention each caller
+   re-implements cannot be improved centrally. A red local run is a red change; fix it before
+   going further.
+
+   Know exactly what the default run covers, because it is not everything:
+   - It runs every suite that fits the two-minute budget, roughly 3,400 tests.
+   - **Two suites are PARKED and do NOT run by default** - `Gateway.Tests` (host-bound, takes a
+     machine-wide lock) and `Core.Tests` (far outside the budget). Run them with `-Parked`.
+   - `-Fast` is a **no-op**, retained only for callers that still pass it. The default is the
+     fast run. Do not claim a change was gated by `-Fast`; it means nothing.
+   - It runs **no web tests and no Python tests** at all.
+
+   So a regression inside a parked suite, the browser shells, or the Python toolbelt can reach
+   main with a green local run. If your change touches any of those, run `-Parked` or the
+   relevant suite yourself - do not let "the gate was green" stand in for coverage it never had.
 2. **Get the change reviewed by a different agent family.** The author is the last to see the
    defect, so the reviewer must not be the writer. Codex is the default reviewer, and it runs as
    a real tracked session, never backgrounded and never hidden:
@@ -234,11 +244,17 @@ answer you already have locally was the single largest source of dead time in th
 trade, and it only works if the red is actually chased: a red that is left standing turns the
 backstop into noise, and then nobody looks at it at all. Chase it the moment you see it.
 
-**Know what the local gate does NOT cover.** `test-local.ps1` runs the .NET suites only - it runs
-no web tests and no Python tests. Those live only in the "Build & Test (web)" and "Tool contracts
-(Python)" jobs, which finish in about a minute each. You are not required to wait for them, but if
-you touched the browser shells or the Python toolbelt, that is where the answer is, and fixing it
-forward means watching for it rather than walking away.
+**Chasing a red is not the same as waiting for a green.** Nothing is ever held open pending a
+check. But the web and Python jobs are the ONLY place those tests run at all, so if you touched
+the browser shells or the Python toolbelt, go and read that result after merging rather than
+walking away from it. Merge without waiting; come back for the answer.
+
+**Releasing is the one place the missing coverage bites, and it cannot be fixed forward.** The
+release workflow runs ZERO tests - it builds and publishes artifacts - and a pushed tag cannot be
+un-pushed. So a defect that the default gate never looked at ships, and "fix it forward" is not
+available to a release that is already out. **Before a release, run `.\scripts\test-local.ps1
+-Parked` and let it finish.** That is the release gate, it is local, and it replaces the old
+instruction to wait for a green continuous integration run - it does not reintroduce it.
 
 If the Gateway suite says it is WAITING on a lock held by another run, that is not a hang - it is
 one run at a time by design, and it prints its holder every 30 seconds. See issue #1156 for why that

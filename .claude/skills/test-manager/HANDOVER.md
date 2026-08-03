@@ -30,8 +30,9 @@ un-park anything to raise a coverage number.
 4. **Speed beats coverage.** A fast gate runs on every change; a slow comprehensive one gets skipped,
    and a skipped gate has a true coverage of zero. A batch that would blow the 120-second ceiling does
    not go in, however good the tests are.
-5. **Local is the gate.** CI is for releases, explicit requests, and its own failures - and a red CI is
-   driven to green, never left standing.
+5. **Local is the gate, and nothing ever waits on continuous integration.** Not for a release
+   either - a release runs the local `-Parked` gate instead. Continuous integration is a
+   post-merge backstop that is never watched and never left red: a red is driven to green at once.
 
 ## The queue, in the order I would do it
 

@@ -131,7 +131,7 @@ durations. If they are close, the tests are running one at a time whatever the c
 
 ## LOCAL IS THE GATE. NOTHING EVER WAITS ON CONTINUOUS INTEGRATION
 
-Run `.\scripts	est-local.ps1`. This machine is far stronger than a runner and gives the answer in
+Run `.\scripts\test-local.ps1`. This machine is far stronger than a runner and gives the answer in
 about a minute; the .NET job takes roughly fifty. **Never wait on continuous integration to merge -
 no exceptions, releases included.** The gate is the local run plus a review by a different agent
 family (Codex by default), and then the change merges.
@@ -140,11 +140,19 @@ The exception list this section used to carry - releases, changes to the build, 
 is gone deliberately. Every exception was an invitation to pay the fifty minutes again, and the
 answer it bought was one the local run had already given.
 
-Continuous integration still runs after the merge, as a backstop. It is never watched and never
-waited for, and it is never left red: **a red is fixed forward immediately, re-run, and confirmed
-clear.** That is the whole trade. A red left standing turns the backstop into noise, and a backstop
-nobody reads is not a backstop - which is exactly how two architecture guards stayed red on main for
-a morning without anybody being told.
+A release still needs the coverage the default run skips, and gets it LOCALLY: run
+`.\scripts\test-local.ps1 -Parked` and let it finish before cutting one. That is not a softened
+version of the old rule - it is a local gate, not a wait on a runner. It matters because the
+release workflow runs ZERO tests and a pushed tag cannot be un-pushed, so a release is the single
+place where fixing forward is not available.
+
+Continuous integration still runs after the merge, as a backstop. It is never **waited on** - no
+merge is ever held open for it - and it is never left red: **a red is fixed forward immediately,
+re-run, and confirmed clear.** Reading a result after the fact is chasing, not waiting, and it is
+required: the web and Python jobs are the only place those tests run at all, so a change touching
+the browser shells or the Python toolbelt must go back and read them. A red left standing turns the
+backstop into noise, and a backstop nobody reads is not a backstop - which is exactly how two
+architecture guards stayed red on main for a morning without anybody being told.
 
 ## Deciding what to run: ALWAYS ask the selector, never guess
 
