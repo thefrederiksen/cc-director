@@ -92,6 +92,51 @@ public class GitAbsentTests
     }
 
     /// <summary>
+    /// The read provider the Source Control view renders. When the launch itself fails it has to
+    /// pass the REASON through - it used to report a fixed "Failed to start git process", which
+    /// threw away why and was also what it said when git ran perfectly well and exited non-zero.
+    ///
+    /// The launch is failed here with a working directory that does not exist, because that fails on
+    /// a machine that HAS git and so reproduces anywhere. It is the same wiring the missing-git case
+    /// takes: both arrive as ProcessRunner reporting Started=false with an operating system code.
+    /// </summary>
+    [Fact]
+    public async Task GitStatusProvider_WhenGitCannotBeLaunched_ReportsWhy()
+    {
+        var missingDirectory = Path.Combine(Path.GetTempPath(), "devthrottle-no-such-directory-" + Guid.NewGuid().ToString("N"));
+
+        var result = await new GitStatusProvider().GetStatusAsync(missingDirectory);
+
+        Assert.False(result.Success);
+        Assert.StartsWith("git could not be started", result.Error);
+        Assert.NotEqual("Failed to start git process", result.Error);
+    }
+
+    /// <summary>
+    /// The branch bar's provider. It reported "Failed to start git process" for BOTH a launch that
+    /// never happened and a git that ran and exited non-zero - so a folder that is simply not a
+    /// checkout was described as a machine that could not start git.
+    /// </summary>
+    [Fact]
+    public async Task GitSyncStatusProvider_WhenGitRanAndFailed_DoesNotClaimItNeverStarted()
+    {
+        var notARepo = Path.Combine(Path.GetTempPath(), "devthrottle-not-a-repo-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(notARepo);
+        try
+        {
+            var status = await new GitSyncStatusProvider().GetSyncStatusAsync(notARepo);
+
+            Assert.False(status.Success);
+            Assert.NotEqual("Failed to start git process", status.Error);
+            Assert.Contains("exited", status.Error!);
+        }
+        finally
+        {
+            try { Directory.Delete(notARepo, recursive: true); } catch { /* disposable temp folder */ }
+        }
+    }
+
+    /// <summary>
     /// The detector against the real machine. Every other test here injects the two machine-touching
     /// steps; this one runs neither injected, so PATH resolution, the subprocess and the version
     /// banner are all exercised together. It asserts Present because the machines this suite runs on
