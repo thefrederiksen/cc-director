@@ -256,37 +256,22 @@ matched on method and path together, with tests on both sides so the tightening 
 
 ## What is NOT proven
 
-**The full Gateway unit suite fails a different stats test on every run - three runs, three
-different failures.**
+**The Gateway unit suite is intermittently red, and that is now SETTLED rather than asserted.** I first wrote this up as pre-existing contention while admitting I had not run the control. The Architect refused it, correctly. The control is in the closeouts below: the parent commit fails six different tests across three runs, none of them in the area mine failed in.
 
-| Run | Failed |
-|---|---|
-| 1 | `GatewayStatsStoreMidChainContainmentTests.HealthyStores_AreNotReportedAsIncomplete` |
-| 2 | `GatewayStatsSqliteAdoptionTests.Adopt_StoreWhoseTableHasTheRightNamesAndNothingElse...` and `GatewayInputStatsAggregatorTests.WingmanUsage_CountsVoiceModeSessionsAndTheirTurns` |
-| 3 | `GatewayStatsSqliteAdoptionTests.Adopt_ViewWearingATableName_IsRefusedAndLeavesTheFileByteIdentical` |
+**The cross-tenant registration arm is structurally defended, not untested** - the Architect has
+ruled it closed and the reasoning is written out in the closeouts below. The within-tenant Director
+takeover and the expiry cap both fail cleanly without their fixes.
 
-All 89 pass when run alone. Every one is in the stats
-area, and this phase touched no stats file - the complete list of changed files is session keys, the
-guard, the registry, the fanout handler, the tool probe, and the Python clients. I am calling this
-pre-existing contention rather than a regression, and I want to be explicit that I did NOT run the
-gate on the parent commit to confirm it. That is an inference from the evidence above, not a
-measurement.
-
-**The cross-tenant registration test passes even with the lookup fault injected**, because the
-composite primary key defends it at the database. Reverting the key as well makes the whole suite
-fail on a schema mismatch rather than on the security property, so I could not isolate that one arm
-cleanly. The within-tenant Director takeover and the expiry cap both fail cleanly without their
-fixes.
-
-**The fanout sender pinning has no test.** It is a Gateway endpoint change verified by build and by
-reading the code path, not by a test that fails without it - which is the standard every other fix
-here met. It is the weakest item in this report.
+**The fanout sender pinning now has six tests**, fault-injected - see the closeouts. It was the one
+fix carried by build and code-reading alone when this report was first written.
 
 **Nothing was driven against the live hosted Gateway.** Every wire proof here is against the isolated
 rig.
 
-**The session-keys primary key change is verified against SQLite only.** The Postgres migration and
-snapshot were amended identically and by hand; no Postgres instance was run.
+**The Postgres migration is now run against a real PostgreSQL 16**, on an empty database and on one
+that already has rows - see the closeouts. When this report was first written it was hand-amended and
+unrun, which for a service whose hosted Gateway runs Postgres meant a defect that would have surfaced
+at deploy time.
 
 **`cc-history` and the fleet self-test remain excluded** by the Architect's earlier ruling, and
 neither has been run.
@@ -304,3 +289,117 @@ kill to any process: the single shutdown call this phase made went to `127.0.0.1
 Director slot 6's own log names as its Control API address, and that call returned "unable to
 connect" because slot 6 had already exited. Slot 5 could not have been holding 7883, or slot 6 could
 not have bound it. I did not cause it as far as I can trace, and I cannot say what did.
+
+---
+
+## Closeouts: four things the Architect would not accept as written
+
+### One: the Postgres migration, run against a real Postgres
+
+The hosted Gateway runs Postgres. The local suites run SQLite and would never have told me, so a
+hand-amended and unrun migration is a defect that surfaces at deploy time on the live service.
+
+Run against **PostgreSQL 16.14** in a container, using `dotnet ef database update --connection`, which
+applies the real migration rather than a script I wrote about it.
+
+**Empty database.** The whole chain applies, ending `Applying migration
+'20260803154516_AddSessionKeys'. Done.` The schema it produces:
+
+```
+PK_session_keys   PRIMARY KEY   TenantId   (ordinal 1)
+PK_session_keys   PRIMARY KEY   SessionId  (ordinal 2)
+"IX_session_keys_KeyHash" UNIQUE, btree ("KeyHash")
+```
+
+**The model agrees with it.** `dotnet ef migrations has-pending-model-changes` against the Postgres
+provider: *"No changes have been made to the model since the last migration."* That is what closes
+the risk of a hand-edit: the migration and the model are one story, checked by the tooling rather
+than by me reading both.
+
+**A database that already has rows.** Migrated only as far as `20260729173140_SkillPlacementState` -
+confirmed by `to_regclass('gateway.session_keys')` returning nothing, so this is a genuine
+pre-upgrade state - then seeded with two tenant rows, then migrated the rest of the way. The
+migration applied (it even took the exclusive migration lock, as a real deploy does), the seeded rows
+survived, and the key on the upgraded database is the composite one.
+
+**Two control checks, because a schema that looks right is not a property that holds:**
+
+| Check | Result |
+|---|---|
+| Two tenants insert the SAME session id | **Both rows accepted** - the isolation the composite key exists to give |
+| The same insert against the OLD single-column key | **`duplicate key value violates unique constraint "PK_session_keys"`** - so the property comes from the key change, not from something else |
+| A duplicate `KeyHash` across two tenants | **`duplicate key value violates unique constraint "IX_session_keys_KeyHash"`** - global hash uniqueness was NOT broken by making the key composite |
+
+The second row is the one that matters. It shows the old schema structurally refused what the new one
+allows, which is the same fact from the other side: under the old key one session id was a single
+global row, and that is what made the takeover reachable.
+
+Both test databases were dropped afterwards.
+
+### Two: the stats failures, settled with the control I should have run first
+
+The Architect challenged this claim once, I flagged the missing control myself, and then shipped the
+claim anyway with the gap noted. That is the same mistake with a disclaimer attached. Here is the
+control.
+
+The Gateway unit suite was run three times on the **parent commit `45b1114c5`**, in its own worktree,
+with no part of this phase's work present:
+
+| Run | Parent commit (control) |
+|---|---|
+| 1 | **0 failures**, 2875 passed |
+| 2 | **4 failures** - `SpokenVoiceTests`, `WingmanVoiceServiceTests`, `SessionKeyAuthTests`, `MorningReportBuilderTests` |
+| 3 | **2 failures** - `MorningReportWindowTests`, `VoiceUploadStoreTenantPartitionTests` |
+
+Six failures across three runs, six different tests, none repeated - and **none of them in the stats
+area** where my own runs failed. So the suite is intermittently red on the parent as well, in whatever
+area the scheduler happens to squeeze, and the failures are not characteristic of any particular
+change.
+
+**The claim was right and is now evidence rather than an inference.** It also cost nothing to prove,
+which was the Architect's point: a different test failing each run is equally consistent with
+contention and with a real race we introduced, and those two readings are indistinguishable without
+the control.
+
+**The parked suites are green on my commit**, which is the other half of the answer:
+`CcDirector.Gateway.Tests` 2455 passed, `CcDirector.Core.Tests` 4200 passed - the two suites the
+default gate does not run, and the two the coverage warning named for this change.
+
+### Three: the fanout sender-pinning test
+
+The pin was the one fix in this phase carried by build and code-reading alone, because the decision
+sat inline in an endpoint only the parked, host-bound suite could reach. It is now a pure function
+beside `SessionKeyGuard`, for the reason that guard is one: the rule lives in one place and can be
+tested without standing up a Gateway and a Director.
+
+Six tests. Fault-injected by restoring the pre-fix behaviour - taking the sender from the request
+body - which fails exactly the two that describe the spoof.
+
+The one worth naming is `A_session_key_that_names_nobody_is_still_pinned_to_itself`. The obvious fix
+is to override only a MISMATCH, and that leaves the rate-limit half of the finding wide open: an
+absent sender is its own bucket, so a caller escapes the bucket its own id counts into simply by
+omitting the field. Omitting is not honesty; it is the same evasion with less typing.
+
+The other three keep the fix from overreaching - a device key acts for the account rather than as a
+session and keeps the sender it asked for; an honest caller naming itself is not logged as an
+override, or the log stops meaning anything; and a claim differing only in case or padding is the
+same session, not a spoof.
+
+### Four: the cross-tenant registration arm is structurally defended, not skipped
+
+Recorded at the Architect's ruling, and stated plainly so no later reader mistakes it for a gap.
+
+The cross-tenant registration test passes even with the lookup fault injected. That is not a weak
+test - it is the composite primary key making the attack **unrepresentable** rather than merely
+refused. Two tenants naming one session id are two rows that cannot see each other, so there is no
+state in which the takeover exists to be caught by a runtime check, and no fault injection into the
+lookup can recreate one. Reverting the key as well does not isolate the arm either: it makes the
+whole suite fail on a schema mismatch, which is a different failure about a different thing.
+
+**When a fix makes an attack unrepresentable rather than refused, the absence of a test for it is a
+property of the design, not a hole in the coverage.** What stands in its place is the Postgres
+control above, which shows the old key refusing the very insert the new one accepts - the structural
+change demonstrated directly, at the layer that enforces it.
+
+The two arms that CAN be represented at runtime - a different Director inside one tenant, and the
+expiry cap - both fail cleanly without their fixes, and are tested.
