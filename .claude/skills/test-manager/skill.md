@@ -22,6 +22,55 @@ The owner of this repository's test suites. Three duties, in priority order:
 
 ---
 
+## Deciding what to run: ALWAYS ask the selector, never guess
+
+`scripts/select-tests.ps1` answers "which suites can this change actually affect" from the files it
+touched. **Use it whenever the question comes up** - before merging, when someone asks whether the
+parked suites are needed, or when a change feels risky.
+
+    .\scripts\select-tests.ps1 -Explain
+
+It derives the answer from the .csproj REFERENCE GRAPH, not from a hand-written folder list: each
+test project's transitive closure is computed, and a suite is selected when the change touched any
+project inside it. A hand-maintained map goes stale silently the first time somebody adds a
+ProjectReference; this one cannot.
+
+It fails toward running MORE. An unrecognised path, a changed .csproj or .sln, a change to the gate
+itself - all select everything. Only paths whose irrelevance is obvious (docs, markdown, images) are
+allowed to select nothing.
+
+**The gate calls it automatically and prints a COVERAGE GAP warning** when a change touches code that
+a parked suite covers. That warning is the answer to "who remembers to run `-Parked`" - nobody has
+to. Treat it as a required action, not a hint: run `-Parked` before merging, or say in the pull
+request why not.
+
+### Why the gate WARNS instead of auto-running the parked suites
+
+Measured by replaying the last hundred merges: a parked suite was implicated in **69 to 80 per cent
+of changes**, because `CcDirector.Core` and `Gateway.Contracts` are referenced by nearly everything.
+Running them automatically would restore a twelve-to-forty-five-minute gate for seven changes in ten
+- exactly the problem the budget removed. So the fast gate stands and the reader is told precisely
+what it did not cover.
+
+That number is also the honest measure of how much selection saves here: **less than you would hope.**
+The fan-out from the shared projects is the real constraint, and the way to actually shrink it is to
+make the parked suites fast enough to stop being parked.
+
+### The map is validated against history, not asserted
+
+`scripts/validate-test-selection.ps1` replays the last hundred merges and checks the only property
+that can hurt: that the selection was never TOO SMALL. Ground truth is derived from paths, not from
+the graph, so the check is not circular - a change editing `Engine.Tests` must select `Engine.Tests`,
+a change under `src/` must select something, a change under `apps/` must select the web tests.
+
+Last run: **100 changes, zero violations.** 44 per cent ran everything (fail-safe), 42 per cent
+narrowed, 13 per cent needed no tests, 1 per cent web only.
+
+Re-run it after changing the selector or restructuring projects. It is cheap and it is the only thing
+standing between a clever map and a silent skip. It is honest about its limits too: a suite that
+should run because of a RUNTIME coupling the reference graph cannot see will not be caught by any
+path-based harness.
+
 ## The law: a two-minute budget, enforced
 
 `$BudgetSeconds = 120` in `scripts/test-local.ps1`. Each suite gets that long. One that has not
