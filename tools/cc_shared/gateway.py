@@ -26,6 +26,7 @@ scope from, and - on the skill, workflow, schedule and mission paths - the accou
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -123,6 +124,43 @@ def _error_message(body: str, code: int, fault_is_director: bool = False) -> str
     return status
 
 
+def _origin(url: str) -> tuple:
+    """Scheme, host and port - the three things that decide whether a URL is the SAME place."""
+    parsed = urllib.parse.urlparse(url)
+    return (parsed.scheme.lower(), (parsed.hostname or "").lower(), parsed.port)
+
+
+class _SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse to carry the session key to a different origin.
+
+    Every request here sends `Authorization: Bearer <session key>`, and Python's default redirect
+    handler copies that header onto the redirected request - INCLUDING when the scheme, host or port
+    changes. A redirect returned by the Gateway, by a reverse proxy in front of it, or by anything
+    that has taken over a route therefore hands the credential to whoever the redirect names. That
+    was proved at runtime with two loopback servers: the second one received the original header.
+
+    A redirect to the SAME origin is ordinary and is followed. A redirect to a different origin is
+    refused LOUDLY rather than followed-without-the-header, because an API call to the Gateway
+    answering "go and ask that other host instead" is not a condition to quietly accommodate - it is
+    either a misconfiguration or an attack, and both should be read by a person.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if _origin(newurl) != _origin(req.full_url):
+            raise GatewayError(
+                f"The Gateway redirected {req.full_url} to a different origin ({newurl}). "
+                "That was refused: the request carries this session's credential, and following it "
+                "would hand that credential to another host. Check CC_GATEWAY_URL and anything "
+                "proxying in front of the Gateway."
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+# Built once. Carries ONLY our redirect handler over the default set, so behaviour is unchanged
+# except that a cross-origin redirect now fails instead of leaking the bearer token.
+_OPENER = urllib.request.build_opener(_SameOriginRedirectHandler)
+
+
 def _request(method: str, path: str, body: Optional[dict] = None, timeout: float = 30) -> Any:
     url = f"{gateway_base_url()}/{path.lstrip('/')}"
     data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -133,7 +171,7 @@ def _request(method: str, path: str, body: Optional[dict] = None, timeout: float
     req.add_header("Authorization", f"Bearer {session_key()}")
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _OPENER.open(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
             return json.loads(raw) if raw else None
     except urllib.error.HTTPError as err:

@@ -214,7 +214,7 @@ def _session_env(monkeypatch):
 def test_request_surfaces_the_sentence_from_a_problem_details_response(monkeypatch):
     """End to end through _request: this is the path every cc-devthrottle command takes."""
     _session_env(monkeypatch)
-    monkeypatch.setattr(gateway.urllib.request, "urlopen",
+    monkeypatch.setattr(gateway._OPENER, "open",
                         lambda *a, **k: (_ for _ in ()).throw(_http_error(500, PROBLEM_DETAILS)))
 
     with pytest.raises(gateway.GatewayError) as caught:
@@ -226,7 +226,7 @@ def test_request_surfaces_the_sentence_from_a_problem_details_response(monkeypat
 
 def test_request_still_reports_the_status_when_the_body_carries_no_sentence(monkeypatch):
     _session_env(monkeypatch)
-    monkeypatch.setattr(gateway.urllib.request, "urlopen",
+    monkeypatch.setattr(gateway._OPENER, "open",
                         lambda *a, **k: (_ for _ in ()).throw(_http_error(502, "")))
 
     with pytest.raises(gateway.GatewayError) as caught:
@@ -255,7 +255,7 @@ def test_request_presents_the_session_key_as_a_bearer_token(monkeypatch):
         return _Resp()
 
     _session_env(monkeypatch)
-    monkeypatch.setattr(gateway.urllib.request, "urlopen", _capture)
+    monkeypatch.setattr(gateway._OPENER, "open", _capture)
     gateway.get_json("sessions?envelope=true")
 
     assert seen["auth"] == "Bearer a-session-key"
@@ -301,7 +301,7 @@ def test_an_unreachable_gateway_says_there_is_no_local_path(monkeypatch):
     is no local path - so nobody goes looking for the second door this mission removed.
     """
     _session_env(monkeypatch)
-    monkeypatch.setattr(gateway.urllib.request, "urlopen",
+    monkeypatch.setattr(gateway._OPENER, "open",
                         lambda *a, **k: (_ for _ in ()).throw(urllib.error.URLError("connection refused")))
 
     with pytest.raises(gateway.GatewayError) as caught:
@@ -344,3 +344,114 @@ def test_a_gateway_that_says_nothing_about_completeness_is_UNKNOWN_not_complete(
     assert complete is None
     assert reason is None and stale is None
     assert gateway.roster_caveat(complete, reason) != ""  # and it says so out loud
+
+
+# --- The credential must not cross an origin boundary -----------------------------------------
+
+
+def _redirect_rig():
+    """Two real loopback servers: the first redirects to the second, which records what it got.
+
+    Driven with real HTTP rather than a mocked opener on purpose. The defect was in Python's own
+    redirect handling - the default handler copies Authorization onto the redirected request - so a
+    test that faked the redirect would have tested the fake and not the behaviour that leaked.
+    """
+    import http.server
+    import threading
+
+    received = {}
+
+    class _Second(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            received["auth"] = self.headers.get("Authorization")
+            body = b"{}"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    second = http.server.HTTPServer(("127.0.0.1", 0), _Second)
+    threading.Thread(target=second.serve_forever, daemon=True).start()
+    second_url = "http://127.0.0.1:%d" % second.server_address[1]
+
+    class _First(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(302)
+            self.send_header("Location", second_url + "/sessions")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    first = http.server.HTTPServer(("127.0.0.1", 0), _First)
+    threading.Thread(target=first.serve_forever, daemon=True).start()
+    first_url = "http://127.0.0.1:%d" % first.server_address[1]
+
+    return first_url, received, first, second
+
+
+def test_a_cross_origin_redirect_never_receives_the_session_key(monkeypatch):
+    """The proved disclosure path: a redirect to another origin must not carry the credential.
+
+    Python's default opener copies Authorization onto the redirected request even when the host and
+    port change, so any redirect - from the Gateway, a reverse proxy, or a hijacked route - handed
+    this session's key to whoever the Location named.
+    """
+    first_url, received, first, second = _redirect_rig()
+    try:
+        monkeypatch.setenv("CC_GATEWAY_URL", first_url)
+        monkeypatch.setenv("CC_GATEWAY_SESSION_KEY", "a-session-key")
+
+        with pytest.raises(gateway.GatewayError) as caught:
+            gateway.get_json("sessions")
+
+        # Refused, and the sentence says why rather than surfacing a redirect loop or a bare 302.
+        assert "different origin" in str(caught.value)
+        # And - the point of the whole finding - the other origin never saw the credential.
+        assert received.get("auth") is None
+    finally:
+        first.shutdown()
+        second.shutdown()
+
+
+def test_a_same_origin_redirect_is_still_followed(monkeypatch):
+    """The guard must not break ordinary redirects back to the Gateway itself."""
+    import http.server
+    import threading
+
+    state = {}
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/sessions":
+                self.send_response(302)
+                self.send_header("Location", "/sessions-moved")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            state["auth"] = self.headers.get("Authorization")
+            body = b'{"ok": true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setenv("CC_GATEWAY_URL", "http://127.0.0.1:%d" % srv.server_address[1])
+        monkeypatch.setenv("CC_GATEWAY_SESSION_KEY", "a-session-key")
+
+        assert gateway.get_json("sessions") == {"ok": True}
+        assert state["auth"] == "Bearer a-session-key"
+    finally:
+        srv.shutdown()
