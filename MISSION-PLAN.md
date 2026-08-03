@@ -60,9 +60,21 @@ control endpoint from the instance registration.
 popup is gone on a clean machine. This phase is what removes that popup permanently.
 
 ### 6 - Delete the launcher's listener
-Seven routes move onto the outbound connection that already exists; the web host goes.
-**Proof:** nothing listening for the launcher; starting, stopping and restarting a Director from
-another machine still works.
+**Smaller than briefed, and verified before briefing it.** The launcher does not merely hold an
+outbound connection - it already registers a downward COMMAND handler on it
+(`LauncherStreamClient.cs`: `_connection.On<LauncherCommand, LauncherCommandResult>("Command", ...)`)
+and already dispatches six verbs: `director/start`, `director/stop`, `director/restart`, `launch`,
+`apps`, `files`. Six of the nine routes therefore have a working non-HTTP path today.
+
+What is actually left:
+- `healthz` and `status` - the Gateway is already told the launcher's port and version in the hub
+  Hello, and liveness IS the connection being up. No verb needed; read what the hub already knows.
+- `shutdown` - lifecycle, handled by Phase 4's named event, not by the hub.
+- Confirm the Gateway's machine endpoints dispatch over the hub rather than still dialling the
+  launcher's HTTP port, then delete the web host.
+
+**Proof:** nothing listening for the launcher in a live connection scan; starting, stopping and
+restarting a Director from another machine still works.
 
 ### 7 - The guard
 A fitness test that fails if a listener is added back to either program.
