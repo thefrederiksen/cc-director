@@ -6,21 +6,40 @@ on:
   pull_request:
     branches: [main]
 
-# One run per workflow per branch, and supersede an older run ONLY on a pull request.
+# A pull request keeps ONE run per branch and supersedes the older one. A push to main gets a group
+# of its OWN, one per commit, so it never shares a queue with any other commit.
 #
 # Why the asymmetry, because getting it the other way round is the expensive mistake. On a pull request
 # the head commit is the only one anyone acts on, so an older run for a commit that has already been
 # pushed past is spending a runner on an answer nobody will read - cancelling it is right. On a push to
-# main, EVERY commit must keep its own verification: cancelling there would leave main commits
-# permanently unverified, and a green that belongs to a specific commit is the whole point of having CI
-# rather than a memory of a run.
+# main, EVERY commit must keep its own verification: a green that belongs to a specific commit is the
+# whole point of having continuous integration rather than a memory of a run.
 #
-# Added after a draft pull request queued six simultaneous runs on one branch, none of which superseded
-# any other, so the answer everybody was waiting for kept being pushed further out by the very commits
-# that were waiting on it. When a resource serialises, parallelism converts into latency rather than
-# throughput, and the cost lands on whoever is waiting rather than on whoever is holding.
+# The pull-request half was added after a draft pull request queued six simultaneous runs on one branch,
+# none of which superseded any other, so the answer everybody was waiting for kept being pushed further
+# out by the very commits that were waiting on it. When a resource serialises, parallelism converts into
+# latency rather than throughput, and the cost lands on whoever is waiting rather than on whoever is
+# holding.
+#
+# THE PER-COMMIT GROUP ON MAIN IS THE SECOND HALF, AND IT IS NOT THE SAME KNOB. Turning cancellation off
+# for main was believed to be enough, and it is not: cancel-in-progress protects only the run that is
+# already EXECUTING, while a concurrency group holds at most ONE run in the pending slot. A third push
+# arriving discards whichever run was waiting there. On 3 August, main took 24 runs and 16 of them ended
+# cancelled having never started a single job - each one killed to the second by the arrival of the next
+# merge, because the .NET job takes about fifty minutes and merges land every two to five. Those runs
+# were not superseded mid-flight; they were evicted from the queue before they ever ran.
+#
+# That was not a cosmetic loss. Two architecture guards were red on main that morning, and the commit
+# that fixed them (#2424) had its own run evicted, so nothing on GitHub ever reported either the break
+# or the repair. Continuous integration is also the backstop for the two suites parked out of the local
+# gate, and a backstop that is evicted before it starts is not a backstop.
+#
+# Keying the group on the commit removes main from the shared queue entirely: every merge gets a run
+# that no later merge can take the slot from. The cost is real and was accepted deliberately - one full
+# run per merge instead of one per burst. Runs may still WAIT on the account-wide runner limit, but
+# waiting yields a verdict late whereas eviction yields none at all.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
