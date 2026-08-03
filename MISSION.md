@@ -207,3 +207,22 @@ the result is believable.
 
 Still unproven and reassigned to Phase 2b: the seven browser WRITE verbs, a single-target message into
 a real agent, and prompt/interrupt/compact/mission-attach/session-done end to end.
+
+## The carried-over popup fix: independently approved, still parked
+
+2026-08-03. A third review pass on `fix/port-probe-loopback` returned APPROVE, and the method is why
+it counts: bin and obj were force-removed for both affected projects before EVERY matrix run and again
+before each isolated rerun, so no result rode a stale assembly - the hazard that produced three wrong
+diagnoses earlier in this work. Baseline 24/24 green; the scan line reverted turns exactly one test
+red; the bind reverted to `IPAddress.Any` turns exactly one different test red; reverted to
+`IPAddress.IPv6Any` the same; restored 24/24 green. Each intentional failure also failed alone after a
+clean, so none was suite contention. Fault-injected detector validation in both directions.
+
+**Disposition: parked, NOT merged.** The Architect's authority on this mission covers landing the
+MISSION's work on main. This branch is explicitly not mission work, so merging it is the owner's call
+and has not been given - he declined twice and then said the fix is unnecessary once the port goes.
+
+**The one thing that changes this:** Phase 5 is several phases away. If any release ships before Phase
+5 lands, that release carries the first-launch popup - a new user's setup wizard appearing frozen -
+and this approved two-line change is the only thing that would have prevented it. Flag at release
+time, not before.
