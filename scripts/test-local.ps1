@@ -74,6 +74,10 @@ if ($Gateway -and $Parked) {
 #   HostedAgent          36s                      Launcher    2s      Terminal 11s
 # They start together, so the default costs about the slowest one.
 $defaultProjects = @(
+    # BACK IN THE DEFAULT RUN. It was parked for exceeding the ceiling at about 2 minutes quiet and 3 to 5
+    # busy; it now finishes in under a minute, because the cost turned out to be the migration set being
+    # rebuilt from scratch once per database-backed test. 2762 tests.
+    "src\CcDirector.Gateway.UnitTests\CcDirector.Gateway.UnitTests.csproj",
     "src\CcDirector.Avalonia.Tests\CcDirector.Avalonia.Tests.csproj",
     "src\CcDirector.Engine.Tests\CcDirector.Engine.Tests.csproj",
     "src\CcDirector.HostedAgent.Tests\CcDirector.HostedAgent.Tests.csproj",
@@ -88,14 +92,7 @@ $defaultProjects = @(
 $gatewayProject = "src\CcDirector.Gateway.Tests\CcDirector.Gateway.Tests.csproj"
 $parkedProjects = @(
     $gatewayProject,
-    "src\CcDirector.Core.Tests\CcDirector.Core.Tests.csproj",
-    # Parked on measurement, not on principle - and the measurement is worth keeping because it says what
-    # would bring it back. 2762 tests, about 2 minutes on a quiet machine and 3 to 5 with the fleet busy.
-    # Raising its thread cap does NOT fix it: 24 threads ran it in 149 seconds against 120 at four, and
-    # brought the flakiness back. It uses about ONE core's worth of CPU throughout. It is not compute-bound,
-    # it is SLEEP-bound - the wall clock is Task.Delay and Thread.Sleep inside the tests, which no amount of
-    # hardware shortens. It comes back when those waits are replaced by injected clocks, not before.
-    "src\CcDirector.Gateway.UnitTests\CcDirector.Gateway.UnitTests.csproj"
+    "src\CcDirector.Core.Tests\CcDirector.Core.Tests.csproj"
 )
 
 # THE TWO-MINUTE BUDGET IS ENFORCED, NOT DOCUMENTED. A suite that exceeds it is KILLED and the run is
