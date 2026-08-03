@@ -44,6 +44,43 @@ no name displays as the bare folder name and is impossible to tell apart. Lead w
 `implement #799`); spawn warns when you give neither. A blank name, or a name equal to the bare
 repository folder name, is rejected - pass something meaningful or a purpose.
 
+### Spawning is a commitment, not a resource request
+
+**When you spawn a session, it is YOUR worker and you own finishing it.** You do not hand it a
+task and walk away. From the moment it exists it is your job to drive it to completion as quickly
+as possible, and to get its work somewhere safe.
+
+**A session is not complete when its work is written. It is complete when ALL of these are true:**
+
+1. its code has been reviewed by a session OTHER than the one that wrote it;
+2. its output is SAFE (see the two destinations below);
+3. its worktree is gone, if it had its own;
+4. the session itself is dead (`cc-devthrottle session done <target>`).
+
+Any one of those missing means it is still open, still yours, and still costing something.
+
+**"Safe" means one of two different things, and you choose which at spawn time:**
+
+- **The child works in YOUR worktree.** Its output is safe once merged into your tree and you
+  carry it forward. You are now responsible for that code.
+- **The child has its OWN worktree.** Its output is safe ONLY on `origin/main`. That worktree
+  will be deleted, and anything left in it - uncommitted changes, a branch never pushed, a patch
+  on disk - dies with it.
+
+Know which one you took on before you spawn; the obligation is different.
+
+**Three questions you must be able to answer for every session you started:**
+
+- when did it start?
+- how long has it been open?
+- what specifically has to happen to close it?
+
+If you cannot answer the third, the session has no exit and will not acquire one by itself.
+
+**This is not a limit on how many sessions you may run.** A hundred sessions is fine if every one
+is being driven to done. Three is a mess if none of them are. What matters is closing, not
+counting - so drive one thing all the way to dead-and-deleted before you pick up the next.
+
 ### If rename, done, or "message send all" answers "HTTP 404 from the Director"
 
 The command is right and the code is right. The Director you are talking to is too old.
