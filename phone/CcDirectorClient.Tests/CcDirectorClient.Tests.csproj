@@ -28,7 +28,6 @@
     <Compile Include="..\CcDirectorClient\Voice\DirectorInfo.cs" Link="Voice\DirectorInfo.cs" />
     <Compile Include="..\CcDirectorClient\Voice\RepoInfo.cs" Link="Voice\RepoInfo.cs" />
     <Compile Include="..\CcDirectorClient\Voice\FleetParser.cs" Link="Voice\FleetParser.cs" />
-    <Compile Include="..\CcDirectorClient\Voice\SessionFilter.cs" Link="Voice\SessionFilter.cs" />
     <Compile Include="..\CcDirectorClient\Voice\ChatTurnResult.cs" Link="Voice\ChatTurnResult.cs" />
     <Compile Include="..\CcDirectorClient\Voice\VoiceTurnResults.cs" Link="Voice\VoiceTurnResults.cs" />
     <Compile Include="..\CcDirectorClient\Voice\IVoiceTurnChannel.cs" Link="Voice\IVoiceTurnChannel.cs" />
@@ -36,7 +35,6 @@
     <Compile Include="..\CcDirectorClient\Voice\VoiceTurnTerminalExceptions.cs" Link="Voice\VoiceTurnTerminalExceptions.cs" />
     <Compile Include="..\CcDirectorClient\Voice\VoiceTurnRetryPolicy.cs" Link="Voice\VoiceTurnRetryPolicy.cs" />
     <Compile Include="..\CcDirectorClient\Voice\VoiceTurnRunner.cs" Link="Voice\VoiceTurnRunner.cs" />
-    <Compile Include="..\CcDirectorClient\Voice\ConductorState.cs" Link="Voice\ConductorState.cs" />
     <Compile Include="..\CcDirectorClient\Voice\RawTerminalPage.cs" Link="Voice\RawTerminalPage.cs" />
     <Compile Include="..\CcDirectorClient\Voice\TurnBrief.cs" Link="Voice\TurnBrief.cs" />
     <Compile Include="..\CcDirectorClient\Voice\OfflineGuard.cs" Link="Voice\OfflineGuard.cs" />
@@ -48,7 +46,6 @@
     <Compile Include="..\CcDirectorClient\Voice\PlaybackOutcome.cs" Link="Voice\PlaybackOutcome.cs" />
     <Compile Include="..\CcDirectorClient\Voice\Mp3Duration.cs" Link="Voice\Mp3Duration.cs" />
     <Compile Include="..\CcDirectorClient\Voice\PlaybackLog.cs" Link="Voice\PlaybackLog.cs" />
-    <Compile Include="..\CcDirectorClient\Voice\LastClipCache.cs" Link="Voice\LastClipCache.cs" />
     <Compile Include="..\CcDirectorClient\Voice\IAudioCue.cs" Link="Voice\IAudioCue.cs" />
     <Compile Include="..\CcDirectorClient\Voice\NullAudioCue.cs" Link="Voice\NullAudioCue.cs" />
     <Compile Include="..\CcDirectorClient\Voice\PairingLink.cs" Link="Voice\PairingLink.cs" />

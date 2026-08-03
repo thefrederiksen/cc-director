@@ -437,11 +437,11 @@ public sealed class DirectorVoiceClient : IVoiceTurnChannel
     }
 
     /// <summary>
-    /// Park or un-park a session in the FIFO voice queue on the owning Director (POST
-    /// /sessions/{sid}/hold). Held sessions drop out of the FIFO rotation. Unlike
-    /// voice-mode, this is an explicit user action with a queue consequence, so it
-    /// THROWS on HTTP failure - the caller must know the hold did not take before it
-    /// advances past the session.
+    /// Park or un-park a session ("deal with this later") on the owning Director (POST
+    /// /sessions/{sid}/hold). The Gateway keeps the snooze registry and the Cockpit
+    /// renders SNOOZED. Unlike voice-mode, this is an explicit user action with a visible
+    /// consequence, so it THROWS on HTTP failure - the caller must know the hold did not
+    /// take before it moves on.
     /// </summary>
     public async Task SetHoldAsync(string directorBase, string sessionId, bool onHold, CancellationToken ct = default)
     {

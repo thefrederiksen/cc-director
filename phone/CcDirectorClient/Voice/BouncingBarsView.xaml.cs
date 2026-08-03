@@ -2,9 +2,9 @@ namespace CcDirectorClient.Voice;
 
 /// <summary>
 /// 9-bar audio-level equalizer that bounces with the live microphone input
-/// from an <see cref="IUtteranceRecorder"/>. Shared by both dictation dialog
-/// modes (the FIFO voice dialog and the speak-into-textbox dialog) so the
-/// visual confirmation "the mic is hearing you" looks identical everywhere.
+/// from an <see cref="IUtteranceRecorder"/>. Used by the speak-into-textbox
+/// dialog so the visual confirmation "the mic is hearing you" looks the same
+/// wherever the app opens the microphone.
 ///
 /// The recorder only exposes a single peak amplitude per read, not a real
 /// spectrum, so the bars are decorative: each bar is offset from the shared

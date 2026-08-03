@@ -4,7 +4,7 @@
 #   powershell -ExecutionPolicy Bypass -File phone\update-phone-client.ps1
 #   (or in a Claude Code prompt:  ! powershell -File phone\update-phone-client.ps1 )
 #
-# This is the CC Director Client (Sessions + FIFO voice app), NOT the CC Recorder.
+# This is the CC Director Client (Sessions + voice app), NOT the CC Recorder.
 # It auto-selects the physical device (ignores the emulator). If the phone isn't
 # connected, it tells you how to reconnect wireless debugging.
 

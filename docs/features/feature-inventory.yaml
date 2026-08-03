@@ -203,27 +203,6 @@ features:
   # after the mission that deleted the corpse had merged without anyone noticing main had gone red.)
 
   # --- Mobile -------------------------------------------------------------
-  - id: mobile-fifo-voice
-    title: Mobile In-Car Voice (FIFO)
-    category: mobile
-    status: implemented
-    screen: phone
-    source:
-      - phone/CcDirectorClient/FifoPage.xaml
-      - phone/CcDirectorClient/Controls/VoiceSessionView.xaml
-    screenshot: mobile-fifo-voice.png
-    summary: Hands-free phone walkthrough of sessions needing attention - spoken briefing, you said, reply, and tap-to-answer, designed for driving.
-
-  - id: mobile-fifo-text
-    title: Mobile Text (FIFO)
-    category: mobile
-    status: implemented
-    screen: phone
-    source:
-      - phone/CcDirectorClient/FifoTextPage.xaml
-    screenshot: mobile-fifo-text.png
-    summary: The same session walkthrough as a text-first, type-to-respond flow.
-
   - id: mobile-talk
     title: Mobile Talk (single session)
     category: mobile
