@@ -279,3 +279,49 @@ The controls: in every one of the four, the correctness tests
 `TheSetBasedRead_IsScopedToItsTenant`) must stay GREEN. They assert behaviour, and reverts 1 and 2 restore
 a path that behaves identically - so a correctness test that reddens under them is a test that was
 measuring the implementation rather than the answer.
+
+---
+
+## 9. The gate result - 3 August 2026, `-Parked` on `f41b08aa5`
+
+**Invocation: `scripts\test-local.ps1 -Parked`** - the release gate, which is the only invocation that runs
+this work item's parked facts. A default run would have executed five of the thirteen and reported green.
+
+| Project | Outcome | Total | Executed | Failed |
+|---|---|---|---|---|
+| CcDirector.Gateway.Tests (parked) | **Completed** | 2484 | 2437 | **0** |
+| CcDirector.Gateway.UnitTests | Failed | 2773 | 2765 | 1 |
+| CcDirector.Core.Tests (parked) | Failed | 4238 | 4230 | 2 |
+| Avalonia / Engine / HostedAgent / Launcher / Terminal | Completed | 346 / 63 / 88 / 110 / 24 | all | 0 |
+
+**All thirteen of this work item's facts EXECUTED and PASSED**, in the projects they were deliberately
+placed in - five in `Gateway.UnitTests` (every gate) and eight in `Gateway.Tests` (release gate). Named
+individually in the two TRX files, which is the check that replaced the count comparison after the split.
+
+**The three failures are not this branch's, and that is established by evidence rather than asserted:**
+
+- `Gateway.UnitTests / TranscriptStoreTests.Append_NullCleaned_DefaultsToRaw` - "The collection has been
+  marked as complete with regards to additions", the SQLite pool race of issue #2414, in a file this branch
+  has never opened. The harness fix `4e396b801` reduced that race without removing it; the residue is
+  recorded on the issue.
+- `Core.Tests / GatewayOnlyTranscriptionGuardTests` and `Core.Tests / NoCrossMachineLoopbackGuardTests` -
+  two path-keyed architecture guards. Between them they name **twelve** offending files, and **all twelve
+  are in `src/CcDirector.Gateway.UnitTests/`**, the project main created when it split the suite. Not one
+  is this branch's. A file move past a path-keyed allowlist is what broke them, so removing these commits
+  could not change the outcome.
+
+**Counts are recorded rather than compared, and here is why that is not an evasion.** The split moved about
+2,750 tests between two projects and a later commit moved more, so `test-baseline.md`'s numbers describe a
+layout that no longer exists; comparing against them would produce a 2,750-test "fall" that means nothing.
+The named-facts check above is what carries the weight instead, and it is stronger for this purpose: a
+count catches a collapsed run, but only naming the facts catches a hollow one.
+
+## 10. What is NOT proven
+
+- **The four revert proofs in section 8 have not been run.** Each needs its own acquisition of the
+  machine-wide lock, and the Architect's instruction was to report the gate and stop rather than add work.
+  They are written down, in order, with the symptom each must produce - but they are a plan, not evidence,
+  and nothing here should be read as though a test has been watched failing.
+- **Stage 1 has not been run.** It is the latency and ceiling measurement, it needs a quiet machine, and
+  this one has not been quiet. The overlap guard therefore rests on its unit tests and not on a load
+  measurement; the baseline's 91-overlaps-in-98-ticks figure has no measured counterpart yet.
