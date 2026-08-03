@@ -404,9 +404,17 @@
                                 Content="I don't have code on this machine yet"
                                 HorizontalAlignment="Center" Margin="0,4,0,0"
                                 Click="BtnNoCodeYet_Click" />
+                        <!-- DO NOT ADVISE AN ACTION THE READER CANNOT TAKE (devthrottle_internal
+                             issue #1048). This said "when you clone or create your first repository",
+                             which needs git - and it is shown on exactly the machine least likely to
+                             have any: a clean Windows box that has never been set up for development.
+                             Making a folder always works, needs nothing installed, and is precisely
+                             what the clean-machine walk did, with a plain folder holding two files
+                             and no git anywhere. Cloning is still named as the other way in for
+                             anyone who has the tools; it is simply no longer the only route offered. -->
                         <TextBlock x:Name="CodeNoneAckText" Classes="hint" IsVisible="False"
                                    HorizontalAlignment="Center" TextAlignment="Center" MaxWidth="480"
-                                   Text="No problem - nothing here is required. When you clone or create your first repository, add its folder from the Repositories view and DevThrottle picks it up." />
+                                   Text="No problem - nothing here is required. Make a folder for your code, or bring a repository onto this machine, then add that folder from the Repositories view and DevThrottle picks it up." />
                     </StackPanel>
                 </ScrollViewer>
                 <!-- The proof number: how many repositories the added folders will surface. -->
