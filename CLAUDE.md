@@ -346,6 +346,31 @@ When using any cc-* tool, check `docs/cli-reference.md` for exact flags before c
 4. Write a test
 5. Read [docs/CodingStyle.md](docs/CodingStyle.md)
 
+## THERE IS EXACTLY ONE WAY TO DEPLOY THE GATEWAY, THE COCKPIT AND THE MOBILE APP
+
+**Use the `deploy-hosted-gateway` skill. Never any other way.**
+
+All three ship in ONE container image - the Cockpit and the mobile app are built into the Gateway image
+(`wwwroot/c` and `wwwroot/mobile`, see the repo-root `Dockerfile`). "Deploy the Cockpit" and "deploy
+mobile" mean this same one path. There is no separate Cockpit deploy and no separate mobile deploy.
+
+**FORBIDDEN, for every agent:**
+- `az webapp config container set`, `az webapp restart`, `az webapp deployment slot swap`, or any other
+  hand-rolled `az` command against `devthrottle-gw`
+- deploying from the Azure Portal
+- building an image and pinning it by hand
+
+**Why this is a rule and not a preference.** The deploy workflow warms a staging slot and swaps, so the
+cutover costs 0.0 seconds - measured. It refuses any ref that is not main. It refuses a commit whose
+checks have FAILED. It measures the real external outage at ~0.1s resolution and fails the run if it
+exceeds the budget. And it serialises against the rollback and provisioning workflows, because two
+containers on one shared file share corrupted a database on 2026-07-30 and took the service down for 32
+minutes. A hand-rolled deploy has none of that.
+
+If the skill cannot do what is needed, that is a gap to FIX IN THE WORKFLOW. Say so and stop.
+
+Rolling back is also a workflow (`rollback-hosted-gateway.yml`). Never swap by hand.
+
 ## NEVER MENTION CLAUDE ANYWHERE IN GITHUB - ABSOLUTE
 
 **NO Claude / Claude Code / Anthropic / AI attribution EVER appears in anything

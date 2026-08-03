@@ -1,6 +1,6 @@
 ---
 name: deploy-hosted-gateway
-description: Release the live hosted Gateway (the cloud service at devthrottle-gw.azurewebsites.net) by starting its GitHub deploy, watching it finish, and confirming the live service comes back healthy. This is the CLOUD Gateway, not the downloadable desktop app. Triggers on "release the gateway", "deploy the gateway", "push the gateway live", "update the hosted gateway", "redeploy the gateway".
+description: The ONLY way to deploy the hosted Gateway, the Cockpit and the mobile app - all three ship in one image, so this one skill covers all three. Starts the GitHub deploy, watches it, and reports the measured outage. This is the CLOUD Gateway, not the downloadable desktop app. Triggers on "release the gateway", "deploy the gateway", "push the gateway live", "update the hosted gateway", "redeploy the gateway", "deploy the cockpit", "update the cockpit", "ship the cockpit", "deploy mobile", "deploy the mobile app", "deploy to production".
 ---
 
 # Deploy the hosted Gateway
@@ -8,6 +8,11 @@ description: Release the live hosted Gateway (the cloud service at devthrottle-g
 Updates the live cloud Gateway that DevThrottle clients talk to. It rebuilds the
 Gateway container and pushes it live to Azure, then confirms the service is
 healthy again.
+
+**It covers the Cockpit and the mobile app too.** They are built INTO the Gateway
+container image (`wwwroot/c` and `wwwroot/mobile` - see the repo-root `Dockerfile`).
+There is no separate Cockpit deploy and no separate mobile deploy. If someone asks
+you to "deploy the Cockpit", this is the skill.
 
 This is NOT the desktop-app release. Cutting a version and building the
 downloadable `cc-director.exe` is a different job - use the `release-manager`
