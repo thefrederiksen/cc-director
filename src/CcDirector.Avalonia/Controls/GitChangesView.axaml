@@ -201,6 +201,18 @@
                            FontSize="12"
                            Margin="8,12,0,0"
                            IsVisible="True" />
+
+                <!-- The state that used to be indistinguishable from the one above. When the git
+                     read FAILS - most plainly on a machine with no git at all - this page returned
+                     early and left "No changes detected" on the screen, which is a statement about
+                     the repository and was not true: nothing had been read. This says what actually
+                     happened instead (devthrottle_internal issue #1048). -->
+                <TextBlock x:Name="ProblemText"
+                           Foreground="#B48A54"
+                           FontSize="12"
+                           TextWrapping="Wrap"
+                           Margin="8,12,8,0"
+                           IsVisible="False" />
             </StackPanel>
         </ScrollViewer>
     </DockPanel>

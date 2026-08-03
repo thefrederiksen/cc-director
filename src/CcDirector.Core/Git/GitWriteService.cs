@@ -23,6 +23,22 @@ public sealed class GitWriteResult
 /// </summary>
 public sealed class GitWriteService
 {
+    private readonly string _executable;
+
+    /// <summary>Runs the <c>git</c> on this machine's PATH. This is the only production form.</summary>
+    public GitWriteService() : this("git") { }
+
+    /// <summary>
+    /// Runs <paramref name="executable"/> instead of <c>git</c>. A TEST SEAM, and the only way to
+    /// reach the missing-git branch on a machine that has git: pass a name that resolves nowhere and
+    /// the launch fails for precisely the reason it fails on a clean Windows install. Production
+    /// never calls this.
+    /// </summary>
+    public GitWriteService(string executable)
+    {
+        _executable = executable;
+    }
+
     /// <summary>Stage paths (<c>git add -- &lt;paths&gt;</c>), or everything when paths is empty (<c>git add -A</c>).</summary>
     public Task<GitWriteResult> StageAsync(string repoPath, IReadOnlyList<string> paths, CancellationToken ct = default)
         => paths.Count == 0
@@ -64,14 +80,14 @@ public sealed class GitWriteService
         return args.ToArray();
     }
 
-    private static async Task<GitWriteResult> RunGitAsync(string repoPath, string[] args, CancellationToken ct)
+    private async Task<GitWriteResult> RunGitAsync(string repoPath, string[] args, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(repoPath) || !Directory.Exists(repoPath))
             return new GitWriteResult { Success = false, Error = $"repo path not found: {repoPath}" };
 
         var psi = new ProcessStartInfo
         {
-            FileName = "git",
+            FileName = _executable,
             WorkingDirectory = repoPath,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -88,7 +104,22 @@ public sealed class GitWriteService
         proc.OutputDataReceived += (_, e) => { if (e.Data != null) stdout.AppendLine(e.Data); };
         proc.ErrorDataReceived += (_, e) => { if (e.Data != null) stderr.AppendLine(e.Data); };
 
-        proc.Start();
+        // On a machine with no git, Process.Start THROWS Win32Exception rather than returning false.
+        // Unguarded it escaped every caller of stage / unstage / discard / commit - the desktop Source
+        // Control buttons, the Control API git verbs, and through them the Cockpit and the phone -
+        // none of which catches it: they all read GitWriteResult.Success. Reported as a failed result
+        // it reaches all three surfaces as the sentence below instead of an unhandled exception
+        // (devthrottle_internal issue #1048).
+        try
+        {
+            proc.Start();
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            FileLog.Write($"[GitWriteService] git could not be started: {ex.Message}");
+            return new GitWriteResult { Success = false, ExitCode = -1, Error = GitLaunchFailure.Describe(ex) };
+        }
+
         proc.BeginOutputReadLine();
         proc.BeginErrorReadLine();
         await proc.WaitForExitAsync(ct);

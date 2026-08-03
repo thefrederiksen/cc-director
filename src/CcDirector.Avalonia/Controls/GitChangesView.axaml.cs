@@ -93,6 +93,8 @@ public partial class GitChangesView : UserControl
         StagedSection.IsVisible = false;
         EmptyText.IsVisible = true;
         BranchBar.IsVisible = false;
+        ProblemText.IsVisible = false;
+        ProblemText.Text = "";
     }
 
     private async void PollTimer_Tick(object? sender, EventArgs e)
@@ -159,12 +161,25 @@ public partial class GitChangesView : UserControl
             BehindMainText.Text = $"{status.MainBranchName} v{status.BehindMainCount}";
     }
 
-    private async Task RefreshAsync()
+    /// <summary>
+    /// Re-read the repository's changed files. Internal rather than private so a test can await the
+    /// one refresh instead of racing the poll timer that Attach starts.
+    /// </summary>
+    internal async Task RefreshAsync()
     {
         if (_repoPath == null || !Directory.Exists(_repoPath)) return;
 
         var result = await _provider.GetStatusAsync(_repoPath);
-        if (!result.Success) return;
+        if (!result.Success)
+        {
+            // NOT a silent return. The old early exit left the page showing "No changes detected",
+            // which claims the repository is clean - on a machine with no git nothing had been read
+            // at all, so the page stated as fact something it had not established (issue #1048).
+            ShowProblem(result.Error);
+            return;
+        }
+
+        ClearProblem();
 
         // Skip expensive tree rebuild if git output hasn't changed
         var rawOutput = _provider.GetCachedRawOutput(_repoPath);
@@ -190,6 +205,35 @@ public partial class GitChangesView : UserControl
 
         ChangesBadge.Text = result.UnstagedChanges.Count.ToString();
         EmptyText.IsVisible = result.StagedChanges.Count == 0 && result.UnstagedChanges.Count == 0;
+    }
+
+    /// <summary>
+    /// Say that the changes could not be read, and WHY, instead of leaving a stale or empty list
+    /// that reads as "there is nothing to show". The reason comes from the provider whole - this
+    /// view never composes its own explanation of a failure it did not observe.
+    /// </summary>
+    private void ShowProblem(string? reason)
+    {
+        FileLog.Write($"[GitChangesView] ShowProblem: {reason}");
+        StagedTree.ItemsSource = null;
+        ChangesTree.ItemsSource = null;
+        StagedSection.IsVisible = false;
+        EmptyText.IsVisible = false;
+        _lastRawOutput = null;
+
+        ProblemText.Text = string.IsNullOrWhiteSpace(reason)
+            ? "Changes could not be read for this folder."
+            : $"Changes could not be read: {reason}";
+        ProblemText.IsVisible = true;
+    }
+
+    /// <summary>Clear the problem line once a read succeeds, so a fixed machine stops being accused.</summary>
+    private void ClearProblem()
+    {
+        if (!ProblemText.IsVisible) return;
+        FileLog.Write("[GitChangesView] ClearProblem");
+        ProblemText.IsVisible = false;
+        ProblemText.Text = "";
     }
 
     internal static List<GitTreeNode> BuildTree(IReadOnlyList<GitFileEntry> files)

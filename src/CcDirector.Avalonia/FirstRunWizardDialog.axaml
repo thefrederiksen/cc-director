@@ -2,7 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="CcDirector.Avalonia.FirstRunWizardDialog"
         Title="Set up DevThrottle"
-        Width="900" Height="640"
+        Width="900" Height="860"
         MinWidth="760" MinHeight="560"
         WindowStartupLocation="CenterOwner"
         CanResize="True"
@@ -16,6 +16,17 @@
       screen, one primary button per screen, a quiet skip, a bottom-left Back link.
     -->
     <Window.Styles>
+        <!-- WHEN A LIST IS TOO TALL, SAY SO. Every scrolling area in this wizard keeps its scrollbar
+             instead of fading it out. The theme default is an overlay bar that appears on hover, so
+             a list whose last row is cut in half looks exactly like a list that ends there - which
+             is what a 1024x768 machine saw on Welcome and on the Done receipt
+             (devthrottle_internal issue #1046). Sizing the window to the display is the main fix;
+             this is what makes the remaining case, a display too small for the content at any size,
+             legible rather than silently truncated. -->
+        <Style Selector="ScrollViewer">
+            <Setter Property="AllowAutoHide" Value="False" />
+        </Style>
+
         <!-- Big centered hero title. -->
         <Style Selector="TextBlock.wtitle">
             <Setter Property="Foreground" Value="#16181D" />
@@ -382,6 +393,26 @@
                         <Button x:Name="CodeKeepLookingButton" Classes="quietLink" IsVisible="False"
                                 Content="Keep looking" HorizontalAlignment="Center"
                                 Click="BtnKeepLookingForCode_Click" />
+                        <!-- GIT IS RECOMMENDED, NEVER REQUIRED (devthrottle_internal issue #1048).
+                             A clean Windows machine has no git, and this wizard used to say nothing
+                             about that while advising the one action that needs it. This is a
+                             SENTENCE, not a warning, not a blocker and not a dialog: nothing here
+                             stops, nothing turns red, and the primary button is untouched. It says
+                             what we found, says git is worth having, and leaves the choice - other
+                             version control exists and a plain folder works perfectly well.
+                             It is shown ONLY when git was definitely not found. A machine we could
+                             not read says nothing at all, because "you have no git" is a claim about
+                             somebody's computer and we do not make one we have not established. -->
+                        <StackPanel x:Name="CodeNoGitPanel" IsVisible="False" Spacing="2" Margin="0,2,0,6">
+                            <TextBlock x:Name="CodeNoGitText" FontSize="12.5" Foreground="#5A616B"
+                                       TextWrapping="Wrap" TextAlignment="Center"
+                                       HorizontalAlignment="Center" MaxWidth="540"
+                                       Text="We could not find git on this machine. Nothing here needs it - DevThrottle works with any folder, and it is your choice which version control you use, if any - but git is highly recommended: it is what most projects use to clone code and keep a history of changes." />
+                            <Button x:Name="CodeNoGitLink" Classes="quietLink"
+                                    Content="Where to get git" HorizontalAlignment="Center"
+                                    Click="BtnGetGit_Click" />
+                        </StackPanel>
+
                         <!-- The manual path: always present, works the same on Windows and macOS. -->
                         <Border Background="#FFFFFF" BorderBrush="#E6E8EC" BorderThickness="1"
                                 CornerRadius="10" Padding="16,13">
@@ -404,9 +435,16 @@
                                 Content="I don't have code on this machine yet"
                                 HorizontalAlignment="Center" Margin="0,4,0,0"
                                 Click="BtnNoCodeYet_Click" />
+                        <!-- The old wording said "when you clone or create your first repository",
+                             which on a machine with no git advises an action the person cannot take
+                             (issue #1048). Making a folder always works, needs nothing installed,
+                             and is exactly what the clean-machine walk did: a plain folder with two
+                             files in it, no git anywhere. Cloning is still named, as the other way
+                             in for anyone who has the tools for it - it is simply no longer the
+                             only route offered. -->
                         <TextBlock x:Name="CodeNoneAckText" Classes="hint" IsVisible="False"
                                    HorizontalAlignment="Center" TextAlignment="Center" MaxWidth="480"
-                                   Text="No problem - nothing here is required. When you clone or create your first repository, add its folder from the Repositories view and DevThrottle picks it up." />
+                                   Text="No problem - nothing here is required. Make a folder for your code, or bring a repository onto this machine, then add that folder from the Repositories view and DevThrottle picks it up." />
                     </StackPanel>
                 </ScrollViewer>
                 <!-- The proof number: how many repositories the added folders will surface. -->

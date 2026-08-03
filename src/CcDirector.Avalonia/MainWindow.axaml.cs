@@ -219,7 +219,7 @@ public partial class MainWindow : Window
         // title bar overhead is unknown. Size against the work area alone here - that alone stops a
         // window very much larger than the desktop ever existing - and correct it in OnOpened,
         // where the frame can be measured.
-        ApplyFit(FrameOverhead.None, movePosition: false, stage: "pre-show");
+        WindowFitter.FitBeforeShow(this, "MainWindow");
     }
 
     /// <summary>
@@ -231,71 +231,7 @@ public partial class MainWindow : Window
     protected override void OnOpened(EventArgs e)
     {
         base.OnOpened(e);
-
-        var frame = FrameSize is { } size
-            ? new FrameOverhead(
-                Math.Max(0, size.Width - ClientSize.Width),
-                Math.Max(0, size.Height - ClientSize.Height))
-            : FrameOverhead.None;
-
-        ApplyFit(frame, movePosition: true, stage: "opened");
-    }
-
-    /// <summary>
-    /// Shrinks the window to the work area of the display it is on and centres it there.
-    ///
-    /// Issue #1049: the window opened at a fixed 1400x900 regardless of the screen. On a small
-    /// display that left it larger than the desktop and inset from the corner, so it ran off the
-    /// right and bottom edges - putting Settings off the right edge and unclickable, and with it
-    /// every "you can change this later in Settings" promise the setup wizard makes. The supported
-    /// minimum is a 1280x720 display, about 1280x672 of work area once the taskbar is subtracted.
-    /// </summary>
-    private void ApplyFit(FrameOverhead frame, bool movePosition, string stage)
-    {
-        var screen = Screens.ScreenFromWindow(this) ?? Screens.Primary ?? Screens.All.FirstOrDefault();
-        if (screen is null)
-        {
-            // Desktop Avalonia always reports at least one display. Nothing to fit against means
-            // something is wrong with the windowing platform, so say so loudly rather than
-            // silently opening at a size that may not fit.
-            FileLog.Write($"[MainWindow] ApplyFit ({stage}) FAILED: the windowing platform reported no display; leaving the window as declared");
-            return;
-        }
-
-        var area = new WorkArea(
-            screen.WorkingArea.X,
-            screen.WorkingArea.Y,
-            screen.WorkingArea.Width,
-            screen.WorkingArea.Height,
-            screen.Scaling);
-
-        var placement = WindowFit.Fit(Width, Height, area, frame);
-
-        FileLog.Write(
-            $"[MainWindow] ApplyFit ({stage}): workArea={area.Width}x{area.Height} physical, scaling={area.Scaling}, " +
-            $"logical={area.LogicalWidth:F0}x{area.LogicalHeight:F0}, frame={frame.Width:F0}x{frame.Height:F0}, " +
-            $"desired={Width}x{Height}, chosen={placement.Width:F0}x{placement.Height:F0} at {placement.X},{placement.Y}");
-
-        Width = placement.Width;
-        Height = placement.Height;
-
-        if (!movePosition)
-            return;
-
-        // The platform applies its own default placement as part of showing the window, and that
-        // happens AFTER OnOpened - measured on 30 July 2026, a Position assigned here was honoured
-        // when the size also changed and silently discarded when it did not, landing the window on
-        // a different monitor. Posting the move puts it after the show completes, so it holds
-        // either way. Centring is part of the fix, not decoration: a window as tall as the work
-        // area is pushed off the bottom by any default offset at all.
-        WindowStartupLocation = WindowStartupLocation.Manual;
-        Dispatcher.UIThread.Post(
-            () =>
-            {
-                Position = new PixelPoint(placement.X, placement.Y);
-                FileLog.Write($"[MainWindow] ApplyFit ({stage}): position applied at {Position.X},{Position.Y}");
-            },
-            DispatcherPriority.Loaded);
+        WindowFitter.FitOnOpened(this, "MainWindow");
     }
 
     private void OnAlphaModeChanged()

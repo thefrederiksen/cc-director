@@ -16,6 +16,7 @@ using CcDirector.Core.Agents;
 using CcDirector.Core.Browsers;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.GatewayConnection;
+using CcDirector.Core.Git;
 using System.Text.Json.Nodes;
 using Avalonia.Platform.Storage;
 using CcDirector.Core.Onboarding;
@@ -154,6 +155,16 @@ public partial class FirstRunWizardDialog : Window
     // on disk - it only stops the step, and the Done receipt, from reading as a failure.
     private bool _codeNoneOnThisMachine;
 
+    // What this machine knows about git, and whether we have asked yet (issue #1048). The verdict is
+    // three-state on purpose and the screen reads only its ShouldAdviseInstallingGit ruling - this
+    // dialog never re-derives "missing" from the parts. Detection is a PATH lookup plus one
+    // subprocess, so it runs once for the life of the wizard and off the user interface thread.
+    private GitPresence? _gitPresence;
+    private bool _gitProbeRan;
+
+    /// <summary>The git verdict this run reached, or null before the probe has answered.</summary>
+    internal GitPresence? DetectedGitPresence => _gitPresence;
+
     // Browsers step (issue #1012): whether browser-harness resolves on this machine, the ONE browser
     // this step sets up (more are added from the rail - signing in is interactive and cannot be
     // batched), whether a run is in flight, and the last failure. The failure is held rather than
@@ -218,9 +229,29 @@ public partial class FirstRunWizardDialog : Window
         _isReview = !FirstRunWizardModel.ShouldShow();
 
         InitializeComponent();
+
+        // The size declared in the markup is a PREFERENCE, not a promise. It used to be the whole
+        // story: a fixed 900x640 with no reference to the display, which is why the Welcome step
+        // promised five things and showed four and a bit, and the Done receipt hid the row saying we
+        // are about to start emailing you every morning (devthrottle_internal issue #1046). Shrink
+        // it to the display before the window is ever shown, the same way the main window does.
+        WindowFitter.FitBeforeShow(this, "FirstRunWizardDialog");
+
         BuildDots();
         BuildWelcomeScreen();
         ShowStep(_model.Current);
+    }
+
+    /// <summary>
+    /// Re-fit once the window exists and the frame can be measured. Identical in purpose to the main
+    /// window's, and deliberately the same code: on Windows 11 the frame is 39 device independent
+    /// pixels taller than the client area, which is most of what a window overflows a small desktop
+    /// by, and it cannot be known before the window is shown.
+    /// </summary>
+    protected override void OnOpened(EventArgs e)
+    {
+        base.OnOpened(e);
+        WindowFitter.FitOnOpened(this, "FirstRunWizardDialog");
     }
 
     /// <summary>Create one progress dot per present step. Colours are refreshed on every step change.</summary>
@@ -373,6 +404,11 @@ public partial class FirstRunWizardDialog : Window
                 PrimaryButton.IsVisible = true;
                 if (!_codeScanRan)
                     _ = ScanCodeFoldersAsync();
+                // Independent of the folder sweep on purpose: whether this machine has git is true
+                // or false whatever the sweep finds, and the sentence must not wait on a ten-second
+                // disk walk to appear (issue #1048).
+                if (!_gitProbeRan)
+                    _ = DetectGitForWizardAsync();
                 break;
 
             case WizardStep.Screenshots:
@@ -1462,6 +1498,67 @@ public partial class FirstRunWizardDialog : Window
         catch (Exception ex)
         {
             FileLog.Write($"[FirstRunWizardDialog] BtnBrowseCodeFolder_Click FAILED: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Ask this machine about git, once, and show the recommendation if - and only if - git is
+    /// definitely not here (issue #1048).
+    ///
+    /// DevThrottle does not need git and will never install it. A user may prefer another version
+    /// control system, or none: that is their call, and the wizard's job is to make sure they are
+    /// not the last to know that the tool most projects assume is absent. So this step DETECTS and
+    /// TELLS. It never blocks, never offers to install, and never changes the machine.
+    /// </summary>
+    private async Task DetectGitForWizardAsync()
+    {
+        FileLog.Write("[FirstRunWizardDialog] DetectGitForWizardAsync");
+        _gitProbeRan = true;
+        try
+        {
+            // Off the user interface thread: the probe is a PATH walk plus a subprocess, and this
+            // product's first rule is that no user action waits on either.
+            var presence = await Task.Run(() => GitPresenceDetector.DetectAsync(CancellationToken.None));
+            if (_closed) return;
+            ApplyGitPresence(presence);
+        }
+        catch (Exception ex)
+        {
+            // The detector answers "undetermined" rather than throwing, so reaching here means
+            // something else broke. Nothing on the screen changes: the notice stays hidden, which is
+            // the same thing "we could not tell" produces, and is the only honest state.
+            FileLog.Write($"[FirstRunWizardDialog] DetectGitForWizardAsync FAILED: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Render the git verdict. The panel follows the verdict's own ruling and nothing else - there
+    /// is deliberately no second opinion formed here about what "missing" means.
+    /// Internal so the test can drive all three states without a machine that lacks git.
+    /// </summary>
+    internal void ApplyGitPresence(GitPresence presence)
+    {
+        _gitPresence = presence;
+        CodeNoGitPanel.IsVisible = presence.ShouldAdviseInstallingGit;
+        FileLog.Write(
+            $"[FirstRunWizardDialog] ApplyGitPresence: availability={presence.Availability}, " +
+            $"advising={presence.ShouldAdviseInstallingGit}, detail={presence.Detail}");
+    }
+
+    /// <summary>Open the git download page. Opening a page is the whole of what we do about git.</summary>
+    private void BtnGetGit_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[FirstRunWizardDialog] BtnGetGit_Click");
+        try
+        {
+            Process.Start(new ProcessStartInfo("https://git-scm.com/downloads") { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[FirstRunWizardDialog] BtnGetGit_Click FAILED: {ex.Message}");
+            CodeNoGitText.Text =
+                "We could not find git on this machine, and could not open your browser either. "
+                + "You can download git from git-scm.com/downloads. It is highly recommended, but nothing here needs it.";
         }
     }
 
