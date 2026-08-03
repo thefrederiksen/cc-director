@@ -16,29 +16,39 @@ Pre-release tags: append `-rc1`, `-rc2`, etc. for release candidates. Pre-releas
 > (`.claude/skills/release-manager/SKILL.md`). This page is the short form; where the two differ,
 > the skill wins.
 
-The release gate runs AFTER the version bump is committed and BEFORE the tag - see step 3 below.
-Running it any earlier is pointless: the bump itself would be untested by it.
+The release gate runs on MERGED `main`, after the version bump has landed and before the tag - see
+step 3. Running it any earlier is pointless: the bump itself would be untested by it, and a run
+against a pull-request head is not a run against the squashed commit that gets tagged.
 
-### 1. Bump Version
+### 1. Bump the version
 
-Update the `<Version>` tag in both csproj files:
+The version lives in ONE place - `<Version>` in `Directory.Build.props` at the repository root.
+Every project derives its assembly versions from it, and no project may declare its own.
 
-- `src/CcDirector.Wpf/CcDirector.Wpf.csproj`
-- `tools/cc-director-setup/cc-director-setup.csproj`
+(The two csproj files this page used to name, `src/CcDirector.Wpf/CcDirector.Wpf.csproj` and
+`tools/cc-director-setup/cc-director-setup.csproj`, no longer exist. Editing "both csproj files"
+has been impossible for some time.)
 
-Also update `VersionText` in `tools/cc-director-setup/MainWindow.xaml` if the displayed version differs.
+### 2. Land it on main through a pull request
 
-### 2. Commit
+`main` is protected and cannot be pushed to directly, so the bump reaches it the same way every
+other change does: a pull request titled `release: v<version> - <one-line summary>`, merged once
+its ordinary local gate is green and the review is clean. Stage the file you changed by name -
+never `git add -A`, which sweeps up whatever else is in a shared checkout.
 
 ```bash
-git add -A
-git commit -m "chore: bump version to vX.Y.Z"
+git add Directory.Build.props
+git commit -m "release: vX.Y.Z - <one-line summary>"
 ```
+
+Note also that `docs/public/release-notes/v<version>.md` must already be merged to `main` before
+you tag: the workflow publishes it verbatim and FAILS without it, burning a build on a tag that
+cannot be un-pushed.
 
 ### 3. The release gate - MANDATORY, and local
 
-On the exact commit you are about to tag - the bump already committed, nothing else pending -
-run all of this and let it finish:
+On MERGED `main`, at the exact commit you are about to tag - park the checkout there first with
+`git checkout main && git pull` - run all of this and let it finish:
 
 ```powershell
 .\scripts\test-local.ps1 -Parked -Configuration Release
@@ -56,22 +66,19 @@ the gate instead, and unlike an ordinary change a release cannot be fixed forwar
 workflow runs no tests, and a pushed tag cannot be un-pushed. If it is red, fix it forward and
 run the gate again before tagging.
 
-### 4. Tag
+### 4. Tag the gated commit and push the tag
 
 ```bash
 git tag vX.Y.Z
-```
-
-Tags without `-` in the suffix (e.g., `v1.2.0`) become the "Latest" release on GitHub. Tags with `-rc` (e.g., `v1.2.0-rc1`) become pre-releases.
-
-### 5. Push
-
-```bash
-git push origin main
 git push origin vX.Y.Z
 ```
 
-### 6. Wait for the release build to produce the artifacts
+Only the TAG is pushed. `main` already carries the bump - it arrived through the merged pull
+request in step 2 - and cannot be pushed to directly in any case.
+
+Tags without `-` in the suffix (e.g., `v1.2.0`) become the "Latest" release on GitHub. Tags with `-rc` (e.g., `v1.2.0-rc1`) become pre-releases.
+
+### 5. Wait for the release build to produce the artifacts
 
 This is the ONE wait that remains, and it is not a test gate - it is the build that produces the
 downloadable files, so there is nothing to release until it finishes. The rule against waiting on
@@ -84,7 +91,7 @@ The GitHub Actions workflow (`.github/workflows/release.yml`) will:
 3. Build all cc-tools as zip archives
 4. Create a GitHub Release with all artifacts attached
 
-### 7. Verify
+### 6. Verify
 
 1. Go to the [Releases page](https://github.com/thefrederiksen/devthrottle/releases)
 2. Confirm the new release is marked "Latest" (if not a pre-release)

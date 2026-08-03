@@ -63,8 +63,10 @@ git rev-list --count <last-tag>..origin/main    # how many commits shipped
   behind it. The code you are documenting lives on `origin/main`; your working
   branch may not have it.
 - Know that a release is gated by a LOCAL run, not by continuous integration, and that the run
-  which counts happens later - on the version-bump head immediately before the merge and tag (see
-  "Cut the release"). It is `.\scripts\test-local.ps1 -Parked -Configuration Release` PLUS the two
+  which counts happens later - on MERGED `main`, at the exact commit about to be tagged, after the
+  version-bump pull request has landed (see "Cut the release"). A run against the pull-request head
+  does not count: the squash merge produces a different commit.
+  It is `.\scripts\test-local.ps1 -Parked -Configuration Release` PLUS the two
   installer test projects the script cannot reach, and it is the one release-blocking wait, because
   the release workflow runs ZERO tests and a pushed tag cannot be un-pushed. A release is the
   single place "fix it forward" is unavailable.
