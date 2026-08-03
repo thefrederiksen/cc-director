@@ -71,6 +71,29 @@ public class GitChangesViewFailedReadTests
     }
 
     /// <summary>
+    /// The branch bar is filled by a SEPARATE read on its own timer, so a failed changes read used
+    /// to leave it standing: last known branch, ahead and behind counts, presented as current, right
+    /// beside a line saying nothing could be read. Stale numbers next to an admission of ignorance
+    /// are worse than no numbers.
+    /// </summary>
+    [AvaloniaFact]
+    public async Task AFailedRead_TakesTheStaleBranchBarDownWithIt()
+    {
+        var gone = Path.Combine(Path.GetTempPath(), "cc-director-changes-view-tests", Guid.NewGuid().ToString("N"));
+
+        var view = new GitChangesView();
+        view.Attach(gone);
+        // Stand in for an earlier successful sync read, which is what puts the bar up.
+        view.BranchBar.IsVisible = true;
+
+        await view.RefreshAsync();
+
+        Assert.True(view.ProblemText.IsVisible);
+        Assert.False(view.BranchBar.IsVisible, "the branch bar stayed up showing stale counts beside a failed read");
+        view.Detach();
+    }
+
+    /// <summary>
     /// A successful read clears the accusation. A machine that has been fixed must stop being told
     /// it is broken - and a problem line that never goes away is its own defect.
     /// </summary>
