@@ -41,11 +41,84 @@ public sealed class NewMissionRequest
 }
 
 /// <summary>
-/// Body of POST /sessions/{id}/mission: attach a session to a Mission. <see cref="MissionId"/> is the
-/// Mission the session attaches to; a null/absent value DETACHES the session (clears its attachment),
-/// mirroring how <see cref="SetRoleRequest"/> clears an explicit role.
+/// Body of POST /sessions/{id}/mission: attach a session that ALREADY EXISTS to a Mission (issue #2387).
+/// <see cref="MissionId"/> is the Mission the session attaches to; a null/absent value DETACHES the session
+/// (clears its attachment), mirroring how <see cref="SetRoleRequest"/> clears an explicit role.
+///
+/// Attaching is a MOVE, not a one-way door: a session that already carries a Mission is re-pointed by the
+/// same call. A mission's shape is discovered rather than planned - that is what makes it a mission - so the
+/// first classification of a session is a guess, and a one-way attach would make every wrong guess permanent
+/// until the session was killed. The attachment rules are written up in
+/// docs/new_architecture/mission-as-first-class-unit-of-work.md.
 /// </summary>
 public sealed class SetMissionRequest
 {
     public Guid? MissionId { get; set; }
+
+    /// <summary>
+    /// The Mission's display name, RESOLVED BY THE GATEWAY against its own tenant-scoped store and cached
+    /// onto the session so a client can render the attachment without a second lookup. Present on the
+    /// Gateway path (the end state, exactly like <c>NewSessionRequest.MissionName</c> at spawn); blank on
+    /// the transitional bridge, where the Director resolves the name from its own local store instead.
+    ///
+    /// A Director never TRUSTS this to decide whether the attachment is allowed - the Gateway has already
+    /// resolved the mission inside the caller's own tenant before sending it, and that resolution is the
+    /// authorization. This field only saves the Director a lookup it cannot do correctly anyway (its local
+    /// store is not the fleet's).
+    /// </summary>
+    public string? MissionName { get; set; }
+
+    /// <summary>
+    /// True when this call must also move the session's WORKFLOW SEAT, and false when the seat must be left
+    /// exactly as it is. The Gateway decides which - see the seat block on the attach route - and the
+    /// Director obeys; it has no way to decide correctly, because whether a run belongs to a mission is a
+    /// fact only the Gateway's run store holds.
+    ///
+    /// WHY THE SEAT IS PART OF THIS CALL AT ALL. A Mission is not only a record: it is also a RUN of the
+    /// built-in "mission" workflow, and a mission-scoped spawn seats the session on that run, which is what
+    /// pins the conduct the agent was told to follow. Moving the mission link alone would show a session
+    /// under one mission while it was GOVERNED by the one it left - taking its conduct from the mission it
+    /// is no longer in. That is worse than an inconsistent label, and it would happen in exactly the case
+    /// this feature was built for.
+    /// </summary>
+    public bool MoveSeat { get; set; }
+
+    /// <summary>The workflow run to seat the session on when <see cref="MoveSeat"/> is true. Null clears the
+    /// seat - a mission with no run of its own (an ungoverned mission), or a detach.</summary>
+    public Guid? WorkflowRunId { get; set; }
+
+    /// <summary>The seated run's workflow id, Gateway-resolved. Ignored unless <see cref="MoveSeat"/>.</summary>
+    public string? WorkflowId { get; set; }
+
+    /// <summary>The seated run's PINNED version, Gateway-resolved. Ignored unless <see cref="MoveSeat"/>.</summary>
+    public int? WorkflowVersion { get; set; }
+}
+
+/// <summary>
+/// The result of POST /sessions/{sid}/mission: the updated session, plus WHAT HAPPENED TO ITS WORKFLOW
+/// SEAT.
+///
+/// The seat outcome is returned rather than left to be inferred, and that is deliberate. Only the Gateway
+/// knows the seat the session held before the call and whether that seat belonged to the mission it left,
+/// so only the Gateway can say whether the seat moved. A Director asked to work it out for a session it
+/// does not host would be comparing against a value it never had, and would report a preserved seat as a
+/// moved one - stating a fact it is not in a position to know.
+/// </summary>
+public sealed class MissionAttachResultDto
+{
+    /// <summary>The session as the owning Director reports it after the change.</summary>
+    public SessionDto? Session { get; set; }
+
+    /// <summary>True when the workflow seat was moved or cleared by this call; false when it was left alone.</summary>
+    public bool SeatMoved { get; set; }
+
+    /// <summary>The workflow run the session was seated on BEFORE the call, or null if it was seated on nothing.</summary>
+    public Guid? PreviousWorkflowRunId { get; set; }
+
+    /// <summary>
+    /// A plain sentence about the seat when there is something the caller needs told - a seat preserved
+    /// because it was never the mission's, or a destination mission that seats nobody. Null when the
+    /// outcome speaks for itself.
+    /// </summary>
+    public string? SeatNote { get; set; }
 }

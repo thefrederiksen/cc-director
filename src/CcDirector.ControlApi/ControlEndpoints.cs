@@ -1640,6 +1640,126 @@ internal static class ControlEndpoints
             });
         });
 
+        // POST /fleet/mission - attach a session that ALREADY EXISTS to a Mission, or DETACH it (issue #2387).
+        // The counterpart of `session spawn --mission`, which could only attach in the instant a session was
+        // born: a mission's real shape is discovered as it runs, so attach-at-birth grouped only the work
+        // somebody had already planned. Attaching is a MOVE - a session that already carries a mission is
+        // re-pointed, and the response says which mission it LEFT, because a move that reports only its
+        // destination hides that anything was displaced.
+        //
+        // A LOCAL target resolves the mission NAME against the GATEWAY - the source of truth for missions,
+        // which are fleet-level - exactly as the local leg of /fleet/spawn does (issue #1548). Without that
+        // the floor would fall through to its local-store bridge and reject a mission that genuinely exists,
+        // telling the human to create one they already have. An unreachable Gateway is reported as
+        // unreachable (502), NEVER as an unknown mission. A REMOTE target is relayed through the Gateway
+        // (POST /sessions/{sid}/mission), which resolves the mission inside the caller's own tenant and routes
+        // the attachment to the owning Director over the tunnel - the same shape as /fleet/role.
+        app.MapPost("/fleet/mission", async (FleetMissionRequest req, CancellationToken ct) =>
+        {
+            if (req is null || string.IsNullOrWhiteSpace(req.ToSessionId))
+                return Results.BadRequest(new { error = "toSessionId is required" });
+            if (!Guid.TryParse(req.ToSessionId, out var toGuid))
+                return Results.BadRequest(new { error = "invalid toSessionId format" });
+
+            // The session's state BEFORE the call, read while it is still true. Only available when this
+            // Director hosts the session; for a target elsewhere this machine simply never saw it, and
+            // inventing a "(none)" would read as "it had no mission" when the truth is "this machine does
+            // not know".
+            var local = sessionManager.GetSession(toGuid);
+            var previousMissionId = local?.MissionId;
+            var previousMissionName = local?.MissionName;
+
+            // RELAYED THROUGH THE GATEWAY WHETHER OR NOT THE TARGET IS LOCAL, and that is the point.
+            //
+            // Attaching moves TWO things: the mission link and the workflow SEAT, because a Mission is also a
+            // run of the mission workflow and the seat is what pins the conduct the agent follows. Deciding
+            // whether a seat belongs to the mission being left is a fact about the Gateway's run store, so
+            // the Gateway is the only place that can decide it. Routing the local case through the same
+            // endpoint means that rule has exactly ONE implementation - a second copy here would drift, and
+            // the drift would be invisible until a session was found governed by a mission it had left.
+            var gw = gatewayClientProvider?.Invoke();
+            if (gw is { IsEnabled: true })
+            {
+                try
+                {
+                    var relayed = await gw.SetMissionFleetAsync(req.ToSessionId, req.MissionId, ct);
+                    // The seat outcome comes from the GATEWAY, verbatim. This Director must not re-derive
+                    // it: for a session on another machine it never saw the seat the session held before
+                    // the call, so comparing against what it holds would report a PRESERVED seat as a moved
+                    // one - a fact stated by a machine not in a position to know it.
+                    return Results.Json(new FleetMissionResponse
+                    {
+                        Applied = true,
+                        SessionId = relayed.Session?.SessionId ?? req.ToSessionId,
+                        MissionId = relayed.Session?.MissionId,
+                        MissionName = relayed.Session?.MissionName,
+                        WorkflowRunId = relayed.Session?.WorkflowRunId,
+                        WorkflowId = relayed.Session?.WorkflowId,
+                        WorkflowVersion = relayed.Session?.WorkflowVersion,
+                        SeatMoved = relayed.SeatMoved,
+                        SeatNote = relayed.SeatNote,
+                        PreviousMissionId = previousMissionId,
+                        PreviousMissionName = previousMissionName,
+                    });
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[ControlEndpoints] /fleet/mission relay to {toGuid} FAILED: {ex.Message}");
+                    return Results.Json(new FleetMissionResponse
+                    {
+                        Applied = false, SessionId = req.ToSessionId,
+                        Error = $"Cannot attach the target to the mission via the Gateway: {ex.Message}",
+                    }, statusCode: StatusCodes.Status502BadGateway);
+                }
+            }
+
+            // NO GATEWAY. Missions and runs both live at the Gateway, so a Gateway-less Director can only
+            // reach the mission records in its own local store, and can reach no runs at all. It attaches the
+            // mission and says plainly that no seat was moved - the same posture /fleet/spawn already takes
+            // ("a Gateway-less Director seats nothing"), stated rather than silently implied.
+            if (local is null)
+                return Results.Json(new FleetMissionResponse
+                {
+                    Applied = false, SessionId = req.ToSessionId,
+                    Error = "Session not found on this Director and no Gateway is configured.",
+                }, statusCode: StatusCodes.Status404NotFound);
+
+            var command = new DirectorCommand
+            {
+                Verb = "attach-mission",
+                SessionId = req.ToSessionId,
+                // MoveSeat stays false: with no Gateway there is no run store to decide against, and moving a
+                // seat on a guess is worse than leaving one that is visibly stale.
+                PayloadJson = SessionCommandExecutor.Serialize(new SetMissionRequest { MissionId = req.MissionId }),
+            };
+            var missionServices = new SessionCommandServices { MissionStore = missionStore };
+            var result = await SessionCommandExecutor.DispatchAsync(
+                sessionManager, directorId, command, missionServices, cancellationToken: ct);
+            if (result.Status != DirectorCommandStatus.Ok)
+                return Results.Json(new FleetMissionResponse
+                {
+                    Applied = false, SessionId = req.ToSessionId, Error = result.Error ?? "attach failed",
+                }, statusCode: result.Status == DirectorCommandStatus.NotFound
+                    ? StatusCodes.Status404NotFound
+                    : StatusCodes.Status400BadRequest);
+
+            return Results.Json(new FleetMissionResponse
+            {
+                Applied = true,
+                SessionId = req.ToSessionId,
+                MissionId = local.MissionId,
+                MissionName = local.MissionName,
+                WorkflowRunId = local.WorkflowRunId,
+                WorkflowId = local.WorkflowId,
+                WorkflowVersion = local.WorkflowVersion,
+                SeatMoved = false,
+                SeatNote = "No Gateway is configured, so the workflow seat was not moved - workflow runs "
+                         + "live only at the Gateway.",
+                PreviousMissionId = previousMissionId,
+                PreviousMissionName = previousMissionName,
+            });
+        });
+
         // POST /fleet/done - flag a session anywhere in the fleet for teardown (issue #1490). A local target is
         // flagged directly (its Director's reaper removes it after the grace window); a remote target is relayed
         // through the Gateway (POST /sessions/{sid}/request-deletion). Restores `cc-devthrottle session done` -

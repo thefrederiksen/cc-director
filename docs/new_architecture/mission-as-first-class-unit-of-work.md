@@ -50,6 +50,124 @@ The Mission object supplies the missing horizontal binding:
 Without a Mission object, "Architect beside Manager" has nothing to hang on and collapses back into
 a chain.
 
+## Attaching a session that ALREADY EXISTS (issue #2387)
+
+A Mission could originally only be joined in the instant a session was spawned
+(`session spawn --mission <id>`). That made the feature miss the case it exists for. A mission's
+shape is DISCOVERED as it runs - that is what makes it a mission rather than a task - so
+attach-at-birth grouped only the work somebody had already planned, which is the work that least
+needs grouping. The case that found it: a release push that began as one coordinating seat and grew
+over a day into about a dozen - an architect and a manager, three review seats, three more for a
+different question, an investigation seat, four independent gate reviewers commissioned one pull
+request at a time, and a session fixing a defect one of them found. All one body of work. None of it
+foreseeable at spawn. None of it representable.
+
+The verb: `cc-devthrottle mission attach <session> <mission>` and `mission detach <session>`, over
+`POST /sessions/{sid}/mission` at the Gateway and `POST /fleet/mission` on a Director.
+
+### The rules, settled
+
+Each of these was decided rather than left implied, because somebody hits every one of them and an
+implied answer gets re-litigated at the worst moment.
+
+1. **Attaching is a MOVE, not a one-way door.** A session that already carries a mission is
+   re-pointed by the same command. Since the first classification of a session is always a guess
+   about work still taking shape, a one-way attach would make every wrong guess permanent until the
+   session was killed.
+2. **The move is REPORTED.** The command names the mission the session LEFT. A move that reports
+   only its destination hides that anything was displaced, which is how a session goes missing from
+   the pod somebody is looking at.
+3. **Detaching is supported.** No mission is the ORDINARY state of a session, so returning to it
+   must not require inventing a mission to park the session in. A session that had no mission is
+   told exactly that, rather than being told it was detached from nothing.
+4. **A refused attach changes nothing.** A mistyped mission id leaves an existing attachment intact
+   rather than clearing it - otherwise the failure looks like nothing happened until somebody goes
+   looking for the pod.
+5. **Attaching a controlling session does NOT bring its children by default; `--with-children`
+   does.** A controller routinely commissions work that is not part of its own mission - a reviewer
+   for one pull request, an investigation seat for something else - and a silent bulk re-parent
+   cannot be undone in one step. With the flag, the walk is TRANSITIVE (children, their children,
+   and so on): stopping at the first level would attach the Manager and leave the Workers behind,
+   which reads as success while producing exactly the split view this feature exists to end. Every
+   session it moves is NAMED, not counted.
+6. **A spawned session INHERITS its controlling session's mission by default.** The fleet already
+   records the controlling relationship, so this costs nothing and would have grouped the release
+   push above for free - every one of those sessions was spawned by a seat already on the mission.
+   An explicit `--mission` wins (stated intent beats a default), `--mission none` is the opt-out
+   (spelled the way `--controlled-by none` is), and the inheritance is never silent: the spawn names
+   the mission, names the session it came from, and says how to undo it.
+
+### The workflow seat moves with the mission
+
+**A Mission is not only a record. It is also a RUN of the built-in `mission` workflow**, and a
+mission-scoped spawn seats the session on that run and records it in the run's participant ledger. The
+seat - `WorkflowRunId` plus the workflow id and its PINNED version - is what decides the conduct the
+agent was told to follow. So the mission link and the seat are two halves of one fact, and an attach
+that moved only the link would leave a session **displayed under one mission while governed by the one
+it left**, taking its conduct from a mission it is no longer in and still counted in that mission's
+participant ledger. That is worse than an inconsistent label, and it would happen in exactly the case
+this feature was built for. (Found by independent review of the first cut, which moved only the link.)
+
+**The rule, and its one exception:**
+
+- A seat that **is a run of the mission being left** belongs to that mission and **follows it**. On a
+  move it becomes the destination mission's run; on a detach it is **cleared**.
+- A seat the caller **chose independently** - spawned with an explicit `--workflow-run` that is not this
+  mission's run - is **preserved untouched**. It was never the mission's to take.
+- A session with **no seat** has nothing to preserve, so it simply gains the destination mission's seat.
+- A destination mission with **no run of its own** (an UNGOVERNED mission, created while the owner had the
+  mission workflow switched off) seats nobody, so the session moves unseated rather than keeping the old
+  seat. A move must not smuggle a seat past a switch the owner deliberately turned off.
+
+**Detach clears the seat rather than refusing.** Refusing to detach while a seat exists was considered
+and rejected: every mission-spawned session is seated, so refusal would make detach impossible for
+precisely the sessions that most need it. A session that has left a mission cannot still be governed by
+that mission's run, and the coherent action - leave the run - exists. Refusal is the right answer only
+where no coherent action does.
+
+**Leaving is recorded, not erased.** The ledger marks the participant as having left (`LeftUtc`). That
+the session *was* in that run is true and stays true.
+
+**The decision is the Gateway's and is made in one place.** Whether a run belongs to a mission is a fact
+about the run store, which only the Gateway holds; a Director asked to decide it would have to guess. The
+Gateway sends the Director a finished answer - move the seat or do not, and which run to sit on - and the
+Director applies it in the *same verb* as the mission, so the two can never land apart. This is also why
+the Director's own `POST /fleet/mission` relays through the Gateway even for a session it hosts itself: a
+second implementation of this rule would drift, and the drift would be invisible until somebody found a
+session governed by a mission it had left.
+
+**The limit, stated because it is real.** Moving the seat corrects the RECORD - what the fleet shows, what
+governs the session, who the run lists. It cannot reach into a running agent's context and replace the
+conduct text that was injected at birth. Only telling the session to fetch its conduct again does that,
+and the command line says so every time a seat moves.
+
+### The tenant boundary, which is the constraint that governs the design
+
+Missions are TENANT-SCOPED and that was hard won (devthrottle_internal issue #1039 fixed a live leak
+where `GET /missions` served every account's list to every account; a mission NAME is free text a
+person typed - customer names, project names, people's names). Attach is the first WRITE that takes
+a mission id from a caller and applies it, so it is exactly the shape that would put the leak back.
+
+`POST /sessions/{sid}/mission` therefore follows `GET /missions/{mid}` line for line: resolve the
+CALLER's own tenant server-side from the authenticated device key, REFUSE when no tenant is bound
+(never fall back to a shared partition), and resolve the mission INSIDE that tenant. The mission is
+resolved BEFORE the session is located, so the refusal is a property of the tenant gate alone and cannot
+be confused with a Director being offline.
+
+**A refusal must not reveal WHICH refusal it is, and that is a security property of the route rather than
+a nicety of its error text.** "No mission has that id" and "that mission belongs to someone else" answer
+identically - same status, same sentence, only the echoed id differing. If they diverged, attaching a
+session to guessed identifiers would enumerate which missions exist in other accounts, one request at a
+time, without ever reading one. The test that holds this compares the two answers TO EACH OTHER rather
+than to a fixed string, so a later edit cannot reword one and leave the other behind.
+`MissionAttachRouteTenantScopingTests` holds it to that, pairing every refusal with a permitted
+request in the same Gateway and asserting that no `attach-mission` command reached the Director.
+
+The Gateway sends the RESOLVED NAME down with the id and the Director stamps it directly, exactly as
+it does for a mission-scoped spawn. A Director must not re-validate against its own mission store:
+that is a different (single-tenant, per-machine) set, so a mission that is real and owned would be
+rejected for being absent from the wrong store - the failure issue #1548 fixed on the spawn path.
+
 ## Naming: Mission -> Task
 
 - The shared root the pod attacks = a **Mission**.

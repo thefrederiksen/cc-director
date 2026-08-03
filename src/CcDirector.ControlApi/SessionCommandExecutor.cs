@@ -758,9 +758,23 @@ internal static class SessionCommandExecutor
     /// <summary>
     /// The <c>attach-mission</c> verb: attach a session to a Mission (or DETACH it on a blank/absent
     /// MissionId). Invalid id -&gt; BadRequest, missing session -&gt; NotFound, unknown Mission -&gt;
-    /// BadRequest. The Mission's display name is resolved through the Mission store and cached onto the
-    /// session. Returns the updated session mapped through the SAME <see cref="ControlEndpoints.Map"/> the
+    /// BadRequest. Returns the updated session mapped through the SAME <see cref="ControlEndpoints.Map"/> the
     /// stream snapshot uses. Mirrors <see cref="SetRole"/>.
+    ///
+    /// The Mission NAME arrives one of two ways, exactly as it does on the create path (see the mission block
+    /// in <see cref="Create"/>), because a Mission is a FLEET-level record whose source of truth is the
+    /// Gateway and not this machine:
+    ///  * GATEWAY path (MissionId AND MissionName both set): the Gateway resolved the mission against its own
+    ///    TENANT-SCOPED store before sending the verb, and that resolution is the authorization. The Director
+    ///    stamps the attachment directly - no local lookup, no second opinion. This is the end state.
+    ///  * TRANSITIONAL BRIDGE (MissionId set, MissionName blank): an old caller naming a mission in the
+    ///    Director's OWN store. The Director resolves it locally exactly as before. Removed with the Director
+    ///    MissionStore in Gateway Cleanup Phase 1.
+    ///
+    /// The Director deliberately does NOT re-validate a Gateway-supplied mission against its local store. It
+    /// could not: the local store is a different (single-tenant, per-machine) set, so a mission that is real
+    /// and owned would be rejected here for being absent from the wrong store - which is exactly the failure
+    /// issue #1548 fixed on the spawn path.
     /// </summary>
     internal static DirectorCommandResult AttachMission(SessionManager sessionManager, string directorId, DirectorCommand command, SessionCommandServices? services)
     {
@@ -773,15 +787,44 @@ internal static class SessionCommandExecutor
         if (session is null)
             return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found");
 
+        // THE SEAT MOVES WITH THE MISSION, when the Gateway says it should (issue #2387 review).
+        //
+        // A Mission is also a RUN of the built-in "mission" workflow, and a mission-scoped spawn seats the
+        // session on that run - which is what pins the conduct its preamble told it to follow. Changing the
+        // mission link alone would leave a session DISPLAYED under one mission and GOVERNED by the one it
+        // left. The seat therefore rides this same verb, so the two land together and a session is never
+        // momentarily one and not the other.
+        //
+        // The DECISION is the Gateway's, not this Director's: whether the current seat belongs to the
+        // mission being left is a fact about the run store, which lives at the Gateway. This applies what it
+        // was told. MoveSeat=false means "the seat is not the mission's to take" and the seat is untouched.
+        void ApplySeat()
+        {
+            if (request?.MoveSeat == true)
+                session.SeatOnWorkflow(request.WorkflowRunId, request.WorkflowId, request.WorkflowVersion);
+        }
+
         if (request?.MissionId is not Guid missionId)
         {
             // Blank/absent -> detach (mirrors set-role clearing the explicit role).
             session.AttachToMission(null, null);
-            FileLog.Write($"[SessionCommandExecutor] attach-mission: session={guid} detached");
+            ApplySeat();
+            FileLog.Write($"[SessionCommandExecutor] attach-mission: session={guid} detached " +
+                          $"(seat {(request?.MoveSeat == true ? "cleared with it" : "left as it was")})");
             return DirectorCommandResult.Success(Serialize(ControlEndpoints.Map(session, directorId)));
         }
 
-        // The Director's store is single-tenant - one machine, one owner - so Local is its whole world.
+        if (!string.IsNullOrWhiteSpace(request.MissionName))
+        {
+            // Gateway path: the mission was resolved inside the caller's own tenant; stamp it.
+            session.AttachToMission(missionId, request.MissionName);
+            ApplySeat();
+            FileLog.Write($"[SessionCommandExecutor] attach-mission: session={guid} mission={missionId} (resolved by the Gateway)");
+            return DirectorCommandResult.Success(Serialize(ControlEndpoints.Map(session, directorId)));
+        }
+
+        // Transitional bridge. The Director's store is single-tenant - one machine, one owner - so Local is
+        // its whole world.
         var mission = services?.MissionStore?.Get(Core.Tenancy.TenantId.Local, missionId);
         if (mission is null)
             return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest,

@@ -36,11 +36,27 @@ def captured(monkeypatch):
     return body
 
 
-def _spawn(monkeypatch, *, cc_session=None, controlled_by=None, standalone=False, role=None):
+def _spawn(
+    monkeypatch,
+    *,
+    cc_session=None,
+    controlled_by=None,
+    standalone=False,
+    role=None,
+    mission=None,
+    roster=None,
+):
     if cc_session is None:
         monkeypatch.delenv("CC_SESSION_ID", raising=False)
     else:
         monkeypatch.setenv("CC_SESSION_ID", cc_session)
+    # Mission inheritance (issue #2387) reads the fleet roster to find the CONTROLLING session's
+    # mission, so every spawn with a controller now consults it. Stubbed here - and defaulting to an
+    # EMPTY roster - so these cases keep asserting what they were written to assert and no test
+    # reaches the network to find out.
+    monkeypatch.setattr(
+        session_ops.director, "get_fleet", lambda: (list(roster or []), True, None, None)
+    )
     session_ops.spawn_session(
         repo="C:/repo",
         agent="ClaudeCode",
@@ -53,6 +69,7 @@ def _spawn(monkeypatch, *, cc_session=None, controlled_by=None, standalone=False
         args=None,
         standalone=standalone,
         role=role,
+        mission=mission,
     )
 
 
@@ -196,3 +213,129 @@ def test_the_director_flag_reaches_spawn_session(monkeypatch, tmp_path):
         app, ["session", "spawn", str(tmp_path), "--name", "n", "--director", "North build"])
     assert result.exit_code == 0, result.output
     assert "North build" in seen["args"]
+# --- Mission inheritance from the controlling session (issue #2387) ---
+#
+# A mission's shape is discovered as it runs, so attaching only at spawn grouped just the work
+# somebody had already planned. The fleet ALREADY records who controls whom, so a spawned child
+# inheriting its controller's mission costs nothing and would have grouped the release push that
+# found this gap - a dozen sessions, none foreseeable at spawn - for free. Default ON, explicit
+# --mission wins, --mission none opts out, and it is never silent.
+
+MANAGER_ON_A_MISSION = {
+    "sessionId": "sess-A",
+    "name": "Release - Manager",
+    "missionId": "aaaaaaaa-1111-2222-3333-444444444444",
+    "missionName": "Release 1.9.4",
+}
+
+
+def test_spawn_inherits_the_controlling_sessions_mission(monkeypatch, captured):
+    # The whole point: no --mission, but the controller is on one, so the child joins it.
+    _spawn(monkeypatch, cc_session="sess-A", roster=[MANAGER_ON_A_MISSION])
+    assert captured.get("missionId") == "aaaaaaaa-1111-2222-3333-444444444444"
+
+
+def test_an_explicit_mission_wins_over_the_inherited_one(monkeypatch, captured):
+    # Stated intent beats a default. Inheritance must never quietly override what was asked for.
+    _spawn(
+        monkeypatch,
+        cc_session="sess-A",
+        mission="bbbbbbbb-9999-8888-7777-666666666666",
+        roster=[MANAGER_ON_A_MISSION],
+    )
+    assert captured.get("missionId") == "bbbbbbbb-9999-8888-7777-666666666666"
+
+
+def test_mission_none_opts_out_of_inheritance(monkeypatch, captured):
+    # The opt-out, spelled the same way --controlled-by none is: a deliberate child that is NOT
+    # part of its controller's body of work.
+    _spawn(monkeypatch, cc_session="sess-A", mission="none", roster=[MANAGER_ON_A_MISSION])
+    assert "missionId" not in captured
+
+
+def test_a_controller_on_no_mission_leaves_the_child_unattached(monkeypatch, captured):
+    # Nothing to inherit is the ordinary case and must not invent an attachment.
+    _spawn(
+        monkeypatch,
+        cc_session="sess-A",
+        roster=[{"sessionId": "sess-A", "name": "Standalone seat"}],
+    )
+    assert "missionId" not in captured
+
+
+def test_a_spawn_with_no_controller_inherits_nothing(monkeypatch, captured):
+    # A human/desktop spawn has no controller, so there is no relationship to inherit along - even
+    # when other sessions in the roster are on missions.
+    _spawn(monkeypatch, cc_session=None, roster=[MANAGER_ON_A_MISSION])
+    assert "missionId" not in captured
+
+
+def test_standalone_inherits_nothing_because_it_has_no_controller(monkeypatch, captured):
+    # --standalone drops the controller, and inheritance follows the controller. A deliberate peer
+    # is not silently folded into the mission of the session that happened to start it.
+    _spawn(monkeypatch, cc_session="sess-A", standalone=True, roster=[MANAGER_ON_A_MISSION])
+    assert "missionId" not in captured
+
+
+def test_inheritance_follows_an_explicit_controller_not_the_spawner(monkeypatch, captured):
+    # --controlled-by names who SUPERVISES the child, and that is the relationship a mission is
+    # inherited along. The spawner's own mission is deliberately NOT the answer here: the sharp
+    # case is a session seating a worker under a DIFFERENT manager, where following the spawner
+    # would file the worker under the wrong body of work.
+    spawner = {
+        "sessionId": "sess-A",
+        "name": "Some other seat",
+        "missionId": "cccccccc-0000-0000-0000-000000000000",
+        "missionName": "Not this one",
+    }
+    _spawn(
+        monkeypatch,
+        cc_session="sess-A",
+        controlled_by="sess-A-manager",
+        roster=[spawner, dict(MANAGER_ON_A_MISSION, sessionId="sess-A-manager")],
+    )
+    assert captured.get("missionId") == "aaaaaaaa-1111-2222-3333-444444444444"
+
+
+def test_inheritance_is_reported_not_silent(monkeypatch, captured, capsys, plain):
+    # An attachment the caller did not ask for is only safe if they can SEE it happened. The line
+    # has to name the mission and say how to undo it, or a wrong inheritance is invisible.
+    # Asserted against the TEXT, not the rendering: Rich threads style codes through a version
+    # number, so a plain substring check would fail wherever colour is on (issue #1082).
+    _spawn(monkeypatch, cc_session="sess-A", roster=[MANAGER_ON_A_MISSION])
+    out = plain(capsys.readouterr().out)
+    assert "Release 1.9.4" in out
+    assert "mission detach" in out
+
+
+def test_an_unreadable_roster_is_reported_and_the_spawn_still_opens(
+    monkeypatch, captured, capsys, plain
+):
+    # A roster this process cannot read is NOT the same as a controller with no mission, and must
+    # not be reported as one. The session still opens - refusing to start work because an optional
+    # grouping could not be looked up would be the worse failure - but the human is told why it is
+    # unattached, so the missing mission is never a mystery.
+    def boom():
+        raise session_ops.director.DirectorError("Director not reachable")
+
+    monkeypatch.setenv("CC_SESSION_ID", "sess-A")
+    monkeypatch.setattr(session_ops.director, "get_fleet", boom)
+    session_ops.spawn_session(
+        repo="C:/repo",
+        agent="ClaudeCode",
+        prompt=None,
+        name="n",
+        purpose=None,
+        command=None,
+        command_args=None,
+        controlled_by=None,
+        args=None,
+        standalone=False,
+        role=None,
+        mission=None,
+    )
+
+    assert "missionId" not in captured
+    out = plain(capsys.readouterr().out)
+    assert "no mission" in out
+    assert "Opened" in out   # the control: the spawn itself still happened

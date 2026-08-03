@@ -830,6 +830,35 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     }
 
     /// <summary>
+    /// Attach a session anywhere in the fleet to a Mission - or DETACH it, on a null mission id - via the
+    /// Gateway's POST /sessions/{sid}/mission, which resolves the mission inside the CALLER's own tenant and
+    /// then routes the attachment to the owning Director over the tunnel (issue #2387). The Director's
+    /// loopback POST /fleet/mission relays here for a target it does not host. Throws when the Gateway is
+    /// disabled or the call fails - an unreachable Gateway is never reported as an unknown mission.
+    /// </summary>
+    public async Task<MissionAttachResultDto> SetMissionFleetAsync(string toSessionId, Guid? missionId, CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled)
+            throw new InvalidOperationException("Gateway is not configured; cannot reach a remote session.");
+        if (string.IsNullOrWhiteSpace(toSessionId))
+            throw new ArgumentException("Target session id is required", nameof(toSessionId));
+
+        FileLog.Write($"[GatewayClient] SetMissionFleetAsync: POST /sessions/{toSessionId}/mission mission={missionId?.ToString() ?? "(detach)"}");
+        var body = new SetMissionRequest { MissionId = missionId };
+        using var resp = await _http.PostAsJsonAsync($"sessions/{toSessionId}/mission", body, ct);
+        if (!resp.IsSuccessStatusCode)
+            throw await RelayFailureAsync(resp, $"mission attach of {toSessionId}", ct);
+
+        // The result carries the SEAT OUTCOME as well as the session, because whether the workflow seat
+        // moved is a fact only the Gateway holds - it knew the seat the session had before the call and
+        // whether that seat belonged to the mission it left. This Director must not re-derive it.
+        var parsed = await resp.Content.ReadFromJsonAsync<MissionAttachResultDto>(ct);
+        if (parsed is null)
+            throw new InvalidOperationException("Gateway mission attach returned an unparsable body.");
+        return parsed;
+    }
+
+    /// <summary>
     /// Flag a session anywhere in the fleet for teardown via the Gateway's POST /sessions/{sid}/request-deletion,
     /// which routes to the owning Director over the tunnel. Issue #1490: the Director's loopback POST /fleet/done
     /// relays here for a non-local target. Throws when the Gateway is disabled or the call fails.
