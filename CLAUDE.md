@@ -252,9 +252,13 @@ walking away from it. Merge without waiting; come back for the answer.
 **Releasing is the one place the missing coverage bites, and it cannot be fixed forward.** The
 release workflow runs ZERO tests - it builds and publishes artifacts - and a pushed tag cannot be
 un-pushed. So a defect that the default gate never looked at ships, and "fix it forward" is not
-available to a release that is already out. **Before a release, run `.\scripts\test-local.ps1
--Parked` and let it finish.** That is the release gate, it is local, and it replaces the old
-instruction to wait for a green continuous integration run - it does not reintroduce it.
+available to a release that is already out. **Before a release, on the exact commit being
+shipped, run `.\scripts\test-local.ps1 -Parked -Configuration Release` and let it finish.**
+`-Parked` adds the two skipped suites; `-Configuration Release` matches what users download,
+because the script defaults to Debug while the continuous integration job it replaced ran Release.
+An earlier run does not count - the version bump and anything else merged since is untested by it.
+That is the release gate, it is local, and it replaces the old instruction to wait for a green
+continuous integration run rather than reintroducing it.
 
 If the Gateway suite says it is WAITING on a lock held by another run, that is not a hang - it is
 one run at a time by design, and it prints its holder every 30 seconds. See issue #1156 for why that

@@ -141,10 +141,13 @@ is gone deliberately. Every exception was an invitation to pay the fifty minutes
 answer it bought was one the local run had already given.
 
 A release still needs the coverage the default run skips, and gets it LOCALLY: run
-`.\scripts\test-local.ps1 -Parked` and let it finish before cutting one. That is not a softened
-version of the old rule - it is a local gate, not a wait on a runner. It matters because the
-release workflow runs ZERO tests and a pushed tag cannot be un-pushed, so a release is the single
-place where fixing forward is not available.
+`.\scripts\test-local.ps1 -Parked -Configuration Release` on the exact commit being shipped, and
+let it finish. `-Parked` adds the two skipped suites; `-Configuration Release` matches what users
+download, because this script defaults to Debug while the continuous integration job it replaced
+ran Release. An earlier run does not count - whatever was committed after it is untested by it.
+That is not a softened version of the old rule - it is a local gate, not a wait on a runner. It
+matters because the release workflow runs ZERO tests and a pushed tag cannot be un-pushed, so a
+release is the single place where fixing forward is not available.
 
 Continuous integration still runs after the merge, as a backstop. It is never **waited on** - no
 merge is ever held open for it - and it is never left red: **a red is fixed forward immediately,

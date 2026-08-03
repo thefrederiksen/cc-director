@@ -12,6 +12,28 @@ Pre-release tags: append `-rc1`, `-rc2`, etc. for release candidates. Pre-releas
 
 ## Release Process
 
+> The authoritative run-book is the `release-manager` skill
+> (`.claude/skills/release-manager/SKILL.md`). This page is the short form; where the two differ,
+> the skill wins.
+
+### 0. The release gate - MANDATORY, and local
+
+Run this on the exact commit you are about to tag, with the branch rebased on current
+`origin/main`, and let it finish:
+
+```powershell
+.\scripts\test-local.ps1 -Parked -Configuration Release
+```
+
+Both switches matter. `-Parked` adds `Gateway.Tests` and `Core.Tests`, which the ordinary gate
+skips, and `-Configuration Release` matches what is actually shipped - the script defaults to
+Debug. A run from earlier in the process does not count: anything committed after it, including
+the version bump, is untested by it.
+
+Nothing waits on continuous integration here or anywhere else (CLAUDE.md 5a). This local run is
+the gate instead, and unlike an ordinary change a release cannot be fixed forward - the release
+workflow runs no tests, and a pushed tag cannot be un-pushed.
+
 ### 1. Bump Version
 
 Update the `<Version>` tag in both csproj files:

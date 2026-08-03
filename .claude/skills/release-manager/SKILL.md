@@ -62,11 +62,13 @@ git rev-list --count <last-tag>..origin/main    # how many commits shipped
 - Confirm the release is cut from `origin/main`, and that your local branch is not
   behind it. The code you are documenting lives on `origin/main`; your working
   branch may not have it.
-- Run the RELEASE gate locally and let it finish: `.\scripts\test-local.ps1 -Parked`. This is the
-  one run that includes the two parked suites (`Gateway.Tests`, `Core.Tests`), which the ordinary
-  gate skips. It replaces the old instruction to wait for a green continuous integration run.
-  It is not optional here: the release workflow runs ZERO tests, and a pushed tag cannot be
-  un-pushed, so a release is the one place "fix it forward" is not available.
+- Know that a release is gated by a LOCAL run, not by continuous integration, and that the run
+  which counts happens later - on the version-bump head immediately before the merge and tag (see
+  "Cut the release"). It is `.\scripts\test-local.ps1 -Parked -Configuration Release`, and it is
+  the one release-blocking wait, because the release workflow runs ZERO tests and a pushed tag
+  cannot be un-pushed. A release is the single place "fix it forward" is unavailable.
+- You may run it now as an early warning, but an early run is NOT the gate: everything committed
+  after it - notes, the version bump, other people's merges - is untested by it.
 
 ### Step 2: Decide the version number
 
@@ -202,10 +204,24 @@ pull request. That is how v1.1.0 shipped (pull request #1489).
    The workflow publishes that file verbatim and FAILS if it is missing, so a tag
    pushed without it burns a whole build and cannot be un-pushed.
 2. Open a pull request that bumps `Directory.Build.props` to the new version, titled
-   `release: v<version> - <one-line summary>`. Merge it once the local `-Parked` run from Step 1
-   is green and the review is clean - not on a continuous integration result, which is never
-   waited for.
-3. Create the tag `v<version>` on `main` at the merged bump commit and push it. That
+   `release: v<version> - <one-line summary>`.
+3. **Run the release gate on the commit you are actually about to ship**, with the branch rebased
+   on current `origin/main`, immediately before you merge:
+
+       .\scripts\test-local.ps1 -Parked -Configuration Release
+
+   Two things about that command are deliberate and neither is optional:
+   - `-Parked` adds `Gateway.Tests` and `Core.Tests`, which the ordinary gate skips.
+   - `-Configuration Release` matches what is shipped. The script defaults to **Debug**, while
+     the continuous integration job this replaced ran `-c Release`. Releasing on a Debug-only
+     run would quietly test a different build from the one users download.
+
+   A gate run earlier in this procedure does NOT count. Notes commits, the version bump and any
+   merges that landed meanwhile all sit between it and the tag, so it is a verdict about a commit
+   nobody is shipping. This is the one release-blocking wait, and it is local.
+4. Merge once that run is green and the review is clean - never on a continuous integration
+   result, which is never waited for.
+5. Create the tag `v<version>` on `main` at the merged bump commit and push it. That
    is the last manual act. Monitor the Actions run.
 
 **Do NOT create or publish a GitHub release by hand, and do NOT paste the notes into

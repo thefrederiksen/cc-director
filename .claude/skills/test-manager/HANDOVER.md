@@ -31,8 +31,11 @@ un-park anything to raise a coverage number.
    and a skipped gate has a true coverage of zero. A batch that would blow the 120-second ceiling does
    not go in, however good the tests are.
 5. **Local is the gate, and nothing ever waits on continuous integration.** Not for a release
-   either - a release runs the local `-Parked` gate instead. Continuous integration is a
-   post-merge backstop that is never watched and never left red: a red is driven to green at once.
+   either - a release runs the local `-Parked -Configuration Release` gate instead, on the commit
+   being shipped. Continuous integration is a post-merge backstop that is never WAITED on and
+   never left red: a red is driven to green at once. Reading a result after the merge is chasing,
+   not waiting, and it is required for the web and Python jobs - they are the only place those
+   tests run at all.
 
 ## The queue, in the order I would do it
 
