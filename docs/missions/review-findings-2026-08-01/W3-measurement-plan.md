@@ -177,21 +177,47 @@ and if it appears, the rig is not wired the way this document says it is.
 
 ---
 
-## 5a. The gate baseline this branch is judged against
+## 5a. The gate, REWRITTEN after main split the test suites (a084c422c)
 
-The gate is `scripts\test-local.ps1`, judged by the TRX `ResultSummary/@outcome` AND the executed count
-against `test-baseline.md`, never the console line. Two adjustments to expect on this branch, recorded now
-so a higher number is not read as drift and a lower one is not explained away:
+**The earlier version of this section is void, and so is the count comparison it rested on.** On 2 August
+main split `CcDirector.Gateway.Tests` in two: about 2,750 pure tests moved to a new
+`CcDirector.Gateway.UnitTests` that takes no machine-wide lock and runs in the default gate, and the
+host-bound remainder stayed behind, PARKED along with `CcDirector.Core.Tests`. The default
+`scripts\test-local.ps1` no longer runs either parked suite.
 
-- **`CcDirector.Gateway.Tests` gains 13** - nine facts in `RosterFoldBatchedSnoozeReadTests` and four in
-  `DisplayStateSweepOverlapGuardTests`, counted rather than remembered.
-- **`CcDirector.Core.Tests` gains 3** from `origin/main`, not from this work: `126249d44`
-  (the Wingman session-cleanup fix) adds three facts to `SessionStatusWingmanTests`. This branch is
-  rebased onto it. Its two files do not intersect this branch's twelve at all, so it was rebased for
-  ancestry and not re-gated - the plausible-interaction test governs re-gating, and a Wingman file in
-  `CcDirector.Core` cannot execute a line of the Gateway fold.
+**Both of this work item's test files landed in the PARKED suite by default, which means the default gate
+would have reported green without executing either of them.** That is this mission's own false-green shape,
+arriving as the default behaviour rather than as an accident. So:
 
-The rule is at-or-above, and a FALL is the finding - that is what a silently collapsed suite looks like.
+- **Every report from here states WHICH invocation was run.** `-Parked` (or `-Gateway`) or it proves
+  nothing about this work.
+- **A count comparison against `test-baseline.md` is no longer meaningful for the two split projects** -
+  their totals moved by ~2,750 for reasons that have nothing to do with this branch. Comparing to those
+  numbers would produce a frightening-looking fall that means nothing, which is worse than no comparison.
+  The unchanged projects (Avalonia 353, Engine 63, HostedAgent 88, Launcher 110, Terminal 24) still compare
+  and must still hold.
+- **What replaces it, and it is stronger: the named facts must appear in the TRX as EXECUTED and passed.**
+  A count catches a collapsed run; naming the facts catches a hollow one, and after a layout change it is
+  the only claim that means what it says. Thirteen facts, by name:
+  five in `CcDirector.Gateway.UnitTests/RosterFoldBatchedSnoozeReadTests`, four in
+  `CcDirector.Gateway.Tests/RosterFoldSnoozeReadCountTests`, four in
+  `CcDirector.Gateway.Tests/DisplayStateSweepOverlapGuardTests`.
+
+### Where the tests were placed, and why - decided rather than defaulted
+
+The split's rule is host-bound parked, fast unit tests not, with the locked project as the default home so
+anything unclassified is serialized by construction.
+
+| File | Placement | Why |
+|---|---|---|
+| `RosterFoldBatchedSnoozeReadTests` (5 correctness facts) | **fast suite, runs on EVERY gate** | Constructs no host, binds no port, needs only its own throwaway SQLite file. A regression guard that runs on every gate is worth more than one that runs before a release. |
+| `RosterFoldSnoozeReadCountTests` (4 counter facts) | **parked** | Every fact asserts a DELTA on `LoadTestMetrics.snoozeDbReads`, which is process-global. The fast assembly runs four collections at once and holds a dozen fold tests that increment that same counter, so an exact delta there would silently absorb another test's reads - a flaky assertion on this item's headline proof. The locked suite disables parallelism, which is what makes the delta mean anything. Same rule the split applied to the 34 classes that mutate process-wide environment variables. |
+| `DisplayStateSweepOverlapGuardTests` (4 facts) | **parked** | Boots a real `GatewayHost` and binds a port - host-bound by the split's own definition - and also asserts process-global sweep counters. |
+
+The cost is stated rather than hidden: the read-COUNT proof runs on the release gate, not on every gate.
+Two things reduce that cost. The correctness facts it depends on - that the batched read answers exactly
+what the three per-session reads answered - run every time. And the count has a second, independent
+instrument in the load test's Stage 0, which measured 42 reads for 42 folds against the baseline's 1,032.
 
 ## 6. What would make a run unusable
 

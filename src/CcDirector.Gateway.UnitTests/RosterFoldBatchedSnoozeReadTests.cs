@@ -1,9 +1,7 @@
-using System.Text.Json;
 using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Data;
-using CcDirector.Gateway.Diagnostics;
 using CcDirector.Gateway.Snooze;
 using CcDirector.Gateway.Tests.Data;
 using Xunit;
@@ -11,25 +9,24 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// THE ROSTER FOLD TAKES ONE SNOOZE DATABASE READ, NOT THREE PER SESSION (issue #2323, read-model epic
-/// #1159).
+/// THE BATCHED SNOOZE READ ANSWERS EXACTLY WHAT THE THREE PER-SESSION READS ANSWERED (issue #2323,
+/// read-model epic #1159).
 ///
-/// The fold used to ask the snooze registry three separate questions per session - <c>HoldStateFor</c> and
+/// The fold used to ask the snooze registry three questions per session - <c>HoldStateFor</c> and
 /// <c>IsExpired</c> in its first loop, <c>SnoozeUntilFor</c> in a SECOND loop further down the same method -
-/// and each one took the registry's process-wide monitor, rented its own pooled context and ran its own
-/// query. The 31 July load-test baseline measured it exactly: 1,032 reads for 30 roster polls plus 13 sweeps
-/// over 8 sessions, (30 + 13) x 8 x 3 with no remainder, and named that monitor as the resource that gave
-/// first - roughly five concurrent viewers over 800 sessions, 104 of 111 threads blocked on it at the wedge.
+/// each taking the registry's process-wide monitor, renting its own pooled context and running its own
+/// query. It now takes one set-based read per fold and answers all three from that. These are the
+/// CORRECTNESS facts: the read count is worthless if it buys a wrong answer.
 ///
-/// TWO LOOPS IS THE POINT OF THE READ-COUNT ASSERTION. A batch that fixed only the first loop would remove
-/// two reads of three and the load test would report a two-thirds improvement that reads like success. So
-/// these tests assert the read count is ONE for the whole fold, not "fewer than before": over four sessions
-/// the old shape cost twelve, a first-loop-only fix would cost five, and only a fix that reaches both loops
-/// costs one.
-///
-/// The counter asserted here is the same one the load test reads at <c>GET /diag/loadmetrics</c>
-/// (<c>counters.snoozeDbReads</c>), read through the same JSON the endpoint serves - so a counter that
-/// stopped being exposed would fail here rather than quietly leaving the load test blind.
+/// WHY THESE LIVE IN THE FAST SUITE AND THE READ-COUNT FACTS DO NOT. This file constructs no
+/// <c>GatewayHost</c>, binds no port and touches nothing process-global - it needs only its own throwaway
+/// SQLite file - so it runs on EVERY gate, which is where a regression guard earns its keep. Its siblings
+/// in <c>RosterFoldSnoozeReadCountTests</c> assert deltas on the process-wide
+/// <c>LoadTestMetrics.snoozeDbReads</c> counter, and this assembly runs four collections at once; every
+/// other fold test here (<see cref="SnoozeExpiredBadgeFoldTests"/> among them) increments that same
+/// counter. An exact delta cannot be asserted beside them, so those facts stay in the locked suite where
+/// parallelism is disabled - the same rule the suite split applied to the classes that mutate process-wide
+/// environment variables.
 /// </summary>
 public sealed class RosterFoldBatchedSnoozeReadTests : IDisposable
 {
@@ -40,14 +37,6 @@ public sealed class RosterFoldBatchedSnoozeReadTests : IDisposable
     private SnoozeRegistry NewReg() => new(Db, _h.LegacyPath(Guid.NewGuid().ToString("N") + ".json"));
 
     public void Dispose() => _h.Dispose();
-
-    /// <summary>Read one counter out of the load-test snapshot exactly as <c>/diag/loadmetrics</c> serves it.</summary>
-    private static long Counter(string name)
-    {
-        var json = JsonSerializer.Serialize(LoadTestMetrics.Snapshot(reset: false));
-        using var doc = JsonDocument.Parse(json);
-        return doc.RootElement.GetProperty("counters").GetProperty(name).GetInt64();
-    }
 
     private static SessionDto Session(string sid) => new()
     {
@@ -66,67 +55,10 @@ public sealed class RosterFoldBatchedSnoozeReadTests : IDisposable
         => GatewayEndpoints.StampFleetRolesAndFold(sessions, sessions, needsYouStampFor: null, snoozeRegistry: reg);
 
     [Fact]
-    public void TheWholeFold_TakesExactlyOneSnoozeRead_HoweverManySessionsItStamps()
-    {
-        var reg = NewReg();
-        var now = DateTime.UtcNow;
-        reg.Snooze("s1", now.AddHours(2), "dir-1");     // armed, running
-        reg.Snooze("s2", now.AddMinutes(-1), "dir-1");  // armed, elapsed
-        reg.SnoozeDeferred("s3", 720, "dir-1");         // deferred, no clock yet
-        // s4 has no entry at all.
-        var sessions = new List<SessionDto> { Session("s1"), Session("s2"), Session("s3"), Session("s4") };
-
-        var before = Counter("snoozeDbReads");
-        Fold(reg, sessions);
-        var reads = Counter("snoozeDbReads") - before;
-
-        // ONE. Four sessions x three reads = twelve under the old shape; five if only the first loop had
-        // been batched. Anything above one means a per-session read is back on the fold path.
-        Assert.Equal(1L, reads);
-    }
-
-    [Fact]
-    public void TheReadCounter_StillCountsEveryRead_SoTheOneAboveIsMeasuredRatherThanBroken()
-    {
-        // VALIDATE THE INSTRUMENT WHERE IT IS POINTED. "One read" is only evidence if this counter, at this
-        // call site, can report something other than one - a counter that had stopped incrementing would
-        // produce a very convincing zero and a nearly convincing one.
-        var reg = NewReg();
-        var sessions = new List<SessionDto> { Session("s1"), Session("s2") };
-
-        var before = Counter("snoozeDbReads");
-        Fold(reg, sessions);
-        Fold(reg, sessions);
-        Fold(reg, sessions);
-        Assert.Equal(3L, Counter("snoozeDbReads") - before);   // three folds, three reads
-
-        // And the per-session readers - the three the fold no longer calls - still count one read each, so
-        // the counter has not stopped seeing the shape it was built to see.
-        before = Counter("snoozeDbReads");
-        reg.HoldStateFor("s1", DateTime.UtcNow);
-        reg.IsExpired("s1", DateTime.UtcNow);
-        reg.SnoozeUntilFor("s1");
-        Assert.Equal(3L, Counter("snoozeDbReads") - before);
-    }
-
-    [Fact]
-    public void AFoldOverNothing_ReadsNothing()
-    {
-        var reg = NewReg();
-        var before = Counter("snoozeDbReads");
-
-        Fold(reg, new List<SessionDto>());                              // no sessions at all
-        Fold(reg, new List<SessionDto> { Session(""), Session("  ") }); // nothing that could match a row
-
-        Assert.Equal(0L, Counter("snoozeDbReads") - before);
-    }
-
-    [Fact]
     public void EveryShapeOfRow_FoldsToTheSameAnswerItDidBefore()
     {
         // The four shapes a session can be in, and the three stamped facts for each. This is the behaviour
-        // the batched read has to preserve exactly; the read count above is worthless if it buys a wrong
-        // answer.
+        // the batched read has to preserve exactly.
         var reg = NewReg();
         var now = DateTime.UtcNow;
         var running = now.AddHours(2);
@@ -260,19 +192,5 @@ public sealed class RosterFoldBatchedSnoozeReadTests : IDisposable
         var alicesView = aliceReg.HoldSnapshotFor(new[] { "shared-session-id" });
         Assert.Equal(1, alicesView.Count);
         Assert.Equal(HoldStates.Held, alicesView.HoldStateFor("shared-session-id", now));
-    }
-
-    [Fact]
-    public void AFoldWithNoRegistryAtAll_StampsNoHold_AndReadsNothing()
-    {
-        // The dev and diagnostic callers pass no registry. They used to get null out of `snoozeRegistry?.`;
-        // they now get the empty snapshot, which must answer the same way.
-        var sessions = new List<SessionDto> { Session("s1") };
-        var before = Counter("snoozeDbReads");
-
-        Fold(null, sessions);
-
-        Assert.Equal(0L, Counter("snoozeDbReads") - before);
-        Assert.Null(sessions[0].SnoozeUntil);
     }
 }

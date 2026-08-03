@@ -28,6 +28,10 @@ namespace CcDirector.Gateway.Tests;
 /// (and therefore a fresh Gateway) for every test, and the sweep timer's first fire is five seconds after
 /// start. Each test here finishes in milliseconds, so the only ticks in the window are the ones the test
 /// makes itself.
+///
+/// THIS FILE BELONGS IN THE LOCKED SUITE and is not a candidate for the fast one: it boots a real
+/// <see cref="GatewayHost"/> and binds a port, which is the split's own definition of host-bound. It also
+/// asserts deltas on the process-global sweep counters, which a four-thread assembly could not give it.
 /// </summary>
 public sealed class DisplayStateSweepOverlapGuardTests : IAsyncLifetime
 {
