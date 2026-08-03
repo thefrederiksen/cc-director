@@ -273,7 +273,14 @@ commit is luck; so is a red one. That matters to this mission directly, because 
 green" is the criterion the whole fleet merges on - including whatever the Architect eventually lands.
 
 **Ruling: a run on a mission commit counts only against a run on its PARENT. A failure is ours only if
-it does not also appear on the parent.** Absolute greenness is not available here and pretending
+it does not also appear on the parent. THE PARENT MUST BE RUN MORE THAN ONCE** - a refinement from the
+Manager that is better than the Architect's original wording, and it is not a detail: parent run one
+here was GREEN, so a single-run control would have convicted this mission of a regression it did not
+cause. A one-run control on a flaky suite is itself a coin toss.
+
+The evidence is ten failures across six runs on two commits, ten DISTINCT tests, zero repeats, spread
+across stats, speech, wingman, morning-report, voice-upload and session-key-auth. The spread is what
+rules out the comfortable version of this finding - that there is a known bad set to discount. Absolute greenness is not available here and pretending
 otherwise would mean either shipping on noise or chasing it forever.
 
 **This is the SECOND independent reliability defect this mission has found in the fleet's own gate.**
