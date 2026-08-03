@@ -18,20 +18,48 @@ namespace CcDirector.Core.Sessions;
 /// session cannot report a pointer for another one - the same limit the route's session-bound
 /// credential gave, achieved by the shape of the drop box rather than by a check.
 ///
-/// APPLYING A DROP IS IDEMPOTENT, so nothing depends on each event being seen exactly once. Files are
-/// not deleted after reading; a session's file is removed when the session is. And because
-/// <see cref="FileSystemWatcher"/> can genuinely lose events when its buffer overflows - a documented
-/// property of the operating system facility, not a defect to fix - the loss is SIGNALLED on its Error
-/// event, and this answers that signal with a full sweep of the directory. A dropped event would
-/// otherwise cost a stale transcript pointer silently, which is exactly the failure this class exists
-/// to prevent.
+/// THE SWEEP IS THE DELIVERY GUARANTEE; THE WATCHER ONLY MAKES IT FAST. That is the design, and it is
+/// the design because of a measurement rather than a preference. A FileSystemWatcher was tried as the
+/// sole delivery path first, and it SILENTLY MISSED a notification about one run in ten: the drop file
+/// was present, complete, correctly named and valid, the session's pointer had not moved, and no Error
+/// event had been raised - so the documented buffer-overflow signal, which this class also answers, did
+/// not cover it. A lost notification costs a stale transcript pointer, and that takes session history
+/// and the Gateway voice mode above it down without anything turning red. Too much to rest on a
+/// facility that demonstrably drops events.
+///
+/// So a short timer sweeps the box, and the watcher exists to apply a drop in milliseconds rather than
+/// seconds. This is NOT a fallback in the sense the coding standard forbids: there is no degraded second
+/// implementation hiding a broken first one. Both paths run the same Apply, the sweep is the floor and is
+/// always correct, and the watcher is an optimisation above it. Neither can hide a fault in the other,
+/// because they do the same thing.
+///
+/// APPLYING A DROP IS IDEMPOTENT, so nothing depends on a file being seen exactly once - a watcher event
+/// and a sweep may both deliver the same drop. A drop is DELETED once applied, which keeps the box empty
+/// in the steady state (so sweeping it costs almost nothing) and means the hook's next write usually
+/// creates a file rather than replacing one.
 /// </summary>
 public sealed class SessionPointerWatcher : IDisposable
 {
+    /// <summary>
+    /// How often the box is swept. Short, because this is the DELIVERY path and not a backstop: a
+    /// Director that showed a stale transcript for a minute after a /clear would be the same defect this
+    /// class exists to prevent, merely slower. The steady-state cost is one enumeration of an EMPTY
+    /// directory, because an applied drop is deleted.
+    /// </summary>
+    internal static readonly TimeSpan SweepInterval = TimeSpan.FromSeconds(2);
+
     private readonly SessionManager _sessions;
     private readonly string _directory;
+    private readonly CancellationTokenSource _sweepCts = new();
     private FileSystemWatcher? _watcher;
     private bool _disposed;
+
+    /// <summary>
+    /// Test seam: start WITHOUT the file-system watcher, so a test can prove the sweep delivers a drop on
+    /// its own. It has to be provable separately, because in normal operation the watcher wins the race
+    /// almost every time and would mask a sweep that did not work at all.
+    /// </summary>
+    internal bool SuppressWatcherForTests { get; set; }
 
     /// <param name="sessions">The roster a drop is applied to.</param>
     /// <param name="directory">Tests pin the drop box; production uses the storage root.</param>
@@ -56,18 +84,47 @@ public sealed class SessionPointerWatcher : IDisposable
         System.IO.Directory.CreateDirectory(_directory);
         Purge();
 
-        _watcher = new FileSystemWatcher(_directory, "*" + SessionHookFiles.DropExtension)
+        if (!SuppressWatcherForTests)
         {
-            NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size,
-            IncludeSubdirectories = false,
-        };
-        _watcher.Created += OnDropped;
-        _watcher.Changed += OnDropped;
-        _watcher.Renamed += OnDropped;
-        _watcher.Error += OnWatcherError;
-        _watcher.EnableRaisingEvents = true;
+            _watcher = new FileSystemWatcher(_directory, "*" + SessionHookFiles.DropExtension)
+            {
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size,
+                IncludeSubdirectories = false,
+            };
+            _watcher.Created += OnDropped;
+            _watcher.Changed += OnDropped;
+            _watcher.Renamed += OnDropped;
+            _watcher.Error += OnWatcherError;
+            _watcher.EnableRaisingEvents = true;
+        }
 
-        FileLog.Write($"[SessionPointerWatcher] watching {_directory} for session-pointer drops");
+        _ = Task.Run(() => SweepLoopAsync(_sweepCts.Token));
+
+        FileLog.Write($"[SessionPointerWatcher] watching {_directory} for session-pointer drops " +
+                      $"(sweeping every {SweepInterval.TotalSeconds:0.#}s; notifications " +
+                      $"{(SuppressWatcherForTests ? "SUPPRESSED for a test" : "on")})");
+    }
+
+    /// <summary>
+    /// Sweep the box on a short timer for as long as this watcher runs. This is what makes delivery a
+    /// guarantee rather than a hope - see the class comment for the measurement behind it. Best-effort per
+    /// tick, so one bad tick never ends the loop.
+    /// </summary>
+    private async Task SweepLoopAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(SweepInterval);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
+            {
+                try { Sweep(); }
+                catch (Exception ex) { FileLog.Write($"[SessionPointerWatcher] sweep FAILED: {ex.Message}"); }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The watcher is stopping - a clean end, not a failure.
+        }
     }
 
     /// <summary>
@@ -141,6 +198,12 @@ public sealed class SessionPointerWatcher : IDisposable
         if (!string.IsNullOrWhiteSpace(evt.ClaudeSessionId))
             _sessions.RelinkClaudeSession(sessionId.Value, evt.ClaudeSessionId!);
 
+        // Applied, so the drop has done its job and goes. The state lives in the session now, and an
+        // empty box is what makes a two-second sweep cost nothing. A failed delete is harmless -
+        // re-applying the same drop changes nothing - so it is logged rather than retried.
+        try { File.Delete(path); }
+        catch (Exception ex) { FileLog.Write($"[SessionPointerWatcher] applied but could not remove {path}: {ex.Message}"); }
+
         return true;
     }
 
@@ -203,6 +266,9 @@ public sealed class SessionPointerWatcher : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+
+        _sweepCts.Cancel();
+        _sweepCts.Dispose();
 
         if (_watcher is not null)
         {

@@ -120,8 +120,15 @@ public sealed class HookScriptRoundTripTests : IDisposable
         return (proc.ExitCode, stdout, stderr);
     }
 
-    /// <summary>Wait, briefly and with a real deadline, for the live watcher to apply a drop.</summary>
-    private static void WaitFor(Func<bool> condition, string what)
+    /// <summary>
+    /// Wait, briefly and with a real deadline, for the live watcher to apply a drop.
+    ///
+    /// The failure message carries the drop box's actual contents, because "timed out" alone cannot
+    /// distinguish the two things that would cause it: the hook never wrote the drop, or it wrote it and
+    /// the watcher never saw it. Those need opposite fixes, and one intermittent red with no evidence
+    /// costs a whole investigation.
+    /// </summary>
+    private void WaitFor(Func<bool> condition, string what)
     {
         var deadline = DateTime.UtcNow.AddSeconds(15);
         while (DateTime.UtcNow < deadline)
@@ -129,7 +136,16 @@ public sealed class HookScriptRoundTripTests : IDisposable
             if (condition()) return;
             Thread.Sleep(50);
         }
-        Assert.Fail($"timed out waiting for {what}");
+
+        var box = Directory.Exists(_pointerDir)
+            ? string.Join("; ", Directory.GetFiles(_pointerDir)
+                .Select(f => $"{Path.GetFileName(f)} ({new FileInfo(f).Length} bytes) = {File.ReadAllText(f)}"))
+            : "(the drop box does not exist)";
+        var pointers = string.Join("; ", _sessions.ListSessions()
+            .Select(s => $"{s.Id} -> {s.ClaudeSessionId} @ {s.ClaudeTranscriptPath}"));
+        Assert.Fail($"timed out waiting for {what}.{Environment.NewLine}" +
+                    $"  drop box: {box}{Environment.NewLine}" +
+                    $"  sessions: {pointers}");
     }
 
     // ---------- The whole channel, both halves, one run of the real script ----------
@@ -295,6 +311,45 @@ public sealed class HookScriptRoundTripTests : IDisposable
         Assert.Equal(0, exitCode);
         Assert.True(string.IsNullOrEmpty(stdout), $"a missing preamble file produced output: {stdout}");
         Assert.True(string.IsNullOrWhiteSpace(stderr), $"a missing preamble file produced stderr: {stderr}");
+    }
+
+    /// <summary>
+    /// THE SWEEP ALONE DELIVERS - proven with the file-system watcher switched off.
+    ///
+    /// This has to be provable on its own, and it took a defect to learn why. The watcher was the sole
+    /// delivery path first, and it silently missed a notification about one run in ten: the drop was
+    /// present, complete and valid, the pointer had not moved, and no Error event had been raised. So the
+    /// sweep is now the guarantee and the watcher is the thing that makes it fast.
+    ///
+    /// With both running, the watcher wins the race nearly every time - which would mask a sweep that did
+    /// not work at all. Suppressing notifications is the only way to put the guarantee itself on trial.
+    /// </summary>
+    [Fact]
+    public void With_the_watcher_suppressed_the_sweep_still_delivers_a_real_hook_drop()
+    {
+        var session = Adopt();
+        var pointerDir = Path.Combine(_dir, "sweep-only-pointers");
+        Directory.CreateDirectory(pointerDir);
+        using var sweepOnly = new SessionPointerWatcher(_sessions, pointerDir) { SuppressWatcherForTests = true };
+        sweepOnly.Start();
+
+        var pointerFile = SessionHookFiles.PointerPathFor(session.Id, pointerDir);
+        var (interpreter, arguments) = ClaudeHook();
+        var rotatedId = Guid.NewGuid().ToString();
+
+        var (exitCode, _, _) = RunHook(interpreter, arguments,
+            $$"""{"session_id":"{{rotatedId}}","transcript_path":"/tmp/{{rotatedId}}.jsonl","hook_event_name":"SessionStart","source":"compact"}""",
+            preambleFile: null, pointerFile: pointerFile);
+        Assert.Equal(0, exitCode);
+
+        // Well inside the deadline at a two-second interval, and nothing but the timer can deliver it.
+        var deadline = DateTime.UtcNow.AddSeconds(15);
+        while (DateTime.UtcNow < deadline && session.ClaudeSessionId != rotatedId)
+            Thread.Sleep(50);
+
+        Assert.Equal(rotatedId, session.ClaudeSessionId);
+        Assert.Equal($"/tmp/{rotatedId}.jsonl", session.ClaudeTranscriptPath);
+        Assert.False(File.Exists(pointerFile), "the sweep applied the drop but left it in the box");
     }
 
     // ---------- Codex, the other hook family, from the same file ----------

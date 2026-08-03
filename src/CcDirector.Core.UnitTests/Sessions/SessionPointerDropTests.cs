@@ -92,24 +92,57 @@ public sealed class SessionPointerDropTests : IDisposable
     }
 
     /// <summary>
-    /// Applying the same drop twice must be a no-op, because nothing in this channel guarantees a file is
-    /// seen exactly once: a watcher event and a sweep can both deliver the same file, and neither deletes
-    /// it afterwards.
+    /// A drop is removed once it has been applied. That is what keeps the box empty in the steady state,
+    /// so the two-second sweep that guarantees delivery costs almost nothing, and it means the hook's
+    /// next write usually creates a file rather than replacing one.
     /// </summary>
     [Fact]
-    public void Applying_the_same_drop_twice_changes_nothing()
+    public void An_applied_drop_is_removed()
+    {
+        var session = Adopt();
+        Drop(session.Id, "rotated", "/tmp/rotated.jsonl");
+        var path = SessionHookFiles.PointerPathFor(session.Id, _dir);
+
+        Assert.True(Watcher().Apply(path));
+
+        Assert.False(File.Exists(path), "an applied drop was left in the box");
+    }
+
+    /// <summary>
+    /// Applying the same drop twice must be a no-op, because nothing in this channel guarantees a file is
+    /// seen exactly once: a watcher event and the sweep can both deliver the same one. Re-dropped rather
+    /// than re-read, because an applied drop is deleted - the second delivery is a second arrival of the
+    /// same content, which is the case that actually happens.
+    /// </summary>
+    [Fact]
+    public void Delivering_the_same_drop_twice_changes_nothing()
     {
         var session = Adopt();
         var rotatedId = Guid.NewGuid().ToString();
-        Drop(session.Id, rotatedId, "/tmp/rotated.jsonl");
         var watcher = Watcher();
         var path = SessionHookFiles.PointerPathFor(session.Id, _dir);
 
-        watcher.Apply(path);
-        watcher.Apply(path);
+        Drop(session.Id, rotatedId, "/tmp/rotated.jsonl");
+        Assert.True(watcher.Apply(path));
+        Drop(session.Id, rotatedId, "/tmp/rotated.jsonl");
+        Assert.True(watcher.Apply(path));
 
         Assert.Equal(rotatedId, session.ClaudeSessionId);
         Assert.Equal("/tmp/rotated.jsonl", session.ClaudeTranscriptPath);
+    }
+
+    /// <summary>
+    /// A drop that is gone by the time it is read - the other delivery path applied and deleted it first.
+    /// A race the two paths make routine, so it must be quiet rather than an error.
+    /// </summary>
+    [Fact]
+    public void A_drop_that_has_already_been_applied_and_removed_is_not_an_error()
+    {
+        var session = Adopt();
+        var path = SessionHookFiles.PointerPathFor(session.Id, _dir);
+
+        Assert.False(Watcher().Apply(path));
+        Assert.Equal("the-id-from-launch", session.ClaudeSessionId);
     }
 
     /// <summary>
@@ -191,6 +224,12 @@ public sealed class SessionPointerDropTests : IDisposable
 
         Assert.Equal("rotated-a", a.ClaudeSessionId);
         Assert.Equal("rotated-b", b.ClaudeSessionId);
+
+        // The two that were applied are gone; the two that were not stay put. A sweep that deleted what
+        // it could not apply would throw away a drop for a session that is merely still starting up.
+        Assert.False(File.Exists(SessionHookFiles.PointerPathFor(a.Id, _dir)));
+        Assert.False(File.Exists(SessionHookFiles.PointerPathFor(b.Id, _dir)));
+        Assert.Equal(2, Directory.GetFiles(_dir, "*.json").Length);
     }
 
     /// <summary>
