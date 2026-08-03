@@ -55,10 +55,13 @@ public sealed class FileLogRestartAfterStopTests
         FileLog.Stop();
         FileLog.Start();
 
-        var droppedBefore = FileLog.DroppedLines;
-        FileLog.Write("a line that must reach the new writer");
+        // Same reasoning as the trigger test below: DroppedLines is process-wide and other tests move
+        // it, so the invariant is asserted directly. A spent writer still installed after Start is the
+        // lifetime defect, and with Enqueue no longer throwing it is otherwise completely silent.
+        Assert.False(FileLog.InstalledWriterIsSpent);
 
-        Assert.Equal(droppedBefore, FileLog.DroppedLines);
+        var ex = Record.Exception(() => FileLog.Write("a line that must reach the new writer"));
+        Assert.Null(ex);
     }
 
     [Fact]
@@ -100,11 +103,16 @@ public sealed class FileLogRestartAfterStopTests
         var lines = scope.DrainAndReadLines();
         Assert.Contains(lines, l => l.Contains("a line produced inside the scope"));
 
-        var droppedBefore = FileLog.DroppedLines;
-        var ex = Record.Exception(() => FileLog.Write("a neighbour logging after the drain"));
+        // The invariant, asserted directly. This first read DroppedLines instead, and that version
+        // passed on its own and FAILED inside the full suite - DroppedLines is process-wide, so
+        // thousands of unrelated tests had already filled the ambient writer's bounded queue and the
+        // count moved for reasons that had nothing to do with this scope. An order-dependent test for
+        // an order-dependent bug proves nothing; caught by running the parked suite in full, which is
+        // exactly what the coverage-gap warning is for.
+        Assert.False(FileLog.InstalledWriterIsSpent);
 
+        var ex = Record.Exception(() => FileLog.Write("a neighbour logging after the drain"));
         Assert.Null(ex);
-        Assert.Equal(droppedBefore, FileLog.DroppedLines);
     }
 
     [Fact]
