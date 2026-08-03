@@ -389,15 +389,32 @@ public partial class RepositoryDetailView : UserControl
         if (repo is null) return;
         try
         {
-            var commits = await Task.Run(() => _history.RecentAsync(repo));
+            var history = await Task.Run(() => _history.RecentAsync(repo));
             if (_repoPath != repo) return;
-            HistoryList.ItemsSource = commits.Select(c => new CommitRowItem
+
+            if (!history.Success)
+            {
+                // "No commits." is a statement about the repository. When the read fails nothing has
+                // been established about it at all, so saying so would assert what we do not know
+                // (devthrottle_internal issue #1048). This is the same defect the Changes page had,
+                // and it became easier to write the moment the git services started returning a
+                // failure instead of throwing one: an ignored return value is silent where an
+                // escaping exception was loud.
+                HistoryList.ItemsSource = null;
+                HistoryStatus.IsVisible = true;
+                HistoryStatus.Text = string.IsNullOrWhiteSpace(history.Error)
+                    ? "The history could not be read."
+                    : $"The history could not be read: {history.Error}";
+                return;
+            }
+
+            HistoryList.ItemsSource = history.Commits.Select(c => new CommitRowItem
             {
                 Hash = c.ShortHash,
                 Subject = c.Subject,
                 When = c.WhenUtc is { } w ? w.ToLocalTime().ToString("yyyy-MM-dd HH:mm") : "",
             }).ToList();
-            HistoryStatus.IsVisible = commits.Count == 0;
+            HistoryStatus.IsVisible = history.Commits.Count == 0;
             HistoryStatus.Text = "No commits.";
         }
         catch (Exception ex)

@@ -176,8 +176,27 @@ public static class GitHubUrls
             UseShellExecute = false,
             CreateNoWindow = true,
         };
-        using var process = System.Diagnostics.Process.Start(psi)
-            ?? throw new InvalidOperationException("Failed to start git");
+        // THE LAUNCH ITSELF CAN FAIL, and until now that failure left here as a Win32Exception.
+        // This method's contract - and its documentation comment - is that it throws
+        // InvalidOperationException, which is the ONLY exception its callers catch: the Director's
+        // github-urls command catches exactly that and turns it into a clean 409. A Win32Exception
+        // went straight past it and surfaced raw on the desktop, on any machine without git
+        // (devthrottle_internal issue #1048).
+        //
+        // The other services return a failed result for this; here the honest equivalent is the
+        // exception the contract already promises, carrying the same sentence they all use.
+        System.Diagnostics.Process process;
+        try
+        {
+            process = System.Diagnostics.Process.Start(psi)
+                ?? throw new InvalidOperationException("Failed to start git");
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            throw new InvalidOperationException(CcDirector.Core.Git.GitLaunchFailure.Describe(ex), ex);
+        }
+
+        using var _ = process;
         var output = process.StandardOutput.ReadToEnd().Trim();
         process.WaitForExit();
         if (process.ExitCode != 0 || output.Length == 0)

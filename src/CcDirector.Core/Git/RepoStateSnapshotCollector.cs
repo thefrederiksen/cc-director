@@ -89,6 +89,14 @@ public sealed class RepoStateSnapshotCollector
         // disagree, and the report would show a worktree as safe to remove whose branch it also lists as
         // unmerged - in the same email.
         var inventory = await _branches.ListInventoryAsync(repo.Path, ct);
+        if (!inventory.Success)
+            // Fail closed, exactly as the worktree enumeration below already does. This snapshot
+            // feeds the morning report, and a failed read used to arrive here as an EMPTY branch
+            // list - so a repository whose branches could not be read would have been reported as
+            // a repository with no branches, in an email, as fact (devthrottle_internal issue #1048).
+            throw new InvalidOperationException(
+                $"the branch inventory failed: {inventory.Error ?? "no reason reported"}");
+
         var byBranch = inventory.Branches.ToDictionary(b => b.Name, StringComparer.Ordinal);
 
         // fetchPrune: false - the collector runs on a timer in the background and must not mutate the

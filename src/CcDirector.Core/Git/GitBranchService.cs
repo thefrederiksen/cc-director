@@ -52,6 +52,18 @@ public sealed record BranchInventory
     public string? DefaultBranch { get; init; }
 
     public IReadOnlyList<BranchInfo> Branches { get; init; } = Array.Empty<BranchInfo>();
+
+    /// <summary>
+    /// Whether the branches were actually READ. False means the list is empty because git could not
+    /// be run, not because the repository has no branches - a distinction an empty list cannot carry
+    /// and a caller must not have to guess at (devthrottle_internal issue #1048). Every repository
+    /// has at least one branch, so an empty successful inventory is already the unusual case; an
+    /// empty FAILED one used to look identical to it.
+    /// </summary>
+    public bool Success { get; init; } = true;
+
+    /// <summary>Why the read failed, when it did.</summary>
+    public string? Error { get; init; }
 }
 
 /// <summary>
@@ -137,7 +149,15 @@ public sealed class GitBranchService
             "--format=%(HEAD)%09%(refname:short)%09%(committerdate:unix)%09%(objectname)"
         }, ct);
         if (!list.Success)
-            return new BranchInventory { DefaultBranch = mainRef, Branches = results };
+            // Marked as a FAILURE, not returned as an empty inventory. The caller renders the
+            // difference; before this it could not see one.
+            return new BranchInventory
+            {
+                DefaultBranch = mainRef,
+                Branches = results,
+                Success = false,
+                Error = list.Error,
+            };
 
         // Branches held by linked worktrees (never deletable from under them).
         var worktreeBranches = await BranchesCheckedOutInWorktreesAsync(repoPath, ct);

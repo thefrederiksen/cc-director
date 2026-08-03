@@ -3,6 +3,18 @@ using CcDirector.Core.Utilities;
 namespace CcDirector.Core.Git;
 
 /// <summary>
+/// Parsed diffs, WITH whether the read succeeded. A file with no differences and a git that could
+/// not run both produce zero entries, and the diff pane rendered both as "(no differences)" - a
+/// statement about the file that nothing had established (devthrottle_internal issue #1048).
+/// </summary>
+public readonly record struct FileDiffSet(bool Success, IReadOnlyList<FileDiff> Diffs, string? Error)
+{
+    public static FileDiffSet Ok(IReadOnlyList<FileDiff> diffs) => new(true, diffs, null);
+
+    public static FileDiffSet Failed(string? error) => new(false, Array.Empty<FileDiff>(), error);
+}
+
+/// <summary>
 /// Reads diffs for the diff viewer: unstaged (working tree vs index) and staged (index vs HEAD),
 /// whole-repo or one file. Read-only; the write actions stay on <see cref="GitWriteService"/>.
 /// </summary>
@@ -16,11 +28,11 @@ public sealed class GitDiffService
     }
 
     /// <summary>Unstaged changes (working tree vs index), parsed. Optionally one file.</summary>
-    public async Task<IReadOnlyList<FileDiff>> UnstagedAsync(string repoPath, string? file = null, CancellationToken ct = default)
+    public async Task<FileDiffSet> UnstagedAsync(string repoPath, string? file = null, CancellationToken ct = default)
         => await RunAndParseAsync(repoPath, BuildArgs(cached: false, file), ct);
 
     /// <summary>Staged changes (index vs HEAD), parsed. Optionally one file.</summary>
-    public async Task<IReadOnlyList<FileDiff>> StagedAsync(string repoPath, string? file = null, CancellationToken ct = default)
+    public async Task<FileDiffSet> StagedAsync(string repoPath, string? file = null, CancellationToken ct = default)
         => await RunAndParseAsync(repoPath, BuildArgs(cached: true, file), ct);
 
     /// <summary>
@@ -76,15 +88,17 @@ public sealed class GitDiffService
         return args.ToArray();
     }
 
-    private async Task<IReadOnlyList<FileDiff>> RunAndParseAsync(string repoPath, string[] args, CancellationToken ct)
+    private async Task<FileDiffSet> RunAndParseAsync(string repoPath, string[] args, CancellationToken ct)
     {
         var result = await _git.RunAsync(repoPath, args, ct);
         if (!result.Success)
         {
+            // NOT an empty set. Returning one here is what let the diff pane say "(no differences)"
+            // about a file it had never managed to read.
             FileLog.Write($"[GitDiffService] git {string.Join(' ', args)} failed: {result.Error}");
-            return Array.Empty<FileDiff>();
+            return FileDiffSet.Failed(result.Error);
         }
-        return DiffParser.Parse(result.Output);
+        return FileDiffSet.Ok(DiffParser.Parse(result.Output));
     }
 
     private static bool LooksBinary(string path)

@@ -98,6 +98,27 @@ public partial class ChangesDiffView : UserControl
             if (_repoPath != repo)
                 return;
 
+            if (!status.Success)
+            {
+                // "No uncommitted changes." is a claim about the repository, and on a failed read
+                // nothing has been read (devthrottle_internal issue #1048). This view checked no
+                // success flag at all, so every failure - a missing git most plainly - rendered as
+                // a clean working tree.
+                _staged = new List<DiffFileItem>();
+                _unstaged = new List<DiffFileItem>();
+                StagedFiles.ItemsSource = null;
+                UnstagedFiles.ItemsSource = null;
+                StagedHeader.IsVisible = false;
+                UnstagedHeader.IsVisible = false;
+                NoChangesText.IsVisible = true;
+                NoChangesText.Text = string.IsNullOrWhiteSpace(status.Error)
+                    ? "The changes could not be read."
+                    : $"The changes could not be read: {status.Error}";
+                DiffRows.ItemsSource = null;
+                return;
+            }
+
+            NoChangesText.Text = "No uncommitted changes.";
             _staged = status.StagedChanges.Select(f => ToItem(f, staged: true)).ToList();
             _unstaged = status.UnstagedChanges.Select(f => ToItem(f, staged: false)).ToList();
 
@@ -177,9 +198,28 @@ public partial class ChangesDiffView : UserControl
         }
         else
         {
-            diffs = item.IsStaged
+            var set = item.IsStaged
                 ? await _diff.StagedAsync(repo, item.Path)
                 : await _diff.UnstagedAsync(repo, item.Path);
+            if (!set.Success)
+            {
+                // "(no differences)" says the file is unchanged. A failed read says nothing about
+                // the file (devthrottle_internal issue #1048).
+                DiffRows.ItemsSource = new[]
+                {
+                    new DiffRowItem
+                    {
+                        Text = string.IsNullOrWhiteSpace(set.Error)
+                            ? "(the diff could not be read)"
+                            : $"(the diff could not be read: {set.Error})",
+                        TextBrush = CtxFg,
+                    },
+                };
+                StagedFiles.ItemsSource = null; StagedFiles.ItemsSource = _staged;
+                UnstagedFiles.ItemsSource = null; UnstagedFiles.ItemsSource = _unstaged;
+                return;
+            }
+            diffs = set.Diffs;
         }
 
         DiffRows.ItemsSource = BuildRows(diffs);
