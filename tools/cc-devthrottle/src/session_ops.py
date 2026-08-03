@@ -423,7 +423,7 @@ def read_session_buffer(target: Optional[str]) -> None:
     elif isinstance(resp, str):
         text = resp
     if text is None:
-        console.print("[red]Error:[/red] the Director did not return the session's buffer.")
+        console.print("[red]Error:[/red] the Gateway did not return the session's buffer.")
         raise typer.Exit(1)
     # Plain print, not console.print, for the same reason as list_sessions above. This is raw terminal
     # text from another session, so it is arbitrary and nobody controls its shape: Rich reads a token

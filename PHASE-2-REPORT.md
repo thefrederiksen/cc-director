@@ -111,7 +111,7 @@ credential, they never called the Director, and they are unaffected by the switc
 
 ### Guard changes, and why each is not a widening
 
-`SessionKeyGuard` gained four entries:
+`SessionKeyGuard` gained five entries:
 
 | Added | Why it is the same privilege, not more |
 |---|---|
@@ -119,7 +119,11 @@ credential, they never called the Director, and they are unaffected by the switc
 | `POST /sessions/{sid}/message` | Strictly narrower than `/prompt`, which was already allowed - the sender cannot be chosen by the caller. |
 | `POST /fleet/broadcast` | The team-resolving front door onto `/fanout`, which was already allowed. |
 | `POST /directors/{id}/sessions` | The same verb as `POST /machines/{m}/sessions`, already allowed - addressed precisely rather than to "some Director over there". |
-| `/directors/{id}/browsers/...` | The one place `/directors` opens to a session key. An automation browser is a tool an agent uses; it was reachable by every agent on the machine before this mission over the loopback port with **no credential narrower than the machine secret**. Routing it through the Gateway NARROWS it. |
+| `/directors/{id}/browsers/...` | An automation browser is a tool an agent uses, not Director administration. It was reachable by every agent on the machine before this mission over the loopback port with **no credential narrower than the machine secret**. Routing it through the Gateway NARROWS it. |
+
+Those last two are the only sub-paths of `/directors` a session key may reach; the rest of that
+surface - registration, settings, handovers, force-kill - stays refused, and both are matched by
+segment structure so a new sibling under `/directors` cannot be reached by accident.
 
 ## Notable behaviour changes
 
@@ -141,6 +145,50 @@ documented fallback is now the only path. It is a display line; nothing branches
 *(filled in as each proof lands - see the sections below)*
 
 ### The local gate
+
+`.\scripts\test-local.ps1 -Parked`, after deleting every `obj` and `bin` under `src` and `tools`
+(this repo serves stale assemblies on incremental builds).
+
+| Project | Result |
+|---|---|
+| CcDirector.Core.UnitTests | 89 passed |
+| CcDirector.Gateway.UnitTests | 2870 passed, **1 failed** |
+| CcDirector.Avalonia.Tests | 356 passed |
+| CcDirector.Engine.Tests | 63 passed |
+| CcDirector.HostedAgent.Tests | 88 passed |
+| CcDirector.Launcher.Tests | 110 passed |
+| CcDirector.Terminal.Avalonia.Tests | 24 passed |
+| cc-director-setup.Tests | 25 passed |
+| cc-director-setup-engine.Tests | 453 passed |
+| **CcDirector.Gateway.Tests** (parked) | 2454 passed, **2 failed** |
+| **CcDirector.Core.Tests** (parked) | 4197 passed |
+
+**Three failures, and each was chased rather than waved through.**
+
+1. `CleanInstallCliAuthenticationTests` - **mine, and the test is now obsolete by design.** It drove
+   the real Python command line authenticating against a real Director, resolving the per-instance
+   machine secret. That mechanism is exactly what this phase deletes: `director_token.py` is gone and
+   the command line cannot authenticate against a Director by any path. The test failed with
+   `tools/cc_shared/director.py not found`. **Deleted**, because there is no version of it that could
+   pass without reinstating the thing the mission removes. What replaces its guarantee: the command
+   line presents a session key to the Gateway, pinned in `test_gateway.py`
+   (`test_request_presents_the_session_key_as_a_bearer_token`) and demonstrated live in the pass mark
+   above.
+2. `MissionAttachRouteTenantScopingTests.Another_tenants_session_cannot_be_attached_to_your_own_mission`
+   - `POST /missions` returned 500 during setup. **Run alone it passes** (1/1, 338ms), so this is
+   contention in a shared fixture, not a regression. I did not touch the mission route.
+3. `SessionStateEventEmitterTests.Two_tenants_sharing_a_session_id_keep_independent_transitions` -
+   `InvalidOperationException: The collection has been marked as complete with regards to additions`
+   from `FileLogWriter.Enqueue`, via `GatewayDbTestHarness.Open`. This is the **pre-existing
+   teardown-race flake** the phase-1b report documents and reproduced on `origin/main` four times
+   with a different test failing each run. Nothing to do with this phase; the fleet already has
+   `fix/filelog-writer-lifetime` on it.
+
+**The new tests pass:** `SessionKeyLaunchWindowTests` 4/4, and the whole session-key plus framing
+family 98/98.
+
+**Python:** 330 passed across `cc_shared`, `cc-devthrottle`, `cc-status` and `cc-history` - the suites
+the local gate does not run at all.
 
 ### The no-Gateway message, verified as a user reads it
 
@@ -206,7 +254,70 @@ worth making for a window this shape without evidence that it is being hit. **Re
 Architect: leave it, and revisit if a refused first command is ever actually observed** - which is
 findable, because the refusal is loud and logged.
 
-### End to end with the Director's routes switched OFF
+### End to end with the Director's routes switched OFF - THE PASS MARK
+
+**Done, and it passes.** An isolated Gateway and an isolated Director, both built from this branch,
+both on their own storage roots and ports. Nothing on the live fleet was touched: the running
+Gateway, the installed Director and the owner's slots 1-5 were never read, reconfigured or stopped,
+and the live fleet was confirmed healthy (8 sessions) afterwards.
+
+- Gateway: `CcDirector.Gateway.exe` on port 7997, own `CC_DIRECTOR_ROOT`, **auth ON**, reporting
+  `1.9.7+46504673f4e4ac0f3035f485aa6b344621327341` - the exact commit under test.
+- Director: slot 6, own `CC_DIRECTOR_ROOT`, launched from a scheduled task (rule 0b) through a
+  wrapper that sets the environment **process-locally**, with `CC_DIRECTOR_AGENT_ROUTES=off`.
+
+The Director's own log, live:
+
+```
+[ControlApiHost] agent surface (/fleet/* and /browsers/*): OFF (CC_DIRECTOR_AGENT_ROUTES=off)
+[ControlEndpoints] the agent surface (/fleet/*) is SWITCHED OFF; the command line reaches the fleet through the Gateway
+```
+
+It registered with the isolated Gateway over the tunnel (`healthz` went to `directors: 1`), and the
+test session was created **through the Gateway** (`POST /directors/{id}/sessions`) - with the agent
+routes off there is no Director route to create one, which is itself part of the proof.
+
+**The switch actually removed the routes, and the proof has both arms.** Probing the Director with a
+credential it accepts:
+
+| Route | Result |
+|---|---|
+| `/healthz`, `/settings`, `/tools`, `/update/status` | **200** - the credential is valid and the Director is alive and serving |
+| `/fleet/sessions`, `/fleet/repositories`, `/fleet/worktrees`, `/fleet/machines`, `/fleet/directors`, `/fleet/buffer`, `/fleet/send`, `/fleet/broadcast`, `/browsers` | **404** - gone |
+
+The first row is what makes the second mean anything. An earlier probe without a valid credential
+returned 401 for everything, including routes that certainly exist - an auth refusal standing in for
+the route being absent, which would have been a false proof.
+
+**The checklist, run INSIDE that session, holding that session's own key:**
+
+```
+CC_GATEWAY_URL=http://127.0.0.1:7997
+CC_GATEWAY_SESSION_KEY=[present, value never printed]
+CC_DIRECTOR_API=http://127.0.0.1:7883   <- the Director is still listening; its AGENT routes are off
+```
+
+PASS: `session list`, `session whoami`, `actions --json`, `repo list`, `worktree list`,
+`machine list`, `director list`, `skill list`, `workflow list`, `schedule list`, `mission list`,
+`browser list`, `session buffer`, `session rename`, `session role`, `session hold`,
+`message send all`, `cc-status` - **18 of 19**.
+
+The nineteenth, `machine apps`, answered `no launcher registered for machine 'SOREN_NORTH'`. That is
+the product answering correctly: the rig ran a Gateway and a Director but no cc-launcher. The command
+reached the Gateway, was authorised by the session key, and got the honest answer - so it too
+demonstrates the path, and only the rig is short.
+
+`message send` to a single session was dropped from the checklist after it failed for a fixture
+reason worth recording: the test session is a `RawCli` batch script, and delivery uses
+`EchoVerifiedSubmit`, which types into a terminal and waits for the echo. A batch script has no
+composer to echo. `message send all` passed and exercises the same framing and the same fanout
+delivery, so the messaging path is covered; a single-target send into a real agent TUI is not.
+
+**The credential is genuinely the phase-1b one.** It was minted by the Director inside the session's
+environment build, registered with the Gateway over the tunnel, and never printed - the checklist
+reports only that it is present. This is the end-to-end exercise phase 1b recorded as missing, and it
+closes both of the gaps that phase left open: the credential now has a consumer, and something now
+reads the calling session id (the framing and team resolution on the two new routes).
 
 ### The repointed read paths, against the LIVE Gateway
 
@@ -295,40 +406,27 @@ tunnel-only cut deleted, with no test that would have caught it.*
 
 ## What is NOT proven
 
-**The end-to-end run with a real session key is NOT done, and it is the Architect's pass mark.** It
-needs a Director and a Gateway both built from this branch, because the live Gateway is an older
-build without the new routes and this session predates phase 1b so holds no session key. The rig for
-it is written (`scripts/phase2-gateway-proof.ps1`) and its shape is settled:
+**The rig is torn down, so the pass mark is a record rather than a running thing.** It is
+reproducible from `scripts/phase2-gateway-proof.ps1` plus the notes in the pass-mark section above:
+publish `CcDirector.Gateway` (NOT `CcDirector.Gateway.Host` - that one is the hosted image and
+refuses to start self-hosted, by design), give it its own `CC_DIRECTOR_ROOT`, put the Director's
+gateway config in `<root>/instances/default/config/config.json` (NOT at the root - the instance home
+is where a Director reads it), and set the environment in a wrapper script rather than at user scope.
 
-1. Publish this branch's Gateway and run it on its own port with its own `CC_DIRECTOR_ROOT`, so the
-   live Gateway, the installed Director and the user's slots 1-5 are never touched. It writes its own
-   token to `<root>/config/director/gateway-token.txt`; auth stays ON, because the session-key path
-   runs through `AuthMiddleware` and a rig with auth off would prove nothing.
-2. Build a Director slot at 6 or above from this branch, point its `config.json` at that Gateway, and
-   launch it through its own scheduled task (CLAUDE.md rule 0b).
-3. **Create the test session through the GATEWAY** (`POST /directors/{id}/sessions`) - with the agent
-   routes off there is no Director route to create one, which is itself part of the proof.
-4. The session's command is a checklist script. **The commands must run inside a session**, because
-   `CC_GATEWAY_SESSION_KEY` is minted per session, stamped into that one session's environment, and
-   deliberately never logged or stored anywhere a script could read it. A rig that fabricated its own
-   key would prove the Gateway accepts a key it was handed, which is not the question.
-5. Run it twice - agent routes ON, then OFF. The second run is the pass mark.
+**The write paths were exercised against the ISOLATED Gateway, not the live one.** `session rename`,
+`session role`, `session hold` and `message send all` all passed against the rig. `prompt`,
+`interrupt`, `compact`, `mission attach/detach`, `session done`, `spawn` beyond the rig's own use of
+it, and every `browser` verb were not driven. Deliberately: the only other Gateway available is the
+fleet's production one.
 
-One thing that rig must get right and is easy to get wrong: the checklist has to run **this
-worktree's** tools, not the installed ones on the machine PATH. `python -m src.cli` from
-`tools/cc-devthrottle` with `PYTHONPATH` set to `tools` works and is how the no-Gateway message above
-was captured.
+**A single-target `message send` into a real agent has not been run.** The rig's session is a batch
+script with no composer to echo, so `EchoVerifiedSubmit` cannot complete. `message send all` covers
+the same framing and fanout delivery.
 
-**The write paths are unexercised against a real Gateway.** The nine read paths above ran against the
-live Gateway; `message send`, `message ask`, `message send all`, `prompt`, `interrupt`, `hold`,
-`compact`, `role`, `mission attach/detach`, `session done`, `spawn` and every `browser` verb have not.
-They are covered by unit tests and by the fact that the routes they call already exist, but nothing
-has driven them end to end. Deliberately so: they are writes, and the only Gateway available to this
-session is the fleet's production one.
-
-**The browser tunnel legs have never carried a command.** `BrowserExecutor` is exercised only through
-`BrowserEndpoints`' loopback adapter, which is the same code path minus the tunnel. The eight Gateway
-routes and the verb dispatch between them are unproven.
+**The browser tunnel legs have never carried a command.** `browser list` passed - so the Gateway
+route, the guard entry and the tunnel dispatch all work for the read - but the seven write verbs
+(create, start, stop, signin, rename, delete, attach) were not driven, and the rig had no browsers to
+drive them against.
 
 **The Gateway's own tests do not yet cover the new routes.** `POST /sessions/{sid}/message`, `POST
 /fleet/broadcast`, the roster-completeness fields and the browser legs have no Gateway-side tests of

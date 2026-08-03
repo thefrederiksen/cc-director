@@ -186,8 +186,9 @@ public static class SessionKeyGuard
     /// <summary>
     /// The automation-browser shapes under <c>/directors/{id}/browsers</c>.
     ///
-    /// THIS IS THE ONE PLACE /directors IS OPEN TO A SESSION KEY, and the narrowness is deliberate. The rest
-    /// of that surface is the owner's - registration, settings, handovers, force-kill - and stays refused.
+    /// THIS AND <c>POST /directors/{id}/sessions</c> ARE THE ONLY SUB-PATHS OF /directors OPEN TO A SESSION
+    /// KEY, and the narrowness is deliberate. The rest of that surface is the owner's - registration,
+    /// settings, handovers, force-kill - and stays refused.
     /// This sub-path is not Director administration at all: an automation browser is a tool an agent uses,
     /// it was reachable by every agent on the machine before this mission (over the Director's loopback
     /// port, with no credential narrower than the machine secret), and routing it through the Gateway
