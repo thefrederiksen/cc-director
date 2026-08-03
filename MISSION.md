@@ -288,3 +288,26 @@ The first was stale assemblies on incremental builds, which serve the previous c
 success and cost three consecutive wrong diagnoses; the fix is deleting `obj` and `bin` for any
 project whose result is to be trusted. Both belong in the QA report as findings about the tooling
 every mission depends on, not as footnotes about a flaky test.
+
+## Mission record, and a product defect found while creating it - 2026-08-03
+
+The owner asked for the Architect and Manager sessions to be combined into a Mission. The record is
+created: **"Remove the network port", id 761ec285**, and `cc-devthrottle mission list` returns it.
+
+**Attaching the two RUNNING sessions FAILED, and the failure is a product defect, not a mistake in the
+attempt.** `POST /sessions/{id}/mission` answers `502` with
+`unknown mission '761ec285...'. Create it first with POST /missions.` - for a mission the SAME Gateway
+returns from `GET /missions` seconds earlier, over the same base URL, with the same credential. The
+Director has no `/missions` route at all (404 on GET and POST), so the advice in the error names an
+endpoint that does not exist on the machine it is given to.
+
+So one Gateway route cannot see a record another Gateway route lists. The likely cause is a scoping
+difference between the two paths - the list route answering across a scope the attach route resolves
+within - but that is a hypothesis, not a finding, and it should be diagnosed rather than assumed.
+
+**Consequence for this mission:** future seats are attached at spawn with `--mission`, which is the
+supported path. The two already-running sessions stay unattached until this is fixed.
+
+**Worth filing on its own.** The error is the dangerous kind: it is specific, confident and actionable,
+and the action it names is impossible. A user following it looks for a route that is not there and
+concludes their install is broken.
