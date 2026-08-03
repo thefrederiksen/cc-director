@@ -169,9 +169,13 @@ documented fallback is now the only path. It is a display line; nothing branches
    the real Python command line authenticating against a real Director, resolving the per-instance
    machine secret. That mechanism is exactly what this phase deletes: `director_token.py` is gone and
    the command line cannot authenticate against a Director by any path. The test failed with
-   `tools/cc_shared/director.py not found`. **Deleted**, because there is no version of it that could
-   pass without reinstating the thing the mission removes. What replaces its guarantee: the command
-   line presents a session key to the Gateway, pinned in `test_gateway.py`
+   `tools/cc_shared/director.py not found`. **Deleted.**
+
+   The Architect has backed this deletion explicitly, so that nobody later reads it as a test quietly
+   dropped to get a green run. In his terms: **a test that can only pass by undoing the change is not
+   coverage, it is a fossil.** No version of this one could pass without reinstating the exact
+   mechanism the phase removes. What replaces its guarantee is the command line presenting a session
+   key to the Gateway - pinned in `test_gateway.py`
    (`test_request_presents_the_session_key_as_a_bearer_token`) and demonstrated live in the pass mark
    above.
 2. `MissionAttachRouteTenantScopingTests.Another_tenants_session_cannot_be_attached_to_your_own_mission`
@@ -253,6 +257,11 @@ guaranteed without blocking the caller - is a real change to how every session s
 worth making for a window this shape without evidence that it is being hit. **Recommendation to the
 Architect: leave it, and revisit if a refused first command is ever actually observed** - which is
 findable, because the refusal is loud and logged.
+
+**Architect ruling: SETTLED, not deferred.** All three candidate fixes are worse than the window, and
+the third is worse for a reason worth writing down: the credential check is the one path that must
+stay cheap and must not depend on the Director being reachable. A race whose other side is an
+operating system starting a process, which fails LOUDLY and heals itself, is the right trade.
 
 ### End to end with the Director's routes switched OFF - THE PASS MARK
 
@@ -382,6 +391,11 @@ Gateway round trip rather than a local call". That is true only of the commands 
 answered itself. For the aggregating reads - the roster, repositories, worktrees, machines,
 Directors, and every command that resolves a target against the roster first - it was already a
 Gateway round trip, and this phase makes them faster by removing a hop nobody was counting.
+
+**This corrected something the owner had been told.** The Architect had reported that every agent
+command becomes a round trip and gets slower; the measurement shows most get FASTER and only
+genuinely-local reads pay. The correction has been passed on. The accepted cost is smaller than the
+owner was told it would be.
 
 ## Pre-existing defects this mission uncovered (Architect ruling 3: file separately, not here)
 
