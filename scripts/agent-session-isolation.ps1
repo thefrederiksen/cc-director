@@ -217,62 +217,27 @@ function Stop-OwnLaunchedDirector([int]$DirectorPid, [string]$ExePath) {
     Stop-Process -Id $DirectorPid -Force -Confirm:$false
 }
 
-# The instance home of the Director answering on this port. Every Director - the default included -
-# keeps its whole storage under <base>\instances\<slug> and registers THERE, so the home is found by
-# matching the port against the live registrations across the flat base (pre-instance installs) and
-# every per-instance home. With no live match, the default instance's home when it exists, else the
-# flat base.
-function Get-InstanceHomeForPort([int]$Port) {
+# WHICH Director a process id is. Remove-the-network-port mission, phase 4: this replaces
+# Get-ShutdownToken, which resolved the SECRET a Director accepts so a shutdown could be posted to
+# its Control API. There is no credential to resolve now and no port to find - the clean stop is a
+# signal named for the Director's own identifier - so what has to be looked up is which Director is
+# running as this process, and the registration files are where that is written down.
+function Get-DirectorIdForPid([int]$DirectorPid) {
     $base = Join-Path $env:LOCALAPPDATA 'cc-director'
     $homes = @($base)
     $instancesRoot = Join-Path $base 'instances'
     if (Test-Path $instancesRoot) {
         $homes += @(Get-ChildItem $instancesRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
     }
-
-    # $instanceHome, not $home: PowerShell's automatic $HOME is read-only and a foreach
-    # iteration variable named $home fails against it.
     foreach ($instanceHome in $homes) {
         $regDir = Join-Path $instanceHome 'config\director\instances'
         if (-not (Test-Path $regDir)) { continue }
         foreach ($f in @(Get-ChildItem $regDir -Filter *.json -ErrorAction SilentlyContinue)) {
             try {
                 $j = Get-Content $f.FullName -Raw | ConvertFrom-Json
-                if (-not $j.ControlEndpoint) { continue }
-                if (([uri]$j.ControlEndpoint).Port -ne $Port) { continue }
-                if (-not $j.Pid) { continue }
-                if ($null -eq (Get-Process -Id $j.Pid -ErrorAction SilentlyContinue)) { continue }
-                return $instanceHome
+                if ($j.Pid -eq $DirectorPid -and $j.DirectorId) { return [string]$j.DirectorId }
             } catch {}
         }
-    }
-
-    $defaultHome = Join-Path $base 'instances\default'
-    if (Test-Path $defaultHome) { return $defaultHome }
-    return $base
-}
-
-# The secret a Director accepts, resolved the way THAT Director resolves it and from ITS OWN instance
-# home: the SHARED fleet token from that home's config.json when this machine is attached to a
-# Gateway, otherwise that home's persisted token file. Two past shapes of this bug: reading only the
-# gateway token (standalone machines could not shut their own test Director down), and reading the
-# right pair of files from the FLAT root - which on a clean named-default install holds neither,
-# because every Director's storage lives under instances\<slug>. Both ended the same way: every
-# teardown silently falling through to the force-kill that leaves a phantom crash-journal entry.
-function Get-ShutdownToken([int]$Port) {
-    $instanceHome = Get-InstanceHomeForPort $Port
-
-    $cfg = Join-Path $instanceHome 'config\config.json'
-    if (Test-Path $cfg) {
-        try {
-            $j = Get-Content $cfg -Raw | ConvertFrom-Json
-            if ($j.gateway -and $j.gateway.token) { return [string]$j.gateway.token }
-        } catch {}
-    }
-
-    $tokenFile = Join-Path $instanceHome 'config\director\gateway-token.txt'
-    if (Test-Path $tokenFile) {
-        try { return (Get-Content $tokenFile -Raw).Trim() } catch {}
     }
     return ''
 }
@@ -284,24 +249,38 @@ function Get-ShutdownToken([int]$Port) {
 # (the Director is genuinely stuck) or when no Control API port is known.
 function Stop-DirectorCleanly([int]$DirectorPid, [int]$Port, [string]$ExePath) {
     $exited = $false
-    if ($Port -gt 0) {
-        $headers = @{}
-        $tok = Get-ShutdownToken $Port
-        if ($tok) { $headers['Authorization'] = "Bearer $tok" }
-        Write-Host "[teardown] requesting clean shutdown: POST http://127.0.0.1:$Port/shutdown (PID $DirectorPid)"
-        try { Invoke-WebRequest "http://127.0.0.1:$Port/shutdown" -Method POST -Headers $headers -UseBasicParsing -TimeoutSec 5 | Out-Null } catch {}
-        $deadline = (Get-Date).AddSeconds(15)
-        while ((Get-Date) -lt $deadline) {
-            if ($null -eq (Get-Process -Id $DirectorPid -ErrorAction SilentlyContinue)) { $exited = $true; break }
-            Start-Sleep -Milliseconds 250
+
+    # The clean stop is a NAMED SIGNAL, not a post to the Director's Control API. It is named for
+    # that Director's own identifier, which is the only string that names one process - this
+    # machine runs several Directors, and a request that could reach any of them would eventually
+    # reach the wrong one. The port is no longer part of stopping anything.
+    $directorId = Get-DirectorIdForPid $DirectorPid
+    if ($directorId) {
+        $signal = "Local\cc-director-shutdown-$($directorId.ToLowerInvariant())"
+        Write-Host "[teardown] requesting clean shutdown: signalling $signal (PID $DirectorPid)"
+        $delivered = $false
+        try {
+            $evt = [System.Threading.EventWaitHandle]::OpenExisting($signal)
+            $evt.Set() | Out-Null
+            $evt.Dispose()
+            $delivered = $true
+        } catch {
+            Write-Host "[teardown] nothing is listening for $signal - this Director cannot be asked to stop"
+        }
+        if ($delivered) {
+            $deadline = (Get-Date).AddSeconds(20)
+            while ((Get-Date) -lt $deadline) {
+                if ($null -eq (Get-Process -Id $DirectorPid -ErrorAction SilentlyContinue)) { $exited = $true; break }
+                Start-Sleep -Milliseconds 250
+            }
         }
     } else {
-        Write-Host "[teardown] no Control API port known for PID $DirectorPid - cannot shut down cleanly"
+        Write-Host "[teardown] no instance registration names PID $DirectorPid - cannot identify which Director to stop"
     }
 
     if (-not $exited) {
-        # LAST RESORT: the clean shutdown did not take (no port, or the process is stuck). A
-        # force-kill gives the process no chance to delete its crash journal, so this path DOES
+        # LAST RESORT: the clean shutdown did not take (nothing listening, or the process is stuck).
+        # A force-kill gives the process no chance to delete its crash journal, so this path DOES
         # leave an "interrupted" entry - it is used only when there is no other option.
         $alive = Get-Process -Id $DirectorPid -ErrorAction SilentlyContinue
         if ($alive -and $alive.Path -and ($alive.Path -ieq $ExePath)) {

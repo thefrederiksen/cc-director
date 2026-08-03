@@ -125,19 +125,23 @@ public sealed class ControlApiHostTests : IAsyncLifetime
         CcDirector.Core.Input.PromptDeliveryFailures.ResetForTests();
     }
 
+    /// <summary>
+    /// Remove-the-network-port mission, phase 4. This used to be Shutdown_triggers_callback, which
+    /// posted to /shutdown and waited for the host's callback to run. The route is gone: stopping the
+    /// Director is a named lifecycle signal now, because it has to work when no socket is accepting
+    /// connections - that is the state an update needs it in.
+    ///
+    /// The old test could only pass by putting the route back, so it is replaced rather than fixed. The
+    /// callback it exercised is unchanged and still wired: the Gateway tunnel's shutdown verb and the
+    /// lifecycle signal both invoke it.
+    /// </summary>
     [Fact]
-    public async Task Shutdown_triggers_callback()
+    public async Task Shutdown_is_no_longer_a_route()
     {
-        Assert.False(_shutdownRequested);
         var resp = await _client.PostAsync("shutdown", null);
-        Assert.True(resp.IsSuccessStatusCode);
 
-        // Callback runs on a Task.Delay(100) so wait a beat
-        var deadline = DateTime.UtcNow.AddSeconds(2);
-        while (!_shutdownRequested && DateTime.UtcNow < deadline)
-            await Task.Delay(50);
-
-        Assert.True(_shutdownRequested);
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        Assert.False(_shutdownRequested, "a deleted route must not still be able to stop the Director");
     }
 
     [Fact]

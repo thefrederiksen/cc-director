@@ -104,12 +104,15 @@ public sealed class ControlApiHostileAccessTests : IAsyncLifetime
         { "GET", "fleet/worktrees" },
         { "GET", "fleet/machines" },
         { "GET", "prompt-delivery-failures" },
-        { "GET", "update/status" },
         { "GET", "tools" },
         { "GET", "browsers" },
         { "GET", "workspaces" },
         { "GET", "history" },
-        { "POST", "shutdown" },
+        // Remove-the-network-port mission, phase 4: "GET update/status" and "POST shutdown" were both
+        // here and are gone. Their routes are deleted, so the 401 they used to prove would now be the
+        // auth middleware refusing a path that does not exist - a refusal standing in for absence,
+        // which is evidence about nothing. That the routes are ABSENT is proved in
+        // SessionHookRoutesAreGoneTests, with a detector validated against routes that still exist.
         { "POST", "reconnect" },
         { "POST", "fleet/spawn" },
         { "POST", "fleet/prompt" },
@@ -333,17 +336,23 @@ public sealed class ControlApiHostileAccessTests : IAsyncLifetime
     /// something: the attacker cannot read our answer across origins, but a spawn or a shutdown does
     /// not need to be read to have happened.
     /// </summary>
+    /// <remarks>
+    /// This was aimed at POST /shutdown until phase 4 deleted that route. It is aimed at a spawn now
+    /// rather than dropped: the property under test is the rebinding refusal on a MUTATION, and a
+    /// deleted route cannot demonstrate it - a 401 on a path that does not exist is an auth refusal
+    /// standing in for absence.
+    /// </remarks>
     [Fact]
-    public async Task DnsRebindingStyleHost_OnShutdown_IsRefused()
+    public async Task DnsRebindingStyleHost_OnAMutation_IsRefused()
     {
         using var anonymous = Anonymous();
-        using var request = new HttpRequestMessage(HttpMethod.Post, "shutdown");
+        using var request = new HttpRequestMessage(HttpMethod.Post, "fleet/spawn");
         request.Headers.Host = "rebind.invalid";
 
         using var response = await anonymous.SendAsync(request);
 
         Assert.True(response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden,
-            $"POST /shutdown with Host: rebind.invalid was answered {(int)response.StatusCode}");
+            $"POST /fleet/spawn with Host: rebind.invalid was answered {(int)response.StatusCode}");
     }
 
     // =====================================================================================
@@ -357,7 +366,6 @@ public sealed class ControlApiHostileAccessTests : IAsyncLifetime
         => DirectorScopedToken.Mint(RootSecret, ScopeNames.SessionChild, sessionId);
 
     [Theory]
-    [InlineData("POST", "shutdown")]
     [InlineData("POST", "reconnect")]
     [InlineData("POST", "fleet/spawn")]
     [InlineData("POST", "fleet/prompt")]

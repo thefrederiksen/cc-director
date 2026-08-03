@@ -80,7 +80,9 @@ agent-lifecycle hooks, not for driving sessions:
 | POST | `/fleet/send`, `/fleet/ask` | Fleet messaging relay (used by `cc-devthrottle message`) |
 | POST | `/fleet/spawn` | Spawn on another machine, relayed via the Gateway |
 | POST | `/reconnect` | Bounce this Director's outbound tunnel |
-| POST | `/shutdown` | Ask this Director to stop |
+| (gone) | `/shutdown` | DELETED by the remove-the-network-port mission. Stopping a Director is a
+named signal now (`Local\cc-director-shutdown-<directorId>`), because it has to work when nothing is
+listening on a socket - which is the state an update needs it in. See CLAUDE.md rule 0b. |
 | GET/PUT | `/settings` (+ agents/tools/workspaces) | Local config surface (desktop app + cc-settings-api) |
 
 A session's SessionStart hook used to call three routes here - two to fetch its fleet preamble and one

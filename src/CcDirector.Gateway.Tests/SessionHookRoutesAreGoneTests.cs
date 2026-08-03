@@ -88,8 +88,13 @@ public sealed class SessionHookRoutesAreGoneTests : IAsyncLifetime
     /// The detector, validated before it is trusted: authenticated routes that DO exist answer something
     /// other than 404 through this client. If this goes red, every 404 below means nothing.
     /// </summary>
+    /// <remarks>
+    /// <c>update/status</c> USED TO BE ONE OF THESE CONTROLS and is not any more: phase 4 deleted it
+    /// along with the rest of the lifecycle surface. Left here it would 404 like the routes below, the
+    /// detector would report itself broken, and the honest reading of that red would have been "no 404
+    /// in this class can be trusted" - a true statement about a control that had simply gone stale.
+    /// </remarks>
     [Theory]
-    [InlineData("update/status")]
     [InlineData("settings")]
     [InlineData("fleet/sessions")]
     public async Task Control_anAuthenticatedRouteThatStillExists_isNot404(string path)
@@ -148,6 +153,38 @@ public sealed class SessionHookRoutesAreGoneTests : IAsyncLifetime
 
         Assert.True(File.Exists(path), $"the Director did not maintain a preamble file at {path}");
         Assert.Contains("hookSpecificOutput", File.ReadAllText(path));
+    }
+
+    /// <summary>
+    /// Phase 4 of the same mission: the LIFECYCLE routes are gone too, proved with the same validated
+    /// detector two tests up.
+    ///
+    /// This asks the question the other direction from the launcher's own tests. Those prove the
+    /// launcher no longer NEEDS these routes; this proves the Director no longer OFFERS them - and both
+    /// are needed, because a caller that stopped calling leaves a route that is merely unused, which is
+    /// an opening rather than a capability. Shutdown in particular: while it existed, any local process
+    /// that could reach the port and present a credential could stop the Director and every agent under
+    /// it.
+    /// </summary>
+    [Fact]
+    public async Task The_update_status_route_is_gone()
+    {
+        using var response = await _client.GetAsync("update/status");
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task The_update_check_route_is_gone()
+    {
+        using var response = await _client.PostAsync("update/check", content: null);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task The_shutdown_route_is_gone()
+    {
+        using var response = await _client.PostAsync("shutdown", content: null);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
     private sealed class IdleStubBackend : Core.Backends.ISessionBackend
