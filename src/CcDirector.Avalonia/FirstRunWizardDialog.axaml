@@ -616,8 +616,8 @@
                                      is granted only on an account's first arrival at the hosted gateway
                                      and never twice, so "you get 14 days" would be false for someone
                                      coming back. -->
-                                <TextBlock FontSize="12.5" Foreground="#8A909A"
-                                           Text="Part of Pro. New accounts get 14 days free, no card." />
+                                <TextBlock TextWrapping="Wrap" FontSize="12.5" Foreground="#8A909A"
+                                           Text="Part of Pro. New accounts get 14 days free, no credit card." />
                             </StackPanel>
                         </RadioButton>
 
