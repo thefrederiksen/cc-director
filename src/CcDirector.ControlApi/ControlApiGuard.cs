@@ -124,7 +124,10 @@ public static class ControlApiGuard
     ///
     /// <paramref name="boundSessionId"/> is the id the token is signed for. A route that names a
     /// session must name THAT session; a child token presented for another session's id is refused
-    /// exactly as if it were unauthenticated for that route.
+    /// exactly as if it were unauthenticated for that route. Today the only such route is
+    /// <c>/fleet/buffer</c>, which names its session in the query string - the three
+    /// <c>/sessions/{sid}</c> hook routes that used to be here went with phase 3 of the
+    /// remove-the-network-port mission (see below).
     /// </summary>
     public static GuardVerdict CheckSessionChild(string method, string path, Func<string, string?> queryValue, Guid boundSessionId)
     {
@@ -151,22 +154,18 @@ public static class ControlApiGuard
             }
         }
 
-        // The three own-session routes: the two preamble reads and the Claude session-pointer report.
-        // Each is scoped to the {sid} in the path, which must be the token's bound session.
-        var segments = p.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        if (segments.Length == 3 && string.Equals(segments[0], "sessions", StringComparison.OrdinalIgnoreCase))
-        {
-            var routeName = segments[2].ToLowerInvariant();
-            var allowed = (method, routeName) switch
-            {
-                ("GET", "fleet-preamble") => true,
-                ("GET", "fleet-preamble-hook-output") => true,
-                ("POST", "claude-hook") => true,
-                _ => false,
-            };
-            if (allowed)
-                return SameSession(segments[1], boundSessionId, $"{method} {p}");
-        }
+        // Remove-the-network-port mission, phase 3: THREE ENTRIES WERE REMOVED FROM THIS ALLOW LIST.
+        //
+        // A child credential used to be allowed three own-session routes under /sessions/{sid} - the two
+        // fleet-preamble reads and the Claude session-pointer report - each scoped to the {sid} in the
+        // path. All three routes are deleted: a session's SessionStart hook now reads a file the Director
+        // maintains and writes a file the Director watches, so it presents no credential to anything.
+        //
+        // The entries are deleted rather than left harmlessly matching nothing, because this list is
+        // prose the next reader trusts. An allow list that names routes which do not exist teaches
+        // whoever reads it next that a credential reaches a surface it cannot reach, and would be read as
+        // permission to re-add the route. Nothing under /sessions/{sid} is open to a child now; a child's
+        // own-session read is /fleet/buffer above.
 
         return GuardVerdict.Refuse(
             $"a session-child credential may not call {method} {p}; it may read its own session and the safe discovery set only");

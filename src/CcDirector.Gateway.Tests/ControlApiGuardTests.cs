@@ -104,18 +104,29 @@ public sealed class ControlApiGuardTests
     public void A_child_may_read_the_safe_discovery_set(string path)
         => Assert.True(ChildMay("GET", path));
 
+    // Remove-the-network-port mission, phase 3: the three /sessions/{sid} hook routes a child used to be
+    // allowed are DELETED, and so are their allow-list entries. What replaced these two theories is the
+    // deletion proof below plus the own-terminal-buffer case, which is now the only route a child may
+    // call that names a session.
+    //
+    // These are pinned as REFUSED rather than simply dropped. The allow list is the file an agent's
+    // authority is read out of, so the useful assertion after removing an entry is that the route is
+    // now shut to a child - if a later change re-added the entry to make some other test pass, this goes
+    // red and names why.
     [Theory]
     [InlineData("GET", "/sessions/11111111-1111-1111-1111-111111111111/fleet-preamble")]
     [InlineData("GET", "/sessions/11111111-1111-1111-1111-111111111111/fleet-preamble-hook-output")]
     [InlineData("POST", "/sessions/11111111-1111-1111-1111-111111111111/claude-hook")]
-    public void A_child_may_reach_its_own_session(string method, string path)
-        => Assert.True(ChildMay(method, path));
+    [InlineData("GET", "/sessions/22222222-2222-2222-2222-222222222222/fleet-preamble")]
+    [InlineData("POST", "/sessions/22222222-2222-2222-2222-222222222222/claude-hook")]
+    public void A_child_may_not_reach_the_deleted_session_hook_routes_even_for_its_own_session(string method, string path)
+        => Assert.False(ChildMay(method, path));
 
     [Theory]
-    [InlineData("GET", "/sessions/22222222-2222-2222-2222-222222222222/fleet-preamble")]
-    [InlineData("GET", "/sessions/22222222-2222-2222-2222-222222222222/fleet-preamble-hook-output")]
-    [InlineData("POST", "/sessions/22222222-2222-2222-2222-222222222222/claude-hook")]
-    public void A_child_may_not_reach_another_session(string method, string path)
+    [InlineData("GET", "/sessions/11111111-1111-1111-1111-111111111111")]
+    [InlineData("GET", "/sessions/22222222-2222-2222-2222-222222222222/turn-summaries")]
+    [InlineData("POST", "/sessions/11111111-1111-1111-1111-111111111111/prompt")]
+    public void A_child_may_not_reach_anything_under_sessions(string method, string path)
         => Assert.False(ChildMay(method, path));
 
     [Fact]

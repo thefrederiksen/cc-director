@@ -20,17 +20,14 @@ public class ClaudeHookInstallerTests
             var scriptPath = Path.Combine(dir, "report-session.ps1");
             Assert.True(File.Exists(scriptPath));
 
-            // The script posts to the claude-hook endpoint using the injected per-session env.
+            // The script uses the two per-session FILES the Director stamps - the pointer drop box and
+            // the maintained preamble - not an address and a credential (remove-the-network-port
+            // mission, phase 3). The full contract, including everything the script must NOT contain,
+            // is HookScriptContractTests; this is the installer's own smoke check.
             var script = File.ReadAllText(scriptPath);
-            Assert.Contains("claude-hook", script);
-            Assert.Contains("CC_SESSION_ID", script);
-            Assert.Contains("CC_DIRECTOR_API", script);
-
-            // It also fetches the fleet preamble and surfaces it into the session via the
-            // SessionStart additionalContext field, so the agent knows the fleet instantly.
-            Assert.Contains("fleet-preamble", script);
-            Assert.Contains("additionalContext", script);
-            Assert.Contains("hookSpecificOutput", script);
+            Assert.Contains("CC_SESSION_POINTER_FILE", script);
+            Assert.Contains("CC_SESSION_PREAMBLE_FILE", script);
+            Assert.DoesNotContain("CC_DIRECTOR_API", script);
 
             var command = ReadFirstHookCommand(settingsPath!, out var matchers);
             Assert.Equal(new[] { "startup", "resume", "clear", "compact" }, matchers);
@@ -57,15 +54,14 @@ public class ClaudeHookInstallerTests
             var scriptPath = Path.Combine(dir, "report-session.sh");
             Assert.True(File.Exists(scriptPath));
 
-            // curl-only contract: the raw hook event is forwarded verbatim to the claude-hook
-            // endpoint, and the preamble is fetched as ready-made hook output. No JSON is
-            // parsed or built in shell.
+            // File contract: the raw hook event is written verbatim to the pointer drop box and the
+            // maintained preamble file is printed as-is. No JSON is parsed or built in shell - and
+            // nothing is fetched, so there is no curl.
             var script = File.ReadAllText(scriptPath);
-            Assert.Contains("curl", script);
-            Assert.Contains("claude-hook", script);
-            Assert.Contains("fleet-preamble-hook-output", script);
-            Assert.Contains("CC_SESSION_ID", script);
-            Assert.Contains("CC_DIRECTOR_API", script);
+            Assert.Contains("CC_SESSION_POINTER_FILE", script);
+            Assert.Contains("CC_SESSION_PREAMBLE_FILE", script);
+            Assert.DoesNotContain("curl", script);
+            Assert.DoesNotContain("CC_DIRECTOR_API", script);
             Assert.Contains("exit 0", script);
             Assert.DoesNotContain("powershell", script, StringComparison.OrdinalIgnoreCase);
 

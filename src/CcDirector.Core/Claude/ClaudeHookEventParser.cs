@@ -1,22 +1,27 @@
 using System.Text.Json;
 using CcDirector.Gateway.Contracts;
 
-namespace CcDirector.ControlApi;
+namespace CcDirector.Core.Claude;
 
 /// <summary>
-/// Parses the body of POST /sessions/{id}/claude-hook into a <see cref="ClaudeHookRequest"/>.
+/// Parses a Claude SessionStart hook event into a <see cref="ClaudeHookRequest"/>.
 ///
-/// Two body shapes are accepted:
-/// - The mapped camelCase shape the Windows PowerShell hook script builds
-///   (<c>claudeSessionId</c>, <c>transcriptPath</c>, <c>hookEvent</c>, <c>source</c>).
+/// Remove-the-network-port mission, phase 3: this used to parse the body of
+/// <c>POST /sessions/{id}/claude-hook</c>. That route is gone - the hook now writes the event to a
+/// file the Director watches (<see cref="Sessions.SessionPointerWatcher"/>) - so this parses the file's
+/// contents instead. The parsing itself is unchanged, which is why it moved rather than being rewritten.
+///
+/// Two shapes are accepted:
 /// - Claude Code's RAW hook event JSON (<c>session_id</c>, <c>transcript_path</c>,
-///   <c>hook_event_name</c>, <c>source</c>), forwarded verbatim by the macOS/Linux shell
-///   hook script. Shell cannot parse JSON with tools guaranteed to exist on a stock
-///   machine, so the mapping happens here instead - in testable C#.
+///   <c>hook_event_name</c>, <c>source</c>). Both hook scripts now write this verbatim: neither shell
+///   nor PowerShell has to understand it, so neither can get it wrong.
+/// - The mapped camelCase shape (<c>claudeSessionId</c>, <c>transcriptPath</c>, <c>hookEvent</c>,
+///   <c>source</c>) the Windows script used to build. Still accepted because it costs one line and
+///   the mapping is what the tests around it pin.
 /// </summary>
 internal static class ClaudeHookEventParser
 {
-    /// <summary>Parse either accepted body shape. Returns null when the body is not valid JSON.</summary>
+    /// <summary>Parse either accepted shape. Returns null when the text is not valid JSON.</summary>
     public static ClaudeHookRequest? Parse(string body)
     {
         if (string.IsNullOrWhiteSpace(body))

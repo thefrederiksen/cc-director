@@ -247,6 +247,29 @@ public static class CcStorage
     /// <summary>The preamble file handed to the Pi agent: base/pi-preamble/.</summary>
     public static string PiPreamble() => Path.Combine(Base(), "pi-preamble");
 
+    /// <summary>
+    /// Remove-the-network-port mission, phase 3: the ready-to-print SessionStart hook output the
+    /// Director MAINTAINS for each live session, one file per session:
+    /// base/session-preambles/. A session's SessionStart hook prints this file instead of calling
+    /// the Director's Control API for it.
+    ///
+    /// MAINTAINED, not written once. The preamble renders from three live stores - the user's
+    /// injected text, the workflow index and the skill index, all Gateway-owned and all refreshed
+    /// on the Director's poll - plus the session's own name and workflow seat. A file written once
+    /// at launch would serve the user their OLD text after they edited it and would hide newly
+    /// published skills, and nothing would look broken. See SessionPreambleMaintainer.
+    /// </summary>
+    public static string SessionPreambles() => Path.Combine(Base(), "session-preambles");
+
+    /// <summary>
+    /// Remove-the-network-port mission, phase 3: the drop box a Claude SessionStart hook writes its
+    /// CURRENT session id and transcript path into, one file per session:
+    /// base/session-pointers/. The Director watches this directory, so the hook reports a rotated
+    /// transcript (after /clear or auto-compaction) by writing a file rather than by POSTing to a
+    /// local HTTP route. See SessionPointerWatcher.
+    /// </summary>
+    public static string SessionPointers() => Path.Combine(Base(), "session-pointers");
+
     /// <summary>Recorded terminal sessions: base/session-recordings/.</summary>
     public static string SessionRecordings() => Path.Combine(Base(), "session-recordings");
 

@@ -32,7 +32,7 @@ namespace CcDirector.ControlApi;
 /// </summary>
 internal static class ControlEndpoints
 {
-    public static void Map(IEndpointRouteBuilder app, SessionManager sessionManager, string directorId, string version, Func<Task> requestShutdownAsync, bool authEnabled = false, RepositoryRegistry? repositoryRegistry = null, TurnSummaryCache? turnSummaryCache = null, string? gatewayUrl = null, ProactiveExplainService? proactiveExplain = null, GatewayConnectionMonitor? gatewayMonitor = null, Func<TailnetEndpointResolution>? resolveTailnetEndpoint = null, Func<GatewayClient?>? gatewayClientProvider = null, MessageSteward? messageSteward = null, MissionStore? missionStore = null, Func<CancellationToken, Task<SignedInUser?>>? signedInUserResolver = null, Core.Git.RepositoryMonitor? repositoryMonitor = null, bool mapAgentRoutes = true)
+    public static void Map(IEndpointRouteBuilder app, SessionManager sessionManager, string directorId, string version, Func<Task> requestShutdownAsync, bool authEnabled = false, RepositoryRegistry? repositoryRegistry = null, TurnSummaryCache? turnSummaryCache = null, string? gatewayUrl = null, ProactiveExplainService? proactiveExplain = null, GatewayConnectionMonitor? gatewayMonitor = null, Func<TailnetEndpointResolution>? resolveTailnetEndpoint = null, Func<GatewayClient?>? gatewayClientProvider = null, MessageSteward? messageSteward = null, MissionStore? missionStore = null, Core.Git.RepositoryMonitor? repositoryMonitor = null, bool mapAgentRoutes = true)
     {
         // ===== Healthz =====
         // The one route reachable without a credential, so its unauthenticated answer says ONLY that
@@ -97,150 +97,23 @@ internal static class ControlEndpoints
             });
         });
 
-        // The launch-time "fleet awareness" preamble for a session: its own identity plus the
-        // cc-devthrottle commands to reach the rest of the fleet. The Claude SessionStart hook fetches this
-        // and injects it as additionalContext so the agent knows the fleet instantly, with no
-        // skill lookup. Plain text (not JSON) so a hook can drop it straight into a context field.
-        app.MapGet("/sessions/{sid}/fleet-preamble", async (string sid, CancellationToken ct) =>
-        {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            // Issue #800: the display name goes through the single composer so it is never the
-            // bare folder name (legacy sessions with no CustomName get folder + type + disambiguator).
-            var name = SessionName.DisplayName(session.CustomName,
-                SessionName.FolderName(session.RepoPath),
-                SessionName.Disambiguator(session.Id));
-
-            // Issue #1357: name the signed-in DevThrottle user so the agent binds "me / my account /
-            // email me" to that account. Resolved (cached) from the Gateway; null when no one is signed
-            // in or no resolver is wired (tests, standalone) - the preamble then omits the identity line.
-            SignedInUser? user = signedInUserResolver is null ? null : await signedInUserResolver(ct);
-
-            // A session only ever calls its OWN Director, so this Director's machine name is the
-            // session's machine.
-            //
-            // BuildForSession, not Build: this is a live launch, so it must honour the user's choice
-            // of whose text is injected. Build renders the DevThrottle default regardless, which is
-            // only correct for previewing ours.
-            try
-            {
-                var text = FleetPreamble.BuildForSession(
-                    session.Id.ToString(), name, Environment.MachineName, session.RepoPath, user,
-                    workflowIndex: new WorkflowIndexStore(), skillIndex: new SkillIndexStore());
-                text = AppendSeatParagraph(text, session);
-                return Results.Text(text, "text/plain");
-            }
-            catch (Exception ex) when (ex is InjectedTextUnavailableException or FleetPreambleTemplateException)
-            {
-                // The user's text is live but unreadable, or was edited on disk into something that
-                // cannot render. Do NOT substitute ours - they turned ours off. An empty body means the
-                // hook injects nothing, so the session still starts and the agent simply has no
-                // preamble, rather than silently receiving the text (and the policy) they declined.
-                //
-                // This catches the render failure too, not just the read failure: an uncaught one would
-                // become a 500 WITH A BODY, and the macOS/Linux hook pipes this response straight to
-                // stdout - so an error page would arrive in the agent's context dressed as the
-                // preamble. An empty body is the only thing that reliably means "nothing".
-                FileLog.Write($"[ControlEndpoints] fleet-preamble unavailable for {sid}: {ex.Message}");
-                return Results.Text("", "text/plain");
-            }
-        });
-
-        // The fleet preamble pre-wrapped as ready-to-print SessionStart hook output. The
-        // macOS/Linux shell hook cannot safely BUILD JSON (escaping arbitrary preamble text in
-        // POSIX shell), so the Director serializes the whole hookSpecificOutput envelope and the
-        // script just prints this response body to stdout. Empty body when there is no preamble,
-        // so the hook emits nothing rather than an empty envelope.
-        app.MapGet("/sessions/{sid}/fleet-preamble-hook-output", async (string sid, CancellationToken ct) =>
-        {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            var name = SessionName.DisplayName(session.CustomName,
-                SessionName.FolderName(session.RepoPath),
-                SessionName.Disambiguator(session.Id));
-
-            // Issue #1357: this path silently omitted the signed-in user, so Claude on macOS and Linux
-            // never got the identity line that Windows got - the same text built two ways, one of them
-            // wrong. Resolving the user here (which is why this handler is now async) makes the two
-            // platforms agree.
-            SignedInUser? user = signedInUserResolver is null ? null : await signedInUserResolver(ct);
-
-            string text;
-            try
-            {
-                text = FleetPreamble.BuildForSession(
-                    session.Id.ToString(), name, Environment.MachineName, session.RepoPath, user,
-                    workflowIndex: new WorkflowIndexStore(), skillIndex: new SkillIndexStore());
-                text = AppendSeatParagraph(text, session);
-            }
-            catch (Exception ex) when (ex is InjectedTextUnavailableException or FleetPreambleTemplateException)
-            {
-                // See the sibling endpoint: the user's text is live but unreadable or unrenderable, so
-                // we inject nothing rather than substituting the text they declined - and an empty body
-                // rather than an error body, because this response is piped straight to the hook's
-                // stdout.
-                FileLog.Write($"[ControlEndpoints] fleet-preamble-hook-output unavailable for {sid}: {ex.Message}");
-                return Results.Text("", "text/plain");
-            }
-
-            // BuildForSession already collapses whitespace-only text to empty, so this agrees with the
-            // sibling endpoint and with Pi by construction rather than by coincidence.
-            if (string.IsNullOrEmpty(text))
-                return Results.Text("", "text/plain");
-
-            return Results.Json(new
-            {
-                hookSpecificOutput = new
-                {
-                    hookEventName = "SessionStart",
-                    additionalContext = text,
-                },
-            });
-        });
-
-        // A Claude SessionStart hook (matchers startup/resume/clear/compact) reports the CURRENT
-        // Claude session id + transcript path here. This is the authoritative, push-based pointer
-        // update that keeps the Director tracking the right transcript across /clear and
-        // auto-compaction, instead of the best-effort relink scan above. The hook script swallows
-        // all errors, so this endpoint just records what it is given and returns 200. Accepts both
-        // the mapped camelCase body (Windows PowerShell hook) and Claude's raw snake_case hook
-        // event (forwarded verbatim by the macOS/Linux shell hook) - see ClaudeHookEventParser.
-        app.MapPost("/sessions/{sid}/claude-hook", async (string sid, HttpContext httpCtx) =>
-        {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            string body;
-            using (var reader = new StreamReader(httpCtx.Request.Body))
-                body = await reader.ReadToEndAsync();
-
-            var req = ClaudeHookEventParser.Parse(body);
-            if (req is null)
-                return Results.BadRequest(new { error = "invalid json body" });
-
-            FileLog.Write($"[ControlEndpoints] POST claude-hook: sid={guid} event={req?.HookEvent} source={req?.Source} claudeId={req?.ClaudeSessionId} transcript={req?.TranscriptPath}");
-            session.UpdateClaudeSessionPointer(req?.ClaudeSessionId, req?.TranscriptPath, req?.Source);
-
-            // Keep the SessionManager's claude-id routing map in sync with the new id.
-            if (!string.IsNullOrWhiteSpace(req?.ClaudeSessionId))
-                sessionManager.RelinkClaudeSession(guid, req!.ClaudeSessionId!);
-
-            return Results.Json(new { received = true });
-        });
+        // Remove-the-network-port mission, phase 3: THE THREE SESSION-HOOK ROUTES ARE GONE.
+        //
+        // GET /sessions/{sid}/fleet-preamble, GET /sessions/{sid}/fleet-preamble-hook-output and
+        // POST /sessions/{sid}/claude-hook lived here. A session's SessionStart hook called all three
+        // over loopback, which made an agent's own lifecycle one of the last things on this machine
+        // needing a listening port.
+        //
+        // They are now files. The Director MAINTAINS the ready-to-print hook output per session
+        // (SessionPreambleFile, kept current by SessionPreambleMaintainer) and WATCHES a drop box for
+        // the pointer report (SessionPointerWatcher). Both hook scripts read and write files whose exact
+        // paths the Director stamps into the session's environment, so they need no address, no
+        // credential and no port.
+        //
+        // Do not restore a route here for either job. A second way to deliver the preamble is the second
+        // door this mission exists to remove, and it would immediately be the wrong one: the routes
+        // rendered on demand from the Director's caches, and the maintained file is written from those
+        // same caches at the moment they refresh - so there is nothing a route could serve that is fresher.
 
         // ===== Update status (issue #1030) =====
         //
@@ -1950,17 +1823,6 @@ internal static class ControlEndpoints
     /// not on the unreadable-user-template failure path, which deliberately injects nothing at all.
     /// Unseated sessions pass through untouched.
     /// </summary>
-    private static string AppendSeatParagraph(string preamble, Session session)
-    {
-        // ONE builder for every delivery channel (WorkflowSeatParagraph) - it also validates the
-        // workflow id against the catalog slug shape, so a forged seat renders nothing.
-        var paragraph = WorkflowSeatParagraph.Build(
-            session.WorkflowRunId, session.WorkflowId, session.WorkflowVersion, session.ExplicitRole);
-        if (paragraph is null)
-            return preamble;
-        return string.IsNullOrEmpty(preamble) ? paragraph : preamble + "\n\n" + paragraph;
-    }
-
     private static IResult CommandResultToHttp(DirectorCommandResult result) => result.Status switch
     {
         DirectorCommandStatus.Ok => Results.Content(result.BodyJson ?? "{}", "application/json"),

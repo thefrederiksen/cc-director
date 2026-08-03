@@ -1,4 +1,4 @@
-using CcDirector.ControlApi;
+using CcDirector.Core.Claude;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;

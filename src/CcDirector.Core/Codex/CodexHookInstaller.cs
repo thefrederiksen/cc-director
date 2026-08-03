@@ -14,34 +14,31 @@ namespace CcDirector.Core.Codex;
 /// Unlike Claude (which takes a private settings file via <c>--settings</c>), Codex reads hooks only
 /// from fixed locations, so this MERGES our SessionStart entry into the user-layer
 /// <c>~/.codex/hooks.json</c> (honoring <c>CODEX_HOME</c>) without disturbing the user's own hooks.
-/// The hook script is static and shared: it reads the per-session <c>CC_SESSION_ID</c> /
-/// <c>CC_DIRECTOR_API</c> the Director injects, so it no-ops in the user's own (non-Director) Codex
-/// sessions. The Director appends <c>--dangerously-bypass-hook-trust</c> at launch so the hook runs
-/// without a per-user trust prompt (verified live on codex 0.141.0).
+/// The hook script is static and shared: it reads the per-session <c>CC_SESSION_PREAMBLE_FILE</c> the
+/// Director injects, so it no-ops in the user's own (non-Director) Codex sessions. The Director appends
+/// <c>--dangerously-bypass-hook-trust</c> at launch so the hook runs without a per-user trust prompt
+/// (verified live on codex 0.141.0).
+///
+/// Remove-the-network-port mission, phase 3: this used to GET the preamble from the Director's Control
+/// API and wrap it as hook output itself. It now prints the file the Director MAINTAINS for the session,
+/// which is already the finished envelope - so Codex and Claude receive the identical bytes from the
+/// identical file, and neither the port nor a credential is involved.
 /// </summary>
 public static class CodexHookInstaller
 {
-    // PowerShell: fetch the preamble the Director owns and print it as additionalContext. The hook
-    // does not need the event payload, so it deliberately does not read stdin; Codex 0.142+ can
-    // fail interactive startup if a hook command consumes or probes the terminal stdin. Must never
-    // block or fail the session - swallows all errors and exits 0. Codex re-fires SessionStart on
-    // /clear and /compact, so the preamble is re-injected automatically with no extra wiring.
+    // PowerShell: print the preamble file the Director maintains for this session. The hook does not
+    // need the event payload, so it deliberately does not read stdin; Codex 0.142+ can fail interactive
+    // startup if a hook command consumes or probes the terminal stdin. Must never block or fail the
+    // session - swallows all errors and exits 0. Codex re-fires SessionStart on /clear and /compact,
+    // and the Director keeps the file current, so a clear hours after launch injects the user's CURRENT
+    // text rather than a launch-time snapshot. An empty or absent file means inject nothing.
     private const string ScriptContent =
         "$ErrorActionPreference = 'SilentlyContinue'\r\n" +
         "try {\r\n" +
-        "    $api = $env:CC_DIRECTOR_API\r\n" +
-        "    $sid = $env:CC_SESSION_ID\r\n" +
-        // The session's own credential, injected beside CC_DIRECTOR_API at launch. The preamble read
-        // is authenticated now, and this script swallows every error and exits 0 - so without the
-        // header the only symptom would be an agent that quietly knows nothing about the fleet.
-        "    $hdr = @{}\r\n" +
-        "    if ($env:CC_DIRECTOR_TOKEN) { $hdr['Authorization'] = \"Bearer $env:CC_DIRECTOR_TOKEN\" }\r\n" +
-        "    if ($api -and $sid) {\r\n" +
-        "        $preamble = Invoke-RestMethod -Uri \"$api/sessions/$sid/fleet-preamble\" -Headers $hdr -TimeoutSec 5\r\n" +
-        "        if ($preamble) {\r\n" +
-        "            $out = @{ hookSpecificOutput = @{ hookEventName = 'SessionStart'; additionalContext = [string]$preamble } } | ConvertTo-Json -Compress\r\n" +
-        "            [Console]::Out.Write($out)\r\n" +
-        "        }\r\n" +
+        "    $pre = $env:CC_SESSION_PREAMBLE_FILE\r\n" +
+        "    if ($pre -and (Test-Path -LiteralPath $pre)) {\r\n" +
+        "        $out = [System.IO.File]::ReadAllText($pre)\r\n" +
+        "        if ($out) { [Console]::Out.Write($out) }\r\n" +
         "    }\r\n" +
         "} catch { }\r\n" +
         "exit 0\r\n";

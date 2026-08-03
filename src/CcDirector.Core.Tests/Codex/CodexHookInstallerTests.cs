@@ -24,9 +24,13 @@ public class CodexHookInstallerTests
             var scriptPath = Path.Combine(scriptDir, "report-preamble.ps1");
             Assert.True(File.Exists(scriptPath));
             var script = File.ReadAllText(scriptPath);
-            Assert.Contains("fleet-preamble", script);
-            Assert.Contains("additionalContext", script);
-            Assert.Contains("CC_SESSION_ID", script);
+            // Remove-the-network-port mission, phase 3: the hook prints the preamble FILE the Director
+            // maintains for the session instead of fetching it from a route.
+            // The finished envelope is IN the file, so the script no longer builds one - which is what
+            // stops it and the two Claude scripts drifting apart about its shape.
+            Assert.Contains("CC_SESSION_PREAMBLE_FILE", script);
+            Assert.DoesNotContain("additionalContext", script);
+            Assert.DoesNotContain("CC_DIRECTOR_API", script);
 
             using var doc = JsonDocument.Parse(File.ReadAllText(hooksPath));
             var sessionStart = doc.RootElement.GetProperty("hooks").GetProperty("SessionStart");

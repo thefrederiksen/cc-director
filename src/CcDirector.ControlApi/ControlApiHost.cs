@@ -236,6 +236,13 @@ public sealed class ControlApiHost : IAsyncDisposable
     private TerminalSessionRecorder? _sessionRecorder;
     private Core.Storage.TurnReviewLogger? _turnReviewLogger;
     private Core.Sessions.SessionRecordsWatcher? _recordsWatcher;
+    // Remove-the-network-port mission, phase 3: the two halves of the session-hook channel that
+    // replaced the three Control API routes. Both started by StartSessionStateServices, because
+    // neither touches the bound port and both must run even when it fails to bind - a Director whose
+    // Control API cannot start must still give its agents their preamble and still track their
+    // transcripts.
+    private Core.Sessions.SessionPreambleMaintainer? _preambleMaintainer;
+    private Core.Sessions.SessionPointerWatcher? _pointerWatcher;
     private Core.Storage.ConversationIngestor? _conversationIngestor;
     private Core.Storage.SessionLogManager? _sessionLogManager;
     private readonly string? _instancesDirectory;
@@ -358,6 +365,23 @@ public sealed class ControlApiHost : IAsyncDisposable
         catch (Exception ex)
         {
             FileLog.Write($"[ControlApiHost] skill placement report FAILED (will retry next cycle): {ex.Message}");
+        }
+        // Remove-the-network-port mission, phase 3: THE SECOND JOB OF THIS REFRESH. All three stores a
+        // session's fleet preamble renders from have just been re-downloaded, so every live session's
+        // maintained hook-output file is rewritten now.
+        //
+        // This is what makes the file as fresh as the routes it replaced. Those routes rendered on
+        // demand - but from these same caches, so the moment the caches move is the only moment there is
+        // anything new to render. Rewriting HERE, rather than on a timer of its own, means the file and
+        // the deleted route would always have produced the same bytes. Its own try, like the four above:
+        // a store that failed to refresh must not also cost every session its preamble.
+        try
+        {
+            _preambleMaintainer?.RewriteAll();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[ControlApiHost] session preamble rewrite FAILED (will retry next cycle): {ex.Message}");
         }
     }
 
@@ -686,7 +710,7 @@ public sealed class ControlApiHost : IAsyncDisposable
         FileLog.Write($"[ControlApiHost] agent surface (/fleet/* and /browsers/*): {(mapAgentRoutes ? "ON" : "OFF")}"
             + (agentRoutesSetting.Length > 0 ? $" (CC_DIRECTOR_AGENT_ROUTES={agentRoutesSetting})" : ""));
 
-        ControlEndpoints.Map(_app, _sessionManager, DirectorId, _version, _requestShutdownAsync, _authEnabled, _repositoryRegistry, _turnSummaryCache, gatewayUrl, _proactiveExplain, GatewayMonitor, resolveTailnetEndpoint, () => _gatewayClient, messageSteward, _missionStore, ct => signedInUserProvider.ResolveAsync(ct), _repositoryMonitor, mapAgentRoutes);
+        ControlEndpoints.Map(_app, _sessionManager, DirectorId, _version, _requestShutdownAsync, _authEnabled, _repositoryRegistry, _turnSummaryCache, gatewayUrl, _proactiveExplain, GatewayMonitor, resolveTailnetEndpoint, () => _gatewayClient, messageSteward, _missionStore, _repositoryMonitor, mapAgentRoutes);
 
         // DevThrottle's automation browsers (the drivable, signed-in-once Chromium instances). Loopback,
         // machine-local surface backed by AutomationBrowserService; the desktop rail reads the same fold
@@ -905,6 +929,25 @@ public sealed class ControlApiHost : IAsyncDisposable
         // sessions have a writer attached before any events fire.
         _sessionLogManager = new Core.Storage.SessionLogManager(_sessionManager);
         _sessionLogManager.Start();
+
+        // Remove-the-network-port mission, phase 3: the session-hook channel. The maintainer keeps each
+        // live session's SessionStart hook output CURRENT (the routes it replaced rendered on demand, so
+        // a file written once at launch would have served a user their old injected text and hidden
+        // newly published skills). The watcher reads the drop box a Claude hook reports its rotated
+        // transcript pointer into.
+        //
+        // The signed-in user is read through the SessionManager's accessor rather than captured: this
+        // runs before StartAsync wires the account provider, and the account itself resolves from the
+        // Gateway after boot, so anything captured here would name nobody for the life of the process.
+        _preambleMaintainer = new Core.Sessions.SessionPreambleMaintainer(
+            _sessionManager, () => _sessionManager.SignedInUserAccessor?.Invoke());
+        _preambleMaintainer.Start();
+
+        _pointerWatcher = new Core.Sessions.SessionPointerWatcher(_sessionManager);
+        _pointerWatcher.Start();
+        // A removed session's drop file goes with it, so nothing is left that a later sweep could
+        // re-apply to an id that has been reused.
+        _sessionManager.OnSessionRemoved += s => _pointerWatcher?.Forget(s.Id);
 
         // Phase 3: the SessionStatusWingman is the sole writer of each Session's
         // StatusColor. Must start BEFORE TurnSummaryCache so brand-new sessions are
@@ -1467,6 +1510,10 @@ public sealed class ControlApiHost : IAsyncDisposable
         _statusWingman = null;
         _sessionLogManager?.Dispose();
         _sessionLogManager = null;
+        _pointerWatcher?.Dispose();
+        _pointerWatcher = null;
+        _preambleMaintainer?.Dispose();
+        _preambleMaintainer = null;
 
         _registration?.Unregister();
 

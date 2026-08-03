@@ -395,25 +395,44 @@ public sealed class ControlApiHostileAccessTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
+    /// <summary>
+    /// Remove-the-network-port mission, phase 3: the three session-hook routes are DELETED, so a child
+    /// is refused them for its OWN session as much as for anyone else's - the whole /sessions surface is
+    /// now shut to a child credential.
+    ///
+    /// Refused, not 404. That distinction is the one the mission learned the hard way in phase 2: a
+    /// probe with a credential the Director rejects answers 401 for routes that still exist, so it
+    /// proves nothing about absence. Here the credential is one the Director ACCEPTS, and the gate
+    /// refuses the path before routing ever looks for it - which is the stronger property anyway. That
+    /// nothing ANSWERS these paths is proved separately, against a host with no auth, in
+    /// SessionHookRoutesAreGoneTests.
+    /// </summary>
     [Theory]
-    [InlineData("sessions/{other}/fleet-preamble")]
-    [InlineData("sessions/{other}/fleet-preamble-hook-output")]
-    public async Task SessionChild_CannotReadAnotherSession(string template)
+    [InlineData("sessions/{sid}/fleet-preamble")]
+    [InlineData("sessions/{sid}/fleet-preamble-hook-output")]
+    public async Task SessionChild_IsRefusedTheDeletedPreambleRoutes(string template)
     {
         using var child = WithToken(ChildTokenFor(SessionA));
-        using var response = await child.GetAsync(template.Replace("{other}", SessionB.ToString()));
 
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        // Its own session, then another's. Both refused: the entries left the allow list.
+        foreach (var sid in new[] { SessionA, SessionB })
+        {
+            using var response = await child.GetAsync(template.Replace("{sid}", sid.ToString()));
+            Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        }
     }
 
     [Fact]
-    public async Task SessionChild_CannotReportAnotherSessionsClaudeHook()
+    public async Task SessionChild_IsRefusedTheDeletedClaudeHookRoute()
     {
         using var child = WithToken(ChildTokenFor(SessionA));
-        using var response = await child.PostAsync($"sessions/{SessionB}/claude-hook",
-            new StringContent("{}", Encoding.UTF8, "application/json"));
 
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        foreach (var sid in new[] { SessionA, SessionB })
+        {
+            using var response = await child.PostAsync($"sessions/{sid}/claude-hook",
+                new StringContent("{}", Encoding.UTF8, "application/json"));
+            Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        }
     }
 
     /// <summary>
@@ -454,7 +473,11 @@ public sealed class ControlApiHostileAccessTests : IAsyncLifetime
         var repointed = ChildTokenFor(SessionA).Replace(SessionA.ToString(), SessionB.ToString());
         using var client = WithToken(repointed);
 
-        using var response = await client.GetAsync($"sessions/{SessionB}/fleet-preamble");
+        // Probed on /fleet/buffer, which is the child's remaining own-session read (the three
+        // /sessions/{sid} hook routes went with phase 3). The point is unchanged: a token whose bound id
+        // was rewritten fails its SIGNATURE, so it is answered 401 - not 403 - because it is not a
+        // credential at all rather than a credential reaching too far.
+        using var response = await client.GetAsync($"fleet/buffer?sessionId={SessionB}");
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
@@ -462,32 +485,23 @@ public sealed class ControlApiHostileAccessTests : IAsyncLifetime
     // ---------- Positive controls: the child CAN do what it is for ----------
 
     /// <summary>
-    /// The child's own-session reads must pass the gate. The assertion is that the request was not
-    /// REFUSED - a session that does not exist on this test host answers 404 or an empty body, and
-    /// that is fine: what is on trial here is the gate, and a 401 or 403 would mean the fleet
-    /// preamble no longer reaches the agent it was written for.
+    /// The child's own-session read must pass the gate. The assertion is that the request was not
+    /// REFUSED - a session that does not exist on this test host answers 404 or an empty body, and that
+    /// is fine: what is on trial here is the gate, and a 401 or 403 would mean an agent had lost the one
+    /// read of its own session it is meant to have.
+    ///
+    /// This is the whole positive control now. Its two companions probed the fleet-preamble and
+    /// claude-hook routes, which phase 3 deleted - a positive control for a route that no longer exists
+    /// would be a test that can only pass by putting the route back.
     /// </summary>
-    [Theory]
-    [InlineData("fleet-preamble")]
-    [InlineData("fleet-preamble-hook-output")]
-    public async Task SessionChild_CanReadItsOwnSession(string route)
-    {
-        using var child = WithToken(ChildTokenFor(SessionA));
-        using var response = await child.GetAsync($"sessions/{SessionA}/{route}");
-
-        Assert.False(response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden,
-            $"the child's own {route} was refused with {(int)response.StatusCode}");
-    }
-
     [Fact]
-    public async Task SessionChild_CanReportItsOwnClaudeHook()
+    public async Task SessionChild_CanReadItsOwnTerminalBuffer()
     {
         using var child = WithToken(ChildTokenFor(SessionA));
-        using var response = await child.PostAsync($"sessions/{SessionA}/claude-hook",
-            new StringContent("{\"claudeSessionId\":\"x\"}", Encoding.UTF8, "application/json"));
+        using var response = await child.GetAsync($"fleet/buffer?sessionId={SessionA}");
 
         Assert.False(response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden,
-            $"the child's own claude-hook was refused with {(int)response.StatusCode}");
+            $"the child's own terminal buffer was refused with {(int)response.StatusCode}");
     }
 
     /// <summary>Safe discovery: the roster is what a preamble needs to orient an agent in the fleet.</summary>

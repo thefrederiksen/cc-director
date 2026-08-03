@@ -62,10 +62,15 @@ public sealed class ControlApiAuthReapplyTests : IAsyncLifetime
     /// changed, so the session-child token stamped into it at launch is derived from the secret in
     /// force at launch time. When enrollment, rotation, or disconnect replaces the accepted secret
     /// at runtime, that live session's hooks keep presenting the old-secret child token; if the host
-    /// verifies only against the new secret, the hooks 401 silently and the session's transcript
-    /// pointer and preamble injection quietly die. The child credential must therefore keep working
-    /// across ONE rotation - while full authority (admin, cli, and the raw secret itself) follows
-    /// the current secret only, so a leaked old root credential still buys nothing.
+    /// verifies only against the new secret, that session's command line is refused 401 and the agent
+    /// loses the fleet. The child credential must therefore keep working across ONE rotation - while
+    /// full authority (admin, cli, and the raw secret itself) follows the current secret only, so a
+    /// leaked old root credential still buys nothing.
+    ///
+    /// Probed on /fleet/buffer. The remove-the-network-port mission's phase 3 deleted the three
+    /// /sessions/{sid} hook routes this used to probe - a session's hooks now read and write files and
+    /// present no credential at all - so the buffer read is what a child credential is FOR now, and it
+    /// is the right thing to hold the grace window to.
     /// </summary>
     [Fact]
     public async Task ReapplyGateway_AfterTokenChange_ALiveSessionsChildCredentialKeepsWorking()
@@ -80,7 +85,7 @@ public sealed class ControlApiAuthReapplyTests : IAsyncLifetime
 
         // Sanity before the rotation: the hook's own-session calls pass the gate. (404/2xx are both
         // fine on a host with no such session - what is on trial is the credential gate.)
-        Assert.False(await IsRefused(launchTimeChildToken, "GET", $"sessions/{sessionId}/fleet-preamble"),
+        Assert.False(await IsRefused(launchTimeChildToken, "GET", $"fleet/buffer?sessionId={sessionId}"),
             "before any rotation the child credential must pass the gate");
 
         // The real runtime rotation, through the same production path the enroll flow uses.
@@ -90,15 +95,16 @@ public sealed class ControlApiAuthReapplyTests : IAsyncLifetime
             "{\"gateway\":{\"token\":\"" + newSecret + "\"}}");
         await _host.ReapplyGatewayAsync();
 
-        // The live session's hook calls keep working: preamble read and claude-hook report.
-        Assert.False(await IsRefused(launchTimeChildToken, "GET", $"sessions/{sessionId}/fleet-preamble"),
-            "after the rotation the live session's child credential was refused - its hooks are dead");
-        Assert.False(await IsRefused(launchTimeChildToken, "POST", $"sessions/{sessionId}/claude-hook"),
-            "after the rotation the live session's claude-hook report was refused");
+        // The live session's own-session read keeps working.
+        Assert.False(await IsRefused(launchTimeChildToken, "GET", $"fleet/buffer?sessionId={sessionId}"),
+            "after the rotation the live session's child credential was refused - its command line is dead");
+        // And so does the safe discovery set the command line's read verbs need.
+        Assert.False(await IsRefused(launchTimeChildToken, "GET", "fleet/sessions"),
+            "after the rotation the live session lost the fleet roster");
 
         // The grace is scoped to the child credential and does not widen its grant: the old child
         // token still cannot read another session or the settings.
-        Assert.True(await IsRefused(launchTimeChildToken, "GET", $"sessions/{Guid.NewGuid()}/fleet-preamble"),
+        Assert.True(await IsRefused(launchTimeChildToken, "GET", $"fleet/buffer?sessionId={Guid.NewGuid()}"),
             "the old child credential must stay bound to its own session");
         Assert.True(await IsRefused(launchTimeChildToken, "GET", "settings"),
             "the old child credential must not reach the settings");
@@ -128,7 +134,7 @@ public sealed class ControlApiAuthReapplyTests : IAsyncLifetime
             "{\"gateway\":{\"token\":\"third-" + Guid.NewGuid().ToString("N") + "\"}}");
         await _host.ReapplyGatewayAsync();
 
-        Assert.True(await IsRefused(firstChildToken, "GET", $"sessions/{sessionId}/fleet-preamble"),
+        Assert.True(await IsRefused(firstChildToken, "GET", $"fleet/buffer?sessionId={sessionId}"),
             "a child credential two rotations old must be refused - the grace window is one secret deep");
     }
 

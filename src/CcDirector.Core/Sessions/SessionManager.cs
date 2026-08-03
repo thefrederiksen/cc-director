@@ -716,11 +716,62 @@ public sealed class SessionManager : IDisposable
                 envVars["OPENCODE_DISABLE_AUTO_UPDATE"] = "1";
             }
 
+            // Remove-the-network-port mission, phase 3: the two files a SessionStart hook uses instead
+            // of calling this Director over HTTP. Both are named EXPLICITLY rather than computed by the
+            // hook script, because working out the storage root - per platform and per named instance -
+            // in two shell dialects would be a second copy of CcStorage that could drift from it in
+            // silence.
+            //
+            // The preamble is WRITTEN HERE, before the process starts, because a startup hook fires
+            // within moments of it. It is not written ONLY here: the Director maintains it for the
+            // session's whole life (SessionPreambleMaintainer), because the hook fires again on every
+            // resume, clear and compact, and the text renders from stores the user edits meanwhile.
+            //
+            // Only the two agent families that have a SessionStart hook get these. Pi has its own
+            // launch-time system-prompt file, and an agent with no hook would be handed a path nothing
+            // reads.
+            if (agent.Kind is AgentKind.ClaudeCode or AgentKind.Codex)
+            {
+                try
+                {
+                    var preamblePath = SessionPreambleFile.WriteFor(
+                        session, Environment.MachineName, SignedInUserAccessor?.Invoke());
+                    envVars[SessionHookFiles.PreambleFileEnvVar] = preamblePath;
+                }
+                catch (Exception ex)
+                {
+                    // A preamble that cannot be written must never stop a session starting. The
+                    // variable is then not stamped at all, so the hook prints nothing rather than
+                    // reading a path that does not resolve.
+                    _log?.Invoke($"The fleet preamble file could not be written for this session: {ex.Message}");
+                    FileLog.Write($"[SessionManager] preamble file write FAILED (session still launching): {ex}");
+                }
+            }
+
+            // The pointer drop box, for Claude alone - it is the only agent that mints a new session id
+            // and transcript on /clear and compaction, so it is the only one with a pointer to report.
+            // The directory is created HERE as well as by the watcher: the hook writes into it and
+            // swallows every error, so a missing directory would cost transcript tracking silently.
+            if (agent.Kind == AgentKind.ClaudeCode)
+            {
+                try
+                {
+                    var pointerPath = SessionHookFiles.PointerPathFor(id);
+                    Directory.CreateDirectory(Path.GetDirectoryName(pointerPath)!);
+                    envVars[SessionHookFiles.PointerFileEnvVar] = pointerPath;
+                }
+                catch (Exception ex)
+                {
+                    _log?.Invoke($"The session-pointer drop box could not be prepared: {ex.Message}");
+                    FileLog.Write($"[SessionManager] pointer drop box FAILED (session still launching): {ex}");
+                }
+            }
+
             // For Claude, install the session-pointer hooks and pass them via --settings so the
             // Director learns the current Claude session id + transcript path across /clear and
             // auto-compaction (Claude mints a new id + transcript file on each). --settings MERGES
-            // with the user's own hooks - it never replaces them - and the hook files read
-            // CC_SESSION_ID / CC_DIRECTOR_API from the environment injected above.
+            // with the user's own hooks - it never replaces them - and the hook files read the two
+            // file paths stamped above from the environment.
             if (agent.Kind == AgentKind.ClaudeCode)
             {
                 var hookSettings = CcDirector.Core.Claude.ClaudeHookInstaller.EnsureInstalled();
@@ -734,7 +785,7 @@ public sealed class SessionManager : IDisposable
             // For Codex, merge the fleet-preamble SessionStart hook into ~/.codex/hooks.json and
             // append --dangerously-bypass-hook-trust so it runs without a per-user trust prompt.
             // Codex re-fires SessionStart on /clear and /compact, so the preamble re-injects itself;
-            // the hook reads CC_SESSION_ID / CC_DIRECTOR_API from the environment injected above.
+            // the hook reads the preamble file path stamped above from the environment.
             if (agent.Kind == AgentKind.Codex)
             {
                 if (CcDirector.Core.Codex.CodexHookInstaller.EnsureInstalled())

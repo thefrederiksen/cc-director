@@ -122,6 +122,23 @@ public sealed class WorkflowSeatTests : IAsyncLifetime
         try { if (Directory.Exists(_repoDir)) Directory.Delete(_repoDir, true); } catch { /* best effort */ }
     }
 
+    /// <summary>
+    /// The preamble text the session's SessionStart hook would inject, read out of the file the Director
+    /// maintains for it (remove-the-network-port mission, phase 3). The file holds the finished
+    /// hookSpecificOutput envelope, so the text is its additionalContext field; an empty file means the
+    /// hook injects nothing.
+    /// </summary>
+    private static string ReadMaintainedPreamble(string sessionId)
+    {
+        var path = SessionHookFiles.PreamblePathFor(Guid.Parse(sessionId));
+        Assert.True(File.Exists(path), $"the Director did not maintain a preamble file at {path}");
+        var body = File.ReadAllText(path);
+        if (body.Length == 0)
+            return "";
+        using var doc = JsonDocument.Parse(body);
+        return doc.RootElement.GetProperty("hookSpecificOutput").GetProperty("additionalContext").GetString() ?? "";
+    }
+
     private NewSessionRequest CliSpawnBody() => new()
     {
         RepoPath = _repoDir,
@@ -160,7 +177,11 @@ public sealed class WorkflowSeatTests : IAsyncLifetime
         // The briefing: the seated session's preamble tells the agent its seat, the PINNED fetch
         // command, and the fail-closed rule - regardless of agent kind, because it rides the same
         // preamble every agent family receives.
-        var preamble = await _client.GetStringAsync($"sessions/{dto.SessionId}/fleet-preamble");
+        //
+        // Read from the FILE the Director maintains, not from a route: the remove-the-network-port
+        // mission's phase 3 replaced the two preamble routes with that file, and it is what the
+        // SessionStart hook prints.
+        var preamble = ReadMaintainedPreamble(dto.SessionId!);
         Assert.Contains("[Workflow seat]", preamble);
         Assert.Contains("seated as Architect on the 'mission' workflow", preamble);
         Assert.Contains($"cc-devthrottle workflow instructions mission --version {PinnedVersion}", preamble);
@@ -197,7 +218,7 @@ public sealed class WorkflowSeatTests : IAsyncLifetime
         Assert.Null(dto.WorkflowVersion);
         Assert.Empty(_participantPatches);
 
-        var preamble = await _client.GetStringAsync($"sessions/{dto.SessionId}/fleet-preamble");
+        var preamble = ReadMaintainedPreamble(dto.SessionId!);
         Assert.DoesNotContain("[Workflow seat]", preamble);
 
         await _client.DeleteAsync($"sessions/{dto.SessionId}");
