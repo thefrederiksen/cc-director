@@ -48,10 +48,28 @@ it. The report-back after a clear or compact becomes a file the Director watches
 transcript.
 
 ### 4 - Lifecycle off HTTP
-Liveness from the process the launcher already owns; version from the exe on disk; session count from
-the crash journal the Director already writes; shutdown and restart via a named event.
+
+**Correction to the brief, found by checking rather than by assuming.** The claim that "the launcher
+owns the process it started" is FALSE in the way that matters. `DirectorSupervisor` does not retain a
+handle: it starts the Director with `using var proc = Process.Start(...)`, disposing the handle
+immediately, and afterwards finds it again by NAME - `Process.GetProcessesByName("cc-director")`.
+
+That is fine for "is a Director running" and needs no network call, so the phase's direction holds.
+But it CANNOT answer "is THIS Director running" on a machine with several - which is exactly this
+owner's setup, with named instances and development slots. A name scan returns all of them. Whatever
+replaces the health route must identify a SPECIFIC Director (process id from the instance
+registration, or the parent chain - never the name alone, and never the exe path, which is shared
+across instances).
+
+**Confirmed, not assumed:** the crash journal really does carry the session roster
+(`DirectorCrashJournal.Sessions`, a `List<DirectorCrashJournalSession>`, refreshed on every change),
+so the session count that decides whether an update would interrupt live work can be read from a file.
+
+Version comes from the exe on disk. Shutdown and restart become a named event.
+
 **Proof:** a self-update swaps the exe with live sessions running, and the launcher restarts a killed
-Director - both with no Gateway reachable.
+Director - both with no Gateway reachable - AND liveness resolves the right Director on a machine
+running more than one.
 
 ### 5 - Delete the Director's listener
 Remove the web host, the port allocator (range, reservation files, excluded-range reader), and the
