@@ -146,6 +146,19 @@ public static class FileLog
     }
 
     /// <summary>
+    /// TEST-ONLY. True when the installed writer's queue has been completed and can never accept another
+    /// line - the state devthrottle_internal#1312 was about.
+    ///
+    /// This exists because the invariant is otherwise unobservable, and the obvious substitute is a trap.
+    /// The first version of those tests asserted on <see cref="DroppedLines"/>, which is a PROCESS-WIDE
+    /// counter every other test contributes to: the assertion passed alone and failed inside the full
+    /// suite, where the ambient writer's bounded queue had filled from thousands of unrelated lines. An
+    /// order-dependent test for an order-dependent bug is not a test, it is the same defect wearing a
+    /// different hat.
+    /// </summary>
+    internal static bool InstalledWriterIsSpent => _writer.IsSpent;
+
+    /// <summary>
     /// Lines this process could not fit into the writer's queue - a stalled writer means the file record is
     /// incomplete by exactly this many lines. Zero on a healthy process.
     /// </summary>
@@ -205,6 +218,8 @@ public static class FileLog
         {
             if (_lines is not null) return _lines;
             _testWriter.Stop();
+            _writer = _previousWriter;
+            _started = _previousStarted;
             var lines = new List<string>();
             foreach (var file in Directory.EnumerateFiles(_dir, "*.log"))
                 lines.AddRange(ReadAllLinesShared(file));
