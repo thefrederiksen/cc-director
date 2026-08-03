@@ -177,6 +177,22 @@ and if it appears, the rig is not wired the way this document says it is.
 
 ---
 
+## 5a. The gate baseline this branch is judged against
+
+The gate is `scripts\test-local.ps1`, judged by the TRX `ResultSummary/@outcome` AND the executed count
+against `test-baseline.md`, never the console line. Two adjustments to expect on this branch, recorded now
+so a higher number is not read as drift and a lower one is not explained away:
+
+- **`CcDirector.Gateway.Tests` gains 13** - nine facts in `RosterFoldBatchedSnoozeReadTests` and four in
+  `DisplayStateSweepOverlapGuardTests`, counted rather than remembered.
+- **`CcDirector.Core.Tests` gains 3** from `origin/main`, not from this work: `126249d44`
+  (the Wingman session-cleanup fix) adds three facts to `SessionStatusWingmanTests`. This branch is
+  rebased onto it. Its two files do not intersect this branch's twelve at all, so it was rebased for
+  ancestry and not re-gated - the plausible-interaction test governs re-gating, and a Wingman file in
+  `CcDirector.Core` cannot execute a line of the Gateway fold.
+
+The rule is at-or-above, and a FALL is the finding - that is what a silently collapsed suite looks like.
+
 ## 6. What would make a run unusable
 
 - The roster returns zero sessions, or the fold count is not `p + w`. The rig is mis-wired; fix and re-run.
