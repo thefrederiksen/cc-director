@@ -156,7 +156,7 @@ public sealed class PythonToolsInstaller
             SharedInstallLock installLock;
             try
             {
-                installLock = SharedInstallLock.Acquire(PipInstallTimeout);
+                installLock = SharedInstallLock.Acquire(PipInstallTimeout, _layout.LocalRoot);
             }
             catch (TimeoutException ex)
             {
@@ -695,19 +695,48 @@ public sealed class PythonToolsInstaller
 /// </summary>
 internal sealed class SharedInstallLock : IDisposable
 {
-    private const string MutexName = "cc-director-python-tools-install";
+    private const string MutexPrefix = "cc-director-python-tools-install";
     private readonly Mutex? _mutex;
 
     private SharedInstallLock(Mutex? mutex) => _mutex = mutex;
 
     /// <summary>
-    /// Block until the lock is free or <paramref name="timeout"/> elapses. Throws <see cref="TimeoutException"/>
-    /// if another install holds it for the whole bound. An abandoned mutex (a previous holder that crashed
-    /// without releasing) is treated as acquired, so one crashed install never wedges every future one.
+    /// The mutex name for a specific install tree. THE SCOPE IS THE TREE, NOT THE MACHINE.
+    ///
+    /// This used to be one fixed name with nothing appended, which made it a single machine-wide lock
+    /// that every caller on the box contended for. That is wrong in two ways. In production it made two
+    /// Directors installing into DIFFERENT roots block each other for no reason - the race being guarded
+    /// (issue #994) is two concurrent rebuilds of ONE tree, and installs into separate roots cannot
+    /// collide. In tests it was worse than useless: every test that installs takes the same global lock,
+    /// so a suite running its tests in parallel had them queueing behind one another and timing out
+    /// against a holder in an unrelated test. That is shared mutable state across tests, and it produced
+    /// a different failure on each run of the 453-test assembly.
+    ///
+    /// Keying on the normalised root makes the lock mean what its comment always claimed: one install
+    /// into one tree at a time. Tests use their own temporary roots and therefore stop contending
+    /// altogether, without any test-only switch in production code.
+    ///
+    /// The path is hashed rather than appended: a mutex name is length-limited and may not contain a
+    /// directory separator, and a raw path would breach both.
     /// </summary>
-    public static SharedInstallLock Acquire(TimeSpan timeout)
+    internal static string NameFor(string installRoot)
     {
-        var mutex = new Mutex(initiallyOwned: false, MutexName);
+        var normalised = Path.TrimEndingDirectorySeparator(Path.GetFullPath(installRoot))
+            .ToLowerInvariant();
+        var hash = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(normalised)))[..16];
+        return $"{MutexPrefix}-{hash}";
+    }
+
+    /// <summary>
+    /// Block until the lock for <paramref name="installRoot"/> is free or <paramref name="timeout"/>
+    /// elapses. Throws <see cref="TimeoutException"/> if another install into THE SAME TREE holds it for
+    /// the whole bound. An abandoned mutex (a previous holder that crashed without releasing) is treated
+    /// as acquired, so one crashed install never wedges every future one.
+    /// </summary>
+    public static SharedInstallLock Acquire(TimeSpan timeout, string installRoot)
+    {
+        var mutex = new Mutex(initiallyOwned: false, NameFor(installRoot));
         bool owned;
         try { owned = mutex.WaitOne(timeout); }
         catch (AbandonedMutexException) { owned = true; }
