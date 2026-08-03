@@ -645,6 +645,27 @@ public sealed class PushedSessionStore
     }
 
     /// <summary>
+    /// True when <paramref name="connectionId"/> is the Director's CURRENTLY ACTIVE connection - the same
+    /// ownership question <see cref="ApplySnapshot"/>, <see cref="ApplyDelta"/> and <see cref="ApplyRemove"/>
+    /// answer before they accept anything, exposed as a read for a caller that changes no session state.
+    ///
+    /// Its caller is the clean-shutdown farewell. A farewell is a statement about a PROCESS, and a delayed
+    /// one from a connection that has already been superseded by a reconnect is a statement about a process
+    /// that is no longer the one registered - acting on it would stamp the LIVE Director as stopped, and a
+    /// later genuine crash of that Director would then be reported as an orderly shutdown for a whole day.
+    /// The registry's liveness gate cannot catch this: it serialises writes, it does not establish which
+    /// connection owns the entry.
+    /// </summary>
+    public bool IsActiveConnection(TenantId tenant, string directorId, string connectionId)
+    {
+        if (string.IsNullOrEmpty(connectionId)) return false;
+        if (!DirectorsFor(tenant).TryGetValue(directorId, out var entry))
+            return false;
+        lock (entry.Gate)
+            return string.Equals(entry.ActiveConnectionId, connectionId, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// The active stream connection id for a Director, or null when none. The Gateway uses it to address a
     /// message DOWN the stream to that Director (issue #1176, Phase 1b down-channel).
     /// </summary>

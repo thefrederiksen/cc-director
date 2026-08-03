@@ -35,8 +35,8 @@ public sealed class DirectorReachabilityDto
     public string DisplayName { get; set; } = "";
 
     /// <summary>
-    /// The presentation state, one of <see cref="StateOnline"/>, <see cref="StateWobbly"/>, or
-    /// <see cref="StateOffline"/>. Never null.
+    /// The presentation state, one of <see cref="StateOnline"/>, <see cref="StateWobbly"/>,
+    /// <see cref="StateOffline"/>, or <see cref="StateStopped"/>. Never null.
     /// </summary>
     public string State { get; set; } = StateOnline;
 
@@ -73,4 +73,65 @@ public sealed class DirectorReachabilityDto
     /// answer, so its rows are the last thing it said rather than a confirmed present state.
     /// </summary>
     public const string StateOffline = "offline";
+
+    /// <summary>
+    /// The Director SAID GOODBYE: it sent the tunnel farewell at the start of an orderly shutdown, so its
+    /// registration is retired (see <see cref="DirectorDto.StoppedAtUtc"/>) and its absence is expected.
+    ///
+    /// This is deliberately NOT <see cref="StateOffline"/>, and the difference is the whole point of the
+    /// state. Offline means the Gateway CANNOT REACH a Director it still expects to be there - a fact the
+    /// owner needs, because something is wrong. Stopped means nobody is there and nobody should be - which is
+    /// the ordinary end of every Director that is ever shut down, and is not a fault at all. Reporting the
+    /// second as the first turned every clean shutdown into a day-long warning on a machine that was fine.
+    ///
+    /// A stopped Director still cannot be acted on (its tunnel is down, so a command has nothing to travel
+    /// over), so it is not offered as free capacity either - it is simply not running.
+    ///
+    /// ON ADDING A FOURTH VALUE TO A WIRE FIELD OLDER CLIENTS ALREADY READ, since that is a fair question to
+    /// ask of this line. A Cockpit built before this state exists treats an unrecognised value as online, so
+    /// against a newer Gateway it would offer "+ New session" on a Director that cannot take one. That skew
+    /// cannot occur: the Cockpit bundle is SERVED BY THE GATEWAY and redeploys with it, so the client reading
+    /// this field is always the one shipped beside it. The surface that genuinely can be older is the mobile
+    /// app, and it renders no Director badge and no start action - it reads reachability only through the
+    /// roster retention fold, which routes unknown states to its unreachable treatment (conservative, and
+    /// wrong only in tone). Directors of any age are unaffected: an older one simply never sends the farewell,
+    /// so it never reaches this state.
+    /// </summary>
+    public const string StateStopped = "stopped";
+
+    /// <summary>
+    /// THE BADGE WORD for this Director, decided here and printed verbatim. Empty while
+    /// <see cref="StateOnline"/> - a healthy Director wears no badge.
+    ///
+    /// This and the three members below exist because of the standing rule that the Gateway owns all ruling
+    /// and the client only renders (CLAUDE.md rule 7). The Cockpit used to map state to a word, to a
+    /// placeholder sentence, to whether a button appeared, and to whether a card dimmed - four judgements
+    /// about what a state MEANS, in a view file, re-made in each of three places. Adding one state to that
+    /// shape means finding every branch; a client that meets a state it does not know renders something
+    /// plausible instead of something true. Adding a state HERE is one edit, and an unknown state degrades to
+    /// a Gateway-written label rather than to a guess.
+    /// </summary>
+    public string StateLabel { get; set; } = "";
+
+    /// <summary>
+    /// True when this Director's rows are LAST-KNOWN rather than confirmed - it did not answer on this
+    /// refresh. The client dims its cards and shows the last-seen age. True for wobbly, offline and stopped;
+    /// false only for online.
+    /// </summary>
+    public bool DataIsStale { get; set; }
+
+    /// <summary>
+    /// True when a new session started here could actually be delivered. A start is routed to the Director
+    /// down its tunnel, so this is false whenever that tunnel is down (offline, stopped) and true when it is
+    /// up (online, and wobbly - where only the last push is late, and the command still lands). A button that
+    /// cannot do what it says reads as the app being broken, so the client shows the action only when this
+    /// says it can be honoured.
+    /// </summary>
+    public bool CanStartSession { get; set; } = true;
+
+    /// <summary>
+    /// The finished line to print where this Director has NO sessions, saying why there are none - free
+    /// capacity, an unreachable link, or a Director that is simply not running. Printed verbatim.
+    /// </summary>
+    public string EmptySlotText { get; set; } = "";
 }

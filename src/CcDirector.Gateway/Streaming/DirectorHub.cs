@@ -361,6 +361,12 @@ public sealed class DirectorHub : Hub
     /// never says goodbye is caught by the history sweep's silence rule instead ("interrupted") - the
     /// two rulings are exactly what tells a clean stop from a power cut. Older Directors simply never
     /// call this; nothing here is required for the stream to function.
+    ///
+    /// THE SAME GOODBYE ALSO RETIRES THE REGISTRATION. It used to tell only the history recorder, so
+    /// discovery went on expecting a Director that had politely announced it was leaving - and reported
+    /// it "unreachable" for the full day until the eviction horizon swept it. One signal, both readers:
+    /// history rules the work rows, the registry marks the entry not-running. Best-effort, exactly like
+    /// the history call beside it: a farewell that cannot be recorded must never fail the shutdown.
     /// </summary>
     public void DirectorStopping()
     {
@@ -368,6 +374,19 @@ public sealed class DirectorHub : Hub
         using var tenantScope = EnterBoundTenantScope();
         FileLog.Write($"[DirectorHub] DirectorStopping: director={directorId} conn={Short(Context.ConnectionId)}");
         _sessionHistory?.ObserveDirectorStopping(RequireBoundTenant(), directorId);
+        // ONLY THE CURRENTLY ACTIVE CONNECTION MAY RETIRE THE REGISTRATION - the same ownership gate the
+        // snapshot, delta and remove paths apply, for a sharper reason. A farewell is a statement about a
+        // PROCESS. A delayed one arriving on a connection a reconnect has already superseded describes a
+        // process that is no longer the registered one, and stamping it would mark the LIVE Director stopped;
+        // when that Director later died for real, its crash would be reported as an orderly shutdown for the
+        // whole eviction horizon - silencing exactly the fault this state exists to keep visible.
+        //
+        // The history ruling above is deliberately NOT gated the same way: it closes rows belonging to the
+        // connection that is saying goodbye, and its own throttle already tolerates a late one.
+        if (_store.IsActiveConnection(RequireBoundTenant(), directorId, Context.ConnectionId))
+            _registry.MarkStopped(RequireBoundTenant(), directorId);
+        else
+            FileLog.Write($"[DirectorHub] DirectorStopping IGNORED for the registry (not the active connection): director={directorId} conn={Short(Context.ConnectionId)}");
     }
 
     public override Task OnConnectedAsync()

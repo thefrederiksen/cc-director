@@ -48,12 +48,14 @@ import type { SessionDto } from "../api/client";
 import {
   reachabilityLastSeen,
   REACHABILITY_OFFLINE,
+  REACHABILITY_STOPPED,
   REACHABILITY_ONLINE,
   REACHABILITY_WOBBLY,
   type DirectorReachability,
   type ReachabilityState,
   type SessionsEnvelope,
 } from "./fleetClient";
+import { directorStateLabel } from "./directorPresentation";
 
 // How one session should be rendered on the roster. "online" sessions render normally (no mark); a
 // "wobbly" or "offline" session is grayed and carries a short plain note naming the machine and, when
@@ -66,6 +68,12 @@ export interface RosterSessionMark {
   machineName: string;
   /** "last seen Ns ago" style age, or "" when unknown. */
   lastSeenLabel: string;
+  /**
+   * The Gateway's own word for the owning Director's condition ("Wobbly", "Offline", "Not running"), so a
+   * surface can name the state instead of inferring it from `reachability`. Empty when the Gateway did not
+   * say (an older Gateway, or an online Director).
+   */
+  stateLabel: string;
 }
 
 // The retention cache carried across polls by the caller (held in a ref). The last-known session list
@@ -199,6 +207,10 @@ function markFor(state: SessionReachability, machineName: string, reach: Directo
     reachability: state,
     machineName,
     lastSeenLabel: reachabilityLastSeen(reach?.lastSeenAgeSeconds),
+    // Carried through so a surface can print the Gateway's word rather than inferring one from the state
+    // it was handed. Without it the phone read "Unreachable" beside a Director that had been shut down on
+    // purpose - the false outage this change removes on the desktop, still live on the phone.
+    stateLabel: directorStateLabel(reach),
   };
 }
 
@@ -268,9 +280,16 @@ export function mergeRosterRetention(
       continue;
     }
 
-    // Not online. The mark is the machine's own state - wobbly reads as "reconnecting", anything else as
-    // "unreachable" - and it is applied whether the rows came from the Gateway or from this cache.
-    const markState: SessionReachability = state === REACHABILITY_WOBBLY ? REACHABILITY_WOBBLY : REACHABILITY_OFFLINE;
+    // Not online. The mark carries the machine's OWN state through, unflattened. It used to collapse
+    // everything that was not wobbly into "offline", which was harmless while offline was the only other
+    // state and became a lie the moment "stopped" existed: a Director that announced its own shutdown was
+    // marked unreachable, and the phone duly announced an outage about a machine that was fine.
+    const markState: SessionReachability =
+      state === REACHABILITY_WOBBLY
+        ? REACHABILITY_WOBBLY
+        : state === REACHABILITY_STOPPED
+        ? REACHABILITY_STOPPED
+        : REACHABILITY_OFFLINE;
 
     if (live && live.length > 0) {
       // THE GATEWAY SERVED ROWS FOR AN UNREACHABLE MACHINE, so those rows are the answer - for offline

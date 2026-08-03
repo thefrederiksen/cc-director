@@ -6,9 +6,11 @@ import {
   getDirectorSettings,
   getFleetDirectors,
   putDirectorSettings,
+  REACHABILITY_STOPPED,
   type FleetDirector,
   type MachineError,
 } from "@devthrottle/client-core/fleet/fleetClient";
+import { directorStateLabel } from "@devthrottle/client-core/fleet/directorPresentation";
 import { useSharedRoster } from "@devthrottle/client-core/fleet/rosterStore";
 import { useVisiblePolling } from "@devthrottle/client-core/polling/useVisiblePolling";
 import { useNow } from "@devthrottle/client-core/polling/useNow";
@@ -66,6 +68,11 @@ export function DirectorDetailView() {
   const sessions: SessionDto[] = roster.sessions ?? [];
   const machineError: MachineError | null =
     roster.machineErrors.find((e) => (e.directorId ?? "").toLowerCase() === directorId.toLowerCase()) ?? null;
+  // A Director that SAID GOODBYE is not in machineErrors - nothing failed - so it is read from the
+  // reachability list instead. Not running and cannot be reached are different facts, and only the
+  // second is a problem; this page has to say which one it is looking at.
+  const reach = roster.directors.find((r) => (r.directorId ?? "").toLowerCase() === directorId.toLowerCase());
+  const wasShutDown = reach?.state === REACHABILITY_STOPPED;
 
   const [director, setDirector] = useState<FleetDirector | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -79,7 +86,11 @@ export function DirectorDetailView() {
   // The current reachability, mirrored into a ref so the stable poll callback can gate the repo fetch on
   // it without taking the roster as a dependency (which would rebuild the poll loop every 2 seconds).
   const reachableRef = useRef(true);
-  reachableRef.current = machineError === null;
+  // THE GATE IS "CAN THIS DIRECTOR ANSWER", NOT "IS SOMETHING WRONG". It read machineError alone, and a
+  // shut-down Director is deliberately absent from that list - so its page went on proxying getRepos to a
+  // tunnel that is gone, every thirty seconds, forever, while the page itself said nothing could be read
+  // from it.
+  reachableRef.current = machineError === null && !wasShutDown;
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -163,6 +174,10 @@ export function DirectorDetailView() {
 
   const d = director;
   const unreachable = machineError !== null;
+  // Both states mean the same thing for what this page can DO - the tunnel is gone, so nothing here can
+  // be read from or written to the Director - while meaning opposite things about whether anything is
+  // wrong. The actions are gated on the first; the wording is gated on the second.
+  const linkDown = unreachable || wasShutDown;
 
   return (
     <div className="dpage">
@@ -181,6 +196,8 @@ export function DirectorDetailView() {
         <span className="dpage-sub">v{d.version}</span>
         {unreachable ? (
           <span className="ddet-chip dstat-warn" title={machineError?.error}>UNREACHABLE</span>
+        ) : wasShutDown ? (
+          <span className="ddet-chip dstat-idle">{directorStateLabel(reach).toUpperCase()}</span>
         ) : (
           <span className="ddet-chip dstat-ok">OK</span>
         )}
@@ -191,6 +208,16 @@ export function DirectorDetailView() {
         <div className="dpage-error">
           The Gateway cannot reach this Director right now: {machineError?.error}. Registration facts below may be
           stale; its sessions are missing.
+        </div>
+      )}
+
+      {/* Not an error, and not styled as one. This Director announced its own shutdown, so there is
+          nothing to investigate and nothing to fix - the page simply cannot read from it, and says so
+          plainly instead of raising an alarm about a machine that may be perfectly healthy. */}
+      {!unreachable && wasShutDown && (
+        <div className="dpage-note">
+          This Director was shut down and is not running. The facts below are from when it last ran; nothing here can
+          be read from or written to it until it starts again.
         </div>
       )}
 
@@ -276,7 +303,7 @@ export function DirectorDetailView() {
             )}
           </section>
 
-          <DirectorSettings directorId={d.directorId} reachable={!unreachable} />
+          <DirectorSettings directorId={d.directorId} reachable={!linkDown} />
         </div>
 
         <div className="ddet-side">
@@ -403,7 +430,9 @@ function DirectorSettings({ directorId, reachable }: { directorId: string; reach
           <button type="button" className="ddet-btn" onClick={() => void load()} disabled={busy || !reachable}>
             {busy ? "Loading..." : "Load settings"}
           </button>
-          {!reachable && <span className="ddet-settings-status">Director is unreachable - settings cannot be read right now.</span>}
+          {/* Covers both reasons the tunnel can be gone - shut down, or unreachable - because the
+              consequence here is identical and the page has already said which one it is. */}
+          {!reachable && <span className="ddet-settings-status">This Director is not answering - settings cannot be read right now.</span>}
         </div>
       ) : (
         <div className="ddet-settings">

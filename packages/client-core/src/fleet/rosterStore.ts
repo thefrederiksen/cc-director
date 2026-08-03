@@ -34,6 +34,8 @@ export interface SharedRoster {
   sessions: SessionDto[] | null;
   machineErrors: MachineError[];
   directors: DirectorReachability[];
+  /** The Gateway's finished fleet-wide warning line, or null when nothing is wrong. Printed verbatim. */
+  unreachableBanner: string | null;
   error: string | null;
   refreshNow: () => void;
 }
@@ -44,6 +46,7 @@ export function useSharedRoster(): SharedRoster {
     sessions: data === null ? null : data.sessions,
     machineErrors: data?.machineErrors ?? [],
     directors: data?.directors ?? [],
+    unreachableBanner: data?.unreachableBanner ?? null,
     error,
     refreshNow: rosterStore.refreshNow,
   };

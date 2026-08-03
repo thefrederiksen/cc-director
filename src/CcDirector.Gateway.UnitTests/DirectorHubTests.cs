@@ -141,6 +141,75 @@ public sealed class DirectorHubTests : IDisposable
         Assert.True(reg.Contains("s1")); // the armed snooze survived a rejected snapshot
     }
 
+    // ---------- The clean-shutdown farewell reaches DISCOVERY, not only work history ----------
+    // It used to tell the history recorder alone, so the registry went on expecting a Director that had
+    // announced it was leaving - and reported it unreachable until the 24-hour eviction horizon swept it.
+    // Revert-prove: delete the MarkStopped line from DirectorHub.DirectorStopping and the first of these
+    // goes red at the stamp, after its positive control has passed.
+
+    [Fact]
+    public void TheFarewell_RetiresTheRegistration()
+    {
+        var (hub, _) = NewHub("conn-1");
+        hub.Hello(Hello("dir-A"));
+        // Positive control: registered and RUNNING before the goodbye, so the assertion below cannot pass
+        // against an entry that was never created.
+        Assert.Null(_registry.Get(CcDirector.Core.Tenancy.TenantId.Local, "dir-A")!.StoppedAtUtc);
+
+        hub.DirectorStopping();
+
+        Assert.NotNull(_registry.Get(CcDirector.Core.Tenancy.TenantId.Local, "dir-A")!.StoppedAtUtc);
+    }
+
+    /// <summary>
+    /// A DISCONNECT IS NOT A GOODBYE. Only an explicit farewell retires a registration; a Director that dies
+    /// without one - a force-kill, a crash, a power cut - stays "expected", which is exactly the case the
+    /// owner needs reported as unreachable. Losing this distinction would silence the real fault along with
+    /// the false one.
+    /// </summary>
+    [Fact]
+    public async Task ADisconnectWithoutAFarewell_LeavesTheRegistrationExpected()
+    {
+        var (hub, _) = NewHub("conn-1");
+        hub.Hello(Hello("dir-A"));
+
+        await hub.OnDisconnectedAsync(new Exception("the machine went away"));
+
+        Assert.Null(_registry.Get(CcDirector.Core.Tenancy.TenantId.Local, "dir-A")!.StoppedAtUtc);
+    }
+
+    /// <summary>
+    /// A DELAYED FAREWELL FROM A SUPERSEDED CONNECTION MUST NOT RETIRE THE LIVE REGISTRATION. Found by
+    /// review. conn-1 says Hello as dir-A; conn-2 reconnects and supersedes it; conn-1's farewell then
+    /// arrives late. Acting on it would stamp the registry row that now represents conn-2 - and when THAT
+    /// Director later died for real, its crash would read as an orderly shutdown for the whole eviction
+    /// horizon, silencing exactly the fault the state exists to keep visible.
+    ///
+    /// Revert-prove: drop the IsActiveConnection guard in DirectorStopping and this goes red at the final
+    /// assertion, after its two positive controls have passed.
+    /// </summary>
+    [Fact]
+    public void AFarewellFromASupersededConnection_DoesNotRetireTheLiveRegistration()
+    {
+        var (hub1, _) = NewHub("conn-1");
+        hub1.Hello(Hello("dir-A"));
+
+        var (hub2, _) = NewHub("conn-2");
+        hub2.Hello(Hello("dir-A"));   // the reconnect supersedes conn-1
+
+        // Positive control: the registration exists and is running.
+        Assert.Null(_registry.Get(CcDirector.Core.Tenancy.TenantId.Local, "dir-A")!.StoppedAtUtc);
+
+        hub1.DirectorStopping();      // the late farewell, on the connection that is no longer active
+
+        Assert.Null(_registry.Get(CcDirector.Core.Tenancy.TenantId.Local, "dir-A")!.StoppedAtUtc);
+
+        // Positive control on the guard: the CURRENT connection's farewell still works, so the assertion
+        // above is not passing because the whole path is broken.
+        hub2.DirectorStopping();
+        Assert.NotNull(_registry.Get(CcDirector.Core.Tenancy.TenantId.Local, "dir-A")!.StoppedAtUtc);
+    }
+
     private static DirectorStreamHello Hello(string directorId) => new() { DirectorId = directorId, Version = "test" };
 
     private static SessionDto Session(string id, string state = "Working") => new() { SessionId = id, ActivityState = state };

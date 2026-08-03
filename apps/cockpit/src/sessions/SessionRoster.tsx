@@ -21,12 +21,12 @@ import {
 } from "@devthrottle/client-core/sessions/delivery";
 import { supervisionStats } from "@devthrottle/client-core/sessions/supervision";
 import { machinePortLabel } from "@devthrottle/client-core/fleet/directorEndpoint";
+import { isDataStale } from "@devthrottle/client-core/fleet/directorPresentation";
 import { useNow, waitingLabel } from "@devthrottle/client-core/sessions/waiting";
 import { useNow as useSharedNow } from "@devthrottle/client-core/polling/useNow";
 import {
   reachabilityFor,
   reachabilityLastSeen,
-  REACHABILITY_OFFLINE,
   REACHABILITY_WOBBLY,
   type DirectorReachability,
 } from "@devthrottle/client-core/fleet/fleetClient";
@@ -303,8 +303,12 @@ function RosterRow({
   // place and shows a "last seen" age; an Online (or unknown) Director renders normally.
   const reach = reachabilityFor(directors, session.directorId);
   const wobbly = reach?.state === REACHABILITY_WOBBLY;
-  const offline = reach?.state === REACHABILITY_OFFLINE;
-  const lastSeen = wobbly || offline ? reachabilityLastSeen(reach?.lastSeenAgeSeconds) : "";
+  // WHETHER these rows are last-known is the Gateway's ruling, read - not a list of states enumerated
+  // here. This checked only wobbly and offline, so a row owned by a Director that had been shut down (the
+  // Gateway deliberately keeps serving those) rendered as current, undimmed and undated.
+  const stale = isDataStale(reach);
+  const offline = stale && !wobbly;
+  const lastSeen = stale ? reachabilityLastSeen(reach?.lastSeenAgeSeconds) : "";
   // The hold time ("wakes in 3h 48m") and the winding-down flag are the Gateway's fold, read the same way
   // the desktop rail reads them - never the raw onHold sensor, which can drift from the fold (a Held
   // session that starts working is blue, and must not still read "snoozed"). The snooze LABEL already

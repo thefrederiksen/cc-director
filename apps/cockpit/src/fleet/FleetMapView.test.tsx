@@ -15,7 +15,7 @@ import type { SharedRoster } from "@devthrottle/client-core/fleet/rosterStore";
 // The Fleet Map reads the ONE shared roster store; mock it so the test drives an exact fleet without a
 // Gateway. Canvas measures the DOM with ResizeObserver, which jsdom lacks - stub it so layout runs.
 const rosterValue: { current: SharedRoster } = {
-  current: { sessions: [], machineErrors: [], directors: [], error: null, refreshNow: () => {} },
+  current: { sessions: [], machineErrors: [], directors: [], unreachableBanner: null, error: null, refreshNow: () => {} },
 };
 vi.mock("@devthrottle/client-core/fleet/rosterStore", () => ({
   useSharedRoster: () => rosterValue.current,
@@ -85,6 +85,7 @@ describe("FleetMapView - By machine free slots", () => {
         director({ directorId: "soren-1", machineName: "SOREN", state: "online" }), // idle, no sessions
         director({ directorId: "mac-1", machineName: "Sorens-Mac-mini", state: "online" }), // idle
       ],
+      unreachableBanner: null,
       error: null,
       refreshNow: () => {},
     };
@@ -115,6 +116,7 @@ describe("FleetMapView - By machine free slots", () => {
         director({ directorId: "north-1", machineName: "SOREN_NORTH", state: "online" }),
         director({ directorId: "soren-1", machineName: "SOREN", state: "online" }),
       ],
+      unreachableBanner: null,
       error: null,
       refreshNow: () => {},
     };
@@ -141,6 +143,7 @@ describe("FleetMapView - By machine free slots", () => {
         director({ directorId: "north-alpha", machineName: "SOREN_NORTH", state: "online" }),
         director({ directorId: "dead-beta", machineName: "DEAD_MACHINE", state: "offline", lastSeenAgeSeconds: 420 }),
       ],
+      unreachableBanner: null,
       error: null,
       refreshNow: () => {},
     };
@@ -152,7 +155,11 @@ describe("FleetMapView - By machine free slots", () => {
     expect(screen.getByText(/Offline - last seen 7m ago/)).toBeTruthy();
     // It is not offered as capacity: no "free slot" line, and no button that could not be honoured.
     expect(screen.queryByText(/free slot/i)).toBeNull();
-    expect(screen.getByText(/machine unreachable/i)).toBeTruthy();
+    // NOTE THE NOUN. This placeholder sits under a DIRECTOR sub-header and used to read "machine
+    // unreachable" - on a machine that may be running other Directors perfectly well. It names the
+    // Director now, which is the only thing the Gateway actually reported.
+    expect(screen.getByText(/this director cannot be reached/i)).toBeTruthy();
+    expect(screen.queryByText(/machine unreachable/i)).toBeNull();
     expect(screen.queryByRole("button", { name: /Start a new session on Director beta/ })).toBeNull();
     // The reachable machine keeps its own action.
     expect(screen.getByRole("button", { name: /Start a new session on Director alpha/ })).toBeTruthy();
@@ -178,6 +185,7 @@ describe("FleetMapView - By director pivot (devthrottle_internal#1177)", () => {
         // An offline Director: shown dated with no action, never dropped (same rule as the machine pivot).
         director({ directorId: "dead-beta", machineName: "DEAD_MACHINE", state: "offline", lastSeenAgeSeconds: 420 }),
       ],
+      unreachableBanner: null,
       error: null,
       refreshNow: () => {},
     };
@@ -195,7 +203,8 @@ describe("FleetMapView - By director pivot (devthrottle_internal#1177)", () => {
 
     // The idle Director is a free slot; the offline one is unreachable and dated.
     expect(screen.getAllByText(/free slot/i)).toHaveLength(1);
-    expect(screen.getByText(/machine unreachable/i)).toBeTruthy();
+    expect(screen.getByText(/this director cannot be reached/i)).toBeTruthy();
+    expect(screen.queryByText(/machine unreachable/i)).toBeNull();
     expect(screen.getByText(/Offline - last seen 7m ago/)).toBeTruthy();
 
     // "+ New session" is offered on the reachable lanes and withheld on the offline one.
@@ -234,6 +243,7 @@ describe("FleetMapView - Director sub-header new-session button", () => {
       sessions: [session({ directorId: "north-aaa", machineName: "SOREN_NORTH" })],
       machineErrors: [],
       directors: [director({ directorId: "north-aaa", machineName: "SOREN_NORTH", state: "online" })],
+      unreachableBanner: null,
       error: null,
       refreshNow: () => {},
     };
@@ -251,5 +261,90 @@ describe("FleetMapView - Director sub-header new-session button", () => {
       const north = dialog.querySelector("button.newsess-machine.sel");
       expect(north?.textContent).toContain("SOREN_NORTH");
     });
+  });
+});
+
+// THE WARNING LINE ABOVE THE MAP. It used to be built in this view by counting the envelope's
+// machineErrors rows and printing each one with the word "machine". Those rows are PER DIRECTOR, so a
+// machine running three Directors and fifteen live sessions announced "1 machine unreachable on the last
+// sweep: SOREN_NORTH" the moment one of its slots was shut down - a healthy machine reported as dead, from
+// a count of the wrong noun. The verdict is now folded on the Gateway and printed verbatim, so these prove
+// the view prints what it is given and invents nothing.
+describe("FleetMapView - the unreachable banner is the Gateway's sentence", () => {
+  it("prints the Gateway's banner verbatim", () => {
+    rosterValue.current = {
+      sessions: [session({ directorId: "north-alpha" })],
+      machineErrors: [],
+      directors: [director({ directorId: "north-alpha", machineName: "SOREN_NORTH", state: "online" })],
+      unreachableBanner:
+        "1 director could not be reached on the last sweep: Slot 5 on SOREN_NORTH (last seen 32m ago) - the rest of that machine is answering normally",
+      error: null,
+      refreshNow: () => {},
+    };
+
+    render(<FleetMapView />);
+
+    expect(screen.getByText(/Slot 5 on SOREN_NORTH \(last seen 32m ago\)/)).toBeTruthy();
+  });
+
+  // THE REGRESSION, and the assertion that fails on the old view: machineErrors is populated exactly as it
+  // is for one unreachable slot, and the Gateway has ruled that this is not a dead machine. The old code
+  // counted that row and rendered "1 machine unreachable on the last sweep: SOREN_NORTH" regardless.
+  it("does NOT call a machine unreachable just because one of its Directors is", () => {
+    rosterValue.current = {
+      sessions: [session({ directorId: "north-alpha" })],
+      machineErrors: [{ directorId: "north-slot5", machineName: "SOREN_NORTH", error: "director not connected to the tunnel" }],
+      directors: [
+        director({ directorId: "north-alpha", machineName: "SOREN_NORTH", state: "online" }),
+        director({ directorId: "north-slot5", machineName: "SOREN_NORTH", state: "offline", lastSeenAgeSeconds: 1896 }),
+      ],
+      unreachableBanner: null,
+      error: null,
+      refreshNow: () => {},
+    };
+
+    render(<FleetMapView />);
+
+    expect(screen.queryByText(/machine unreachable on the last sweep/i)).toBeNull();
+    expect(screen.queryByText(/could not be reached/i)).toBeNull();
+    // Positive control: the map really did render this fleet, so the absence above is not an empty page.
+    expect(screen.getByText("SOREN_NORTH")).toBeTruthy();
+  });
+
+  // A shut-down Director is ordinary. It is labelled, it is not offered as capacity it cannot provide, and
+  // it raises no warning at all.
+  it("renders a shut-down Director as not running, with no warning and no action", () => {
+    window.localStorage.setItem("cockpit.fleetMapPivot", "director");
+    rosterValue.current = {
+      sessions: [],
+      machineErrors: [],
+      directors: [
+        director({
+          directorId: "north-slot5",
+          machineName: "SOREN_NORTH",
+          displayName: "Slot 5",
+          state: "stopped",
+          lastSeenAgeSeconds: 1896,
+          // The Gateway's finished presentation, rendered verbatim - not re-derived from the state here.
+          stateLabel: "Not running",
+          dataIsStale: true,
+          canStartSession: false,
+          emptySlotText: "No sessions - this director is not running",
+        }),
+      ],
+      unreachableBanner: null,
+      error: null,
+      refreshNow: () => {},
+    };
+
+    render(<FleetMapView />);
+
+    expect(screen.getByText(/Not running - last seen 31m ago/)).toBeTruthy();
+    expect(screen.getByText("No sessions - this director is not running")).toBeTruthy();
+    // Not free capacity: its tunnel went with the process, so a start could not be delivered.
+    expect(screen.queryByText(/free slot/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /Start a new session on Slot 5/ })).toBeNull();
+    // And nothing on this screen calls it a failure.
+    expect(screen.queryByText(/unreachable/i)).toBeNull();
   });
 });

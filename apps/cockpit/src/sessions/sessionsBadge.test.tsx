@@ -14,7 +14,7 @@ import type { SharedRoster } from "@devthrottle/client-core/fleet/rosterStore";
 // leave the badge lit until morning.
 
 const rosterValue: { current: SharedRoster } = {
-  current: { sessions: null, machineErrors: [], directors: [], error: null, refreshNow: () => {} },
+  current: { sessions: null, machineErrors: [], directors: [], unreachableBanner: null, error: null, refreshNow: () => {} },
 };
 vi.mock("@devthrottle/client-core/fleet/rosterStore", () => ({
   useSharedRoster: () => rosterValue.current,
@@ -84,6 +84,7 @@ describe("Cockpit needs-you badge", () => {
       ],
       machineErrors: [],
       directors: [],
+      unreachableBanner: null,
       error: null,
       refreshNow: () => {},
     };
@@ -99,6 +100,7 @@ describe("Cockpit needs-you badge", () => {
       sessions: [needsYou("unstamped")],
       machineErrors: [],
       directors: [],
+      unreachableBanner: null,
       error: null,
       refreshNow: () => {},
     };

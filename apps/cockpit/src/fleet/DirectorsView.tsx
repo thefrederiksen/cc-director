@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { gatewayErrorMessage, type SessionDto } from "@devthrottle/client-core/api/client";
 import {
   getFleetDirectors,
+  type DirectorReachability,
   type FleetDirector,
   type MachineError,
 } from "@devthrottle/client-core/fleet/fleetClient";
@@ -77,14 +78,23 @@ export function DirectorsView() {
     return map;
   }, [machineErrors]);
 
+  // The per-Director reachability from the same shared roster. A Director that was SHUT DOWN is not in
+  // machineErrors - nothing failed - so without this the table called it OK.
+  const reachByDirector = useMemo(() => {
+    const map = new Map<string, DirectorReachability>();
+    for (const r of roster.directors) map.set((r.directorId ?? "").toLowerCase(), r);
+    return map;
+  }, [roster.directors]);
+
   const sessionCount = useCallback(
     (d: FleetDirector) => sessionsByDirector.get(d.directorId.toLowerCase())?.length ?? 0,
     [sessionsByDirector],
   );
 
   const statusOf = useCallback(
-    (d: FleetDirector) => directorStatus(d, errorByDirector.get(d.directorId.toLowerCase())),
-    [errorByDirector],
+    (d: FleetDirector) =>
+      directorStatus(d, errorByDirector.get(d.directorId.toLowerCase()), reachByDirector.get(d.directorId.toLowerCase())),
+    [errorByDirector, reachByDirector],
   );
 
   // The searchable text of a Director row: display name, machine name, the user, the version, and the

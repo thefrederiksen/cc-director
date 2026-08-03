@@ -92,13 +92,19 @@ export interface MachineError {
 // serves every session it last knew about, whatever its age, so all three states carry sessions and the
 // state decides only how they are RENDERED. A session leaves the roster when its Director says so or
 // when the machine passes the Gateway's eviction horizon - never because a display timer ran out.
+//  - "stopped": it said goodbye. The Director sent the tunnel farewell at the start of an orderly
+//    shutdown, so its registration is retired and its absence is EXPECTED - not a fault, and never
+//    counted as a machine the Gateway cannot reach. A Director that dies without a farewell has no such
+//    stamp and still reads "offline", which is the case actually worth showing.
 export const REACHABILITY_ONLINE = "online";
 export const REACHABILITY_WOBBLY = "wobbly";
 export const REACHABILITY_OFFLINE = "offline";
+export const REACHABILITY_STOPPED = "stopped";
 export type ReachabilityState =
   | typeof REACHABILITY_ONLINE
   | typeof REACHABILITY_WOBBLY
-  | typeof REACHABILITY_OFFLINE;
+  | typeof REACHABILITY_OFFLINE
+  | typeof REACHABILITY_STOPPED;
 
 // One Director's reachability presentation in the roster envelope (issue #1215). The Cockpit joins a
 // session to its Director by directorId (also stamped on SessionDto.directorId) to decide how to render
@@ -122,6 +128,22 @@ export interface DirectorReachability {
   lastSeenAgeSeconds?: number | null;
   /** The last poll's failure reason for wobbly/offline; null while online. */
   error?: string | null;
+  /**
+   * THE GATEWAY'S FINISHED PRESENTATION for this Director (CLAUDE.md rule 7). The four fields below are
+   * rendered, never re-derived: the Cockpit used to map the state string to a badge word, a placeholder
+   * sentence, whether a button appeared, and whether a card dimmed - four judgements about what a state
+   * MEANS, made in a view file, in three separate places. Absent from an older Gateway, where the
+   * `??` fallbacks beside each use keep the historical rendering.
+   *
+   * The badge word; empty while online (a healthy Director wears no badge).
+   */
+  stateLabel?: string;
+  /** True when the rows are last-known rather than confirmed - dim the cards and show the age. */
+  dataIsStale?: boolean;
+  /** True when a start could actually be delivered down this Director's tunnel. */
+  canStartSession?: boolean;
+  /** The line to print where this Director has no sessions, saying why there are none. */
+  emptySlotText?: string;
 }
 
 // The envelope shape GET /sessions returns with ?envelope=true: the live sessions, the machines that
@@ -131,8 +153,35 @@ export interface DirectorReachability {
 export interface SessionsEnvelope {
   sessions: SessionDto[];
   machineErrors: MachineError[];
-  /** Per-Director reachability for the Online / Wobbly / Offline rendering (issue #1215). */
+  /** Per-Director reachability for the Online / Wobbly / Offline / Not running rendering (issue #1215). */
   directors: DirectorReachability[];
+  /**
+   * The fleet-wide warning line, folded on the Gateway and printed VERBATIM, or null when nothing is
+   * wrong. It replaces counting machineErrors in the view: those rows are per-DIRECTOR, so a view that
+   * counted them and printed the word "machine" announced a dead machine whenever any one slot on it was
+   * unreachable - while fifteen sessions on that machine were pushing every few seconds.
+   *
+   * NULL AND ABSENT ARE DIFFERENT ANSWERS and must stay distinguishable. Null is the Gateway saying
+   * "nothing is wrong"; absent is an OLDER Gateway that cannot answer at all, and collapsing the second
+   * into the first would silence a real outage on the very screen that reports outages. getSessionsEnvelope
+   * fills an absent field from machineErrors instead - see there.
+   */
+  unreachableBanner: string | null;
+}
+
+/**
+ * The fallback warning line for an OLDER Gateway that does not fold one - built from machineErrors, which
+ * such a Gateway does still populate. Deliberately Director-shaped ("1 director could not be reached"),
+ * because that is what those rows have always been; the old view called them machines and that was the
+ * defect. Exported for its test.
+ */
+export function bannerFromMachineErrors(errors: MachineError[]): string | null {
+  const named = errors
+    .map((m) => (m.machineName ?? "").trim())
+    .map((n) => (n.length > 0 ? n : "an unidentified machine"));
+  if (named.length === 0) return null;
+  const head = named.length === 1 ? "1 director could not be reached" : `${named.length} directors could not be reached`;
+  return `${head} on the last sweep: ${named.join(", ")}`;
 }
 
 // GET /sessions?envelope=true - the roster plus the unreachable-machine list and per-Director
@@ -150,10 +199,17 @@ export async function getSessionsEnvelope(signal?: AbortSignal): Promise<Session
     throw new GatewayError(res.status, `GET /sessions?envelope=true failed: ${res.status}`);
   }
   const body = (await res.json()) as Partial<SessionsEnvelope>;
+  const machineErrors = body.machineErrors ?? [];
   return {
     sessions: body.sessions ?? [],
-    machineErrors: body.machineErrors ?? [],
+    machineErrors,
     directors: body.directors ?? [],
+    // ABSENT means an older Gateway, and it must not read as "nothing is wrong" - that would leave the
+    // Fleet Map silent during a real outage. Only a field the Gateway actually sent (including an explicit
+    // null, which IS the "nothing is wrong" answer) is taken at face value; otherwise the line is rebuilt
+    // from machineErrors, which every Gateway populates.
+    unreachableBanner:
+      body.unreachableBanner !== undefined ? body.unreachableBanner : bannerFromMachineErrors(machineErrors),
   };
 }
 

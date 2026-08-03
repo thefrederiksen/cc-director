@@ -6,9 +6,12 @@
 import type { SessionDto } from "@devthrottle/client-core/api/client";
 import {
   ENDPOINT_STATE_UNREACHABLE_BY_NAME,
+  REACHABILITY_STOPPED,
+  type DirectorReachability,
   type FleetDirector,
   type MachineError,
 } from "@devthrottle/client-core/fleet/fleetClient";
+import { directorStateLabel } from "@devthrottle/client-core/fleet/directorPresentation";
 import { relativeTime, repoBasename } from "./format";
 
 /** A Director's health, computed once and reused by the status cell and the column sort. A higher rank
@@ -21,13 +24,33 @@ export interface DirectorStatus {
 }
 
 // Classify a Director's health. Precedence matches the original table: an advertised name that stopped
-// answering, then a Gateway-to-Director reachability error, then a terminal-stream failure, then OK.
-export function directorStatus(d: FleetDirector, error: MachineError | undefined): DirectorStatus {
+// answering, then a Gateway-to-Director reachability error, then a Director that was SHUT DOWN, then a
+// terminal-stream failure, then OK.
+//
+// "Not running" sits between them on purpose, and it is not a fault. A Director that said goodbye is
+// exactly where it should be - it is simply not there to be used, which is worth showing and worth
+// sorting above OK, but is nothing to investigate. Without this branch a shut-down Director read "OK":
+// the row it used to be judged by (machineErrors) no longer contains it, precisely because nothing
+// failed. The WORD comes from the Gateway (directorStateLabel); the rank and the colour are this
+// table's own sorting and styling.
+export function directorStatus(
+  d: FleetDirector,
+  error: MachineError | undefined,
+  reach?: DirectorReachability,
+): DirectorStatus {
   if (d.advertisedEndpointState === ENDPOINT_STATE_UNREACHABLE_BY_NAME) {
     return { label: "UNREACHABLE BY NAME", className: "dstat-err", rank: 3, title: endpointTooltip(d) };
   }
   if (error !== undefined) {
     return { label: "UNREACHABLE", className: "dstat-warn", rank: 3, title: error.error };
+  }
+  if (reach?.state === REACHABILITY_STOPPED) {
+    return {
+      label: directorStateLabel(reach).toUpperCase(),
+      className: "dstat-idle",
+      rank: 1,
+      title: "This Director told the Gateway it was shutting down. It is not running, and its registration is retired.",
+    };
   }
   if ((d.streamVerifyError ?? null) !== null) {
     return {
