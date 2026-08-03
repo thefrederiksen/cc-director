@@ -77,7 +77,8 @@ Director-only; it cannot host a self-hosted gateway.
    turns on voice, and sends you the morning report. DevThrottle will ask you on its second setup
    screen, and "Not now" is a real answer you can change later in Settings.
 
-     * Hosted gateway (recommended) - we run it. Sign in and this machine is enrolled. Part of Pro:
+     * Hosted gateway (recommended) - we run it. Sign in and this machine is enrolled. Included with
+       Pro, and with the free 14-day Pro trial that new accounts get when they first connect:
        https://devthrottle.com/pricing
      * Self-hosted gateway - run it on your own machine and join it. Windows only. Advanced setups.
      * Not now - local-only on this machine.
