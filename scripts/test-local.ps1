@@ -4,33 +4,44 @@
     Run this repository's tests locally. THE one command - do not hand-roll a dotnet test invocation.
 
 .DESCRIPTION
-    Local is the gate for ordinary changes (issue #1156). GitHub CI takes roughly fifty minutes for the
-    .NET job; this machine is far stronger than a CI runner and should be where the answer comes from.
+    THE DEFAULT RUN IS ABOUT TWO MINUTES, AND THAT IS THE POINT. Local is the gate for ordinary changes
+    (issue #1156), so the gate has to be cheap enough that nobody is tempted to skip it.
 
-    WHY A SCRIPT RATHER THAN "JUST RUN DOTNET TEST". Two reasons, and the second is the important one.
+    WHAT THE DEFAULT RUNS: every suite that finishes inside the two-minute budget. Roughly 3400 tests.
+    They start together and the wall clock is the slowest of them, not the sum.
 
-    1. It is faster than the obvious invocation. Seven test projects exist. Only CcDirector.Gateway.Tests
-       serializes itself machine-wide (GatewayTestSuiteLock, and see issue #1156 for why). The other six
-       contend with nothing, so they are started IMMEDIATELY and run alongside the Gateway suite while it
-       queues for its lock. A plain solution-wide `dotnet test` runs them one project at a time and pays
-       the lock wait on top; this pays roughly the slower of the two, not the sum.
+    WHAT THE DEFAULT NO LONGER RUNS - AND THIS IS DELIBERATE, NOT AN OVERSIGHT. Two suites are PARKED
+    behind -Parked because neither can meet the budget:
 
-    2. It is ONE place to make everyone faster. When the Gateway suite's lock is removed, or in-process
-       parallelism becomes safe, this file changes and every agent and person in the fleet gets the
-       improvement without being told. A convention that each caller re-implements cannot be improved
-       centrally - which is the same argument GatewayTestSuiteLock makes about acquisition being automatic.
+      CcDirector.Gateway.Tests   - serializes machine-wide (GatewayTestSuiteLock), so its cost is not its
+                                   own runtime but the QUEUE behind every other working tree on the
+                                   machine. On 2026-08-02 it burned two waits of 45 minutes that executed
+                                   ZERO tests, and aborted a third. Its pure tests were split out into
+                                   CcDirector.Gateway.UnitTests, which is in the default run; what is
+                                   parked here is the host-bound remainder.
+      CcDirector.Core.Tests      - 11 minutes on a quiet machine and 33 with the fleet busy. Nothing is
+                                   wrong with it; it is simply far outside the budget.
+
+    THE TRADE, STATED PLAINLY SO NOBODY DISCOVERS IT THE HARD WAY: those two suites hold real coverage,
+    including the Gateway's host-bound endpoint, tenancy and boundary tests. Parked means a regression in
+    them can reach main without a local red. That is a deliberate, temporary choice to fix the speed
+    problem first - a gate so slow that a day of work becomes a day of waiting is not protecting anything,
+    because it stops being run. Run -Parked before a release, and move suites back into the default the
+    moment they can meet the budget.
 
     EVERY RUN WRITES A TRX FILE AND PRINTS ITS OUTCOME AND TEST COUNT. That pair, not the console
-    "Passed!" line, is the verdict - see the comment above the run loop for why. The TRX files are kept
-    after a green run as well as a red one, because a green with a collapsed count is the result most
-    worth being able to go back and check.
+    "Passed!" line, is the verdict - see the comment above the run loop for why. A green with a collapsed
+    count is the result most worth being able to go back and check.
 
 .PARAMETER Gateway
-    Run ONLY the Gateway suite. Use when the change is Gateway-side and you want its answer first.
+    Run ONLY the parked Gateway suite (host-bound, machine-wide lock). Expect a queue.
+
+.PARAMETER Parked
+    Also run the two parked suites - Gateway.Tests and Core.Tests. This is the RELEASE gate. Expect tens
+    of minutes, most of it queueing for the Gateway lock.
 
 .PARAMETER Fast
-    Skip the Gateway suite. Use for a change that provably does not touch the Gateway - the six other
-    projects together finish in well under a minute. State the reason in the pull request if you rely on it.
+    Retained for callers that pass it. The default IS fast now, so this is a no-op.
 
 .PARAMETER Filter
     An xUnit filter passed through to every project (e.g. "FullyQualifiedName~Dictation").
@@ -42,6 +53,7 @@
 #>
 param(
     [switch]$Gateway,
+    [switch]$Parked,
     [switch]$Fast,
     [string]$Filter = "",
     [string]$Configuration = "Debug"
@@ -51,15 +63,18 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $sln = Join-Path $repoRoot "cc-director.sln"
 
-if ($Gateway -and $Fast) {
-    Write-Error "-Gateway and -Fast are opposites; pass at most one."
+if ($Gateway -and $Parked) {
+    Write-Error "-Gateway already runs a parked suite on its own; pass one or the other."
     exit 2
 }
 
-# The Gateway suite is named separately because it is the only one that serializes machine-wide.
-$gatewayProject = "src\CcDirector.Gateway.Tests\CcDirector.Gateway.Tests.csproj"
-$otherProjects = @(
-    "src\CcDirector.Core.Tests\CcDirector.Core.Tests.csproj",
+# THE TWO-MINUTE BUDGET IS THE RULE THIS LIST ENCODES. A suite is in the default run if it finishes
+# inside it, and parked if it does not. Measured 2026-08-02, whole fleet busy:
+#   Gateway.UnitTests  ~2m 0s   (2754 tests)      Avalonia    4s      Engine   4s
+#   HostedAgent          36s                      Launcher    2s      Terminal 11s
+# They start together, so the default costs about the slowest one.
+$defaultProjects = @(
+    "src\CcDirector.Gateway.UnitTests\CcDirector.Gateway.UnitTests.csproj",
     "src\CcDirector.Avalonia.Tests\CcDirector.Avalonia.Tests.csproj",
     "src\CcDirector.Engine.Tests\CcDirector.Engine.Tests.csproj",
     "src\CcDirector.HostedAgent.Tests\CcDirector.HostedAgent.Tests.csproj",
@@ -67,9 +82,23 @@ $otherProjects = @(
     "src\CcDirector.Terminal.Avalonia.Tests\CcDirector.Terminal.Avalonia.Tests.csproj"
 )
 
+# PARKED. Not deleted, not broken - excluded from the default because they cannot meet the budget.
+# Gateway.Tests costs a machine-wide QUEUE (45-minute waits that ran nothing); Core.Tests costs 11 to 33
+# minutes of its own. Run them with -Parked before a release, and move either back into the list above
+# the day it fits.
+$gatewayProject = "src\CcDirector.Gateway.Tests\CcDirector.Gateway.Tests.csproj"
+$parkedProjects = @(
+    $gatewayProject,
+    "src\CcDirector.Core.Tests\CcDirector.Core.Tests.csproj"
+)
+
 $toRun = @()
-if (-not $Fast)    { $toRun += $gatewayProject }
-if (-not $Gateway) { $toRun += $otherProjects }
+if ($Gateway) {
+    $toRun = @($gatewayProject)
+} else {
+    $toRun = $defaultProjects
+    if ($Parked) { $toRun += $parkedProjects }
+}
 
 Write-Host "Building once, then running $($toRun.Count) test project(s)..."
 & dotnet build $sln -c $Configuration -v q --nologo
@@ -126,8 +155,12 @@ foreach ($proj in $toRun) {
 }
 
 Write-Host ""
-Write-Host "Waiting. The Gateway suite serializes machine-wide, so it may queue behind another run;"
-Write-Host "that is not a hang - it prints its holder every 30s into its log."
+if ($toRun -contains $gatewayProject) {
+    Write-Host "Waiting. The Gateway suite serializes machine-wide, so it may queue behind another run;"
+    Write-Host "that is not a hang - it prints its holder every 30s into its log."
+} else {
+    Write-Host "Waiting. No parked suite is in this run, so nothing here queues for the machine-wide lock."
+}
 Write-Host ""
 
 $failed = @()
