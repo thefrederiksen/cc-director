@@ -608,9 +608,16 @@
                                 <TextBlock TextWrapping="Wrap" FontSize="12.5" Foreground="#5A616B"
                                            Text="Your agents run on your machines. Fleet metadata and conversation history are stored on the hosted gateway so remote history and supervision work." />
                                 <!-- State the plan, never assert what this user already owns: on a
-                                     brand-new free account "included with your subscription" is false. -->
+                                     brand-new free account "included with your subscription" is false.
+                                     "Part of Pro" alone was true but read as a paywall on the card the
+                                     user is one click from taking, because it omitted the trial the
+                                     Gateway actually grants (issue #1044). The trial is stated as a
+                                     general fact about new accounts, NOT as a promise to this user: it
+                                     is granted only on an account's first arrival at the hosted gateway
+                                     and never twice, so "you get 14 days" would be false for someone
+                                     coming back. -->
                                 <TextBlock FontSize="12.5" Foreground="#8A909A"
-                                           Text="Part of Pro" />
+                                           Text="Part of Pro. New accounts get 14 days free, no card." />
                             </StackPanel>
                         </RadioButton>
 
