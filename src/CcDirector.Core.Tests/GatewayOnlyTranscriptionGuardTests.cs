@@ -54,9 +54,11 @@ public sealed class GatewayOnlyTranscriptionGuardTests
             + string.Join("\n  ", offenders));
     }
 
-    // One shared predicate (see TestProjectPath) - this guard was one of the two that stayed GREEN
-    // after the suite split, not because it was satisfied but because nothing among the moved files
-    // happened to match its pattern. Latent, not passing.
+    // One shared predicate (see TestProjectPath). This guard is one of the two that FIRED after the
+    // suite split - two moved files carry the forbidden construction outside every allowed prefix, and
+    // the old substring stopped excluding them. The twelve reported offenders are ten loopback plus
+    // these two. The LATENT pair - green only because nothing moved happened to match them - is the
+    // agent-plugin and storage-root guards.
     private static bool IsTestProject(string rel) => TestProjectPath.IsTestProject(rel);
 
     private static string Relative(string root, string full)

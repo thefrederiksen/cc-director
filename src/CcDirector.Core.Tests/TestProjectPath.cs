@@ -28,25 +28,52 @@ namespace CcDirector.Core.Tests;
 /// here. The file name itself is never consulted: <c>Foo.Tests.cs</c> sitting in a production project
 /// is production code.
 /// </summary>
+/// WHY NOT SIMPLY "ANY ANCESTOR DIRECTORY ENDING IN Tests". The first version of this helper did
+/// exactly that, and an inspection caught two ways it is wrong - both of which SILENCE a guard, which
+/// is worse than the narrowing it was written to replace:
+///
+///   * <c>src/CcDirector.Core/DiagnosticsTests/Probe.cs</c> is PRODUCTION code inside the production
+///     project <c>CcDirector.Core</c>. Matching any ancestor makes it invisible to all four guards
+///     while every one of them stays green.
+///   * A caller passing an ABSOLUTE path would match an ancestor OUTSIDE the repository entirely. A
+///     checkout living under any folder whose name ends in "Tests" would disable a guard completely -
+///     a defect that depends on where somebody happened to clone, and appears nowhere in the code.
+///
+/// So the decision is the OWNING PROJECT directory, found by anchoring on a known source root: the
+/// project is the segment DIRECTLY BELOW <c>src</c>, <c>tools</c> or <c>phone</c>. Anchoring on the
+/// root is also what makes an absolute path harmless, because nothing above the root is ever read.
 internal static class TestProjectPath
 {
+    /// <summary>The source roots a project directory sits directly beneath.</summary>
+    private static readonly string[] SourceRoots = { "src", "tools", "phone" };
+
     /// <summary>
-    /// True when <paramref name="repoRelativePath"/> - forward-slashed, relative to the repository
-    /// root - lies inside a test project.
+    /// True when <paramref name="path"/> lies inside a test PROJECT. Repository-relative is the
+    /// intended input; an absolute path is tolerated because the search anchors on a source root
+    /// rather than counting segments from the beginning.
     /// </summary>
-    internal static bool IsTestProject(string repoRelativePath)
+    internal static bool IsTestProject(string path)
     {
-        if (string.IsNullOrWhiteSpace(repoRelativePath)) return false;
+        if (string.IsNullOrWhiteSpace(path)) return false;
 
-        var segments = repoRelativePath.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var segments = path.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
 
-        // Every segment EXCEPT the last, which is the file name. A directory decides this, not a file.
+        // The LAST source root wins, so a checkout that itself lives under a folder called "src"
+        // cannot shift which segment gets read as the project.
+        var rootIndex = -1;
         for (var i = 0; i < segments.Length - 1; i++)
         {
-            if (segments[i].EndsWith("Tests", StringComparison.OrdinalIgnoreCase))
-                return true;
+            if (Array.Exists(SourceRoots, r => string.Equals(segments[i], r, StringComparison.OrdinalIgnoreCase)))
+                rootIndex = i;
         }
 
-        return false;
+        if (rootIndex < 0) return false;
+
+        var projectIndex = rootIndex + 1;
+
+        // A project directory must still have a file below it; a bare root is not a project.
+        if (projectIndex >= segments.Length - 1) return false;
+
+        return segments[projectIndex].EndsWith("Tests", StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -41,6 +41,16 @@ public class TestProjectPathTests
     [InlineData("src/CcDirector.ControlApi/ControlEndpoints.cs")]
     // A production FILE whose own name mentions tests. The file name is never consulted.
     [InlineData("src/CcDirector.Core/Diagnostics/SelfTests.cs")]
+    // A directory ending in "Tests" NESTED INSIDE a production project. The first version of the
+    // predicate matched any ancestor and called these test code - which would have made production
+    // files invisible to all four guards while every one of them stayed green. A widening that
+    // SILENCES a guard is worse than the narrowing it was written to fix.
+    [InlineData("src/CcDirector.Core/DiagnosticsTests/Probe.cs")]
+    [InlineData("src/CcDirector.Core/Tests/Probe.cs")]
+    [InlineData("src/CcDirector.Gateway/Api/IntegrationTests/Helper.cs")]
+    // An ABSOLUTE path whose ancestors OUTSIDE the repository end in "Tests". Anchoring on the source
+    // root is what stops a checkout location silently disabling a guard.
+    [InlineData("D:/SomeTests/checkout/src/CcDirector.Core/Sessions/SessionManager.cs")]
     public void AProductionProject_IsNotATestProject(string relativePath)
         => Assert.False(TestProjectPath.IsTestProject(relativePath), relativePath);
 
