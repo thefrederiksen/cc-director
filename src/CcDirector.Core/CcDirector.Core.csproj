@@ -9,6 +9,9 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="CcDirector.Core.Tests" />
+    <!-- The parallel half of the same suite: the fast Core tests, split out so they no longer
+         sit behind that project's assembly-wide DisableTestParallelization. Same tests, same access. -->
+    <InternalsVisibleTo Include="CcDirector.Core.UnitTests" />
     <InternalsVisibleTo Include="CcDirector.Avalonia.Tests" />
     <InternalsVisibleTo Include="CcDirector.Gateway.Tests" />
     <!-- The unlocked half of the same suite (the pure tests, split out so they no longer queue
