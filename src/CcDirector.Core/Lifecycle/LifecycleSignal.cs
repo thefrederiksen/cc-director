@@ -1,0 +1,302 @@
+using System.Globalization;
+using System.Runtime.Versioning;
+using CcDirector.Core.Storage;
+using CcDirector.Core.Utilities;
+
+namespace CcDirector.Core.Lifecycle;
+
+/// <summary>
+/// A one-shot "do this now" request sent between two processes on the SAME MACHINE with no network of
+/// any kind - no socket, no port, no Gateway.
+///
+/// WHY THIS EXISTS AND WHY IT MUST NOT ROUTE THROUGH THE GATEWAY. Everything else an agent does goes
+/// through the Gateway, deliberately, so there is one door. Process lifecycle is the exception, and it
+/// is not a stylistic exception: the launcher supervising the Director, and the updater making the
+/// Director exit so its executable can be replaced, have to work EXACTLY WHEN THE GATEWAY DOES NOT.
+/// A Director that cannot be stopped because the internet is down cannot be updated, and a launcher
+/// that cannot be quit because a cloud service is unreachable cannot be uninstalled. Routing any of
+/// this through the Gateway would make the recovery path depend on the thing being recovered from.
+///
+/// WHAT IT IS. A named signal. The listener holds it open for its whole life; a sender raises it by
+/// name. There is no payload and no reply - every one of these requests is a verb with no arguments
+/// ("shut down", "restart the Director", "check for updates"), and a request with no payload cannot be
+/// injected with one.
+///
+/// TWO MECHANISMS, ONE PER PLATFORM - THIS IS NOT A FALLBACK CHAIN. Windows gets a named
+/// <see cref="EventWaitHandle"/>, which is the operating system's own answer: instantaneous, owned by
+/// the kernel, and destroyed automatically when the listening process dies, so a signal can never be
+/// left lying around to fire at the wrong process later. Unix has no named event in .NET (only
+/// <see cref="Mutex"/> is named cross-platform), so it gets a request file that the listener polls. The
+/// platform is chosen once, by <see cref="OperatingSystem.IsWindows"/>; neither arm is ever tried after
+/// the other fails. A stale Unix request is defended against by an age stamp rather than by a retry.
+///
+/// THE CALLER CONTRACT, WHICH IS THE SAME ON BOTH PLATFORMS. <see cref="Raise"/> answering true means
+/// the request was HANDED OVER, never that it was carried out. Every caller must verify the effect it
+/// wanted - the process exited, the new version answered - and act on that. This is deliberate: the
+/// Windows arm can tell you nobody was listening and the Unix arm cannot, and a contract that only one
+/// platform can honour would quietly become a Windows-only guarantee that Unix code was written
+/// against.
+/// </summary>
+public static class LifecycleSignal
+{
+    /// <summary>
+    /// The Windows object-namespace prefix. <c>Local\</c> - the caller's own logon session - and not
+    /// <c>Global\</c>, because creating a Global object needs a privilege a standard user does not
+    /// have, and every process involved here (the launcher, the Director, the installer) runs as the
+    /// same interactive user.
+    /// </summary>
+    private const string WindowsPrefix = @"Local\";
+
+    /// <summary>
+    /// How old a Unix request file may be and still be acted on. Longer than any plausible gap between
+    /// a sender writing and a listener polling, and far shorter than the time between one run of the
+    /// product and the next - so a request whose sender died mid-write is discarded rather than
+    /// delivered to a process that starts an hour later.
+    /// </summary>
+    public static readonly TimeSpan UnixRequestFreshness = TimeSpan.FromMinutes(2);
+
+    /// <summary>How often the Unix listener looks for a request file.</summary>
+    public static readonly TimeSpan UnixPollInterval = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>
+    /// Start listening for <paramref name="name"/>. The returned handle must be kept for as long as the
+    /// signal should be answered, and disposed to stop listening.
+    ///
+    /// <paramref name="onSignal"/> runs on a background thread, never on the caller's. It is invoked
+    /// once per raise, and an exception from it is logged and swallowed - a listener that dies on a bad
+    /// signal is a listener that cannot be shut down.
+    /// </summary>
+    public static ILifecycleSignalListener Listen(string name, Action onSignal)
+    {
+        if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("A signal name is required", nameof(name));
+        ArgumentNullException.ThrowIfNull(onSignal);
+
+        FileLog.Write($"[LifecycleSignal] Listen: name={name}");
+        return OperatingSystem.IsWindows()
+            ? new WindowsListener(name, onSignal)
+            : new UnixListener(name, onSignal);
+    }
+
+    /// <summary>
+    /// Ask whoever is listening for <paramref name="name"/> to act.
+    ///
+    /// Returns true when the request was handed over - NOT that it was carried out. See the class
+    /// comment: the caller verifies the effect. False means the request could not even be delivered,
+    /// which on Windows is the strong statement that nothing is listening.
+    /// </summary>
+    public static bool Raise(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("A signal name is required", nameof(name));
+
+        try
+        {
+            var delivered = OperatingSystem.IsWindows() ? RaiseWindows(name) : RaiseUnix(name);
+            FileLog.Write($"[LifecycleSignal] Raise: name={name}, delivered={delivered}");
+            return delivered;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[LifecycleSignal] Raise FAILED: name={name}: {ex.Message}");
+            return false;
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static bool RaiseWindows(string name)
+    {
+        if (!EventWaitHandle.TryOpenExisting(WindowsPrefix + name, out var handle) || handle is null)
+        {
+            FileLog.Write($"[LifecycleSignal] Raise: nothing is listening for {name}");
+            return false;
+        }
+
+        using (handle)
+        {
+            handle.Set();
+            return true;
+        }
+    }
+
+    private static bool RaiseUnix(string name)
+    {
+        var path = UnixRequestPath(name);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+        return true;
+    }
+
+    /// <summary>
+    /// Where a Unix request file lives. Under the caller's storage root, so two roots on one machine -
+    /// a test rig and the real install - never signal each other.
+    /// </summary>
+    internal static string UnixRequestPath(string name)
+        => Path.Combine(CcStorage.ToolConfig("lifecycle-signals"), name + ".request");
+
+    [SupportedOSPlatform("windows")]
+    private sealed class WindowsListener : ILifecycleSignalListener
+    {
+        private readonly EventWaitHandle _signal;
+        private readonly EventWaitHandle _stop = new(false, EventResetMode.ManualReset);
+        private readonly Thread _thread;
+        private bool _disposed;
+
+        public WindowsListener(string name, Action onSignal)
+        {
+            Name = name;
+            // AutoReset: one raise wakes the wait exactly once and re-arms itself, so a signal cannot
+            // be left set and re-delivered on the next loop.
+            _signal = new EventWaitHandle(false, EventResetMode.AutoReset, WindowsPrefix + name, out var createdNew);
+            if (!createdNew)
+            {
+                // Another process in this logon session already listens for this name. That is a real
+                // anomaly worth saying out loud - the two would take alternate signals - and it is not
+                // fatal, because refusing to listen would leave the caller with no way to be stopped
+                // at all.
+                FileLog.Write($"[LifecycleSignal] {name} was ALREADY being listened for by another process in this "
+                              + "logon session. Two listeners will take alternate signals; expect a shutdown or a "
+                              + "restart request to reach the wrong one.");
+            }
+
+            _thread = new Thread(() => Pump(onSignal))
+            {
+                IsBackground = true,
+                Name = $"lifecycle-signal-{name}",
+            };
+            _thread.Start();
+        }
+
+        public string Name { get; }
+
+        private void Pump(Action onSignal)
+        {
+            var handles = new WaitHandle[] { _signal, _stop };
+            while (true)
+            {
+                var which = WaitHandle.WaitAny(handles);
+                if (which == 1) return;
+
+                FileLog.Write($"[LifecycleSignal] {Name}: signalled");
+                try { onSignal(); }
+                catch (Exception ex) { FileLog.Write($"[LifecycleSignal] {Name} handler FAILED: {ex}"); }
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            try { _stop.Set(); } catch { }
+            // A shutdown handler disposes the very listener that invoked it, so this can be the pump
+            // thread joining itself - which throws. Skipping the join there is correct rather than
+            // merely safe: the pump returns as soon as the handler does, and the stop is already set.
+            // The handles are only released once the pump is known to have stopped waiting on them;
+            // on the self-disposing path the process is exiting and the kernel releases them.
+            if (Thread.CurrentThread != _thread && _thread.Join(TimeSpan.FromSeconds(2)))
+            {
+                _signal.Dispose();
+                _stop.Dispose();
+            }
+            FileLog.Write($"[LifecycleSignal] stopped listening for {Name}");
+        }
+    }
+
+    private sealed class UnixListener : ILifecycleSignalListener
+    {
+        private readonly string _path;
+        private readonly CancellationTokenSource _stop = new();
+        private readonly Thread _thread;
+        private bool _disposed;
+
+        public UnixListener(string name, Action onSignal)
+        {
+            Name = name;
+            _path = UnixRequestPath(name);
+            Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+
+            // A leftover request from a previous run is deleted rather than answered: this process has
+            // only just started, so a request that predates it was meant for its predecessor.
+            TryDeleteRequest();
+
+            _thread = new Thread(() => Pump(onSignal))
+            {
+                IsBackground = true,
+                Name = $"lifecycle-signal-{name}",
+            };
+            _thread.Start();
+        }
+
+        public string Name { get; }
+
+        private void Pump(Action onSignal)
+        {
+            // POLLED, not watched. A FileSystemWatcher silently drops notifications - this repository
+            // measured roughly one lost event in five, with the file present and complete and no Error
+            // raised - so a watcher may be a latency win but must never be the delivery guarantee. A
+            // shutdown that is missed one time in five is worse than one that arrives half a second
+            // late.
+            while (!_stop.IsCancellationRequested)
+            {
+                try
+                {
+                    if (File.Exists(_path) && TakeRequest(out var stamp))
+                    {
+                        var age = DateTimeOffset.UtcNow - stamp;
+                        if (age > UnixRequestFreshness)
+                        {
+                            FileLog.Write($"[LifecycleSignal] {Name}: discarding a request written {age.TotalSeconds:F0}s "
+                                          + "ago - too old to have been meant for this process.");
+                        }
+                        else
+                        {
+                            FileLog.Write($"[LifecycleSignal] {Name}: signalled");
+                            try { onSignal(); }
+                            catch (Exception ex) { FileLog.Write($"[LifecycleSignal] {Name} handler FAILED: {ex}"); }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[LifecycleSignal] {Name}: poll failed: {ex.Message}");
+                }
+
+                if (_stop.Token.WaitHandle.WaitOne(UnixPollInterval)) return;
+            }
+        }
+
+        /// <summary>Read and remove the request in one pass, so it is answered exactly once.</summary>
+        private bool TakeRequest(out DateTimeOffset stamp)
+        {
+            stamp = default;
+            string text;
+            try { text = File.ReadAllText(_path); }
+            catch (FileNotFoundException) { return false; }
+            TryDeleteRequest();
+            return DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind, out stamp);
+        }
+
+        private void TryDeleteRequest()
+        {
+            try { if (File.Exists(_path)) File.Delete(_path); }
+            catch (Exception ex) { FileLog.Write($"[LifecycleSignal] {Name}: cannot remove {_path}: {ex.Message}"); }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _stop.Cancel();
+            // See the Windows listener: a handler that disposes its own listener runs ON this thread.
+            if (Thread.CurrentThread != _thread && _thread.Join(TimeSpan.FromSeconds(2)))
+                _stop.Dispose();
+            FileLog.Write($"[LifecycleSignal] stopped listening for {Name}");
+        }
+    }
+}
+
+/// <summary>A live subscription to a named lifecycle signal. Dispose to stop answering it.</summary>
+public interface ILifecycleSignalListener : IDisposable
+{
+    /// <summary>The signal name being answered.</summary>
+    string Name { get; }
+}

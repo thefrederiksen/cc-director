@@ -49,6 +49,13 @@ public partial class App : Application
     /// changes; deleted on clean shutdown, so a surviving file means an abnormal death.
     /// </summary>
     public DirectorCrashJournal? CrashJournal { get; private set; }
+
+    /// <summary>
+    /// The two lifecycle requests this Director answers from outside itself, with no network: "shut
+    /// down" and "check for updates now". See <see cref="StartLifecycleSignals"/>.
+    /// </summary>
+    private CcDirector.Core.Lifecycle.ILifecycleSignalListener? _shutdownSignal;
+    private CcDirector.Core.Lifecycle.ILifecycleSignalListener? _updateCheckSignal;
     public RecentSessionStore RecentSessionStore { get; private set; } = null!;
     public SessionHistoryStore SessionHistoryStore { get; private set; } = null!;
     public NulFileWatcher? NulFileWatcher { get; private set; }
@@ -407,6 +414,8 @@ public partial class App : Application
         UpdateSplashStatus(splash, "Starting engine...");
         StartEngine(log);
 
+        StartLifecycleSignals(log);
+
         UpdateSplashStatus(splash, "Starting control API...");
         StartControlApi(log);
     }
@@ -559,30 +568,90 @@ public partial class App : Application
         });
     }
 
+    /// <summary>
+    /// Shut this Director down because something outside it asked - the lifecycle signal, or the
+    /// Gateway tunnel's shutdown verb.
+    ///
+    /// A programmatic lifetime.Shutdown() does NOT raise ShutdownRequested, so the shutdown routine
+    /// (kill sessions, Gateway farewell, stop hosts, delete the crash journal) must run EXPLICITLY here
+    /// first - otherwise an externally requested stop exits without any of it and is indistinguishable
+    /// from a crash (issue #2194 found this: no session removals, no farewell, crash journal left
+    /// behind). Off the UI thread, exactly like the ShutdownRequested path; the guard inside OnShutdown
+    /// makes a later ShutdownRequested double-fire a no-op.
+    /// </summary>
+    internal async Task RequestShutdownAsync()
+    {
+        await Task.Run(() => OnShutdown(msg => FileLog.Write($"[CcDirector] {msg}")));
+        global::Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+        {
+            if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime lifetime)
+                lifetime.Shutdown();
+        });
+    }
+
+    /// <summary>
+    /// Begin answering the two lifecycle requests that must work when nothing else does: "shut down"
+    /// and "check for updates now".
+    ///
+    /// WHY THESE ARE SIGNALS AND NOT ROUTES. Both used to be posts to this Director's own web
+    /// interface, which meant the launcher could only stop it - and therefore only update it - while a
+    /// loopback socket was accepting connections and a credential file could be read. Every other thing
+    /// an agent asks for goes through the Gateway on purpose, so there is one door; lifecycle cannot,
+    /// because its whole job is to work when the Gateway is unreachable and to make this process exit
+    /// so its executable can be replaced. A named signal delivered by the operating system needs no
+    /// port, no address, no token, and no service to be up.
+    ///
+    /// THE NAME IS KEYED TO THIS DIRECTOR'S IDENTIFIER, which is the only string that names one
+    /// process. This machine routinely runs several Directors - named instances and development slots -
+    /// and a shutdown request that could reach any of them would eventually reach the wrong one.
+    ///
+    /// Started before the Control API rather than after it: a Director whose web interface fails to
+    /// bind is exactly the Director somebody needs to be able to stop.
+    /// </summary>
+    private void StartLifecycleSignals(Action<string> log)
+    {
+        try
+        {
+            var directorId = DirectorIdStore.LoadOrCreate();
+
+            _shutdownSignal = CcDirector.Core.Lifecycle.LifecycleSignal.Listen(
+                CcDirector.Core.Lifecycle.LifecycleSignalNames.DirectorShutdown(directorId),
+                () =>
+                {
+                    FileLog.Write("[CcDirector] shutdown requested by lifecycle signal");
+                    RequestShutdownAsync().GetAwaiter().GetResult();
+                });
+
+            _updateCheckSignal = CcDirector.Core.Lifecycle.LifecycleSignal.Listen(
+                CcDirector.Core.Lifecycle.LifecycleSignalNames.DirectorUpdateCheck(directorId),
+                () =>
+                {
+                    FileLog.Write("[CcDirector] update check requested by lifecycle signal");
+                    var outcome = CcDirector.Core.Update.UpdateStatusBoard.CheckNowAsync()
+                        .GetAwaiter().GetResult();
+                    FileLog.Write($"[CcDirector] on-demand update check concluded: "
+                                  + $"{outcome?.ToString() ?? "the updater has not started yet"}");
+                });
+
+            log($"Lifecycle signals listening for directorId={directorId}");
+        }
+        catch (Exception ex)
+        {
+            // Loud, and NOT fatal. A Director that refused to start because it could not be remotely
+            // stopped would be a Director nobody could start either.
+            log($"Lifecycle signals FAILED to start: {ex.Message}. This Director cannot be stopped or "
+                + "asked to check for updates from outside itself; closing its window still works.");
+        }
+    }
+
     private void StartControlApi(Action<string> log)
     {
         try
         {
             // Clean semver on the wire (gateway registration / status surfaces).
             var version = AppVersion.Semver;
-            Func<Task> requestShutdown = async () =>
-            {
-                // A programmatic lifetime.Shutdown() does NOT raise ShutdownRequested, so the
-                // shutdown routine (kill sessions, Gateway farewell, stop hosts, delete the crash
-                // journal) must run EXPLICITLY here first - otherwise a POST /shutdown exits without
-                // any of it and the stop is indistinguishable from a crash (issue #2194 found this:
-                // no session removals, no farewell, crash journal left behind). Off the UI thread,
-                // exactly like the ShutdownRequested path; the guard inside OnShutdown makes a later
-                // ShutdownRequested double-fire a no-op.
-                await Task.Run(() => OnShutdown(msg => FileLog.Write($"[CcDirector] {msg}")));
-                global::Avalonia.Threading.Dispatcher.UIThread.Post(() =>
-                {
-                    if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime lifetime)
-                        lifetime.Shutdown();
-                });
-            };
 
-            ControlApiHost = new ControlApiHost(SessionManager, version, requestShutdown,
+            ControlApiHost = new ControlApiHost(SessionManager, version, RequestShutdownAsync,
                 // Authentication is required, stated here rather than left to the constructor default,
                 // because this is the line that decides what a shipped desktop install exposes. It read
                 // as "no argument, so whatever the default is" for as long as the default was open.
@@ -775,6 +844,13 @@ public partial class App : Application
             // by the next Director's recovery scan (issue #212 L5).
             try { CrashJournal?.MarkClean(); }
             catch (Exception ex) { log($"CrashJournal MarkClean error: {ex.Message}"); }
+
+            // Stop answering lifecycle requests LAST of the listeners: this runs on the shutdown path
+            // the signal itself may have started, and on Windows the kernel destroys the named object
+            // the moment this process ends anyway, so a later signal cannot be delivered to a Director
+            // that is already leaving.
+            try { _shutdownSignal?.Dispose(); _updateCheckSignal?.Dispose(); }
+            catch (Exception ex) { log($"Lifecycle signal stop error: {ex.Message}"); }
 
             ClaudeUsageService?.Dispose();
             BackupCleaner?.Dispose();

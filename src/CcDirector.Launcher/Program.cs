@@ -236,33 +236,27 @@ public static class Program
             target, stagedSelf, version,
             stopLauncher: () =>
             {
-                // Issue #1609: /shutdown is behind LauncherHost's token gate, so this MUST authenticate.
-                // Sent token-less it was answered 401, the Launcher never exited, its exe never unlocked,
-                // and the self-update aborted with the misleading "exe still locked after stop". The
-                // exe-writability wait below is only a barrier if the process actually exits; it cannot
-                // substitute for it. Same defect, same fix, as the Gateway helper.
-                var request = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/shutdown");
-                var token = TryReadLauncherToken();
-                if (token is null)
-                {
-                    FileLog.Write("[Program] /shutdown SKIPPED: no launcher token readable; cannot ask the Launcher to exit, so the swap will abort");
-                    return false;
-                }
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-
-                try
-                {
-                    using var resp = http.SendAsync(request).GetAwaiter().GetResult();
-                    FileLog.Write($"[Program] /shutdown -> {(int)resp.StatusCode}");
-                    if (!resp.IsSuccessStatusCode)
-                        FileLog.Write($"[Program] /shutdown REFUSED ({(int)resp.StatusCode}); the Launcher will not exit and the swap will abort on a locked exe");
-                    return resp.IsSuccessStatusCode;
-                }
-                catch (Exception ex)
-                {
-                    FileLog.Write($"[Program] /shutdown unreachable ({ex.Message}); launcher presumably not running");
-                    return false;
-                }
+                // A named lifecycle signal, not a post to the launcher's own web interface.
+                //
+                // The route this replaced was behind LauncherHost's token gate, and issue #1609 is what
+                // that cost: sent token-less it was answered 401, the launcher never exited, its
+                // executable never unlocked, and the self-update aborted with the misleading "exe still
+                // locked after stop". The signal removes the whole class of failure - there is no
+                // credential to omit, no port to have moved, and no socket that has to be accepting
+                // connections at the moment a swap needs the process to leave.
+                //
+                // False here means nothing was listening, which is the same answer the refusal path
+                // gave and is handled the same way: the swap aborts rather than writing over a locked
+                // executable. The wait for the executable to become writable is still the barrier and
+                // still cannot substitute for the process actually exiting.
+                var signal = CcDirector.Core.Lifecycle.LifecycleSignalNames.LauncherShutdown();
+                var asked = CcDirector.Core.Lifecycle.LifecycleSignal.Raise(signal);
+                FileLog.Write($"[Program] asked the Launcher to quit via {signal}: delivered={asked}");
+                if (!asked)
+                    FileLog.Write("[Program] nothing is listening for the launcher shutdown signal; the launcher is "
+                                  + "not running, or is a build older than this one. The swap will abort rather than "
+                                  + "write over a locked executable.");
+                return asked;
             },
             startLauncher: () =>
             {

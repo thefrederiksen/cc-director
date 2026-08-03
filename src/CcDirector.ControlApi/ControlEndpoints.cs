@@ -115,82 +115,26 @@ internal static class ControlEndpoints
         // rendered on demand from the Director's caches, and the maintained file is written from those
         // same caches at the moment they refresh - so there is nothing a route could serve that is fresher.
 
-        // ===== Update status (issue #1030) =====
+        // Remove-the-network-port mission, phase 4: THE THREE LIFECYCLE ROUTES ARE GONE.
         //
-        // What this machine knows about its own updates: the running version, when it last looked, what
-        // that look concluded, and what the launcher decided to do about anything it downloaded. The
-        // same folded answer the desktop window renders - one fold, so nothing can say two things.
+        // POST /shutdown, GET /update/status and POST /update/check lived here.
         //
-        // The body carries FINISHED text and the finished list of available actions, not raw state for a
-        // caller to interpret (critical rule 7). A caller that wanted to group machines can key on
-        // "state"; a caller that wants to SHOW something uses the words that are already here.
-        app.MapGet("/update/status", () =>
-        {
-            var status = CcDirector.Core.Update.UpdateStatusBoard.Current();
-            if (status is null)
-            {
-                // Startup has not built the updater yet. Say that, rather than answering "up to date"
-                // for a machine that has not looked - the exact confusion this endpoint exists to end.
-                FileLog.Write("[ControlEndpoints] GET update/status before the updater was registered");
-                return Results.Json(new { ready = false, reason = "the updater has not started yet" }, statusCode: 503);
-            }
-
-            return Results.Json(new
-            {
-                ready = true,
-                state = status.State,
-                headline = status.Headline,
-                detail = status.Detail,
-                tooltip = status.Tooltip,
-                accent = status.Accent,
-                background = status.Background,
-                border = status.Border,
-                icon = status.Icon,
-                busy = status.Busy,
-                percentComplete = status.PercentComplete,
-                canCheckNow = status.CanCheckNow,
-                checkNowLabel = status.CheckNowLabel,
-                canInstallNow = status.CanInstallNow,
-                installNowLabel = status.InstallNowLabel,
-            });
-        });
-
-        // Run a check on demand and answer with what it CONCLUDED plus the refolded status, so the
-        // caller learns the result of the thing it asked for rather than having to poll and guess.
-        app.MapPost("/update/check", async (CancellationToken ct) =>
-        {
-            FileLog.Write("[ControlEndpoints] POST update/check");
-            var outcome = await CcDirector.Core.Update.UpdateStatusBoard.CheckNowAsync(ct);
-            if (outcome is null)
-                return Results.Json(new { ok = false, reason = "the updater has not started yet" }, statusCode: 503);
-
-            var status = CcDirector.Core.Update.UpdateStatusBoard.Current();
-            return Results.Json(new
-            {
-                ok = true,
-                outcome = outcome.Value.ToString(),
-                state = status?.State,
-                headline = status?.Headline,
-                detail = status?.Detail,
-            });
-        });
-
-        // ===== Shutdown =====
-        app.MapPost("/shutdown", (HttpContext ctx) =>
-        {
-            // Name the local caller (issue #212 L3). This endpoint stops the whole Director
-            // and every claude.exe under it; the 2026-06-06 post-mortem could not tell whether
-            // an agent had triggered a shutdown because the caller was never recorded.
-            var caller = Core.Network.LoopbackPeerResolver.Describe(ctx.Connection.RemotePort, ctx.Connection.LocalPort);
-            FileLog.Write($"[ControlEndpoints] POST shutdown requested caller={caller}");
-            _ = Task.Run(async () =>
-            {
-                await Task.Delay(100);
-                try { await requestShutdownAsync(); }
-                catch (Exception ex) { FileLog.Write($"[ControlEndpoints] Shutdown FAILED: {ex.Message}"); }
-            });
-            return Results.Json(new { accepted = true });
-        });
+        // Lifecycle is the one part of this product that must work exactly when the Gateway does NOT -
+        // it is how the launcher supervises this Director and how an update makes it exit so its
+        // executable can be replaced - so it can never move to the Gateway. It moved OFF the network
+        // instead:
+        //
+        //   - "shut down" is a named signal keyed to this Director's identifier
+        //     (LifecycleSignalNames.DirectorShutdown), listened for in App.StartLifecycleSignals. It
+        //     runs the same shutdown routine this route ran, and it is reachable when no socket is.
+        //   - "check for updates now" is the same, DirectorUpdateCheck.
+        //   - The update STATUS had no caller outside this Director at all - every consumer of
+        //     UpdateStatusBoard is in-process (the desktop window renders the same fold). A route with
+        //     no caller is not a capability, it is an opening, so it is deleted rather than moved.
+        //
+        // Do not restore any of them. A second way to stop a Director is the second door this mission
+        // exists to remove, and it is the door that stops working first.
+        _ = requestShutdownAsync; // still handed to the Gateway tunnel's shutdown verb, in ControlApiHost.
 
         // ===== Fleet messaging (issue #705) - CUT RESTORATION (SB-4a) =====
         // Gateway Cleanup mission: these four routes were deleted at the cut but are RESTORED to the Director's

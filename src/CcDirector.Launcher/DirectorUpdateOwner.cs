@@ -151,29 +151,31 @@ public sealed class DirectorUpdateOwner
                 "The Director was not running when the launcher looked, so nothing was installed.");
         }
 
-        // How busy is it? A Director that cannot be asked must NOT be read as idle: it may well be
-        // holding sessions, and acting without the evidence is exactly the guess this change exists to
-        // remove.
-        var health = await _supervisor.ReadHealthAsync(ct);
-        if (health is null)
+        // How busy is it? A Director whose state cannot be established must NOT be read as idle: it may
+        // well be holding sessions, and acting without the evidence is exactly the guess this change
+        // exists to remove. This is also where an UNDECIDABLE machine stops - two live processes both
+        // claiming the supervised instance means the launcher does not know whose sessions it would be
+        // interrupting, and a Director that cannot be identified is never updated over.
+        var status = _supervisor.ReadStatus();
+        if (status is null)
         {
-            FileLog.Write($"[DirectorUpdateOwner] {staged.Version} is staged but the running Director did not answer, "
-                          + "so whether it is idle is unknown; holding the update rather than guessing.");
+            FileLog.Write($"[DirectorUpdateOwner] {staged.Version} is staged but the running Director could not be "
+                          + "identified or read, so whether it is idle is unknown; holding the update rather than guessing.");
             return Record(staged, DirectorUpdateDecision.HeldBecauseUnknown,
-                "The running Director did not answer when asked whether it was busy.");
+                "The running Director could not be identified when the launcher looked at how busy it was.");
         }
 
-        if (health.Sessions is null)
+        if (status.Sessions is null)
         {
-            FileLog.Write($"[DirectorUpdateOwner] {staged.Version} is staged but the Director answered without a session "
-                          + "count; holding the update rather than guessing.");
+            FileLog.Write($"[DirectorUpdateOwner] {staged.Version} is staged but the Director's session roster could "
+                          + "not be read; holding the update rather than guessing.");
             return Record(staged, DirectorUpdateDecision.HeldBecauseUnknown,
-                "The Director answered without saying how many sessions it holds.");
+                "The Director did not have a readable roster saying how many sessions it holds.");
         }
 
         // The Director is already the staged version - it was installed by a route other than this one,
         // or the record simply outlived the install. Clear the record instead of reinstalling.
-        if (health.Version is { } reportedVersion && DirectorUpdateApply.VersionsMatch(staged.Version, reportedVersion))
+        if (status.Version is { Length: > 0 } reportedVersion && DirectorUpdateApply.VersionsMatch(staged.Version, reportedVersion))
         {
             FileLog.Write($"[DirectorUpdateOwner] the running Director already reports {reportedVersion}; "
                           + "clearing the staged record without installing anything.");
@@ -181,7 +183,7 @@ public sealed class DirectorUpdateOwner
             return DirectorUpdateDecision.NothingStaged;
         }
 
-        var sessions = health.Sessions.Value;
+        var sessions = status.Sessions.Value;
         if (!ShouldApply(hasStagedUpdate: true, runningSessionCount: sessions))
         {
             FileLog.Write($"[DirectorUpdateOwner] {staged.Version} is staged but {sessions} session(s) are running; "
@@ -191,7 +193,8 @@ public sealed class DirectorUpdateOwner
         }
 
         FileLog.Write($"[DirectorUpdateOwner] installing {staged.Version}: staged={staged.StagedBuild}, "
-                      + $"target={staged.InstallTarget}, sessions=0, currentVersion={health.Version ?? "unknown"}");
+                      + $"target={staged.InstallTarget}, sessions=0, currentVersion="
+                      + $"{(status.Version.Length > 0 ? status.Version : "unknown")}");
 
         // Claim it BEFORE anything is started, so no Director that comes up during this can hand itself
         // to its own swap. See the class comment - the alternative is a rollback loop into a dead build.
@@ -203,7 +206,10 @@ public sealed class DirectorUpdateOwner
             staged.Version,
             stopDirector: token => _supervisor.StopAsync(token),
             startDirector: () => _supervisor.Start(),
-            readRunningVersion: async token => (await _supervisor.ReadHealthAsync(token))?.Version,
+            // The version of whatever is running NOW, re-read on every poll while the swap settles. It
+            // comes from the registration the running process wrote, so a Director that never came up
+            // cannot supply it - which is what makes the roll-back below reachable.
+            readRunningVersion: _ => Task.FromResult(_supervisor.ReadStatus()?.Version),
             healthTimeout: _healthTimeout,
             ct: ct);
 

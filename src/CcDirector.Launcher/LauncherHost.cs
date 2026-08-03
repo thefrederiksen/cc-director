@@ -273,24 +273,18 @@ public sealed class LauncherHost : IAsyncDisposable
             await ctx.Response.WriteAsJsonAsync(new { ok = true, action = "stopped" }, JsonOpts);
         });
 
-        // POST /director/restart
-        app.MapPost("/director/restart", async (HttpContext ctx) =>
-        {
-            await _directorSupervisor.RestartAsync(ctx.RequestAborted);
-            await ctx.Response.WriteAsJsonAsync(new { ok = true, action = "restarted" }, JsonOpts);
-        });
-
-        // POST /shutdown - quit the launcher.
-        app.MapPost("/shutdown", async (HttpContext ctx) =>
-        {
-            FileLog.Write("[LauncherHost] /shutdown requested");
-            await ctx.Response.WriteAsJsonAsync(new { ok = true }, JsonOpts);
-            _ = Task.Run(async () =>
-            {
-                await Task.Delay(100); // Let the response flush.
-                await _requestShutdownAsync();
-            });
-        });
+        // Remove-the-network-port mission, phase 4: POST /director/restart AND POST /shutdown ARE GONE.
+        //
+        // Both were lifecycle, and lifecycle is the one thing here that has to work when the network
+        // does not: the Director's "install it now" button asked for the restart, and the uninstaller
+        // asked the launcher to quit. Serving those over a socket meant a launcher whose web host had
+        // not come up could be neither quit nor asked to install anything - the exact states somebody
+        // needs those two verbs in.
+        //
+        // They are now named signals (LifecycleSignalNames.LauncherRestartDirector and
+        // LauncherShutdown), answered in LauncherCore, keyed to the storage root this launcher serves.
+        // Do not restore a route for either: a second way to stop the launcher is the second door this
+        // mission exists to remove, and the socket is the one that stops working first.
     }
 
     /// <summary>

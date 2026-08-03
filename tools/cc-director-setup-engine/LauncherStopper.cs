@@ -49,8 +49,16 @@ public sealed class LauncherStopper
 
     public LauncherStopper(InstallLayout layout) => _layout = layout;
 
-    /// <summary>Ask the launcher at this URL to quit, with this token. True when it accepted.</summary>
-    public Func<string, string?, bool> RequestQuit { get; init; } = DefaultRequestQuit;
+    /// <summary>
+    /// Ask the launcher serving this storage root to quit. True when the request was delivered - which
+    /// on Windows also means something was listening for it.
+    ///
+    /// A named lifecycle signal rather than a post to the launcher's loopback interface. That matters
+    /// here more than anywhere: this runs during an UNINSTALL, on a machine whose launcher may be
+    /// half-started, and the polite path used to need a discovery port, a token file and a live socket -
+    /// three ways to be forced into the kill that the steps below correctly refuse to call a clean stop.
+    /// </summary>
+    public Func<string, bool> RequestQuit { get; init; } = DefaultRequestQuit;
 
     /// <summary>Every launcher process on the machine (unfiltered - this class does the scoping).</summary>
     public Func<IReadOnlyList<LauncherProcess>> ListLauncherProcesses { get; init; } = DefaultListLauncherProcesses;
@@ -64,8 +72,10 @@ public sealed class LauncherStopper
     /// <summary>Which process answers on the launcher port, or 0 when nothing does or it will not say.</summary>
     public Func<int> PortOwnerPid { get; init; } = DefaultPortOwnerPid;
 
-    /// <summary>Where the launcher's bearer token lives, inside the per-user root.</summary>
-    public string TokenFilePath => Path.Combine(_layout.LocalRoot, "config", "launcher", "launcher-token.txt");
+    // Remove-the-network-port mission, phase 4: TokenFilePath and ReadToken are GONE. The polite quit
+    // was a post to the launcher's loopback interface behind a bearer token, so an uninstall running
+    // AFTER the token file was removed got a 401 and fell through to killing the process. There is no
+    // token to be missing now, which removes the ordering hazard rather than documenting it.
 
     /// <summary>
     /// Stop every installed launcher. Safe when none is running. MUST be called BEFORE any wipe of the
@@ -114,24 +124,20 @@ public sealed class LauncherStopper
             return new Result(true, steps);
         }
 
-        // 2. Politely, while the token still exists, and only to a launcher that is ours.
-        var token = ReadToken();
-        if (token is null)
+        // 2. Politely first, and only to a launcher that is ours.
+        //
+        // THE SCOPING NO LONGER DEPENDS ON WHO HOLDS THE PORT. It used to: the quit was sent only when
+        // the process answering the launcher port was positively one of ours, because a per-user bearer
+        // token would also be accepted by a launcher running out of a developer's checkout, and an
+        // unidentified port owner was not permission to shut down whoever was there. The signal is
+        // named for the storage root this installer is uninstalling, so a launcher serving a different
+        // root cannot hear it at all - the scoping moved from a runtime check into the address itself,
+        // which is why the port test is gone rather than merely relaxed.
         {
-            steps.Add($"launcher token not present at {TokenFilePath} - cannot ask it to quit, "
-                      + "stopping it by process instead");
-        }
-        else if (portBusy && portOwner != 0 && ours.Any(p => p.Pid == portOwner))
-        {
-            // ONLY when the owner is positively identified as ours. An unknown owner (health did not
-            // answer, or answered without a process id) is not permission to send a shutdown to whoever
-            // is there: the token is per-user, so a launcher running from a developer's checkout would
-            // accept it. When we cannot tell, we stop our own processes directly instead - which is
-            // scoped by construction.
-            var asked = RequestQuit($"http://127.0.0.1:{LauncherTrayInstaller.LauncherDefaultPort}/shutdown", token);
+            var asked = RequestQuit(_layout.LocalRoot);
             steps.Add(asked
-                ? "the launcher accepted the quit request"
-                : "the launcher refused or did not answer the quit request");
+                ? "the launcher was asked to quit"
+                : "no launcher of ours is listening for a quit request");
             if (asked) WaitFor(() => Ours(out _).Count == 0, TimeSpan.FromSeconds(5));
         }
 
@@ -202,20 +208,6 @@ public sealed class LauncherStopper
         return Ours(out _).Any(p => p.Pid == owner);
     }
 
-    private string? ReadToken()
-    {
-        try
-        {
-            if (!File.Exists(TokenFilePath)) return null;
-            var token = File.ReadAllText(TokenFilePath).Trim();
-            return string.IsNullOrWhiteSpace(token) ? null : token;
-        }
-        catch (Exception ex)
-        {
-            EngineLog.Write($"[LauncherStopper] could not read the launcher token: {ex.Message}");
-            return null;
-        }
-    }
 
     private static bool WaitFor(Func<bool> condition, TimeSpan timeout)
     {
@@ -230,15 +222,12 @@ public sealed class LauncherStopper
 
     // ---- production implementations ----
 
-    private static bool DefaultRequestQuit(string url, string? token)
+    private static bool DefaultRequestQuit(string sharedRoot)
     {
         try
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-            using var req = new HttpRequestMessage(HttpMethod.Post, url);
-            if (token is not null) req.Headers.Add("Authorization", $"Bearer {token}");
-            using var resp = http.Send(req);
-            return resp.IsSuccessStatusCode;
+            return CcDirector.Core.Lifecycle.LifecycleSignal.Raise(
+                CcDirector.Core.Lifecycle.LifecycleSignalNames.LauncherShutdown(sharedRoot));
         }
         catch (Exception ex)
         {

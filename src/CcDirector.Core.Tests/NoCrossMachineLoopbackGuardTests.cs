@@ -48,11 +48,17 @@ public sealed class NoCrossMachineLoopbackGuardTests
         ["src/CcDirector.Gateway.Migrations.Postgres/GatewayStatsDbContextPostgresDesignTimeFactory.cs"] = "Design-time-only EF tooling factory for the statistics context's POSTGRES migration chain, same shape as GatewayDbContextDesignTimeFactory.cs above: the localhost connection string is a THROWAWAY design value that migrations add never opens, and the running Gateway selects its statistics connection through StatsConnectionSelection instead.",
         ["src/CcDirector.Gateway/CarMode/LoopbackCarModeFleet.cs"] = "The Car Mode brain's fleet tools call THIS Gateway's own endpoints over http://127.0.0.1:{port} (same-machine self-call), the same pattern the Web Push needs-you notifier uses to read its own /sessions - so the brain sees the identical aggregated roster every client sees with no re-implementation.",
         ["src/CcDirector.GatewayApp/Program.cs"] = "Local Gateway bootstrap.",
-        ["src/CcDirector.Launcher/DirectorSupervisor.cs"] = "Supervises a local Director over loopback.",
+        // Remove-the-network-port mission, phase 4: DirectorSupervisor.cs no longer appears here. It
+        // supervised the Director by posting to its loopback Control API; it now reads the files the
+        // Director maintains and raises a named signal, so it carries no address of any kind.
         ["src/CcDirector.Launcher/LauncherHost.cs"] = "Local launcher loopback bind.",
         ["src/CcDirector.Launcher/Program.cs"] = "Self-update helper POSTs /shutdown + probes /healthz on the launcher's own loopback (same machine).",
         ["src/CcDirector.Core/Account/LoopbackLoginListener.cs"] = "Binds an HttpListener on 127.0.0.1 only (operating-system-assigned ephemeral port) to receive the first-run browser sign-in hand-back; same-machine loopback trust boundary (security rule DT-07, issue #581).",
-        ["src/CcDirector.Core/Update/LauncherRestartClient.cs"] = "The Director asks ITS OWN launcher - the process supervising this very Director on this very machine - to stop it, install the staged build and start it again (issue #1030's 'install it now' action). Same machine is not a convenience here, it is the whole meaning of the call: a launcher on another machine could not replace THIS binary, and the port comes from LauncherDiscovery reading a file the local launcher wrote in this machine's own storage home, so there is no address that could name a remote one. Mirrors the loopback already allowed for DirectorSupervisor.cs and LauncherHost.cs at the other end of the same conversation.",
+        // Remove-the-network-port mission, phase 4: LauncherRestartClient.cs no longer appears here
+        // either. "Install it now" asked the launcher over http://127.0.0.1:{port}/director/restart,
+        // reading a discovery file for the port and a token file for the credential; it raises a named
+        // signal now. The same-machine scoping that entry argued for is stronger rather than weaker - the
+        // signal is named for this machine's storage root, so there is no address to get wrong.
         // Browsers feature: an automation browser's Chrome remote-debugging port is bound by Chrome on
         // loopback, so machine-locality is the feature's designed security property - only an agent on
         // THIS machine can attach (handover 2026-07-23). These three carry the loopback literal on purpose.

@@ -18,12 +18,13 @@ namespace CcDirector.Launcher;
 public static class LauncherAuth
 {
     /// <remarks>
-    /// The path is stated once, in <see cref="CcDirector.Core.Update.LauncherRestartClient.TokenFile"/>,
-    /// because the Director reads this file too - it is how the update status offers "install it now"
-    /// (issue #1030). Two spellings of the same path would let one of them be corrected and the other
-    /// quietly keep pointing at nothing.
+    /// The launcher is now the ONLY reader of this file. It was stated over in the Director's Core
+    /// assembly for as long as the Director had to present it - that is how "install it now" used to
+    /// ask for a restart - and the restart is a named lifecycle signal now, so the path comes home to
+    /// the one process that still needs it. The remaining routes it guards are Phase 6's to remove.
     /// </remarks>
-    public static string TokenFile { get; } = CcDirector.Core.Update.LauncherRestartClient.TokenFile;
+    public static string TokenFile { get; } =
+        Path.Combine(CcStorage.ToolConfig("launcher"), "launcher-token.txt");
 
     private static readonly HashSet<string> PublicPaths = new(StringComparer.OrdinalIgnoreCase)
     {

@@ -42,7 +42,7 @@ public sealed class LauncherStopperTests
             PortInUse = () => false,
             PortOwnerPid = () => 0,
             ListLauncherProcesses = () => { listed = true; return []; },
-            RequestQuit = (_, _) => throw new InvalidOperationException("must not ask when nothing of ours is running"),
+            RequestQuit = _ => throw new InvalidOperationException("must not ask when nothing of ours is running"),
             StopProcess = _ => throw new InvalidOperationException("must not stop anything"),
         };
 
@@ -54,18 +54,15 @@ public sealed class LauncherStopperTests
         Assert.True(listed);
     }
 
-    // The polite path, and the ORDER that makes it possible: the token must still be on disk, which
-    // is only true before a wipe. On the real machine the token file had already been deleted and the
-    // shutdown request came back 401.
+    // The polite path. It no longer depends on a token file still being on disk, and that ordering
+    // hazard is the reason it is worth restating: the quit used to be a post behind a bearer token, so
+    // an uninstall that had already wiped the token got a 401 and force-killed instead. A named signal
+    // has nothing to be missing.
     [Fact]
-    public void Stop_AsksTheLauncherToQuitFirst_WhenTheTokenIsStillOnDisk()
+    public void Stop_AsksTheLauncherToQuitFirst()
     {
         var root = MakeRoot();
-        var stopper = new LauncherStopper(LayoutIn(root));
-        Directory.CreateDirectory(Path.GetDirectoryName(stopper.TokenFilePath)!);
-        File.WriteAllText(stopper.TokenFilePath, "the-token");
-
-        string? sawToken = null;
+        string? sawRoot = null;
         var quitAsked = false;
         var killed = false;
         var running = true;
@@ -78,9 +75,9 @@ public sealed class LauncherStopperTests
         {
             PortInUse = () => running,
             PortOwnerPid = () => 4242,
-            RequestQuit = (_, token) =>
+            RequestQuit = askedRoot =>
             {
-                quitAsked = true; sawToken = token; running = false; alive = false; return true;
+                quitAsked = true; sawRoot = askedRoot; running = false; alive = false; return true;
             },
             ListLauncherProcesses = () => alive ? [ourLauncher] : [],
             StopProcess = _ => { killed = true; return true; },
@@ -89,15 +86,17 @@ public sealed class LauncherStopperTests
         var result = s.Stop();
 
         Assert.True(quitAsked);
-        Assert.Equal("the-token", sawToken);
+        // Scoped to the root being uninstalled, which is what keeps a launcher serving a different root
+        // from hearing it at all.
+        Assert.Equal(root, sawRoot);
         Assert.True(result.Stopped);
         Assert.False(killed);   // it went quietly; nothing had to be killed
     }
 
-    // No token (the state a wipe leaves behind) means the polite path is impossible, so the process
-    // path must run. This is the orphan case.
+    // Nobody listening for the quit signal - a launcher older than this build, or one whose startup
+    // never got that far. The process path must still run. This is the orphan case.
     [Fact]
-    public void Stop_WithNoToken_StopsTheInstalledProcessInstead()
+    public void Stop_WhenNothingAnswersTheQuitSignal_StopsTheInstalledProcessInstead()
     {
         var root = MakeRoot();
         var layout = LayoutIn(root);
@@ -108,7 +107,7 @@ public sealed class LauncherStopperTests
         {
             PortInUse = () => running,
             PortOwnerPid = () => 34084,
-            RequestQuit = (_, _) => throw new InvalidOperationException("there is no token to ask with"),
+            RequestQuit = _ => false,
             ListLauncherProcesses = () => running
                 ? [new LauncherProcess(34084, Path.Combine(layout.LauncherDir, "cc-launcher") + " --managed")]
                 : [],
@@ -133,7 +132,7 @@ public sealed class LauncherStopperTests
         {
             PortInUse = () => true,
             PortOwnerPid = () => 999,
-            RequestQuit = (_, _) => throw new InvalidOperationException(
+            RequestQuit = _ => throw new InvalidOperationException(
                 "must not ask a launcher outside the install to quit - it shares the same token file"),
             ListLauncherProcesses = () => [new LauncherProcess(999, @"D:\repos\devthrottle\src\CcDirector.Launcher\bin\cc-launcher.exe --managed")],
             StopProcess = pid => { stopped.Add(pid); return true; },
@@ -161,7 +160,7 @@ public sealed class LauncherStopperTests
         {
             PortInUse = () => true,                 // never frees
             PortOwnerPid = () => 34084,
-            RequestQuit = (_, _) => false,
+            RequestQuit = _ => false,
             // The process survives every attempt - the exact orphan behaviour.
             ListLauncherProcesses = () => [new LauncherProcess(34084, Path.Combine(layout.LauncherDir, "cc-launcher") + " --managed")],
             StopProcess = _ => true,                // the attempt "succeeded"
@@ -193,7 +192,7 @@ public sealed class LauncherStopperTests
         {
             PortInUse = () => alive,
             PortOwnerPid = () => 34084,
-            RequestQuit = (_, _) => false,
+            RequestQuit = _ => false,
             ListLauncherProcesses = () => alive
                 ? [new LauncherProcess(34084, Path.Combine(layout.LauncherDir, "cc-launcher") + " --managed")]
                 : [],
@@ -219,7 +218,7 @@ public sealed class LauncherStopperTests
         {
             PortInUse = () => true,
             PortOwnerPid = () => 777,
-            RequestQuit = (_, _) => throw new InvalidOperationException("not ours"),
+            RequestQuit = _ => throw new InvalidOperationException("not ours"),
             ListLauncherProcesses = () => [new LauncherProcess(777, layout.LauncherDir + "-dev/cc-launcher --managed")],
             StopProcess = pid => { stopped.Add(pid); return true; },
         };
@@ -231,19 +230,27 @@ public sealed class LauncherStopperTests
 
     // FINDING 4: an installed launcher that holds NO port - still starting, failed to bind, or on a
     // different port - must still be stopped, because its files are about to be deleted underneath it.
+    //
+    // It is now ASKED first as well, which the port-gated version could not do: the polite path used to
+    // require the launcher port to be held by a process positively identified as ours, so precisely the
+    // launcher that had failed to bind was the one that could only ever be killed. The signal is named
+    // for the storage root rather than found through a port, so a launcher holding no port at all still
+    // hears it. Here nothing answers, so the process path still runs - which is what this test was
+    // written to protect.
     [Fact]
     public void Stop_StopsAnInstalledLauncherThatHoldsNoPort()
     {
         var root = MakeRoot();
         var layout = LayoutIn(root);
         var stopped = new List<int>();
+        var asked = false;
         var alive = true;
 
         var s = new LauncherStopper(layout)
         {
             PortInUse = () => false,                 // nothing on the port at all
             PortOwnerPid = () => 0,
-            RequestQuit = (_, _) => throw new InvalidOperationException("nothing is on the port to ask"),
+            RequestQuit = _ => { asked = true; return false; },
             ListLauncherProcesses = () => alive
                 ? [new LauncherProcess(5150, Path.Combine(layout.LauncherDir, "cc-launcher") + " --managed")]
                 : [],
@@ -252,6 +259,7 @@ public sealed class LauncherStopperTests
 
         var result = s.Stop();
 
+        Assert.True(asked, "a launcher holding no port must still be asked politely before it is killed");
         Assert.Equal([5150], stopped);
         Assert.True(result.Stopped);
     }
@@ -270,7 +278,7 @@ public sealed class LauncherStopperTests
         {
             PortInUse = () => live.Contains(100),
             PortOwnerPid = () => 100,
-            RequestQuit = (_, _) => false,
+            RequestQuit = _ => false,
             ListLauncherProcesses = () => live.Select(p => new LauncherProcess(p, exe + " --managed")).ToList(),
             StopProcess = pid => { live.Remove(pid); stopped.Add(pid); return true; },
         };
@@ -292,7 +300,7 @@ public sealed class LauncherStopperTests
             PortInUse = () => false,
             PortOwnerPid = () => 0,
             ListLauncherProcesses = () => throw new InvalidOperationException("ps is unavailable"),
-            RequestQuit = (_, _) => false,
+            RequestQuit = _ => false,
             StopProcess = _ => false,
         };
 

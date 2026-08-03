@@ -28,6 +28,8 @@ public sealed class LauncherCore : IAsyncDisposable
     private LauncherHost? _host;
     private GatewayRegistrationClient? _gatewayClient;
     private LauncherStreamClient? _launcherStreamClient;
+    private CcDirector.Core.Lifecycle.ILifecycleSignalListener? _shutdownSignal;
+    private CcDirector.Core.Lifecycle.ILifecycleSignalListener? _restartDirectorSignal;
     private bool _stopped;
 
     public LauncherCore(int port, string version)
@@ -52,6 +54,14 @@ public sealed class LauncherCore : IAsyncDisposable
 
         var launchService = new LaunchService();
         var directorSupervisor = new DirectorSupervisor();
+
+        // The two things asked of the launcher that must work with no network at all: quit, and
+        // restart the Director (which is how a staged update gets installed). They used to be posts to
+        // this launcher's own loopback interface - so the uninstaller could not stop a launcher whose
+        // web host had not come up, and the Director's "install it now" button depended on reading a
+        // port and a token off disk. Started FIRST, before the web host and before the Gateway, because
+        // a launcher that failed to start the rest of itself is exactly the one somebody needs to quit.
+        StartLifecycleSignals(requestShutdownAsync, directorSupervisor);
 
         // One instance of each query service, shared by the loopback host and the Gateway command stream, for
         // the same reason they share the supervisor and the launch service: two instances would be two places
@@ -104,6 +114,63 @@ public sealed class LauncherCore : IAsyncDisposable
         {
             await _host.StopAsync();
             _host = null;
+        }
+
+        try
+        {
+            _shutdownSignal?.Dispose();
+            _restartDirectorSignal?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[LauncherCore] stopping the lifecycle signals failed: {ex.Message}");
+        }
+        _shutdownSignal = null;
+        _restartDirectorSignal = null;
+    }
+
+    /// <summary>
+    /// Answer the two lifecycle requests aimed at this launcher, with no network involved.
+    ///
+    /// Both are keyed to the storage root this launcher serves, not to a port and not to the product
+    /// name, so a test rig running against its own root and the installed launcher never hear each
+    /// other's requests - which a port-based interface could not promise, because a port is a single
+    /// machine-wide number that whoever binds it first owns.
+    ///
+    /// The restart request is what installs a staged update on demand. It deliberately does the same
+    /// thing the launcher's own update pass would have done later, rather than a shortcut around it:
+    /// whatever replaces the executable has to outlive the process being replaced, so the launcher has
+    /// to be the one doing it.
+    /// </summary>
+    private void StartLifecycleSignals(Func<Task> requestShutdownAsync, DirectorSupervisor directorSupervisor)
+    {
+        try
+        {
+            _shutdownSignal = CcDirector.Core.Lifecycle.LifecycleSignal.Listen(
+                CcDirector.Core.Lifecycle.LifecycleSignalNames.LauncherShutdown(),
+                () =>
+                {
+                    FileLog.Write("[LauncherCore] quit requested by lifecycle signal");
+                    requestShutdownAsync().GetAwaiter().GetResult();
+                });
+
+            _restartDirectorSignal = CcDirector.Core.Lifecycle.LifecycleSignal.Listen(
+                CcDirector.Core.Lifecycle.LifecycleSignalNames.LauncherRestartDirector(),
+                () =>
+                {
+                    FileLog.Write("[LauncherCore] Director restart requested by lifecycle signal");
+                    directorSupervisor.RestartAsync().GetAwaiter().GetResult();
+                });
+
+            FileLog.Write("[LauncherCore] lifecycle signals listening for root key "
+                          + CcDirector.Core.Lifecycle.LifecycleSignalNames.RootKey());
+        }
+        catch (Exception ex)
+        {
+            // Loud, and NOT fatal - a launcher that refused to start because it could not be quit
+            // remotely would be a launcher nobody could remove.
+            FileLog.Write($"[LauncherCore] lifecycle signals FAILED to start: {ex.Message}. This launcher cannot "
+                          + "be quit or asked to restart the Director from outside itself.");
         }
     }
 
