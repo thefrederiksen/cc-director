@@ -418,6 +418,13 @@ internal static class AuthMiddleware
                 var session = AuthenticateSession(ctx, sessions, provided);
                 if (session == AuthenticationResultKind.Authenticated)
                     return session;
+                // A scope refusal is TERMINAL - it returns here rather than falling through to the cookie.
+                // NO FALLBACKS: the caller identified itself as a session and was refused this route, and it
+                // does not get to be somebody else on the same request. Falling through would let any agent
+                // that also held a machine credential reach the account surface, and the refusal would never
+                // be visible - the guard would be advisory rather than a boundary.
+                if (session == AuthenticationResultKind.OutOfScopeSessionKey)
+                    return session;
                 strongestFailure = StrongerFailure(strongestFailure, session);
             }
         }
