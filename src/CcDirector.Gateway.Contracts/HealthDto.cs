@@ -39,6 +39,20 @@ public sealed class HealthDto
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? Commit { get; set; }
 
+    /// <summary>
+    /// The identity of the running PROCESS answering this probe, unique per boot, or NULL when the
+    /// responder does not publish one - in which case it is OMITTED from the JSON.
+    ///
+    /// The commit cannot answer "which process is this": a deploy runs two containers at once, and a
+    /// redeploy of the same commit - a rollback, a retried release - puts two processes on the wire with
+    /// identical commit stamps. A Gateway asks the public address for this field and compares it to its
+    /// own to learn whether IT is the one serving production, which is what decides whether it does
+    /// background work (issue #2398, GatewayInstanceRole). Fleet-global process identity carrying no
+    /// per-tenant fact, so it is safe on the public probe exactly as the commit is.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? Instance { get; set; }
+
     public DateTime ServerTime { get; set; } = DateTime.UtcNow;
 
     /// <summary>Director's GUID. Empty when returned by the Gateway aggregator.</summary>

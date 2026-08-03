@@ -455,6 +455,9 @@ internal static class GatewayEndpoints
                     Status = "ok",
                     Version = version,
                     Commit = commit,
+                    // Per-boot process identity, so a Gateway can ask this address whether it is ITSELF
+                    // answering there and therefore whether it should be doing background work (#2398).
+                    Instance = GatewayInstanceIdentity.Current,
                     ServerTime = DateTime.UtcNow,
                 });
             }
@@ -477,6 +480,7 @@ internal static class GatewayEndpoints
                 Sessions = totalSessions,
                 Version = version,
                 Commit = commit,
+                Instance = GatewayInstanceIdentity.Current,
                 ServerTime = DateTime.UtcNow,
             });
         });
