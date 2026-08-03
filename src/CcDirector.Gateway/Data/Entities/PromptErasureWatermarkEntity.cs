@@ -12,13 +12,10 @@ namespace CcDirector.Gateway.Data.Entities;
 /// AFTER it. The metadata reset makes the first one worse rather than better - it moves the summary kind
 /// back to null, which is precisely the state that stops <c>StoreGeneratedSummary</c> refusing the write.
 ///
-/// So a delete that reported success could be silently undone seconds later, with no error anywhere and
-/// the member's own words back on the History page.
-///
-/// HOW IT IS USED. The erasure stamps this row. Every prompt-derived write then compares the material it
-/// was computed from against the stamp and refuses to commit anything older. The comparison is on the
-/// MATERIAL, not on the moment of writing: a write is only safe if what it is made of came into existence
-/// after the member's delete.
+/// HOW IT IS USED. The erasure stamps this row, and the prompt-derived writers read it. The comparison
+/// each one makes is on the MATERIAL it was computed from, not on the moment of writing. What each
+/// writer does with that comparison is documented at each writer, because they do not all do the same
+/// thing: some refuse the write outright, and the roll-up insert commits and then compensates.
 ///
 /// WHY IT IS DURABLE RATHER THAN A FIELD IN MEMORY. Two of the three races are in-process and die with the
 /// process, so memory would do for them. The third does not: the Director's ingest deliberately retries
@@ -27,8 +24,7 @@ namespace CcDirector.Gateway.Data.Entities;
 /// meant to erase. A watermark that a restart forgets would let those through, and the guard would fail
 /// OPEN and silently.
 ///
-/// This row is what lets the writers above compare material against a delete. What the delete promises
-/// the member is published on /privacy and is not characterised here.
+/// This row is what lets the writers above compare material against a delete.
 /// </summary>
 public sealed class PromptErasureWatermarkEntity : TenantScopedEntity
 {

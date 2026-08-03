@@ -14,17 +14,6 @@ namespace CcDirector.Gateway.Prompts;
 /// here. GET /prompts/export and DELETE /prompts - the account data rights (CR-3b,
 /// devthrottle_internal issue #1180). All are tenant-scoped; none can name another account's partition.
 ///
-/// WHAT THE DELETE PROMISES THE MEMBER IS NOT DESCRIBED HERE, AND MAY NOT BE. It is published on the
-/// /privacy page and that is the only statement of it. Six inspections found the same defect each time -
-/// a comment, a table cell or a test name characterising the whole guarantee in words that drifted from
-/// the others - so the rule now is structural rather than editorial: a comment describes what its own
-/// function does and nothing further. A comment that cannot make a claim about the guarantee cannot
-/// contradict it.
-///
-/// An earlier version of this block tried to BE the canonical statement, with every other site pointing
-/// at it. That could not work: a customer-facing privacy page cannot take its promise from a source
-/// comment, so the claim that everything pointed here was itself false.
-///
 /// TENANT-SCOPED (issue #1848). "The whole fleet's record" means the REQUESTING ACCOUNT'S fleet. Both verbs
 /// resolve the request's tenant from the authenticated device key with the same seam the cockpit read path
 /// uses, and write into / read out of only that tenant's partition. Before this, neither handler took an

@@ -310,9 +310,6 @@ public sealed class SessionHistoryStore
     /// Erase the prompt-derived fields this database holds for the CURRENT tenant, as part of
     /// <c>DELETE /prompts</c> (the account data right, CR-3b).
     ///
-    /// What follows describes only what this method does. The member-facing promise is published on
-    /// /privacy and is deliberately not characterised anywhere in this codebase.
-    ///
     /// What goes:
     ///
     ///  - <see cref="SessionHistoryEntity.FirstPromptLine"/> on every row - the first 200 characters of the
@@ -330,8 +327,8 @@ public sealed class SessionHistoryStore
     /// worth reading why, because the mistake was not in the code:
     ///
     /// A sealed summary arrives through <see cref="SealSummary"/> from the session itself, and the earlier
-    /// reasoning was that a farewell the session wrote is not prompt material, so erasing it would remove
-    /// more than the delete claims. The verification offered for that was that <c>SummaryKind</c> reliably
+    /// reasoning was that a farewell the session wrote is not prompt material, so this method should leave
+    /// it alone. The verification offered for that was that <c>SummaryKind</c> reliably
     /// tracks which WRITER wrote the row - which is TRUE, and is the wrong question. What the exemption
     /// needed was that the CONTENT is not prompt-derived, and nothing establishes that: the seal route takes
     /// caller-supplied prose and all five lists with no material time and no provenance of any kind. Arriving
@@ -542,9 +539,8 @@ public sealed class SessionHistoryStore
             // material. That is a real loss and it is not an oversight.
             //
             // It is the safe direction. The seal route carries no provenance of any kind: nothing in the
-            // request establishes where its prose came from, and the whole reason sealed rows are erased at
-            // all is that a farewell may be composed from the member's own prompts. Bounding admission by
-            // the session's whole observed life is the only bound available that a caller cannot move.
+            // request establishes where its prose came from. Bounding admission by the session's whole
+            // observed life is the only bound available that a caller cannot move.
             //
             // And it is cheap NOW, which was not true before seals were erased on delete: a refused seal
             // leaves a row the background summariser can still fill in later from material that postdates
@@ -796,19 +792,19 @@ public sealed class SessionHistoryStore
     /// <summary>
     /// Insert or replace one cached roll-up row.
     ///
-    /// The watermark comparison is IN the statements, like the other writers, but this one is an upsert and
-    /// an INSERT cannot carry a WHERE clause in one portable statement. So it is done in the order that
-    /// leaves no stale row behind:
+    /// The watermark comparison is IN the statements, but this one is an upsert and an INSERT cannot carry
+    /// a WHERE clause in one portable statement. So:
     ///
     ///  1. A CONDITIONAL UPDATE for a row that already exists - watermark in the WHERE clause, atomic.
     ///  2. If nothing was updated and no row exists, INSERT, then immediately a CONDITIONAL DELETE that
     ///     removes what was just inserted if this account erased while it was being written.
     ///
-    /// Step 2 can leave a row visible for the width of one statement if an erasure lands in that instant.
-    /// That is stated rather than hidden: it is a cached PARAGRAPH rather than the member's own text, and it
-    /// is gone by the time the next statement completes. The alternative is provider-specific raw SQL for a
-    /// conditional insert - a narrower window bought with two hand-written statements that nothing here can
-    /// check against each other.
+    /// STEP 2 IS NOT ATOMIC AND THIS METHOD DOES NOT CLAIM IT IS. The insert commits before the
+    /// compensating delete runs, so a process stopped between the two statements leaves the inserted row
+    /// in the table. <see cref="ReadRollups"/> excludes rows at or before the watermark, and a later
+    /// erasure deletes this tenant's roll-up rows outright; both are documented where they happen. The
+    /// alternative is provider-specific raw SQL for a conditional insert - a narrower window bought with
+    /// two hand-written statements that nothing here can check against each other.
     ///
     /// <paramref name="materialReadAtUtc"/> is when the inputs this paragraph was written from were read.
     /// </summary>

@@ -200,18 +200,10 @@ public sealed class GatewayPromptLog
     /// Append messages pushed by a Director, into that Director's tenant partition. Returns how many were
     /// written. Never throws: a logging failure must not fail the Director's push.
     ///
-    /// RECORDS OLDER THAN THIS ACCOUNT'S ERASURE ARE REFUSED AT THE DOOR, and that is the only version of
-    /// this guarantee that does not need every downstream consumer to be perfect forever. The Director
-    /// RETRIES records the Gateway did not accept, so after a delete an old batch can arrive and be stored
-    /// again; a summariser reading it afterwards has no way to tell - it stamps its own read time, which is
-    /// honestly recent, and writes a summary made of the member's erased prompts. Keeping the material out
-    /// is what stops that, rather than policing each thing that later reads the log.
-    ///
-    /// THE MATERIAL TIME IS CLAMPED to the Gateway's receipt time. <c>TsUtc</c> is supplied by the Director
-    /// and is not ours: a clock running ahead would otherwise stamp old prompts into the future and walk
-    /// them past the erasure. Clamping cannot make a record look OLDER than it is, so it never refuses
-    /// anything legitimate.
-    ///
+    /// This method drops records whose claimed material time is at or before this tenant's erasure
+    /// watermark, and writes the rest. It does that here, at the door, rather than relying on every
+    /// later reader of the log to make the same check: the Director retries records the Gateway did not
+    /// accept, so a batch can arrive well after it was captured.
     /// </summary>
     public int Append(TenantId tenant, IEnumerable<PromptRecord> records)
     {
@@ -223,12 +215,9 @@ public sealed class GatewayPromptLog
             var receivedAtUtc = DateTime.UtcNow;
             var kept = records as IReadOnlyList<PromptRecord> ?? records.ToList();
 
-            // THE WHOLE DECIDE-AND-WRITE SEQUENCE IS INSIDE THE TENANT'S GATE, and so is DeleteAll. That is
-            // the round-three correction: the watermark used to be read outside the gate and the append made
-            // separately, so a delete could stamp and remove the files between the two and the old batch
-            // landed afterwards. Inside one gate the two orders are the only ones possible, and both are
-            // safe - either this append completes first and the delete that follows removes what it wrote,
-            // or the delete completes first and the watermark read below refuses the batch.
+            // The whole decide-and-write sequence is inside this tenant's gate, and so is DeleteAll. The
+            // watermark used to be read outside the gate and the append made separately, so the two could
+            // interleave within one instance. The gate is per instance and does not span processes.
             lock (gate)
             {
                 var erasedAtUtc = _erasureWatermarkUtc?.Invoke(tenant);

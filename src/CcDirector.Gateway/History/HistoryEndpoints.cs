@@ -105,11 +105,9 @@ public static class HistoryEndpoints
 
             using (EnterScope(tenant.Value, tenantBoundary))
             {
-                // No material time is passed, and that is the fix for the round-three finding rather than
-                // an omission: this endpoint had nothing to supply but the ARRIVAL moment, which is always
-                // newer than an erasure that already happened - so the guard admitted every seal after
-                // every delete. The store now compares the watermark against the SESSION'S OWN START,
-                // which no caller can influence.
+                // This endpoint passes NO material time, deliberately. The only value it could supply is
+                // the moment the request arrived, which is a fact about the request rather than about the
+                // prose it carries. What the store compares instead is documented at SealSummary.
                 var sealedOk = store.SealSummary(sessionId, request);
                 if (!sealedOk)
                     return Results.NotFound(new { error = "no history record for that session, or this account erased since" });

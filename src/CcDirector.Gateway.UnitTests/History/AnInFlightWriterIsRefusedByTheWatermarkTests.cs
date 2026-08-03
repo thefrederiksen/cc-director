@@ -162,12 +162,15 @@ public sealed class AnInFlightWriterIsRefusedByTheWatermarkTests : IDisposable
     }
 
     /// <summary>
-    /// THE CONTROL, without which the fact above is satisfied by a guard that refuses everything. A
-    /// summarisation whose material was read AFTER the delete still lands - the erasure stops resurrection,
-    /// not summarisation.
+    /// THE CONTROL, without which the fact above is satisfied by a guard that refuses everything.
+    ///
+    /// The name used to say "starts after the delete", and starting later is not what makes this pass -
+    /// the body deletes, then re-seeds the log with a record TIMESTAMPED after the erasure, and it is that
+    /// timestamp the writer is judged on. A summarisation that merely began later, over material dated
+    /// before the delete, is refused; the fact above is exactly that case.
     /// </summary>
     [Fact]
-    public async Task A_summarisation_that_starts_after_the_delete_still_writes_its_summary()
+    public async Task A_summarisation_whose_material_is_dated_after_the_delete_still_writes_its_summary()
     {
         var (store, log) = SeedEndedSessionAwaitingASummary();
 

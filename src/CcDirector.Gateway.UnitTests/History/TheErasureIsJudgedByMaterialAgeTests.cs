@@ -201,11 +201,16 @@ public sealed class TheErasureIsJudgedByMaterialAgeTests : IDisposable
     /// THE PATH THE INSPECTION SAID WAS MISSED, and it needs no race at all. A Director re-delivers records
     /// it failed to deliver earlier; they arrive AFTER the member's delete; the real summariser then reads
     /// the log and writes a summary made of the member's erased words, carrying a read time that is
-    /// honestly recent. The fix keeps the material OUT rather than policing every later reader, so the
-    /// retried batch is refused at <c>Append</c> and there is nothing left to summarise.
+    /// honestly recent. Keeping the material OUT is what stops that, so the retried batch is refused at
+    /// <c>Append</c> and there is nothing left to summarise.
+    ///
+    /// THE NAME NOW CARRIES THE CONDITION THAT MAKES THE BODY TRUE. Arriving after the delete is not it -
+    /// the control immediately below sends a batch after the same delete and it IS accepted and summarised.
+    /// What is refused here is a batch whose records still carry their ORIGINAL pre-delete timestamps,
+    /// which is what a retry of previously-undelivered records looks like.
     /// </summary>
     [Fact]
-    public async Task An_old_batch_retried_after_the_delete_cannot_be_summarised_back()
+    public async Task A_retried_batch_still_carrying_its_pre_delete_timestamps_is_refused_and_leaves_nothing_to_summarise()
     {
         var store = new SessionHistoryStore(_harness.Open());
         var log = new GatewayPromptLog(_promptDir, tenant => store.PromptErasureWatermarkUtc(tenant));
