@@ -1,5 +1,6 @@
 using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Data;
+using Microsoft.Data.Sqlite;
 
 namespace CcDirector.Gateway.Tests.Data;
 
@@ -26,10 +27,59 @@ public sealed class GatewayDbTestHarness : IDisposable
     /// <summary>A path in this harness's directory (for a legacy JSON import file, or any test file).</summary>
     public string LegacyPath(string name) => Path.Combine(_dir, name);
 
+    /// <summary>
+    /// THE MIGRATED SCHEMA, BUILT ONCE PER TEST PROCESS AND THEN COPIED.
+    ///
+    /// Constructing a GatewayDatabase over an empty file runs the whole migration set, and that was the
+    /// single largest cost in this assembly: a database-backed test took about 355 milliseconds against
+    /// 0.45 for a pure one - roughly eight hundred times slower - and well over half the suite is
+    /// database-backed. It was not sleeping and it was not short of cores; it was rebuilding the same
+    /// schema from scratch, once per test, hundreds of times per run.
+    ///
+    /// Migrating once and copying the resulting file is behaviour-preserving rather than a shortcut: the
+    /// copy is produced by the SAME constructor over the same migration set, so every test still opens the
+    /// real schema through the real code path. EF then finds no pending migrations and skips Migrate(),
+    /// which the database already handles as a first-class case. What is removed is the repetition, not a
+    /// step.
+    /// </summary>
+    /// The template is held as BYTES, not as a path, and that detail is load-bearing. The first version
+    /// copied a file and called SqliteConnection.ClearAllPools() to release it - and ClearAllPools is
+    /// PROCESS-GLOBAL. Built lazily on first use, it fired while other tests were already running and
+    /// yanked THEIR pooled connections out from under them: every full run failed exactly one database
+    /// test, a different one each time, all passing in isolation. Reading the bytes once under a sharing
+    /// handle needs no pool clear at all, so nothing outside this type is disturbed - and writing from
+    /// memory is faster than copying a file besides.
+    private static readonly Lazy<byte[]> MigratedTemplate = new(BuildTemplate, isThreadSafe: true);
+
+    private static byte[] BuildTemplate()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cc-gateway-db-template-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "template.db");
+        // Construct and dispose: the constructor is what applies the migrations.
+        using (var db = new GatewayDatabase(new SingleTenantContext(), path)) { }
+        // Read it back with full sharing rather than clearing the global connection pool.
+        byte[] bytes;
+        using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+        {
+            bytes = new byte[fs.Length];
+            fs.ReadExactly(bytes);
+        }
+        try { Directory.Delete(dir, recursive: true); } catch { /* best effort; the bytes are already held */ }
+        return bytes;
+    }
+
     /// <summary>Open the shared database with the given tenant (defaults to the local single tenant).</summary>
     public GatewayDatabase Open(ITenantContext? tenant = null)
     {
         Directory.CreateDirectory(_dir);
+        // Seed from the migrated template on FIRST open only. A second Open() over the same path is a test
+        // deliberately simulating a Gateway restart, and must find the database it just wrote - not a fresh
+        // one - so the copy is conditional on the file not already existing.
+        if (!File.Exists(DbPath))
+        {
+            File.WriteAllBytes(DbPath, MigratedTemplate.Value);
+        }
         var db = new GatewayDatabase(tenant ?? new SingleTenantContext(), DbPath);
         _opened.Add(db);
         return db;
