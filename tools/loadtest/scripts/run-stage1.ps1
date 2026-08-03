@@ -27,26 +27,11 @@ if (-not (Test-Path $viewersFile)) {
 }
 
 # The FULL target guard the tools carry (LoadTargetGuard.cs), applied before anything is sent -
-# including the metrics reset below, which carries a bearer key. All three rules, in order: the
-# production deny list has no override; loopback is free; any other host must be named exactly in
-# LOADTEST_ALLOW_HOST. Trailing dots trimmed first so the absolute-DNS spelling cannot slip past.
-$uri = [Uri]$GatewayUrl
-# Uri.Host keeps IPv6 in brackets, and Windows PowerShell 5.1 EXPANDS [::1] to the full zero-padded
-# form - so loopback is ruled by PARSING the address (IPAddress.IsLoopback covers 127.0.0.0/8 and
-# ::1 in every spelling), never by string-matching one spelling of it.
-$hostName = $uri.Host.ToLowerInvariant().TrimEnd('.').Trim('[', ']')
-if ($hostName.EndsWith("azurewebsites.net") -or $hostName.Contains("devthrottle")) {
-    throw "REFUSED: $GatewayUrl matches the production deny list. The harness never runs against production; there is no override."
-}
-$parsedIp = $null
-$isLoopback = [System.Net.IPAddress]::TryParse($hostName, [ref]$parsedIp) -and [System.Net.IPAddress]::IsLoopback($parsedIp)
-if (-not ($isLoopback -or $hostName -eq 'localhost' -or $hostName -eq 'host.docker.internal')) {
-    $allowedHost = $env:LOADTEST_ALLOW_HOST
-    if ($null -ne $allowedHost) { $allowedHost = $allowedHost.Trim().ToLowerInvariant().TrimEnd('.') }
-    if ($allowedHost -ne $hostName) {
-        throw "REFUSED: non-local host '$hostName'. If this is a dedicated staging rig, set LOADTEST_ALLOW_HOST=$hostName. Production is refused regardless."
-    }
-}
+# including the metrics reset below, which carries a bearer key. It lives in loadtarget-guard.ps1
+# because run-stage0.ps1 needs the same rules, and a guard kept in duplicate is a guard that will
+# eventually be tightened in one copy only.
+. (Join-Path $PSScriptRoot "loadtarget-guard.ps1")
+Assert-LoadTargetAllowed -GatewayUrl $GatewayUrl
 
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $summaryFile = Join-Path $OutDir "stage1-$stamp-summary.json"

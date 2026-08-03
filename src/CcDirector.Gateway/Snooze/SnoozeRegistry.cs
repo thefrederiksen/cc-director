@@ -384,15 +384,92 @@ public sealed class SnoozeRegistry
     }
 
     /// <summary>
+    /// THE FOLD'S READ. One set-based query for every session in <paramref name="sessionIds"/>, under ONE
+    /// acquisition of the process-wide gate and over ONE pooled context, returning a
+    /// <see cref="SnoozeHoldSnapshot"/> that answers all three of the fold's per-session questions without
+    /// touching the database again.
+    ///
+    /// WHY THIS EXISTS, in numbers rather than in principle. The fold used to call
+    /// <see cref="HoldStateFor"/>, <see cref="IsExpired"/> and <see cref="SnoozeUntilFor"/> once per session -
+    /// three gate acquisitions, three context rentals, three round trips each, all serialized behind this one
+    /// monitor for the whole process. The 31 July load-test baseline
+    /// (devthrottle_internal docs/load-test/runs/2026-07-31-local-baseline.md) measured it exactly: 1,032
+    /// reads for 30 roster polls plus 13 sweeps over 8 sessions, and named THIS monitor as the resource that
+    /// gave first - roughly five concurrent viewers on 800 sessions, with 104 of 111 threads blocked on it at
+    /// the wedge. One read per fold is the fix (issue #2323, read-model epic #1159).
+    ///
+    /// SCOPED TO THE SESSIONS BEING FOLDED, not to the whole table, deliberately. The table is not bounded:
+    /// a permanently retired Director's rows are never dropped (see the class summary), so a whole-table read
+    /// would grow without limit on the hot path and trade a measured ceiling for an unmeasured one. Reading
+    /// the ids the fold actually asked about keeps the read proportional to the work.
+    ///
+    /// TENANT SCOPE is the ambient one, exactly as every per-session read here has always resolved it -
+    /// <see cref="GatewayDatabase.CreateContext"/> stamps the context and the global query filter does the
+    /// rest. The fold runs inside a tenant scope already (the sweep enters one per tenant), so this inherits
+    /// the same partition the three reads it replaces did.
+    ///
+    /// COUNTED AS ONE READ, because it is one: <c>SnoozeDbReadObserved</c> fires once, which is what makes the
+    /// load-test ratio (snooze reads divided by roster requests) fall from three-per-session to one-per-fold
+    /// and makes the improvement a measurement rather than a claim.
+    ///
+    /// An EMPTY id set takes no lock and performs no read - there is nothing to ask about - and returns
+    /// <see cref="SnoozeHoldSnapshot.Empty"/>.
+    /// </summary>
+    /// <param name="sessionIds">The session ids this fold will stamp. Null, empty and whitespace ids are
+    /// skipped (they can never match a row); duplicates are harmless.</param>
+    public SnoozeHoldSnapshot HoldSnapshotFor(IEnumerable<string> sessionIds)
+    {
+        if (sessionIds is null) throw new ArgumentNullException(nameof(sessionIds));
+
+        var wanted = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var id in sessionIds)
+            if (!string.IsNullOrWhiteSpace(id) && seen.Add(id))
+                wanted.Add(id);
+        if (wanted.Count == 0)
+            return SnoozeHoldSnapshot.Empty;
+
+        // Load-test Stage 0 (issue #1173): the same wait-and-count measurement the per-session reads carry,
+        // recorded ONCE for the one read this performs.
+        var gateWaitStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        lock (_gate)
+        {
+            Diagnostics.LoadTestMetrics.SnoozeLockWaitMs.RecordSince(gateWaitStart);
+            Diagnostics.LoadTestMetrics.SnoozeDbReadObserved();
+            using var ctx = _db.CreateContext();
+            // Two columns, because they are the only two the fold's three questions need: presence, and a
+            // NULLABLE deadline. DirectorId, the pending minutes and the owner-turn baseline belong to the
+            // write paths.
+            var rows = ctx.Snoozes.AsNoTracking()
+                .Where(e => wanted.Contains(e.SessionId))
+                .Select(e => new { e.SessionId, e.SnoozeUntilUtc })
+                .ToList();
+
+            var map = new Dictionary<string, DateTime?>(rows.Count, StringComparer.Ordinal);
+            // Indexer, not ToDictionary: the session id is the key within a tenant, so a duplicate cannot
+            // exist - and if the store were ever corrupt enough to hold one, this fold answers with a row
+            // rather than throwing a roster read for every viewer.
+            foreach (var r in rows)
+                map[r.SessionId] = r.SnoozeUntilUtc;
+            return new SnoozeHoldSnapshot(map);
+        }
+    }
+
+    /// <summary>
     /// True when <paramref name="sessionId"/> has an ARMED entry whose return time is at or before
-    /// <paramref name="nowUtc"/> - i.e. the snooze has elapsed. This is the ONE expiry predicate: the fold
-    /// reads it to flip the session back into "needs you" and to stamp the durable "Snooze ended" badge
-    /// (<see cref="SessionDto.SnoozeExpired"/>). It stays true for as long as the elapsed entry lingers -
-    /// there is no sweep to retire it; only a lifecycle edge does. Pure (no mutation), so it is safe to
-    /// call on the hot read path.
+    /// <paramref name="nowUtc"/> - i.e. the snooze has elapsed. It expresses the expiry rule the durable
+    /// "Snooze ended" badge (<see cref="SessionDto.SnoozeExpired"/>) is stamped from. It stays true for as
+    /// long as the elapsed entry lingers - there is no sweep to retire it; only a lifecycle edge does. Pure
+    /// (no mutation).
     ///
     /// A DEFERRED entry is never expired: its clock has not started, because the work it is waiting for
     /// has not ended. There is nothing to elapse.
+    ///
+    /// ONE READ, ONE SESSION - AND THE FOLD NO LONGER CALLS IT (issue #2323). The hot path reads
+    /// <see cref="HoldSnapshotFor"/> once per fold instead; this per-session form remains for callers that
+    /// genuinely have one session to ask about, and for the tests that pin the rule. Both answer from
+    /// <see cref="SnoozeHoldSnapshot.IsExpiredOf"/>, so they cannot disagree. Do not reintroduce it into a
+    /// per-session loop: that loop is what the load-test baseline measured as the ceiling.
     /// </summary>
     public bool IsExpired(string sessionId, DateTime nowUtc)
     {
@@ -406,9 +483,7 @@ public sealed class SnoozeRegistry
             Diagnostics.LoadTestMetrics.SnoozeDbReadObserved();
             using var ctx = _db.CreateContext();
             var e = Find(ctx, sessionId, tracking: false);
-            return e is not null
-                && e.SnoozeUntilUtc is DateTime untilUtc
-                && nowUtc.ToUniversalTime() >= untilUtc;
+            return SnoozeHoldSnapshot.IsExpiredOf(e is not null, e?.SnoozeUntilUtc, nowUtc);
         }
     }
 
@@ -426,7 +501,9 @@ public sealed class SnoozeRegistry
     ///                          the real state lived on a Director this Gateway could not write to.
     ///   * an armed entry, running -> <see cref="HoldStates.Held"/>.
     ///
-    /// Pure (no mutation), so it is safe on the hot read path of the fold.
+    /// Pure (no mutation). ONE READ, ONE SESSION - AND THE FOLD NO LONGER CALLS IT (issue #2323): the hot
+    /// path reads <see cref="HoldSnapshotFor"/> once per fold. Both answer from
+    /// <see cref="SnoozeHoldSnapshot.HoldStateOf"/>, so they cannot disagree.
     /// </summary>
     public string HoldStateFor(string sessionId, DateTime nowUtc)
     {
@@ -439,11 +516,7 @@ public sealed class SnoozeRegistry
             Diagnostics.LoadTestMetrics.SnoozeDbReadObserved();
             using var ctx = _db.CreateContext();
             var e = Find(ctx, sessionId, tracking: false);
-            if (e is null)
-                return HoldStates.None;
-            if (e.SnoozeUntilUtc is not DateTime untilUtc)
-                return HoldStates.DeferredHold;
-            return nowUtc.ToUniversalTime() >= untilUtc ? HoldStates.None : HoldStates.Held;
+            return SnoozeHoldSnapshot.HoldStateOf(e is not null, e?.SnoozeUntilUtc, nowUtc);
         }
     }
 
@@ -452,8 +525,13 @@ public sealed class SnoozeRegistry
     /// when there is no clock to show: no entry, or a DEFERRED entry whose clock has not started (the work
     /// it waits on has not ended - defect 20). Deliberately returns the deadline even once it is in the past
     /// - an elapsed armed entry still has a real <c>SnoozeUntilUtc</c>; whether that reads as "over" is
-    /// <see cref="HoldStateFor"/>'s and <see cref="IsExpired"/>'s ruling, not this getter's. Pure, so it is
-    /// safe on the fold's read path alongside <see cref="HoldStateFor"/>.
+    /// <see cref="HoldStateFor"/>'s and <see cref="IsExpired"/>'s ruling, not this getter's. Pure.
+    ///
+    /// ONE READ, ONE SESSION - AND THE FOLD NO LONGER CALLS IT (issue #2323). This was the THIRD of the
+    /// fold's three per-session reads, and the one sitting in a SECOND loop further down that method - so a
+    /// batch that fixed only the first loop would have left a third of the reads in place and reported a
+    /// two-thirds improvement that read like success. The fold answers it from
+    /// <see cref="HoldSnapshotFor"/>'s snapshot now, in both loops.
     /// </summary>
     public DateTime? SnoozeUntilFor(string sessionId)
     {

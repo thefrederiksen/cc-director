@@ -12,13 +12,19 @@ namespace CcDirector.Gateway.Diagnostics;
 ///   * how long callers WAIT to enter the snooze registry's process-wide gate (the shared-lock claim);
 ///   * how many database reads the snooze registry performs (the N+1 claim - divide by roster requests);
 ///   * how long one <c>StampFleetRolesAndFold</c> pass takes (the fold cost);
-///   * whether two display sweeps were ever in flight at once (the missing-overlap-guard claim);
+///   * whether two display sweeps were ever in flight at once, and how many ticks the overlap guard skipped
+///     because a pass was already running (the overlap-guard claim, and the guard's own effect);
 ///   * how many Director stream connections are held and how many pushes are in flight (the socket and
 ///     ingress-pressure numbers);
 ///   * server-side <c>GET /sessions</c> latency, beside what the load driver measures from outside.
 ///
-/// MEASUREMENT ONLY. Nothing here changes behavior, adds a guard, caches a read, or fixes anything the
-/// numbers reveal - the fixes belong to the read-model epic (#1159). Everything is a lock-free counter or
+/// MEASUREMENT ONLY, still: nothing here changes behavior, guards anything, or caches a read. The first two
+/// fixes the numbers called for have since landed in the code they measure - one set-based snooze read per
+/// fold (<c>SnoozeRegistry.HoldSnapshotFor</c>) and the sweep's overlap guard
+/// (<c>GatewayHost.SweepDisplayStateTick</c>) - and this class stayed exactly as it was, because an
+/// instrument that is edited alongside the thing it measures cannot be used to compare before with after.
+/// The one addition is <see cref="SweepSkipped"/>, which counts what the guard now prevents; every counter
+/// the 31 July baseline reported still means what it meant then. Everything is a lock-free counter or
 /// a fixed-bucket histogram (a handful of interlocked adds per observation), cheap enough to stay on
 /// permanently. Deliberately NO FileLog entry/exit logging in this class: these methods run millions of
 /// times per minute under load, and a log line per observation would make the instrument the bottleneck
@@ -56,6 +62,7 @@ public static class LoadTestMetrics
     private static long _rosterNonSuccess;
     private static long _sweepTicks;
     private static long _sweepOverlaps;
+    private static long _sweepSkipped;
     private static int _sweepInFlight;
     private static int _hubConnections;
     private static long _hubConnectionsTotal;
@@ -78,15 +85,35 @@ public static class LoadTestMetrics
         RosterDurationMs.Record(elapsed);
     }
 
-    /// <summary>A display sweep tick is starting. Returns the timestamp to hand to
+    /// <summary>A display sweep tick is starting and is about to RUN. Returns the timestamp to hand to
     /// <see cref="SweepFinished"/>. If another tick is still in flight, the overlap the read-model review
-    /// predicted has actually happened, and it is counted - never prevented (measurement only).</summary>
+    /// predicted has actually happened, and it is counted here - this class never prevents it.
+    ///
+    /// The overlap GUARD now lives at the sweep itself (<c>GatewayHost.SweepDisplayStateTick</c>), so in the
+    /// ordinary case this counter stays at zero and <see cref="SweepSkipped"/> carries the ticks that did not
+    /// run. The counter is deliberately kept rather than removed: it is the instrument that measured the
+    /// defect (91 of 98 ticks on 31 July), and a zero from an instrument that can no longer report anything
+    /// else would be worthless as evidence that the guard holds.</summary>
     public static long SweepStarting()
     {
         if (Interlocked.Increment(ref _sweepInFlight) > 1)
             Interlocked.Increment(ref _sweepOverlaps);
         Interlocked.Increment(ref _sweepTicks);
         return Stopwatch.GetTimestamp();
+    }
+
+    /// <summary>
+    /// A display sweep tick fired and was SKIPPED because a pass was already running. Counted as a tick (the
+    /// timer did fire) AND as a skip, so <c>sweepTicks</c> keeps the meaning it had in the 31 July baseline -
+    /// how many times the timer fired - and <c>sweepTicks - sweepSkipped</c> is how many actually ran.
+    ///
+    /// This exists so the guard cannot make its own effect invisible. Without it, a working guard and a dead
+    /// instrument produce the same reading: zero overlaps.
+    /// </summary>
+    public static void SweepSkipped()
+    {
+        Interlocked.Increment(ref _sweepTicks);
+        Interlocked.Increment(ref _sweepSkipped);
     }
 
     /// <summary>The matching end of <see cref="SweepStarting"/>. Call from a finally block.</summary>
@@ -149,6 +176,7 @@ public static class LoadTestMetrics
                 rosterNonSuccess = reset ? Interlocked.Exchange(ref _rosterNonSuccess, 0) : Interlocked.Read(ref _rosterNonSuccess),
                 sweepTicks = reset ? Interlocked.Exchange(ref _sweepTicks, 0) : Interlocked.Read(ref _sweepTicks),
                 sweepOverlaps = reset ? Interlocked.Exchange(ref _sweepOverlaps, 0) : Interlocked.Read(ref _sweepOverlaps),
+                sweepSkipped = reset ? Interlocked.Exchange(ref _sweepSkipped, 0) : Interlocked.Read(ref _sweepSkipped),
                 hubPushEvents = reset ? Interlocked.Exchange(ref _hubPushEvents, 0) : Interlocked.Read(ref _hubPushEvents),
                 hubConnectionsTotal = reset ? Interlocked.Exchange(ref _hubConnectionsTotal, 0) : Interlocked.Read(ref _hubConnectionsTotal),
             },
