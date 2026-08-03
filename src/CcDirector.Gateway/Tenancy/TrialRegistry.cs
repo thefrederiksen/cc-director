@@ -28,6 +28,46 @@ public enum TrialOutcome
     Unknown,
 }
 
+/// <summary>
+/// What a trial read established for a surface that DESCRIBES the trial to the member, rather than deciding
+/// entitlement from it. Four values, because the two questions need different resolutions.
+///
+/// <see cref="TrialOutcome"/> has three because that is exactly what an ACCESS decision can act on: grant,
+/// refuse, retry. "Never had a trial" and "the trial ended" both mean refuse, so folding them is correct
+/// there. A SENTENCE shown to a member cannot fold them: "your Pro trial ended on 17 August" told to someone
+/// who never had one is false, and so is "you have no trial" told to someone whose fourteen days finished
+/// yesterday. So this splits the refusal in two and leaves the other two alone.
+///
+/// THE SAFETY PARTITION IS STILL THREE, and it is the one that must never be collapsed: ACTIVE /
+/// KNOWN-NOT-ACTIVE (<see cref="Expired"/> and <see cref="NeverGranted"/>) / <see cref="Unreadable"/>.
+/// Unreadable is ignorance and may never be answered as either of the others - telling a member they have no
+/// trial because a database read failed is telling someone with twelve days left that they have nothing.
+/// </summary>
+public enum TrialStatusKind
+{
+    /// <summary>The read succeeded and a trial is running right now.</summary>
+    Active,
+
+    /// <summary>The read succeeded, a trial WAS granted to this account, and its window has closed. It is
+    /// never extended or re-granted, so this state is permanent.</summary>
+    Expired,
+
+    /// <summary>The read succeeded and this account was never granted a trial at all.</summary>
+    NeverGranted,
+
+    /// <summary>The read FAILED. We do not KNOW - this must never be answered as any of the other three.</summary>
+    Unreadable,
+}
+
+/// <summary>One descriptive trial read: the four-way status and the row's instants when there was a row.</summary>
+/// <param name="Kind">The four-way status. The Unreadable value may never be folded into the others.</param>
+/// <param name="StartedAtUtc">When the trial was granted; present whenever a row was read.</param>
+/// <param name="ExpiresAtUtc">When the trial ends or ended; present whenever a row was read. Unlike
+/// <see cref="TrialDecision.ExpiresAtUtc"/> this is populated on <see cref="TrialStatusKind.Expired"/> too,
+/// because a surface saying "your trial ended" has to name the date. It is NOT an entitlement period end and
+/// nothing clips a lease to it.</param>
+public sealed record TrialStatus(TrialStatusKind Kind, DateTime? StartedAtUtc = null, DateTime? ExpiresAtUtc = null);
+
 /// <summary>The result of one trial read: the three-way outcome and, on <see cref="TrialOutcome.Active"/>,
 /// the exact instant the trial ends.</summary>
 /// <param name="Outcome">The three-way outcome. Never fold the three into two.</param>
@@ -97,12 +137,47 @@ public sealed class TrialRegistry
     /// testable at an exact instant.</param>
     public TrialDecision Evaluate(string accountSubject, DateTime nowUtc)
     {
-        // A blank subject is a caller error, not a failed read. Answering Unknown would invite a retry loop
+        // DELEGATES to the single read rather than performing its own (issue #1243). There is exactly ONE
+        // place that loads the row and ONE expiry comparison in this type, so the access decision and the
+        // sentence shown to the member can never disagree about whether a trial is running - which they could
+        // the moment a second method repeated the boundary rule and one of the two was later edited.
+        var status = ReadStatus(accountSubject, nowUtc);
+
+        return status.Kind switch
+        {
+            // The period end the entitlement decision carries forward, so the hosted access lease clips to it.
+            TrialStatusKind.Active => new TrialDecision(TrialOutcome.Active, status.ExpiresAtUtc),
+
+            // IGNORANCE, NOT ABSENCE. Never a grant and never a refusal - the caller turns this into a retry.
+            TrialStatusKind.Unreadable => new TrialDecision(TrialOutcome.Unknown),
+
+            // Expired and NeverGranted are both KNOWLEDGE that no trial covers this account now, and an access
+            // decision has one answer for both. Only a sentence shown to a member needs them apart.
+            _ => new TrialDecision(TrialOutcome.None),
+        };
+    }
+
+    /// <summary>
+    /// Read what covers this account at <paramref name="nowUtc"/>, keeping "never had one" and "it ended"
+    /// apart (issue #1243). READ-ONLY, like <see cref="Evaluate"/>, and the ONLY place this type loads the
+    /// trial row - <see cref="Evaluate"/> is a fold over this.
+    ///
+    /// This exists because the trial was granted and never mentioned anywhere: no endpoint returned it, so no
+    /// screen could show it, and a promise kept silently is indistinguishable from a promise broken. A surface
+    /// that tells a member about their trial needs to name the date it ends or ended, and needs to say
+    /// "I cannot tell you" out loud when the read fails rather than picking the comfortable answer.
+    /// </summary>
+    /// <param name="accountSubject">The verified account subject. The caller must have validated the token
+    /// this came from; this method does not re-verify it.</param>
+    /// <param name="nowUtc">The moment to judge the trial window against.</param>
+    public TrialStatus ReadStatus(string accountSubject, DateTime nowUtc)
+    {
+        // A blank subject is a caller error, not a failed read. Answering Unreadable would invite a retry loop
         // that can never succeed. There is no trial for nobody.
         if (string.IsNullOrWhiteSpace(accountSubject))
         {
-            FileLog.Write("[TrialRegistry] Evaluate: NO TRIAL - no account subject was supplied");
-            return new TrialDecision(TrialOutcome.None);
+            FileLog.Write("[TrialRegistry] ReadStatus: NO TRIAL - no account subject was supplied");
+            return new TrialStatus(TrialStatusKind.NeverGranted);
         }
 
         var subject = accountSubject.Trim();
@@ -118,23 +193,23 @@ public sealed class TrialRegistry
             // IGNORANCE, NOT ABSENCE. A failed read does not tell us the account has no trial, so it may not
             // deny and it may not grant. Logged loud and by type: a persistent failure here stops every new
             // member from starting a trial and must not be quiet.
-            FileLog.Write($"[TrialRegistry] Evaluate: READ FAILED ({ex.GetType().Name}) - answering UNKNOWN, " +
+            FileLog.Write($"[TrialRegistry] ReadStatus: READ FAILED ({ex.GetType().Name}) - answering UNREADABLE, " +
                           "which must be retried and must NEVER be treated as no-trial or as a live trial");
-            return new TrialDecision(TrialOutcome.Unknown);
+            return new TrialStatus(TrialStatusKind.Unreadable);
         }
 
         if (row is null)
-            return new TrialDecision(TrialOutcome.None);
+            return new TrialStatus(TrialStatusKind.NeverGranted);
 
         // STRICTLY LESS THAN, so the expiry instant itself is already outside the window - at exactly
         // ExpiresAtUtc the trial HAS ended, which is what the field means. An inclusive comparison would grant
         // on an expired trial: one tick, but a tick in the give-it-away direction, and boundaries are where a
         // policy is decided, so this one is pinned by its own test.
         if (nowUtc < row.ExpiresAtUtc)
-            return new TrialDecision(TrialOutcome.Active, row.ExpiresAtUtc);
+            return new TrialStatus(TrialStatusKind.Active, row.StartedAtUtc, row.ExpiresAtUtc);
 
-        FileLog.Write("[TrialRegistry] Evaluate: NO TRIAL - this account's trial has ended (it is never extended or re-granted)");
-        return new TrialDecision(TrialOutcome.None);
+        FileLog.Write("[TrialRegistry] ReadStatus: NO TRIAL - this account's trial has ended (it is never extended or re-granted)");
+        return new TrialStatus(TrialStatusKind.Expired, row.StartedAtUtc, row.ExpiresAtUtc);
     }
 
     /// <summary>

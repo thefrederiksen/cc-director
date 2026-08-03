@@ -3051,6 +3051,14 @@ public sealed class GatewayHost : IAsyncDisposable
         AccountCreditsEndpoint.Map(_app, Account, new Core.Account.AccountCreditsClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }),
             tenantBoundary: _tenantBoundary, tenants: TenantRegistry);
 
+        // The free Pro trial read (issue #1243): GET /account/trial. NOT a proxy - unlike the two routes above
+        // there is no cloud call and no account token, because the trial ledger is this Gateway's own
+        // account_trials table. The trial was already being granted at enrolment and stored here; nothing
+        // could ask about it, so no screen ever said a trial was running. This is that read path. Every
+        // answer, including the denials, carries a three-way state so no surface has to decide for itself
+        // what a missing answer means. Inherits the host-wide token middleware like the other /account routes.
+        AccountTrialEndpoint.Map(_app, TrialRegistry, tenantBoundary: _tenantBoundary, tenants: TenantRegistry);
+
         // "DevThrottle emails me" relay (issue #1318 consumer): POST /account/email. A session or scheduled
         // run passes a subject + body (+ optional attachments); the Gateway injects its own stored account
         // token and forwards to the cloud primitive (POST /api/v1/account/notify-owner, devthrottle_internal
