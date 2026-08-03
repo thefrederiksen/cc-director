@@ -27,7 +27,7 @@ namespace CcDirector.Core.Tests;
 /// future <c>.IntegrationTests</c> or <c>.ContractTests</c> without anybody remembering to come back
 /// here. The file name itself is never consulted: <c>Foo.Tests.cs</c> sitting in a production project
 /// is production code.
-/// </summary>
+///
 /// WHY NOT SIMPLY "ANY ANCESTOR DIRECTORY ENDING IN Tests". The first version of this helper did
 /// exactly that, and an inspection caught two ways it is wrong - both of which SILENCE a guard, which
 /// is worse than the narrowing it was written to replace:
@@ -42,6 +42,7 @@ namespace CcDirector.Core.Tests;
 /// So the decision is the OWNING PROJECT directory, found by anchoring on a known source root: the
 /// project is the segment DIRECTLY BELOW <c>src</c>, <c>tools</c> or <c>phone</c>. Anchoring on the
 /// root is also what makes an absolute path harmless, because nothing above the root is ever read.
+/// </summary>
 internal static class TestProjectPath
 {
     /// <summary>The source roots a project directory sits directly beneath.</summary>
