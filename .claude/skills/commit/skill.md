@@ -145,31 +145,45 @@ commit (Step 4), drive it home:
 
 2. Open the pull request: gh pr create --fill (or with a title/body matching recent PRs).
 
-3. DO NOT WAIT FOR THE .NET CI JOB. "Build & Test (.NET)" takes roughly FIFTY MINUTES and is the
-   same suite you just ran locally on a far stronger machine. Waiting on it is the single largest
-   source of dead time in this repository, and it is why local is now the gate.
+3. NEVER WAIT FOR A CONTINUOUS INTEGRATION RESULT. Not for "Build & Test (.NET)", which takes
+   roughly FIFTY MINUTES and is the same suite you just ran locally on a far stronger machine,
+   and not for any other check. There is no exception - not a release, not a change to the build
+   or to continuous integration itself, not a cross-platform change. The old rule carried that
+   exception list and it is deliberately gone: every exception was an invitation to pay the fifty
+   minutes again.
 
-   The other three checks - "Build & Test (web)", "Tool contracts (Python)", "Inventory drift" -
-   each finish in about a minute and cover things the local .NET run does NOT. Wait for those:
+   If you want to see the fast checks in passing, look once and move on - do not watch them:
 
        gh pr checks <number>
 
-   If any of those three fail, fix and push a NEW commit (never amend, never --no-verify).
+   If something fails, fix it and push a NEW commit (never amend, never --no-verify).
 
-4. Merge with squash once the local run is green and the three fast checks pass:
+4. GET A REVIEW FROM A DIFFERENT AGENT FAMILY BEFORE MERGING. The author is the last to see the
+   defect, so the reviewer must not be the writer. Codex is the default reviewer, and it runs as
+   a real tracked session - never backgrounded, never hidden:
+
+       cc-devthrottle session spawn <repo> --agent Codex --prompt "<what to review>" --name "review: <what it is>"
+
+   This review replaces the wait, it does not sit alongside it. Waiting bought a second opinion
+   from a machine that runs the same tests; a reviewer reads the change itself, which is the part
+   the tests cannot do.
+
+5. Merge with squash once the local run is green and the review is clean:
    gh pr merge <number> --squash --delete-branch.
    (delete_branch_on_merge is ON, but --delete-branch is explicit and harmless.)
 
-   The .NET job keeps running after the merge as a backstop. If it goes red on main, fix it
-   forward immediately - that is the trade for not waiting on it.
+   Continuous integration keeps running after the merge as a backstop. If it goes red on main,
+   FIX IT FORWARD IMMEDIATELY. That is the whole trade, and it only works if the red is actually
+   chased - a red left standing turns the backstop into noise and then nobody looks at it at all.
 
-   WAIT FOR THE .NET JOB ANYWAY when the change is genuinely risky: a release commit, a change to
-   the build or CI itself, anything cross-platform, or anything you could not test locally. Those
-   are the cases the fifty minutes is actually worth paying for.
-4. Park the checkout back on main:
+   Note what the local gate does NOT cover: test-local.ps1 runs the .NET suites only - no web
+   tests, no Python tests. If you touched the browser shells or the Python toolbelt, the answer
+   is in the "Build & Test (web)" and "Tool contracts (Python)" jobs, and fixing forward means
+   watching for those rather than walking away.
+6. Park the checkout back on main:
    git checkout main && git pull
    If you worked in a worktree, remove it: git worktree remove ../<repo>-wt-<short-desc>.
-5. Verify the resting state: git status --short is empty, git branch --show-current is main,
+7. Verify the resting state: git status --short is empty, git branch --show-current is main,
    and the feature branch is gone (git branch --list <type>/<short-desc> prints nothing).
 
 STEP 8: Report completion

@@ -205,26 +205,40 @@ Do NOT put try-catch in helper methods or service methods.
 - Use Arrange-Act-Assert pattern
 - Name tests: `MethodName_Scenario_ExpectedResult`
 
-### 5a. RUN THE TESTS LOCALLY - GITHUB IS NOT THE GATE
+### 5a. LOCAL RUN, THEN A REVIEW, THEN MERGE - NEVER WAIT FOR CONTINUOUS INTEGRATION
 
-**Run `.\scripts\test-local.ps1` before you open a pull request. That run is the gate.**
+**The gate is two things, both of which happen here: `.\scripts\test-local.ps1` goes green, and a
+reviewer from a different agent family reads the change. Then merge. Nothing waits on GitHub.**
 
-Do NOT run `gh pr checks --watch` on "Build & Test (.NET)" and wait for it. That job takes about
-FIFTY MINUTES and runs the same tests you can run here, on a machine with 24 logical cores and 64 GB.
-Waiting on it was the single largest source of dead time in this repository (issue #1156).
+There is no longer any case in which you hold a merge open waiting for a continuous integration
+result - not a release, not a change to the build or to continuous integration itself, not a
+cross-platform change. That exception list is gone deliberately. Waiting fifty minutes for an
+answer you already have locally was the single largest source of dead time in this repository
+(issue #1156), and every exception written into the rule was an invitation to pay it again.
 
-- **Use the script, not a hand-rolled `dotnet test`.** It builds once and starts every test project
-  together, so the six that do not serialize finish while the Gateway suite queues for its
-  machine-wide lock. It is also the ONE place the whole fleet gets faster when the suite improves -
-  a convention each caller re-implements cannot be improved centrally.
-- `-Fast` skips the Gateway suite for a change that provably does not touch it. Say so in the pull
-  request if you rely on it.
-- **Do wait for the three fast checks** - "Build & Test (web)", "Tool contracts (Python)",
-  "Inventory drift". They take about a minute each and cover things the local .NET run does not.
-- The .NET job still runs after the merge as a backstop. If it reddens on main, fix it forward
-  immediately. That is the trade for not waiting on it.
-- **Do wait for the .NET job anyway** when the change is genuinely risky: a release commit, a change
-  to the build or to CI itself, anything cross-platform, or anything you could not test locally.
+1. **Run the local gate.** Use the script, not a hand-rolled `dotnet test`: it builds once and
+   starts every test project together, so the six that do not serialize finish while the Gateway
+   suite queues for its machine-wide lock. It is also the ONE place the whole fleet gets faster
+   when the suite improves - a convention each caller re-implements cannot be improved centrally.
+   `-Fast` skips the Gateway suite for a change that provably does not touch it; say so in the
+   pull request if you rely on it. A red local run is a red change - fix it before going further.
+2. **Get the change reviewed by a different agent family.** The author is the last to see the
+   defect, so the reviewer must not be the writer. Codex is the default reviewer, and it runs as
+   a real tracked session, never backgrounded and never hidden:
+
+       cc-devthrottle session spawn <repo> --agent Codex --prompt "<what to review>" --name "review: <what it is>"
+
+3. **Merge.** `gh pr merge <number> --squash --delete-branch`, then park the checkout back on main.
+
+**When continuous integration goes red afterwards, fix it forward immediately.** That is the whole
+trade, and it only works if the red is actually chased: a red that is left standing turns the
+backstop into noise, and then nobody looks at it at all. Chase it the moment you see it.
+
+**Know what the local gate does NOT cover.** `test-local.ps1` runs the .NET suites only - it runs
+no web tests and no Python tests. Those live only in the "Build & Test (web)" and "Tool contracts
+(Python)" jobs, which finish in about a minute each. You are not required to wait for them, but if
+you touched the browser shells or the Python toolbelt, that is where the answer is, and fixing it
+forward means watching for it rather than walking away.
 
 If the Gateway suite says it is WAITING on a lock held by another run, that is not a hang - it is
 one run at a time by design, and it prints its holder every 30 seconds. See issue #1156 for why that

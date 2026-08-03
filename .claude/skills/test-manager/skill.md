@@ -129,21 +129,22 @@ split - a new project that silently inherited it would look like a win and be th
 **Prove parallelism by measurement, not by intent.** Wall clock must be far below the summed test
 durations. If they are close, the tests are running one at a time whatever the configuration says.
 
-## LOCAL IS THE GATE. CI IS FOR RELEASES AND FOR ITS OWN FAILURES
+## LOCAL IS THE GATE. NOTHING EVER WAITS ON CONTINUOUS INTEGRATION
 
-Run `.\scripts	est-local.ps1`. This machine is far stronger than a CI runner and gives the answer in
-about a minute; the .NET job on CI takes roughly fifty. **Do not wait on CI to merge ordinary work.**
+Run `.\scripts	est-local.ps1`. This machine is far stronger than a runner and gives the answer in
+about a minute; the .NET job takes roughly fifty. **Never wait on continuous integration to merge -
+no exceptions, releases included.** The gate is the local run plus a review by a different agent
+family (Codex by default), and then the change merges.
 
-CI is run in exactly these cases:
+The exception list this section used to carry - releases, changes to the build, cross-platform work -
+is gone deliberately. Every exception was an invitation to pay the fifty minutes again, and the
+answer it bought was one the local run had already given.
 
-| When | Why |
-|------|-----|
-| Cutting a release | The one time the full matrix is worth fifty minutes. |
-| Explicitly asked for | Somebody wants it, or it has been a while and drift is suspected. |
-| **CI itself went red** | Then it is re-run and driven to green - a red CI is never left standing. |
-
-A red CI is not a background condition to be worked around. Fix it forward immediately, re-run, and
-confirm it clears. That is the trade for not waiting on it the rest of the time.
+Continuous integration still runs after the merge, as a backstop. It is never watched and never
+waited for, and it is never left red: **a red is fixed forward immediately, re-run, and confirmed
+clear.** That is the whole trade. A red left standing turns the backstop into noise, and a backstop
+nobody reads is not a backstop - which is exactly how two architecture guards stayed red on main for
+a morning without anybody being told.
 
 ## Deciding what to run: ALWAYS ask the selector, never guess
 
@@ -441,8 +442,9 @@ Answer with what is NOT running, not with a number of tests. The honest summary 
 - **Running by default:** ~3400 tests, ~80 seconds.
 - **Not running by default:** the host-bound Gateway suite (endpoints, tenancy, boundaries) and all
   of `Core.Tests`. Both run under `-Parked`.
-- **CI** still runs everything after a merge as a backstop; it takes about fifty minutes and does not
-  block anyone.
+- **Continuous integration** still runs everything after a merge as a backstop; it takes about fifty
+  minutes, blocks nobody, and is never waited for. When it reddens it is fixed forward at once - an
+  unchased red is how this backstop stops being one.
 
 If a change touches the Gateway's host-bound surface, or anything Core covers, say so and run
 `-Parked` before merging. The budget buys speed on ordinary changes; it is not a licence to skip

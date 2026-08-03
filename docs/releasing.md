@@ -43,7 +43,11 @@ git push origin main
 git push origin vX.Y.Z
 ```
 
-### 5. Wait for CI
+### 5. Wait for the release build to produce the artifacts
+
+This is the ONE wait that remains, and it is not a test gate - it is the build that produces the
+downloadable files, so there is nothing to release until it finishes. The rule against waiting on
+continuous integration (CLAUDE.md 5a) is about the test job gating a merge; it does not apply here.
 
 The GitHub Actions workflow (`.github/workflows/release.yml`) will:
 
