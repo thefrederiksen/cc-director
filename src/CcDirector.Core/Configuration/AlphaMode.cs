@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Nodes;
 using CcDirector.Core.Utilities;
 
@@ -6,7 +6,7 @@ namespace CcDirector.Core.Configuration;
 
 /// <summary>
 /// Global alpha-features toggle. When enabled, alpha/experimental features (handover,
-/// FIFO, GitHub remote sessions, Assistant/Coach cards, wake-word test) are visible in
+/// GitHub remote sessions, Assistant/Coach cards, wake-word test) are visible in
 /// the desktop UI. Default is OFF: alpha features are hidden until they have been
 /// verified well enough to graduate out from behind the flag.
 /// GRADUATED out of alpha (2026-06-05): the agent picker, with Claude Code and Pi -

@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using Avalonia.Media;
 using Avalonia.Threading;
@@ -31,7 +31,7 @@ public class SessionViewModel : INotifyPropertyChanged
     //   error  = crashed (issue #959)
     //
     // The hexes are NOT here any more. They live in ONE table, StatusPalette, which the turn review
-    // and the FIFO window also call, and which the spec's palette table is the written source for.
+    // also calls, and which the spec's palette table is the written source for.
     // This class had its own private copy, and so did four other surfaces - that was defect 18.
     //
     // THE GREY IS ONE GREY. This strip used to pick between a light #9CA3AF and a #6A6A6A by

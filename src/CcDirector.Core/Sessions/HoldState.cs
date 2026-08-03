@@ -1,4 +1,4 @@
-namespace CcDirector.Core.Sessions;
+﻿namespace CcDirector.Core.Sessions;
 
 /// <summary>
 /// Where a session sits in the hold ("Snooze") state machine - the user's "I do not want to deal with
@@ -42,7 +42,7 @@ public enum HoldState
     None = 0,
 
     /// <summary>
-    /// Parked by the user: shown as "Snoozed", sunk to the bottom of the roster, skipped by the FIFO
+    /// Parked by the user: shown as "Snoozed", sunk to the bottom of the roster, skipped by the
     /// conductor, and never raised as "needs you". Left the instant the agent starts working again.
     /// </summary>
     Held = 1,

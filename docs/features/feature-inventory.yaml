@@ -1,4 +1,4 @@
-# DevThrottle Feature Inventory
+﻿# DevThrottle Feature Inventory
 #
 # This is the source-of-truth list of user-facing features in the cc-director
 # desktop app (brand name DevThrottle). It is generated and maintained by the
@@ -95,7 +95,7 @@ features:
     source:
       - src/CcDirector.Avalonia/MainWindow.axaml
     screenshot: main-toolbar.png
-    summary: Top toolbar with Director info (machine:port), Tools, Cockpit, Settings, New Session, and Start FIFO.
+    summary: Top toolbar with Director info (machine:port), Tools, Cockpit, Settings, and New Session.
 
   # --- Source control and repositories ------------------------------------
   - id: source-control-tab
@@ -201,17 +201,6 @@ features:
   #
   # (Session States mission, 15 July 2026. Found because the check went red on an unrelated pull request,
   # after the mission that deleted the corpse had merged without anyone noticing main had gone red.)
-
-  - id: fifo-window
-    title: FIFO Full-Screen Mode
-    category: voice-wingman
-    status: implemented
-    screen: window
-    source:
-      - src/CcDirector.Avalonia/FifoWindow.axaml
-      - src/CcDirector.Avalonia/FifoWindow.axaml.cs
-    screenshot: fifo-window.png
-    summary: Full-screen, voice-first walkthrough that steps through every session needing attention, with a briefing pane and an optional verification terminal.
 
   # --- Mobile -------------------------------------------------------------
   - id: mobile-fifo-voice

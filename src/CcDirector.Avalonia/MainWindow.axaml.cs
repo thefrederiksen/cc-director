@@ -184,7 +184,7 @@ public partial class MainWindow : Window
         SessionList.AddHandler(DragDrop.DropEvent, SessionList_Drop);
         SessionList.AddHandler(PointerPressedEvent, SessionList_PointerPressed, global::Avalonia.Interactivity.RoutingStrategies.Tunnel);
 
-        // Alpha gating: Start FIFO and Handover are alpha features, hidden by default.
+        // Alpha gating: Handover is an alpha feature, hidden by default.
         // Re-gate live when the flag is toggled in the Settings dialog.
         ApplyAlphaFeatureVisibility();
         AlphaMode.Changed += OnAlphaModeChanged;
@@ -301,7 +301,7 @@ public partial class MainWindow : Window
     private void OnAlphaModeChanged()
     {
         // The flag could be toggled off the UI thread (e.g. a future REST write); always hop to it.
-        // BuildNativeMenu is rebuilt too because the Session menu's Start FIFO item is alpha-gated.
+        // BuildNativeMenu is rebuilt too because the Developer menu is alpha-gated.
         Dispatcher.UIThread.Post(() =>
         {
             ApplyAlphaFeatureVisibility();
@@ -313,7 +313,6 @@ public partial class MainWindow : Window
     private void ApplyAlphaFeatureVisibility()
     {
         var alpha = AlphaMode.IsEnabled;
-        BtnStartFifo.IsVisible = alpha;
         BtnHandover.IsVisible = alpha;
         FileLog.Write($"[MainWindow] ApplyAlphaFeatureVisibility: alphaFeatures={alpha}");
     }
@@ -2442,7 +2441,7 @@ public partial class MainWindow : Window
         ToolTip.SetTip(rename, "Give this session a memorable name shown in the list.");
         rename.Click += (_, _) => ShowRenameDialog(vm);
 
-        // On-hold toggle: parks the session out of the FIFO rotation and paints its
+        // On-hold toggle: parks the session out of the needs-you rotation and paints its
         // list strip dark blue so you can see at a glance which sessions you've set aside.
         //
         // The lengths come from the Gateway-owned cache, read here because it never blocks - this menu is
@@ -4080,7 +4079,6 @@ public partial class MainWindow : Window
         if (alpha)
         {
             var dev = new NativeMenuItem("Developer") { Menu = new NativeMenu() };
-            dev.Menu.Items.Add(Item("Start FIFO", () => BtnFifo_Click(this, new RoutedEventArgs())));
             dev.Menu.Items.Add(Item("Accounts...", async () =>
             {
                 FileLog.Write("[MainWindow] Menu: Accounts");
@@ -4383,35 +4381,6 @@ public partial class MainWindow : Window
     }
 
     private bool _commsInitialized;
-
-    // Launch the full-screen FIFO takeover: step through every session that needs the
-    // user, one at a time, with the live terminal + wingman briefing. Modal over the main
-    // window so there is nothing else to look at while stepping through.
-    private async void BtnFifo_Click(object? sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var sm = (global::Avalonia.Application.Current as App)?.SessionManager;
-            if (sm is null)
-            {
-                FileLog.Write("[MainWindow] BtnFifo_Click: SessionManager not available");
-                return;
-            }
-            FileLog.Write("[MainWindow] BtnFifo_Click: opening FIFO window");
-            await new FifoWindow(sm).ShowDialog(this);
-
-            // The FIFO window is full-screen, so attaching a session there resized that
-            // session's PTY to full-screen dimensions. Re-attach the main window's active
-            // session so it re-sends ITS dimensions and redraws cleanly, instead of leaving
-            // the session rendering at the FIFO window's size.
-            if (_activeSession is not null)
-                TerminalHost.Attach(_activeSession.Session);
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[MainWindow] BtnFifo_Click FAILED: {ex.Message}");
-        }
-    }
 
     private async void BtnComms_Click(object? sender, RoutedEventArgs e)
     {

@@ -1,10 +1,10 @@
-namespace CcDirector.Gateway.Contracts;
+﻿namespace CcDirector.Gateway.Contracts;
 
 /// <summary>
 /// One wingman turn brief - the strong model's interpretation of a completed turn
 /// (docs/architecture/wingman/TURN_BRIEFING.md, contract v2.2). Generated eagerly at turn
 /// end by the Director, stored durably, and rendered verbatim by every consumer (Cockpit
-/// Brief page, rail, phone FIFO, voice). Consumers NEVER parse or post-process this -
+/// Brief page, rail, phone, voice). Consumers NEVER parse or post-process this -
 /// interpretation happened once, on the Director, with the best model available (D6).
 /// </summary>
 public sealed class TurnBriefDto
@@ -120,7 +120,7 @@ public sealed class TurnBriefNeedsYou
     /// <summary>"high" | "ambiguous". Ambiguous statements say so honestly.</summary>
     public string Confidence { get; set; } = "high";
 
-    /// <summary>&lt;= 8 words for the rail / FIFO card / voice.</summary>
+    /// <summary>&lt;= 8 words for the rail / voice.</summary>
     public string RailLine { get; set; } = "";
 
     /// <summary>"If you do nothing" (v3, issue #205): one line - is the session blocked,
