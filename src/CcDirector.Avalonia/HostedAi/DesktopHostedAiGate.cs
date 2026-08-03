@@ -20,6 +20,16 @@ namespace CcDirector.Avalonia.HostedAi;
 public static class DesktopHostedAiGate
 {
     /// <summary>
+    /// TEST SEAM. When set, <see cref="CheckAsync"/> returns this instead of doing the real check.
+    ///
+    /// It exists for ONE thing that cannot be proved otherwise: this pre-flight is the await during
+    /// which a user can close the Speak dialog, and a recorder built after that close is rooted by its
+    /// own NAudio capture thread and never released. A test has to be able to hold the pre-flight open,
+    /// close the window, then let it complete. Null in production, where the real check always runs.
+    /// </summary>
+    internal static Func<CancellationToken, Task<HostedAiState>>? CheckOverrideForTests;
+
+    /// <summary>
     /// Resolve the current hosted-AI state for the configured mode: reads the mode locally, the
     /// bring-your-own key through the shared resolver, and the balance over HTTP from the Gateway. A
     /// fresh resolver + client are built per call so the answer reflects the live state (adding $5 or a
@@ -27,6 +37,9 @@ public static class DesktopHostedAiGate
     /// </summary>
     public static Task<HostedAiState> CheckAsync(CancellationToken ct = default)
     {
+        var testOverride = CheckOverrideForTests;
+        if (testOverride is not null) return testOverride(ct);
+
         // A short timeout keeps the pre-flight from stalling the UI: a slow/unknown balance falls open to
         // Ready (the runtime 402 stays the authoritative gate), so the feature is never blocked on a slow
         // read - only on a definitive out-of-credits / no-key answer, which returns fast.
