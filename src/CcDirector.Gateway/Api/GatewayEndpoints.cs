@@ -2542,6 +2542,12 @@ internal static class GatewayEndpoints
                 SessionIds = targetIds,
                 Text = FrameFromSender(identity, senderRow, senderOwner, req.Text, includeReplyHint: true),
                 FromSessionId = from,
+                // DELIVER AND RETURN - do NOT wait for every recipient to finish. FanoutRequest defaults
+                // WaitForIdle to true, which is right for a caller collecting answers and badly wrong here:
+                // "message send all" is a notification, and waiting would hold the sender for as long as the
+                // slowest recipient takes to go idle - up to the per-session timeout, on a command whose
+                // predecessor returned as soon as the message was accepted.
+                WaitForIdle = false,
                 Reason = req.Everyone ? req.Reason : null,
                 GrantId = req.Everyone ? req.GrantId : null,
             });
