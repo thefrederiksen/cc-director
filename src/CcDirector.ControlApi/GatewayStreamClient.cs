@@ -67,6 +67,14 @@ public sealed class GatewayStreamClient : IAsyncDisposable
     /// </summary>
     private readonly Func<string?>? _displayName;
 
+    /// <summary>
+    /// Remove-the-network-port phase 1b: the registrations for every live session that holds a Gateway
+    /// session key, re-sent on every reseed so a key survives a tunnel drop, a Gateway restart, and a
+    /// Director reconnect. Null in tests and older callers - session keys are then simply never registered,
+    /// which is the same state as a Director that has not been given the feature.
+    /// </summary>
+    private readonly Func<List<SessionKeyRegistration>>? _sessionKeys;
+
     private HubConnection? _connection;
     private long _sequence;
     private int _started;
@@ -99,8 +107,10 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         SessionManager? sessionManager = null,
         GatewayConnectionMonitor? monitor = null,
         Func<List<RepoStatusDto>>? repoSnapshot = null,
-        Func<string?>? displayName = null)
+        Func<string?>? displayName = null,
+        Func<List<SessionKeyRegistration>>? sessionKeys = null)
     {
+        _sessionKeys = sessionKeys;
         _displayName = displayName;
         _repoSnapshot = repoSnapshot;
         _config = config ?? throw new ArgumentNullException(nameof(config));
@@ -506,6 +516,38 @@ public sealed class GatewayStreamClient : IAsyncDisposable
             FileLog.Write($"[GatewayStreamClient] reseed failed (auto-reconnect will retry): {ex.Message}");
         }
 
+        // Remove-the-network-port phase 1b: re-register every live session's Gateway key, in its OWN
+        // try/catch for the same reason as the repository leg below.
+        //
+        // THIS IS THE RECOVERY PATH, not an optimisation. The tunnel is how a key reaches the Gateway, and
+        // the tunnel drops - a Gateway restart wipes nothing (the registry is durable) but a Director that
+        // reconnects after one may have minted keys nobody received. Re-sending them on every reseed makes
+        // the new connection authoritative for credentials exactly as the snapshot above makes it
+        // authoritative for the roster, so a lost registration heals within one reseed instead of leaving an
+        // agent permanently unable to call the Gateway.
+        //
+        // It also EXTENDS the expiry (RegistrationFor recomputes it), which is what lets a key be short-lived
+        // without a long-running session ever losing it.
+        if (_sessionKeys is not null && conn.State == HubConnectionState.Connected)
+        {
+            try
+            {
+                var registrations = _sessionKeys();
+                var registered = 0;
+                foreach (var registration in registrations)
+                {
+                    await conn.InvokeAsync("RegisterSessionKey", registration);
+                    registered++;
+                }
+                if (registrations.Count > 0)
+                    FileLog.Write($"[GatewayStreamClient] re-registered {registered}/{registrations.Count} session key(s)");
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[GatewayStreamClient] session key re-registration incomplete (older Gateway?): {ex.Message}");
+            }
+        }
+
         // The repository snapshot rides the same reseed cadence, in its OWN try/catch: an old Gateway
         // without the PushRepoSnapshot hub method throws a HubException here, and that must never take
         // the session reseed down with it (best-effort, no capability negotiation - see phase C notes).
@@ -547,6 +589,56 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         if (conn is null || conn.State != HubConnectionState.Connected) return;
         var seq = Interlocked.Increment(ref _sequence);
         _ = SendAsync(() => conn.InvokeAsync("PushDelta", seq, session), "PushDelta");
+    }
+
+    /// <summary>
+    /// Register ONE session's Gateway key (Remove-the-network-port mission, phase 1b), sent the instant the
+    /// key is minted - before the agent process is launched, let alone booted - so it is accepted by the
+    /// time the agent's first command reaches the Gateway.
+    ///
+    /// It is awaited, and its failure is REPORTED rather than swallowed: an unregistered key is a session
+    /// whose command line answers 401 on every call, and that must be one findable line in the log rather
+    /// than an agent reporting that DevThrottle is broken. The next reseed re-registers it, which is what
+    /// makes this survivable rather than fatal.
+    /// </summary>
+    public async Task<bool> RegisterSessionKeyAsync(SessionKeyRegistration registration)
+    {
+        if (registration is null || string.IsNullOrEmpty(registration.SessionId)) return false;
+        var conn = _connection;
+        if (conn is null || conn.State != HubConnectionState.Connected)
+        {
+            FileLog.Write($"[GatewayStreamClient] session key NOT registered (tunnel not connected): session={registration.SessionId} - the next reseed will register it");
+            return false;
+        }
+
+        try
+        {
+            await conn.InvokeAsync("RegisterSessionKey", registration);
+            FileLog.Write($"[GatewayStreamClient] registered session key: session={registration.SessionId}, expires={registration.ExpiresAtUtc:O}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayStreamClient] session key registration FAILED: session={registration.SessionId}, {ex.Message} - the next reseed will retry");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// End one session's Gateway key (Remove-the-network-port mission, phase 1b) - sent when the session is
+    /// reaped. Fire-and-forget: a revocation that does not land is backstopped by the key's expiry, and by
+    /// the fact that a reaped session is no longer re-registered, so the key lapses rather than living on.
+    /// </summary>
+    public void RevokeSessionKey(string sessionId)
+    {
+        if (string.IsNullOrEmpty(sessionId)) return;
+        var conn = _connection;
+        if (conn is null || conn.State != HubConnectionState.Connected)
+        {
+            FileLog.Write($"[GatewayStreamClient] session key NOT revoked (tunnel not connected): session={sessionId} - it lapses at its expiry");
+            return;
+        }
+        _ = SendAsync(() => conn.InvokeAsync("RevokeSessionKey", sessionId), $"RevokeSessionKey({sessionId})");
     }
 
     /// <summary>Push a session removal. Fire-and-forget; a drop is reconciled by the next snapshot.</summary>

@@ -268,6 +268,15 @@ public sealed class GatewayHost : IAsyncDisposable
     public Pairing.DeviceRegistry Devices { get; }
 
     /// <summary>
+    /// Remove-the-network-port mission, phase 1b: the registry of per-SESSION Gateway credentials. A Director
+    /// registers one key per session over its tunnel and revokes it when the session is reaped; the auth gate
+    /// verifies presented session keys against it, and the session-key guard limits what they may call. This
+    /// is what lets an agent's command line reach the Gateway without being handed its Director's
+    /// account-wide key.
+    /// </summary>
+    public Pairing.SessionKeyRegistry SessionKeys { get; }
+
+    /// <summary>
     /// Issue #288: which Director last owned each session, so the per-session WS proxy can answer
     /// 503 (owner offline) instead of 404 (unknown session). Populated by the /sessions aggregator
     /// and the WS proxy; read by the WS proxy.
@@ -1100,6 +1109,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // MTR-14B: the shared EF database is now the device registry authority. The legacy JSON path is
         // supplied only to the one-time importer; no runtime authentication or mutation reads or writes it.
         Devices = new Pairing.DeviceRegistry(_gatewayDb, devicesPath, GatewayHostedMode.IsHosted);
+        // Remove-the-network-port phase 1b: the per-session credential registry. A Director registers one key
+        // per session over the tunnel it already holds, and an agent inside that session authenticates as the
+        // session rather than with its Director's account-wide key. Same database and the same stored-hash
+        // shape as the device registry above, because it is the same kind of credential one hop further in.
+        SessionKeys = new Pairing.SessionKeyRegistry(_gatewayDb);
         // The account-to-tenant resolver (Hosted Multi-Tenancy increment 1): owns the tenants mapping table
         // and mints/looks up a tenant from a verified account subject. Built over the EF database; wired into
         // the hosted enrollment boundary (which validates the account token and stamps the resolved tenant on
@@ -2387,6 +2401,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // there is a statistics store and, when there is not, why not.
         builder.Services.AddSingleton(StatsStore);
         builder.Services.AddSingleton(Registry);
+        // Remove-the-network-port phase 1b: the DirectorHub (constructed per-invocation by SignalR) registers
+        // and revokes session keys through the SAME registry the auth gate verifies against.
+        builder.Services.AddSingleton(SessionKeys);
         // launcher-persistent-join: the LauncherHub (constructed per-invocation by SignalR) and
         // SendLauncherCommandAsync share this one connection registry.
         builder.Services.AddSingleton(LauncherConnections);
@@ -2459,7 +2476,7 @@ public sealed class GatewayHost : IAsyncDisposable
             // own unique key. The shared token still authenticates the host's own browser/cookie
             // surface, but it is no longer the path a NEW device uses to get in (that is account
             // sign-in - see SignedInEnrollmentEndpoint).
-            var requireToken = new AuthMiddleware.RequireToken { Token = Token, Devices = Devices, Leases = _accessLeases, Boundary = _tenantBoundary };
+            var requireToken = new AuthMiddleware.RequireToken { Token = Token, Devices = Devices, Leases = _accessLeases, Boundary = _tenantBoundary, Sessions = SessionKeys };
             _app.Use(async (ctx, next) => await AuthMiddleware.Run(ctx, requireToken, next));
         }
 

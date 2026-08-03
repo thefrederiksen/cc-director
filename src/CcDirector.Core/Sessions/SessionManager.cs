@@ -89,6 +89,33 @@ public sealed class SessionManager : IDisposable
     public Func<Guid, string?>? SessionCredentialSource { get; set; }
 
     /// <summary>
+    /// Remove-the-network-port mission, phase 1b: mints the credential a session's own agent presents to the
+    /// GATEWAY, bound to that session's id, and registers it with the Gateway over the connection the
+    /// Director already holds. Returns null when no Gateway is configured or no key could be minted. Set by
+    /// ControlApiHost.StartAsync alongside <see cref="GatewayUrl"/> - the address and the credential are
+    /// stamped together, because either alone is useless.
+    ///
+    /// This is a DIFFERENT credential from <see cref="SessionCredentialSource"/> above, and it has to be.
+    /// That one is a signature the Director can re-derive from the machine secret it holds; the Gateway
+    /// holds no such secret and must never be given one, so a Gateway session key is random, registered by
+    /// its hash, and revoked when the session is reaped.
+    ///
+    /// THERE IS NO FALLBACK BEHIND IT. A session either gets its own key or it gets nothing - it is never
+    /// handed the Director's own Gateway key, which would give every agent process authority over the whole
+    /// account on every machine. That is a strictly larger hole than the network port this mission removes.
+    /// </summary>
+    public Func<Guid, string?>? GatewaySessionCredentialSource { get; set; }
+
+    /// <summary>
+    /// Remove-the-network-port mission, phase 1b: the Gateway's base URL, injected into every spawned session
+    /// as CC_GATEWAY_URL so an agent's command line knows where to present the key from
+    /// <see cref="GatewaySessionCredentialSource"/>. Null/empty when no Gateway is configured, in which case
+    /// neither variable is stamped - an address with no credential, or a credential with no address, is a
+    /// half-configured session that fails in a confusing way rather than an obvious one.
+    /// </summary>
+    public string? GatewayUrl { get; set; }
+
+    /// <summary>
     /// Issue #1357: returns the signed-in DevThrottle user (email + nickname) to name in a Pi session's
     /// launch-time preamble, or null when no one is signed in. Set by ControlApiHost.StartAsync to read
     /// the host's cached snapshot SYNCHRONOUSLY (no network) so session creation never blocks. Null
@@ -604,6 +631,25 @@ public sealed class SessionManager : IDisposable
             var sessionCredential = SessionCredentialSource?.Invoke(id);
             if (!string.IsNullOrEmpty(sessionCredential))
                 envVars["CC_DIRECTOR_TOKEN"] = sessionCredential;
+
+            // Remove-the-network-port mission, phase 1b: the Gateway's address and THIS SESSION'S OWN key
+            // for it. Stamped as a PAIR or not at all - a session given one without the other cannot reach
+            // the Gateway and would report a credential problem or an address problem depending on which
+            // half arrived, when the real answer is simply "there is no Gateway here".
+            //
+            // Until now a session had no Gateway credential of any kind, and the only way to give it one
+            // would have been the Director's own - authority over the entire account. This is the least
+            // privilege replacement: bound to this session, limited to the agent routes, ended when the
+            // session is.
+            if (!string.IsNullOrEmpty(GatewayUrl))
+            {
+                var gatewayCredential = GatewaySessionCredentialSource?.Invoke(id);
+                if (!string.IsNullOrEmpty(gatewayCredential))
+                {
+                    envVars["CC_GATEWAY_URL"] = GatewayUrl;
+                    envVars["CC_GATEWAY_SESSION_KEY"] = gatewayCredential;
+                }
+            }
 
             // Issue #705: make session-to-session messaging discoverable to the agent. This is a
             // one-line reminder, NOT a credential - the tools reach the fleet through CC_DIRECTOR_API

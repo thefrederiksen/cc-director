@@ -116,6 +116,14 @@ public sealed class ControlApiHost : IAsyncDisposable
     // Issue #1176 (Phase 1a): the outbound push-stream client, running alongside _gatewayClient when
     // gateway.streamMode is on. Null when stream mode is off, so the Director behaves exactly as today.
     private GatewayStreamClient? _streamClient;
+
+    /// <summary>
+    /// Remove-the-network-port mission, phase 1b: the hashes of the Gateway session keys this Director's
+    /// live sessions hold, so it can re-register them on a tunnel reseed. Owned by the host - it outlives
+    /// the stream client, which is rebuilt whenever the Gateway settings change, and the keys stamped into
+    /// already-running sessions' environments cannot be re-issued when that happens.
+    /// </summary>
+    private readonly SessionGatewayKeys _sessionGatewayKeys = new();
     private readonly SemaphoreSlim _gatewayReapplyLock = new(1, 1);
 
     /// <summary>
@@ -742,6 +750,27 @@ public sealed class ControlApiHost : IAsyncDisposable
                 ? DirectorScopedToken.Mint(secret, ScopeNames.SessionChild, sessionId)
                 : null;
 
+        // Remove-the-network-port mission, phase 1b: the same idea, one hop out. Every session also gets a
+        // credential for the GATEWAY, bound to its own id and limited to the agent routes, so an agent's
+        // command line can reach the fleet through the Gateway without being handed this Director's own
+        // account-wide key.
+        //
+        // The registration is sent the moment the key is minted, which is inside the environment build - so
+        // it goes up the tunnel BEFORE the agent process is even launched, and is long since accepted by the
+        // time that process boots and runs its first command. It is not awaited here because session
+        // creation must never block on the network; a registration that does not land is re-sent on the next
+        // tunnel reseed, and until then the session's calls are REFUSED rather than falling back to anything.
+        _sessionManager.GatewayUrl = gatewayConfig.IsEnabled ? gatewayConfig.Url : null;
+        _sessionManager.GatewaySessionCredentialSource = sessionId =>
+        {
+            if (_streamClient is null) return null;
+            var key = _sessionGatewayKeys.Mint(sessionId);
+            var registration = _sessionGatewayKeys.RegistrationFor(sessionId);
+            if (registration is not null)
+                _ = _streamClient.RegisterSessionKeyAsync(registration);
+            return key;
+        };
+
         // Named instances: record the ACTUAL bound port (fixed or ephemeral-fallback) back to the
         // named-instance registry so the picker/switcher shows and probes the right port. Best-effort;
         // never throws into startup.
@@ -1005,7 +1034,11 @@ public sealed class ControlApiHost : IAsyncDisposable
             // devthrottle_internal#1176: read the display name from the named-instance registry on EVERY
             // reseed (not InstanceContext.DisplayName, a start-once static) so a rename lands fleet-wide
             // on the next ~10s Hello without a Director restart.
-            displayName: () => NamedInstanceRegistry.Get(InstanceContext.Slug)?.DisplayName);
+            displayName: () => NamedInstanceRegistry.Get(InstanceContext.Slug)?.DisplayName,
+            // Remove-the-network-port phase 1b: every live session's Gateway key rides the reseed, so a
+            // registration lost to a tunnel drop or a Gateway restart heals on the next connection instead
+            // of leaving that session's agent permanently refused.
+            sessionKeys: () => _sessionGatewayKeys.LiveRegistrations());
     }
 
     /// <summary>
@@ -1199,6 +1232,13 @@ public sealed class ControlApiHost : IAsyncDisposable
                     Core.Sessions.ActivityState.Exited.ToString(), DoorbellEvents.SessionExited);
             // Issue #1176 (Phase 1a): tombstone the removed session so the Gateway prunes it immediately.
             _streamClient?.NotifyRemove(session.Id.ToString());
+            // Remove-the-network-port phase 1b: END the session's Gateway credential. Both halves are
+            // needed and neither substitutes for the other - Forget stops THIS Director re-registering the
+            // key on the next reseed, and the revocation is what makes the GATEWAY refuse it. Forgetting
+            // alone would leave a working credential behind for a session that no longer exists; revoking
+            // alone would have the next reseed try to bring it back.
+            if (_sessionGatewayKeys.Forget(session.Id))
+                _streamClient?.RevokeSessionKey(session.Id.ToString());
             // The session is gone from the roster - drop the announce guard so the map
             // never grows past the live roster.
             _exitAnnounced.TryRemove(session.Id, out _);

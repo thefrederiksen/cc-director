@@ -1,3 +1,4 @@
+using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Cockpit;
 using CcDirector.Gateway.Pairing;
@@ -93,6 +94,19 @@ internal static class AuthMiddleware
     /// "the shared machine token, no device" for hosted tenant resolution.
     /// </summary>
     public const string AuthenticatedCredentialItemKey = "cc.auth.Credential";
+
+    /// <summary>
+    /// Request item containing the <see cref="Pairing.SessionCredentialIdentity"/> of the SESSION whose key
+    /// authenticated this request (Remove-the-network-port mission, phase 1b), or absent when the caller was
+    /// not a session.
+    ///
+    /// THIS IS THE CALLING SESSION ID, and it is stamped here - at the one place the credential was actually
+    /// verified - for the same reason <see cref="AuthenticatedCredentialItemKey"/> is: anything downstream
+    /// that needs to know which session is calling must read the identity this gate resolved, never re-read
+    /// the raw request and reach its own conclusion. Two parsers of one request eventually disagree, and the
+    /// gap between them is a session id the caller can choose.
+    /// </summary>
+    public const string AuthenticatedSessionItemKey = "cc.auth.SessionIdentity";
 
     /// <summary>
     /// The desktop Cockpit's sign-in route (issue #1088): the shared client-core enrollment screen a
@@ -240,7 +254,7 @@ internal static class AuthMiddleware
             return;
         }
 
-        var authentication = AuthenticateRequest(ctx, cfg.Token, cfg.Devices, GatewayHostedMode.IsHosted);
+        var authentication = AuthenticateRequest(ctx, cfg.Token, cfg.Devices, GatewayHostedMode.IsHosted, cfg.Sessions);
         if (authentication == AuthenticationResultKind.Authenticated)
         {
             // MTR-15 cancellation cutoff: on hosted, an authenticated device-key request must still belong to
@@ -294,6 +308,21 @@ internal static class AuthMiddleware
             return;
         }
 
+        // A session key that VERIFIED but is not allowed to call this route. This is a 403, never a 401: the
+        // credential is genuine and saying "missing or invalid token" would send an agent - and whoever is
+        // reading its transcript - hunting a credential problem that does not exist. The guard's own sentence
+        // is returned, because the agent that hit it is the one who has to understand it.
+        if (authentication == AuthenticationResultKind.OutOfScopeSessionKey)
+        {
+            var refusal = SessionKeyGuard.Check(ctx.Request.Method, path);
+            FileLog.Write($"[AuthMiddleware] session key REFUSED: {ctx.Request.Method} {path} - {refusal.Reason}");
+            ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+            ctx.Response.ContentType = "application/json; charset=utf-8";
+            await ctx.Response.WriteAsync(
+                "{\"error\":\"" + JsonEscape(refusal.Reason) + "\",\"code\":\"session_key_out_of_scope\"}");
+            return;
+        }
+
         // Unauthorized. A person's browser navigation (Accept: text/html) is driven to the shared
         // sign-in flow - the Cockpit's /signin enrollment screen - carrying the originally-requested
         // route in next= so the browser lands back on that exact route after enrollment (issue #1088).
@@ -334,6 +363,13 @@ internal static class AuthMiddleware
     /// single-owner, the shared token remains its credential, and this overload reads
     /// <see cref="GatewayHostedMode.IsHosted"/> (false off hosted) so behavior there is byte-identical.
     /// </summary>
+    /// <remarks>
+    /// Session keys (Remove-the-network-port phase 1b) are deliberately NOT accepted through this overload:
+    /// it takes no session registry, so a route gated by it directly refuses a session key. That is the safe
+    /// direction. Routes an agent must reach are gated by the host-wide middleware, which does pass the
+    /// registry; a route that gates itself is one that stays credential-gated even when the global gate is
+    /// off, and those are exactly the routes an agent has no business on.
+    /// </remarks>
     public static bool HasValidToken(HttpContext ctx, string token, DeviceRegistry? devices)
         => HasValidToken(ctx, token, devices, GatewayHostedMode.IsHosted);
 
@@ -352,7 +388,8 @@ internal static class AuthMiddleware
         HttpContext ctx,
         string token,
         DeviceRegistry? devices,
-        bool rejectSharedToken)
+        bool rejectSharedToken,
+        SessionKeyRegistry? sessions = null)
     {
         var strongestFailure = AuthenticationResultKind.UnknownCredential;
 
@@ -373,6 +410,15 @@ internal static class AuthMiddleware
                 if (result == AuthenticationResultKind.Authenticated)
                     return result;
                 strongestFailure = StrongerFailure(strongestFailure, result);
+
+                // Remove-the-network-port phase 1b: a per-SESSION key. Bearer ONLY, deliberately - a session
+                // key is an agent's credential, carried by a command line, and it is never a browser's. The
+                // cookie path below exists for browser WebSockets, which cannot set a header; extending a
+                // session key to it would put an agent's credential on a surface a page can be made to send.
+                var session = AuthenticateSession(ctx, sessions, provided);
+                if (session == AuthenticationResultKind.Authenticated)
+                    return session;
+                strongestFailure = StrongerFailure(strongestFailure, session);
             }
         }
 
@@ -420,14 +466,61 @@ internal static class AuthMiddleware
         };
     }
 
+    /// <summary>
+    /// Verify a presented Bearer as a SESSION key, and - when it verifies - decide in the SAME step whether
+    /// that session may call this route.
+    ///
+    /// The scope check lives HERE, inside the accept, rather than as a second gate further down the pipeline.
+    /// A scope rule that sits beside the authentication rather than inside it is a rule every future caller
+    /// of the authentication has to remember to also apply, and one that forgets does not fail loudly - it
+    /// quietly grants an agent a route nobody meant it to have. Fold it in once and "this credential is
+    /// valid" and "valid FOR THIS REQUEST" become the same question, which is the only version of it that
+    /// cannot be half-answered.
+    /// </summary>
+    private static AuthenticationResultKind AuthenticateSession(
+        HttpContext ctx,
+        SessionKeyRegistry? sessions,
+        string credential)
+    {
+        if (sessions is null)
+            return AuthenticationResultKind.UnknownCredential;
+
+        var resolution = sessions.ResolveCredential(credential);
+        switch (resolution.Kind)
+        {
+            case SessionCredentialResolutionKind.Active when resolution.Identity is not null:
+                var verdict = SessionKeyGuard.Check(ctx.Request.Method, ctx.Request.Path.Value);
+                if (!verdict.Allowed)
+                    return AuthenticationResultKind.OutOfScopeSessionKey;
+                return AcceptSession(ctx, credential, resolution.Identity);
+
+            case SessionCredentialResolutionKind.Revoked:
+                return AuthenticationResultKind.RevokedCredential;
+
+            case SessionCredentialResolutionKind.Unavailable:
+                return AuthenticationResultKind.RegistryUnavailable;
+
+            default:
+                return AuthenticationResultKind.UnknownCredential;
+        }
+    }
+
     private static AuthenticationResultKind StrongerFailure(
         AuthenticationResultKind current,
         AuthenticationResultKind candidate)
     {
         if (candidate == AuthenticationResultKind.RegistryUnavailable)
             return candidate;
-        if (candidate == AuthenticationResultKind.RevokedCredential
+        // An out-of-scope session key is the most SPECIFIC thing we can say short of a registry outage: the
+        // credential was proven and the route was refused. It outranks "revoked" and "unknown", which are
+        // both statements that no credential on this request verified at all - and reporting the wrong one
+        // sends the reader after a credential problem instead of a permission one.
+        if (candidate == AuthenticationResultKind.OutOfScopeSessionKey
             && current != AuthenticationResultKind.RegistryUnavailable)
+            return candidate;
+        if (candidate == AuthenticationResultKind.RevokedCredential
+            && current != AuthenticationResultKind.RegistryUnavailable
+            && current != AuthenticationResultKind.OutOfScopeSessionKey)
             return candidate;
         return current;
     }
@@ -456,6 +549,43 @@ internal static class AuthMiddleware
         }
         return AuthenticationResultKind.Authenticated;
     }
+
+    /// <summary>
+    /// Accept a request on a verified SESSION key. Like <see cref="Accept"/> this is the one place a session
+    /// caller is admitted, so the calling session id is recorded on the request exactly once.
+    ///
+    /// It deliberately does NOT set <see cref="AuthenticatedDeviceItemKey"/> or
+    /// <see cref="DeviceTypeItemKey"/>: a session is not a device, and dressing it as one would put a
+    /// fabricated device identity in front of every consumer that reads those - the statistics surface would
+    /// attribute the call to a device type nobody enrolled, and the tenant boundary would resolve the caller
+    /// through a device record that does not exist. The session identity is its own item, and the code that
+    /// needs it asks for it by name.
+    /// </summary>
+    private static AuthenticationResultKind AcceptSession(
+        HttpContext ctx,
+        string credential,
+        SessionCredentialIdentity identity)
+    {
+        ctx.Items[AuthenticatedCredentialItemKey] = credential;
+        ctx.Items[AuthenticatedSessionItemKey] = identity;
+        return AuthenticationResultKind.Authenticated;
+    }
+
+    /// <summary>
+    /// The session identity that authenticated this request, or null when the caller was not a session. The
+    /// ONE way to ask "which session is calling" - see <see cref="AuthenticatedSessionItemKey"/> for why it
+    /// must never be re-derived from the raw request.
+    /// </summary>
+    public static SessionCredentialIdentity? CallingSession(HttpContext? ctx)
+        => ctx?.Items.TryGetValue(AuthenticatedSessionItemKey, out var value) == true
+            ? value as SessionCredentialIdentity
+            : null;
+
+    /// <summary>Escape a guard sentence for the hand-built JSON refusal body. The sentences are ours and
+    /// carry no quotes today; escaping them anyway means a future reworded refusal cannot emit a broken
+    /// body that a client parses as a different error.</summary>
+    private static string JsonEscape(string value)
+        => value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", " ").Replace("\r", " ");
 
     private static IEnumerable<string> CookieValues(HttpContext ctx, string name)
     {
@@ -519,6 +649,14 @@ internal static class AuthMiddleware
         /// <summary>The boundary that resolves the authenticated device key to its tenant, for the lease
         /// check. Null on self-host.</summary>
         public CcDirector.Gateway.Tenancy.HostedTenantBoundary? Boundary { get; init; }
+
+        /// <summary>
+        /// Remove-the-network-port phase 1b: the per-session key registry, so an agent running inside a
+        /// session authenticates as THAT SESSION rather than with its Director's account-wide key. Null
+        /// disables session-key auth entirely (a Gateway with no registry answers every session key
+        /// "unknown"), which is the correct behaviour for any host that has not wired one.
+        /// </summary>
+        public SessionKeyRegistry? Sessions { get; init; }
     }
 
     internal enum AuthenticationResultKind
@@ -527,5 +665,10 @@ internal static class AuthMiddleware
         Authenticated,
         RevokedCredential,
         RegistryUnavailable,
+
+        /// <summary>A SESSION key that verified, presented on a route the session-key guard does not allow.
+        /// A permission answer (403), not a credential answer (401) - see the refusal branch in
+        /// <see cref="Run"/> for why the two must not be reported in the same words.</summary>
+        OutOfScopeSessionKey,
     }
 }

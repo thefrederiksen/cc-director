@@ -60,8 +60,10 @@ public sealed class DirectorHub : Hub
         Fleet.FleetRoleObserver? fleetRoles = null, Fleet.FleetDisplayStateObserver? fleetDisplayState = null,
         DirectorConnectionRegistry? connections = null,
         PushedRepositoryStore? repositoryStore = null, RepoHistoryStore? repoHistory = null,
-        History.SessionHistoryRecorder? sessionHistory = null)
+        History.SessionHistoryRecorder? sessionHistory = null,
+        Pairing.SessionKeyRegistry? sessionKeys = null)
     {
+        _sessionKeys = sessionKeys;
         _store = store;
         _registry = registry;
         _inputStats = inputStats.Aggregator;
@@ -77,6 +79,15 @@ public sealed class DirectorHub : Hub
     }
 
     private readonly PushedRepositoryStore? _repositoryStore;
+
+    /// <summary>
+    /// Remove-the-network-port phase 1b: the per-session credential registry. Null in tests and older
+    /// callers, which makes <see cref="RegisterSessionKey"/> and <see cref="RevokeSessionKey"/> refuse
+    /// loudly rather than pretend to work - a registration that silently vanished would leave a session
+    /// holding a key the Gateway will never accept, which reads as an agent whose tools are broken.
+    /// </summary>
+    private readonly Pairing.SessionKeyRegistry? _sessionKeys;
+
     private readonly RepoHistoryStore? _repoHistory;
     // Issue #2194: the durable work-history recorder, fed from the same accepted pushes as the other
     // observers. Throttled internally (it is NOT a write per push) and never throws.
@@ -185,6 +196,82 @@ public sealed class DirectorHub : Hub
         _registry.RegisterFromStream(directorId, hello.MachineName, hello.User, hello.Version, hello.Pid, hello.StartedAt, tenant,
             hello.DisplayName);
         FileLog.Write($"[DirectorHub] Hello: director={directorId} bound to conn={Short(Context.ConnectionId)} (version={hello.Version}, machine={hello.MachineName})");
+    }
+
+    /// <summary>
+    /// Register (or refresh) the Gateway credential for ONE of the bound Director's sessions
+    /// (Remove-the-network-port mission, phase 1b).
+    ///
+    /// This is the whole reason an agent can call the Gateway as itself. The Director mints a key for a
+    /// session, keeps the raw value on its own machine, and sends the HASH up this connection - so the key
+    /// exists in exactly two places, the Director process and the one session's environment, and never on
+    /// the wire.
+    ///
+    /// THE TENANT IS THE CONNECTION'S, NOT THE PAYLOAD'S. It is taken from
+    /// <see cref="RequireBoundTenant"/> - the tenant this connection bound to at Hello, resolved there from
+    /// the AUTHENTICATED device key. There is deliberately no tenant field in the registration message: a
+    /// tenant a client can name is a tenant a client can choose, and choosing one would mint a working
+    /// credential inside somebody else's account.
+    ///
+    /// Requires the connection to be bound first, exactly like every other message on this hub. A hub method
+    /// is a boundary, so this catches: a registry failure must surface to the calling Director as a hub
+    /// error it can log and retry on the next reseed, never as a faulted connection that drops the tunnel.
+    /// </summary>
+    public void RegisterSessionKey(SessionKeyRegistration registration)
+    {
+        var directorId = RequireBoundDirector();
+        var tenant = RequireBoundTenant();
+
+        if (registration is null
+            || string.IsNullOrWhiteSpace(registration.SessionId)
+            || string.IsNullOrWhiteSpace(registration.KeyHash))
+        {
+            FileLog.Write($"[DirectorHub] RegisterSessionKey REJECTED (incomplete registration): director={directorId}");
+            throw new HubException("a session key registration needs a session id and a key hash");
+        }
+
+        if (_sessionKeys is null)
+        {
+            FileLog.Write($"[DirectorHub] RegisterSessionKey REFUSED (this Gateway has no session key registry): director={directorId}, session={registration.SessionId}");
+            throw new HubException("this Gateway has no session key registry");
+        }
+
+        var registered = _sessionKeys.Register(
+            tenant, directorId, registration.SessionId, registration.KeyHash, registration.ExpiresAtUtc);
+
+        FileLog.Write($"[DirectorHub] RegisterSessionKey: director={directorId}, session={registration.SessionId}, registered={registered}");
+        if (!registered)
+            throw new HubException($"the session key for {registration.SessionId} was not registered");
+    }
+
+    /// <summary>
+    /// End one session's Gateway credential (Remove-the-network-port mission, phase 1b) - sent when the
+    /// Director reaps the session. Scoped to the connection's bound tenant, so a Director can only ever end
+    /// its own account's keys.
+    ///
+    /// Revoking a key that is already gone is NOT an error and does not throw: the reap path and the expiry
+    /// sweep can both reach the same key, and a shutdown that revokes twice must not be reported as a
+    /// failure the Director then retries forever.
+    /// </summary>
+    public void RevokeSessionKey(string sessionId)
+    {
+        var directorId = RequireBoundDirector();
+        var tenant = RequireBoundTenant();
+
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            FileLog.Write($"[DirectorHub] RevokeSessionKey REJECTED (no session id): director={directorId}");
+            throw new HubException("a session key revocation needs a session id");
+        }
+
+        if (_sessionKeys is null)
+        {
+            FileLog.Write($"[DirectorHub] RevokeSessionKey REFUSED (this Gateway has no session key registry): director={directorId}, session={sessionId}");
+            throw new HubException("this Gateway has no session key registry");
+        }
+
+        var revoked = _sessionKeys.Revoke(tenant, sessionId, Pairing.SessionKeyRegistry.ReasonSessionReaped);
+        FileLog.Write($"[DirectorHub] RevokeSessionKey: director={directorId}, session={sessionId}, revoked={revoked}");
     }
 
     /// <summary>A full snapshot: replaces the bound Director's session set (pruning anything absent).</summary>
