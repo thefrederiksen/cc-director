@@ -12,10 +12,16 @@ namespace CcDirector.Core.Tests.Git;
 /// each of these services was unreachable, and the exception left them by a route none of their
 /// callers expects: every one of them is written against a result object carrying Success=false.
 ///
-/// The launch is failed here by naming an executable that resolves nowhere, so the operating system
-/// fails it for exactly the reason it fails on a clean Windows install. These tests therefore run
-/// on ANY machine, with or without git - which matters, because a machine without git is a supported
-/// machine and these are the tests it most needs to keep.
+/// EVERY test here fails the launch by naming an executable that resolves nowhere, so the operating
+/// system fails it for exactly the reason it fails on a clean Windows install. These tests therefore
+/// run identically on ANY machine, with or without git - which matters, because a machine without
+/// git is a supported machine and these are the tests it most needs to keep.
+///
+/// That sentence was claimed once before and was FALSE: one test failed the launch with a missing
+/// working directory instead, so its result depended on whether the host had git, and it reddened a
+/// build on a git-less machine. The claim is now verified by a control rather than asserted - the
+/// suite is run a second time with git removed from PATH, and must give the identical result with
+/// nothing skipped. If you add a test here, run that control before you believe this paragraph.
 ///
 /// The assertion in every case is the same: a RESULT that says why, never an exception.
 /// </summary>
@@ -102,28 +108,41 @@ public class GitLaunchGuardTests
     /// <summary>
     /// The read provider the Source Control view renders. It used to report a fixed "Failed to start
     /// git process", which threw the reason away - and said the same thing when git ran perfectly
-    /// well and merely exited non-zero. The launch is failed here with a working directory that does
-    /// not exist, which reaches the same wiring on a machine that HAS git.
+    /// well and merely exited non-zero.
+    ///
+    /// THIS TEST USED TO DEPEND ON THE HOST HAVING GIT, which is the one thing it must not do. It
+    /// failed the launch with a missing working DIRECTORY, so what came back depended on which
+    /// failure the operating system hit first: with git installed, "the directory name is invalid";
+    /// without it, "no such file" - which the rule correctly describes as git not being installed,
+    /// and the assertion that the message must NOT say "not installed" then failed. It reddened a
+    /// build on exactly the machine this whole change exists to support. It now uses the same seam
+    /// as every other test here, so the failure is always the same one, everywhere.
+    ///
+    /// The assertion it used to carry - that a launch failure which is NOT a missing file keeps its
+    /// own words rather than being relabelled "not installed" - has not been lost. It is proved
+    /// directly and deterministically by AnyOtherCode_KeepsTheRealReason below, which is where a
+    /// rule about error codes belongs anyway.
     /// </summary>
     [Fact]
     public async Task GitStatusProvider_WhenGitCannotBeLaunched_ReportsTheReason()
     {
-        var missingDirectory = Path.Combine(Path.GetTempPath(), "devthrottle-no-such-directory-" + Guid.NewGuid().ToString("N"));
+        // A directory of its own, not the shared temp root: GitStatusProvider keeps a STATIC cache
+        // keyed by path, so a sibling test reading the same folder within the cache window could
+        // hand this one a cached success instead of the launch failure it is here to observe.
+        var ownDirectory = Path.Combine(Path.GetTempPath(), "devthrottle-status-launch-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(ownDirectory);
+        try
+        {
+            var result = await new GitStatusProvider(NoSuchExecutable).GetStatusAsync(ownDirectory);
 
-        var result = await new GitStatusProvider().GetStatusAsync(missingDirectory);
-
-        Assert.False(result.Success);
-        Assert.NotEqual("Failed to start git process", result.Error);
-
-        // The sharper assertion, and the one worth having: git IS installed on this machine - the
-        // working directory is what is missing - so the message must NOT claim git is absent. A rule
-        // that mapped every launch failure to "not installed" would pass a prefix check and still be
-        // telling the user to reinstall software they already have.
-        Assert.DoesNotContain("not installed", result.Error!);
-        Assert.StartsWith("git could not be started: ", result.Error);
-        Assert.True(
-            result.Error!.Length > "git could not be started: ".Length,
-            "the reason was dropped - only the prefix survived");
+            Assert.False(result.Success);
+            Assert.NotEqual("Failed to start git process", result.Error);
+            Assert.Equal(NotInstalled, result.Error);
+        }
+        finally
+        {
+            try { Directory.Delete(ownDirectory, recursive: true); } catch { /* disposable temp folder */ }
+        }
     }
 
     // ---- The sentence itself -----------------------------------------------------------------
