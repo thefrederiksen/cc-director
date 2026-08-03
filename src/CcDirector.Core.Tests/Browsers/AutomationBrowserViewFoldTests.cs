@@ -172,4 +172,134 @@ public sealed class AutomationBrowserViewFoldTests
     {
         Assert.Throws<ArgumentNullException>(() => AutomationBrowserViewFold.Fold(null!, AutomationBrowserStatus.Ready, account: null));
     }
+
+    // ---- The pinned rail row ----------------------------------------------------------------------
+    //
+    // One clickable row in the left rail, never a list: it carries the profile count and a dot when any
+    // profile is up, and nothing else. These prove the two facts it states are true.
+
+    private static AutomationBrowserView View(string id, AutomationBrowserStatus status) =>
+        AutomationBrowserViewFold.Fold(
+            new AutomationBrowser(
+                Id: id,
+                Name: id,
+                Kind: BrowserKind.Chrome,
+                UserDataDir: $@"C:\data\browsers\{id}",
+                Port: 9310,
+                CreatedUtc: new DateTime(2026, 7, 23, 12, 0, 0, DateTimeKind.Utc),
+                LastSignedInUtc: null),
+            status,
+            account: null);
+
+    [Fact]
+    public void FoldRail_CountsProfilesAndSaysHowManyAreRunning()
+    {
+        var rail = AutomationBrowserViewFold.FoldRail(
+            new[]
+            {
+                View("a", AutomationBrowserStatus.Ready),
+                View("b", AutomationBrowserStatus.Stopped),
+                View("c", AutomationBrowserStatus.NeedsSignIn),
+                View("d", AutomationBrowserStatus.Stopped),
+            },
+            harnessInstalled: true);
+
+        Assert.True(rail.ShowCount);
+        Assert.Equal("4", rail.CountText);
+        // Running means the debug port answered. A browser that is up but never signed in is running.
+        Assert.Equal("4 browser profiles, 2 running. Click to manage them in Settings.", rail.ToolTip);
+        Assert.Equal("green", rail.RunningDotColor);
+        Assert.False(rail.ShowSetup);
+    }
+
+    [Fact]
+    public void FoldRail_NoneRunning_SaysSoAndShowsNoDot()
+    {
+        var rail = AutomationBrowserViewFold.FoldRail(
+            new[] { View("a", AutomationBrowserStatus.Stopped), View("b", AutomationBrowserStatus.Stopped) },
+            harnessInstalled: true);
+
+        Assert.Equal("2 browser profiles, none running. Click to manage them in Settings.", rail.ToolTip);
+        Assert.Null(rail.RunningDotColor);
+        Assert.Equal("2", rail.CountText);
+    }
+
+    [Fact]
+    public void FoldRail_OneProfile_ReadsSingular()
+    {
+        var rail = AutomationBrowserViewFold.FoldRail(
+            new[] { View("a", AutomationBrowserStatus.Ready) },
+            harnessInstalled: true);
+
+        Assert.Equal("1 browser profile, 1 running. Click to manage them in Settings.", rail.ToolTip);
+    }
+
+    [Fact]
+    public void FoldRail_WhileAnyProfileIsStillBeingProbed_SaysNothingAboutRunning()
+    {
+        // The row repaints on a timer, so "none running" stated during the probe window would be a
+        // falsehood shown repeatedly. Unknown is said by not saying it - the count is still true.
+        var rail = AutomationBrowserViewFold.FoldRail(
+            new[] { View("a", AutomationBrowserStatus.Checking), View("b", AutomationBrowserStatus.Stopped) },
+            harnessInstalled: true);
+
+        Assert.Equal("2 browser profiles. Click to manage them in Settings.", rail.ToolTip);
+        Assert.Null(rail.RunningDotColor);
+    }
+
+    [Fact]
+    public void FoldRail_ProbedProfileRunningWhileAnotherIsStillChecking_StillShowsTheDot()
+    {
+        // The dot is an existence claim ("at least one is up"), which a single probed Ready already
+        // settles - unlike the running COUNT, which the unprobed profile could still change.
+        var rail = AutomationBrowserViewFold.FoldRail(
+            new[] { View("a", AutomationBrowserStatus.Ready), View("b", AutomationBrowserStatus.Checking) },
+            harnessInstalled: true);
+
+        Assert.Equal("green", rail.RunningDotColor);
+        Assert.Equal("2 browser profiles. Click to manage them in Settings.", rail.ToolTip);
+    }
+
+    [Fact]
+    public void FoldRail_HarnessNotInstalled_WearsTheSetupNudgeAndNoCount()
+    {
+        // The row must stay visible and say what is missing: the feature advertises itself rather than
+        // hiding, and clicking it lands on the screen where the install runs.
+        var rail = AutomationBrowserViewFold.FoldRail(
+            new[] { View("a", AutomationBrowserStatus.Stopped) },
+            harnessInstalled: false);
+
+        Assert.True(rail.ShowSetup);
+        Assert.False(rail.ShowCount);
+        Assert.Null(rail.RunningDotColor);
+        Assert.Contains("not set up yet", rail.ToolTip);
+    }
+
+    [Fact]
+    public void FoldRail_NoProfilesYet_InvitesTheFirstOne()
+    {
+        var rail = AutomationBrowserViewFold.FoldRail(Array.Empty<AutomationBrowserView>(), harnessInstalled: true);
+
+        Assert.False(rail.ShowSetup);
+        Assert.False(rail.ShowCount);
+        Assert.Null(rail.RunningDotColor);
+        Assert.Equal("No browser profiles yet. Click to add one your agents can drive.", rail.ToolTip);
+    }
+
+    [Fact]
+    public void FoldRail_DotColorIsAPaletteNameTheDesktopKnows()
+    {
+        // The surface maps this name to a brush; an unknown name renders the magenta BROKEN sentinel.
+        var rail = AutomationBrowserViewFold.FoldRail(new[] { View("a", AutomationBrowserStatus.Ready) }, harnessInstalled: true);
+
+        Assert.Equal(DotColorOf(AutomationBrowserStatus.Ready), rail.RunningDotColor);
+    }
+
+    private static string DotColorOf(AutomationBrowserStatus status) => AutomationBrowserViewFold.DotColor(status);
+
+    [Fact]
+    public void FoldRail_NullList_Throws()
+    {
+        Assert.Throws<ArgumentNullException>(() => AutomationBrowserViewFold.FoldRail(null!, harnessInstalled: true));
+    }
 }
