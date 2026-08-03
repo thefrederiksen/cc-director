@@ -18,15 +18,17 @@ namespace CcDirector.Gateway.Tests;
 /// query. It now takes one set-based read per fold and answers all three from that. These are the
 /// CORRECTNESS facts: the read count is worthless if it buys a wrong answer.
 ///
-/// WHY THESE LIVE IN THE FAST SUITE AND THE READ-COUNT FACTS DO NOT. This file constructs no
-/// <c>GatewayHost</c>, binds no port and touches nothing process-global - it needs only its own throwaway
-/// SQLite file - so it runs on EVERY gate, which is where a regression guard earns its keep. Its siblings
-/// in <c>RosterFoldSnoozeReadCountTests</c> assert deltas on the process-wide
-/// <c>LoadTestMetrics.snoozeDbReads</c> counter, and this assembly runs four collections at once; every
-/// other fold test here (<see cref="SnoozeExpiredBadgeFoldTests"/> among them) increments that same
-/// counter. An exact delta cannot be asserted beside them, so those facts stay in the locked suite where
-/// parallelism is disabled - the same rule the suite split applied to the classes that mutate process-wide
-/// environment variables.
+/// WHY THIS FILE IS IN THE FAST SUITE. It constructs no <c>GatewayHost</c>, binds no port and touches
+/// nothing process-global - only its own throwaway SQLite file - so it runs on EVERY gate, which is where
+/// a regression guard earns its keep.
+///
+/// Its sibling <see cref="RosterFoldSnoozeReadCountTests"/> holds the exact READ-COUNT facts and lives in
+/// this same assembly, in a collection declared <c>DisableParallelization</c>. Those facts assert deltas on
+/// the process-global <c>LoadTestMetrics.snoozeDbReads</c> counter, which a parallel collection cannot give
+/// them; serializing that one collection isolates the counter without pushing the guard onto the release
+/// gate. They were parked at first and moved here on inspection - a proof that runs only before a release
+/// lets an ordinary change restore the per-session reads and pass every default gate on the way in.
+///
 /// </summary>
 public sealed class RosterFoldBatchedSnoozeReadTests : IDisposable
 {
