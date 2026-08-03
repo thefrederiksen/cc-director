@@ -16,23 +16,8 @@ Pre-release tags: append `-rc1`, `-rc2`, etc. for release candidates. Pre-releas
 > (`.claude/skills/release-manager/SKILL.md`). This page is the short form; where the two differ,
 > the skill wins.
 
-### 0. The release gate - MANDATORY, and local
-
-Run this on the exact commit you are about to tag, with the branch rebased on current
-`origin/main`, and let it finish:
-
-```powershell
-.\scripts\test-local.ps1 -Parked -Configuration Release
-```
-
-Both switches matter. `-Parked` adds `Gateway.Tests` and `Core.Tests`, which the ordinary gate
-skips, and `-Configuration Release` matches what is actually shipped - the script defaults to
-Debug. A run from earlier in the process does not count: anything committed after it, including
-the version bump, is untested by it.
-
-Nothing waits on continuous integration here or anywhere else (CLAUDE.md 5a). This local run is
-the gate instead, and unlike an ordinary change a release cannot be fixed forward - the release
-workflow runs no tests, and a pushed tag cannot be un-pushed.
+The release gate runs AFTER the version bump is committed and BEFORE the tag - see step 3 below.
+Running it any earlier is pointless: the bump itself would be untested by it.
 
 ### 1. Bump Version
 
@@ -50,7 +35,28 @@ git add -A
 git commit -m "chore: bump version to vX.Y.Z"
 ```
 
-### 3. Tag
+### 3. The release gate - MANDATORY, and local
+
+On the exact commit you are about to tag - the bump already committed, nothing else pending -
+run all of this and let it finish:
+
+```powershell
+.\scripts\test-local.ps1 -Parked -Configuration Release
+dotnet test tools/cc-director-setup.Tests/ -c Release
+dotnet test tools/cc-director-setup-engine.Tests/ -c Release
+```
+
+`-Parked` adds `Gateway.Tests` and `Core.Tests`, which the ordinary gate skips.
+`-Configuration Release` matches what is actually shipped; the script defaults to Debug.
+The two installer projects are not in `cc-director.sln`, so `test-local.ps1` never runs them -
+and this release publishes `cc-director-setup.exe`, so skipping them ships the installer untested.
+
+Nothing waits on continuous integration here or anywhere else (CLAUDE.md 5a). This local run is
+the gate instead, and unlike an ordinary change a release cannot be fixed forward - the release
+workflow runs no tests, and a pushed tag cannot be un-pushed. If it is red, fix it forward and
+run the gate again before tagging.
+
+### 4. Tag
 
 ```bash
 git tag vX.Y.Z
@@ -58,14 +64,14 @@ git tag vX.Y.Z
 
 Tags without `-` in the suffix (e.g., `v1.2.0`) become the "Latest" release on GitHub. Tags with `-rc` (e.g., `v1.2.0-rc1`) become pre-releases.
 
-### 4. Push
+### 5. Push
 
 ```bash
 git push origin main
 git push origin vX.Y.Z
 ```
 
-### 5. Wait for the release build to produce the artifacts
+### 6. Wait for the release build to produce the artifacts
 
 This is the ONE wait that remains, and it is not a test gate - it is the build that produces the
 downloadable files, so there is nothing to release until it finishes. The rule against waiting on
@@ -78,7 +84,7 @@ The GitHub Actions workflow (`.github/workflows/release.yml`) will:
 3. Build all cc-tools as zip archives
 4. Create a GitHub Release with all artifacts attached
 
-### 6. Verify
+### 7. Verify
 
 1. Go to the [Releases page](https://github.com/thefrederiksen/devthrottle/releases)
 2. Confirm the new release is marked "Latest" (if not a pre-release)

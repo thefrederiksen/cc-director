@@ -37,7 +37,7 @@ The owner of this repository's test suites. Three duties, in priority order:
 |--------|---------|
 | Run the gate (this is THE gate) | `.\scripts\test-local.ps1` |
 | Run the gate plus parked suites | `.\scripts\test-local.ps1 -Parked` |
-| THE RELEASE GATE - on the commit being shipped | `.\scripts\test-local.ps1 -Parked -Configuration Release` |
+| THE RELEASE GATE - on merged main, at the commit being tagged | `.\scripts\test-local.ps1 -Parked -Configuration Release` **plus** the two `tools/cc-director-setup*.Tests` projects - see the release gate section; the script alone is NOT the whole gate |
 | Run only the locked Gateway suite | `.\scripts\test-local.ps1 -Gateway` |
 | Filter within a run | `.\scripts\test-local.ps1 -Filter "FullyQualifiedName~Snooze"` |
 
@@ -141,11 +141,20 @@ The exception list this section used to carry - releases, changes to the build, 
 is gone deliberately. Every exception was an invitation to pay the fifty minutes again, and the
 answer it bought was one the local run had already given.
 
-A release still needs the coverage the default run skips, and gets it LOCALLY: run
-`.\scripts\test-local.ps1 -Parked -Configuration Release` on the exact commit being shipped, and
-let it finish. `-Parked` adds the two skipped suites; `-Configuration Release` matches what users
-download, because this script defaults to Debug while the continuous integration job it replaced
-ran Release. An earlier run does not count - whatever was committed after it is untested by it.
+A release still needs the coverage the default run skips, and gets it LOCALLY, on merged `main` at
+the exact commit about to be tagged:
+
+    .\scripts\test-local.ps1 -Parked -Configuration Release
+    dotnet test tools/cc-director-setup.Tests/ -c Release
+    dotnet test tools/cc-director-setup-engine.Tests/ -c Release
+
+`-Parked` adds the two skipped suites. `-Configuration Release` matches what users download,
+because this script defaults to Debug while the continuous integration job it replaced ran Release.
+The two installer projects are outside `cc-director.sln` and this script therefore never runs them,
+while the release ships `cc-director-setup.exe` - folding them into `-Parked` is the follow-up that
+removes the footgun. An earlier run does not count, and neither does a run against a pull-request
+head rather than the squashed commit that gets tagged.
+
 That is not a softened version of the old rule - it is a local gate, not a wait on a runner. It
 matters because the release workflow runs ZERO tests and a pushed tag cannot be un-pushed, so a
 release is the single place where fixing forward is not available.
