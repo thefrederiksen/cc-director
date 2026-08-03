@@ -153,7 +153,10 @@ public class GitStatusProvider
             // scan could not stop it.
             var r = await ProcessRunner.RunAsync("git", new[] { "status", "--porcelain=v1", "-u" }, repoPath, ct);
             if (!r.Started)
-                return ("", "Failed to start git process", -1);
+                // Carries the REASON, not just the fact. On a machine with no git this is the
+                // sentence the Source Control view puts on the screen (issue #1048); it used to be
+                // the fixed "Failed to start git process", which threw the reason away.
+                return ("", GitLaunchFailure.Describe(r.StartErrorCode, r.StandardError), -1);
             return (r.StandardOutput, r.StandardError, r.ExitCode);
         }
         catch (OperationCanceledException)

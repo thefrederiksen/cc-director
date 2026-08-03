@@ -29,6 +29,22 @@ public sealed class GitCommandResult
 /// </summary>
 public class GitCommandRunner
 {
+    private readonly string _executable;
+
+    /// <summary>Runs the <c>git</c> on this machine's PATH. This is the only production form.</summary>
+    public GitCommandRunner() : this("git") { }
+
+    /// <summary>
+    /// Runs <paramref name="executable"/> instead of <c>git</c>. A TEST SEAM, and the only way to
+    /// reach the missing-git branch on a machine that has git: pass a name that resolves nowhere and
+    /// the launch fails for precisely the reason it fails on a clean Windows install. Production
+    /// never calls this - every call site uses the parameterless constructor above.
+    /// </summary>
+    public GitCommandRunner(string executable)
+    {
+        _executable = executable;
+    }
+
     /// <summary>
     /// Runs <c>git &lt;args&gt;</c> in <paramref name="workingDirectory"/> and returns its result.
     /// </summary>
@@ -39,7 +55,7 @@ public class GitCommandRunner
 
         var psi = new ProcessStartInfo
         {
-            FileName = "git",
+            FileName = _executable,
             WorkingDirectory = workingDirectory,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -56,7 +72,24 @@ public class GitCommandRunner
         proc.OutputDataReceived += (_, e) => { if (e.Data != null) stdout.AppendLine(e.Data); };
         proc.ErrorDataReceived += (_, e) => { if (e.Data != null) stderr.AppendLine(e.Data); };
 
-        proc.Start();
+        // A machine with no git is a supported machine (devthrottle_internal issue #1048), and on one
+        // Process.Start does not return false - it THROWS Win32Exception "The system cannot find the
+        // file specified". Unguarded, that exception left this method by a route none of its callers
+        // expect: every one of them is written against a GitCommandResult carrying Success=false, and
+        // the class already returns exactly that for the other reason a command cannot run (the
+        // working directory being absent, above). Reporting the missing git the same way keeps one
+        // contract instead of two, and puts a sentence a person can act on where the surfaces that
+        // render it - the Worktrees page, the branch services - already display the Error.
+        try
+        {
+            proc.Start();
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            FileLog.Write($"[GitCommandRunner] git could not be started: {ex.Message}");
+            return new GitCommandResult { Success = false, ExitCode = -1, Error = GitLaunchFailure.Describe(ex) };
+        }
+
         proc.BeginOutputReadLine();
         proc.BeginErrorReadLine();
         try

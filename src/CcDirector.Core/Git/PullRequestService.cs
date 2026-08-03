@@ -172,7 +172,10 @@ public sealed class PullRequestService
             // cancellation - a CLI that fills its stderr pipe (an auth prompt, a stack of warnings)
             // can no longer deadlock the capture, and a cancelled call leaves no orphaned process.
             var r = await ProcessRunner.RunAsync(exe, args, workingDir, ct);
-            return r.Started ? (r.ExitCode, r.StandardOutput, r.StandardError) : (-1, "", $"{exe} could not start");
+            // ProcessRunner puts WHY it could not start into StandardError (a missing executable
+            // reads "The system cannot find the file specified"). Passing that through keeps the
+            // reason, which a bare "could not start" threw away.
+            return (r.ExitCode, r.StandardOutput, r.StandardError);
         }
         catch (OperationCanceledException)
         {
