@@ -1,8 +1,28 @@
 # Phase 3 - Session hooks stop needing an API
 
 Manager: session 71673d6b. Branch `mission/remove-network-port`, worktree `D:\ReposFred\devthrottle-noport`.
-Base: `e5b1d3447`. Commits: `03394e673` (the change) and `881d19d9b` (a defect the change's own
-end-to-end test found). Both pushed. **Not merged to main** - that is the Architect's.
+Base: `e5b1d3447`. Commits `03394e673`, `881d19d9b`, `8d859ad90`, `94abcedd1`. All pushed.
+**Not merged to main** - that is the Architect's.
+
+---
+
+## THE NUMBER THAT MATTERS MOST IN THIS REPORT
+
+**The design this phase was told not to build - writing the preamble once at session launch - passes 48 of
+53 tests.**
+
+That was measured, not argued: the snapshot design was implemented as a deliberate fault on a clean build,
+and it turned **4 tests red and left 48 green**. The four are the "a mid-session change reaches the next
+hook fire" assertions.
+
+So the correction in the brief was not a matter of taste, and it was not comfortably far from shipping. A
+Director that serves a user their OLD injected text after they have edited it, and hides every skill
+published since the session started, would have gone out behind a suite that was 91% green - and would
+never have looked broken, because there is no failure mode to see. The five tests that catch it are the
+five the brief asked for, and four of them did not exist before this phase.
+
+Full detail, including the two other fault injections, under "The wrong design was injected on purpose"
+below.
 
 ---
 
@@ -253,11 +273,43 @@ Architect required after the previous phase's single green control nearly convic
   every run** (89 on the parent - the difference is exactly the new tests). Not one failure on either arm,
   in any run, was in a test this phase wrote or a file it touched.
 
-**On the 62.** It is much larger than the parent's 1 or 2 and should not be waved past, so: the count is a
-property of the named mechanism, not of severity. One process-wide pool clear fails every test in flight at
-that instant, so 62 is one unlucky moment in a busy assembly. The same commit produced 0, 62, 1 and 0. The
-classes involved (`AuthMiddlewareTests`, `BrowserSignInGateTests`, `NetDiagDeviceStoreTests`,
-`SharedWorkflowLibraryTests`, the Gateway stores) are untouched by this phase and unreachable from it.
+## The run of 62 - what made it cascade
+
+The Architect's question, and it is the right one: "all carried the documented signature" explains the KIND
+and not the COUNT. So the run's own result file was measured rather than reasoned about.
+
+**It was ONE event lasting about a tenth of a second, not 62 failures.**
+
+| Measurement (`CcDirector.Gateway.UnitTests.trx`, mine run 2) | |
+|---|---|
+| All 62 failures, start AND end times, span | **0.101 seconds** - every one inside 17:36:03.772 to 17:36:03.874 |
+| Classes affected | 9 |
+| Of those, classes in which EVERY test failed | 4 (`AuthMiddlewareTests` 27/27, `BrowserSignInGateTests` 8/8, `NetDiagDeviceStoreTests` 4/4, `GatewayStatsReadParityTests` 3/3) |
+| Classes hit only partway | 5 (e.g. `SessionStateEventEmitterTests` 2 failed, 15 passed) |
+| Tests that PASSED after the last failure | **935** |
+| Assembly parallelism | `MaxParallelThreads = 4` |
+
+**What that establishes.** The failures are simultaneous to within a tenth of a second across nine classes,
+and the run then recovered completely - 935 tests passed afterwards. So this is not 62 things breaking; it
+is one instantaneous, assembly-wide event, and **the count is that instant's blast radius**. With four
+parallel threads only a handful of tests can genuinely be mid-query at once, which is what the five
+partly-hit classes are; the four classes where *every* test failed, start time equal to end time, are the
+**queue behind them** - once the message bus is closed, each remaining test fails the moment it is entered
+rather than by doing anything. The parent's runs caught the same event with 1 or 2 tests exposed. Mine
+caught it with 62.
+
+That is why 62 and 1 are the same finding at different moments, and why the count says nothing about
+severity. The same commit produced 0, 62, 1, 0 and 1.
+
+**What this does NOT establish, stated so it is not read as a full explanation.** The documented root cause
+(`GatewayDatabase.Dispose` calling the process-wide `SqliteConnection.ClearAllPools()` while 79 classes
+share `GatewayDbTestHarness`) predicts exactly this shape - a global event with a variable radius - and the
+observation is consistent with it. But **I did not establish which class's disposal fired that particular
+instant, nor why one instant's radius is 62 and another's is 1.** The shape of the count is explained; the
+variance in it is not, and I am not going to dress up a consistent observation as a diagnosis. It is issue
+#2414's, not this phase's: every class involved (`AuthMiddlewareTests`, `BrowserSignInGateTests`,
+`NetDiagDeviceStoreTests`, `SharedWorkflowLibraryTests`, the Gateway stores) is untouched by and unreachable
+from this phase's code.
 
 **Both standing hazards were respected.** Every result reported here comes from a build with `obj` and
 `bin` deleted for the projects under test - before the first gate run, and before each of the three fault
@@ -296,14 +348,20 @@ Targeted runs on my commit, all green, on clean rebuilds:
 
 # What this phase did NOT prove, and one thing it changed on purpose
 
-**Nothing here ran on macOS or Linux.** The POSIX hook script is exercised only by its text
-(`HookScriptContractTests`); `HookScriptRoundTripTests` runs whichever script belongs to the current
-platform, which on this machine is PowerShell. The POSIX script is *simpler* than the one it replaced - no
-`curl`, no authentication branch, no pre-wrapped envelope - but "simpler" is not "run". The route it
-replaced had the same gap: the old shell test returned early on Windows and therefore never ran here
-either. This is not a regression in coverage; it is an unchanged hole, now stated.
+**Nothing here ran on macOS or Linux. This phase was proven on WINDOWS ONLY.** The POSIX hook script is
+exercised only by its text (`HookScriptContractTests`); `HookScriptRoundTripTests` runs whichever script
+belongs to the current platform, which on this machine is PowerShell. The POSIX script is *simpler* than the
+one it replaced - no `curl`, no authentication branch, no pre-wrapped envelope - but "simpler" is not "run".
 
-**Per-session isolation of the preamble is weaker on paper, and unchanged in practice.** The deleted route
+The route it replaced had the same gap: the old shell test returned early on Windows and therefore never ran
+here either. So this is not a regression in coverage - it is a hole that **predates this mission and stays
+open**. Architect ruling: recorded as a real hole rather than closed, and **the QA report must say the
+mission was proven on Windows only.**
+
+**Per-session isolation of the preamble is UNCHANGED, not improved - and it was never a guarantee.**
+Architect ruling, accepted, and worded this way deliberately so nobody reads the paragraph below as a new
+protection being offered. Nothing here hardens the boundary between two sessions on one machine; the point
+is only that nothing here weakens it either. The deleted route
 required a session-bound credential, so session A could not read session B's preamble over HTTP. The file
 sits under the user's own storage root, so any process running as this user can read it. That is not a new
 boundary being crossed: `ControlApiHost` already states in code that this was never an operating-system
@@ -314,7 +372,9 @@ pointer direction is bound by the drop box's shape: the session comes from the F
 body, which `A_drop_is_applied_to_the_session_its_FILE_names_not_one_named_inside_it` pins with a body that
 names another session in every field it could.
 
-**One bounded window is accepted rather than closed.** The maintainer's rewrite is a replace over the
+**One bounded window is accepted rather than closed - Architect ruling, on the record.** The alternative was
+coupling a rewrite to every store write, for a staleness no human can perceive between two hook fires. The
+maintainer's rewrite is a replace over the
 preamble file; on Windows that fails if a hook is reading it at that instant. The consequence is small and
 self-healing: the write is caught and **logged loudly**, the file keeps its previous content (valid, one
 refresh old), and the next cycle fixes it. Closing it would mean a stream-and-share dance inside a
@@ -325,6 +385,25 @@ silent and permanent - is the one that was fixed.
 **The seat and role rewrite has no cross-machine trigger.** A seat stamped by the Gateway on this
 Director's session raises the new event locally. If a seat could ever change without passing through
 `SetExplicitRole` or `SeatOnWorkflow`, the 60-second refresh is the floor that catches it.
+
+## For the QA report - two items from this phase belong there, not only here
+
+**1. `FileSystemWatcher` silently drops notifications, and the fix has a shape.** Measured here at about one
+run in five, with the file present, complete, correctly named and valid, and **no `Error` event raised** - so
+the documented buffer-overflow signal does not cover it. This is a finding about a mechanism used well beyond
+this mission, and the rule it produces is general: **never let the fast path be the correctness path.** Put
+the guarantee on a short timer sweep, keep the watcher as the latency win, and make both call the same apply
+function so neither can hide a fault in the other. Prove the sweep alone with the watcher suppressed,
+because otherwise the watcher wins the race and masks a sweep that does not work at all.
+
+**2. The mission is proven on Windows only.** See the section above. The macOS and Linux hook path is
+verified by script text and by nothing executing it, and that predates this mission.
+
+Also worth carrying across, as tooling findings rather than test flakes: this phase's gate evidence adds a
+fifth and sixth distinct test to the issue #2414 tally (ten distinct failing tests, zero repeats, across
+eight runs on two commits), and it establishes the SHAPE of that defect's failure count - one
+sub-tenth-of-a-second assembly-wide event whose radius is whatever happened to be in flight or queued, so a
+run of 62 and a run of 1 are the same event caught at different moments.
 
 ## For Phase 5
 
