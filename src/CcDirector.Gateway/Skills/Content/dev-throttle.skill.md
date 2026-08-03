@@ -117,6 +117,12 @@ prompts, or on the wrong model.
    "Do you want to proceed?" prompt or run on the wrong model/window.
 3. **Use `--prompt`** for the session's first task (dispatched once the agent is ready). For a long
    instruction, write it to a file and make `--prompt` a short "read and follow <path>" pointer.
+4. **Know what will close it before you open it.** A session is a commitment as much as a resource:
+   whoever spawns it owns driving it to completion. Decide at spawn time where its output has to end
+   up - merged into YOUR worktree if it shares yours, or on `origin/main` if it has its own - and put
+   that in the brief. A session whose exit conditions were never stated does not acquire them later;
+   it just stays open. See **Closing a session** below, which applies to the sessions you started as
+   much as to yourself.
 
 ```
 # Create a properly-named, autonomous-ready session
@@ -152,7 +158,7 @@ An unregistered name fails loudly, and a name matching two Directors fails listi
 falls back to another Director - if you get one of those errors, run `director list` and pick, rather
 than dropping the flag and spawning wherever.
 
-## Closing a session (including closing yourself)
+## Closing a session - yours and the ones you started
 
 A session can close itself. When an agent has finished its work and nothing is waiting on the
 user, it should reap its own session rather than leaving an idle entry in Mission Control.
@@ -171,6 +177,27 @@ To reap a DIFFERENT session, pass its id or name: `cc-devthrottle session done <
 
 Do not self-close while something still needs the user (a pending decision, an approval, an
 unanswered question). Reap only when the queue is truly empty.
+
+**Closing the sessions YOU spawned is your job, not theirs.** A child session that has finished its
+work and gone idle is not done - it is unfinished work sitting where nobody is looking. As its parent
+you drive it to all four conditions:
+
+1. **reviewed** by a session OTHER than the one that wrote it;
+2. **output safe** - merged into your worktree if it shares yours, otherwise on `origin/main`,
+   because a worktree of its own will be deleted and anything left in it dies with it;
+3. **worktree removed**, if it had its own;
+4. **session reaped**, with `cc-devthrottle session done <target>`.
+
+**The failure this prevents.** A definition of "done" that means only "the pull request merged"
+leaves a branch, a worktree and a live session behind EVERY time. Those accumulate faster than
+anything removes them, and the cost stays invisible until somebody counts. One coordinator running
+this fleet finished many tasks that way and left 27 worktrees, 7 open pull requests and branches four
+days old - not through any single bad decision, but because nothing in the definition of done
+required cleanup.
+
+**Note that `session done` reaches a session that is not answering.** It flags the target through the
+Director and does not depend on fleet messaging, which can fail. If a session you started has stopped
+responding, you can still close it.
 
 ## Who the user is
 

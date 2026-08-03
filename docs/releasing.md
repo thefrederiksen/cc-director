@@ -12,38 +12,77 @@ Pre-release tags: append `-rc1`, `-rc2`, etc. for release candidates. Pre-releas
 
 ## Release Process
 
-### 1. Bump Version
+> The authoritative run-book is the `release-manager` skill
+> (`.claude/skills/release-manager/SKILL.md`). This page is the short form; where the two differ,
+> the skill wins.
 
-Update the `<Version>` tag in both csproj files:
+The release gate runs on MERGED `main`, after the version bump has landed and before the tag - see
+step 3. Running it any earlier is pointless: the bump itself would be untested by it, and a run
+against a pull-request head is not a run against the squashed commit that gets tagged.
 
-- `src/CcDirector.Wpf/CcDirector.Wpf.csproj`
-- `tools/cc-director-setup/cc-director-setup.csproj`
+### 1. Bump the version
 
-Also update `VersionText` in `tools/cc-director-setup/MainWindow.xaml` if the displayed version differs.
+The version lives in ONE place - `<Version>` in `Directory.Build.props` at the repository root.
+Every project derives its assembly versions from it, and no project may declare its own.
 
-### 2. Commit
+(The two csproj files this page used to name, `src/CcDirector.Wpf/CcDirector.Wpf.csproj` and
+`tools/cc-director-setup/cc-director-setup.csproj`, no longer exist. Editing "both csproj files"
+has been impossible for some time.)
+
+### 2. Land it on main through a pull request
+
+`main` is protected and cannot be pushed to directly, so the bump reaches it the same way every
+other change does: a pull request titled `release: v<version> - <one-line summary>`, merged once
+its ordinary local gate is green and the review is clean. Stage the file you changed by name -
+never `git add -A`, which sweeps up whatever else is in a shared checkout.
 
 ```bash
-git add -A
-git commit -m "chore: bump version to vX.Y.Z"
+git add Directory.Build.props
+git commit -m "release: vX.Y.Z - <one-line summary>"
 ```
 
-### 3. Tag
+Note also that `docs/public/release-notes/v<version>.md` must already be merged to `main` before
+you tag: the workflow publishes it verbatim and FAILS without it, burning a build on a tag that
+cannot be un-pushed.
+
+### 3. The release gate - MANDATORY, and local
+
+On MERGED `main`, at the exact commit you are about to tag - park the checkout there first with
+`git checkout main && git pull` - run all of this and let it finish:
+
+```powershell
+.\scripts\test-local.ps1 -Parked -Configuration Release
+dotnet test tools/cc-director-setup.Tests/ -c Release
+dotnet test tools/cc-director-setup-engine.Tests/ -c Release
+```
+
+`-Parked` adds `Gateway.Tests` and `Core.Tests`, which the ordinary gate skips.
+`-Configuration Release` matches what is actually shipped; the script defaults to Debug.
+The two installer projects are not in `cc-director.sln`, so `test-local.ps1` never runs them -
+and this release publishes `cc-director-setup.exe`, so skipping them ships the installer untested.
+
+Nothing waits on continuous integration here or anywhere else (CLAUDE.md 5a). This local run is
+the gate instead, and unlike an ordinary change a release cannot be fixed forward - the release
+workflow runs no tests, and a pushed tag cannot be un-pushed. If it is red, fix it forward and
+run the gate again before tagging.
+
+### 4. Tag the gated commit and push the tag
 
 ```bash
 git tag vX.Y.Z
-```
-
-Tags without `-` in the suffix (e.g., `v1.2.0`) become the "Latest" release on GitHub. Tags with `-rc` (e.g., `v1.2.0-rc1`) become pre-releases.
-
-### 4. Push
-
-```bash
-git push origin main
 git push origin vX.Y.Z
 ```
 
-### 5. Wait for CI
+Only the TAG is pushed. `main` already carries the bump - it arrived through the merged pull
+request in step 2 - and cannot be pushed to directly in any case.
+
+Tags without `-` in the suffix (e.g., `v1.2.0`) become the "Latest" release on GitHub. Tags with `-rc` (e.g., `v1.2.0-rc1`) become pre-releases.
+
+### 5. Wait for the release build to produce the artifacts
+
+This is the ONE wait that remains, and it is not a test gate - it is the build that produces the
+downloadable files, so there is nothing to release until it finishes. The rule against waiting on
+continuous integration (CLAUDE.md 5a) is about the test job gating a merge; it does not apply here.
 
 The GitHub Actions workflow (`.github/workflows/release.yml`) will:
 

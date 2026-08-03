@@ -157,3 +157,4 @@ artifacts/
 _inspection/
 codex-review-*.md
 codex-rereview-*.md
+*.received.txt

@@ -43,7 +43,20 @@ public sealed class AgentPluginArchitectureGuardTests
         foreach (var path in Directory.EnumerateFiles(src, "*.cs", SearchOption.AllDirectories))
         {
             var normalized = path.Replace('\\', '/');
-            if (normalized.Contains(".Tests/", StringComparison.OrdinalIgnoreCase))
+            // Repository-RELATIVE, which is the documented contract: an absolute path would let a
+
+            // checkout living under a folder ending in "Tests" disable this scan entirely, which is a
+
+            // correctness property depending on where somebody cloned. The predicate anchors on a source
+
+            // root as well, so this is belt and braces rather than the only defence.
+
+            // This guard was the fourth carrier of a
+            // copy-pasted ".Tests/" substring test, and it stayed GREEN through the suite split only
+            // because nothing among the 2,750 files that moved into ".UnitTests" happened to match its
+            // pattern - latent rather than satisfied.
+            var relative = Path.GetRelativePath(root, path).Replace('\\', '/');
+            if (TestProjectPath.IsTestProject(relative))
                 continue;
             if (normalized.Contains("/AgentPlugins/", StringComparison.OrdinalIgnoreCase))
                 continue;

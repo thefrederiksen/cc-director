@@ -59,6 +59,14 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
     // The whole-turn PCM16 accumulator. Every captured chunk is appended here in
     // capture order; nothing leaves the machine until TranscribeAsync wraps the
     // whole buffer in one WAV blob and sends it to the Gateway transcription endpoint.
+    //
+    // Its size is bounded by the recorder being DISPOSED when its owner is finished with it - see
+    // DisposeAsync and the close handling in SpeakDialog. An earlier version of this change also
+    // added a 30-minute hard ceiling here as a second line of defence. That ceiling was removed: it
+    // needed its own microphone shutdown, which had to coordinate with the normal stop and with
+    // disposal, and two review rounds found four separate defects in that coordination - including
+    // silently discarding everything the user said past the limit. A safety net that has caused four
+    // defects and prevented none is not making anything safer. Correct ownership is the fix.
     private readonly MemoryStream _audio = new();
     private readonly object _audioLock = new();
 
@@ -111,6 +119,10 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
     /// WaveIn device number to capture from. Defaults to
     /// <see cref="MicDevices.DefaultDeviceNumber"/> (the Windows default mic).
     /// </param>
+    // Interlocked disposal gate, so teardown runs exactly once even if two callers dispose
+    // concurrently. _disposed stays for the ObjectDisposedException guards below.
+    private int _disposedFlag;
+
     public BatchDictationRecorder(AgentOptions options, int micDeviceNumber = MicDevices.DefaultDeviceNumber)
     {
         if (options is null) throw new ArgumentNullException(nameof(options));
@@ -196,11 +208,10 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
     {
         FileLog.Write("[BatchDictationRecorder] StopAndGetWavAsync");
         var (pcm, _, _) = await StopAndSnapshotAsync();
-        // Pad the model's trailing run-out onto the transcription WAV (dictation end-word fix); the
+        // Header + samples + trailing run-out pad (dictation end-word fix) in ONE allocation. The old
+        // pad-then-wrap chain made two extra full-size copies of the clip on the Large Object Heap; the
         // unpadded pcm length still stands for any bytes accounting - the pad is silence, not captured audio.
-        var wav = WavWriter.WrapPcm16(
-            PcmWav.WithTrailingSilence(pcm, MicAudioCapture.SampleRate, MicAudioCapture.Channels, MicAudioCapture.BitsPerSample, PcmWav.TrailingSilenceMs),
-            MicAudioCapture.SampleRate, MicAudioCapture.Channels, MicAudioCapture.BitsPerSample);
+        var wav = WavWriter.WrapPcm16WithRunOut(pcm, MicAudioCapture.SampleRate, MicAudioCapture.Channels, MicAudioCapture.BitsPerSample);
         return new CapturedAudio(wav, _recordingStopwatch?.ElapsedMilliseconds ?? 0);
     }
 
@@ -276,10 +287,10 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
         // Wrap the whole captured PCM in one WAV blob and transcribe ONCE through the
         // Gateway transcription endpoint. The dictionary corrector is the only text transform. The
         // trailing-silence run-out (dictation end-word fix) is padded onto the transcription WAV only;
-        // pcm.Length below stays the honest captured-byte count for the audit record.
-        var wav = WavWriter.WrapPcm16(
-            PcmWav.WithTrailingSilence(pcm, MicAudioCapture.SampleRate, MicAudioCapture.Channels, MicAudioCapture.BitsPerSample, PcmWav.TrailingSilenceMs),
-            MicAudioCapture.SampleRate, MicAudioCapture.Channels, MicAudioCapture.BitsPerSample);
+        // pcm.Length below stays the honest captured-byte count for the audit record. Header, samples
+        // and pad are written in ONE allocation - the old pad-then-wrap chain made two extra full-size
+        // copies of the clip on the Large Object Heap.
+        var wav = WavWriter.WrapPcm16WithRunOut(pcm, MicAudioCapture.SampleRate, MicAudioCapture.Channels, MicAudioCapture.BitsPerSample);
 
         var stopWatch = System.Diagnostics.Stopwatch.StartNew();
         var gateway = await new GatewayTranscriptionClient().TranscribeAsync(
@@ -339,7 +350,9 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed) return;
+        // Atomic, so two concurrent disposals cannot both pass the check and decrement the live
+        // count twice. That count is the leak oracle a test asserts on, so it has to be exact.
+        if (Interlocked.Exchange(ref _disposedFlag, 1) == 1) return;
         _disposed = true;
         if (_mic is not null)
         {
@@ -388,5 +401,16 @@ internal static class WavWriter
     {
         if (pcm is null) throw new ArgumentNullException(nameof(pcm));
         return PcmWav.Wrap(pcm, sampleRate, channels, bitsPerSample);
+    }
+
+    /// <summary>
+    /// Wrap the clip AND append the transcription run-out pad in a single allocation. Byte-identical
+    /// to the old <c>Wrap(WithTrailingSilence(pcm))</c> chain, without the two extra full-size copies
+    /// that chain put on the Large Object Heap for a long recording.
+    /// </summary>
+    public static byte[] WrapPcm16WithRunOut(byte[]? pcm, int sampleRate, int channels, int bitsPerSample)
+    {
+        if (pcm is null) throw new ArgumentNullException(nameof(pcm));
+        return PcmWav.WrapWithTrailingSilence(pcm, sampleRate, channels, bitsPerSample, PcmWav.TrailingSilenceMs);
     }
 }

@@ -74,6 +74,10 @@ if ($Gateway -and $Parked) {
 #   HostedAgent          36s                      Launcher    2s      Terminal 11s
 # They start together, so the default costs about the slowest one.
 $defaultProjects = @(
+    # The PARALLEL half of the Core tests: 2858 tests in about nine seconds. The project they came from
+    # runs sequentially (DisableTestParallelization) and takes eleven minutes for the same kind of work -
+    # that attribute is deliberately NOT in this one, and must never be added to it.
+    "src\CcDirector.Core.UnitTests\CcDirector.Core.UnitTests.csproj",
     # BACK IN THE DEFAULT RUN. It was parked for exceeding the ceiling at about 2 minutes quiet and 3 to 5
     # busy; it now finishes in under a minute, because the cost turned out to be the migration set being
     # rebuilt from scratch once per database-backed test. 2762 tests.
@@ -222,6 +226,36 @@ foreach ($r in $running) {
 Write-Host ""
 Write-Host "TRX files: $logDir"
 Write-Host ""
+
+# COVERAGE WARNING. The default run is fast because two suites are parked - but "parked" must never
+# quietly mean "this change was never tested". select-tests.ps1 works out, from the reference graph,
+# which suites this change could actually affect; if a PARKED one is in that set, say so loudly.
+#
+# It WARNS rather than running them, and the measurement is why. Replaying the last hundred merges,
+# a parked suite was implicated in 69 to 80 per cent of changes - because CcDirector.Core and
+# Gateway.Contracts are referenced by nearly everything. Running them automatically would restore the
+# twelve-to-forty-five-minute gate for seven changes in ten, which is the problem this whole exercise
+# removed. So the fast gate stands, and the reader is told exactly what it did not cover.
+$parkedNames = @($parkedProjects | ForEach-Object { Split-Path -Leaf ([System.IO.Path]::GetDirectoryName((Join-Path $repoRoot $_))) })
+$coverageGap = @()
+if (-not $Parked -and -not $Gateway) {
+    try {
+        $sel = & (Join-Path $PSScriptRoot "select-tests.ps1")
+        $coverageGap = @($sel.Suites | Where-Object { $parkedNames -contains $_ })
+    } catch {
+        # A selector that cannot run must not fail the gate, but it must not be silent either.
+        Write-Host "NOTE: could not compute test selection ($($_.Exception.Message)); coverage gap unknown."
+    }
+}
+
+if ($coverageGap.Count -gt 0) {
+    Write-Host ""
+    Write-Host "COVERAGE GAP - this change touches code covered by PARKED suite(s) that did not run:"
+    foreach ($n in $coverageGap) { Write-Host "  $n" }
+    Write-Host ""
+    Write-Host "Run '.\scripts	est-local.ps1 -Parked' before merging, or say in the pull request why not."
+    Write-Host "(Explain the reasoning with: .\scripts\select-tests.ps1 -Explain)"
+}
 
 if ($overBudget.Count -gt 0) {
     Write-Host ("RESULT: OVER BUDGET - {0} suite(s) exceeded the {1}-second ceiling and were STOPPED:" -f $overBudget.Count, $BudgetSeconds)

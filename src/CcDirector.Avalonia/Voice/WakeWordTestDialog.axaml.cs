@@ -89,9 +89,14 @@ public partial class WakeWordTestDialog : Window
         InjectBox.IsEnabled = false;
         FeedButton.IsEnabled = false;
 
+        // Declared outside the try so the catch can dispose the instance it actually built. The old
+        // code called DisposeRecorderAsync(), which reads the _recorder FIELD - still null at that
+        // point, because the assignment below had not run. So a failed start leaked a recorder that
+        // owns a live NAudio capture thread, which roots it forever and keeps it recording.
+        BatchDictationRecorder? recorder = null;
         try
         {
-            var recorder = new BatchDictationRecorder(_options);
+            recorder = new BatchDictationRecorder(_options);
             recorder.OnAudioBands += OnAudioBands;
             await recorder.StartAsync("default");
             _recorder = recorder;
@@ -106,7 +111,13 @@ public partial class WakeWordTestDialog : Window
         {
             FileLog.Write($"[WakeWordTestDialog] StartAsync FAILED: {ex.Message}");
             AppendLog($"ERROR: could not start microphone: {ex.Message}");
-            await DisposeRecorderAsync();
+            if (recorder is not null)
+            {
+                recorder.OnAudioBands -= OnAudioBands;
+                try { await recorder.DisposeAsync(); }
+                catch (Exception disposeEx) { FileLog.Write($"[WakeWordTestDialog] failed-start dispose error: {disposeEx.Message}"); }
+            }
+            _recorder = null;
             StartButton.IsEnabled = true;
             WakeWordBox.IsEnabled = true;
             InjectBox.IsEnabled = true;
