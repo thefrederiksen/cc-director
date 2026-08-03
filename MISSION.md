@@ -71,7 +71,8 @@ the Gateway calling in, and can become pushes down the connection it already has
 |---|-------|-------|
 | 1 | Gateway parity, proven with a session credential | DONE - finding below |
 | 1b | Session credentials on the Gateway (discovered in Phase 1) | DONE - see PHASE-1B-REPORT.md |
-| 2 | The command line tools talk to the Gateway | BUILT, NOT PROVEN - pass mark unrun |
+| 2 | The command line tools talk to the Gateway | DONE - pass mark MET, see PHASE-2-REPORT.md |
+| 2b | Owner permission widening + the write paths | in progress |
 | 3 | Session hooks stop needing an API | not started |
 | 4 | Lifecycle off HTTP | not started |
 | 5 | Delete the Director's listener | not started |
@@ -177,3 +178,32 @@ Consequence for the build: `SessionKeyGuard` widens. The guard's own comment - t
 `/directors` surface "is the owner's ... and stays refused" - is now wrong and must be rewritten, not
 merely edited around. An allow list whose stated reasoning contradicts its contents is worse than a
 wrong entry, because the next reader trusts the prose.
+
+## Phase 2 accepted, 2026-08-03 - Architect rulings
+
+**Pass mark met.** 18 commands green from inside a real session holding a real session key, with the
+Director's agent routes switched off, on an isolated Director and Gateway both built from this branch.
+The switch was probed with a credential the Director ACCEPTS, so a removed route answers 404; an
+earlier probe with an invalid credential returned 401 for everything including routes that still
+existed, which is an auth refusal standing in for absence and proves nothing. That distinction is why
+the result is believable.
+
+1. **The launch window is SETTLED, not deferred.** No fix. All three candidates are worse than the
+   window: a command-line retry is a second path wearing a different hat; awaiting registration inside
+   session creation makes every launch wait on the network; and having the Gateway ask the Director
+   about an unknown key puts a second lookup on the credential check, the one path that must stay
+   cheap and must not depend on the Director being reachable. A race that fails LOUDLY, heals itself,
+   and whose other side is an operating system starting a process is the right trade.
+2. **Deleting `CleanInstallCliAuthenticationTests` is backed by the Architect**, on the record, so it
+   is never read later as a test dropped to get green. It drove the command line authenticating
+   against a Director by resolving the machine secret - precisely the mechanism this phase removes. No
+   version of it could pass without reinstating what was deleted. A test that can only pass by undoing
+   the change is not coverage, it is a fossil.
+3. **The accepted cost was overstated to the owner and is corrected.** The brief said every agent
+   command becomes a round trip and gets slower. Measurement shows the fleet reads were ALREADY a
+   round trip plus a local hop, so most commands get FASTER (870ms against 1023ms) and only
+   genuinely-local reads pay (a session's own terminal, 321ms to 828ms, against a hosted Gateway
+   across the internet). The correction has been passed to the owner.
+
+Still unproven and reassigned to Phase 2b: the seven browser WRITE verbs, a single-target message into
+a real agent, and prompt/interrupt/compact/mission-attach/session-done end to end.
