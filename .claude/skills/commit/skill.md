@@ -157,13 +157,16 @@ commit (Step 4), drive it home:
    rule carried that exception list and it is deliberately gone: every exception was an invitation
    to pay the fifty minutes again.
 
-   Do NOT justify this by telling yourself the job runs the same tests you just ran. IT DOES NOT,
-   and the difference is the whole reason the gaps above are written down: the .NET job runs the
-   two parked suites and the two installer projects, none of which any local invocation touches.
-   The reason not to wait is that a verdict arriving fifty minutes after everyone has moved on
-   does not get read, so it buys nothing while costing a day - and the coverage it holds is worth
-   having on purpose, by running it locally when your change touches it, rather than by accident,
-   an hour late.
+   Do NOT justify this by telling yourself the job runs the same tests you just ran. It does not
+   run the same tests as your DEFAULT local run, which omits the two parked suites and never
+   touches the two installer projects. That coverage is reachable locally and on purpose -
+   `-Parked` for the suites, and the two explicit `dotnet test tools/cc-director-setup*.Tests`
+   commands - which is what the release gate uses.
+
+   The reason not to wait is not that the job is redundant. It is that a verdict arriving fifty
+   minutes after everyone has moved on does not get read, so it buys nothing while costing a day.
+   Where its coverage matters, run that coverage yourself, deliberately, instead of receiving it
+   late by accident.
 
    If you want to see the fast checks in passing, look once and move on - do not watch them:
 
