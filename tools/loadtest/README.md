@@ -49,8 +49,11 @@ correctly against the 31 July baseline:
 
 ## How to run (local rig, one machine)
 
-Prerequisites: .NET 10 SDK, Docker Desktop, and k6 (one static binary - `winget install k6.k6`, or
-unzip a release from github.com/grafana/k6/releases onto PATH).
+Prerequisites: .NET 10 SDK, Docker Desktop, and k6 (one static binary -
+`winget install --id GrafanaLabs.k6`, or unzip a release from github.com/grafana/k6/releases onto PATH).
+The package id used to be written here as `k6.k6`, which matches nothing; the working one is
+`GrafanaLabs.k6`. **Record the k6 version in the run report** - the client-side percentiles come from it,
+and the 31 July baseline did not record which version produced its own.
 
 ```powershell
 # 1. Throwaway database (container dt-loadtest-pg on 127.0.0.1:55442).

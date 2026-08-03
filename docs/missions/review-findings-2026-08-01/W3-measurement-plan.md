@@ -87,6 +87,24 @@ with `-c Release`, while the baseline states it measured a Debug build. Whoever 
 follow that line. This run matches the BASELINE (Debug), because comparability beats the instruction, and
 the README now says the choice must match whichever baseline a run is being compared against.
 
+### What the baseline does NOT record, which bounds how precise any comparison can be
+
+This is a limit on the comparison itself, not a caveat about this run, and it will bound the next
+comparison too unless it is said out loud:
+
+- **The tenant count of the rig Stage 0 actually ran on is not recorded anywhere.** The committed
+  `rig-provenance.json` says 20 tenants, but it was written at 15:50:05 UTC and the Stage 0 artifact was
+  captured at 15:46:24 UTC - three and a half minutes EARLIER - so it describes a later rig boot. It is
+  reconstructable to the extent that matters (the fold count of 43 proves exactly one tenant was folded),
+  but the seeded count itself is gone.
+- **The k6 version that produced the baseline's client-side percentiles is not recorded.** This run uses
+  **k6 2.1.0**, recorded here. Stage 1's client-side p50 and p95 therefore compare across an unknown
+  version gap; the server-side figures from `/diag/loadmetrics` do not, and are the ones to lean on.
+
+So a before-and-after pair from these two runs is honest about direction and about counts, and it should
+not be presented as though the baseline was fully characterised. It was not, and saying so is what keeps
+the next reader from over-reading a precise-looking number.
+
 ---
 
 ## 4. Stage 0 - the exact invocation
@@ -172,8 +190,11 @@ and if it appears, the rig is not wired the way this document says it is.
 
 ## 7. Stage 1, when the machine can give it
 
-Prerequisite not yet met: **k6 is not installed on this machine** (`winget install k6.k6`, one static
-binary). Stage 1 is the knee run - 800 sessions from 100 Directors, viewers stepping 5, 10, 25, 50, 100 -
+Prerequisite now met: **k6 2.1.0 is installed** (`winget install --id GrafanaLabs.k6` - the id previously
+written in the README, `k6.k6`, matches nothing, which is why this looked like a ten-minute job that had
+not been done). `k6 inspect` parses `stage1-roster.js` and resolves its ramping-viewer stages under that
+version, so the script has not been broken by a k6 major release; that was checked without touching the
+rig. Stage 1 is the knee run - 800 sessions from 100 Directors, viewers stepping 5, 10, 25, 50, 100 -
 and it is where the overlap guard and the ceiling are actually measured. Its configuration must match the
 same table in section 3, with 20 tenants x 5 Directors x 8 sessions.
 
