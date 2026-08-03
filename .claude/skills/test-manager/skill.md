@@ -430,6 +430,13 @@ verification on the ones that need it.
 
 ---
 
-**Skill Version:** 1.0
+## Continuing this work
+
+`HANDOVER.md`, beside this file, carries the current state of play and the queue: the bad test list in
+priority order, the mechanics for the next Core batch, the two traps in the split, and the measurement
+recipe that worked. Read it before picking any of this up.
+
+**Skill Version:** 1.1
 **Last Updated:** 2026-08-03
+**Handover:** HANDOVER.md
 **Enforced by:** `scripts/test-local.ps1` (`$BudgetSeconds`, `$defaultProjects`, `$parkedProjects`)
