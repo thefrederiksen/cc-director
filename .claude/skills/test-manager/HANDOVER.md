@@ -30,8 +30,13 @@ un-park anything to raise a coverage number.
 4. **Speed beats coverage.** A fast gate runs on every change; a slow comprehensive one gets skipped,
    and a skipped gate has a true coverage of zero. A batch that would blow the 120-second ceiling does
    not go in, however good the tests are.
-5. **Local is the gate.** CI is for releases, explicit requests, and its own failures - and a red CI is
-   driven to green, never left standing.
+5. **Local is the gate, and nothing ever waits on continuous integration.** Not for a release
+   either - a release runs the local `-Parked -Configuration Release` gate instead, plus the two
+   installer test projects the script cannot reach, on merged main at the commit being tagged.
+   Continuous integration is a post-merge backstop that is never WAITED on and
+   never left red: a red is driven to green at once. Reading a result after the merge is chasing,
+   not waiting, and it is required for the web and Python jobs - they are the only place those
+   tests run at all.
 
 ## The queue, in the order I would do it
 

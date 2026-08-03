@@ -62,7 +62,16 @@ git rev-list --count <last-tag>..origin/main    # how many commits shipped
 - Confirm the release is cut from `origin/main`, and that your local branch is not
   behind it. The code you are documenting lives on `origin/main`; your working
   branch may not have it.
-- Confirm the mainline is green in continuous integration before going further.
+- Know that a release is gated by a LOCAL run, not by continuous integration, and that the run
+  which counts happens later - on MERGED `main`, at the exact commit about to be tagged, after the
+  version-bump pull request has landed (see "Cut the release"). A run against the pull-request head
+  does not count: the squash merge produces a different commit.
+  It is `.\scripts\test-local.ps1 -Parked -Configuration Release` PLUS the two
+  installer test projects the script cannot reach, and it is the one release-blocking wait, because
+  the release workflow runs ZERO tests and a pushed tag cannot be un-pushed. A release is the
+  single place "fix it forward" is unavailable.
+- You may run it now as an early warning, but an early run is NOT the gate: everything committed
+  after it - notes, the version bump, other people's merges - is untested by it.
 
 ### Step 2: Decide the version number
 
@@ -198,8 +207,34 @@ pull request. That is how v1.1.0 shipped (pull request #1489).
    The workflow publishes that file verbatim and FAILS if it is missing, so a tag
    pushed without it burns a whole build and cannot be un-pushed.
 2. Open a pull request that bumps `Directory.Build.props` to the new version, titled
-   `release: v<version> - <one-line summary>`. Merge it once it is green.
-3. Create the tag `v<version>` on `main` at the merged bump commit and push it. That
+   `release: v<version> - <one-line summary>`.
+3. Merge the bump pull request once its ordinary local gate is green and the review is clean -
+   never on a continuous integration result, which is never waited for.
+4. **Run the release gate on MERGED MAIN, immediately before you tag.** Not on the pull request
+   head: a squash merge produces a different commit, and `main` can move underneath you during a
+   run that takes tens of minutes. Park the checkout on the exact commit you are about to tag,
+   and run all three of these:
+
+       git checkout main && git pull
+       .\scripts\test-local.ps1 -Parked -Configuration Release
+       dotnet test tools/cc-director-setup.Tests/ -c Release
+       dotnet test tools/cc-director-setup-engine.Tests/ -c Release
+
+   Every part of that is deliberate:
+   - `-Parked` adds `Gateway.Tests` and `Core.Tests`, which the ordinary gate skips.
+   - `-Configuration Release` matches what is shipped. The script defaults to **Debug**, while
+     the continuous integration job this replaced ran `-c Release`. Releasing on a Debug-only
+     run would quietly test a different build from the one users download.
+   - **The two installer projects are NOT optional and NOT covered by the script.** They are not
+     in `cc-director.sln`, so `test-local.ps1` never touches them - it runs nine projects, all
+     under `src\`. The continuous integration job ran them separately, and the release publishes
+     `cc-director-setup.exe`, so leaving them out ships the first thing a new user sees with no
+     test behind it at all. Folding them into `-Parked` is the follow-up that removes this
+     footgun; until then, run them by hand.
+
+   If anything here is red, fix it forward on `main` and run the gate again. Do not tag until it
+   is green: this is the one release-blocking wait, and it is local.
+5. Create the tag `v<version>` on `main` at the gated commit and push it. That
    is the last manual act. Monitor the Actions run.
 
 **Do NOT create or publish a GitHub release by hand, and do NOT paste the notes into

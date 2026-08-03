@@ -30,7 +30,11 @@ version numbers, release notes, tags, or the mailing list.
 - **It will only ship green main.** The run refuses, in seconds and before it
   touches anything, if it was started against any ref other than `refs/heads/main`,
   or if the commit being shipped has a check that failed or has not finished. If it
-  refuses for a pending check, wait for continuous integration and start it again.
+  refuses for a pending check, wait for continuous integration and start it again. This is the one
+  wait the no-waiting rule (CLAUDE.md 5a) does not cover, and it is not our policy: 5a governs
+  whether a MERGE is held open, while this is the deploy workflow's own refusal to push unverified
+  code to a live service. Since every merge to main now gets its own run that cannot be evicted,
+  that check will actually finish - before, it could be cancelled and then never go green at all.
 - **It does not set up any infrastructure.** The Azure resource group, container
   registry, database connection, and storage are already provisioned and persist
   across deploys. This deploy only: rebuild the image, point the live service at
