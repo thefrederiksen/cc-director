@@ -7,8 +7,13 @@
     THE DEFAULT RUN IS ABOUT TWO MINUTES, AND THAT IS THE POINT. Local is the gate for ordinary changes
     (issue #1156), so the gate has to be cheap enough that nobody is tempted to skip it.
 
-    WHAT THE DEFAULT RUNS: every suite that finishes inside the two-minute budget. Roughly 3400 tests.
-    They start together and the wall clock is the slowest of them, not the sum.
+    WHAT THE DEFAULT RUNS: every suite that finishes inside the two-minute budget, roughly 3400 tests,
+    PLUS the two installer test projects (478 tests, about seven seconds). They start together and the
+    wall clock is the slowest of them, not the sum.
+
+    The installer projects live outside cc-director.sln and are built separately here. They are in the
+    default run because they are fast and because the thing they cover - the first screen a new user
+    ever sees - was running nowhere locally at all.
 
     WHAT THE DEFAULT NO LONGER RUNS - AND THIS IS DELIBERATE, NOT AN OVERSIGHT. Two suites are PARKED
     behind -Parked because neither can meet the budget:
@@ -28,6 +33,11 @@
     problem first - a gate so slow that a day of work becomes a day of waiting is not protecting anything,
     because it stops being run. Run -Parked before a release, and move suites back into the default the
     moment they can meet the budget.
+
+    THE RELEASE GATE IS NOW ONE COMMAND: .\scripts\test-local.ps1 -Parked -Configuration Release, run on
+    merged main at the commit about to be tagged. It was three, because the two installer projects had to
+    be invoked by hand; a gate that depends on remembering two extra commands is one that will eventually
+    be run without them, and a release is the one place there is no fixing it forward.
 
     EVERY RUN WRITES A TRX FILE AND PRINTS ITS OUTCOME AND TEST COUNT. That pair, not the console
     "Passed!" line, is the verdict - see the comment above the run loop for why. A green with a collapsed
@@ -89,6 +99,22 @@ $defaultProjects = @(
     "src\CcDirector.Terminal.Avalonia.Tests\CcDirector.Terminal.Avalonia.Tests.csproj"
 )
 
+# THE INSTALLER, WHICH IS IN THE DEFAULT RUN AND IS NOT IN THE SOLUTION.
+#
+# These two are NOT parked and were never slow - 478 tests in about seven seconds. They were missing for a
+# plumbing reason: they are not in cc-director.sln, so the single solution build above never produced them
+# and the run list never named them. Nothing local ran them at all. The continuous integration job ran them
+# as a separate step, so while that job was waited on the gap was invisible; the moment local became the
+# gate, the installer - the first thing a new user ever sees - had no test behind it, and a release could
+# ship it untested. Found by review on 2026-08-03, measured before being added.
+#
+# They are built individually below because a solution build cannot reach them. That is the whole reason
+# they get their own list rather than a line in $defaultProjects.
+$installerProjects = @(
+    "tools\cc-director-setup.Tests\CcDirectorSetup.Tests.csproj",
+    "tools\cc-director-setup-engine.Tests\CcDirector.Setup.Engine.Tests.csproj"
+)
+
 # PARKED. Not deleted, not broken - excluded from the default because they cannot meet the budget.
 # Gateway.Tests costs a machine-wide QUEUE (45-minute waits that ran nothing); Core.Tests costs 11 to 33
 # minutes of its own. Run them with -Parked before a release, and move either back into the list above
@@ -110,9 +136,10 @@ $BudgetSeconds = 120
 
 $toRun = @()
 if ($Gateway) {
+    # -Gateway is the "only that one suite" switch, so it stays exactly that and pulls in nothing else.
     $toRun = @($gatewayProject)
 } else {
-    $toRun = $defaultProjects
+    $toRun = $defaultProjects + $installerProjects
     if ($Parked) { $toRun += $parkedProjects }
 }
 
@@ -122,6 +149,19 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host ""
     Write-Host "RESULT: BUILD FAILED - no tests were run."
     exit 1
+}
+
+# The installer projects are outside cc-director.sln, so the build above did not produce them and the run
+# loop's --no-build would fail against a stale or absent assembly. Build them here, before anything starts.
+# A failure is fatal for the same reason a solution build failure is: tests that never ran must not be
+# reported as tests that passed.
+foreach ($proj in ($toRun | Where-Object { $installerProjects -contains $_ })) {
+    & dotnet build (Join-Path $repoRoot $proj) -c $Configuration -v q --nologo
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ""
+        Write-Host "RESULT: BUILD FAILED for $proj - no tests were run."
+        exit 1
+    }
 }
 
 $logDir = Join-Path ([System.IO.Path]::GetTempPath()) ("cc-test-local-" + [Guid]::NewGuid().ToString("N").Substring(0,8))
