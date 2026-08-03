@@ -455,3 +455,79 @@ def test_a_same_origin_redirect_is_still_followed(monkeypatch):
         assert state["auth"] == "Bearer a-session-key"
     finally:
         srv.shutdown()
+
+
+# --- Transport failures the user must read as a sentence, not a traceback ----------------------
+
+
+def test_an_unanswered_request_is_a_sentence_not_a_bare_timeout(monkeypatch):
+    """A read timeout escapes urlopen as TimeoutError, NOT URLError, so it slipped past the catch."""
+    import socket
+    import threading
+    import time
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+
+    def _accept_and_stall():
+        try:
+            conn, _ = listener.accept()
+            time.sleep(5)
+            conn.close()
+        except OSError:
+            pass
+
+    threading.Thread(target=_accept_and_stall, daemon=True).start()
+    try:
+        monkeypatch.setenv("CC_GATEWAY_URL", "http://127.0.0.1:%d" % listener.getsockname()[1])
+        monkeypatch.setenv("CC_GATEWAY_SESSION_KEY", "a-session-key")
+
+        with pytest.raises(gateway.GatewayError) as caught:
+            gateway.get_json("sessions", timeout=0.4)
+
+        assert "did not answer in time" in str(caught.value)
+    finally:
+        listener.close()
+
+
+def test_a_misconfigured_gateway_url_is_a_sentence_not_a_valueerror(monkeypatch):
+    """An invalid CC_GATEWAY_URL raises ValueError out of urlopen before any request is made."""
+    monkeypatch.setenv("CC_GATEWAY_URL", "not-a-url")
+    monkeypatch.setenv("CC_GATEWAY_SESSION_KEY", "a-session-key")
+
+    with pytest.raises(gateway.GatewayError) as caught:
+        gateway.get_json("sessions")
+
+    assert "CC_GATEWAY_URL" in str(caught.value)
+
+
+def test_a_200_that_is_not_json_is_a_sentence_not_a_decode_error(monkeypatch):
+    """json.loads sat outside any decoding catch, so a non-JSON 200 reached the user as a traceback."""
+    import http.server
+    import threading
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b"<html>not json</html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setenv("CC_GATEWAY_URL", "http://127.0.0.1:%d" % srv.server_address[1])
+        monkeypatch.setenv("CC_GATEWAY_SESSION_KEY", "a-session-key")
+
+        with pytest.raises(gateway.GatewayError) as caught:
+            gateway.get_json("sessions")
+
+        assert "usable answer" in str(caught.value)
+    finally:
+        srv.shutdown()

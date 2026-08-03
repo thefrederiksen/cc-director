@@ -63,8 +63,17 @@ err_console = Console(stderr=True)
 gateway_override: Optional[str] = None
 
 
-class GatewayError(Exception):
-    """A handled, user-facing failure talking to the Gateway."""
+#: THE SAME CLASS THE SHARED TRANSPORT RAISES, not a look-alike beside it.
+#:
+#: This used to be its own `class GatewayError(Exception)`, while `gateway.gateway_base_url()` and
+#: `gateway.session_key()` - called directly from this module - raise `cc_shared.gateway.GatewayError`.
+#: Every `except GatewayError` here therefore missed the no-Gateway failure entirely, and the command
+#: died with a Rich traceback. The owner accepted "no Gateway means no agent tooling" on the promise of
+#: a CLEAR SENTENCE naming the remedy; a stack trace is not that sentence.
+#:
+#: Aliasing rather than catching both is deliberate: two names for one idea is what caused this, and a
+#: second except clause on every handler would leave the trap in place for the next handler written.
+GatewayError = gateway.GatewayError
 
 
 def set_gateway_override(value: Optional[str]) -> None:

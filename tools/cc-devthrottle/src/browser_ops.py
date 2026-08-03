@@ -11,6 +11,7 @@ the Director and returned on the DTO; this module only lays them out.
 
 from __future__ import annotations
 
+import functools
 import json
 from typing import Any, Dict, List, Optional
 
@@ -81,6 +82,30 @@ def _resolve(target: str) -> Dict[str, Any]:
     raise typer.Exit(code=1)
 
 
+def _reports_gateway_failures(fn):
+    """Turn a Gateway failure into the sentence the owner accepted, never a traceback.
+
+    Every function below calls the shared transport, which raises `gateway.GatewayError` for a missing
+    CC_GATEWAY_URL, a missing session key, or an unreachable Gateway. Nothing caught it, so `browser
+    list` on a machine with no Gateway printed a Rich stack trace and exited 1. The mission's accepted
+    cost is "no Gateway means no agent tooling" - accepted specifically because the user would be told
+    so in one clear sentence naming the remedy.
+
+    One decorator rather than eight try/except blocks: the defect was that a handler could be written
+    without remembering the catch, and eight copies would leave that same trap for the ninth.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except gateway.GatewayError as err:
+            console.print(f"[red]Error:[/red] {err}")
+            raise typer.Exit(1)
+
+    return wrapper
+
+@_reports_gateway_failures
 def list_browsers(json_output: bool) -> None:
     """List the automation browsers on this machine."""
     browsers = _browsers()
@@ -111,6 +136,7 @@ def list_browsers(json_output: bool) -> None:
     console.print(table)
 
 
+@_reports_gateway_failures
 def create_browser(name: str, browser: str, json_output: bool) -> None:
     """Register a new drivable browser (does not launch it)."""
     dto = gateway.post_json(_mine(), {"name": name, "browser": browser})
@@ -125,6 +151,7 @@ def create_browser(name: str, browser: str, json_output: bool) -> None:
     )
 
 
+@_reports_gateway_failures
 def signin_browser(target: str, done: bool, json_output: bool) -> None:
     """Open the account page for a one-time human sign-in, or (with --done) record it complete."""
     browser = _resolve(target)
@@ -145,6 +172,7 @@ def signin_browser(target: str, done: bool, json_output: bool) -> None:
         )
 
 
+@_reports_gateway_failures
 def start_browser(target: str, json_output: bool) -> None:
     """Launch the browser if it is down, then print how to attach to it."""
     browser = _resolve(target)
@@ -164,6 +192,7 @@ def start_browser(target: str, json_output: bool) -> None:
     console.print(f"    BU_CDP_URL={bu_url}")
 
 
+@_reports_gateway_failures
 def attach_browser(target: str) -> None:
     """Print ONLY the two export lines, so `eval "$(... attach 'X')"` points the harness at it."""
     browser = _resolve(target)
@@ -176,6 +205,7 @@ def attach_browser(target: str) -> None:
     print(f"export BU_CDP_URL={bu_url}")
 
 
+@_reports_gateway_failures
 def stop_browser(target: str, json_output: bool) -> None:
     """Close a running browser cleanly. Its login and folder are kept; only the process exits."""
     browser = _resolve(target)
@@ -189,6 +219,7 @@ def stop_browser(target: str, json_output: bool) -> None:
     console.print(f'[green]Stopped[/green] "{bname}" ({status}). Its login is kept - start it again any time.')
 
 
+@_reports_gateway_failures
 def rename_browser(target: str, to: str, json_output: bool) -> None:
     """Rename a browser's label (its id, port, and folder are unchanged)."""
     browser = _resolve(target)
@@ -200,6 +231,7 @@ def rename_browser(target: str, to: str, json_output: bool) -> None:
     console.print(f'[green]Renamed[/green] to "{gateway.field(dto, "name", "Name")}".')
 
 
+@_reports_gateway_failures
 def remove_browser(target: str, json_output: bool) -> None:
     """Stop the browser, delete its folder, and drop it from the registry."""
     browser = _resolve(target)

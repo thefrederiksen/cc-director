@@ -164,13 +164,17 @@ _OPENER = urllib.request.build_opener(_SameOriginRedirectHandler)
 def _request(method: str, path: str, body: Optional[dict] = None, timeout: float = 30) -> Any:
     url = f"{gateway_base_url()}/{path.lstrip('/')}"
     data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Accept", "application/json")
-    if data is not None:
-        req.add_header("Content-Type", "application/json")
-    req.add_header("Authorization", f"Bearer {session_key()}")
 
+    # Built INSIDE the try, because a CC_GATEWAY_URL that is not a URL at all ("not-a-url") raises
+    # ValueError right here, out of Request's own parsing, before any request is made. Constructing it
+    # above the try is how a plain configuration mistake reached the user as a stack trace.
     try:
+        req = urllib.request.Request(url, data=data, method=method)
+        req.add_header("Accept", "application/json")
+        if data is not None:
+            req.add_header("Content-Type", "application/json")
+        req.add_header("Authorization", f"Bearer {session_key()}")
+
         with _OPENER.open(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
             return json.loads(raw) if raw else None
@@ -192,6 +196,27 @@ def _request(method: str, path: str, body: Optional[dict] = None, timeout: float
             f"Cannot reach the Gateway at {gateway_base_url()}: {err.reason}. "
             "Every fleet command goes through it and there is no local path to fall back to. "
             "Check that the Gateway is running and this machine can reach it."
+        ) from err
+    except GatewayError:
+        # Already the sentence a user should read - the cross-origin redirect refusal above raises it
+        # from inside the opener. Re-raised unchanged so the two broader catches below cannot rewrite
+        # a precise message into a generic one.
+        raise
+    except (TimeoutError, OSError) as err:
+        # A read timeout escapes urlopen as a bare TimeoutError, NOT as a URLError, so it slipped past
+        # the catch above and reached the user as a traceback. Proved with a loopback server that
+        # accepted the connection and never answered.
+        raise GatewayError(
+            f"The Gateway at {gateway_base_url()} did not answer in time ({type(err).__name__}: {err}). "
+            "Every fleet command goes through it and there is no local path to fall back to."
+        ) from err
+    except ValueError as err:
+        # Two distinct shapes land here, and both used to be tracebacks. An invalid CC_GATEWAY_URL
+        # ("not-a-url") raises ValueError out of urlopen before any request is made; and a 200 whose
+        # body is not JSON reaches json.loads, which raises JSONDecodeError - a ValueError subclass.
+        raise GatewayError(
+            f"The Gateway at {gateway_base_url()} did not return a usable answer ({err}). "
+            "Check CC_GATEWAY_URL names the Gateway and that nothing is intercepting the request."
         ) from err
 
 
