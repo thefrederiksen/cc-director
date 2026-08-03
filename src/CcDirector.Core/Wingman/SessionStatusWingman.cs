@@ -59,6 +59,18 @@ public sealed class SessionStatusWingman : IDisposable
     private bool _disposed;
 
     /// <summary>
+    /// How many sessions this class still holds an activity handler for. Exposed for tests, which
+    /// must assert the COUNT rather than that a teardown method ran: a test that only checks
+    /// "OnSessionRemoved was called" passes against a handler that removes from the wrong
+    /// dictionary, which is the shape of the bug this guards.
+    /// </summary>
+    internal int TrackedHandlerCount => _activityHandlers.Count;
+
+    /// <summary>How many prompt-injection watchers are still held. Same reasoning as
+    /// <see cref="TrackedHandlerCount"/>: both dictionaries leaked, so both are asserted.</summary>
+    internal int TrackedWatcherCount => _injectionWatchers.Count;
+
+    /// <summary>
     /// Debounce window between the last buffer write and running the prompt-input
     /// extraction. Long enough that Claude Code's Ink TUI has settled into a
     /// final frame; short enough that the user sees the suggestion almost
@@ -79,6 +91,7 @@ public sealed class SessionStatusWingman : IDisposable
         FileLog.Write("[SessionStatusWingman] Start");
 
         _sessionManager.OnSessionCreated += OnSessionCreated;
+        _sessionManager.OnSessionRemoved += OnSessionRemoved;
 
         // Wire existing sessions (restored from persistence on Director boot).
         foreach (var s in _sessionManager.ListSessions())
@@ -86,6 +99,29 @@ public sealed class SessionStatusWingman : IDisposable
     }
 
     private void OnSessionCreated(Session session) => WireSession(session, isNew: true);
+
+    /// <summary>
+    /// Release everything this class holds for a session that has ended.
+    ///
+    /// Both dictionaries are keyed by session id and both entries reference the Session itself -
+    /// <see cref="_activityHandlers"/> stores a closure that CAPTURES the session, and the
+    /// <see cref="PromptInjectionWatcher"/> holds it directly. Without this hook those entries live
+    /// as long as the Director does, so every session ever opened stays rooted along with its
+    /// backend, its terminal buffer, and its parsers' scrollback.
+    ///
+    /// That was the bug: this class subscribed to OnSessionCreated and never to OnSessionRemoved,
+    /// while its siblings (TerminalStateDetector, TransientErrorAutoResume) always did. On one
+    /// Director at 58 hours uptime it retained 146 Sessions for 9 live ones - about 1.7 GB, the
+    /// bulk of the process heap. The per-session bounds were all correct; the object count was not.
+    /// </summary>
+    private void OnSessionRemoved(Session session)
+    {
+        if (_activityHandlers.TryRemove(session.Id, out var handler))
+            session.OnActivityStateChanged -= handler;
+
+        if (_injectionWatchers.TryRemove(session.Id, out var watcher))
+            watcher.Dispose();
+    }
 
     private void WireSession(Session session, bool isNew)
     {
@@ -194,11 +230,22 @@ public sealed class SessionStatusWingman : IDisposable
         _disposed = true;
 
         _sessionManager.OnSessionCreated -= OnSessionCreated;
+        _sessionManager.OnSessionRemoved -= OnSessionRemoved;
+
+        // Unsubscribe from the sessions that are still live - we need the Session object to detach
+        // the handler, and only the live list can supply it.
         foreach (var s in _sessionManager.ListSessions())
         {
             if (_activityHandlers.TryRemove(s.Id, out var h))
                 s.OnActivityStateChanged -= h;
         }
+
+        // Then drop whatever is left. Anything still here belongs to a session that has already
+        // ended, so there is no Session to detach from - the entry is pure retention. The loop
+        // above walks LIVE sessions only, which is exactly the set that does NOT need clearing;
+        // without this line a dead session's handler survived even a full Director shutdown.
+        _activityHandlers.Clear();
+
         foreach (var kv in _injectionWatchers)
             kv.Value.Dispose();
         _injectionWatchers.Clear();
