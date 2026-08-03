@@ -284,6 +284,16 @@ snapshot were amended identically and by hand; no Postgres instance was run.
 **`cc-history` and the fleet self-test remain excluded** by the Architect's earlier ruling, and
 neither has been run.
 
-**The rig is left running** (Gateway 7997, Director slot 6, one live agent session) so the Architect
-can inspect it, and the Claude config still carries the pre-trusted rig sandbox folder, backed up
-alongside it. Both need tearing down.
+**The rig is torn down, so these proofs are a record rather than a running thing.** The Director
+slot 6 had already exited on its own; the isolated Gateway was stopped by path match against the rig
+directory; the rig's own scheduled task was unregistered and the owner's `cc-director-launch` was
+confirmed still Ready; and the Claude config was restored from the backup taken before the sandbox
+folder was pre-trusted. It is reproducible from the recipe in this report plus
+`scripts/phase2-gateway-proof.ps1`.
+
+**One thing observed during teardown that I am reporting rather than explaining.** The owner's
+Director in slot 5 was running at the start of this phase and had exited by the end. I issued no
+kill to any process: the single shutdown call this phase made went to `127.0.0.1:7883`, which
+Director slot 6's own log names as its Control API address, and that call returned "unable to
+connect" because slot 6 had already exited. Slot 5 could not have been holding 7883, or slot 6 could
+not have bound it. I did not cause it as far as I can trace, and I cannot say what did.
