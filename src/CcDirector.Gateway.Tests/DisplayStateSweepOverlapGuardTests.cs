@@ -118,7 +118,14 @@ public sealed class DisplayStateSweepOverlapGuardTests : IAsyncLifetime
         LoadTestMetrics.SweepFinished(second);
         LoadTestMetrics.SweepFinished(first);
 
-        Assert.Equal(1L, Counter("sweepOverlaps") - overlapsBefore);
+        // AT LEAST ONE, not exactly one, and the difference was found by revert-proving this file rather
+        // than by reading it. These two calls bypass the guard deliberately, so this host's own five-second
+        // timer can also be mid-pass when they land and contribute an overlap of its own - the assertion
+        // read 2 under both sweep reverts. "Exactly one" was asserting something this test does not control.
+        // The claim it exists to make is that the counter CAN still report a non-zero, and that is what is
+        // asserted now; the ZERO in the test above is what has to be exact, and it is.
+        Assert.True(Counter("sweepOverlaps") - overlapsBefore >= 1,
+            "the overlap counter reported no overlap for two passes that were genuinely in flight at once");
     }
 
     [Fact]

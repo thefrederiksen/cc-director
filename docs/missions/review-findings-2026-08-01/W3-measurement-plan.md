@@ -325,3 +325,48 @@ count catches a collapsed run, but only naming the facts catches a hollow one.
 - **Stage 1 has not been run.** It is the latency and ceiling measurement, it needs a quiet machine, and
   this one has not been quiet. The overlap guard therefore rests on its unit tests and not on a load
   measurement; the baseline's 91-overlaps-in-98-ticks figure has no measured counterpart yet.
+
+---
+
+## 11. The revert proofs, RUN - 3 August 2026
+
+Section 8 named each fault and the symptom it must produce, before any of them was injected. The work was
+committed and pushed first (`d44b45e77`), so every fault below sat on a saved tree and was restored with a
+checkout. Each was run alone with `-Gateway -Filter`.
+
+| # | Line deleted or changed | Fact that went RED | Symptom reported |
+|---|---|---|---|
+| 1 | all three fold reads back to `snoozeRegistry.HoldStateFor` / `.IsExpired` / `?.SnoozeUntilFor` | `TheWholeFold_TakesExactlyOneSnoozeRead` | expected 1, **got 13** |
+| 2 | ONLY `s.SnoozeUntil = holds.SnoozeUntilFor(...)` back to `snoozeRegistry?.SnoozeUntilFor(...)` | the same fact | expected 1, **got 5** |
+| 3 | the whole `Interlocked.CompareExchange` guard block in `SweepDisplayStateTick` | `ATickThatArrivesWhileAPassIsRunning_IsSkipped_AndIsCountedAsSkipped` | the second pass RAN: expected 0, **got 1** |
+| 4 | ONLY `Diagnostics.LoadTestMetrics.SweepSkipped();`, guard left intact | the same fact | the skip went INVISIBLE: expected a skip count of 1, **got 0** |
+
+Restored after each, and the tree verified back to the committed state (`git status` empty). A final run on
+the restored tree: **all eight parked facts pass, outcome Completed, 8 of 8 executed, 0 failed.**
+
+**Revert 2 is the one this work item existed to make possible.** Section 8 predicted "5, not 1 - one
+batched read plus four per-session reads", and 5 is what it reported. That is the half-fix - the
+two-thirds improvement that would have read like success - and the assertion distinguishes it from the
+whole fix by a number rather than by anyone noticing.
+
+**Revert 1 reported 13 where section 8 predicted 12, and the difference is mine to explain rather than to
+round off.** The fault I injected restored the three per-session reads but LEFT the batched snapshot call
+in place, so the count is one snapshot plus four sessions times three - 13, not 12. A full revert would
+have removed the snapshot too and given 12. The prediction described a purer revert than the one that was
+run; the direction, the magnitude and the arithmetic all hold, and the number is stated as observed.
+
+### What the revert proofs found that reading could not
+
+Reverts 3 and 4 both reddened a SECOND fact -
+`TheOverlapCounter_StillReportsAnOverlap_SoTheZeroAboveIsEarned` - which section 8 did not predict, and
+that turned out to be a real fragility in this work item's own test rather than a consequence of the
+fault. That control drives the metric directly, bypassing the guard on purpose, so the host's own
+five-second timer can be mid-pass when its two calls land and contribute an overlap of its own: it read 2
+where it asserted exactly 1. It had passed three times in the full gate, which is exactly how a racy
+assertion survives.
+
+It now asserts **at least one**, which is the claim it exists to make - that the counter CAN still report a
+non-zero, so the zero asserted in the test above it is earned. The exactness belongs on the ZERO, which
+this branch does control, not on a count that a background timer can add to.
+
+A test that is only ever watched passing hides this. Four reverts found it in ten minutes.
