@@ -117,12 +117,20 @@ public sealed class PythonToolsCrashSafeTests : IDisposable
     [Fact]
     public void SharedInstallLock_HeldByAnotherThread_TimesOut()
     {
+        // EVERY ACQUIRE HERE IS SCOPED TO THIS TEST'S OWN ROOT. The lock used to be one machine-wide
+        // name, so this test contended with every other test that installs, with every other worktree
+        // running the same suite, and with any real installer on the box. It failed with "waited 0 min
+        // for the shared Python install lock" whenever a neighbour happened to hold it - the holder
+        // thread below timing out before it could set the event. Nothing about the code under test had
+        // gone wrong; the test was simply reading somebody else's lock.
+        var root = Path.Combine(_dir, "lock-scope");
+
         using var acquired = new ManualResetEventSlim(false);
         using var release = new ManualResetEventSlim(false);
 
         var holder = new Thread(() =>
         {
-            using var held = SharedInstallLock.Acquire(TimeSpan.FromSeconds(5));
+            using var held = SharedInstallLock.Acquire(TimeSpan.FromSeconds(5), root);
             acquired.Set();
             release.Wait(TimeSpan.FromSeconds(10));
         }) { IsBackground = true };
@@ -130,13 +138,44 @@ public sealed class PythonToolsCrashSafeTests : IDisposable
 
         Assert.True(acquired.Wait(TimeSpan.FromSeconds(5)), "holder never acquired the lock");
         // A second acquirer (this thread) must not be able to take it while it is held elsewhere.
-        Assert.Throws<TimeoutException>(() => SharedInstallLock.Acquire(TimeSpan.FromMilliseconds(300)));
+        Assert.Throws<TimeoutException>(() => SharedInstallLock.Acquire(TimeSpan.FromMilliseconds(300), root));
 
         release.Set();
         holder.Join(TimeSpan.FromSeconds(5));
 
         // Once released, it is acquirable again.
-        using var reacquired = SharedInstallLock.Acquire(TimeSpan.FromSeconds(5));
+        using var reacquired = SharedInstallLock.Acquire(TimeSpan.FromSeconds(5), root);
+    }
+
+    [Fact]
+    public void SharedInstallLock_DifferentRoots_DoNotContend()
+    {
+        // The property that makes the lock correct rather than merely quieter: two installs into
+        // DIFFERENT trees must not block each other. Without this, scoping could be "fixed" by handing
+        // every caller the same key again and the test above would still pass.
+        var rootA = Path.Combine(_dir, "tree-a");
+        var rootB = Path.Combine(_dir, "tree-b");
+
+        using var heldA = SharedInstallLock.Acquire(TimeSpan.FromSeconds(5), rootA);
+
+        // Must be immediate, not a wait-then-succeed: a short bound proves there is no contention.
+        using var heldB = SharedInstallLock.Acquire(TimeSpan.FromMilliseconds(300), rootB);
+
+        Assert.NotEqual(SharedInstallLock.NameFor(rootA), SharedInstallLock.NameFor(rootB));
+    }
+
+    [Fact]
+    public void SharedInstallLock_SameRootSpeltDifferently_IsTheSameLock()
+    {
+        // The other half: scoping must not be defeated by a trailing separator or a case difference,
+        // or two installs into ONE tree would proceed at once - the race the lock exists to stop
+        // (issue #994).
+        var root = Path.Combine(_dir, "tree-c");
+        var sameWithSeparator = root + Path.DirectorySeparatorChar;
+        var sameDifferentCase = root.ToUpperInvariant();
+
+        Assert.Equal(SharedInstallLock.NameFor(root), SharedInstallLock.NameFor(sameWithSeparator));
+        Assert.Equal(SharedInstallLock.NameFor(root), SharedInstallLock.NameFor(sameDifferentCase));
     }
 
     /// <summary>
