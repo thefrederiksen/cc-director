@@ -83,6 +83,27 @@ public partial class SpeakDialog : Window
     private Stage _stage = Stage.Connecting;
     private BatchDictationRecorder? _service;
 
+    /// <summary>
+    /// Set the moment the window closes, BEFORE the async teardown runs, and checked after every
+    /// suspension point in startup. A recorder owns a live NAudio capture thread that roots the whole
+    /// object graph, so one built after the dialog has gone can never be collected and never stops
+    /// recording. Startup must therefore refuse to open - or refuse to publish - a recorder once this
+    /// is true, because nothing will come along later to dispose it.
+    /// </summary>
+    private volatile bool _closed;
+
+    /// <summary>
+    /// TEST SEAM: builds the recorder, so a test can hold construction at a barrier and control the
+    /// exact interleaving with <see cref="Window.Close"/>.
+    ///
+    /// It exists because the close race cannot otherwise be tested deterministically. Without it a
+    /// test drives the REAL recorder and a real microphone, so on a machine with no capture device
+    /// <c>StartAsync</c> throws and self-disposes - and the regression test then passes even with the
+    /// close guards removed. That is a test that cannot fail, which is worse than no test.
+    /// Null in production, where the recorder is constructed directly.
+    /// </summary>
+    internal Func<int, Task<BatchDictationRecorder>>? RecorderFactoryForTests;
+
     // The accumulated, dictionary-corrected transcript across every checkpointed
     // segment so far. Grows on each Pause / commit-from-recording. Never populated
     // during recording (no live preview). While PAUSED the user may edit the box,
@@ -152,7 +173,17 @@ public partial class SpeakDialog : Window
         _readyTimeout.Tick += (_, _) => OnReadyTimeout();
 
         Opened += async (_, _) => await OnDialogOpenedAsync();
-        Closed += (_, _) => _ = OnDialogClosedAsync();
+        // The latch is set SYNCHRONOUSLY, before the async teardown starts. Startup is an async
+        // sequence with real suspension points, so the window can close while it is mid-flight; the
+        // teardown then finds no recorder to dispose and finishes, and the startup continuation
+        // afterwards happily builds one and publishes it to a dialog that no longer exists. There is
+        // no second Closed event to catch it, so that recorder - and the live NAudio capture thread
+        // rooting it - would never be released. See _closed.
+        Closed += (_, _) =>
+        {
+            _closed = true;
+            _ = OnDialogClosedAsync();
+        };
 
         // Window-level Enter = Send (insert transcript + auto-submit). Lets the
         // user complete the whole dictation flow with the keyboard only.
@@ -203,6 +234,14 @@ public partial class SpeakDialog : Window
             // (out of credits, or no bring-your-own key), close without recording and show the ONE
             // shared "add credits / add a key" dialog over the owner instead of a raw failure later.
             var state = await DesktopHostedAiGate.CheckAsync();
+            // The preflight is a real await; the user can close the dialog while it is outstanding.
+            // Teardown has then already run and found nothing, so continuing here would open a
+            // microphone nobody will ever close.
+            if (_closed)
+            {
+                FileLog.Write("[SpeakDialog] closed during the hosted-AI preflight; not starting a recorder");
+                return;
+            }
             if (state != HostedAiState.Ready)
             {
                 FileLog.Write($"[SpeakDialog] pre-flight not ready ({state}); not recording");
@@ -236,17 +275,67 @@ public partial class SpeakDialog : Window
         await DisposeServiceAsync();
     }
 
+    /// <summary>
+    /// Build and start a recorder for the current device, and take ownership of it in
+    /// <see cref="_service"/>.
+    ///
+    /// THE RECORDER IS NEVER ORPHANED. A <see cref="BatchDictationRecorder"/> owns a NAudio
+    /// <c>WaveInEvent</c> whose capture thread roots the whole object graph, so one that is dropped
+    /// without being disposed can never be collected AND keeps appending audio forever. Every caller
+    /// of this method (dialog open, Resume, mic switch) wraps it in a try/catch that leaves the dialog
+    /// in a recoverable state - so before this fix, a throw anywhere after construction left a live,
+    /// unreachable recorder behind while the dialog carried on. A 68-hour Director was measured with
+    /// 87 of them, nine still recording, holding 12.69 GB.
+    ///
+    /// <see cref="BatchDictationRecorder.StartAsync"/> disposes itself if the mic fails to open, but
+    /// it raises <c>OnCaptureStarted</c> AFTER capture is live - and that handler runs dialog code that
+    /// can throw. The catch here covers that window and anything else added later.
+    /// </summary>
     private async Task StartNewServiceAsync()
     {
-        var svc = new BatchDictationRecorder(_options, _selectedDeviceNumber);
+        // Refuse to build one at all if the window has already gone - nothing would dispose it.
+        if (_closed)
+        {
+            FileLog.Write("[SpeakDialog] dialog already closed; not building a recorder");
+            return;
+        }
+
+        var svc = RecorderFactoryForTests is null
+            ? new BatchDictationRecorder(_options, _selectedDeviceNumber)
+            : await RecorderFactoryForTests(_selectedDeviceNumber);
         svc.OnAudioBands += OnAudioBands;
         svc.OnInputRms += OnInputRms;
         svc.OnCaptureStarted += OnServiceCaptureStarted;
         svc.OnCaptureLive += OnServiceCaptureLive;
         svc.OnTranscriptionProgress += OnServiceTranscriptionProgress;
-        await svc.StartAsync("default");
+        try
+        {
+            await svc.StartAsync("default");
+        }
+        catch
+        {
+            // Dispose the LOCAL - _service is still whatever it was, so DisposeServiceAsync would not
+            // reach this instance. DisposeAsync is idempotent, so double-disposing after StartAsync's
+            // own cleanup is safe.
+            try { await svc.DisposeAsync(); }
+            catch (Exception disposeEx) { FileLog.Write($"[SpeakDialog] failed-start dispose error: {disposeEx.Message}"); }
+            throw;
+        }
+
+        // StartAsync is awaited, so the window can have closed while the microphone was opening.
+        // Teardown has already run and seen a null _service, so publishing now would strand a LIVE,
+        // recording instance with no owner. Dispose the one we built instead.
+        if (_closed)
+        {
+            FileLog.Write("[SpeakDialog] closed while the microphone was starting; disposing the recorder we just built");
+            try { await svc.DisposeAsync(); }
+            catch (Exception disposeEx) { FileLog.Write($"[SpeakDialog] closed-during-start dispose error: {disposeEx.Message}"); }
+            return;
+        }
+
         _service = svc;
     }
+
 
     private async Task DisposeServiceAsync()
     {
