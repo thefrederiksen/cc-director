@@ -635,6 +635,94 @@ public sealed class SessionStatusWingmanTests
         finally { wingman.Dispose(); manager.Dispose(); }
     }
 
+    // ---------- Session teardown: the class must not outlive the sessions it watched ----------
+    //
+    // This class subscribed to OnSessionCreated and never to OnSessionRemoved, so both of its
+    // per-session dictionaries grew for the life of the Director. The activity-handler entry is a
+    // closure that CAPTURES the Session, so each dead entry rooted the whole Session - its backend,
+    // its 2 MB terminal buffer, and both AnsiParsers with 5,000 scrollback rows each. A heap dump of
+    // a Director at 58 hours uptime found 146 Sessions retained for 9 live: ~1.7 GB, the bulk of the
+    // process heap. Its siblings (TerminalStateDetector, TransientErrorAutoResume) always hooked
+    // removal and sat correctly at the live count.
+    //
+    // These assert the COUNT, not that a teardown method ran. A test that only checked "the removal
+    // handler fired" would pass against a handler that removed from the wrong dictionary.
+
+    [Fact]
+    public void Removing_a_session_releases_both_per_session_entries()
+    {
+        var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
+        var wingman = new SessionStatusWingman(manager);
+        try
+        {
+            wingman.Start();
+            var (session, _) = CreateBufferSession(manager);
+
+            Assert.Equal(1, wingman.TrackedHandlerCount);
+            Assert.Equal(1, wingman.TrackedWatcherCount);
+
+            manager.RemoveSession(session.Id);
+
+            Assert.Equal(0, wingman.TrackedHandlerCount);
+            Assert.Equal(0, wingman.TrackedWatcherCount);
+        }
+        finally { wingman.Dispose(); manager.Dispose(); }
+    }
+
+    [Fact]
+    public void Tracked_state_matches_the_live_session_count_across_churn()
+    {
+        var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
+        var wingman = new SessionStatusWingman(manager);
+        try
+        {
+            wingman.Start();
+
+            // Churn many sessions through, keeping only the last three alive. Before the fix this
+            // ended at 12 tracked handlers for 3 live sessions - the leak in miniature.
+            var live = new List<Session>();
+            for (int i = 0; i < 12; i++)
+            {
+                var (s, _) = CreateBufferSession(manager);
+                live.Add(s);
+                if (live.Count > 3)
+                {
+                    var doomed = live[0];
+                    live.RemoveAt(0);
+                    manager.RemoveSession(doomed.Id);
+                }
+            }
+
+            Assert.Equal(3, manager.ListSessions().Count);
+            Assert.Equal(3, wingman.TrackedHandlerCount);
+            Assert.Equal(3, wingman.TrackedWatcherCount);
+        }
+        finally { wingman.Dispose(); manager.Dispose(); }
+    }
+
+    [Fact]
+    public void Dispose_clears_entries_for_sessions_that_already_ended()
+    {
+        var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
+        var wingman = new SessionStatusWingman(manager);
+        try
+        {
+            wingman.Start();
+            var (session, _) = CreateBufferSession(manager);
+            Assert.Equal(1, wingman.TrackedHandlerCount);
+
+            // Dispose() used to walk ListSessions() - the LIVE sessions - which is precisely the set
+            // that does NOT need clearing. A session removed first was therefore unreachable from
+            // the teardown loop and survived a full Director shutdown.
+            manager.RemoveSession(session.Id);
+            wingman.Dispose();
+
+            Assert.Equal(0, wingman.TrackedHandlerCount);
+            Assert.Equal(0, wingman.TrackedWatcherCount);
+        }
+        finally { wingman.Dispose(); manager.Dispose(); }
+    }
+
     // ---------- Prompt-injection watcher (end-to-end via real buffer) ----------
 
     private static (Session session, BufferOnlyBackend backend) CreateBufferSession(SessionManager manager)
