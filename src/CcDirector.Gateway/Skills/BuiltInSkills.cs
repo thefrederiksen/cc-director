@@ -57,6 +57,17 @@ public static class BuiltInSkills
                 "move session", "migrate session", "transfer session",
                 "move it to the new director",
             }),
+
+        new SkillDefinition(
+            Id: "terminology",
+            Name: "Terminology",
+            Summary: "The words DevThrottle uses and what each one means - one word per idea, one idea " +
+                     "per word.",
+            Triggers: new[]
+            {
+                "what do we call", "what is the right word", "glossary", "vocabulary", "naming",
+                "is it hold or snooze", "controller or supervisor",
+            }),
     };
 
     /// <summary>Every skill the Gateway ships, in the order the register lists them.</summary>

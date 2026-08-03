@@ -57,6 +57,13 @@ public static class FleetPreambleTemplate
         "\n" +
         "[SKILL_INDEX]\n" +
         "\n" +
+        "ONE WORD PER IDEA. A SESSION is one running coding agent; an AGENT is the tool it runs (Claude\n" +
+        "Code, Codex, Grok) - never call a session an agent. A MISSION is why the work exists and who is\n" +
+        "on it together; a WORKFLOW is how it is run; a RUN is one execution of that workflow. Say SNOOZE,\n" +
+        "not hold or parked; say SUPERVISOR, not controller. Use these words in issues, briefs, commits,\n" +
+        "documents and code comments. The full list, and the older names still left in the code:\n" +
+        "  cc-devthrottle skill get terminology\n" +
+        "\n" +
         "THE CODE YOU WRITE IS THE OWNER'S. NEVER SIGN IT. Do not put your name, your model, your vendor,\n" +
         "or any assistant on ANYTHING you produce - no 'Co-authored-by' trailer naming Claude, Codex, Pi,\n" +
         "Gemini, Copilot, Cursor, Grok or any agent; no 'Generated with' line; no robot emoji; no mention\n" +
