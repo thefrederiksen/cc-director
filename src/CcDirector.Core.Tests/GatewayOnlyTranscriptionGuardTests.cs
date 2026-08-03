@@ -54,8 +54,10 @@ public sealed class GatewayOnlyTranscriptionGuardTests
             + string.Join("\n  ", offenders));
     }
 
-    private static bool IsTestProject(string rel)
-        => rel.Contains(".Tests/", StringComparison.OrdinalIgnoreCase);
+    // One shared predicate (see TestProjectPath) - this guard was one of the two that stayed GREEN
+    // after the suite split, not because it was satisfied but because nothing among the moved files
+    // happened to match its pattern. Latent, not passing.
+    private static bool IsTestProject(string rel) => TestProjectPath.IsTestProject(rel);
 
     private static string Relative(string root, string full)
         => Path.GetRelativePath(root, full).Replace('\\', '/');

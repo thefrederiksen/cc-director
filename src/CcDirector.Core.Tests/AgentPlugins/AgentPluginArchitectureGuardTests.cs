@@ -43,7 +43,11 @@ public sealed class AgentPluginArchitectureGuardTests
         foreach (var path in Directory.EnumerateFiles(src, "*.cs", SearchOption.AllDirectories))
         {
             var normalized = path.Replace('\\', '/');
-            if (normalized.Contains(".Tests/", StringComparison.OrdinalIgnoreCase))
+            // One shared predicate (see TestProjectPath). This guard was the fourth carrier of a
+            // copy-pasted ".Tests/" substring test, and it stayed GREEN through the suite split only
+            // because nothing among the 2,750 files that moved into ".UnitTests" happened to match its
+            // pattern - latent rather than satisfied.
+            if (TestProjectPath.IsTestProject(normalized))
                 continue;
             if (normalized.Contains("/AgentPlugins/", StringComparison.OrdinalIgnoreCase))
                 continue;
