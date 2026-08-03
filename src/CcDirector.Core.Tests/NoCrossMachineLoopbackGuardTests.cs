@@ -142,8 +142,10 @@ public sealed class NoCrossMachineLoopbackGuardTests
         => text.Contains("127.0.0.1", StringComparison.Ordinal)
            || text.Contains("localhost", StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsTestProject(string rel)
-        => rel.Contains(".Tests/", StringComparison.OrdinalIgnoreCase);
+    // One shared predicate (see TestProjectPath): four guards each carried their own copy of this
+    // decision, and all four were wrong at once when the Gateway suite split moved 2,750 files into a
+    // project spelled ".UnitTests", which does not contain ".Tests/".
+    private static bool IsTestProject(string rel) => TestProjectPath.IsTestProject(rel);
 
     private static string Relative(string root, string full)
         => Path.GetRelativePath(root, full).Replace('\\', '/');

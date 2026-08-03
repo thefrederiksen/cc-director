@@ -144,8 +144,9 @@ public sealed class StorageRootGuardTests
         return false;
     }
 
-    private static bool IsTestProject(string rel)
-        => rel.Contains(".Tests/", StringComparison.OrdinalIgnoreCase);
+    // One shared predicate (see TestProjectPath) - the other guard that stayed green by luck rather
+    // than by being satisfied, and would have fired later on an unrelated change.
+    private static bool IsTestProject(string rel) => TestProjectPath.IsTestProject(rel);
 
     private static string Relative(string root, string full)
         => Path.GetRelativePath(root, full).Replace('\\', '/');

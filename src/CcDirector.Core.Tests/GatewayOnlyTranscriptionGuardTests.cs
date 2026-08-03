@@ -54,8 +54,12 @@ public sealed class GatewayOnlyTranscriptionGuardTests
             + string.Join("\n  ", offenders));
     }
 
-    private static bool IsTestProject(string rel)
-        => rel.Contains(".Tests/", StringComparison.OrdinalIgnoreCase);
+    // One shared predicate (see TestProjectPath). This guard is one of the two that FIRED after the
+    // suite split - two moved files carry the forbidden construction outside every allowed prefix, and
+    // the old substring stopped excluding them. The twelve reported offenders are ten loopback plus
+    // these two. The LATENT pair - green only because nothing moved happened to match them - is the
+    // agent-plugin and storage-root guards.
+    private static bool IsTestProject(string rel) => TestProjectPath.IsTestProject(rel);
 
     private static string Relative(string root, string full)
         => Path.GetRelativePath(root, full).Replace('\\', '/');
