@@ -7,8 +7,19 @@
     THE DEFAULT RUN IS ABOUT TWO MINUTES, AND THAT IS THE POINT. Local is the gate for ordinary changes
     (issue #1156), so the gate has to be cheap enough that nobody is tempted to skip it.
 
-    WHAT THE DEFAULT RUNS: every suite that finishes inside the two-minute budget. Roughly 3400 tests.
-    They start together and the wall clock is the slowest of them, not the sum.
+    WHAT THE DEFAULT RUNS: every suite that finishes inside the two-minute budget, PLUS the two installer
+    test projects. They start together and the wall clock is the slowest of them, not the sum.
+
+    COUNTS, MEASURED 2026-08-03 FROM THE TRX FILES OF A COLD RUN - not estimated, and not copied forward:
+      Gateway.UnitTests 2777    Avalonia 348    Launcher 110    HostedAgent 88    Core.UnitTests 82
+      Engine 63                 Terminal 24
+      installer: setup.Tests 25, setup-engine.Tests 453
+    3492 in the default suites, 3970 including the installer. Re-measure before changing these numbers;
+    the per-project comments below were carried forward for months after they stopped being true.
+
+    The installer projects live outside cc-director.sln and are built separately here. They are in the
+    default run because they are fast and because the thing they cover - the first screen a new user
+    ever sees - was running nowhere locally at all.
 
     WHAT THE DEFAULT NO LONGER RUNS - AND THIS IS DELIBERATE, NOT AN OVERSIGHT. Two suites are PARKED
     behind -Parked because neither can meet the budget:
@@ -28,6 +39,11 @@
     problem first - a gate so slow that a day of work becomes a day of waiting is not protecting anything,
     because it stops being run. Run -Parked before a release, and move suites back into the default the
     moment they can meet the budget.
+
+    THE RELEASE GATE IS NOW ONE COMMAND: .\scripts\test-local.ps1 -Parked -Configuration Release, run on
+    merged main at the commit about to be tagged. It was three, because the two installer projects had to
+    be invoked by hand; a gate that depends on remembering two extra commands is one that will eventually
+    be run without them, and a release is the one place there is no fixing it forward.
 
     EVERY RUN WRITES A TRX FILE AND PRINTS ITS OUTCOME AND TEST COUNT. That pair, not the console
     "Passed!" line, is the verdict - see the comment above the run loop for why. A green with a collapsed
@@ -69,24 +85,49 @@ if ($Gateway -and $Parked) {
 }
 
 # THE TWO-MINUTE BUDGET IS THE RULE THIS LIST ENCODES. A suite is in the default run if it finishes
-# inside it, and parked if it does not. Measured 2026-08-02, whole fleet busy:
-#   Gateway.UnitTests  ~2m 0s   (2754 tests)      Avalonia    4s      Engine   4s
-#   HostedAgent          36s                      Launcher    2s      Terminal 11s
-# They start together, so the default costs about the slowest one.
+# inside it, and parked if it does not. DURATIONS ONLY - the test counts live once in the header, with
+# the date they were measured, because keeping them in two places is what let one drift by a factor of
+# thirty. Measured 2026-08-03 from a cold run:
+#   Gateway.UnitTests  56s   Avalonia  7s   HostedAgent  37s   Terminal 13s
+#   Launcher            4s   Engine    4s   Core.UnitTests <1s
+#   installer: setup.Tests 5s, setup-engine.Tests 8s (plus about 3s each to build)
+# They start together, so the default costs about the slowest one - Gateway.UnitTests.
 $defaultProjects = @(
-    # The PARALLEL half of the Core tests: 2858 tests in about nine seconds. The project they came from
-    # runs sequentially (DisableTestParallelization) and takes eleven minutes for the same kind of work -
-    # that attribute is deliberately NOT in this one, and must never be added to it.
+    # The PARALLEL half of the Core tests. The project they came from runs sequentially
+    # (DisableTestParallelization) and takes eleven minutes for the same kind of work - that attribute is
+    # deliberately NOT in this one, and must never be added to it.
+    #
+    # This comment claimed 2858 tests until 2026-08-03, when a run of the TRX files put it at 82. Nobody
+    # noticed, because a count in a comment is checked by nothing. Do not restore a number here without
+    # measuring it; the header carries the measured set and the date it was taken.
     "src\CcDirector.Core.UnitTests\CcDirector.Core.UnitTests.csproj",
     # BACK IN THE DEFAULT RUN. It was parked for exceeding the ceiling at about 2 minutes quiet and 3 to 5
     # busy; it now finishes in under a minute, because the cost turned out to be the migration set being
-    # rebuilt from scratch once per database-backed test. 2762 tests.
+    # rebuilt from scratch once per database-backed test. At about 56 seconds it is the slowest suite in
+    # the default run, and therefore the one that sets its wall clock. (Count: see the header.)
     "src\CcDirector.Gateway.UnitTests\CcDirector.Gateway.UnitTests.csproj",
     "src\CcDirector.Avalonia.Tests\CcDirector.Avalonia.Tests.csproj",
     "src\CcDirector.Engine.Tests\CcDirector.Engine.Tests.csproj",
     "src\CcDirector.HostedAgent.Tests\CcDirector.HostedAgent.Tests.csproj",
     "src\CcDirector.Launcher.Tests\CcDirector.Launcher.Tests.csproj",
     "src\CcDirector.Terminal.Avalonia.Tests\CcDirector.Terminal.Avalonia.Tests.csproj"
+)
+
+# THE INSTALLER, WHICH IS IN THE DEFAULT RUN AND IS NOT IN THE SOLUTION.
+#
+# These two are NOT parked and were never slow - about seven seconds of tests between them, counts in the
+# header. They were missing for a
+# plumbing reason: they are not in cc-director.sln, so the single solution build above never produced them
+# and the run list never named them. Nothing local ran them at all. The continuous integration job ran them
+# as a separate step, so while that job was waited on the gap was invisible; the moment local became the
+# gate, the installer - the first thing a new user ever sees - had no test behind it, and a release could
+# ship it untested. Found by review on 2026-08-03, measured before being added.
+#
+# They are built individually below because a solution build cannot reach them. That is the whole reason
+# they get their own list rather than a line in $defaultProjects.
+$installerProjects = @(
+    "tools\cc-director-setup.Tests\CcDirectorSetup.Tests.csproj",
+    "tools\cc-director-setup-engine.Tests\CcDirector.Setup.Engine.Tests.csproj"
 )
 
 # PARKED. Not deleted, not broken - excluded from the default because they cannot meet the budget.
@@ -110,9 +151,10 @@ $BudgetSeconds = 120
 
 $toRun = @()
 if ($Gateway) {
+    # -Gateway is the "only that one suite" switch, so it stays exactly that and pulls in nothing else.
     $toRun = @($gatewayProject)
 } else {
-    $toRun = $defaultProjects
+    $toRun = $defaultProjects + $installerProjects
     if ($Parked) { $toRun += $parkedProjects }
 }
 
@@ -122,6 +164,19 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host ""
     Write-Host "RESULT: BUILD FAILED - no tests were run."
     exit 1
+}
+
+# The installer projects are outside cc-director.sln, so the build above did not produce them and the run
+# loop's --no-build would fail against a stale or absent assembly. Build them here, before anything starts.
+# A failure is fatal for the same reason a solution build failure is: tests that never ran must not be
+# reported as tests that passed.
+foreach ($proj in ($toRun | Where-Object { $installerProjects -contains $_ })) {
+    & dotnet build (Join-Path $repoRoot $proj) -c $Configuration -v q --nologo
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ""
+        Write-Host "RESULT: BUILD FAILED for $proj - no tests were run."
+        exit 1
+    }
 }
 
 $logDir = Join-Path ([System.IO.Path]::GetTempPath()) ("cc-test-local-" + [Guid]::NewGuid().ToString("N").Substring(0,8))
