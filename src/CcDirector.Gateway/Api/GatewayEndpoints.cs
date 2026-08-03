@@ -3589,6 +3589,28 @@ internal static class GatewayEndpoints
                     statusCode: StatusCodes.Status403Forbidden);
             }
 
+            // A SESSION KEY MAY NOT NAME SOMEBODY ELSE AS THE SENDER.
+            //
+            // FanoutRequest carries a caller-supplied FromSessionId, and it is used for two things that
+            // both decide authority: which team scope the broadcast is judged against, and which bucket
+            // the rate limit counts into. Neither was compared with the authenticated caller, so a
+            // session key could name another same-tenant session to borrow its team scope, or vary the
+            // id to sidestep its own rate bucket. The newer /fleet/broadcast contract deliberately has no
+            // sender field for exactly this reason; this is the same rule applied to the older route
+            // rather than a second contract with a different answer.
+            //
+            // A device key (the desktop, the phone) is left alone: it acts for the account rather than as
+            // a session, so it has no session identity to be pinned to.
+            var callingSession = AuthMiddleware.CallingSession(ctx);
+            if (callingSession is not null)
+            {
+                var claimed = (req.FromSessionId ?? "").Trim();
+                var actual = callingSession.SessionId.ToString();
+                if (!string.IsNullOrEmpty(claimed) && !string.Equals(claimed, actual, StringComparison.OrdinalIgnoreCase))
+                    FileLog.Write($"[GatewayEndpoints] fanout sender OVERRIDDEN: key belongs to {actual}, request claimed {claimed}");
+                req.FromSessionId = actual;
+            }
+
             // Resolve all directors once up-front, capturing each target's broadcast scope (issue #1229).
             var directorBySession = new Dictionary<string, DirectorDto>();
             var targetScopes = new List<(string SessionId, BroadcastScope Scope)>();

@@ -252,4 +252,45 @@ public class FleetToolReachabilityTests : IDisposable
 
         Assert.False(check.IsDifferentInstall);
     }
+
+    // ---------- The repointed command line is not a broken one ----------
+    //
+    // Since phase 2 the tool reaches the fleet through the GATEWAY and deliberately ignores
+    // CC_DIRECTOR_API. This probe supplies only CC_DIRECTOR_API, so a perfectly healthy tool answers
+    // with the mission's accepted no-Gateway sentence and a non-zero exit. Reading that as
+    // CannotReachDirector painted the Tools fault banner and offered install and PATH repairs on a
+    // machine whose install was fine.
+    //
+    // The existing fourteen tests all pass by running stubs that return chosen exit codes; none of them
+    // ran a tool that produced this message, which is why the mismatch was invisible to the suite.
+
+    [Fact]
+    public async Task A_tool_that_says_there_is_no_gateway_is_not_reported_as_a_director_fault()
+    {
+        var stub = StubTool(1, "CC_GATEWAY_URL is not set, so there is no Gateway to call.");
+        var check = await WithResolved(stub).RunAsync("http://127.0.0.1:1234", null);
+
+        Assert.Equal(FleetToolVerdict.NoGateway, check.Verdict);
+        Assert.NotEqual(FleetToolVerdict.CannotReachDirector, check.Verdict);
+    }
+
+    [Fact]
+    public async Task A_tool_with_no_session_key_is_also_not_a_director_fault()
+    {
+        var stub = StubTool(1, "CC_GATEWAY_SESSION_KEY is not set, so this session has no credential.");
+        var check = await WithResolved(stub).RunAsync("http://127.0.0.1:1234", null);
+
+        Assert.Equal(FleetToolVerdict.NoGateway, check.Verdict);
+    }
+
+    [Fact]
+    public async Task A_genuinely_broken_tool_is_still_a_director_fault()
+    {
+        // The classification must not swallow the fault it was built to report. Anything that is NOT
+        // the no-Gateway answer still reads as unreachable.
+        var stub = StubTool(1, "connection refused");
+        var check = await WithResolved(stub).RunAsync("http://127.0.0.1:1234", null);
+
+        Assert.Equal(FleetToolVerdict.CannotReachDirector, check.Verdict);
+    }
 }

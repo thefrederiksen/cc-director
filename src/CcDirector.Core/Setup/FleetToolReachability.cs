@@ -21,6 +21,19 @@ public enum FleetToolVerdict
     /// sessions report "cannot connect to DevThrottle" while the Director is healthy and connected.
     /// </summary>
     CannotReachDirector,
+
+    /// <summary>
+    /// The tool is installed and ran correctly, and said there is no Gateway for it to reach.
+    ///
+    /// NOT A FAULT, and separating it from <see cref="CannotReachDirector"/> is the whole point. Since
+    /// the command line was repointed at the Gateway it no longer authenticates against a Director at
+    /// all, so this probe - which supplies only CC_DIRECTOR_API - gets the mission's accepted
+    /// no-Gateway sentence and a non-zero exit from a PERFECTLY HEALTHY tool. Read as a Director
+    /// failure, that painted the Tools fault banner and offered install and PATH repairs for a machine
+    /// with nothing wrong with its install. The banner keys on CannotReachDirector, so this verdict
+    /// stops the mis-paint without the panel having to learn a new case.
+    /// </summary>
+    NoGateway,
 }
 
 /// <summary>
@@ -181,6 +194,17 @@ public sealed class FleetToolReachability
         // Log the reason HERE, where it is known. A red badge whose cause is not in the log is a
         // second investigation for whoever finds it.
         var detail = FirstMeaningfulLine(output) ?? $"exit {exitCode}";
+
+        // The tool ran, and said there is no Gateway. That is a correct answer from a healthy tool, not
+        // a reachability fault, and asking the second question below would only repeat it.
+        if (SaysThereIsNoGateway(output))
+        {
+            FileLog.Write(
+                $"[FleetToolReachability] {ToolName} at {resolved} ran correctly and has no Gateway: {detail}");
+            return new FleetToolCheck(
+                FleetToolVerdict.NoGateway, resolved, expectedBinDir, detail);
+        }
+
         FileLog.Write(
             $"[FleetToolReachability] {ToolName} at {resolved} FAILED to reach {controlApiBaseUrl}: {detail}");
 
@@ -225,10 +249,30 @@ public sealed class FleetToolReachability
         }
 
         var detail = FirstMeaningfulLine(output) ?? $"exit {exitCode}";
+        if (SaysThereIsNoGateway(output))
+        {
+            FileLog.Write(
+                $"[FleetToolReachability] this Director's own {ToolName} at {own} ran correctly and has no Gateway: {detail}");
+            return (FleetToolVerdict.NoGateway, detail);
+        }
+
         FileLog.Write(
             $"[FleetToolReachability] this Director's own {ToolName} at {own} FAILED to reach it: {detail}");
         return (FleetToolVerdict.CannotReachDirector, detail);
     }
+
+
+    /// <summary>
+    /// Does this output say "there is no Gateway here" rather than "this tool is broken"?
+    ///
+    /// Matched on the two environment variables by NAME, which is what the repointed command line
+    /// actually prints (see cc_shared/gateway.py). Matching the names rather than the full sentence
+    /// means a reworded message still classifies correctly, and the names cannot appear in an
+    /// unrelated failure.
+    /// </summary>
+    private static bool SaysThereIsNoGateway(string output)
+        => output.Contains("CC_GATEWAY_URL", StringComparison.OrdinalIgnoreCase)
+            || output.Contains("CC_GATEWAY_SESSION_KEY", StringComparison.OrdinalIgnoreCase);
 
     private async Task<(int ExitCode, string Output)> RunProbeAsync(
         string toolPath, string controlApiBaseUrl, CancellationToken ct)
