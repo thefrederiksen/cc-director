@@ -256,9 +256,16 @@ matched on method and path together, with tests on both sides so the tightening 
 
 ## What is NOT proven
 
-**The full Gateway unit suite fails two tests per run, and they are different tests each run.**
-`GatewayStatsStoreMidChainContainmentTests` on one run; `GatewayStatsSqliteAdoptionTests` and
-`GatewayInputStatsAggregatorTests` on the next. All 89 pass when run alone. Every one is in the stats
+**The full Gateway unit suite fails a different stats test on every run - three runs, three
+different failures.**
+
+| Run | Failed |
+|---|---|
+| 1 | `GatewayStatsStoreMidChainContainmentTests.HealthyStores_AreNotReportedAsIncomplete` |
+| 2 | `GatewayStatsSqliteAdoptionTests.Adopt_StoreWhoseTableHasTheRightNamesAndNothingElse...` and `GatewayInputStatsAggregatorTests.WingmanUsage_CountsVoiceModeSessionsAndTheirTurns` |
+| 3 | `GatewayStatsSqliteAdoptionTests.Adopt_ViewWearingATableName_IsRefusedAndLeavesTheFileByteIdentical` |
+
+All 89 pass when run alone. Every one is in the stats
 area, and this phase touched no stats file - the complete list of changed files is session keys, the
 guard, the registry, the fanout handler, the tool probe, and the Python clients. I am calling this
 pre-existing contention rather than a regression, and I want to be explicit that I did NOT run the
