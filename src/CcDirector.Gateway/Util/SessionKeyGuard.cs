@@ -93,6 +93,12 @@ public static class SessionKeyGuard
             if (s.Length == 2 && s[0] == "sessions") return true;
             if (s.Length == 3 && s[0] == "sessions" && s[2] == "buffer") return true;
 
+            // A session's parsed conversation history - what `cc-history` reads. Exactly the same class of
+            // read as the buffer beside it: one session's own output, inside the caller's own account, and
+            // bounded by the same tenant binding. It is listed separately rather than folded in because an
+            // allow list that widens by pattern stops being an allow list.
+            if (s.Length == 3 && s[0] == "sessions" && s[2] == "history") return true;
+
             // One mission, one scheduled job, one workflow run.
             if (s.Length == 2 && s[0] == "missions") return true;
             if (s.Length == 3 && s[0] == "cron" && s[1] == "jobs") return true;
@@ -105,6 +111,10 @@ public static class SessionKeyGuard
             // The fleet's shared skills and workflows: the catalogue entry, its body/instructions, and its
             // version history. This is how an agent reads a capability the fleet holds centrally.
             if (IsCatalogueRead(s)) return true;
+
+            // The automation browsers on one Director's machine. See IsBrowserRoute for why one sub-path of
+            // the otherwise-forbidden /directors surface is open.
+            if (IsBrowserRoute(s)) return true;
 
             return false;
         }
@@ -120,6 +130,10 @@ public static class SessionKeyGuard
                 switch (s[2])
                 {
                     case "prompt":
+                    // An agent-to-agent message: a prompt the Gateway frames with the CALLING session's own
+                    // name, so the recipient knows who sent it. Allowed for the same reason "prompt" is, and
+                    // it is strictly the narrower of the two - the sender cannot be chosen by the caller.
+                    case "message":
                     case "interrupt":
                     case "escape":
                     case "hold":
@@ -132,8 +146,11 @@ public static class SessionKeyGuard
                 return false;
             }
 
-            // A message to the agent's own team (the fanout the fleet's "message send all" uses).
+            // A message to the agent's own team (the fanout the fleet's "message send all" uses), and the
+            // team-resolving front door onto it - which is what the command line actually calls, because
+            // working out who is on the team is the Gateway's ruling to make, not the caller's.
             if (Join(s) == "fanout") return true;
+            if (Join(s) == "fleet/broadcast") return true;
 
             // Create a mission - the unit of work sessions attach to.
             if (Join(s) == "missions") return true;
@@ -144,13 +161,46 @@ public static class SessionKeyGuard
             // Contribute to the fleet's shared skills and workflows: save a draft, publish it, clone one.
             if (IsCatalogueWrite(s)) return true;
 
+            // Create, start, stop, sign in to or rename an automation browser.
+            if (IsBrowserRoute(s)) return true;
+
             return false;
         }
 
         // Rename a session (PATCH /sessions/{sid}).
         if (verb == "PATCH" && s.Length == 2 && s[0] == "sessions") return true;
 
+        // Delete an automation browser.
+        if (verb == "DELETE" && IsBrowserRoute(s)) return true;
+
         return false;
+    }
+
+    /// <summary>
+    /// The automation-browser shapes under <c>/directors/{id}/browsers</c>.
+    ///
+    /// THIS IS THE ONE PLACE /directors IS OPEN TO A SESSION KEY, and the narrowness is deliberate. The rest
+    /// of that surface is the owner's - registration, settings, handovers, force-kill - and stays refused.
+    /// This sub-path is not Director administration at all: an automation browser is a tool an agent uses,
+    /// it was reachable by every agent on the machine before this mission (over the Director's loopback
+    /// port, with no credential narrower than the machine secret), and routing it through the Gateway
+    /// NARROWS it, because the key is bound to one session inside one account.
+    ///
+    /// Matched by structure so a new sibling under /directors cannot be reached by accident: the id segment
+    /// is never read here, only counted.
+    /// </summary>
+    private static bool IsBrowserRoute(string[] s)
+    {
+        if (s.Length < 3 || s[0] != "directors" || s[2] != "browsers") return false;
+
+        // /directors/{id}/browsers
+        if (s.Length == 3) return true;
+
+        // /directors/{id}/browsers/{browserId}
+        if (s.Length == 4) return true;
+
+        // /directors/{id}/browsers/{browserId}/{attach|start|stop|signin|rename}
+        return s.Length == 5 && s[4] is "attach" or "start" or "stop" or "signin" or "rename";
     }
 
     /// <summary>The read shapes of the shared skill/workflow catalogue.</summary>

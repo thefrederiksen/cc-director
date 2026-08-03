@@ -32,7 +32,7 @@ namespace CcDirector.ControlApi;
 /// </summary>
 internal static class ControlEndpoints
 {
-    public static void Map(IEndpointRouteBuilder app, SessionManager sessionManager, string directorId, string version, Func<Task> requestShutdownAsync, bool authEnabled = false, RepositoryRegistry? repositoryRegistry = null, TurnSummaryCache? turnSummaryCache = null, string? gatewayUrl = null, ProactiveExplainService? proactiveExplain = null, GatewayConnectionMonitor? gatewayMonitor = null, Func<TailnetEndpointResolution>? resolveTailnetEndpoint = null, Func<GatewayClient?>? gatewayClientProvider = null, MessageSteward? messageSteward = null, MissionStore? missionStore = null, Func<CancellationToken, Task<SignedInUser?>>? signedInUserResolver = null, Core.Git.RepositoryMonitor? repositoryMonitor = null)
+    public static void Map(IEndpointRouteBuilder app, SessionManager sessionManager, string directorId, string version, Func<Task> requestShutdownAsync, bool authEnabled = false, RepositoryRegistry? repositoryRegistry = null, TurnSummaryCache? turnSummaryCache = null, string? gatewayUrl = null, ProactiveExplainService? proactiveExplain = null, GatewayConnectionMonitor? gatewayMonitor = null, Func<TailnetEndpointResolution>? resolveTailnetEndpoint = null, Func<GatewayClient?>? gatewayClientProvider = null, MessageSteward? messageSteward = null, MissionStore? missionStore = null, Func<CancellationToken, Task<SignedInUser?>>? signedInUserResolver = null, Core.Git.RepositoryMonitor? repositoryMonitor = null, bool mapAgentRoutes = true)
     {
         // ===== Healthz =====
         // The one route reachable without a credential, so its unauthenticated answer says ONLY that
@@ -482,6 +482,31 @@ internal static class ControlEndpoints
             }
 
             return (answer, outcome);
+        }
+
+        // ===== THE AGENT SURFACE, AND THE SWITCH THAT TURNS IT OFF =====
+        //
+        // Remove-the-network-port mission, phase 2. Everything below this line is the /fleet/* surface the
+        // cc-* command line used to call on this machine's own Director over its loopback port. The command
+        // line now calls the GATEWAY instead, and these routes exist only so command lines installed BEFORE
+        // this phase keep working while the change is in flight. Phase 5 deletes them outright, along with
+        // the listener they are served on.
+        //
+        // The switch is what makes the phase PROVABLE rather than merely believed. With the agent surface
+        // off, a cc-* command that still reaches for this Director fails loudly instead of quietly working -
+        // so "every command goes through the Gateway now" is something that can be demonstrated in one run,
+        // not something inferred from having edited the callers. A claim that cannot fail is not a proof.
+        //
+        // It is NOT a fallback and must never become one: the command line does not choose between two
+        // doors, and nothing below is consulted when the Gateway is unreachable. This only decides whether
+        // the OLD door is still standing for the OLD callers.
+        //
+        // The routes above - health, the update check, shutdown, the session hooks - are NOT agent routes
+        // and are unaffected. They belong to phases 3 and 4 and have their own reasons to survive.
+        if (!mapAgentRoutes)
+        {
+            FileLog.Write("[ControlEndpoints] the agent surface (/fleet/*) is SWITCHED OFF; the command line reaches the fleet through the Gateway");
+            return;
         }
 
         // GET /fleet/sessions - the fleet directory, and the roster EVERY cc-devthrottle verb resolves a

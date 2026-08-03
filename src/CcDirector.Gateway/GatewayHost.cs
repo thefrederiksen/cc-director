@@ -2626,6 +2626,11 @@ public sealed class GatewayHost : IAsyncDisposable
             // same translator (and verdict cache) the narration path uses, so an unchanged screen is
             // answered from the cached per-turn verdict without a second model call.
             wingmanTranslator: _voiceService?.Translator,
+            // Remove-the-network-port mission, phase 2: the fleet-message steward for POST
+            // /sessions/{sid}/message. Its own instance, on its own options, because it keeps per-sender
+            // counters and windows: sharing one with a Director in the same process would let two paths spend
+            // each other's budget, and on hosted there is no Director in the process to share with anyway.
+            messageSteward: new Core.Fleet.MessageSteward(new Core.Configuration.MessageStewardOptions()),
             requestShutdown: () =>
             {
                 var handler = OnShutdownRequested;

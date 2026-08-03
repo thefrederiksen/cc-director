@@ -181,7 +181,13 @@ internal static class GatewayEndpoints
         // refuses a prompt - the pure classifier only trips the question, it never convicts on its own.
         // Null (older callers, tests without a brain) makes a tripwire-positive screen refuse outright:
         // fail closed, because the guard exists to keep an Enter out of a real picker.
-        Wingman.WingmanTranslator? wingmanTranslator = null)
+        Wingman.WingmanTranslator? wingmanTranslator = null,
+        // Remove-the-network-port mission, phase 2: the fleet-message steward (dedupe plus a per-sender rate
+        // limit on outgoing messages), consulted by POST /sessions/{sid}/message. It used to sit on the
+        // Director, because the command line reached the fleet through its own Director's loopback port; with
+        // that port going away the check has to move to the end still in the path. Null (older callers,
+        // tests, a Gateway with the steward switched off) ALLOWS every message, byte-identical to today.
+        Core.Fleet.MessageSteward? messageSteward = null)
     {
         // The old issue #1188 "session lock" (423 Locked on human input while a PENDING dictation record
         // existed) was removed deliberately (issue #1308). This is a single-operator tool: a collision
@@ -1439,12 +1445,26 @@ internal static class GatewayEndpoints
                 // machine is called unreachable only when every Director on it is, and a single dead slot on a
                 // healthy machine is reported as the slot it is. Null when there is nothing wrong. A client
                 // prints it verbatim; there is nothing left for it to decide.
+                // Remove-the-network-port mission, phase 2: the COMPLETENESS verdict is folded here too.
+                // It used to be folded by the Director, on the way past, because the command line reached
+                // the fleet through its own Director; the tools now call this endpoint directly, and a
+                // verdict computed by a middleman that no longer sits in the path has to move to the end
+                // that still does. It is the same RosterCompleteness fold on the same reachability list, so
+                // no wording changes and the two cannot say different things.
+                //
+                // Purely ADDITIVE - `sessions`, `machineErrors`, `directors` and `unreachableBanner` are
+                // untouched, so every existing reader of this envelope (the Cockpit, the phone, and the
+                // Director's own relay) is unaffected.
+                var (rosterComplete, rosterIncompleteReason) = RosterCompleteness.Fold(reachability);
                 return Results.Json(new
                 {
                     sessions = all,
                     machineErrors,
                     directors = reachability,
                     unreachableBanner = FleetReachabilityFold.UnreachableBanner(reachability),
+                    rosterComplete,
+                    rosterIncompleteReason,
+                    rosterStaleAnswerCaution = RosterCompleteness.StaleAnswerCaution(reachability),
                 });
             }
             return Results.Json(all);
@@ -2280,6 +2300,253 @@ internal static class GatewayEndpoints
                 : TunnelFailure(streamResult);
         });
 
+        // Deliver a prompt down the tunnel and, when asked, wait for the session to go idle and return what
+        // it printed. Extracted from POST /sessions/{sid}/prompt by the Remove-the-network-port mission's
+        // phase 2 so the new POST /sessions/{sid}/message shares ONE delivery path with it: a message is a
+        // framed prompt, and two copies of "send it and wait" would be two behaviours to keep equal. The
+        // caller has already located the session and decided what the text is.
+        async Task<IResult> DeliverPromptAsync(DirectorDto director, SessionDto session, string sid, PromptRequest req)
+        {
+            // Post-cut: tunnel-only. A null result means the Director is not connected -> 502. The WaitForIdle
+            // poll below is unchanged - it observes the session regardless of how the prompt was delivered.
+            bool ok; PromptResponse? body; string? err;
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "prompt", sid, req, CancellationToken.None, machineName: director.MachineName);
+            if (streamResult is null)
+            {
+                ok = false;
+                body = null;
+                err = "director not connected to the tunnel";
+            }
+            else
+            {
+                ok = streamResult.Ok;
+                body = streamResult.Ok ? DirectorCommandRouter.ReadBody<PromptResponse>(streamResult) : null;
+                err = streamResult.Ok ? null : DirectorCommandRouter.DescribeFailure(streamResult);
+            }
+            if (!ok || body is null)
+                return Results.Json(new PromptResponse
+                {
+                    Accepted = false,
+                    Error = err,
+                    ActivityState = session.ActivityState,
+                }, statusCode: StatusCodes.Status502BadGateway);
+
+            if (!req.WaitForIdle)
+                return Results.Json(body);
+
+            var deadline = DateTime.UtcNow.AddMilliseconds(req.TimeoutMs);
+            string finalState = body.ActivityState;
+            while (DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(750);
+                // The idle poll rides the tunnel too (snapshot verb). Tunnel-only: there is no HTTP arm.
+                var cur = await SnapshotTunnelFirstAsync(sendCommand, director, sid, CancellationToken.None);
+                if (cur is null) { finalState = "Exited"; break; }
+                finalState = cur.ActivityState;
+                if (finalState is "Idle" or "WaitingForInput" or "Exited" or "Failed") break;
+            }
+
+            // Fetch new output since prompt was sent. Gateway Cleanup Phase 2: buffer verb, tunnel-first.
+            string output = "";
+            var buf = await BufferTunnelFirstAsync(sendCommand, director, sid, 500, body.BufferCursor, CancellationToken.None);
+            if (buf is not null) output = buf.Text;
+
+            body.WaitStatus = finalState switch
+            {
+                "Idle" or "WaitingForInput" => "idle",
+                "Exited" or "Failed" => "failed",
+                _ => "timeout",
+            };
+            body.Output = output;
+            body.ActivityState = finalState;
+            return Results.Json(body);
+        }
+
+        // Resolve the SENDER of an agent-to-agent message: the session whose key authenticated this request,
+        // and its roster row, from which the display name and machine in the frame are read.
+        //
+        // THE SENDER IS NEVER TAKEN FROM THE REQUEST BODY. The Director's /fleet/send read a fromSessionId
+        // out of the body and looked the name up locally, which was safe only because the body arrived over
+        // loopback from a process on the same machine. This route is reachable by anything holding a session
+        // key, so a body-supplied sender would let any agent send a message wearing another agent's name.
+        // The authenticated identity cannot be chosen by the caller, so it is the only honest source.
+        async Task<(Pairing.SessionCredentialIdentity? Identity, SessionDto? Row, DirectorDto? Owner)> ResolveSenderAsync(HttpContext ctx)
+        {
+            var identity = AuthMiddleware.CallingSession(ctx);
+            if (identity is null) return (null, null, null);
+            var (owner, row) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry,
+                identity.SessionId.ToString(), pushedSessions, streamStaleResolved, owners);
+            return (identity, row, owner);
+        }
+
+        // The frame the recipient sees, built from the sender's OWN roster row. A sender the roster cannot
+        // produce is framed by its id alone rather than refused: the message is still worth delivering and
+        // "which session" is the part that matters most.
+        string FrameFromSender(Pairing.SessionCredentialIdentity identity, SessionDto? row, DirectorDto? owner, string text, bool includeReplyHint)
+        {
+            var name = row is null ? null : (string.IsNullOrWhiteSpace(row.Name) ? null : row.Name);
+            var machine = row is not null && !string.IsNullOrWhiteSpace(row.MachineName)
+                ? row.MachineName
+                : (owner?.MachineName ?? "");
+            return FleetMessaging.BuildFramedMessage(identity.SessionId.ToString(), name, machine, text, includeReplyHint);
+        }
+
+        // Every live session in one account, paired with the Director that owns it. This is the candidate set
+        // POST /fleet/broadcast filters down to the sender's team, and it is deliberately built from the same
+        // two sources the roster endpoint uses - the tenant's own Director partition and the pushed snapshot
+        // cache - so "my team" is computed over exactly the fleet the caller can see listed.
+        //
+        // Exited rows are dropped: they are kept on the roster so a person can see that work stopped, but
+        // sending a message to a session that has ended is not a delivery, it is a failure row nobody asked
+        // for. A Director whose tunnel is down contributes its last-known rows, and the delivery attempt to
+        // one of those is what reports the machine as unreachable - which is the honest answer.
+        IEnumerable<(DirectorDto Director, SessionDto Session)> EnumerateTenantSessions(TenantId tenant)
+        {
+            if (pushedSessions is null) yield break;
+            foreach (var d in registry.ListDirectors(tenant))
+            {
+                var known = pushedSessions.GetLastKnown(tenant, d.DirectorId);
+                foreach (var s in known.Sessions)
+                {
+                    if (string.IsNullOrEmpty(s.SessionId)) continue;
+                    if (string.Equals(s.ActivityState, "Exited", StringComparison.OrdinalIgnoreCase)) continue;
+                    yield return (d, s);
+                }
+            }
+        }
+
+        // POST /sessions/{sid}/message - one agent sends one message to one session, ANYWHERE in the account
+        // (Remove-the-network-port mission, phase 2).
+        //
+        // WHY THIS IS NOT JUST /prompt. A prompt is raw text typed into a session, exactly what a person at
+        // the keyboard would type. A MESSAGE is from somebody: it carries a sender header and, for a one-way
+        // message, the command to reply with, and it passes the fleet-message steward. Until now the Director
+        // added all of that on the way past, because the command line reached the fleet through its own
+        // Director's loopback port. That port is being removed, so the framing and the steward move to the end
+        // that is still in the path. Doing it in the client instead was never an option - a sender name, a
+        // machine and a steward verdict are RULINGS, and this repository's standing rule is that the Gateway
+        // owns every ruling and the client only renders.
+        //
+        // `waitForIdle` is what makes this route serve `message ask` as well as `message send`: ask is the
+        // same framed delivery, minus the reply hint (the asker is already waiting and reads the answer from
+        // the target's own output, so telling the recipient to send a SEPARATE reply makes it answer into a
+        // channel nobody is listening on), plus a wait for the session to finish.
+        app.MapPost("/sessions/{sid}/message", async (HttpContext ctx, string sid, FleetMessageRequest req) =>
+        {
+            if (req is null || string.IsNullOrWhiteSpace(req.Text))
+                return Results.BadRequest(new { error = "text is required" });
+
+            var (identity, senderRow, senderOwner) = await ResolveSenderAsync(ctx);
+            if (identity is null)
+                return Results.Json(new { error = "this route identifies the sender from the session key that authenticated the request; the caller presented no session key" },
+                    statusCode: StatusCodes.Status403Forbidden);
+
+            var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
+            if (session is null || director is null)
+                return SessionUnavailable(ctx, tenantBoundary, pushedSessions, sid);
+
+            // The fleet-message steward: dedupe plus a per-sender rate limit on OUTGOING messages. Never
+            // silent - a drop is logged AND returned to the sender. Not wired => allow, byte-identical.
+            var from = identity.SessionId.ToString();
+            if (messageSteward is not null)
+            {
+                var decision = messageSteward.CheckMessage(from, sid, req.Text);
+                if (!decision.Allowed)
+                {
+                    FileLog.Write($"[GatewayEndpoints] POST message steward {decision.Outcome}: from={FleetMessaging.ShortId(from)} to={FleetMessaging.ShortId(sid)} - {decision.Reason}");
+                    return Results.Json(new PromptResponse { Accepted = false, Error = decision.Reason },
+                        statusCode: decision.Outcome == Core.Fleet.StewardOutcome.DuplicateSuppressed
+                            ? StatusCodes.Status200OK
+                            : StatusCodes.Status429TooManyRequests);
+                }
+            }
+
+            var framed = FrameFromSender(identity, senderRow, senderOwner, req.Text, includeReplyHint: !req.WaitForIdle);
+            FileLog.Write($"[GatewayEndpoints] POST message: from={FleetMessaging.ShortId(from)} to={FleetMessaging.ShortId(sid)}, director={director.DirectorId}, waitForIdle={req.WaitForIdle}");
+
+            return await DeliverPromptAsync(director, session, sid, new PromptRequest
+            {
+                Text = framed,
+                AppendEnter = true,
+                WaitForIdle = req.WaitForIdle,
+                TimeoutMs = req.TimeoutMs,
+            });
+        });
+
+        // POST /fleet/broadcast - "message send all": one message to the SENDER'S OWN TEAM, or (with
+        // everyone + a reason + a human grant) the whole account (Remove-the-network-port mission, phase 2).
+        //
+        // WHY THIS EXISTS BESIDE /fanout. /fanout takes an explicit list of session ids and rules on whether
+        // the sender may reach them. Somebody still has to WORK OUT the list, and that is the sender's team -
+        // which is a ruling made from the roster, off the same BroadcastScope this Gateway already enforces.
+        // The Director used to compute it and hand /fanout the finished list; with the Director out of the
+        // path the computation belongs here, next to the rule it has to agree with. Putting it in the command
+        // line would put the definition of "my team" in Python, one process removed from the Gateway that
+        // decides whether the answer was allowed - two definitions of one thing, drifting by default.
+        //
+        // It then delegates to the SAME fanout path, so the scope decision, the grant check, the rate limit
+        // and the delivery are all evaluated exactly once, in one place.
+        app.MapPost("/fleet/broadcast", async (HttpContext ctx, FleetTeamBroadcastRequest req) =>
+        {
+            if (req is null || string.IsNullOrWhiteSpace(req.Text))
+                return Results.BadRequest(new { error = "text is required" });
+
+            var (identity, senderRow, senderOwner) = await ResolveSenderAsync(ctx);
+            if (identity is null)
+                return Results.Json(new { error = "this route identifies the sender from the session key that authenticated the request; the caller presented no session key" },
+                    statusCode: StatusCodes.Status403Forbidden);
+
+            var reqTenant = ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" },
+                    statusCode: StatusCodes.Status403Forbidden);
+
+            if (senderRow is null)
+                return Results.Json(new FanoutResponse
+                {
+                    Denied = true,
+                    DeniedReason = "The broadcasting session is not on the fleet roster, so its team cannot be resolved.",
+                    StartedAt = DateTime.UtcNow,
+                    FinishedAt = DateTime.UtcNow,
+                }, statusCode: StatusCodes.Status404NotFound);
+
+            // The candidate set is this ACCOUNT's roster, read from the Gateway's own tenant-scoped view.
+            var from = identity.SessionId.ToString();
+            // The owner is non-null whenever the row is (they come from one lookup), but the scope is built
+            // from a real DirectorDto either way: the machine name falls back to the Director's when the
+            // session record does not carry one, and a missing machine would silently widen "same machine".
+            var senderScope = BuildBroadcastScope(senderOwner ?? new DirectorDto { DirectorId = identity.DirectorId }, senderRow);
+            var targetIds = new List<string>();
+            foreach (var (d, s) in EnumerateTenantSessions(reqTenant.Value))
+            {
+                if (string.Equals(s.SessionId, from, StringComparison.OrdinalIgnoreCase)) continue;
+                if (req.Everyone || senderScope.Includes(BuildBroadcastScope(d, s)))
+                    targetIds.Add(s.SessionId);
+            }
+
+            if (targetIds.Count == 0)
+                return Results.Json(new FanoutResponse
+                {
+                    Results = new List<FanoutResult>(),
+                    StartedAt = DateTime.UtcNow,
+                    FinishedAt = DateTime.UtcNow,
+                    Warning = req.Everyone ? "No other sessions in the fleet." : "No other sessions on your team.",
+                });
+
+            FileLog.Write($"[GatewayEndpoints] POST fleet/broadcast: from={FleetMessaging.ShortId(from)}, everyone={req.Everyone}, targets={targetIds.Count}");
+
+            // A plain team broadcast passes no reason and no grant - every target is in scope by construction.
+            // `everyone` carries the reason and the human grant the policy requires to reach past the team.
+            return await RunFanoutAsync(ctx, new FanoutRequest
+            {
+                SessionIds = targetIds,
+                Text = FrameFromSender(identity, senderRow, senderOwner, req.Text, includeReplyHint: true),
+                FromSessionId = from,
+                Reason = req.Everyone ? req.Reason : null,
+                GrantId = req.Everyone ? req.GrantId : null,
+            });
+        });
+
         app.MapPost("/sessions/{sid}/prompt", async (string sid, PromptRequest req, HttpContext httpCtx) =>
         {
             if (req is null || string.IsNullOrEmpty(req.Text))
@@ -2349,61 +2616,7 @@ internal static class GatewayEndpoints
                 }
             }
 
-            // Post-cut: tunnel-only. A null result means the Director is not connected -> 502. The WaitForIdle
-            // poll below is unchanged - it observes the session regardless of how the prompt was delivered.
-            bool ok; PromptResponse? body; string? err;
-            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "prompt", sid, req, CancellationToken.None, machineName: director.MachineName);
-            if (streamResult is null)
-            {
-                ok = false;
-                body = null;
-                err = "director not connected to the tunnel";
-            }
-            else
-            {
-                ok = streamResult.Ok;
-                body = streamResult.Ok ? DirectorCommandRouter.ReadBody<PromptResponse>(streamResult) : null;
-                err = streamResult.Ok ? null : DirectorCommandRouter.DescribeFailure(streamResult);
-            }
-            if (!ok || body is null)
-                return Results.Json(new PromptResponse
-                {
-                    Accepted = false,
-                    Error = err,
-                    ActivityState = session.ActivityState,
-                }, statusCode: StatusCodes.Status502BadGateway);
-
-            if (!req.WaitForIdle)
-                return Results.Json(body);
-
-            var sw = Stopwatch.StartNew();
-            var deadline = DateTime.UtcNow.AddMilliseconds(req.TimeoutMs);
-            string finalState = body.ActivityState;
-            while (DateTime.UtcNow < deadline)
-            {
-                await Task.Delay(750);
-                // The idle poll rides the tunnel too (snapshot verb). Tunnel-only: there is no HTTP arm.
-                var cur = await SnapshotTunnelFirstAsync(sendCommand, director, sid, CancellationToken.None);
-                if (cur is null) { finalState = "Exited"; break; }
-                finalState = cur.ActivityState;
-                if (finalState is "Idle" or "WaitingForInput" or "Exited" or "Failed") break;
-            }
-            sw.Stop();
-
-            // Fetch new output since prompt was sent. Gateway Cleanup Phase 2: buffer verb, tunnel-first.
-            string output = "";
-            var buf = await BufferTunnelFirstAsync(sendCommand, director, sid, 500, body.BufferCursor, CancellationToken.None);
-            if (buf is not null) output = buf.Text;
-
-            body.WaitStatus = finalState switch
-            {
-                "Idle" or "WaitingForInput" => "idle",
-                "Exited" or "Failed" => "failed",
-                _ => "timeout",
-            };
-            body.Output = output;
-            body.ActivityState = finalState;
-            return Results.Json(body);
+            return await DeliverPromptAsync(director, session, sid, req);
         });
 
         app.MapPost("/sessions/{sid}/interrupt", async (HttpContext ctx, string sid) =>
@@ -2587,6 +2800,81 @@ internal static class GatewayEndpoints
 
             return TunnelFailure(null, d.MachineName);
         });
+
+        // --- The automation browsers on one machine (Remove-the-network-port mission, phase 2) ------------
+        //
+        // DevThrottle's automation browsers are the drivable, signed-in-once Chromium instances an agent
+        // attaches to with browser-harness. They were reachable ONLY on the Director's own loopback port,
+        // because the only caller was the command line on the same machine. That port is being removed, so
+        // these eight legs give the browser verbs the tunnel path every other agent verb already had.
+        //
+        // THE GATEWAY DOES NOT DRIVE A BROWSER. A browser's debug port is loopback and its profile directory
+        // is on one machine's disk, so the Director on that machine is still the only thing that can start,
+        // stop or attach to it - these routes carry a command to it and carry the answer back. That is why
+        // they are addressed to a DIRECTOR and not to a machine name in a payload: "the browsers on my
+        // machine" is answered by the Director that owns the machine, and an agent's session key names its
+        // own Director, so it cannot ask about somebody else's.
+        //
+        // The verb's body is the Director's own folded view, forwarded VERBATIM - the Gateway must not become
+        // a second definition of what a browser looks like.
+        {
+            // Fold the {browserId} path segment into the body, so one payload carries both the id from the
+            // path and any fields from the request. Exactly what the queue verbs do with theirs.
+            // The payload is handed over as a JsonObject rather than a pre-serialized string: the router
+            // serializes whatever it is given, so a string would arrive at the Director double-encoded - a
+            // payload that parses into a quoted blob and reads as an empty request.
+            static async Task<JsonObject> BrowserPayloadAsync(HttpContext ctx, string? browserId)
+            {
+                JsonObject obj;
+                try
+                {
+                    using var reader = new StreamReader(ctx.Request.Body);
+                    var raw = await reader.ReadToEndAsync(ctx.RequestAborted);
+                    obj = string.IsNullOrWhiteSpace(raw) ? new JsonObject() : (JsonNode.Parse(raw)?.AsObject() ?? new JsonObject());
+                }
+                catch (Exception ex) when (ex is JsonException or IOException)
+                {
+                    obj = new JsonObject();
+                }
+                if (browserId is not null) obj["id"] = browserId;
+                return obj;
+            }
+
+            async Task<IResult> BrowserVerbAsync(HttpContext ctx, string directorId, string verb, string? browserId, CancellationToken ct)
+            {
+                if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, directorId, out var d, out var err)) return err;
+
+                var payload = await BrowserPayloadAsync(ctx, browserId);
+                var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, directorId, verb, "",
+                    payload, ct, machineName: d.MachineName);
+                if (sr is null || !sr.Ok) return DirectorAnswerFailure(sr, d.MachineName);
+                return Results.Content(sr.BodyJson ?? "{}", "application/json");
+            }
+
+            app.MapGet("/directors/{id}/browsers", (HttpContext ctx, string id, CancellationToken ct) =>
+                BrowserVerbAsync(ctx, id, "browsers-list", null, ct));
+
+            app.MapPost("/directors/{id}/browsers", (HttpContext ctx, string id, CancellationToken ct) =>
+                BrowserVerbAsync(ctx, id, "browsers-create", null, ct));
+
+            app.MapGet("/directors/{id}/browsers/{browserId}/attach", (HttpContext ctx, string id, string browserId, CancellationToken ct) =>
+                BrowserVerbAsync(ctx, id, "browsers-attach", browserId, ct));
+
+            app.MapPost("/directors/{id}/browsers/{browserId}/start", (HttpContext ctx, string id, string browserId, CancellationToken ct) =>
+                BrowserVerbAsync(ctx, id, "browsers-start", browserId, ct));
+
+            app.MapPost("/directors/{id}/browsers/{browserId}/stop", (HttpContext ctx, string id, string browserId, CancellationToken ct) =>
+                BrowserVerbAsync(ctx, id, "browsers-stop", browserId, ct));
+
+            app.MapPost("/directors/{id}/browsers/{browserId}/signin", (HttpContext ctx, string id, string browserId, CancellationToken ct) =>
+                BrowserVerbAsync(ctx, id, "browsers-signin", browserId, ct));
+
+            app.MapPost("/directors/{id}/browsers/{browserId}/rename", (HttpContext ctx, string id, string browserId, CancellationToken ct) =>
+                BrowserVerbAsync(ctx, id, "browsers-rename", browserId, ct));
+
+            app.MapDelete("/directors/{id}/browsers/{browserId}", (HttpContext ctx, string id, string browserId, CancellationToken ct) =>
+                BrowserVerbAsync(ctx, id, "browsers-delete", browserId, ct));
+        }
 
         // Gateway Cleanup CUT RESTORATION: the Cockpit's Director Settings editor
         // (apps/cockpit/src/fleet/DirectorDetailView.tsx -> client-core getDirectorSettings/putDirectorSettings).
@@ -3268,7 +3556,13 @@ internal static class GatewayEndpoints
             return Results.Json(new { grantId, expiresInSeconds = (int)TimeSpan.FromMinutes(10).TotalSeconds });
         });
 
-        app.MapPost("/fanout", async (HttpContext ctx, FanoutRequest req) =>
+        app.MapPost("/fanout", (HttpContext ctx, FanoutRequest req) => RunFanoutAsync(ctx, req));
+
+        // The fan-out itself: locate every target, rule on whether the sender may reach them, rate-limit,
+        // deliver in parallel. Extracted from the route lambda by the Remove-the-network-port mission's phase
+        // 2 so POST /fleet/broadcast - which computes the sender's team and then wants exactly this - runs the
+        // SAME scope decision, grant check, rate limit and delivery rather than a second copy of them.
+        async Task<IResult> RunFanoutAsync(HttpContext ctx, FanoutRequest req)
         {
             if (req is null || req.SessionIds is null || req.SessionIds.Count == 0)
                 return Results.BadRequest(new { error = "sessionIds is required" });
@@ -3450,7 +3744,7 @@ internal static class GatewayEndpoints
                 StartedAt = startedAt,
                 FinishedAt = DateTime.UtcNow,
             });
-        });
+        }
 
         app.MapGet("/events", async (HttpContext ctx) =>
         {

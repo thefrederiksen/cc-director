@@ -1,11 +1,18 @@
-namespace CcDirector.ControlApi;
+namespace CcDirector.Gateway.Contracts;
 
 /// <summary>
 /// Pure helpers for fleet session-to-session messaging (issue #705). Kept free of I/O so the
-/// framing format is unit-testable in isolation. The Director stamps the sender header from a
-/// session's own record; the calling agent never supplies its own display identity.
+/// framing format is unit-testable in isolation. The SERVER stamps the sender header from the
+/// sender's own session record; the calling agent never supplies its own display identity.
+///
+/// It lives HERE, in the shared contracts, since the Remove-the-network-port mission's phase 2. It
+/// used to be internal to the Director's Control API, because the command line reached the fleet
+/// through its own Director and the Director framed every message on the way past. The tools now
+/// call the Gateway directly, so the Gateway has to frame - and a second copy of this format on the
+/// Gateway side would be two definitions of what a fleet message LOOKS LIKE, drifting apart by
+/// default. One definition, two callers, no drift.
 /// </summary>
-internal static class FleetMessaging
+public static class FleetMessaging
 {
     /// <summary>
     /// The short, human-friendly handle for a session: the first 8 characters of its GUID,
@@ -19,11 +26,11 @@ internal static class FleetMessaging
 
     /// <summary>
     /// Wrap a message with a sender header so the recipient knows who sent it and how to reply.
-    /// The sender name and machine are resolved by the Director (not the caller); a sender whose
+    /// The sender name and machine are resolved by the server (not the caller); a sender whose
     /// id or name is unknown is framed generically and without a reply line.
     /// </summary>
     /// <param name="fromSessionId">The sender's GUID, or null/empty when unknown.</param>
-    /// <param name="fromName">The sender's display name resolved by the Director, or null when unknown.</param>
+    /// <param name="fromName">The sender's display name resolved by the server, or null when unknown.</param>
     /// <param name="fromMachine">The sender's machine name.</param>
     /// <param name="text">The message body.</param>
     /// <param name="includeReplyHint">True for a one-way message: tell the recipient how to

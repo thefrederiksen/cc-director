@@ -668,12 +668,32 @@ public sealed class ControlApiHost : IAsyncDisposable
         // change is picked up without a restart. Standalone/no-Gateway resolves to null (line omitted).
         var signedInUserProvider = new Core.Account.SignedInUserProvider(Core.Configuration.GatewayConfig.Load);
 
-        ControlEndpoints.Map(_app, _sessionManager, DirectorId, _version, _requestShutdownAsync, _authEnabled, _repositoryRegistry, _turnSummaryCache, gatewayUrl, _proactiveExplain, GatewayMonitor, resolveTailnetEndpoint, () => _gatewayClient, messageSteward, _missionStore, ct => signedInUserProvider.ResolveAsync(ct), _repositoryMonitor);
+        // Remove-the-network-port mission, phase 2: whether this Director still serves the AGENT surface -
+        // the /fleet/* routes and the automation-browser routes the cc-* command line used to call over
+        // loopback. The command line now calls the Gateway; these routes remain only for command lines
+        // installed before the change, and phase 5 deletes them with the listener.
+        //
+        // OFF is the state the phase has to be able to produce on demand, because that is the only way to
+        // show that nothing still needs them. Set CC_DIRECTOR_AGENT_ROUTES=off to run without them.
+        //
+        // DEFAULT ON, and read once here rather than per request: the fleet must never be left without
+        // tooling by accident, and a switch that could flip mid-life would make "which door answered" a
+        // question about timing. It is an environment variable and not a setting on purpose - it is
+        // temporary scaffolding for one phase, and putting it in config.json would outlive the phase and
+        // read as a supported way to run.
+        var agentRoutesSetting = (Environment.GetEnvironmentVariable("CC_DIRECTOR_AGENT_ROUTES") ?? "").Trim();
+        var mapAgentRoutes = !string.Equals(agentRoutesSetting, "off", StringComparison.OrdinalIgnoreCase);
+        FileLog.Write($"[ControlApiHost] agent surface (/fleet/* and /browsers/*): {(mapAgentRoutes ? "ON" : "OFF")}"
+            + (agentRoutesSetting.Length > 0 ? $" (CC_DIRECTOR_AGENT_ROUTES={agentRoutesSetting})" : ""));
+
+        ControlEndpoints.Map(_app, _sessionManager, DirectorId, _version, _requestShutdownAsync, _authEnabled, _repositoryRegistry, _turnSummaryCache, gatewayUrl, _proactiveExplain, GatewayMonitor, resolveTailnetEndpoint, () => _gatewayClient, messageSteward, _missionStore, ct => signedInUserProvider.ResolveAsync(ct), _repositoryMonitor, mapAgentRoutes);
 
         // DevThrottle's automation browsers (the drivable, signed-in-once Chromium instances). Loopback,
-        // machine-local surface backed by AutomationBrowserService; the CLI 'browser' verbs and the
-        // desktop rail both read these.
-        BrowserEndpoints.Map(_app);
+        // machine-local surface backed by AutomationBrowserService; the desktop rail reads the same fold
+        // in-process, so switching these off costs the rail nothing. The command line reaches them through
+        // the Gateway's /directors/{id}/browsers legs, which carry the verb down the tunnel to here.
+        if (mapAgentRoutes)
+            BrowserEndpoints.Map(_app);
 
         // Gateway Cleanup mission: the Director floor's tunnel-bounce. An operator/launcher can force
         // this Director to re-establish its OUTBOUND tunnel without a full restart. Loopback floor route.
