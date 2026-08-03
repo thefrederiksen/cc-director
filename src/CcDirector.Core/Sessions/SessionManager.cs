@@ -107,6 +107,17 @@ public sealed class SessionManager : IDisposable
     public Func<Guid, string?>? GatewaySessionCredentialSource { get; set; }
 
     /// <summary>
+    /// End a Gateway session key that was minted for a session which then FAILED to launch.
+    ///
+    /// The key is minted while the environment is being built, which is before the process starts. If
+    /// anything after that throws, the session is disposed and never enters the roster - so the reaper
+    /// that normally revokes on removal never runs for it, and the key stayed registered on the Gateway,
+    /// refreshed on every reseed, belonging to a session that never existed. Same class of leak as the
+    /// worktree reservation released in the same catch, and found by the same inspection.
+    /// </summary>
+    public Action<Guid>? GatewaySessionCredentialRevoker { get; set; }
+
+    /// <summary>
     /// Remove-the-network-port mission, phase 1b: the Gateway's base URL, injected into every spawned session
     /// as CC_GATEWAY_URL so an agent's command line knows where to present the key from
     /// <see cref="GatewaySessionCredentialSource"/>. Null/empty when no Gateway is configured, in which case
@@ -880,6 +891,10 @@ public sealed class SessionManager : IDisposable
             // Release is idempotent and keyed by session id, so this is safe whether or not we got as far
             // as reserving.
             _reservations.Release(id.ToString());
+
+            // End the Gateway key if one was minted before the throw. Idempotent and keyed by session id,
+            // so it is safe whether or not we got as far as minting one.
+            GatewaySessionCredentialRevoker?.Invoke(id);
 
             session.Dispose();
             throw;

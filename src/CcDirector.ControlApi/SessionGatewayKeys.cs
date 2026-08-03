@@ -89,16 +89,53 @@ public sealed class SessionGatewayKeys
     }
 
     /// <summary>
-    /// Drop a reaped session's record so the Director stops re-registering it. This is HOUSEKEEPING on this
-    /// machine and is NOT the revocation - the credential is ended on the Gateway, which is the only place
-    /// that can refuse it. Forgetting here without revoking there would leave a working key behind for a
-    /// session that no longer exists.
+    /// Drop a reaped session's record so the Director stops re-registering it, AND remember that its
+    /// credential still owes the Gateway a revocation.
+    ///
+    /// THE ORDER AND THE PAIRING BOTH MATTER, AND GETTING THEM WRONG WAS A REAL DEFECT. Forgetting is
+    /// HOUSEKEEPING on this machine; only the Gateway can actually refuse a key. The reap used to forget
+    /// the hash first and then fire a revocation that returned silently when the tunnel was down, was
+    /// never awaited, and had its failures logged and dropped - with no record left that it was owed,
+    /// because the only trace of the session had just been deleted. A reaped session's key therefore
+    /// stayed valid on the Gateway until its expiry, up to twelve hours, which is exactly what phase 1b
+    /// claimed could not happen.
+    ///
+    /// So the debt is recorded HERE, in the same call and before the hash goes, and it is cleared only
+    /// when the Gateway confirms. <see cref="PendingRevocations"/> is what a reconnect replays.
     /// </summary>
     public bool Forget(Guid sessionId)
     {
         var removed = _hashBySession.TryRemove(sessionId, out _);
         if (removed)
-            FileLog.Write($"[SessionGatewayKeys] Forget: session={sessionId}");
+        {
+            _pendingRevocations[sessionId] = 0;
+            FileLog.Write($"[SessionGatewayKeys] Forget: session={sessionId} (revocation now OWED to the Gateway)");
+        }
         return removed;
     }
+
+    private readonly ConcurrentDictionary<Guid, byte> _pendingRevocations = new();
+
+    /// <summary>
+    /// Sessions whose keys have been reaped here but not yet refused by the Gateway.
+    ///
+    /// A reseed replays these the same way it replays registrations. It is the answer to the case the
+    /// old fire-and-forget had no answer for: the tunnel was down, or the invoke failed, at the one
+    /// moment the revocation mattered.
+    /// </summary>
+    public List<string> PendingRevocations()
+        => _pendingRevocations.Keys.Select(id => id.ToString()).ToList();
+
+    /// <summary>Record that a revocation is owed - used when a send fails after the fact.</summary>
+    public void MarkRevocationOwed(Guid sessionId) => _pendingRevocations[sessionId] = 0;
+
+    /// <summary>The Gateway confirmed the revocation; the debt is settled and stops being replayed.</summary>
+    public void RevocationConfirmed(Guid sessionId)
+    {
+        if (_pendingRevocations.TryRemove(sessionId, out _))
+            FileLog.Write($"[SessionGatewayKeys] revocation CONFIRMED by the Gateway: session={sessionId}");
+    }
+
+    /// <summary>How many revocations are still owed. Diagnostics and tests.</summary>
+    public int PendingRevocationCount => _pendingRevocations.Count;
 }

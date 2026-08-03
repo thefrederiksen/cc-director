@@ -800,6 +800,15 @@ public sealed class ControlApiHost : IAsyncDisposable
         // Issue #1357: let the (synchronous, non-blocking) Pi launch path name the signed-in user from
         // the provider's cached snapshot. Warm the cache once now so the first Pi session started right
         // after boot already has it; failures inside ResolveAsync are swallowed (best-effort context).
+
+        // A session whose launch throws after its key was minted never reaches the roster, so the reaper
+        // never revokes it. Wired to the same pair the reap uses: forget the hash here, and owe the
+        // Gateway a revocation that the reseed will deliver.
+        _sessionManager.GatewaySessionCredentialRevoker = sessionId =>
+        {
+            if (_sessionGatewayKeys.Forget(sessionId))
+                _streamClient?.RevokeSessionKey(sessionId.ToString());
+        };
         _sessionManager.SignedInUserAccessor = () => signedInUserProvider.CurrentSnapshot;
         _ = Task.Run(async () =>
         {
@@ -1058,7 +1067,13 @@ public sealed class ControlApiHost : IAsyncDisposable
             // Remove-the-network-port phase 1b: every live session's Gateway key rides the reseed, so a
             // registration lost to a tunnel drop or a Gateway restart heals on the next connection instead
             // of leaving that session's agent permanently refused.
-            sessionKeys: () => _sessionGatewayKeys.LiveRegistrations());
+            sessionKeys: () => _sessionGatewayKeys.LiveRegistrations(),
+            pendingRevocations: () => _sessionGatewayKeys.PendingRevocations(),
+            onRevocationConfirmed: id =>
+            {
+                if (Guid.TryParse(id, out var confirmed))
+                    _sessionGatewayKeys.RevocationConfirmed(confirmed);
+            });
     }
 
     /// <summary>
@@ -1257,6 +1272,11 @@ public sealed class ControlApiHost : IAsyncDisposable
             // key on the next reseed, and the revocation is what makes the GATEWAY refuse it. Forgetting
             // alone would leave a working credential behind for a session that no longer exists; revoking
             // alone would have the next reseed try to bring it back.
+            // Forget RECORDS the revocation as owed before dropping the hash, so a revocation that
+            // cannot be delivered right now survives to be replayed on the next reseed. It used to be
+            // dropped: the hash went first, the send returned silently on a disconnected tunnel and was
+            // swallowed on failure, and the reseed replayed registrations from a set the entry had
+            // already been removed from - so a reaped session's key stayed usable until its expiry.
             if (_sessionGatewayKeys.Forget(session.Id))
                 _streamClient?.RevokeSessionKey(session.Id.ToString());
             // The session is gone from the roster - drop the announce guard so the map

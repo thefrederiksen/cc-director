@@ -115,4 +115,79 @@ public sealed class SessionGatewayKeysTests
     [Fact]
     public void An_empty_session_id_is_refused_rather_than_given_a_key()
         => Assert.Throws<ArgumentException>(() => new SessionGatewayKeys().Mint(Guid.Empty));
+
+    // ---------- The revocation debt: what made a reaped key survive its session ----------
+    //
+    // The reap forgot the hash and THEN fired a revocation that returned silently when the tunnel was
+    // down, was never awaited, and had its failures logged and dropped. Nothing recorded that the
+    // revocation was still owed, and the reseed replayed registrations from the very set the entry had
+    // just been removed from - so there was nothing left to retry from. A reaped session's key stayed
+    // valid on the Gateway until its expiry, up to twelve hours, refreshable by a reseed just before
+    // the reap.
+    //
+    // The inspection's sharpest point about the OLD suite: deleting the production revoke call left all
+    // 98 session-key tests green. These are the tests that would have gone red.
+
+    [Fact]
+    public void Forgetting_a_reaped_session_records_that_its_revocation_is_still_owed()
+    {
+        var keys = new SessionGatewayKeys();
+        var session = Guid.NewGuid();
+        keys.Mint(session);
+
+        Assert.True(keys.Forget(session));
+
+        // The hash is gone so nothing re-registers it - and the DEBT remains, which is the half that
+        // did not exist. Without it a failed send has nothing to be retried from.
+        Assert.Null(keys.RegistrationFor(session));
+        Assert.Contains(session.ToString(), keys.PendingRevocations());
+    }
+
+    [Fact]
+    public void An_owed_revocation_survives_until_the_gateway_confirms_it()
+    {
+        // The tunnel being down at the instant of the reap must DELAY the revocation, never discard it.
+        var keys = new SessionGatewayKeys();
+        var session = Guid.NewGuid();
+        keys.Mint(session);
+        keys.Forget(session);
+
+        // Two reseeds happen with no confirmation - the send failed, or there was no connection.
+        Assert.Contains(session.ToString(), keys.PendingRevocations());
+        Assert.Contains(session.ToString(), keys.PendingRevocations());
+
+        keys.RevocationConfirmed(session);
+
+        Assert.Empty(keys.PendingRevocations());
+    }
+
+    [Fact]
+    public void A_failed_send_can_put_the_debt_back()
+    {
+        // The stream client marks the debt owed again when an invoke throws after the fact, so a
+        // revocation that was attempted and failed is not mistaken for one that landed.
+        var keys = new SessionGatewayKeys();
+        var session = Guid.NewGuid();
+        keys.Mint(session);
+        keys.Forget(session);
+        keys.RevocationConfirmed(session);
+        Assert.Empty(keys.PendingRevocations());
+
+        keys.MarkRevocationOwed(session);
+
+        Assert.Contains(session.ToString(), keys.PendingRevocations());
+        Assert.Equal(1, keys.PendingRevocationCount);
+    }
+
+    [Fact]
+    public void A_live_session_owes_nothing()
+    {
+        // The debt list must not become "every session that ever held a key" - a reseed replaying a
+        // revocation for a LIVE session would end a working agent's credential.
+        var keys = new SessionGatewayKeys();
+        keys.Mint(Guid.NewGuid());
+        keys.Mint(Guid.NewGuid());
+
+        Assert.Empty(keys.PendingRevocations());
+    }
 }

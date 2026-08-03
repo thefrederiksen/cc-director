@@ -75,6 +75,14 @@ public sealed class GatewayStreamClient : IAsyncDisposable
     /// </summary>
     private readonly Func<List<SessionKeyRegistration>>? _sessionKeys;
 
+    /// <summary>Sessions whose keys were reaped here but not yet refused by the Gateway. Replayed on
+    /// every reseed, so a revocation that could not be delivered is not simply lost.</summary>
+    private readonly Func<List<string>>? _pendingRevocations;
+
+    /// <summary>Called with a session id once the GATEWAY has accepted its revocation. Only an accepted
+    /// invoke settles the debt - a logged-and-dropped failure must leave it owed.</summary>
+    private readonly Action<string>? _onRevocationConfirmed;
+
     private HubConnection? _connection;
     private long _sequence;
     private int _started;
@@ -108,9 +116,13 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         GatewayConnectionMonitor? monitor = null,
         Func<List<RepoStatusDto>>? repoSnapshot = null,
         Func<string?>? displayName = null,
-        Func<List<SessionKeyRegistration>>? sessionKeys = null)
+        Func<List<SessionKeyRegistration>>? sessionKeys = null,
+        Func<List<string>>? pendingRevocations = null,
+        Action<string>? onRevocationConfirmed = null)
     {
         _sessionKeys = sessionKeys;
+        _pendingRevocations = pendingRevocations;
+        _onRevocationConfirmed = onRevocationConfirmed;
         _displayName = displayName;
         _repoSnapshot = repoSnapshot;
         _config = config ?? throw new ArgumentNullException(nameof(config));
@@ -548,6 +560,36 @@ public sealed class GatewayStreamClient : IAsyncDisposable
             }
         }
 
+        // Replay every revocation still owed. This is the other half of the recovery path above, and the
+        // half that was missing: registrations healed on reseed while revocations did not, so the one
+        // direction that matters for SECURITY was the one with no retry. Each is confirmed individually,
+        // so a partial failure leaves exactly the undelivered ones owed for the next reseed.
+        if (_pendingRevocations is not null && conn.State == HubConnectionState.Connected)
+        {
+            try
+            {
+                var owed = _pendingRevocations();
+                foreach (var sessionId in owed)
+                {
+                    try
+                    {
+                        await conn.InvokeAsync("RevokeSessionKey", sessionId);
+                        _onRevocationConfirmed?.Invoke(sessionId);
+                    }
+                    catch (Exception ex)
+                    {
+                        FileLog.Write($"[GatewayStreamClient] replayed revocation for {sessionId} failed: {ex.Message} - still owed");
+                    }
+                }
+                if (owed.Count > 0)
+                    FileLog.Write($"[GatewayStreamClient] replayed {owed.Count} owed session key revocation(s)");
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[GatewayStreamClient] revocation replay incomplete: {ex.Message}");
+            }
+        }
+
         // The repository snapshot rides the same reseed cadence, in its OWN try/catch: an old Gateway
         // without the PushRepoSnapshot hub method throws a HubException here, and that must never take
         // the session reseed down with it (best-effort, no capability negotiation - see phase C notes).
@@ -635,10 +677,34 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         var conn = _connection;
         if (conn is null || conn.State != HubConnectionState.Connected)
         {
-            FileLog.Write($"[GatewayStreamClient] session key NOT revoked (tunnel not connected): session={sessionId} - it lapses at its expiry");
+            // NOT "it lapses at its expiry" - that was the old reasoning and it was wrong. The debt is
+            // already recorded by SessionGatewayKeys.Forget and the next reseed replays it, so a tunnel
+            // that is down at this instant delays the revocation rather than discarding it.
+            FileLog.Write($"[GatewayStreamClient] session key revocation DEFERRED (tunnel not connected): session={sessionId} - owed, and replayed on the next reseed");
             return;
         }
-        _ = SendAsync(() => conn.InvokeAsync("RevokeSessionKey", sessionId), $"RevokeSessionKey({sessionId})");
+        _ = RevokeAndConfirmAsync(conn, sessionId);
+    }
+
+    /// <summary>
+    /// Send one revocation and settle its debt ONLY if the Gateway accepted it.
+    ///
+    /// The old code passed this through the shared fire-and-forget SendAsync, which caught the failure,
+    /// logged it and dropped it. That is right for a roster push - the next snapshot re-states the truth -
+    /// and wrong for a revocation, because nothing re-stated it: the hash had already been forgotten, so
+    /// the reseed had nothing to replay and the key stayed valid on the Gateway until it expired.
+    /// </summary>
+    private async Task RevokeAndConfirmAsync(HubConnection conn, string sessionId)
+    {
+        try
+        {
+            await conn.InvokeAsync("RevokeSessionKey", sessionId);
+            _onRevocationConfirmed?.Invoke(sessionId);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayStreamClient] RevokeSessionKey({sessionId}) failed: {ex.Message} - still owed, and replayed on the next reseed");
+        }
     }
 
     /// <summary>Push a session removal. Fire-and-forget; a drop is reconciled by the next snapshot.</summary>
