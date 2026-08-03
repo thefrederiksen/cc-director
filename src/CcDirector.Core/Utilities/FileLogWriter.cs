@@ -99,18 +99,63 @@ internal sealed class FileLogWriter
     }
 
     /// <summary>
-    /// Enqueue a pre-formatted line for the writer thread. Never blocks: if the queue is full because the
-    /// writer is stalled (a network file share that has stopped responding), the line is dropped and
-    /// counted rather than holding up the caller. <see cref="DroppedLines"/> makes the loss visible and the
-    /// writer records it as soon as it can write again.
+    /// True once <see cref="Stop"/> has completed the queue. A completed
+    /// <see cref="BlockingCollection{T}"/> can NEVER accept another item - there is no reopen - so this
+    /// writer is spent and a caller wanting to log again needs a NEW one. <see cref="FileLog.Start"/>
+    /// reads this to decide exactly that.
+    /// </summary>
+    internal bool IsSpent => _queue.IsAddingCompleted;
+
+    /// <summary>
+    /// Enqueue a pre-formatted line for the writer thread. NEVER BLOCKS AND NEVER THROWS: if the line
+    /// cannot be accepted it is dropped and counted rather than holding up - or breaking - the caller.
+    /// <see cref="DroppedLines"/> makes the loss visible and the writer records it as soon as it can
+    /// write again.
+    ///
+    /// Two different refusals land here, and until 2026-08-03 only the first was handled:
+    ///   * The queue is FULL because the writer is stalled (a network file share that has stopped
+    ///     responding). TryAdd returns false, and the line is counted as dropped.
+    ///   * The queue is COMPLETED because Stop has run. TryAdd does NOT return false in that case - it
+    ///     THROWS InvalidOperationException - so the exception escaped into whoever happened to be
+    ///     logging, in flat contradiction of the guarantee written directly above it. The victim was
+    ///     always a bystander doing something unrelated, which is why this presented as several
+    ///     unconnected flaky tests rather than as one logging defect (devthrottle_internal#1312).
+    ///
+    /// A logging call must not be able to take down its caller, whoever completed the queue and for
+    /// whatever reason. That is why this is fixed here as well as in FileLog's lifetime handling: the
+    /// lifetime fix stops the queue being completed under a live logger, and this stops the next thing
+    /// that completes it from re-arming the same failure.
+    ///
+    /// The completed case is checked AND caught. The check alone would be a race - the queue can be
+    /// completed between the test and the add - and the catch alone would make an ordinary, expected
+    /// state cost an exception throw on every line.
     /// </summary>
     internal void Enqueue(string line)
     {
-        if (!_queue.TryAdd(line))
+        if (_queue.IsAddingCompleted)
+        {
             Interlocked.Increment(ref _droppedLines);
+            return;
+        }
+
+        try
+        {
+            if (!_queue.TryAdd(line))
+                Interlocked.Increment(ref _droppedLines);
+        }
+        catch (InvalidOperationException)
+        {
+            // Completed between the check above and the add. Same outcome as any other refusal.
+            Interlocked.Increment(ref _droppedLines);
+        }
     }
 
-    /// <summary>Signal the writer to drain and stop, then wait briefly for it to finish.</summary>
+    /// <summary>
+    /// Signal the writer to drain and stop, then wait briefly for it to finish.
+    ///
+    /// THIS IS ONE-WAY. Completing the queue cannot be undone, so a stopped writer is finished for good
+    /// and must be replaced rather than restarted - see <see cref="IsSpent"/>.
+    /// </summary>
     internal void Stop()
     {
         _queue.CompleteAdding();
