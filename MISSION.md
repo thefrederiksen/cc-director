@@ -152,3 +152,28 @@ A two-line fix to the same port-picking code exists on branch `fix/port-probe-lo
 projects, 10,192 tests) and reviewed twice by Codex. It is NOT merged. Phase 5 deletes the code it
 touches, so it is superseded by this mission - it matters only if the owner wants the popup fixed
 before the mission lands.
+
+## Owner ruling, 2026-08-03: agents configure, agents do not enrol
+
+The owner's words: the point of having agents is not to have to use the interface for most things.
+Once the agents are set up, you maintain and configure through them.
+
+**The principle, so it does not have to be re-decided per phase: an agent may change how the product
+BEHAVES. It may not change WHO IS ALLOWED IN.**
+
+Allowed to a session key:
+- Director and application settings. This is the owner's ruling and it reverses the Phase 1b guard,
+  which refused the whole `/directors/{id}` surface except two sub-paths.
+- Handovers - content agents produce, and moving a session needs it.
+
+Refused to a session key:
+- Device registration and enrolment. The owner named this one himself. A credential that can enrol a
+  device can admit a NEW device, which is not configuration - it is the boundary itself.
+- Account-level identity: billing, ownership, who the account belongs to.
+- Force-killing a Director. Agents already have a clean way to end sessions
+  (`request-deletion`). Flagged to the owner as a line he may want moved.
+
+Consequence for the build: `SessionKeyGuard` widens. The guard's own comment - that the rest of the
+`/directors` surface "is the owner's ... and stays refused" - is now wrong and must be rewritten, not
+merely edited around. An allow list whose stated reasoning contradicts its contents is worse than a
+wrong entry, because the next reader trusts the prose.
