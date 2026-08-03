@@ -167,9 +167,28 @@ public partial class GitChangesView : UserControl
     /// </summary>
     internal async Task RefreshAsync()
     {
-        if (_repoPath == null || !Directory.Exists(_repoPath)) return;
+        // Pinned for the whole call. _repoPath is mutable and Attach can point this view at a
+        // different folder while the read below is in flight; every decision after the await is made
+        // against the folder this refresh actually asked about, and the result is thrown away if the
+        // view has since moved on. Without that, a slow FAILED read of folder A lands after folder B
+        // has loaded cleanly and wipes B's results with A's problem line.
+        var repoPath = _repoPath;
+        if (repoPath == null) return;
 
-        var result = await _provider.GetStatusAsync(_repoPath);
+        if (!Directory.Exists(repoPath))
+        {
+            // Also NOT a silent return. A folder that has been deleted, or a removable drive that
+            // has been unplugged, used to leave whatever the last repository showed still on the
+            // screen - or the "No changes detected" empty state, which is a claim about a repository
+            // that is not there any more.
+            ShowProblem($"This folder is no longer on disk: {repoPath}");
+            return;
+        }
+
+        var result = await _provider.GetStatusAsync(repoPath);
+        if (!string.Equals(repoPath, _repoPath, StringComparison.OrdinalIgnoreCase))
+            return;
+
         if (!result.Success)
         {
             // NOT a silent return. The old early exit left the page showing "No changes detected",
@@ -182,7 +201,7 @@ public partial class GitChangesView : UserControl
         ClearProblem();
 
         // Skip expensive tree rebuild if git output hasn't changed
-        var rawOutput = _provider.GetCachedRawOutput(_repoPath);
+        var rawOutput = _provider.GetCachedRawOutput(repoPath);
         if (rawOutput != null && rawOutput == _lastRawOutput)
             return;
         _lastRawOutput = rawOutput;

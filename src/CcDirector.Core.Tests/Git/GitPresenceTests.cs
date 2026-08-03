@@ -81,6 +81,39 @@ public class GitPresenceTests
     }
 
     /// <summary>
+    /// The banner must be what the program LEADS with, not a phrase buried in its output. A warning
+    /// that merely mentions the words would otherwise be accepted as a working git, and the sentence
+    /// stored as the version would be the warning.
+    /// </summary>
+    [Theory]
+    [InlineData("warning: git version could not be determined")]
+    [InlineData("note: run --help for the git version banner")]
+    public async Task MentionsTheWordsWithoutLeadingWithThem_IsUndetermined(string output)
+    {
+        var presence = await Detect("C:\\decoy\\git.exe", (_, _) => Answers(true, 0, output));
+
+        Assert.Equal(GitAvailability.Undetermined, presence.Availability);
+        Assert.Null(presence.Version);
+    }
+
+    /// <summary>
+    /// The caller asking to stop is not a verdict about the machine. It has to come back out as a
+    /// cancellation, not as a confident-looking "we could not tell".
+    /// </summary>
+    [Fact]
+    public async Task CallerCancellation_Propagates_RatherThanBecomingAVerdict()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            GitPresenceDetector.DetectAsync(
+                _ => "C:\\Program Files\\Git\\cmd\\git.exe",
+                (_, ct) => { ct.ThrowIfCancellationRequested(); return Answers(true, 0, "git version 2.45.1"); },
+                cts.Token));
+    }
+
+    /// <summary>
     /// The one ruling the user interface is allowed to read. Stated as a table so that a later change
     /// making Undetermined advise an install fails here rather than on somebody's screen.
     /// </summary>
@@ -88,7 +121,7 @@ public class GitPresenceTests
     [InlineData(GitAvailability.Present, false)]
     [InlineData(GitAvailability.NotFound, true)]
     [InlineData(GitAvailability.Undetermined, false)]
-    public void OnlyADefiniteAbsenceAdvisesInstallingGit(GitAvailability availability, bool expected)
+    public void OnlyGitFailingToResolveOnPathAdvisesInstallingGit(GitAvailability availability, bool expected)
     {
         var presence = new GitPresence(availability, null, null, "");
 
@@ -99,14 +132,30 @@ public class GitPresenceTests
     /// "Not installed" is a claim about the machine and is made ONLY for the operating system codes
     /// that mean the file is not there. A refusal to run is a different fact and keeps its own words.
     /// </summary>
-    [Theory]
-    [InlineData(2)]
-    [InlineData(3)]
-    public void LaunchFailure_FileNotFoundCodes_SayNotInstalled(int nativeErrorCode)
+    [Fact]
+    public void LaunchFailure_NoSuchFile_SaysNotInstalled()
     {
-        var message = GitLaunchFailure.Describe(nativeErrorCode, "The system cannot find the file specified");
+        // Code 2 is ERROR_FILE_NOT_FOUND on Windows and ENOENT on POSIX - the same meaning on both,
+        // which is why it is the one code read on every platform.
+        var message = GitLaunchFailure.Describe(2, "The system cannot find the file specified");
 
         Assert.Equal("git is not installed on this machine, or is not on PATH", message);
+    }
+
+    /// <summary>
+    /// Code 3 is Windows ERROR_PATH_NOT_FOUND but POSIX ESRCH, "no such process", which says nothing
+    /// about whether git is installed. Reading it as a missing install would tell a Mac user to
+    /// reinstall software that is already on their disk.
+    /// </summary>
+    [Fact]
+    public void LaunchFailure_CodeThree_IsOnlyAMissingFileOnWindows()
+    {
+        var message = GitLaunchFailure.Describe(3, "No such process");
+
+        if (OperatingSystem.IsWindows())
+            Assert.Equal("git is not installed on this machine, or is not on PATH", message);
+        else
+            Assert.DoesNotContain("not installed", message);
     }
 
     [Fact]

@@ -16,7 +16,13 @@ public enum GitAvailability
     /// <summary>A git executable resolved on PATH AND ran and identified itself. Only this is "yes".</summary>
     Present,
 
-    /// <summary>Nothing named git resolves on this machine's PATH. This is a definite "no".</summary>
+    /// <summary>
+    /// Nothing named git resolves on this process's PATH. That is the same lookup every git call in
+    /// the product makes, so it is exactly the condition under which DevThrottle cannot run git. It
+    /// is NOT a claim to have searched the disk: a git installed somewhere the PATH does not reach
+    /// lands here too, and telling that user to set git up is still the right advice, because until
+    /// it is on the PATH nothing here can use it.
+    /// </summary>
     NotFound,
 
     /// <summary>
@@ -42,7 +48,7 @@ public readonly record struct GitPresence(
     string Detail)
 {
     /// <summary>
-    /// Whether to tell the user that git is missing and recommended. TRUE ONLY for
+    /// Whether to tell the user that git could not be found and is recommended. TRUE ONLY for
     /// <see cref="GitAvailability.NotFound"/> - never for <see cref="GitAvailability.Undetermined"/>,
     /// because a machine we could not read is not a machine without git, and saying so would be a
     /// statement about someone's computer that we have not established.
@@ -59,23 +65,34 @@ public readonly record struct GitPresence(
 /// </summary>
 public static class GitLaunchFailure
 {
-    /// <summary>Windows ERROR_FILE_NOT_FOUND: there is no such executable.</summary>
+    /// <summary>
+    /// Code 2. Windows ERROR_FILE_NOT_FOUND, and POSIX ENOENT. It means the same thing on both -
+    /// there is no such file - which is why it is the one code read on every platform.
+    /// </summary>
     private const int FileNotFound = 2;
 
-    /// <summary>Windows ERROR_PATH_NOT_FOUND: the directory the executable would be in is not there.</summary>
-    private const int PathNotFound = 3;
+    /// <summary>
+    /// Code 3. WINDOWS ONLY: ERROR_PATH_NOT_FOUND. On POSIX the same number is ESRCH, "no such
+    /// process", which says nothing at all about whether git is installed - reading it as a missing
+    /// install on macOS would tell a Mac user to reinstall software that is sitting on their disk.
+    /// </summary>
+    private const int PathNotFoundWindowsOnly = 3;
 
     /// <summary>
     /// Describe why git did not launch, WITHOUT over-claiming. "Not installed" is said only for the
-    /// two operating-system codes that actually mean the file is not there; every other reason - a
-    /// permission refusal, a corrupt image, an execution policy - reports itself in its own words
+    /// codes that actually mean the file is not there on THIS operating system; every other reason -
+    /// a permission refusal, a corrupt image, an execution policy - reports itself in its own words
     /// rather than being relabelled as a missing install.
     /// </summary>
     /// <param name="nativeErrorCode">The operating system's own error number from the failed launch.</param>
-    /// <param name="reason">What the failure said, used verbatim for every code but the two below.</param>
+    /// <param name="reason">What the failure said, used verbatim for every other code.</param>
     public static string Describe(int nativeErrorCode, string? reason)
     {
-        if (nativeErrorCode is FileNotFound or PathNotFound)
+        var meansThereIsNoSuchFile =
+            nativeErrorCode == FileNotFound
+            || (OperatingSystem.IsWindows() && nativeErrorCode == PathNotFoundWindowsOnly);
+
+        if (meansThereIsNoSuchFile)
             return "git is not installed on this machine, or is not on PATH";
         return string.IsNullOrWhiteSpace(reason)
             ? "git could not be started"
@@ -140,6 +157,17 @@ public static class GitPresenceDetector
             return new GitPresence(GitAvailability.NotFound, null, null, "git does not resolve on PATH");
         }
 
+        // DO NOT RUN APPLE'S STUB. On macOS /usr/bin/git is a Command Line Tools shim, and executing
+        // it when the tools are absent puts up Apple's "install the developer tools?" dialog. This
+        // detector's entire remit is to say one sentence and change nothing, so it must not be the
+        // thing that offers to install software. Nothing is claimed about such a machine either way.
+        if (IsAppleCommandLineToolsStub(path))
+        {
+            FileLog.Write($"[GitPresenceDetector] DetectAsync: {path} is the macOS developer-tools stub; not running it");
+            return new GitPresence(GitAvailability.Undetermined, path, null,
+                $"{path} is the macOS developer-tools stub and running it can prompt an install, so it was not run");
+        }
+
         var result = await probe(path, ct);
 
         if (!result.Ran)
@@ -159,17 +187,34 @@ public static class GitPresenceDetector
         // Exit zero is not enough on its own: it says something ran, not that git ran. Requiring the
         // version banner is what makes the difference between a working git and any other program
         // that happens to sit on PATH under that name and exit cleanly.
-        if (!result.Output.Contains("git version", StringComparison.OrdinalIgnoreCase))
+        //
+        // The banner has to be the START of the first line, not merely present somewhere in the
+        // output. Real git prints "git version 2.45.1" and nothing before it; a program whose
+        // warning text happens to CONTAIN those words would otherwise be accepted as git, and the
+        // line stored as its version would be the warning.
+        var firstLine = result.Output.Split('\n')[0].Trim();
+        if (!firstLine.StartsWith("git version ", StringComparison.OrdinalIgnoreCase))
         {
             FileLog.Write($"[GitPresenceDetector] DetectAsync: {path} did not identify itself as git");
             return new GitPresence(GitAvailability.Undetermined, path, null,
                 $"{path} ran but did not print a git version");
         }
 
-        var version = result.Output.Split('\n')[0].Trim();
-        FileLog.Write($"[GitPresenceDetector] DetectAsync: {path} -> {version}");
-        return new GitPresence(GitAvailability.Present, path, version, version);
+        FileLog.Write($"[GitPresenceDetector] DetectAsync: {path} -> {firstLine}");
+        return new GitPresence(GitAvailability.Present, path, firstLine, firstLine);
     }
+
+    /// <summary>
+    /// Whether this path is Apple's Command Line Tools shim at <c>/usr/bin/git</c>. On a Mac without
+    /// the tools installed that file EXISTS and running it opens Apple's install dialog, so it is the
+    /// one executable this detector refuses to launch. The consequence is accepted deliberately: on a
+    /// Mac whose git lives there we reach no verdict and say nothing, which is the quiet, honest
+    /// outcome. A Mac with git from Homebrew or elsewhere resolves to that path instead and is probed
+    /// normally.
+    /// </summary>
+    private static bool IsAppleCommandLineToolsStub(string path)
+        => OperatingSystem.IsMacOS()
+           && string.Equals(path, "/usr/bin/git", StringComparison.Ordinal);
 
     /// <summary>
     /// Run <c>&lt;path&gt; --version</c> and capture what it says. Every way of failing to get an
@@ -192,6 +237,13 @@ public static class GitPresenceDetector
             // OUR timeout fired, not the caller's cancellation. That is an unreadable machine, not a
             // cancelled request, so it is reported as a failure to run rather than rethrown.
             return new GitVersionProbe(false, -1, $"timed out after {ProbeTimeout.TotalSeconds:F0} seconds");
+        }
+        catch (OperationCanceledException)
+        {
+            // The CALLER cancelled. That must propagate: turning it into a verdict would hand a
+            // caller who asked to stop a confident-looking answer about the machine instead. This
+            // has to sit ABOVE the general catch below, which would otherwise swallow it.
+            throw;
         }
         catch (Exception ex)
         {

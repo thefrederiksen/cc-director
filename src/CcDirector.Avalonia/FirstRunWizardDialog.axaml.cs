@@ -1502,8 +1502,10 @@ public partial class FirstRunWizardDialog : Window
     }
 
     /// <summary>
-    /// Ask this machine about git, once, and show the recommendation if - and only if - git is
-    /// definitely not here (issue #1048).
+    /// Ask this machine about git, once, and show the recommendation if - and only if - nothing
+    /// named git resolves on this process's PATH (issue #1048). That is the same lookup every git
+    /// call in the product does, so it is exactly the condition under which DevThrottle cannot run
+    /// git - not a claim to have searched the whole disk.
     ///
     /// DevThrottle does not need git and will never install it. A user may prefer another version
     /// control system, or none: that is their call, and the wizard's job is to make sure they are
@@ -1517,7 +1519,9 @@ public partial class FirstRunWizardDialog : Window
         try
         {
             // Off the user interface thread: the probe is a PATH walk plus a subprocess, and this
-            // product's first rule is that no user action waits on either.
+            // product's first rule is that no user action waits on either. Nothing on this step is
+            // gated on the answer, so a PATH entry that never responds costs the sentence, not the
+            // step - the user can carry straight on.
             var presence = await Task.Run(() => GitPresenceDetector.DetectAsync(CancellationToken.None));
             if (_closed) return;
             ApplyGitPresence(presence);

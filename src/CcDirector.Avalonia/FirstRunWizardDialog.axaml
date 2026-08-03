@@ -407,7 +407,7 @@
                             <TextBlock x:Name="CodeNoGitText" FontSize="12.5" Foreground="#5A616B"
                                        TextWrapping="Wrap" TextAlignment="Center"
                                        HorizontalAlignment="Center" MaxWidth="540"
-                                       Text="We could not find git on this machine. Nothing here needs it - DevThrottle works with any folder, and it is your choice which version control you use, if any - but git is highly recommended: it is what most projects use to clone code and keep a history of changes." />
+                                       Text="We could not find git on this machine - nothing named git is on your PATH. Nothing here needs it: DevThrottle works with any folder, and it is your choice which version control you use, if any. But git is highly recommended - it is what most projects use to clone code and keep a history of changes." />
                             <Button x:Name="CodeNoGitLink" Classes="quietLink"
                                     Content="Where to get git" HorizontalAlignment="Center"
                                     Click="BtnGetGit_Click" />

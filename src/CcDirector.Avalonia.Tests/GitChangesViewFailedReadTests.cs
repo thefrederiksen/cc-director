@@ -43,6 +43,30 @@ public class GitChangesViewFailedReadTests
     }
 
     /// <summary>
+    /// A folder that is gone - deleted, or on a drive that has been unplugged - is the other way this
+    /// page used to go quiet. It returned before reading anything and left the previous repository's
+    /// changes, or the "No changes detected" empty state, describing a folder that is not there.
+    /// </summary>
+    [AvaloniaFact]
+    public async Task AFolderThatIsNoLongerOnDisk_SaysSo()
+    {
+        // A path that is simply not there - the state a deleted folder or an unplugged drive leaves
+        // behind. Nothing is created and nothing has to be cleaned up, so this test cannot fail on
+        // Windows holding a handle open rather than on the behaviour under test.
+        var gone = Path.Combine(Path.GetTempPath(), "cc-director-changes-view-tests", Guid.NewGuid().ToString("N"));
+
+        var view = new GitChangesView();
+        view.Attach(gone);
+
+        await view.RefreshAsync();
+
+        Assert.True(view.ProblemText.IsVisible);
+        Assert.Contains("no longer on disk", view.ProblemText.Text ?? "");
+        Assert.False(view.EmptyText.IsVisible);
+        view.Detach();
+    }
+
+    /// <summary>
     /// A successful read clears the accusation. A machine that has been fixed must stop being told
     /// it is broken - and a problem line that never goes away is its own defect.
     /// </summary>
