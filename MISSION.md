@@ -339,3 +339,23 @@ Architect rulings on the open items:
   `ControlApiHost` already documents that this was never an operating-system sandbox.
 - **macOS and Linux unproven: a REAL hole, recorded OPEN.** It predates the mission and is not closed
   by it. The QA report must say the mission was proven on Windows only.
+
+## The 62-failure outlier, answered - and the discipline in how
+
+The Architect asked why one gate run produced 62 failures when the parent arm produced 1 or 2, noting
+that "all carried the documented signature" explains the KIND but not the COUNT.
+
+Measured from the result file rather than reasoned about: **all 62 failures start AND end inside 0.101
+seconds across 9 classes, and 935 tests passed afterwards.** So it is ONE instantaneous assembly-wide
+event, and the count is that instant's blast radius. Four of the nine classes lost every test with
+start time equal to end time - the QUEUE behind the event, each failing on entry rather than by doing
+anything - and with four parallel threads only a handful can genuinely be mid-query, which is what the
+five partly-hit classes are. The parent runs caught the same event with 1 or 2 tests exposed; this one
+caught it with 62. Same finding, different moment.
+
+**And what it does NOT explain, stated by the Manager without being asked:** which class's disposal
+fired at that instant, and why one blast radius is 62 and another is 1. A consistent observation is
+not a diagnosis.
+
+That last sentence is the standard this mission has been held to throughout, and it is worth more than
+the answer it qualifies. Recorded so the next Manager does not re-derive the shape of this count.
