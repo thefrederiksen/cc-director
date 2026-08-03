@@ -595,7 +595,7 @@
 
                         <RadioButton x:Name="GatewayHostedCard" GroupName="GatewayChoice"
                                      Classes="gatewayCard emphasized" IsChecked="True"
-                                     AutomationProperties.Name="Hosted gateway, recommended. We run it for you - sign in and this machine is enrolled. Your agents run on your machines; fleet metadata and conversation history are stored on the hosted gateway so remote history and supervision work."
+                                     AutomationProperties.Name="Hosted gateway, recommended. We run it for you - sign in and this machine is enrolled. Your agents run on your machines; fleet metadata and conversation history are stored on the hosted gateway so remote history and supervision work. Included with Pro, and with the free 14-day Pro trial that new accounts get when they first connect here. No credit card."
                                      IsCheckedChanged="GatewayCard_IsCheckedChanged">
                             <StackPanel Spacing="6">
                                 <StackPanel Orientation="Horizontal" Spacing="10">
@@ -623,9 +623,19 @@
                                      general fact about new accounts, NOT as a promise to this user: it
                                      is granted only on an account's first arrival at the hosted gateway
                                      and never twice, so "you get 14 days" would be false for someone
-                                     coming back. -->
+                                     coming back.
+
+                                     WHY THE INCLUSION COMES FIRST (issue #1243). Leading with the plan
+                                     name still read as exclusion to the very person the trial covers:
+                                     someone who signed up minutes ago for fourteen free days of Pro is
+                                     told, on the card they are one click from taking, that it is "part
+                                     of" a thing they have not bought. The trial is REAL and is granted
+                                     at exactly this step, so the sentence now names both ways in - the
+                                     paid plan and the trial - and the reader finds themselves in one of
+                                     them. It still promises this user nothing: "new accounts", not
+                                     "you", because a returning account is granted no second trial. -->
                                 <TextBlock TextWrapping="Wrap" FontSize="12.5" Foreground="#8A909A"
-                                           Text="Part of Pro. New accounts get 14 days free, no credit card." />
+                                           Text="Included with Pro - and with the free 14-day Pro trial that new accounts get when they first connect here. No credit card." />
                             </StackPanel>
                         </RadioButton>
 
