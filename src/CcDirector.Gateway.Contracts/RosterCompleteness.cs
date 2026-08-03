@@ -131,7 +131,10 @@ public static class RosterCompleteness
     /// </summary>
     public static string DescribeAge(double seconds)
     {
-        if (seconds < 60) return $"{Math.Round(seconds)}s";
+        // AwayFromZero, not the .NET default. C# rounds midpoints to even and JavaScript rounds them up, so
+        // the default would put 58.5 seconds at "58s" here and "59s" in the client - one line apart on the
+        // same screen, for the same Director. A half-second is a trivial quantity and a contradiction is not.
+        if (seconds < 60) return $"{Math.Round(seconds, MidpointRounding.AwayFromZero)}s";
         if (seconds < 3600) return $"{Math.Floor(seconds / 60)}m";
         return $"{Math.Floor(seconds / 3600)}h";
     }

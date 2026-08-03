@@ -129,6 +129,59 @@ public class FleetReachabilityFoldTests
         }));
     }
 
+    /// <summary>
+    /// A STOPPED SIBLING IS NOT SOMEBODY ANSWERING. Found by review. A machine with one slot shut down on
+    /// purpose and one Director genuinely unreachable was reported as a lone dead director followed by
+    /// "the rest of that machine is answering normally" - when nothing on it was answering at all. The
+    /// stopped row is now excluded from the judgement entirely rather than counted as evidence of life.
+    /// </summary>
+    [Fact]
+    public void UnreachableBanner_a_stopped_sibling_does_not_count_as_answering()
+    {
+        var banner = FleetReachabilityFold.UnreachableBanner(new List<DirectorReachabilityDto>
+        {
+            Dir("dir-slot5", "SOREN_NORTH", DirectorReachabilityDto.StateStopped, 200, display: "Slot 5"),
+            Dir("dir-s1", "SOREN_NORTH", DirectorReachabilityDto.StateOffline, 300),
+        });
+
+        Assert.NotNull(banner);
+        Assert.DoesNotContain("answering normally", banner);
+        // Nothing on it is answering, so the honest report is the machine.
+        Assert.Contains("1 machine could not be reached", banner);
+        Assert.Contains("SOREN_NORTH", banner);
+    }
+
+    /// <summary>The reassurance survives when a sibling really IS answering - the case it was written for.</summary>
+    [Fact]
+    public void UnreachableBanner_keeps_the_reassurance_when_a_sibling_answers()
+    {
+        var banner = FleetReachabilityFold.UnreachableBanner(new List<DirectorReachabilityDto>
+        {
+            Dir("dir-slot5", "SOREN_NORTH", DirectorReachabilityDto.StateStopped, 200),
+            Dir("dir-dead", "SOREN_NORTH", DirectorReachabilityDto.StateOffline, 300, display: "Slot 4"),
+            Dir("dir-s1", "SOREN_NORTH", DirectorReachabilityDto.StateOnline, 2),
+        });
+
+        Assert.NotNull(banner);
+        Assert.Contains("1 director could not be reached", banner);
+        Assert.Contains("the rest of that machine is answering normally", banner);
+    }
+
+    /// <summary>A wobbly sibling IS answering - its tunnel is up, only its last push is late.</summary>
+    [Fact]
+    public void UnreachableBanner_a_wobbly_sibling_counts_as_answering()
+    {
+        var banner = FleetReachabilityFold.UnreachableBanner(new List<DirectorReachabilityDto>
+        {
+            Dir("dir-dead", "SOREN_NORTH", DirectorReachabilityDto.StateOffline, 300, display: "Slot 4"),
+            Dir("dir-late", "SOREN_NORTH", DirectorReachabilityDto.StateWobbly, 45),
+        });
+
+        Assert.NotNull(banner);
+        Assert.Contains("1 director could not be reached", banner);
+        Assert.DoesNotContain("machine could not be reached", banner);
+    }
+
     [Fact]
     public void UnreachableBanner_ignores_a_wobbly_director()
     {

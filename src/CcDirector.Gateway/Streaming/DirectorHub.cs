@@ -374,7 +374,19 @@ public sealed class DirectorHub : Hub
         using var tenantScope = EnterBoundTenantScope();
         FileLog.Write($"[DirectorHub] DirectorStopping: director={directorId} conn={Short(Context.ConnectionId)}");
         _sessionHistory?.ObserveDirectorStopping(RequireBoundTenant(), directorId);
-        _registry.MarkStopped(RequireBoundTenant(), directorId);
+        // ONLY THE CURRENTLY ACTIVE CONNECTION MAY RETIRE THE REGISTRATION - the same ownership gate the
+        // snapshot, delta and remove paths apply, for a sharper reason. A farewell is a statement about a
+        // PROCESS. A delayed one arriving on a connection a reconnect has already superseded describes a
+        // process that is no longer the registered one, and stamping it would mark the LIVE Director stopped;
+        // when that Director later died for real, its crash would be reported as an orderly shutdown for the
+        // whole eviction horizon - silencing exactly the fault this state exists to keep visible.
+        //
+        // The history ruling above is deliberately NOT gated the same way: it closes rows belonging to the
+        // connection that is saying goodbye, and its own throttle already tolerates a late one.
+        if (_store.IsActiveConnection(RequireBoundTenant(), directorId, Context.ConnectionId))
+            _registry.MarkStopped(RequireBoundTenant(), directorId);
+        else
+            FileLog.Write($"[DirectorHub] DirectorStopping IGNORED for the registry (not the active connection): director={directorId} conn={Short(Context.ConnectionId)}");
     }
 
     public override Task OnConnectedAsync()

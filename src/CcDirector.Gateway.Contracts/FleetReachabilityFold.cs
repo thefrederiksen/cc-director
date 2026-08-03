@@ -106,10 +106,20 @@ public static class FleetReachabilityFold
         foreach (var r in offline)
         {
             var siblings = byMachine.TryGetValue(MachineKey(r.MachineName), out var s) ? s : new List<DirectorReachabilityDto> { r };
+            // THE QUESTION IS WHETHER ANYTHING ON THAT MACHINE IS STILL ANSWERING, and a STOPPED Director
+            // answers neither way. It is not evidence the machine is alive (nobody is there) and it is not
+            // evidence the machine is dead (it left on purpose), so it is excluded from the judgement
+            // entirely rather than counted on either side.
+            //
+            // Counting it as "not offline" was wrong in a way that produced a provably false sentence: a
+            // machine with one stopped slot and one genuinely unreachable Director failed the whole-machine
+            // test, so it was reported as a lone dead director followed by "the rest of that machine is
+            // answering normally" - when nothing on it was answering at all.
+            var answering = siblings.Any(x => !Is(x.State, DirectorReachabilityDto.StateOffline)
+                                              && !Is(x.State, DirectorReachabilityDto.StateStopped));
             // A machine with no name cannot be judged as a machine at all - it cannot be grouped with
             // confidence - so it is always reported as the single Director it is.
-            var wholeMachineIsDown = !string.IsNullOrWhiteSpace(r.MachineName)
-                && siblings.All(x => Is(x.State, DirectorReachabilityDto.StateOffline));
+            var wholeMachineIsDown = !string.IsNullOrWhiteSpace(r.MachineName) && !answering;
             if (wholeMachineIsDown)
             {
                 var name = r.MachineName.Trim();

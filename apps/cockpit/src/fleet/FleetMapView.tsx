@@ -14,7 +14,7 @@ import {
   directorStateLabel,
   emptySlotTextOf,
   isDataStale,
-} from "./directorPresentation";
+} from "@devthrottle/client-core/fleet/directorPresentation";
 import { useSharedRoster } from "@devthrottle/client-core/fleet/rosterStore";
 import { repoBasename, repoIdentity, relativeTime } from "./format";
 import {
@@ -665,8 +665,8 @@ function NodeCard({
   // keyed to the specific state because they are styling, not meaning.
   const reach = reachabilityFor(directors, s.directorId);
   const wobbly = reach?.state === REACHABILITY_WOBBLY;
-  const offline = reach?.state === REACHABILITY_OFFLINE;
-  const lastSeen = isDataStale(reach) ? reachabilityLastSeen(reach?.lastSeenAgeSeconds) : "";
+  const stale = isDataStale(reach);
+  const lastSeen = stale ? reachabilityLastSeen(reach?.lastSeenAgeSeconds) : "";
   const cls =
     "fmap-card" +
     (color === "red" ? " needs" : "") +
@@ -674,7 +674,7 @@ function NodeCard({
     (wobbly ? " fmap-card-wobbly" : "") +
     // Anything the Gateway calls stale that is not specifically wobbly dims like an offline card: a
     // stopped Director's leftover rows are last-known too, and must not read as live.
-    (isDataStale(reach) && !wobbly ? " fmap-card-offline" : "");
+    (stale && !wobbly ? " fmap-card-offline" : "");
 
   // The card tags carry the two hierarchy coordinates NOT already implied by the lane the card sits in.
   const tags = cardTags(s, pivot);
@@ -732,8 +732,11 @@ function NodeCard({
         <span className="fmap-card-idle">{relativeTime(s.lastActivityAt)}</span>
       </div>
 
+      {/* The Gateway's word for this Director's condition, not a local guess. This branched on
+          `offline ? "Offline" : "Wobbly"`, so a leftover row owned by a shut-down Director - which the
+          Gateway deliberately keeps serving - was captioned "Wobbly": the one state it certainly was not. */}
       {lastSeen.length > 0 && (
-        <div className="fmap-card-lastseen">{offline ? "Offline" : "Wobbly"} - {lastSeen}</div>
+        <div className="fmap-card-lastseen">{directorStateLabel(reach)} - {lastSeen}</div>
       )}
     </article>
   );

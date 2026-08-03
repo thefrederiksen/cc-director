@@ -10,7 +10,7 @@ import {
   type FleetDirector,
   type MachineError,
 } from "@devthrottle/client-core/fleet/fleetClient";
-import { directorStateLabel } from "./directorPresentation";
+import { directorStateLabel } from "@devthrottle/client-core/fleet/directorPresentation";
 import { useSharedRoster } from "@devthrottle/client-core/fleet/rosterStore";
 import { useVisiblePolling } from "@devthrottle/client-core/polling/useVisiblePolling";
 import { useNow } from "@devthrottle/client-core/polling/useNow";
@@ -71,9 +71,8 @@ export function DirectorDetailView() {
   // A Director that SAID GOODBYE is not in machineErrors - nothing failed - so it is read from the
   // reachability list instead. Not running and cannot be reached are different facts, and only the
   // second is a problem; this page has to say which one it is looking at.
-  const wasShutDown =
-    roster.directors.find((r) => (r.directorId ?? "").toLowerCase() === directorId.toLowerCase())?.state ===
-    REACHABILITY_STOPPED;
+  const reach = roster.directors.find((r) => (r.directorId ?? "").toLowerCase() === directorId.toLowerCase());
+  const wasShutDown = reach?.state === REACHABILITY_STOPPED;
 
   const [director, setDirector] = useState<FleetDirector | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -87,7 +86,11 @@ export function DirectorDetailView() {
   // The current reachability, mirrored into a ref so the stable poll callback can gate the repo fetch on
   // it without taking the roster as a dependency (which would rebuild the poll loop every 2 seconds).
   const reachableRef = useRef(true);
-  reachableRef.current = machineError === null;
+  // THE GATE IS "CAN THIS DIRECTOR ANSWER", NOT "IS SOMETHING WRONG". It read machineError alone, and a
+  // shut-down Director is deliberately absent from that list - so its page went on proxying getRepos to a
+  // tunnel that is gone, every thirty seconds, forever, while the page itself said nothing could be read
+  // from it.
+  reachableRef.current = machineError === null && !wasShutDown;
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -194,7 +197,7 @@ export function DirectorDetailView() {
         {unreachable ? (
           <span className="ddet-chip dstat-warn" title={machineError?.error}>UNREACHABLE</span>
         ) : wasShutDown ? (
-          <span className="ddet-chip dstat-idle">{directorStateLabel({ directorId, state: REACHABILITY_STOPPED }).toUpperCase()}</span>
+          <span className="ddet-chip dstat-idle">{directorStateLabel(reach).toUpperCase()}</span>
         ) : (
           <span className="ddet-chip dstat-ok">OK</span>
         )}

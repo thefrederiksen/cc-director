@@ -4677,12 +4677,25 @@ public partial class MainWindow : Window
     /// The Directors ON THIS MACHINE that the Gateway reports as NOT fully Online (Wobbly or
     /// Offline), each as "id (state)". A non-empty result means this machine's session roster may be
     /// missing a live session, so the destructive reaper must fail closed. Pure and testable.
+    ///
+    /// A STOPPED Director is NOT degraded, and this is a fail-closed guard so the exclusion has to be
+    /// argued rather than assumed. The question here is "could this machine be running a session I cannot
+    /// see". A Director in the stopped state told the Gateway it was shutting down and then closed its
+    /// tunnel: the process is gone, so it owns no live session, and there is nothing about it that could be
+    /// missing from the roster. Wobbly and Offline are different - those are Directors that may well be
+    /// alive and merely unheard, which is exactly the doubt this guard exists for.
+    ///
+    /// Without the exclusion, one orderly sibling shutdown disabled every worktree removal on the machine
+    /// until that registration aged out a day later - and <see cref="Gateway.Contracts.RosterCompleteness"/>
+    /// was meanwhile calling the same roster COMPLETE. Two guards reading one roster must not disagree
+    /// about whether it can be trusted.
     /// </summary>
     internal static List<string> DegradedSameMachineDirectors(
         IEnumerable<Gateway.Contracts.DirectorReachabilityDto> reachability, string machine)
         => reachability
             .Where(r => string.Equals(r.MachineName, machine, StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(r.State, Gateway.Contracts.DirectorReachabilityDto.StateOnline, StringComparison.OrdinalIgnoreCase))
+                        && !string.Equals(r.State, Gateway.Contracts.DirectorReachabilityDto.StateOnline, StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(r.State, Gateway.Contracts.DirectorReachabilityDto.StateStopped, StringComparison.OrdinalIgnoreCase))
             .Select(r => $"{r.DirectorId} ({r.State})")
             .ToList();
 

@@ -160,8 +160,28 @@ export interface SessionsEnvelope {
    * wrong. It replaces counting machineErrors in the view: those rows are per-DIRECTOR, so a view that
    * counted them and printed the word "machine" announced a dead machine whenever any one slot on it was
    * unreachable - while fifteen sessions on that machine were pushing every few seconds.
+   *
+   * NULL AND ABSENT ARE DIFFERENT ANSWERS and must stay distinguishable. Null is the Gateway saying
+   * "nothing is wrong"; absent is an OLDER Gateway that cannot answer at all, and collapsing the second
+   * into the first would silence a real outage on the very screen that reports outages. getSessionsEnvelope
+   * fills an absent field from machineErrors instead - see there.
    */
   unreachableBanner: string | null;
+}
+
+/**
+ * The fallback warning line for an OLDER Gateway that does not fold one - built from machineErrors, which
+ * such a Gateway does still populate. Deliberately Director-shaped ("1 director could not be reached"),
+ * because that is what those rows have always been; the old view called them machines and that was the
+ * defect. Exported for its test.
+ */
+export function bannerFromMachineErrors(errors: MachineError[]): string | null {
+  const named = errors
+    .map((m) => (m.machineName ?? "").trim())
+    .map((n) => (n.length > 0 ? n : "an unidentified machine"));
+  if (named.length === 0) return null;
+  const head = named.length === 1 ? "1 director could not be reached" : `${named.length} directors could not be reached`;
+  return `${head} on the last sweep: ${named.join(", ")}`;
 }
 
 // GET /sessions?envelope=true - the roster plus the unreachable-machine list and per-Director
@@ -179,11 +199,17 @@ export async function getSessionsEnvelope(signal?: AbortSignal): Promise<Session
     throw new GatewayError(res.status, `GET /sessions?envelope=true failed: ${res.status}`);
   }
   const body = (await res.json()) as Partial<SessionsEnvelope>;
+  const machineErrors = body.machineErrors ?? [];
   return {
     sessions: body.sessions ?? [],
-    machineErrors: body.machineErrors ?? [],
+    machineErrors,
     directors: body.directors ?? [],
-    unreachableBanner: body.unreachableBanner ?? null,
+    // ABSENT means an older Gateway, and it must not read as "nothing is wrong" - that would leave the
+    // Fleet Map silent during a real outage. Only a field the Gateway actually sent (including an explicit
+    // null, which IS the "nothing is wrong" answer) is taken at face value; otherwise the line is rebuilt
+    // from machineErrors, which every Gateway populates.
+    unreachableBanner:
+      body.unreachableBanner !== undefined ? body.unreachableBanner : bannerFromMachineErrors(machineErrors),
   };
 }
 

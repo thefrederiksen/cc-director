@@ -86,6 +86,16 @@ public sealed class DirectorReachabilityDto
     ///
     /// A stopped Director still cannot be acted on (its tunnel is down, so a command has nothing to travel
     /// over), so it is not offered as free capacity either - it is simply not running.
+    ///
+    /// ON ADDING A FOURTH VALUE TO A WIRE FIELD OLDER CLIENTS ALREADY READ, since that is a fair question to
+    /// ask of this line. A Cockpit built before this state exists treats an unrecognised value as online, so
+    /// against a newer Gateway it would offer "+ New session" on a Director that cannot take one. That skew
+    /// cannot occur: the Cockpit bundle is SERVED BY THE GATEWAY and redeploys with it, so the client reading
+    /// this field is always the one shipped beside it. The surface that genuinely can be older is the mobile
+    /// app, and it renders no Director badge and no start action - it reads reachability only through the
+    /// roster retention fold, which routes unknown states to its unreachable treatment (conservative, and
+    /// wrong only in tone). Directors of any age are unaffected: an older one simply never sends the farewell,
+    /// so it never reaches this state.
     /// </summary>
     public const string StateStopped = "stopped";
 

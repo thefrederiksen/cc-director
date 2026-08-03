@@ -17,7 +17,7 @@ import {
   type FleetDirector,
   type MachineError,
 } from "@devthrottle/client-core/fleet/fleetClient";
-import { canStartSessionOn } from "../fleet/directorPresentation";
+import { canStartSessionOn } from "@devthrottle/client-core/fleet/directorPresentation";
 import type { SessionDto } from "@devthrottle/client-core/api/client";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 import { getGatewaySettings } from "@devthrottle/client-core/settings/settingsClient";

@@ -1016,12 +1016,30 @@ internal static class GatewayEndpoints
                 // so the machine is surfaced as an error exactly as it was before, with nothing served.
                 if (pushedSessions is null)
                 {
+                    const string noStore = "this gateway has no pushed session store";
                     machineErrors.Add(new MachineErrorDto
                     {
                         DirectorId = d.DirectorId,
                         MachineName = d.MachineName ?? "",
-                        Error = "this gateway has no pushed session store",
+                        Error = noStore,
                     });
+                    // AND a reachability row, which this branch used to skip. The warning line above the map
+                    // is folded from the reachability list, so a branch that fills machineErrors alone is a
+                    // branch where the Gateway knows it cannot reach a single machine and says nothing at all
+                    // - the silent-failure shape this whole change exists to remove, reintroduced in the one
+                    // path that has no roster source whatsoever.
+                    var noStoreRow = new DirectorReachabilityDto
+                    {
+                        DirectorId = d.DirectorId,
+                        MachineName = d.MachineName ?? "",
+                        DisplayName = d.DisplayName ?? "",
+                        State = DirectorReachabilityDto.StateOffline,
+                        LastSeenUtc = null,
+                        LastSeenAgeSeconds = null,
+                        Error = noStore,
+                    };
+                    FleetReachabilityFold.Describe(noStoreRow);
+                    reachability.Add(noStoreRow);
                     continue;
                 }
 

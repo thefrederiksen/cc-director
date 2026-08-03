@@ -11,7 +11,7 @@ import {
   type FleetDirector,
   type MachineError,
 } from "@devthrottle/client-core/fleet/fleetClient";
-import { directorStateLabel } from "./directorPresentation";
+import { directorStateLabel } from "@devthrottle/client-core/fleet/directorPresentation";
 import { relativeTime, repoBasename } from "./format";
 
 /** A Director's health, computed once and reused by the status cell and the column sort. A higher rank

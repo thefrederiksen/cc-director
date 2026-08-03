@@ -3,10 +3,16 @@ import {
   REACHABILITY_STOPPED,
   REACHABILITY_WOBBLY,
   type DirectorReachability,
-} from "@devthrottle/client-core/fleet/fleetClient";
+} from "./fleetClient";
 
 /**
  * How a Director is PRESENTED - read from the Gateway, never re-derived here.
+ *
+ * It lives in client-core, not in one app, because BOTH shells answer these questions about the same
+ * Director: the Cockpit's map, session roster and Directors table, and the phone's roster note. When it
+ * sat in the Cockpit only, the phone kept its own copy of the rule and collapsed every non-online state
+ * to "offline" - so a Director that had been shut down on purpose was announced on the phone as
+ * "Unreachable", which is the false outage this whole change exists to remove, one surface over.
  *
  * The Gateway folds all four of these judgements onto every reachability row (FleetReachabilityFold), and
  * these readers exist only so the views take them from ONE place. They used to be four separate `state ===`

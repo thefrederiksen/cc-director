@@ -178,6 +178,38 @@ public sealed class DirectorHubTests : IDisposable
         Assert.Null(_registry.Get(CcDirector.Core.Tenancy.TenantId.Local, "dir-A")!.StoppedAtUtc);
     }
 
+    /// <summary>
+    /// A DELAYED FAREWELL FROM A SUPERSEDED CONNECTION MUST NOT RETIRE THE LIVE REGISTRATION. Found by
+    /// review. conn-1 says Hello as dir-A; conn-2 reconnects and supersedes it; conn-1's farewell then
+    /// arrives late. Acting on it would stamp the registry row that now represents conn-2 - and when THAT
+    /// Director later died for real, its crash would read as an orderly shutdown for the whole eviction
+    /// horizon, silencing exactly the fault the state exists to keep visible.
+    ///
+    /// Revert-prove: drop the IsActiveConnection guard in DirectorStopping and this goes red at the final
+    /// assertion, after its two positive controls have passed.
+    /// </summary>
+    [Fact]
+    public void AFarewellFromASupersededConnection_DoesNotRetireTheLiveRegistration()
+    {
+        var (hub1, _) = NewHub("conn-1");
+        hub1.Hello(Hello("dir-A"));
+
+        var (hub2, _) = NewHub("conn-2");
+        hub2.Hello(Hello("dir-A"));   // the reconnect supersedes conn-1
+
+        // Positive control: the registration exists and is running.
+        Assert.Null(_registry.Get(CcDirector.Core.Tenancy.TenantId.Local, "dir-A")!.StoppedAtUtc);
+
+        hub1.DirectorStopping();      // the late farewell, on the connection that is no longer active
+
+        Assert.Null(_registry.Get(CcDirector.Core.Tenancy.TenantId.Local, "dir-A")!.StoppedAtUtc);
+
+        // Positive control on the guard: the CURRENT connection's farewell still works, so the assertion
+        // above is not passing because the whole path is broken.
+        hub2.DirectorStopping();
+        Assert.NotNull(_registry.Get(CcDirector.Core.Tenancy.TenantId.Local, "dir-A")!.StoppedAtUtc);
+    }
+
     private static DirectorStreamHello Hello(string directorId) => new() { DirectorId = directorId, Version = "test" };
 
     private static SessionDto Session(string id, string state = "Working") => new() { SessionId = id, ActivityState = state };

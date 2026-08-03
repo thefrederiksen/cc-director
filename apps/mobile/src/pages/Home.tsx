@@ -565,11 +565,22 @@ function VoiceAllControl({ sessions }: { sessions: SessionDto[] }) {
   );
 }
 
-// The plain-English note under an unreachable card, naming the machine and (when known) how long ago it
-// was last seen. Wobbly reads as a soft "reconnecting"; offline as a firm "unreachable" - both honest.
+// The plain-English note under a card whose Director did not answer, naming the machine and (when known)
+// how long ago it was last seen. Wobbly reads as a soft "reconnecting"; a Director that was SHUT DOWN
+// reads as not running; anything else as a firm "unreachable" - each honest about a different thing.
+//
+// The shut-down case is not a variation on unreachable, it is its opposite: nothing failed. This note
+// used to call it "Unreachable" because the retention fold flattened every non-wobbly state into offline,
+// so the phone announced an outage about a machine that was perfectly healthy - the same false alarm the
+// Fleet Map was giving, one surface over. The word now comes from the Gateway (mark.stateLabel).
 function unreachableNote(mark: RosterSessionMark): string {
   const machine = mark.machineName.length > 0 ? mark.machineName : "its machine";
-  const base = mark.reachability === "wobbly" ? `Reconnecting to ${machine}` : `Unreachable - ${machine}`;
+  const base =
+    mark.reachability === "wobbly"
+      ? `Reconnecting to ${machine}`
+      : mark.reachability === "stopped"
+      ? `${mark.stateLabel.length > 0 ? mark.stateLabel : "Not running"} - ${machine}`
+      : `Unreachable - ${machine}`;
   return mark.lastSeenLabel.length > 0 ? `${base} - ${mark.lastSeenLabel}` : base;
 }
 
