@@ -90,8 +90,25 @@ running more than one.
 ### 5 - Delete the Director's listener
 Remove the web host, the port allocator (range, reservation files, excluded-range reader), and the
 control endpoint from the instance registration.
+**Two blockers found by checking before briefing, not by a Manager discovering them mid-phase:**
+
+1. **`CC_DIRECTOR_API` is STILL stamped into every session's environment**
+   (`SessionManager.cs:612-613`). Phase 2 repointed the tools, but the address itself is still handed
+   to every agent. After Phase 5 that variable names a port nothing is listening on. It must be
+   removed in the same phase, or every session is given a live-looking address for a dead door - and
+   an agent that finds an address will eventually try it. Removing it is also the only way to know
+   nothing still depends on it: while it is set, a straggling caller keeps working and stays hidden.
+2. **The desktop app dials its own Control API to prove the fleet tools work.**
+   `MainWindow.RefreshFleetToolReachabilityAsync` calls `FleetToolReachability.RunAsync` against
+   `ControlApiBaseUrl` and shows the verdict in the interface. That check must be rebuilt against the
+   Gateway or removed outright - it cannot simply be left, because it would report the tools broken
+   the moment the port goes, which is a green-to-red flip in the user's face caused by nothing being
+   wrong.
+
 **Proof:** nothing listening for cc-director in a live connection scan, AND the first-launch wizard
-popup is gone on a clean machine. This phase is what removes that popup permanently.
+popup is gone on a clean machine, AND no session is handed `CC_DIRECTOR_API`, AND the tool-health
+indicator in the desktop app still tells the truth. This phase is what removes that popup
+permanently.
 
 ### 6 - Delete the launcher's listener
 **Smaller than briefed, and verified before briefing it.** The launcher does not merely hold an
