@@ -15,8 +15,14 @@ namespace CcDirector.Core.Utilities;
 /// </summary>
 public static class ProcessRunner
 {
-    /// <summary>The captured result. <see cref="Started"/> is false when the process could not start.</summary>
-    public readonly record struct Result(int ExitCode, string StandardOutput, string StandardError, bool Started);
+    /// <summary>
+    /// The captured result. <see cref="Started"/> is false when the process could not start, and
+    /// <see cref="StartErrorCode"/> then carries the operating system's own error number so the
+    /// caller can tell "there is no such executable" apart from "it exists and refused to run" -
+    /// a distinction the message text alone cannot be trusted to carry.
+    /// </summary>
+    public readonly record struct Result(
+        int ExitCode, string StandardOutput, string StandardError, bool Started, int StartErrorCode = 0);
 
     /// <summary>
     /// Starts <paramref name="fileName"/> with <paramref name="args"/> in
@@ -41,8 +47,21 @@ public static class ProcessRunner
             psi.ArgumentList.Add(a);
 
         using var proc = new Process { StartInfo = psi };
-        if (!proc.Start())
-            return new Result(-1, "", $"{fileName} could not start", Started: false);
+
+        // Start does NOT return false when the executable is missing - it throws Win32Exception ("The
+        // system cannot find the file specified"). Without this catch the Started=false result was
+        // unreachable for the one case it names, and every caller had to carry its own catch-all to
+        // survive a machine with no git (devthrottle_internal issue #1048). Catching it here is what
+        // makes the documented contract on Started true.
+        try
+        {
+            if (!proc.Start())
+                return new Result(-1, "", $"{fileName} could not start", Started: false);
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            return new Result(-1, "", ex.Message, Started: false, StartErrorCode: ex.NativeErrorCode);
+        }
 
         // Start draining BOTH pipes immediately and concurrently - neither read waits on the other.
         var outTask = proc.StandardOutput.ReadToEndAsync(ct);

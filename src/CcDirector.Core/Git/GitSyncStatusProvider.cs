@@ -21,11 +21,11 @@ public class GitSyncStatusProvider
     {
         try
         {
-            var output = await RunGitAsync(repoPath, new[] { "status", "--branch", "--porcelain=v2" }, ct);
-            if (output == null)
-                return new GitSyncStatus { Success = false, Error = "Failed to start git process" };
+            var read = await RunGitAsync(repoPath, new[] { "status", "--branch", "--porcelain=v2" }, ct);
+            if (read.Output == null)
+                return new GitSyncStatus { Success = false, Error = read.Problem };
 
-            var status = ParseBranchHeaders(output);
+            var status = ParseBranchHeaders(read.Output);
 
             // Determine behind-main count if not on main
             if (!status.IsDetachedHead && !IsMainBranch(status.BranchName))
@@ -33,8 +33,8 @@ public class GitSyncStatusProvider
                 var mainBranch = await DetectMainBranchAsync(repoPath, ct);
                 if (mainBranch != null)
                 {
-                    var countOutput = await RunGitAsync(repoPath, new[] { "rev-list", "--count", $"HEAD..origin/{mainBranch}" }, ct);
-                    if (countOutput != null && int.TryParse(countOutput.Trim(), out var count))
+                    var countRead = await RunGitAsync(repoPath, new[] { "rev-list", "--count", $"HEAD..origin/{mainBranch}" }, ct);
+                    if (countRead.Output != null && int.TryParse(countRead.Output.Trim(), out var count))
                     {
                         return new GitSyncStatus
                         {
@@ -138,11 +138,11 @@ public class GitSyncStatusProvider
     private async Task<string?> DetectMainBranchAsync(string repoPath, CancellationToken ct)
     {
         var result = await RunGitAsync(repoPath, new[] { "rev-parse", "--verify", "--quiet", "origin/main" }, ct);
-        if (result != null)
+        if (result.Output != null)
             return "main";
 
         result = await RunGitAsync(repoPath, new[] { "rev-parse", "--verify", "--quiet", "origin/master" }, ct);
-        if (result != null)
+        if (result.Output != null)
             return "master";
 
         return null;
@@ -151,14 +151,24 @@ public class GitSyncStatusProvider
     private static bool IsMainBranch(string branchName) =>
         branchName is "main" or "master";
 
-    private async Task<string?> RunGitAsync(string repoPath, string[] args, CancellationToken ct)
+    /// <summary>
+    /// One git read. <c>Output</c> is null unless the command both launched and exited zero;
+    /// <c>Problem</c> then says which of those two it was. Keeping them apart is the point: the
+    /// caller used to report "Failed to start git process" for BOTH, so a git that ran perfectly
+    /// well and exited non-zero was described as never having started (issue #1048).
+    /// </summary>
+    private readonly record struct GitRead(string? Output, string Problem);
+
+    private async Task<GitRead> RunGitAsync(string repoPath, string[] args, CancellationToken ct)
     {
         // ProcessRunner drains BOTH pipes (the old code never drained stderr, so a git command that
         // filled its error pipe could deadlock) and honors cancellation by killing the child so a
         // superseded scan does not leave git processes behind (issue 516).
         var r = await ProcessRunner.RunAsync("git", args, repoPath, ct);
         if (!r.Started)
-            return null;
-        return r.ExitCode == 0 ? r.StandardOutput : null;
+            return new GitRead(null, GitLaunchFailure.Describe(r.StartErrorCode, r.StandardError));
+        if (r.ExitCode != 0)
+            return new GitRead(null, $"git {string.Join(' ', args)} exited {r.ExitCode}: {r.StandardError.Trim()}");
+        return new GitRead(r.StandardOutput, "");
     }
 }
