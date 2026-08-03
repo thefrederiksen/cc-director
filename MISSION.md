@@ -71,7 +71,7 @@ the Gateway calling in, and can become pushes down the connection it already has
 |---|-------|-------|
 | 1 | Gateway parity, proven with a session credential | DONE - finding below |
 | 1b | Session credentials on the Gateway (discovered in Phase 1) | DONE - see PHASE-1B-REPORT.md |
-| 2 | The command line tools talk to the Gateway | not started |
+| 2 | The command line tools talk to the Gateway | BUILT, NOT PROVEN - pass mark unrun |
 | 3 | Session hooks stop needing an API | not started |
 | 4 | Lifecycle off HTTP | not started |
 | 5 | Delete the Director's listener | not started |
