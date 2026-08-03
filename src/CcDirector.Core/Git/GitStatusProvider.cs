@@ -30,6 +30,23 @@ public readonly record struct GitCountResult(bool Success, int Count);
 
 public class GitStatusProvider
 {
+    private readonly string _executable;
+
+    /// <summary>Runs the <c>git</c> on this machine's PATH. This is the only production form.</summary>
+    public GitStatusProvider() : this("git") { }
+
+    /// <summary>
+    /// Runs <paramref name="executable"/> instead of <c>git</c>. A TEST SEAM, matching the one
+    /// <see cref="GitCommandRunner"/> and <see cref="GitWriteService"/> already have, and the only
+    /// way to reach the could-not-launch branch WITHOUT depending on what the host machine has
+    /// installed: pass a name that resolves nowhere and the launch fails for precisely the reason it
+    /// fails on a clean Windows install, identically on every machine. Production never calls this.
+    /// </summary>
+    public GitStatusProvider(string executable)
+    {
+        _executable = executable;
+    }
+
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(10);
 
     private readonly record struct CacheEntry(string RawOutput, GitStatusResult Result, DateTime Timestamp);
@@ -143,7 +160,7 @@ public class GitStatusProvider
         return null;
     }
 
-    private static async Task<(string Output, string? Error, int ExitCode)> RunGitStatusAsync(string repoPath, CancellationToken ct)
+    private async Task<(string Output, string? Error, int ExitCode)> RunGitStatusAsync(string repoPath, CancellationToken ct)
     {
         try
         {
@@ -151,7 +168,7 @@ public class GitStatusProvider
             // the child (issue 516): the old code read stdout to end before stderr, so a git process
             // that filled its stderr pipe could deadlock, and it passed no token, so a superseded
             // scan could not stop it.
-            var r = await ProcessRunner.RunAsync("git", new[] { "status", "--porcelain=v1", "-u" }, repoPath, ct);
+            var r = await ProcessRunner.RunAsync(_executable, new[] { "status", "--porcelain=v1", "-u" }, repoPath, ct);
             if (!r.Started)
                 // Carries the REASON, not just the fact. On a machine with no git this is the
                 // sentence the Source Control view puts on the screen (issue #1048); it used to be
