@@ -1,0 +1,97 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- THE UNLOCKED HALF OF THE GATEWAY TESTS.
+       Every test in here is PURE: it constructs no GatewayHost, binds no port, spawns no process, touches
+       no live Postgres, and writes nothing outside its own temporary root. Nothing here can collide with a
+       concurrent run in another working tree, so this assembly deliberately does NOT take the
+       machine-wide GatewayTestSuiteLock - and therefore runs immediately, in parallel with every other
+       working tree on the machine, instead of queueing behind them.
+
+       WHY THE SPLIT IS THIS WAY ROUND. The lock is armed by a [ModuleInitializer] in
+       CcDirector.Gateway.Tests, so it is taken when that ASSEMBLY LOADS - before any test runs, whatever
+       test filter was passed. That made every pure unit test in the project queue behind an unrelated run: on
+       2026-08-02 a run waited its full 45-minute limit and executed zero tests, twice. Moving the pure
+       tests OUT is what removes them from the lock; there is no way to opt a test out from inside.
+
+       THE DEFAULT IS THE LOCKED PROJECT, ON PURPOSE. A test that needs machine-global exclusivity and is
+       written in the wrong project would run unlocked beside another run and produce exactly the
+       corrupted-but-clean-looking evidence the lock exists to prevent. So the safe home is the default
+       home: anything new, or anything not yet classified, belongs in CcDirector.Gateway.Tests. A test only
+       moves here once it is PROVEN to need nothing machine-global. Fail-safe, not fail-open. -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- The tests here share the CcDirector.Gateway.Tests namespace, so they read as one suite to a
+         reader and a moved file needs no edit beyond the move itself. -->
+    <RootNamespace>CcDirector.Gateway.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.*" />
+    <PackageReference Include="NetArchTest.Rules" Version="1.3.2" />
+    <PackageReference Include="Mono.Cecil" Version="0.11.3" />
+    <PackageReference Include="xunit" Version="2.*" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CcDirector.Core\CcDirector.Core.csproj" />
+    <ProjectReference Include="..\CcDirector.ControlApi\CcDirector.ControlApi.csproj" />
+    <ProjectReference Include="..\CcDirector.Engine\CcDirector.Engine.csproj" />
+    <ProjectReference Include="..\CcDirector.Gateway.Contracts\CcDirector.Gateway.Contracts.csproj" />
+    <ProjectReference Include="..\CcDirector.Gateway\CcDirector.Gateway.csproj" />
+    <!-- The Postgres migration assembly. Nothing here calls into it: EF resolves the migration set BY
+         ASSEMBLY NAME at runtime, so it has to be present in the output directory or the model-only tests
+         throw FileNotFoundException. That makes this reference load-bearing exactly as it is in the locked
+         project - do not remove it as unused. -->
+    <ProjectReference Include="..\CcDirector.Gateway.Migrations.Postgres\CcDirector.Gateway.Migrations.Postgres.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- SHARED SOURCE, NOT A COPY. TestStorageRootRedirect points CcStorage.Root at a throwaway temporary
+         directory before any test runs. Without it a test that resolves the root - directly, or through any
+         Core type that resolves it internally - writes into the OWNER'S REAL %LOCALAPPDATA%\cc-director:
+         his live missions, cron jobs and key vault. That has already happened once (2026-07-15, a live
+         statistics file renamed aside). This assembly is new, so it would have started with no protection
+         at all; it is LINKED rather than copied so the two assemblies can never drift into disagreeing
+         about a guard this consequential. Its pinning test is linked with it, so an initializer that
+         silently fails to run is caught here too rather than only next door. -->
+    <Compile Include="..\CcDirector.Gateway.Tests\TestStorageRootRedirect.cs" Link="TestStorageRootRedirect.cs" />
+    <!-- The assembly's OTHER module initializer, and it is a live-data guard too: it pins the Director
+         instance-discovery directory to a per-process temp directory so no test can write an instance file
+         into the real %LOCALAPPDATA%\cc-director\config\director\instances\ (issue #322 - a test once
+         did, and the production Gateway painted a phantom unreachable Director in the owner's Cockpit). It
+         also disables the turn-brief sweep and Tailscale serve provisioning. Linked, not copied, for the
+         same reason as the redirect above: a split that quietly dropped it would leave this assembly both
+         failing and unsafe, which is exactly what it did until this line existed. -->
+    <Compile Include="..\CcDirector.Gateway.Tests\TestEnvironment.cs" Link="TestEnvironment.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- TEST HELPERS SHARED WITH THE LOCKED HALF, linked rather than copied. Each builds its own throwaway
+         temporary directory per instance, so nothing here is machine-global and none of it is a reason to
+         take the lock - but tests on BOTH sides of the split use them, and two copies of a helper drift.
+         One source, compiled into both assemblies. -->
+    <Compile Include="..\CcDirector.Gateway.Tests\Data\GatewayDbTestHarness.cs" Link="Data/GatewayDbTestHarness.cs" />
+    <Compile Include="..\CcDirector.Gateway.Tests\StatsConcurrencyTestDb.cs" Link="StatsConcurrencyTestDb.cs" />
+    <Compile Include="..\CcDirector.Gateway.Tests\TestEs256Key.cs" Link="TestEs256Key.cs" />
+    <Compile Include="..\CcDirector.Gateway.Tests\Stats\FrozenSqliteStatsReader.cs" Link="Stats/FrozenSqliteStatsReader.cs" />
+    <Compile Include="..\CcDirector.Gateway.Tests\Account\GatewayTestJwt.cs" Link="Account/GatewayTestJwt.cs" />
+    <Compile Include="..\CcDirector.Gateway.Tests\ConcurrencyStoreScenarios.cs" Link="ConcurrencyStoreScenarios.cs" />
+    <Compile Include="..\CcDirector.Gateway.Tests\HostedTestEnrollment.cs" Link="HostedTestEnrollment.cs" />
+    <Compile Include="..\CcDirector.Gateway.Tests\ProofOutputDirectory.cs" Link="ProofOutputDirectory.cs" />
+    <Compile Include="..\CcDirector.Gateway.Tests\TestCronNotifier.cs" Link="TestCronNotifier.cs" />
+    <Compile Include="..\CcDirector.Gateway.Tests\WingmanQaReport.cs" Link="WingmanQaReport.cs" />
+    <Compile Include="..\CcDirector.Gateway.Tests\ExecuteActionTestBackend.cs" Link="ExecuteActionTestBackend.cs" />
+  </ItemGroup>
+
+</Project>

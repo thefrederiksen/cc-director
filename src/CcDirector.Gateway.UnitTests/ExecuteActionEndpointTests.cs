@@ -10,52 +10,6 @@ using Xunit;
 
 namespace CcDirector.Gateway.Tests;
 
-/// <summary>
-/// In-process stub backend for execute-action tests: provides a real CircularTerminalBuffer so
-/// every byte the executor injects is observable, never spawns a process, and can simulate a
-/// process exit on demand (drives Session.Status to Exited through the same backend event a real
-/// ConPty exit uses).
-/// </summary>
-internal sealed class ExecuteActionTestBackend : ISessionBackend
-{
-    private bool _hasExited;
-
-    public int ProcessId => 0;
-    public string Status => "Buffer-only";
-    public bool IsRunning => !_hasExited;
-    public bool HasExited => _hasExited;
-    public CircularTerminalBuffer? Buffer { get; } = new CircularTerminalBuffer(65536);
-
-#pragma warning disable CS0067
-    public event Action<string>? StatusChanged;
-#pragma warning restore CS0067
-    public event Action<int>? ProcessExited;
-
-    /// <summary>Simulate the agent process dying (non-zero code so the manager keeps the row).</summary>
-    public void RaiseProcessExited(int exitCode)
-    {
-        _hasExited = true;
-        ProcessExited?.Invoke(exitCode);
-    }
-
-    public void Start(string executable, string args, string workingDir, short cols, short rows, Dictionary<string, string>? environmentVars = null) { }
-    public void Write(byte[] data) => Buffer?.Write(data);
-    public Task SendTextAsync(string text) => Task.CompletedTask;
-    public Task SendEnterAsync() => Task.CompletedTask;
-    public void Resize(short cols, short rows) { }
-
-    /// <summary>The graceful-shutdown window the last kill passed, so tests can assert the fleet-stop path
-    /// escalates on the shorter FleetKillGraceMs window instead of the standard one.</summary>
-    public int? LastGracefulTimeoutMs { get; private set; }
-
-    public Task GracefulShutdownAsync(int timeoutMs = 5000)
-    {
-        LastGracefulTimeoutMs = timeoutMs;
-        return Task.CompletedTask;
-    }
-
-    public void Dispose() { }
-}
 
 /// <summary>
 /// Gateway Cleanup mission (the cut): the Director's <c>POST /sessions/{sid}/execute-action</c> HTTP

@@ -27,6 +27,8 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="CcDirector.Gateway.Tests" />
+    <!-- The unlocked half of the same suite (pure tests split out of the machine-wide test lock). -->
+    <InternalsVisibleTo Include="CcDirector.Gateway.UnitTests" />
     <!-- The desktop rail renders the SAME presentation fold (SessionOrdering) the Gateway serves to the
          Cockpit and the phone, so all three screens cannot disagree about a session's colour and label.
          The fold takes a SessionDto, and ControlEndpoints.Map is the ONE mapper that builds one from a live

@@ -9,7 +9,7 @@
 
     WHY A SCRIPT RATHER THAN "JUST RUN DOTNET TEST". Two reasons, and the second is the important one.
 
-    1. It is faster than the obvious invocation. Seven test projects exist. Only CcDirector.Gateway.Tests
+    1. It is faster than the obvious invocation. Eight test projects exist. Only CcDirector.Gateway.Tests
        serializes itself machine-wide (GatewayTestSuiteLock, and see issue #1156 for why). The other six
        contend with nothing, so they are started IMMEDIATELY and run alongside the Gateway suite while it
        queues for its lock. A plain solution-wide `dotnet test` runs them one project at a time and pays
@@ -59,6 +59,11 @@ if ($Gateway -and $Fast) {
 # The Gateway suite is named separately because it is the only one that serializes machine-wide.
 $gatewayProject = "src\CcDirector.Gateway.Tests\CcDirector.Gateway.Tests.csproj"
 $otherProjects = @(
+    # The unlocked half of the Gateway suite. It holds the ~2750 PURE Gateway tests - no host, no port, no
+    # live database - so it takes no machine-wide lock and runs beside every other working tree instead of
+    # queueing behind them. It belongs in this list, not beside $gatewayProject, so -Fast still covers it:
+    # skipping the lock is the point, skipping the tests is not.
+    "src\CcDirector.Gateway.UnitTests\CcDirector.Gateway.UnitTests.csproj",
     "src\CcDirector.Core.Tests\CcDirector.Core.Tests.csproj",
     "src\CcDirector.Avalonia.Tests\CcDirector.Avalonia.Tests.csproj",
     "src\CcDirector.Engine.Tests\CcDirector.Engine.Tests.csproj",
