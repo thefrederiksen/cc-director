@@ -1,4 +1,4 @@
-using CcDirector.Core.Agents;
+﻿using CcDirector.Core.Agents;
 using CcDirector.Core.Backends;
 using CcDirector.Core.Claude;
 using CcDirector.Core.Input;
@@ -809,7 +809,7 @@ public sealed class Session : IDisposable
             if (_holdState == value) return;
             var wasOnHold = OnHold;
             _holdState = value;
-            // OnHoldChanged is the "is it parked?" signal (rail strip, FIFO conductor), so it fires only
+            // OnHoldChanged is the "is it parked?" signal (rail strip, Cockpit SNOOZED tag), so it fires only
             // when that answer actually flips - None <-> DeferredHold does not park anything.
             if (OnHold != wasOnHold) OnHoldChanged?.Invoke(OnHold);
             // HoldStateChanged fires on EVERY transition, including None <-> DeferredHold, which leaves
@@ -1753,7 +1753,7 @@ public sealed class Session : IDisposable
     /// forbids. (An earlier version of this comment went further and said "nothing that paints reads
     /// anyway (the Gateway is the single fold and reads the Director's cooked StatusColor for NOTHING)".
     /// That is FALSE and it is struck: the Gateway gates its voice-yellow briefing stamp on
-    /// <c>StatusColor == "red"</c>, and the desktop's needs-you count and FIFO filter read it directly. The
+    /// <c>StatusColor == "red"</c>, and the desktop's needs-you count reads it directly. The
     /// FOLD reads it for nothing, which is a much narrower claim. Deleting this ONE write was right because
     /// the Director must not decide a colour - not because the colour is unread.) Because that write was
     /// positive-evidence it was

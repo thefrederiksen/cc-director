@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using CcDirector.Core.Memory;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Utilities;
@@ -21,7 +21,7 @@ namespace CcDirector.Core.Wingman;
 /// <c>SessionDto</c> and is read by live consumers on BOTH sides, including a GATEWAY colour:
 /// <c>GatewayEndpoints</c> gates the voice-yellow briefing stamp on <c>StatusColor == "red"</c>, so yellow
 /// on the phone and the Cockpit depends on this mapping. The desktop's "N need you" header count and the
-/// FIFO window's red filter read it too, as does Car Mode's state fallback and the wingman brief's
+/// the removed FIFO window's red filter read it too, as does the wingman brief's
 /// CurrentColor. Deleting this computation would strand every one of them - a deleted producer under live
 /// consumers, which is this repository's signature bug. It is retired only after those readers move to the
 /// Gateway's fold (docs/new_architecture/session-state.html, "Still to do").

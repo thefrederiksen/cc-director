@@ -1,4 +1,4 @@
-using Avalonia.Media;
+﻿using Avalonia.Media;
 using CcDirector.Gateway.Contracts;
 using Xunit;
 
@@ -9,7 +9,7 @@ namespace CcDirector.Avalonia.Tests;
 ///
 /// There used to be five private palettes for the same colour names, and NOTHING tested any of
 /// them - so nothing noticed that "red" meant #EF4444 on the rail, #E5484D in the turn review,
-/// #F44747 in the FIFO window and the (dead) Director view, and #F14C4C on the phone. This file is
+/// #F44747 in the removed FIFO window and the (dead) Director view, and #F14C4C on the phone. This file is
 /// the C# half of the pin; the web/mobile client carries the same table in
 /// packages/client-core/src/sessions/ordering.ts, and docs/new_architecture/session-state.html is
 /// the single written source both sides cite. PaletteAgreementTests now READS that shipping TypeScript

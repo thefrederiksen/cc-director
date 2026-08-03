@@ -1,4 +1,4 @@
-using Avalonia.Media;
+﻿using Avalonia.Media;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 
@@ -14,7 +14,7 @@ namespace CcDirector.Avalonia;
 /// referencing that canonical map compile-time IS sharing the Gateway's own source of truth, not a
 /// second copy that can drift. (A change to the canonical hex therefore needs a desktop rebuild; the
 /// two ship together as one solution, so a colour never lands on one and not the other.) This class
-/// stays because the rail, the FIFO window and the turn review still need Avalonia
+/// stays because the rail and the turn review still need Avalonia
 /// brushes and the magenta sentinel; only its VALUES moved to the canonical map.
 ///
 /// The web/mobile client (packages/client-core/src/sessions/ordering.ts) cannot reference C#, so it
@@ -24,7 +24,7 @@ namespace CcDirector.Avalonia;
 ///
 /// There used to be FIVE private palettes for the same colour names: the rail said red was #EF4444,
 /// the turn review said #E5484D, the (dead) Director view said #F44747 - and there it meant EXITED,
-/// not needs-you - the FIFO window said #F44747, and the web client said #F14C4C. Every one of them
+/// not needs-you - the removed FIFO window said #F44747, and the web client said #F14C4C. Every one of them
 /// was a hand-rolled switch beside the code that used it. Nothing tested any of them, so nothing
 /// noticed that "the same colour" meant five different pixels.
 ///

@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using CcDirector.Core.Agents;
@@ -46,7 +46,7 @@ public static class WingmanService
     /// <summary>
     /// The single shared "explain this session" question. This is the one prompt every
     /// entry point that asks the Wingman to plainly read a session and say what it wants
-    /// should use - the FIFO conveyor briefing, the desktop Terminal "Explain" button, and
+    /// should use - the desktop Terminal "Explain" button, and
     /// any future caller - so improving how the Wingman explains a session improves all of
     /// them at once. Feed it to <see cref="AnswerViaSessionAsync"/> with the session's
     /// full cleaned terminal. Read-only and verbatim: it states what happened and what the

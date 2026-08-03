@@ -1,4 +1,4 @@
-namespace CcDirector.Gateway.Contracts;
+﻿namespace CcDirector.Gateway.Contracts;
 
 /// <summary>
 /// Describes a single agent session (Claude/Pi/Codex/Gemini) running inside a Director.
@@ -166,7 +166,7 @@ public sealed class SessionDto
     public string BriefingState { get; set; } = "None";
 
     /// <summary>The latest turn brief's needs-you one-liner (&lt;=8 words) for the rail /
-    /// FIFO / voice. Null when nothing is needed or no brief exists.</summary>
+    /// voice. Null when nothing is needed or no brief exists.</summary>
     public string? RailLine { get; set; }
 
     /// <summary>
@@ -414,9 +414,9 @@ public sealed class SessionDto
     public string? HoldState { get; set; }
 
     /// <summary>
-    /// True when the user has parked this session in the FIFO voice queue ("deal with this later") -
+    /// True when the user has parked this session ("deal with this later") -
     /// i.e. it is parked RIGHT NOW. A user override orthogonal to <see cref="ActivityState"/> and
-    /// <see cref="StatusColor"/>: the underlying state is still reported truthfully, but the FIFO
+    /// <see cref="StatusColor"/>: the underlying state is still reported truthfully, but the
     /// conductor skips held sessions. The UI renders this verbatim and never derives it.
     ///
     /// DERIVED from <see cref="HoldState"/>, never stored (defect 12): it is exactly

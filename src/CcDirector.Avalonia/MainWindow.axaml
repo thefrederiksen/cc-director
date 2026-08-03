@@ -164,16 +164,6 @@
                                        VerticalAlignment="Center" />
                         </StackPanel>
                     </Button>
-                    <Button x:Name="BtnStartFifo" Classes="toolbarBtn"
-                            Click="BtnFifo_Click"
-                            ToolTip.Tip="Start FIFO -- step through every session that needs you">
-                        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                            <Viewbox Width="14" Height="12">
-                                <Path Fill="#CCCCCC" Data="M0,0 L7,6 L0,12 Z M7,0 L14,6 L7,12 Z" />
-                            </Viewbox>
-                            <TextBlock Text="Start FIFO" FontSize="12" VerticalAlignment="Center" />
-                        </StackPanel>
-                    </Button>
                 </StackPanel>
             </DockPanel>
         </Border>
@@ -219,7 +209,7 @@
                     </DockPanel>
                 </Border>
 
-                <!-- New Session and Start FIFO moved to the top toolbar. -->
+                <!-- New Session moved to the top toolbar. -->
 
                 <!-- Version footer (very bottom): "v0.6.3 (1cc1abd)", build time in tooltip. -->
                 <Border DockPanel.Dock="Bottom" Padding="8,4">
