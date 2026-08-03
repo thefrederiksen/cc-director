@@ -41,6 +41,31 @@ public class WizardWindowFitTests
     /// </summary>
     private const double TheOldFixedHeight = 640;
 
+    /// <summary>
+    /// THE WIRING. Every other test here calls WindowFit.Fit itself, so deleting the two production
+    /// calls in the wizard would leave them all green - the reviewer's point, and it was right. The
+    /// headless display is roomier than anything under test, so nothing is ever clamped against it
+    /// and the call is unobservable; forcing a small work area makes it observable.
+    /// </summary>
+    [AvaloniaFact]
+    public void TheWizardActuallyFitsItselfToTheDisplayItOpensOn()
+    {
+        WindowFitter.WorkAreaOverride = new WorkArea(0, 0, 1024, 720, 1.0);
+        try
+        {
+            var wizard = new FirstRunWizardDialog(new AgentOptions());
+
+            Assert.True(
+                wizard.Height <= 720,
+                $"the wizard opened at {wizard.Height} against 720 of work area - it never fitted itself");
+            Assert.True(wizard.Width <= 1024);
+        }
+        finally
+        {
+            WindowFitter.WorkAreaOverride = null;
+        }
+    }
+
     [AvaloniaFact]
     public void TheWizardAsksForMoreRoomThanTheOldFixedHeight()
     {

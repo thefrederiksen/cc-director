@@ -24,6 +24,15 @@ namespace CcDirector.Avalonia;
 internal static class WindowFitter
 {
     /// <summary>
+    /// Substitutes the work area a window is fitted against. A TEST SEAM, and the only way to prove
+    /// that a window CALLS this at all: the headless display is roomier than anything under test, so
+    /// with the real work area nothing is ever clamped and deleting the production call sites leaves
+    /// every assertion green. Setting a small work area here makes the call observable.
+    /// Null in production, always.
+    /// </summary>
+    internal static WorkArea? WorkAreaOverride;
+
+    /// <summary>
     /// Fit before the window is shown. The platform frame does not exist yet, so the border and
     /// title bar overhead is unknown and the size is clamped against the work area alone - enough to
     /// stop a window very much larger than the desktop ever existing. Position is left alone,
@@ -51,6 +60,12 @@ internal static class WindowFitter
 
     private static void Apply(Window window, FrameOverhead frame, bool movePosition, string stage, string logPrefix)
     {
+        if (WorkAreaOverride is { } forced)
+        {
+            ApplyTo(window, forced, frame, movePosition, stage, logPrefix);
+            return;
+        }
+
         var screens = window.Screens;
         var screen = screens?.ScreenFromWindow(window) ?? screens?.Primary ?? screens?.All.FirstOrDefault();
         if (screen is null)
@@ -69,6 +84,12 @@ internal static class WindowFitter
             screen.WorkingArea.Height,
             screen.Scaling);
 
+        ApplyTo(window, area, frame, movePosition, stage, logPrefix);
+    }
+
+    private static void ApplyTo(
+        Window window, WorkArea area, FrameOverhead frame, bool movePosition, string stage, string logPrefix)
+    {
         var placement = WindowFit.Fit(window.Width, window.Height, area, frame);
 
         FileLog.Write(

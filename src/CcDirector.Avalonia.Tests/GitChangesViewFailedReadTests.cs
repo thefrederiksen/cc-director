@@ -61,7 +61,11 @@ public class GitChangesViewFailedReadTests
         await view.RefreshAsync();
 
         Assert.True(view.ProblemText.IsVisible);
-        Assert.Contains("no longer on disk", view.ProblemText.Text ?? "");
+        Assert.Contains("cannot be reached", view.ProblemText.Text ?? "");
+        // And it stops short of naming a cause. Directory.Exists is false for a folder that was
+        // deleted AND for one that is merely unreachable or unreadable, so "no longer on disk" -
+        // which is what this said first - asserted something nothing here established.
+        Assert.DoesNotContain("no longer on disk", view.ProblemText.Text ?? "");
         Assert.False(view.EmptyText.IsVisible);
         view.Detach();
     }

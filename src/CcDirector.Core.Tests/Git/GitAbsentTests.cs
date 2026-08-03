@@ -5,7 +5,7 @@ using Xunit;
 namespace CcDirector.Core.Tests.Git;
 
 /// <summary>
-/// What happens when git is not on the machine at all (devthrottle_internal issue #1048).
+/// What happens when git cannot be launched (devthrottle_internal issue #1048).
 ///
 /// These run a REAL subprocess launch against an executable name that resolves nowhere, so the
 /// operating system fails it for exactly the reason it fails on a clean Windows install: Process.Start
@@ -117,7 +117,7 @@ public class GitAbsentTests
     /// never happened and a git that ran and exited non-zero - so a folder that is simply not a
     /// checkout was described as a machine that could not start git.
     /// </summary>
-    [Fact]
+    [RequiresGitFact]
     public async Task GitSyncStatusProvider_WhenGitRanAndFailed_DoesNotClaimItNeverStarted()
     {
         var notARepo = Path.Combine(Path.GetTempPath(), "devthrottle-not-a-repo-" + Guid.NewGuid().ToString("N"));
@@ -140,10 +140,10 @@ public class GitAbsentTests
     /// The detector against the real machine. Every other test here injects the two machine-touching
     /// steps; this one runs neither injected, so PATH resolution, the subprocess and the version
     /// banner are all exercised together. It asserts Present because the machines this suite runs on
-    /// have git - a red here means either git really has gone missing or the detector has stopped
-    /// recognising a working one, and both are worth being told about.
+    /// have git. It SKIPS on a machine without one rather than failing: a git-less machine is a
+    /// supported machine, and a suite that reddens there reports a regression that has not happened.
     /// </summary>
-    [Fact]
+    [RequiresGitFact]
     public async Task GitPresenceDetector_OnThisMachine_ReachesADefiniteVerdict()
     {
         // This machine HAS git, so the detector must say so. The value of running it for real is that

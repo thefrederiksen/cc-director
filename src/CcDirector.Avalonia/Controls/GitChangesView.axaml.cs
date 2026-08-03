@@ -46,6 +46,14 @@ public partial class GitChangesView : UserControl
     private string? _repoPath;
     private string? _lastRawOutput;
 
+    // Which ATTACHMENT is current. Bumped by every Attach and every Detach, captured by each refresh
+    // when it starts, and compared when it finishes. Comparing the repository PATH instead was not
+    // enough: attaching to A, then B, then A again let A's first, slow result land on A's second
+    // attachment; two refreshes of the SAME folder could finish out of order; and comparing paths
+    // case-insensitively conflates genuinely different folders on a case-sensitive filesystem. An
+    // attachment is a thing with an identity, so it gets one.
+    private int _attachGeneration;
+
     /// <summary>Raised when the user requests to view a file.</summary>
     public event Action<string>? ViewFileRequested;
 
@@ -59,6 +67,7 @@ public partial class GitChangesView : UserControl
         FileLog.Write($"[GitChangesView] Attach: {repoPath}");
         Detach();
         _repoPath = repoPath;
+        _attachGeneration++;
 
         _pollTimer = new DispatcherTimer
         {
@@ -87,6 +96,8 @@ public partial class GitChangesView : UserControl
         _syncTimer = null;
         _repoPath = null;
         _lastRawOutput = null;
+        // Detaching ends the current attachment, so anything still in flight for it is stale too.
+        _attachGeneration++;
 
         StagedTree.ItemsSource = null;
         ChangesTree.ItemsSource = null;
@@ -167,12 +178,12 @@ public partial class GitChangesView : UserControl
     /// </summary>
     internal async Task RefreshAsync()
     {
-        // Pinned for the whole call. _repoPath is mutable and Attach can point this view at a
-        // different folder while the read below is in flight; every decision after the await is made
-        // against the folder this refresh actually asked about, and the result is thrown away if the
-        // view has since moved on. Without that, a slow FAILED read of folder A lands after folder B
-        // has loaded cleanly and wipes B's results with A's problem line.
+        // Pinned for the whole call, along with WHICH attachment asked. Every decision after the
+        // await is made against the folder this refresh actually asked about, and the result is
+        // dropped if the view has moved on since. Without that, a slow FAILED read of folder A lands
+        // after folder B has loaded cleanly and wipes B's results with A's problem line.
         var repoPath = _repoPath;
+        var generation = _attachGeneration;
         if (repoPath == null) return;
 
         if (!Directory.Exists(repoPath))
@@ -181,13 +192,17 @@ public partial class GitChangesView : UserControl
             // has been unplugged, used to leave whatever the last repository showed still on the
             // screen - or the "No changes detected" empty state, which is a claim about a repository
             // that is not there any more.
-            ShowProblem($"This folder is no longer on disk: {repoPath}");
+            //
+            // The wording stops short of what was checked. Directory.Exists returns false for a
+            // folder that was deleted AND for one that is merely unreachable or unreadable - a
+            // network share that is down, a permission that was withdrawn - so saying "no longer on
+            // disk" would state a cause we have not established.
+            ShowProblem($"This folder cannot be reached: {repoPath}");
             return;
         }
 
         var result = await _provider.GetStatusAsync(repoPath);
-        if (!string.Equals(repoPath, _repoPath, StringComparison.OrdinalIgnoreCase))
-            return;
+        if (generation != _attachGeneration) return;
 
         if (!result.Success)
         {
@@ -238,6 +253,10 @@ public partial class GitChangesView : UserControl
         ChangesTree.ItemsSource = null;
         StagedSection.IsVisible = false;
         EmptyText.IsVisible = false;
+        // The branch bar too. It is filled by a SEPARATE read on its own timer, so leaving it up
+        // beside a problem line shows the last branch, ahead and behind counts this view happened to
+        // learn - stale numbers presented as current, next to a line saying nothing could be read.
+        BranchBar.IsVisible = false;
         _lastRawOutput = null;
 
         ProblemText.Text = string.IsNullOrWhiteSpace(reason)

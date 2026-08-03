@@ -1,6 +1,7 @@
 using Avalonia.Headless.XUnit;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Git;
+using CcDirector.Core.Onboarding;
 using Xunit;
 
 namespace CcDirector.Avalonia.Tests;
@@ -64,6 +65,22 @@ public class WizardGitNoticeTests
         wizard.ApplyGitPresence(With(GitAvailability.Undetermined));
 
         Assert.False(wizard.CodeNoGitPanel.IsVisible);
+    }
+
+    /// <summary>
+    /// THE WIRING. Every other test here drives ApplyGitPresence directly, so deleting the detection
+    /// call from ShowStep would leave all of them green - the reviewer's point, and it was right.
+    /// This one proves that arriving at the Code step is what starts the probe.
+    /// </summary>
+    [AvaloniaFact]
+    public void ArrivingAtTheCodeStep_StartsTheGitProbe()
+    {
+        var wizard = Wizard();
+        Assert.False(wizard.GitProbeStarted);
+
+        wizard.ShowStepForTests(WizardStep.Code);
+
+        Assert.True(wizard.GitProbeStarted, "reaching the Code step did not start git detection");
     }
 
     /// <summary>

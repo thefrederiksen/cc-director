@@ -147,30 +147,35 @@ public static class GitPresenceDetector
 
     /// <summary>Detect git on this machine, using the real PATH and a real subprocess.</summary>
     public static Task<GitPresence> DetectAsync(CancellationToken ct = default)
-        => DetectAsync(c => ExecutableResolver.Resolve(c), RunVersionAsync, OperatingSystem.IsMacOS(), ct);
+        => DetectAsync(c => ExecutableResolver.Resolve(c), RunVersionAsync, File.Exists, OperatingSystem.IsMacOS(), ct);
 
     /// <summary>
-    /// The rule, with the two machine-touching steps injected so every branch is reachable in a
-    /// test without needing a machine that genuinely lacks git.
+    /// The rule, with the machine-touching steps injected so every branch is reachable in a test
+    /// without needing a machine that genuinely lacks git.
     /// </summary>
     internal static Task<GitPresence> DetectAsync(
         Func<string, string?> resolve,
         Func<string, CancellationToken, Task<GitVersionProbe>> probe,
         CancellationToken ct)
-        => DetectAsync(resolve, probe, OperatingSystem.IsMacOS(), ct);
+        => DetectAsync(resolve, probe, File.Exists, OperatingSystem.IsMacOS(), ct);
 
     /// <summary>
-    /// The rule with the platform passed in as well. The macOS branch is the reason this exists: it
-    /// is never taken on Windows, so on the machines this suite runs on there would otherwise be NO
-    /// test that can fail if the guard is deleted - and that guard is the one stopping the detector
-    /// from putting an installer dialog on a Mac user's screen.
+    /// The rule with the platform and the file check passed in as well. The macOS branches are the
+    /// reason this exists: they are never taken on Windows, so on the machines this suite runs on
+    /// there would otherwise be NO test that can fail if they are deleted - and one of them is what
+    /// stops the detector putting an installer dialog on a Mac user's screen.
     /// </summary>
     internal static async Task<GitPresence> DetectAsync(
         Func<string, string?> resolve,
         Func<string, CancellationToken, Task<GitVersionProbe>> probe,
+        Func<string, bool> fileExists,
         bool isMacOs,
         CancellationToken ct)
     {
+        // Before anything else. A caller who has asked to stop must not get a verdict back - the
+        // early returns below would otherwise hand out a confident answer after cancellation.
+        ct.ThrowIfCancellationRequested();
+
         var path = resolve(GitCommand);
         if (path is null)
         {
@@ -178,15 +183,27 @@ public static class GitPresenceDetector
             return new GitPresence(GitAvailability.NotFound, null, null, "git does not resolve on PATH");
         }
 
-        // DO NOT RUN APPLE'S STUB. On macOS /usr/bin/git is a Command Line Tools shim, and executing
-        // it when the tools are absent puts up Apple's "install the developer tools?" dialog. This
-        // detector's entire remit is to say one sentence and change nothing, so it must not be the
-        // thing that offers to install software. Nothing is claimed about such a machine either way.
-        if (IsAppleCommandLineToolsStub(path, isMacOs))
+        // APPLE'S SHIM IS TWO STATES, NOT ONE - and telling them apart WITHOUT RUNNING IT is the
+        // whole of this branch.
+        //
+        // On macOS /usr/bin/git is a Command Line Tools shim. It exists on every Mac. When the tools
+        // are installed it dispatches to the real git and behaves exactly like git; when they are
+        // not, RUNNING it puts up Apple's "install the developer tools?" dialog. So the shim is not
+        // one situation to be avoided - it is a working git and a prompting stub wearing the same
+        // path, and the first version of this guard could not tell them apart. It refused both,
+        // which traded a dialog for permanent silence on the commonest Mac configuration there is:
+        // we no longer merely stayed quiet, we lost the answer on a machine that HAS git.
+        //
+        // The tools ship the real executable at a known location, and the shim dispatches to it. So
+        // the question "will running the shim prompt?" is answerable by LOOKING, with no process
+        // started at all: if the real git is on disk the shim is safe to run, and if it is not, we
+        // launch nothing and say nothing. Silence stays the right answer for a Mac with no developer
+        // tools; it was never the right answer for a Mac with working git.
+        if (IsAppleCommandLineToolsShim(path, isMacOs) && !DeveloperToolsGitExists(fileExists))
         {
-            FileLog.Write($"[GitPresenceDetector] DetectAsync: {path} is the macOS developer-tools stub; not running it");
+            FileLog.Write($"[GitPresenceDetector] DetectAsync: {path} is Apple's shim and no developer-tools git is installed behind it; not running it");
             return new GitPresence(GitAvailability.Undetermined, path, null,
-                $"{path} is the macOS developer-tools stub and running it can prompt an install, so it was not run");
+                $"{path} is Apple's developer-tools shim with nothing behind it, and running it can prompt an install, so it was not run");
         }
 
         var result = await probe(path, ct);
@@ -233,11 +250,29 @@ public static class GitPresenceDetector
     /// outcome. A Mac with git from Homebrew or elsewhere resolves to that path instead and is probed
     /// normally.
     /// </summary>
-    private static bool IsAppleCommandLineToolsStub(string path, bool isMacOs)
-        => isMacOs && string.Equals(path, AppleStubPath, StringComparison.Ordinal);
+    private static bool IsAppleCommandLineToolsShim(string path, bool isMacOs)
+        => isMacOs && string.Equals(path, AppleShimPath, StringComparison.Ordinal);
 
-    /// <summary>Where Apple puts its Command Line Tools shims.</summary>
-    internal const string AppleStubPath = "/usr/bin/git";
+    /// <summary>
+    /// Whether a real git is installed behind Apple's shim. Purely a look at the filesystem - no
+    /// process is started, which is the point: this is the question that decides whether starting
+    /// one is safe.
+    /// </summary>
+    private static bool DeveloperToolsGitExists(Func<string, bool> fileExists)
+        => DeveloperToolsGitPaths.Any(fileExists);
+
+    /// <summary>Where Apple's shim lives. Present on every Mac, whether or not anything is behind it.</summary>
+    internal const string AppleShimPath = "/usr/bin/git";
+
+    /// <summary>
+    /// Where the REAL git lands when the developer tools are installed - the standalone Command Line
+    /// Tools, then a full Xcode. If either is on disk, the shim dispatches instead of prompting.
+    /// </summary>
+    internal static readonly string[] DeveloperToolsGitPaths =
+    {
+        "/Library/Developer/CommandLineTools/usr/bin/git",
+        "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
+    };
 
     /// <summary>
     /// Run <c>&lt;path&gt; --version</c> and capture what it says. Every way of failing to get an

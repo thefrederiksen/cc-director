@@ -165,6 +165,13 @@ public partial class FirstRunWizardDialog : Window
     /// <summary>The git verdict this run reached, or null before the probe has answered.</summary>
     internal GitPresence? DetectedGitPresence => _gitPresence;
 
+    /// <summary>
+    /// Whether the Code step has started the git probe. Exposed so a test can prove that ARRIVING at
+    /// the step is what triggers detection - without it, every wizard test drives ApplyGitPresence
+    /// directly and deleting the detection call from ShowStep leaves them all green.
+    /// </summary>
+    internal bool GitProbeStarted => _gitProbeRan;
+
     // Browsers step (issue #1012): whether browser-harness resolves on this machine, the ONE browser
     // this step sets up (more are added from the rail - signing in is interactive and cannot be
     // batched), whether a run is in flight, and the last failure. The failure is held rather than
