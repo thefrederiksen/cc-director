@@ -85,10 +85,13 @@ if ($Gateway -and $Parked) {
 }
 
 # THE TWO-MINUTE BUDGET IS THE RULE THIS LIST ENCODES. A suite is in the default run if it finishes
-# inside it, and parked if it does not. Measured 2026-08-02, whole fleet busy:
-#   Gateway.UnitTests  ~2m 0s   (2754 tests)      Avalonia    4s      Engine   4s
-#   HostedAgent          36s                      Launcher    2s      Terminal 11s
-# They start together, so the default costs about the slowest one.
+# inside it, and parked if it does not. DURATIONS ONLY - the test counts live once in the header, with
+# the date they were measured, because keeping them in two places is what let one drift by a factor of
+# thirty. Measured 2026-08-03 from a cold run:
+#   Gateway.UnitTests  56s   Avalonia  7s   HostedAgent  37s   Terminal 13s
+#   Launcher            4s   Engine    4s   Core.UnitTests <1s
+#   installer: setup.Tests 5s, setup-engine.Tests 8s (plus about 3s each to build)
+# They start together, so the default costs about the slowest one - Gateway.UnitTests.
 $defaultProjects = @(
     # The PARALLEL half of the Core tests. The project they came from runs sequentially
     # (DisableTestParallelization) and takes eleven minutes for the same kind of work - that attribute is
@@ -100,8 +103,8 @@ $defaultProjects = @(
     "src\CcDirector.Core.UnitTests\CcDirector.Core.UnitTests.csproj",
     # BACK IN THE DEFAULT RUN. It was parked for exceeding the ceiling at about 2 minutes quiet and 3 to 5
     # busy; it now finishes in under a minute, because the cost turned out to be the migration set being
-    # rebuilt from scratch once per database-backed test. Measured 2777 tests, about 56 seconds - the
-    # slowest suite in the default run and therefore the one that sets its wall clock.
+    # rebuilt from scratch once per database-backed test. At about 56 seconds it is the slowest suite in
+    # the default run, and therefore the one that sets its wall clock. (Count: see the header.)
     "src\CcDirector.Gateway.UnitTests\CcDirector.Gateway.UnitTests.csproj",
     "src\CcDirector.Avalonia.Tests\CcDirector.Avalonia.Tests.csproj",
     "src\CcDirector.Engine.Tests\CcDirector.Engine.Tests.csproj",
@@ -112,7 +115,8 @@ $defaultProjects = @(
 
 # THE INSTALLER, WHICH IS IN THE DEFAULT RUN AND IS NOT IN THE SOLUTION.
 #
-# These two are NOT parked and were never slow - 478 tests in about seven seconds. They were missing for a
+# These two are NOT parked and were never slow - about seven seconds of tests between them, counts in the
+# header. They were missing for a
 # plumbing reason: they are not in cc-director.sln, so the single solution build above never produced them
 # and the run list never named them. Nothing local ran them at all. The continuous integration job ran them
 # as a separate step, so while that job was waited on the gap was invisible; the moment local became the
