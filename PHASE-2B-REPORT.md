@@ -256,7 +256,7 @@ matched on method and path together, with tests on both sides so the tightening 
 
 ## What is NOT proven
 
-**The Gateway unit suite is intermittently red, and that is now SETTLED rather than asserted.** I first wrote this up as pre-existing contention while admitting I had not run the control. The Architect refused it, correctly. The control is in the closeouts below: the parent commit fails six different tests across three runs, none of them in the area mine failed in.
+**The Gateway unit suite is intermittently red on the parent commit as well**, so it is not a finding about this change. It turned out to be a finding about the GATE - ten distinct failures across six runs with no repeats, on two commits - and it is written up under "Findings about the fleet's own tooling" at the end of this report, together with the comparative landing criterion the Architect has set as a result.
 
 **The cross-tenant registration arm is structurally defended, not untested** - the Architect has
 ruled it closed and the reasoning is written out in the closeouts below. The within-tenant Director
@@ -403,3 +403,96 @@ change demonstrated directly, at the layer that enforces it.
 
 The two arms that CAN be represented at runtime - a different Director inside one tenant, and the
 expiry cap - both fail cleanly without their fixes, and are tested.
+
+---
+
+## Findings about the fleet's own tooling
+
+These are not footnotes about a flaky test. They are two independent reliability defects in the
+instrument the whole fleet merges on, uncovered by this mission, and they belong in the QA report as
+such. The Architect asked for them recorded in these terms because the second one only became
+visible when the control run for something else was finally performed.
+
+### Finding one: the local gate is not a reliable pass-or-fail signal
+
+**The evidence.** The Gateway unit suite was run six times across two commits - three on this
+mission's work, three on its unchanged parent `45b1114c5`:
+
+| | Failures | Which |
+|---|---|---|
+| Mission commit, run 1 | 1 | `GatewayStatsStoreMidChainContainmentTests.HealthyStores_AreNotReportedAsIncomplete` |
+| Mission commit, run 2 | 2 | `GatewayStatsSqliteAdoptionTests.Adopt_StoreWhoseTableHasTheRightNamesAndNothingElse...`, `GatewayInputStatsAggregatorTests.WingmanUsage...` |
+| Mission commit, run 3 | 1 | `GatewayStatsSqliteAdoptionTests.Adopt_ViewWearingATableName...` |
+| **Parent commit, run 1** | **0** | - |
+| **Parent commit, run 2** | **4** | `SpokenVoiceTests`, `WingmanVoiceServiceTests`, `SessionKeyAuthTests`, `MorningReportBuilderTests` |
+| **Parent commit, run 3** | **2** | `MorningReportWindowTests`, `VoiceUploadStoreTenantPartitionTests` |
+
+**Ten failures across six runs. Ten distinct tests. Not one repeat.** Every one passes when run alone.
+
+**What that actually means.** The usual reading - "there are some flaky tests" - is too small. On an
+UNCHANGED commit this suite produced a clean green and a four-failure red from the same source. So:
+
+- **A green is not evidence the change is sound.** It may be the run that happened to schedule well.
+- **A red is not evidence the change is broken.** It may be the run that happened not to.
+- The failures are not concentrated in one area, so "we know which tests are flaky" is not available
+  as a workaround. It landed in stats, speech, wingman, morning-report, voice-upload and
+  session-key-auth across six runs.
+
+**Why it matters to this mission specifically, rather than being someone else's problem.**
+`CLAUDE.md` rule 5a makes "`.\scripts\test-local.ps1` goes green" the gate the entire fleet merges
+on, deliberately in place of waiting for continuous integration. That criterion is only as good as
+the signal underneath it, and the signal is presently luck in both directions. Everything this
+mission eventually lands on main will be admitted by that criterion, including work nobody re-checks
+afterwards.
+
+**How this was nearly missed, which is the part worth keeping.** I hit the red, observed that the
+failing test differed each run and sat in code the mission never touched, and concluded "pre-existing
+contention". That conclusion was correct. It was also **unearned** - I had not run the parent, and I
+said so in the report while shipping the claim anyway. The Architect refused it twice. Running the
+control cost one command and about four minutes, and it did not merely confirm the claim: it turned a
+narrow excuse about three stats tests into a general finding about the gate. **A claim that explains
+away a red is exactly the claim that stops anyone looking.**
+
+### The landing criterion this forces, stated so it generalises
+
+The Architect has set the mission's landing criterion **comparatively rather than absolutely**, and
+it is written here in general terms because the method is not specific to this mission and nobody had
+written it down:
+
+> **A run on the change counts only against a run on its parent. A failure belongs to the change only
+> if it does not also appear on the parent.**
+
+Practically, on a red:
+
+1. Cut a worktree at the parent commit (`git worktree add ../<repo>-control <parent> --detach`), so
+   the comparison is like-for-like and the working tree is undisturbed.
+2. Run the same suite there, **more than once**. One run cannot distinguish a clean parent from a
+   lucky one - parent run 1 here was green and would have convicted this mission of a regression it
+   did not cause.
+3. A failure that appears on both is the gate's, not yours. A failure that appears only on the change
+   is yours, and one clean parent run is not enough to say so.
+
+This is not a licence to wave reds through. It is the opposite: it makes "pre-existing" a claim with
+a cost, payable in one command, instead of a sentence anyone can write for free.
+
+### Finding two: the gate serves stale assemblies on incremental builds
+
+The second reliability defect in the same instrument, and the one already known when this phase
+started: an incremental build can leave a project's previous assembly in place, so the suite reports
+on code that is not the code in front of you.
+
+**What I can say first-hand:** I was warned of this in the phase brief and worked around it
+throughout - `rm -rf obj bin` for every project whose result I intended to trust, before every result
+in this report. I did not myself hit a wrong diagnosis from it, because I never ran without the
+workaround. **What I am relaying rather than attesting:** the Architect records that it cost three
+wrong diagnoses earlier in this mission. That is theirs to stand behind, not mine, and I am marking
+which is which rather than inheriting it as something I saw.
+
+**The two defects share a shape, and that is the real finding.** In both cases the gate answers a
+question it cannot actually answer - "is this change sound?" - and the answer arrives looking
+authoritative. Stale assemblies make it answer about the wrong code; the flakiness makes it answer
+about the wrong run. A tool that is wrong loudly gets fixed. A tool that is wrong *plausibly*, and
+only sometimes, gets believed, and its wrong answers get written into reports as findings.
+
+Neither is fixed by this mission. Both are recorded here because a mission that merges on this gate
+should not also be the mission that quietly normalises it.
