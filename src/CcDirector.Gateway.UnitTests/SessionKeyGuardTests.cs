@@ -58,11 +58,83 @@ public sealed class SessionKeyGuardTests
     [InlineData("POST", "/missions")]
     [InlineData("POST", "/machines/SOREN_NORTH/sessions")]
     [InlineData("POST", "/machines/SOREN_NORTH/launch")]
-    [InlineData("POST", "/gateway/skills/move-session/draft")]
     [InlineData("POST", "/gateway/skills/move-session/publish")]
     [InlineData("POST", "/gateway/workflows/mission/clone")]
     public void The_action_side_of_the_agent_route_set_is_allowed(string method, string path)
         => Assert.True(SessionKeyGuard.Check(method, path).Allowed, $"{method} {path} should be allowed");
+
+    // ---------- The routes the SHIPPED CLIENTS actually call ----------
+    //
+    // Every case below is copied from the Gateway's route table and from the command line that calls it -
+    // SkillEndpoints/WorkflowEndpoints/CronJobEndpoints/CronRunEndpoints, and skill_ops.py/workflow_ops.py/
+    // schedule_ops.py - NOT from reading the guard and writing down what it does.
+    //
+    // That distinction is the whole finding. The guard previously allowed only four-segment
+    // POST /gateway/{kind}/{id}/{draft|publish|clone}, so `skill push` (POST /gateway/skills) and every
+    // draft update (PUT .../draft) returned 403 to every agent, and every schedule command except `list`
+    // did too. The suite stayed green because it asserted POST .../draft - a route that exists in neither
+    // the client nor the server. A test written from the implementation agrees with the implementation's
+    // mistakes; only a test written from the other side can disagree with it.
+
+    [Theory]
+    // Catalogue: create with POST on the collection, update with PUT on the draft.
+    [InlineData("POST", "/gateway/skills")]
+    [InlineData("POST", "/gateway/workflows")]
+    [InlineData("PUT", "/gateway/skills/move-session/draft")]
+    [InlineData("PUT", "/gateway/workflows/mission/draft")]
+    [InlineData("POST", "/gateway/skills/move-session/publish")]
+    [InlineData("POST", "/gateway/workflows/mission/publish")]
+    [InlineData("POST", "/gateway/skills/move-session/clone")]
+    [InlineData("DELETE", "/gateway/skills/move-session")]
+    [InlineData("DELETE", "/gateway/workflows/mission")]
+    // Schedules: the client needs create, read, update, delete, run-now and run-history.
+    [InlineData("GET", "/cron/jobs")]
+    [InlineData("POST", "/cron/jobs")]
+    [InlineData("GET", "/cron/jobs/cj_abc")]
+    [InlineData("PUT", "/cron/jobs/cj_abc")]
+    [InlineData("DELETE", "/cron/jobs/cj_abc")]
+    [InlineData("POST", "/cron/jobs/cj_abc/run")]
+    [InlineData("GET", "/cron/jobs/cj_abc/runs")]
+    public void The_methods_and_paths_the_shipped_clients_send_are_allowed(string method, string path)
+        => Assert.True(SessionKeyGuard.Check(method, path).Allowed,
+            $"{method} {path} is what the shipped client sends; refusing it returns 403 to every agent");
+
+    [Fact]
+    public void Turning_a_fleet_wide_capability_off_is_still_the_owners_call()
+    {
+        // The one catalogue verb that is not an agent contributing work. Widening create/update/delete
+        // must not drag these along with them.
+        Assert.False(SessionKeyGuard.Check("POST", "/gateway/skills/move-session/disable").Allowed);
+        Assert.False(SessionKeyGuard.Check("POST", "/gateway/skills/move-session/enable").Allowed);
+        Assert.False(SessionKeyGuard.Check("POST", "/gateway/workflows/mission/disable").Allowed);
+    }
+
+    [Theory]
+    // The browser surface is an exact method+path allow list, not a method/path cross-product. Each of
+    // these is a shape the guard used to authorize and the Gateway does not route: today they 404, and the
+    // day somebody adds a route at one of them it would have been silently open to every session key.
+    [InlineData("DELETE", "/directors/d-1/browsers")]
+    [InlineData("POST", "/directors/d-1/browsers/b-1/attach")]
+    [InlineData("GET", "/directors/d-1/browsers/b-1/start")]
+    [InlineData("DELETE", "/directors/d-1/browsers/b-1/signin")]
+    [InlineData("GET", "/directors/d-1/browsers/b-1")]
+    [InlineData("POST", "/directors/d-1/browsers/b-1")]
+    public void A_browser_shape_the_gateway_does_not_route_is_not_authorized(string method, string path)
+        => Assert.False(SessionKeyGuard.Check(method, path).Allowed,
+            $"{method} {path} is not a mapped route; authorizing it is latent widening");
+
+    [Theory]
+    // ...and the ones it DOES route stay allowed, so the tightening above did not overshoot.
+    [InlineData("GET", "/directors/d-1/browsers")]
+    [InlineData("POST", "/directors/d-1/browsers")]
+    [InlineData("GET", "/directors/d-1/browsers/b-1/attach")]
+    [InlineData("POST", "/directors/d-1/browsers/b-1/start")]
+    [InlineData("POST", "/directors/d-1/browsers/b-1/stop")]
+    [InlineData("POST", "/directors/d-1/browsers/b-1/signin")]
+    [InlineData("POST", "/directors/d-1/browsers/b-1/rename")]
+    [InlineData("DELETE", "/directors/d-1/browsers/b-1")]
+    public void The_browser_routes_the_gateway_does_map_are_allowed(string method, string path)
+        => Assert.True(SessionKeyGuard.Check(method, path).Allowed, $"{method} {path} is a mapped route");
 
     // ---------- Configuration: the owner's ruling of 2026-08-03 ----------
     //
@@ -200,9 +272,12 @@ public sealed class SessionKeyGuardTests
     // Turning a fleet-wide capability off for everyone.
     [InlineData("POST", "/gateway/skills/move-session/disable")]
     [InlineData("POST", "/gateway/workflows/mission/enable")]
-    // Deleting rather than reading.
+    // Deleting rather than reading. NOTE what is no longer here: DELETE /cron/jobs/{id} used to be
+    // asserted as refused, which was this test agreeing with the guard's mistaken idea of the schedule
+    // surface rather than with the client, whose `schedule delete` has always sent exactly that. It is
+    // allowed above now. Deleting a SESSION is different and stays refused - `request-deletion` is the
+    // verb an agent has for that, and it is a request rather than an execution.
     [InlineData("DELETE", "/sessions/11111111-1111-1111-1111-111111111111")]
-    [InlineData("DELETE", "/cron/jobs/cj_abc")]
     // The diagnostics and reporting surfaces.
     [InlineData("GET", "/diag/loadmetrics")]
     [InlineData("GET", "/gateway/reports/morning")]

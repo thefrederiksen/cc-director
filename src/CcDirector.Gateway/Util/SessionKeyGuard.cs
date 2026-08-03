@@ -121,10 +121,11 @@ public static class SessionKeyGuard
             // allow list that widens by pattern stops being an allow list.
             if (s.Length == 3 && s[0] == "sessions" && s[2] == "history") return true;
 
-            // One mission, one scheduled job, one workflow run.
+            // One mission, one workflow run. Scheduled jobs are handled by IsScheduleRoute below, which
+            // owns every /cron shape in one place rather than splitting the reads away from the writes.
             if (s.Length == 2 && s[0] == "missions") return true;
-            if (s.Length == 3 && s[0] == "cron" && s[1] == "jobs") return true;
             if (s.Length == 3 && s[0] == "gateway" && s[1] == "workflow-runs") return true;
+            if (IsScheduleRoute(verb, s)) return true;
 
             // What is installed on another machine, and which files it can see - the "start something over
             // there" discovery pair. Reads only; the start itself is a POST below.
@@ -136,7 +137,7 @@ public static class SessionKeyGuard
 
             // The automation browsers on one Director's machine. See IsBrowserRoute for how the /directors
             // surface is split between configuration and admission.
-            if (IsBrowserRoute(s)) return true;
+            if (IsBrowserRoute(verb, s)) return true;
 
             // Configuration, read side. A Director's settings, the application's own settings, and the
             // handovers on a Director - all three by the owner's ruling that an agent configures the product.
@@ -193,11 +194,14 @@ public static class SessionKeyGuard
             // route would reach the same Director, it just would not let the caller say which.
             if (s.Length == 3 && s[0] == "directors" && s[2] == "sessions") return true;
 
-            // Contribute to the fleet's shared skills and workflows: save a draft, publish it, clone one.
-            if (IsCatalogueWrite(s)) return true;
+            // Contribute to the fleet's shared skills and workflows: create one, publish it, clone one.
+            if (IsCatalogueWrite(verb, s)) return true;
+
+            // Create a scheduled job, or run one now.
+            if (IsScheduleRoute(verb, s)) return true;
 
             // Create, start, stop, sign in to or rename an automation browser.
-            if (IsBrowserRoute(s)) return true;
+            if (IsBrowserRoute(verb, s)) return true;
 
             // Write a handover. This is the one that makes moving a session possible without the owner
             // opening the interface, which is the whole point of the ruling.
@@ -206,15 +210,19 @@ public static class SessionKeyGuard
             return false;
         }
 
-        // ---------- Configuration writes ----------
-        // The settings surface is written with PUT, and PUT is allowed for NOTHING ELSE. Listing the settings
-        // paths explicitly rather than opening the verb - or opening /gateway by prefix - is what keeps this
-        // an allow list: a PUT that arrives on a route added next year is refused until somebody classifies
-        // it, and a prefix rule would have handed over /gateway/skills/{id}/disable the day it was written.
+        // ---------- Configuration and update writes ----------
+        // Every PUT is listed explicitly. Opening the verb, or opening /gateway by prefix, is what would stop
+        // this being an allow list: a PUT arriving on a route added next year must be refused until somebody
+        // classifies it, and a prefix rule would have handed over /gateway/skills/{id}/disable on day one.
         if (verb == "PUT")
         {
             if (IsDirectorSettings(s)) return true;
             if (IsApplicationSetting(s)) return true;
+
+            // Update a skill or workflow draft, and update a scheduled job. Both were refused until the
+            // inspection found that the shipped command line has always sent PUT here.
+            if (IsCatalogueWrite(verb, s)) return true;
+            if (IsScheduleRoute(verb, s)) return true;
             return false;
         }
 
@@ -224,7 +232,12 @@ public static class SessionKeyGuard
         if (verb == "DELETE")
         {
             // Delete an automation browser.
-            if (IsBrowserRoute(s)) return true;
+            if (IsBrowserRoute(verb, s)) return true;
+
+            // Delete a skill, a workflow, or a scheduled job - the same contribute-and-maintain surface as
+            // the creates above.
+            if (IsCatalogueWrite(verb, s)) return true;
+            if (IsScheduleRoute(verb, s)) return true;
 
             // Delete a handover. Beyond the literal words of the owner's ruling, which named handovers as
             // content an agent produces without saying who may remove one - and recorded as a judgement call
@@ -258,18 +271,26 @@ public static class SessionKeyGuard
     /// Matched by structure so a new sibling under /directors cannot be reached by accident: the id segment
     /// is never read here, only counted.
     /// </summary>
-    private static bool IsBrowserRoute(string[] s)
+    private static bool IsBrowserRoute(string verb, string[] s)
     {
         if (s.Length < 3 || s[0] != "directors" || s[2] != "browsers") return false;
 
-        // /directors/{id}/browsers
-        if (s.Length == 3) return true;
+        // /directors/{id}/browsers - list, or create.
+        if (s.Length == 3) return verb is "GET" or "HEAD" or "POST";
 
-        // /directors/{id}/browsers/{browserId}
-        if (s.Length == 4) return true;
+        // /directors/{id}/browsers/{browserId} - DELETE only. There is no GET of a single browser and no
+        // POST to the item itself, so neither is authorized.
+        if (s.Length == 4) return verb == "DELETE";
 
-        // /directors/{id}/browsers/{browserId}/{attach|start|stop|signin|rename}
-        return s.Length == 5 && s[4] is "attach" or "start" or "stop" or "signin" or "rename";
+        // /directors/{id}/browsers/{browserId}/{verb}. `attach` is a GET that prints the connection lines;
+        // the four actions are POSTs.
+        if (s.Length == 5)
+        {
+            if (s[4] == "attach") return verb is "GET" or "HEAD";
+            if (s[4] is "start" or "stop" or "signin" or "rename") return verb == "POST";
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -345,13 +366,71 @@ public static class SessionKeyGuard
         return s.Length == 5 && s[3] == "versions";
     }
 
-    /// <summary>The write shapes of the shared skill/workflow catalogue. Deliberately NOT enable/disable -
-    /// turning a fleet-wide capability off for everyone is an owner's decision, not an agent's.</summary>
-    private static bool IsCatalogueWrite(string[] s)
+    /// <summary>
+    /// The write shapes of the shared skill/workflow catalogue, matched on METHOD AND PATH TOGETHER
+    /// against the routes the Gateway actually maps in <c>SkillEndpoints</c> and <c>WorkflowEndpoints</c>.
+    ///
+    /// THIS METHOD IS WHY AN ALLOW LIST MUST BE BUILT FROM THE ROUTE TABLE, NOT FROM MEMORY. Its previous
+    /// form allowed only four-segment <c>POST /gateway/{kind}/{id}/{draft|publish|clone}</c>, so the two
+    /// verbs the shipped command line uses most - <c>POST /gateway/skills</c> to create and
+    /// <c>PUT /gateway/skills/{id}/draft</c> to update - were refused with 403 on every call. The guard's
+    /// own test did not catch it because it pinned <c>POST .../draft</c>, a route that does not exist: the
+    /// test agreed with the guard about a shape neither the client nor the server ever uses, so both were
+    /// consistently wrong and green. A test written from the guard tests the guard against itself.
+    ///
+    /// STILL REFUSED: <c>enable</c> and <c>disable</c>. Turning a fleet-wide capability off for everyone is
+    /// an owner's decision, and it is the one catalogue verb that is not an agent contributing work.
+    /// </summary>
+    private static bool IsCatalogueWrite(string verb, string[] s)
     {
-        if (s.Length != 4 || s[0] != "gateway") return false;
+        if (s.Length < 2 || s[0] != "gateway") return false;
         if (s[1] != "skills" && s[1] != "workflows") return false;
-        return s[3] is "draft" or "publish" or "clone";
+
+        // POST /gateway/{skills|workflows} - create.
+        if (s.Length == 2) return verb == "POST";
+
+        // DELETE /gateway/{skills|workflows}/{id} - remove one the agent (or the fleet) no longer wants.
+        if (s.Length == 3) return verb == "DELETE";
+
+        if (s.Length == 4)
+        {
+            // PUT .../{id}/draft - save a draft. The client's update verb, and previously refused.
+            if (s[3] == "draft") return verb == "PUT";
+
+            // POST .../{id}/{publish|clone}.
+            if (s[3] is "publish" or "clone") return verb == "POST";
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The scheduled-job surface, matched on method and path together against <c>CronJobEndpoints</c> and
+    /// <c>CronRunEndpoints</c>.
+    ///
+    /// Same defect as the catalogue above and found by the same inspection: the guard allowed the two GETs
+    /// and nothing else, so every schedule command except <c>schedule list</c> returned 403. A schedule is
+    /// configuration - it says what the product should do and when - so it falls on the allowed side of the
+    /// owner's line, and running one now is no more than doing by hand what the schedule does anyway.
+    /// </summary>
+    private static bool IsScheduleRoute(string verb, string[] s)
+    {
+        if (s.Length < 2 || s[0] != "cron" || s[1] != "jobs") return false;
+
+        // /cron/jobs - list, or create.
+        if (s.Length == 2) return verb is "GET" or "HEAD" or "POST";
+
+        // /cron/jobs/{id} - read, update, delete.
+        if (s.Length == 3) return verb is "GET" or "HEAD" or "PUT" or "DELETE";
+
+        // /cron/jobs/{id}/run - run it now. /cron/jobs/{id}/runs - its history.
+        if (s.Length == 4)
+        {
+            if (s[3] == "run") return verb == "POST";
+            if (s[3] == "runs") return verb is "GET" or "HEAD";
+        }
+
+        return false;
     }
 
     private static string Join(string[] segments) => string.Join('/', segments);
