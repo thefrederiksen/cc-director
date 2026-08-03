@@ -116,6 +116,11 @@ Every knob each tool takes is documented at the top of its `Program.cs` (or the 
   hosted 402 gate stays out of the measurement.
 - The production image mirrors every log line synchronously to the console; the rig does not, unless
   you set `LOADTEST_MIRROR_CONSOLE=1`. State which mode a run used in its report.
+- **A run being compared against a baseline must match that baseline's build configuration**, and the
+  steps above say `-c Release` while the 31 July baseline states it measured a **Debug** build. Build
+  whichever the comparison needs and record it - `run-stage0.ps1` refuses to run until you state it.
+  Machine noise makes a run look worse and is visible in the numbers; a build-configuration difference
+  makes it look better and cannot be seen in them afterwards.
 - A single-machine run has the drivers, the Gateway, and Postgres sharing one CPU. Note the machine in
   the report; treat absolute numbers as a floor and the SHAPE (which resource saturates first, where
   the knee is) as the finding.

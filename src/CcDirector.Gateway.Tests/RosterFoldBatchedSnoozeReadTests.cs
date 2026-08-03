@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Data;
@@ -228,6 +229,37 @@ public sealed class RosterFoldBatchedSnoozeReadTests : IDisposable
         // Not asked about, so not answered for - and the caller gets the honest "no row here" rather than a
         // stale one.
         Assert.Equal(HoldStates.None, snapshot.HoldStateFor("someone-elses", now));
+    }
+
+    [Fact]
+    public void TheSetBasedRead_IsScopedToItsTenant()
+    {
+        // A set-based read is exactly the shape that leaks across tenants if it escapes the scope: one query
+        // returning rows for whoever happens to be in the table, instead of one query per session under the
+        // caller's own context. It resolves the ambient tenant through GatewayDatabase.CreateContext and the
+        // global query filter, the same as the three per-session reads it replaces - and this says so with
+        // two tenants over ONE database file rather than trusting the mechanism.
+        var alice = new TenantId(Guid.NewGuid().ToString("N"));
+        var bob = new TenantId(Guid.NewGuid().ToString("N"));
+        var aliceReg = new SnoozeRegistry(_h.Open(new FixedTenantContext(alice)),
+            _h.LegacyPath(Guid.NewGuid().ToString("N") + ".json"));
+        var bobReg = new SnoozeRegistry(_h.Open(new FixedTenantContext(bob)),
+            _h.LegacyPath(Guid.NewGuid().ToString("N") + ".json"));
+
+        var now = DateTime.UtcNow;
+        aliceReg.Snooze("shared-session-id", now.AddHours(3), "dir-1");
+
+        // Bob asks about the very same session id and gets no row - not Alice's deadline, and not a hold.
+        var bobsView = bobReg.HoldSnapshotFor(new[] { "shared-session-id" });
+        Assert.Equal(0, bobsView.Count);
+        Assert.Equal(HoldStates.None, bobsView.HoldStateFor("shared-session-id", now));
+        Assert.Null(bobsView.SnoozeUntilFor("shared-session-id"));
+
+        // And the row really is there for its owner, so the empty answer above is a partition rather than an
+        // empty table.
+        var alicesView = aliceReg.HoldSnapshotFor(new[] { "shared-session-id" });
+        Assert.Equal(1, alicesView.Count);
+        Assert.Equal(HoldStates.Held, alicesView.HoldStateFor("shared-session-id", now));
     }
 
     [Fact]

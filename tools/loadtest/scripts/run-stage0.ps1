@@ -24,9 +24,28 @@ param(
     [int]$Polls = 30,
     [int]$IntervalSeconds = 2,
     # Free-text note for the provenance block, e.g. "after the batched-read fix, machine busy".
-    [string]$Label = ""
+    [string]$Label = "",
+    # THE CONFIGURATION FACTS THIS SCRIPT CANNOT SEE FROM INSIDE. They are required, not defaulted: a run
+    # whose build configuration nobody wrote down is not comparable to a baseline captured under a stated
+    # one, and unlike machine noise - which makes a run look WORSE and shows up in the numbers - a
+    # configuration difference makes it look BETTER and is undetectable from the figures afterwards.
+    [string]$BuildConfiguration = "",
+    [string]$ConsoleMirror = "",
+    [int]$Tenants = 0,
+    [int]$DirectorsConnected = 0,
+    [int]$SessionsPerDirector = 0
 )
 $ErrorActionPreference = "Stop"
+
+$missing = @()
+if (-not $BuildConfiguration) { $missing += "-BuildConfiguration (the 31 July baseline was Debug)" }
+if (-not $ConsoleMirror)      { $missing += "-ConsoleMirror (on/off; the baseline had it OFF - LOADTEST_MIRROR_CONSOLE unset)" }
+if ($Tenants -le 0)           { $missing += "-Tenants (tenants SEEDED in the rig)" }
+if ($DirectorsConnected -le 0){ $missing += "-DirectorsConnected (the baseline's Stage 0 had exactly 1)" }
+if ($SessionsPerDirector -le 0) { $missing += "-SessionsPerDirector (the baseline's Stage 0 had 8)" }
+if ($missing.Count -gt 0) {
+    throw "This run would not be comparable to the baseline, because these facts were not stated: $($missing -join '; '). Pass them; they are written into the artifact's provenance block."
+}
 
 . (Join-Path $PSScriptRoot "loadtarget-guard.ps1")
 Assert-LoadTargetAllowed -GatewayUrl $GatewayUrl
@@ -78,19 +97,20 @@ $machineAfter = Get-MachineState
 # afterwards by anyone reading the figures. Anything that could not be matched to the baseline belongs
 # here, stated, not in a footnote.
 $provenance = [ordered]@{
-    label            = $Label
-    stamp            = $stamp
-    gatewayUrl       = $GatewayUrl
-    polls            = $Polls
-    intervalSeconds  = $IntervalSeconds
-    gatewayVersion   = $healthz.version
-    machineName      = $env:COMPUTERNAME
-    machineBefore    = $machineBefore
-    machineAfter     = $machineAfter
-    # Not knowable from here - the rig owner states them in the run report: build configuration
-    # (the baseline was Debug), LOADTEST_MIRROR_CONSOLE (the baseline had it OFF), tenants, directors
-    # and sessions per director.
-    notRecordedHere  = "build configuration, LOADTEST_MIRROR_CONSOLE, tenant/director/session counts"
+    label               = $Label
+    stamp               = $stamp
+    gatewayUrl          = $GatewayUrl
+    polls               = $Polls
+    intervalSeconds     = $IntervalSeconds
+    gatewayVersion      = $healthz.version
+    machineName         = $env:COMPUTERNAME
+    buildConfiguration  = $BuildConfiguration
+    consoleMirror       = $ConsoleMirror
+    tenantsSeeded       = $Tenants
+    directorsConnected  = $DirectorsConnected
+    sessionsPerDirector = $SessionsPerDirector
+    machineBefore       = $machineBefore
+    machineAfter        = $machineAfter
 }
 
 $artifact = [ordered]@{
