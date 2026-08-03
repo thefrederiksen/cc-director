@@ -39,8 +39,16 @@ public sealed class TheErasureCarriesTheTenantPredicateOnNpgsqlTests
     public TheErasureCarriesTheTenantPredicateOnNpgsqlTests(Xunit.Abstractions.ITestOutputHelper output)
         => _output = output;
 
-    /// <summary>A well-formed connection string to nowhere. Nothing connects: see the interceptors.</summary>
-    private const string NeverConnected = "Host=127.0.0.1;Port=1;Database=devthrottle;Username=u;Password=p";
+    /// <summary>
+    /// A well-formed connection string to nowhere. Nothing connects: see the interceptors.
+    ///
+    /// The host is a name in the reserved <c>.invalid</c> top-level domain, which is guaranteed never to
+    /// resolve. It used to be a loopback address, and the reserved name says "nowhere" BETTER: a loopback
+    /// address names a real machine that may well have something listening on it, so a string claiming to
+    /// be unreachable was in fact the one address most likely to answer if an interceptor ever regressed.
+    /// The architecture guard in <c>NoCrossMachineLoopbackGuardTests</c> is what surfaced it.
+    /// </summary>
+    private const string NeverConnected = "Host=nowhere.invalid;Port=1;Database=devthrottle;Username=u;Password=p";
 
     private const string Tenant = "9f2c1b7e-4d3a-4c5e-8b6f-0a1d2e3f4a5b";
 
