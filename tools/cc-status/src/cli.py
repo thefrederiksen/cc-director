@@ -11,7 +11,7 @@ _tools_dir = str(Path(__file__).resolve().parent.parent.parent)
 if _tools_dir not in sys.path:
     sys.path.insert(0, _tools_dir)
 
-from cc_shared import director  # noqa: E402
+from cc_shared import gateway  # noqa: E402
 
 from . import __version__  # noqa: E402
 
@@ -41,20 +41,20 @@ def _run(
     """Show what fleet sessions are doing: activity state, agent, repo, and last status reason."""
     try:
         # Named roster_reason, not reason: the per-session loop below binds `reason` to a status reason.
-        sessions, complete, roster_reason, stale_caution = director.get_fleet()
-    except director.DirectorError as err:
+        sessions, complete, roster_reason, stale_caution = gateway.get_fleet()
+    except gateway.GatewayError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)
     # Issue #1051, reworded for #1159 step A: an unreachable Director's sessions are now LISTED rather than
     # dropped, so the list is no longer short - but those rows are the last that machine reported, not a
     # confirmed present state. Everything below reports on what came back; this is what says how far it can
     # be trusted.
-    caveat = director.roster_caveat(complete, roster_reason)
+    caveat = gateway.roster_caveat(complete, roster_reason)
 
     if target.strip().lower() != "all":
-        sessions = director.resolve_target(sessions, target)
+        sessions = gateway.resolve_target(sessions, target)
         if not sessions:
-            console.print(director.no_match_message(target))
+            console.print(gateway.no_match_message(target))
             # Not found, or not reached? The two call for opposite next steps, so never imply the first.
             if caveat:
                 console.print(f"[yellow]The fleet list searched may be incomplete.[/yellow] {caveat}")
@@ -65,7 +65,7 @@ def _run(
                 console.print(f"[yellow]{stale_caution}[/yellow]")
             raise typer.Exit(1)
 
-    me = director.session_id()
+    me = gateway.session_id()
     if not sessions:
         # "(no sessions running)" is a claim about the whole fleet that an incomplete roster cannot
         # support - the sessions may be running fine on the machine we could not read (issue #1051).
@@ -82,15 +82,15 @@ def _run(
         return
 
     for s in sessions:
-        sid = director.field(s, "sessionId", "SessionId")
-        name = director.field(s, "name", "Name") or "(unnamed)"
-        agent = director.field(s, "agent", "Agent")
-        state = director.field(s, "activityState", "ActivityState")
-        reason = director.field(s, "lastStatusReason", "LastStatusReason")
-        machine = director.field(s, "machineName", "MachineName")
-        repo = director.field(s, "repoPath", "RepoPath")
+        sid = gateway.field(s, "sessionId", "SessionId")
+        name = gateway.field(s, "name", "Name") or "(unnamed)"
+        agent = gateway.field(s, "agent", "Agent")
+        state = gateway.field(s, "activityState", "ActivityState")
+        reason = gateway.field(s, "lastStatusReason", "LastStatusReason")
+        machine = gateway.field(s, "machineName", "MachineName")
+        repo = gateway.field(s, "repoPath", "RepoPath")
         you = " [dim](you)[/dim]" if me and sid == me else ""
-        console.print(f"[bold]{director.short_id(sid)}[/bold]{you}  {name}  [[cyan]{agent}[/cyan]]  [yellow]{state}[/yellow] - {reason}")
+        console.print(f"[bold]{gateway.short_id(sid)}[/bold]{you}  {name}  [[cyan]{agent}[/cyan]]  [yellow]{state}[/yellow] - {reason}")
         console.print(f"    [dim]{machine}  {repo}[/dim]")
 
     if caveat:

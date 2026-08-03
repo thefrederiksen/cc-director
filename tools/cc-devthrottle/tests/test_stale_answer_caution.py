@@ -18,7 +18,7 @@ What these tests pin, in the two directions that matter:
 WHY cc-status AND cc-history ARE TESTED FROM HERE. Neither tool has a test directory, and the
 continuous integration job runs only this one (`tools/cc-devthrottle/tests`). Putting their tests
 somewhere nothing executes would be decoration. They are loaded by path below, under their own
-module names, so the same monkeypatched `cc_shared.director` serves all three tools.
+module names, so the same monkeypatched `cc_shared.gateway` serves all three tools.
 """
 
 import importlib.util
@@ -32,7 +32,7 @@ import typer
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from cc_shared import director  # noqa: E402
+from cc_shared import gateway  # noqa: E402
 from src import session_ops  # noqa: E402
 
 TOOLS = Path(__file__).resolve().parent.parent.parent
@@ -86,7 +86,7 @@ def wire(monkeypatch):
 
     def serve(sessions, complete=True, reason=None, stale=None):
         monkeypatch.delenv("CC_SESSION_ID", raising=False)
-        monkeypatch.setattr(director, "get_fleet", lambda: (sessions, complete, reason, stale))
+        monkeypatch.setattr(gateway, "get_fleet", lambda: (sessions, complete, reason, stale))
 
     return serve
 
@@ -94,13 +94,13 @@ def wire(monkeypatch):
 # ===== the transport: one fetch, and it carries the fourth field =====
 
 def test_the_one_fetch_reads_the_stale_answer_caution(monkeypatch):
-    monkeypatch.setattr(director, "get_json", lambda path: {
+    monkeypatch.setattr(gateway, "get_json", lambda path: {
         "sessions": [],
         "rosterComplete": True,
         "rosterStaleAnswerCaution": STALE_CAUTION,
     })
 
-    sessions, complete, reason, stale = director.get_fleet()
+    sessions, complete, reason, stale = gateway.get_fleet()
 
     assert sessions == []
     assert complete is True
@@ -111,19 +111,19 @@ def test_the_one_fetch_reads_the_stale_answer_caution(monkeypatch):
 def test_a_blank_caution_is_reported_as_absent(monkeypatch):
     # A whitespace string is not a sentence, and printing an empty yellow line is a caution that
     # says nothing while looking like a warning.
-    monkeypatch.setattr(director, "get_json", lambda path: {
+    monkeypatch.setattr(gateway, "get_json", lambda path: {
         "sessions": [], "rosterComplete": True, "rosterStaleAnswerCaution": "   ",
     })
 
-    _, _, _, stale = director.get_fleet()
+    _, _, _, stale = gateway.get_fleet()
 
     assert stale is None
 
 
 def test_an_older_director_serving_a_bare_array_yields_no_caution(monkeypatch):
-    monkeypatch.setattr(director, "get_json", lambda path: [_row()])
+    monkeypatch.setattr(gateway, "get_json", lambda path: [_row()])
 
-    sessions, complete, reason, stale = director.get_fleet()
+    sessions, complete, reason, stale = gateway.get_fleet()
 
     assert len(sessions) == 1
     assert (complete, reason, stale) == (None, None, None)
@@ -136,7 +136,7 @@ def test_there_is_exactly_one_roster_fetch_to_call():
     contract advertised the new one. If someone adds `get_fleet_with_<anything>` again, this fails
     and points at this docstring rather than at a bug report six weeks later.
     """
-    fetchers = [name for name in dir(director) if name.startswith("get_fleet")]
+    fetchers = [name for name in dir(gateway) if name.startswith("get_fleet")]
 
     assert fetchers == ["get_fleet"], f"more than one roster fetch exists: {fetchers}"
 
@@ -258,7 +258,7 @@ def test_cc_history_prints_the_stale_caution_when_a_target_is_not_found(wire, ca
 
 def test_cc_history_stays_silent_about_staleness_when_it_found_the_target(wire, capsys, plain, monkeypatch):
     wire([_row()], complete=True, stale=STALE_CAUTION)
-    monkeypatch.setattr(director, "get_json", lambda path: {"agent": "Claude", "messages": []})
+    monkeypatch.setattr(gateway, "get_json", lambda path: {"agent": "Claude", "messages": []})
 
     history_cli._run(target=SESSION_ID, last=10, version=False)
 

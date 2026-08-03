@@ -18,16 +18,22 @@ from src import browser_ops  # noqa: E402
 
 
 def _stub_director(monkeypatch, browsers, attach=None):
-    """Point browser_ops.director at canned responses keyed by request path."""
+    """Point browser_ops.gateway at canned responses keyed by request path.
+
+    Remove-the-network-port mission, phase 2: the browsers now hang off the Gateway's
+    /directors/{id}/browsers, addressed to the Director this session belongs to. The env var is set
+    here because that id is how "this machine" is named once the loopback port is gone.
+    """
+    monkeypatch.setenv("CC_DIRECTOR_ID", "dir-1")
 
     def fake_get_json(path):
-        if path == "browsers":
+        if path == "directors/dir-1/browsers":
             return {"browsers": browsers}
         if path.endswith("/attach"):
             return attach
         raise AssertionError(f"unexpected GET {path}")
 
-    monkeypatch.setattr(browser_ops.director, "get_json", fake_get_json)
+    monkeypatch.setattr(browser_ops.gateway, "get_json", fake_get_json)
 
 
 SAMPLE = [
@@ -98,11 +104,11 @@ class TestStop:
             posted["body"] = body
             return {"id": "center-consulting", "name": "Center Consulting", "statusLabel": "Stopped"}
 
-        monkeypatch.setattr(browser_ops.director, "post_json", fake_post_json)
+        monkeypatch.setattr(browser_ops.gateway, "post_json", fake_post_json)
 
         browser_ops.stop_browser("Center Consulting", json_output=False)
 
-        assert posted["path"] == "browsers/center-consulting/stop"
+        assert posted["path"] == "directors/dir-1/browsers/center-consulting/stop"
         out = capsys.readouterr().out
         assert "Stopped" in out
         assert "Center Consulting" in out

@@ -49,6 +49,18 @@ def resolve_base_url() -> str:
 
 
 def _auth_token() -> str:
+    """The ACCOUNT's Gateway credential, deliberately NOT this session's key.
+
+    Remove-the-network-port mission, phase 2: the skill, workflow, schedule and mission clients all
+    moved off this token and onto the session key, which closed a real hole - every agent that ran one
+    of those commands used to hold authority over the whole account. This client did NOT move, and the
+    reason is the session-key guard's own ruling rather than an oversight: it draws the line at the
+    ACCOUNT surface, and names the diagnostics and account routes as the owner's. A session key is
+    REFUSED here, so moving this client onto one would not narrow the command - it would break it.
+
+    So this stays an owner command, run by the person, on the owner's credential. It never called the
+    Director and is unaffected by the Director's agent surface being switched off.
+    """
     config = CCDirectorConfig().load()
     return (config.gateway.token or "").strip()
 

@@ -38,7 +38,7 @@ def posted(monkeypatch):
             calls.append({"path": path, "body": body, "timeout": timeout})
             return response
 
-        monkeypatch.setattr(session_ops.director, "post_json", post_json)
+        monkeypatch.setattr(session_ops.gateway, "post_json", post_json)
         return calls
 
     return serve
@@ -54,8 +54,9 @@ def test_it_posts_the_target_and_the_follow_up(posted):
 
     session_ops.compact_session(SESSION_ID, "continue")
 
-    assert calls[0]["path"] == "fleet/compact"
-    assert calls[0]["body"]["toSessionId"] == SESSION_ID
+    assert calls[0]["path"] == f"sessions/{SESSION_ID}/compact-context"
+    # The target is in the PATH now, asserted above; the body carries only what was asked for.
+    assert "toSessionId" not in calls[0]["body"]
     assert calls[0]["body"]["continuePrompt"] == "continue"
 
 
@@ -100,7 +101,8 @@ def test_it_defaults_to_this_session_when_no_target_is_given(posted):
 
     session_ops.compact_session(None, "continue")
 
-    assert calls[0]["body"]["toSessionId"] == SESSION_ID
+    # The target is in the PATH now, asserted above; the body carries only what was asked for.
+    assert "toSessionId" not in calls[0]["body"]
 
 
 def test_it_waits_far_longer_than_the_ordinary_verb(posted):
@@ -141,14 +143,14 @@ def test_a_failure_is_reported_and_exits_nonzero(posted, monkeypatch, capsys):
     monkeypatch.setenv("CC_SESSION_ID", SESSION_ID)
 
     def boom(path, body, timeout=30):
-        raise session_ops.director.DirectorError("director returned Timeout")
+        raise session_ops.gateway.GatewayError("gateway returned Timeout")
 
-    monkeypatch.setattr(session_ops.director, "post_json", boom)
+    monkeypatch.setattr(session_ops.gateway, "post_json", boom)
 
     with pytest.raises(typer.Exit):
         session_ops.compact_session(None, "continue")
 
-    assert "director returned Timeout" in capsys.readouterr().out
+    assert "gateway returned Timeout" in capsys.readouterr().out
 
 
 def test_a_bracketed_error_does_not_crash_the_verb(posted, monkeypatch, capsys, plain):
@@ -158,9 +160,9 @@ def test_a_bracketed_error_does_not_crash_the_verb(posted, monkeypatch, capsys, 
     monkeypatch.setenv("CC_SESSION_ID", SESSION_ID)
 
     def boom(path, body, timeout=30):
-        raise session_ops.director.DirectorError("no session at [/tmp/x] on that Director")
+        raise session_ops.gateway.GatewayError("no session at [/tmp/x] on that Director")
 
-    monkeypatch.setattr(session_ops.director, "post_json", boom)
+    monkeypatch.setattr(session_ops.gateway, "post_json", boom)
 
     with pytest.raises(typer.Exit):
         session_ops.compact_session(None, "continue")

@@ -12,10 +12,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import typer  # noqa: E402
 
+from cc_shared import gateway  # noqa: E402
 from src.schedule_ops import (  # noqa: E402
-    LOOPBACK_DEFAULT,
     GatewayError,
     ScheduleClient,
+    _auth_token,
     _client,
     assert_scope_is_unambiguous,
     resolve_base_url,
@@ -35,26 +36,48 @@ def _fake_response(status_code: int, json_body=None, text: str = "") -> MagicMoc
 
 
 class TestResolveBaseUrl:
-    def test_uses_configured_gateway_url(self):
-        cfg = MagicMock()
-        cfg.gateway.url = "https://gw.example.ts.net"
-        with patch("src.schedule_ops.CCDirectorConfig") as ctor:
-            ctor.return_value.load.return_value = cfg
-            assert resolve_base_url() == "https://gw.example.ts.net"
+    """Remove-the-network-port mission, phase 2: the address and the credential come from the SESSION.
 
-    def test_strips_trailing_slash(self):
-        cfg = MagicMock()
-        cfg.gateway.url = "https://gw.example.ts.net/"
-        with patch("src.schedule_ops.CCDirectorConfig") as ctor:
-            ctor.return_value.load.return_value = cfg
-            assert resolve_base_url() == "https://gw.example.ts.net"
+    These tests used to pin the opposite - a base URL read out of config.json with a loopback default,
+    and a token exemption for a Gateway that happened to be on this machine. Both are gone on purpose.
+    The command line no longer holds its own opinion about where the Gateway is, and it no longer
+    presents the account-wide token; a session is TOLD both at launch, as a pair.
+    """
 
-    def test_falls_back_to_loopback_default_when_unset(self):
-        cfg = MagicMock()
-        cfg.gateway.url = ""
-        with patch("src.schedule_ops.CCDirectorConfig") as ctor:
-            ctor.return_value.load.return_value = cfg
-            assert resolve_base_url() == LOOPBACK_DEFAULT
+    def test_uses_the_address_this_session_was_given(self, monkeypatch):
+        monkeypatch.setenv("CC_GATEWAY_URL", "https://gw.example.ts.net")
+        assert resolve_base_url() == "https://gw.example.ts.net"
+
+    def test_strips_trailing_slash(self, monkeypatch):
+        monkeypatch.setenv("CC_GATEWAY_URL", "https://gw.example.ts.net/")
+        assert resolve_base_url() == "https://gw.example.ts.net"
+
+    def test_there_is_no_loopback_default_to_fall_back_to(self, monkeypatch):
+        """NO FALLBACK. A default address would be the second door wearing the first one's clothes.
+
+        A machine that happened to run a Gateway on loopback would work and one that did not would
+        fail with a connection error instead of the sentence written for it - and neither user would
+        learn what is actually required.
+        """
+        monkeypatch.delenv("CC_GATEWAY_URL", raising=False)
+        with pytest.raises(gateway.GatewayError) as ex:
+            resolve_base_url()
+        assert "self-hosted gateway" in str(ex.value)
+
+    def test_the_credential_is_this_sessions_key_not_the_accounts_token(self, monkeypatch):
+        """The hole this closes: every agent running a schedule command used to hold the account.
+
+        _auth_token read gateway.token from config.json - the shared machine credential, with
+        authority over the whole account on every machine - and presented it to the Gateway.
+        """
+        monkeypatch.setenv("CC_GATEWAY_SESSION_KEY", "this-sessions-key")
+        assert _auth_token() == "this-sessions-key"
+
+    def test_a_session_with_no_key_is_refused_rather_than_sent_unauthenticated(self, monkeypatch):
+        monkeypatch.delenv("CC_GATEWAY_SESSION_KEY", raising=False)
+        with pytest.raises(gateway.GatewayError) as ex:
+            _auth_token()
+        assert "CC_GATEWAY_SESSION_KEY is not set" in str(ex.value)
 
 
 class TestErrorHandling:

@@ -158,6 +158,13 @@ public static class SessionKeyGuard
             // Start a session, or an application, on a machine in this account.
             if (s.Length == 3 && s[0] == "machines" && (s[2] == "sessions" || s[2] == "launch")) return true;
 
+            // Start a session on ONE named Director. The same verb as the machine route above, addressed
+            // precisely rather than to "some Director over there" - which is the only way to be specific on
+            // a machine running several instances, and how a session spawns on its OWN Director now that
+            // there is no loopback port meaning "here". No wider than what is already allowed: the machine
+            // route would reach the same Director, it just would not let the caller say which.
+            if (s.Length == 3 && s[0] == "directors" && s[2] == "sessions") return true;
+
             // Contribute to the fleet's shared skills and workflows: save a draft, publish it, clone one.
             if (IsCatalogueWrite(s)) return true;
 

@@ -20,15 +20,37 @@ from rich.console import Console
 from rich.table import Table
 
 # session_ops installs the ASCII-only Rich patch at import; cli imports it eagerly, so tables here
-# render with plain ASCII too. cc_shared.director is the loopback Control-API client.
-from cc_shared import director
+# render with plain ASCII too. cc_shared.gateway is the one door to the fleet.
+from cc_shared import gateway
+
+
+def _mine() -> str:
+    """The path prefix for the browsers on THIS session's own machine.
+
+    A browser is machine-local by construction - a loopback debug port and a profile directory on one
+    disk - so the only thing that can drive it is the Director on that machine. Before the
+    Remove-the-network-port mission that was implicit: the command line called its own Director over
+    loopback, so "this machine" was wherever the call landed. Going through the Gateway makes the
+    machine something that has to be NAMED, and the honest name is the Director this session belongs
+    to, which the session is told at launch. It is not resolved from a machine name the caller typed,
+    so `browser` can only ever mean the browsers beside the agent asking.
+    """
+    import os
+    director_id = (os.environ.get("CC_DIRECTOR_ID") or "").strip()
+    if not director_id:
+        raise gateway.GatewayError(
+            "CC_DIRECTOR_ID is not set, so this session cannot say which machine's browsers to use. "
+            "The automation browsers belong to one machine and are reached through the Director that "
+            "owns it; these commands only work inside a DevThrottle session."
+        )
+    return f"directors/{director_id}/browsers"
 
 console = Console()
 
 
 def _browsers() -> List[Dict[str, Any]]:
     """Every automation browser on this machine, each already folded (status/account/attach)."""
-    payload = director.get_json("browsers") or {}
+    payload = gateway.get_json(_mine()) or {}
     return payload.get("browsers", payload.get("Browsers", [])) or []
 
 
@@ -41,14 +63,14 @@ def _resolve(target: str) -> Dict[str, Any]:
     browsers = _browsers()
     key = target.strip().lower()
     for b in browsers:
-        if director.field(b, "id", "Id").lower() == key:
+        if gateway.field(b, "id", "Id").lower() == key:
             return b
     for b in browsers:
-        if director.field(b, "name", "Name").lower() == key:
+        if gateway.field(b, "name", "Name").lower() == key:
             return b
 
     if browsers:
-        names = ", ".join(f'"{director.field(b, "name", "Name")}"' for b in browsers)
+        names = ", ".join(f'"{gateway.field(b, "name", "Name")}"' for b in browsers)
         console.print(f'[red]No automation browser matching "{target}".[/red] On this machine: {names}.')
     else:
         console.print(
@@ -80,10 +102,10 @@ def list_browsers(json_output: bool) -> None:
     table.add_column("STATUS")
     table.add_column("ACCOUNT")
     for b in browsers:
-        name = director.field(b, "name", "Name") or "(unnamed)"
-        kind = director.field(b, "browser", "Browser") or "-"
-        status = director.field(b, "statusLabel", "StatusLabel") or director.field(b, "status", "Status") or "-"
-        account = director.field(b, "account", "Account") or "-"
+        name = gateway.field(b, "name", "Name") or "(unnamed)"
+        kind = gateway.field(b, "browser", "Browser") or "-"
+        status = gateway.field(b, "statusLabel", "StatusLabel") or gateway.field(b, "status", "Status") or "-"
+        account = gateway.field(b, "account", "Account") or "-"
         table.add_row(name, kind, status, account)
 
     console.print(table)
@@ -91,12 +113,12 @@ def list_browsers(json_output: bool) -> None:
 
 def create_browser(name: str, browser: str, json_output: bool) -> None:
     """Register a new drivable browser (does not launch it)."""
-    dto = director.post_json("browsers", {"name": name, "browser": browser})
+    dto = gateway.post_json(_mine(), {"name": name, "browser": browser})
     if json_output:
         print(json.dumps(dto, indent=2))
         return
-    bname = director.field(dto, "name", "Name")
-    kind = director.field(dto, "browser", "Browser")
+    bname = gateway.field(dto, "name", "Name")
+    kind = gateway.field(dto, "browser", "Browser")
     console.print(
         f'[green]Created[/green] browser "{bname}" ({kind}).\n'
         f'Sign it in once with:  cc-devthrottle browser signin "{bname}"'
@@ -106,13 +128,13 @@ def create_browser(name: str, browser: str, json_output: bool) -> None:
 def signin_browser(target: str, done: bool, json_output: bool) -> None:
     """Open the account page for a one-time human sign-in, or (with --done) record it complete."""
     browser = _resolve(target)
-    bid = director.field(browser, "id", "Id")
-    dto = director.post_json(f"browsers/{bid}/signin", {"done": bool(done)})
+    bid = gateway.field(browser, "id", "Id")
+    dto = gateway.post_json(f"{_mine()}/{bid}/signin", {"done": bool(done)})
     if json_output:
         print(json.dumps(dto, indent=2))
         return
 
-    bname = director.field(dto, "name", "Name")
+    bname = gateway.field(dto, "name", "Name")
     if done:
         console.print(f'[green]Recorded[/green]: "{bname}" is signed in and ready to drive.')
     else:
@@ -126,16 +148,16 @@ def signin_browser(target: str, done: bool, json_output: bool) -> None:
 def start_browser(target: str, json_output: bool) -> None:
     """Launch the browser if it is down, then print how to attach to it."""
     browser = _resolve(target)
-    bid = director.field(browser, "id", "Id")
-    dto = director.post_json(f"browsers/{bid}/start", {})
+    bid = gateway.field(browser, "id", "Id")
+    dto = gateway.post_json(f"{_mine()}/{bid}/start", {})
     if json_output:
         print(json.dumps(dto, indent=2))
         return
 
-    bname = director.field(dto, "name", "Name")
-    status = director.field(dto, "statusLabel", "StatusLabel")
-    bu_name = director.field(dto, "buName", "BuName")
-    bu_url = director.field(dto, "buCdpUrl", "BuCdpUrl")
+    bname = gateway.field(dto, "name", "Name")
+    status = gateway.field(dto, "statusLabel", "StatusLabel")
+    bu_name = gateway.field(dto, "buName", "BuName")
+    bu_url = gateway.field(dto, "buCdpUrl", "BuCdpUrl")
     console.print(f'[green]Started[/green] "{bname}" ({status}). Attach the harness with:')
     console.print(f'  eval "$(cc-devthrottle browser attach \'{bname}\')"')
     console.print(f"    BU_NAME={bu_name}")
@@ -145,10 +167,10 @@ def start_browser(target: str, json_output: bool) -> None:
 def attach_browser(target: str) -> None:
     """Print ONLY the two export lines, so `eval "$(... attach 'X')"` points the harness at it."""
     browser = _resolve(target)
-    bid = director.field(browser, "id", "Id")
-    info = director.get_json(f"browsers/{bid}/attach")
-    bu_name = director.field(info, "buName", "BuName")
-    bu_url = director.field(info, "buCdpUrl", "BuCdpUrl")
+    bid = gateway.field(browser, "id", "Id")
+    info = gateway.get_json(f"{_mine()}/{bid}/attach")
+    bu_name = gateway.field(info, "buName", "BuName")
+    bu_url = gateway.field(info, "buCdpUrl", "BuCdpUrl")
     # Plain print, no Rich: this output is meant to be eval'd by a shell.
     print(f"export BU_NAME={bu_name}")
     print(f"export BU_CDP_URL={bu_url}")
@@ -157,33 +179,33 @@ def attach_browser(target: str) -> None:
 def stop_browser(target: str, json_output: bool) -> None:
     """Close a running browser cleanly. Its login and folder are kept; only the process exits."""
     browser = _resolve(target)
-    bid = director.field(browser, "id", "Id")
-    dto = director.post_json(f"browsers/{bid}/stop", {})
+    bid = gateway.field(browser, "id", "Id")
+    dto = gateway.post_json(f"{_mine()}/{bid}/stop", {})
     if json_output:
         print(json.dumps(dto, indent=2))
         return
-    bname = director.field(dto, "name", "Name")
-    status = director.field(dto, "statusLabel", "StatusLabel")
+    bname = gateway.field(dto, "name", "Name")
+    status = gateway.field(dto, "statusLabel", "StatusLabel")
     console.print(f'[green]Stopped[/green] "{bname}" ({status}). Its login is kept - start it again any time.')
 
 
 def rename_browser(target: str, to: str, json_output: bool) -> None:
     """Rename a browser's label (its id, port, and folder are unchanged)."""
     browser = _resolve(target)
-    bid = director.field(browser, "id", "Id")
-    dto = director.post_json(f"browsers/{bid}/rename", {"name": to})
+    bid = gateway.field(browser, "id", "Id")
+    dto = gateway.post_json(f"{_mine()}/{bid}/rename", {"name": to})
     if json_output:
         print(json.dumps(dto, indent=2))
         return
-    console.print(f'[green]Renamed[/green] to "{director.field(dto, "name", "Name")}".')
+    console.print(f'[green]Renamed[/green] to "{gateway.field(dto, "name", "Name")}".')
 
 
 def remove_browser(target: str, json_output: bool) -> None:
     """Stop the browser, delete its folder, and drop it from the registry."""
     browser = _resolve(target)
-    bid = director.field(browser, "id", "Id")
-    bname = director.field(browser, "name", "Name")
-    result = director.delete(f"browsers/{bid}")
+    bid = gateway.field(browser, "id", "Id")
+    bname = gateway.field(browser, "name", "Name")
+    result = gateway.delete(f"{_mine()}/{bid}")
     if json_output:
         print(json.dumps(result, indent=2))
         return

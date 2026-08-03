@@ -30,7 +30,7 @@ def stub_get(monkeypatch):
         calls["path"] = path
         return calls["payload"]
 
-    monkeypatch.setattr(machine_ops.director, "get_json", fake_get_json)
+    monkeypatch.setattr(machine_ops.gateway, "get_json", fake_get_json)
     return calls
 
 
@@ -65,7 +65,7 @@ def test_apps_lists_what_the_machine_reported(stub_get):
 
     assert result.exit_code == 0
     assert "Google Chrome" in result.output
-    assert "fleet/machines/SOREN_NORTH/apps" in stub_get["path"]
+    assert "machines/SOREN_NORTH/apps" in stub_get["path"]
     assert "q=chrome" in stub_get["path"]
 
 
@@ -153,7 +153,7 @@ def test_files_passes_the_time_limit_through_as_milliseconds(stub_get):
 def test_launch_without_a_name_or_a_path_is_refused_before_anything_is_sent(monkeypatch):
     """Nothing should reach a remote computer when the command did not say what to start."""
     sent = []
-    monkeypatch.setattr(machine_ops.director, "post_json",
+    monkeypatch.setattr(machine_ops.gateway, "post_json",
                         lambda *a, **k: sent.append(a) or {})
 
     result = runner.invoke(app, ["machine", "launch", "SOREN_NORTH"])
@@ -170,12 +170,12 @@ def test_launch_by_name_posts_the_application_to_the_right_machine(monkeypatch):
         captured["body"] = body
         return {"ok": True}
 
-    monkeypatch.setattr(machine_ops.director, "post_json", fake_post)
+    monkeypatch.setattr(machine_ops.gateway, "post_json", fake_post)
 
     result = runner.invoke(app, ["machine", "launch", "SOREN_NORTH", "--app", "Google Chrome"])
 
     assert result.exit_code == 0
-    assert captured["path"] == "fleet/machines/SOREN_NORTH/launch"
+    assert captured["path"] == "machines/SOREN_NORTH/launch"
     assert captured["body"]["app"] == "Google Chrome"
     assert captured["body"]["path"] is None
     # The Gateway refuses any launch without this explicit confirmation (tenant-boundary hardening,

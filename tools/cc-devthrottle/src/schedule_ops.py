@@ -19,9 +19,9 @@ _tools_dir = str(Path(__file__).resolve().parent.parent.parent)
 if _tools_dir not in sys.path:
     sys.path.insert(0, _tools_dir)
 
-from cc_shared.config import CCDirectorConfig, get_config_path  # noqa: E402
+from cc_shared import gateway  # noqa: E402
+from cc_shared.config import get_config_path  # noqa: E402
 
-LOOPBACK_DEFAULT = "http://127.0.0.1:7878"
 TIMEOUT_SECONDS = 10
 SCHEDULE_RECURRING = "recurring"
 SCHEDULE_ONE_OFF = "oneOff"
@@ -45,20 +45,13 @@ def set_gateway_override(value: Optional[str]) -> None:
 
 
 def resolve_base_url() -> str:
-    config = CCDirectorConfig().load()
-    url = (config.gateway.url or "").strip()
-    return url.rstrip("/") if url else LOOPBACK_DEFAULT
+    """The Gateway this SESSION was told to call. See mission_ops for the reasoning."""
+    return gateway.gateway_base_url()
 
 
 def _auth_token() -> str:
-    config = CCDirectorConfig().load()
-    return (config.gateway.token or "").strip()
-
-
-def _is_loopback(url: str) -> bool:
-    """True when the URL targets this machine (a loopback Gateway needs no token)."""
-    host = (urlparse(url).hostname or "").lower()
-    return host in ("127.0.0.1", "localhost", "::1")
+    """This session's own Gateway key, replacing the account-wide token this path used to present."""
+    return gateway.session_key()
 
 
 class ScheduleClient:
@@ -66,16 +59,11 @@ class ScheduleClient:
 
     def __init__(self, base_url: Optional[str] = None) -> None:
         self.base_url = (base_url or resolve_base_url()).rstrip("/")
+        # A session key is REQUIRED, and _auth_token raises with the remedy when there is none.
+        # The old exemption - "a loopback Gateway on this machine needs no token" - is deliberately
+        # gone: the credential identifies WHICH SESSION is calling, and that is as necessary on this
+        # machine as on any other. It was the address, never the caller, that made loopback special.
         self._token = _auth_token()
-        # Make the auth requirement explicit instead of silently issuing an unauthenticated
-        # request to a remote Gateway: a loopback Gateway on this machine needs no token, but a
-        # remote one does.
-        if not self._token and not _is_loopback(self.base_url):
-            raise GatewayError(
-                f"Gateway URL {self.base_url} is remote but gateway.token is not set. "
-                "Set it with 'cc-devthrottle settings set gateway.token <token>' "
-                "(a loopback Gateway on this machine needs no token)."
-            )
 
     def _headers(self) -> Dict[str, str]:
         headers = {"Accept": "application/json"}

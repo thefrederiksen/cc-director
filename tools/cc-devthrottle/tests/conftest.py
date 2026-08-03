@@ -38,3 +38,23 @@ def strip_ansi(text: str) -> str:
 def plain():
     """Strip ANSI styling from captured command output before asserting on it."""
     return strip_ansi
+
+
+@pytest.fixture(autouse=True)
+def inside_a_session(monkeypatch):
+    """Run every test as if it were inside a DevThrottle session with a Gateway.
+
+    Remove-the-network-port mission, phase 2. The cc-* commands reach the fleet through the Gateway
+    and present THIS SESSION's own key, and both are read from the environment a session is launched
+    with. Without them every command in this suite would fail before reaching the code it is about,
+    with the same "there is no Gateway here" message - which would say nothing about what these tests
+    are for.
+
+    THIS IS NOT A HOLE IN THE NO-GATEWAY PROOF. That the commands fail loudly, and what they say when
+    they do, is asserted directly in cc_shared/tests/test_gateway.py against the real resolution -
+    each half separately, and the unreachable case too. This fixture only stops every OTHER test from
+    re-proving it by accident. The values are deliberately not a real address: any test that reaches
+    the network with them fails to connect rather than talking to something.
+    """
+    monkeypatch.setenv("CC_GATEWAY_URL", "http://gateway.invalid")
+    monkeypatch.setenv("CC_GATEWAY_SESSION_KEY", "test-session-key")
