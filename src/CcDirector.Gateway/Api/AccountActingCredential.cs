@@ -246,6 +246,18 @@ internal static class AccountOperations
         "Your account is active and your credit balance is unaffected - it simply cannot be read through "
         + "this hosted Gateway. Check it on the DevThrottle website.");
 
+    /// <summary>
+    /// The free Pro trial (issue #1243). Only the DENY and MISWIRED verdicts are ever rendered from this one:
+    /// the trial ledger is the Gateway's OWN table, so a resolved caller needs no forwardable credential and
+    /// the HostedNoGatewayCredential message is never reached. The reassurance still matters on the paths that
+    /// ARE reached, because "we cannot tell you about your trial" is the sentence most likely to be misread as
+    /// "you do not have one".
+    /// </summary>
+    public static readonly AccountOperation Trial = new(
+        "GET /account/trial",
+        "tell you whether a free Pro trial is running",
+        "This does not mean you have no trial - it means this Gateway could not find out.");
+
     public static readonly AccountOperation Logout = new(
         "POST /account/logout",
         "sign your account out",
