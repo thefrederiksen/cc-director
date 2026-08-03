@@ -1,0 +1,368 @@
+<title>DevThrottle Terminology - What We Call Things</title>
+<style>
+  :root {
+    --ink:#1a1f2b; --mute:#5b6675; --line:#d8dee8; --bg:#ffffff; --panel:#f6f8fb;
+    --red:#ef4444; --blue:#3b82f6; --grey:#9ca3af; --slate:#64748b;
+    --green:#16a34a; --amber:#f0b848; --accent:#2563eb; --purple:#a855f7; --orange:#f97316;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink:#e8ecf3; --mute:#9aa7b8; --line:#2b3340; --bg:#12161d; --panel:#1a1f28; }
+  }
+  :root[data-theme="dark"] {
+    --ink:#e8ecf3; --mute:#9aa7b8; --line:#2b3340; --bg:#12161d; --panel:#1a1f28;
+  }
+  :root[data-theme="light"] {
+    --ink:#1a1f2b; --mute:#5b6675; --line:#d8dee8; --bg:#ffffff; --panel:#f6f8fb;
+  }
+
+  * { box-sizing:border-box; }
+  body {
+    margin:0; padding:0 24px 80px; background:var(--bg); color:var(--ink);
+    font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  .wrap { max-width:1180px; margin:0 auto; }
+  header { border-bottom:3px solid var(--ink); padding:48px 0 20px; margin-bottom:30px; }
+  h1 { font-size:34px; line-height:1.15; margin:0 0 10px; letter-spacing:-0.02em; text-wrap:balance; }
+  .sub { color:var(--mute); font-size:15px; margin:0; }
+  h2 { font-size:23px; margin:48px 0 12px; padding-top:22px; border-top:1px solid var(--line);
+       letter-spacing:-0.01em; text-wrap:balance; }
+  h3 { font-size:17px; margin:26px 0 6px; }
+  p { margin:0 0 14px; }
+  .lede { font-size:18px; line-height:1.6; }
+  code { font:12.5px/1.4 "SF Mono",Consolas,"Liberation Mono",monospace; background:var(--panel);
+         padding:1px 5px; border-radius:3px; }
+  ul { margin:0 0 14px; padding-left:22px; }
+  li { margin-bottom:8px; }
+  footer { margin-top:56px; padding-top:20px; border-top:1px solid var(--line); color:var(--mute); font-size:13px; }
+  a { color:var(--accent); }
+  a:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+  .scroll { overflow-x:auto; margin:20px 0; }
+  table { border-collapse:collapse; width:100%; font-size:14px; min-width:1080px; }
+  th, td { border-bottom:1px solid var(--line); padding:11px 12px; text-align:left; vertical-align:top; }
+  th { background:var(--panel); font-weight:600; font-size:11px; text-transform:uppercase;
+       letter-spacing:.06em; color:var(--mute); }
+  tbody tr:hover { background:var(--panel); }
+  td.thing { font-weight:700; white-space:nowrap; }
+  td.now { font:12px/1.5 "SF Mono",Consolas,monospace; color:var(--mute); }
+  td.should { font-weight:600; }
+  td.cost, td.status { white-space:nowrap; font-size:12.5px; }
+  tr.sec td { background:var(--panel); font-size:11px; text-transform:uppercase; letter-spacing:.08em;
+              font-weight:700; color:var(--mute); padding:7px 12px; }
+  tr.done td.thing { color:var(--mute); }
+
+  .tag { display:inline-block; font:10.5px/1 -apple-system,"Segoe UI",sans-serif; font-weight:700;
+         text-transform:uppercase; letter-spacing:.07em; padding:4px 8px; border-radius:99px;
+         color:#fff; white-space:nowrap; }
+  .t-keep { background:var(--green); }
+  .t-ren  { background:var(--red); }
+  .t-add  { background:var(--purple); }
+  .t-drop { background:var(--slate); }
+  .t-new  { background:var(--accent); }
+
+  .st { font:10.5px/1 -apple-system,sans-serif; font-weight:700; text-transform:uppercase;
+        letter-spacing:.07em; padding:4px 8px; border-radius:4px; border:1px solid var(--line); }
+  .s-done { color:var(--green); border-color:var(--green); }
+  .s-open { color:var(--amber); border-color:var(--amber); }
+
+  .c-none { color:var(--green); font-weight:600; }
+  .c-low  { color:var(--green); }
+  .c-med  { color:var(--amber); font-weight:600; }
+  .c-high { color:var(--red); font-weight:600; }
+
+  .callout { background:var(--panel); border-left:4px solid var(--accent); padding:15px 17px;
+             margin:20px 0; border-radius:0 6px 6px 0; }
+  .callout.warn { border-left-color:var(--red); }
+  .callout.ok { border-left-color:var(--green); }
+  .callout p:last-child { margin-bottom:0; }
+</style>
+
+<div class="wrap">
+
+<header>
+  <h1>DevThrottle Terminology</h1>
+  <p class="sub">Every name: what the thing is, what we call it today, what it should be called
+  &middot; reviewed independently by Codex and Grok &middot; 2 August 2026</p>
+</header>
+
+<p class="lede">Twenty names, all settled. The rule we worked to: we do not have to copy the industry, but we
+must not use a word that already means something <em>different</em> in it. Two things still need building
+rather than deciding &mdash; the Task record, and the renames listed in the Cost column.</p>
+
+<div class="callout">
+  <p><strong>Where "team" is used loosely today, tighten it.</strong> The fleet preamble, the broadcast policy,
+  the fleet-comms skill, the mission conduct and the command line all say "your own team" to mean the sessions
+  you may message &mdash; which the skill defines as the sessions on your mission, or, for a solo session, the
+  same repository. That second case is a team with no Team workflow. Where those strings mean message scope,
+  say "the sessions on your mission"; keep "team" for the real thing.</p>
+</div>
+
+<div class="scroll">
+<table>
+  <thead>
+    <tr>
+      <th style="width:105px">Thing</th>
+      <th style="width:260px">What it is</th>
+      <th style="width:225px">Called today</th>
+      <th style="width:230px">Should be called</th>
+      <th style="width:95px">Cost</th>
+      <th style="width:85px">Status</th>
+    </tr>
+  </thead>
+  <tbody>
+
+  <tr class="sec"><td colspan="6">The work</td></tr>
+
+  <tr class="done">
+    <td class="thing">Session</td>
+    <td>One running coding agent: a process, on a machine, in a repository.</td>
+    <td class="now">Session</td>
+    <td class="should"><span class="tag t-keep">keep</span> Session</td>
+    <td class="cost c-none">none</td>
+    <td class="status"><span class="st s-done">settled</span></td>
+  </tr>
+
+  <tr class="done">
+    <td class="thing">Mission</td>
+    <td>An undertaking: <em>why</em> we are doing it, <em>who</em> is on it together, and the <em>tasks</em>
+      it breaks into.</td>
+    <td class="now">Mission</td>
+    <td class="should"><span class="tag t-keep">keep</span> Mission</td>
+    <td class="cost c-none">none</td>
+    <td class="status"><span class="st s-done">settled</span></td>
+  </tr>
+
+  <tr class="done">
+    <td class="thing">Task</td>
+    <td>One piece of a mission, handed to one worker. A mission has several.</td>
+    <td class="now">used constantly in our documents; modelled nowhere</td>
+    <td class="should"><span class="tag t-keep">keep</span> Task. Whether we <em>build</em> it is a separate
+      decision &mdash; a real record with a mission, an assignee, a state and a proof link.</td>
+    <td class="cost c-med">name: none<br>build: a feature</td>
+    <td class="status"><span class="st s-done">name settled</span></td>
+  </tr>
+
+  <tr class="done">
+    <td class="thing">Workflow</td>
+    <td>A reusable, versioned, published way of working. The <em>how</em>, not the <em>what</em>.</td>
+    <td class="now">Workflow</td>
+    <td class="should"><span class="tag t-keep">keep</span> Workflow</td>
+    <td class="cost c-none">none</td>
+    <td class="status"><span class="st s-done">settled</span></td>
+  </tr>
+
+  <tr class="done">
+    <td class="thing">Run</td>
+    <td>One execution of a workflow, in service of a mission.</td>
+    <td class="now">Workflow run</td>
+    <td class="should"><span class="tag t-keep">keep</span> Run</td>
+    <td class="cost c-none">none</td>
+    <td class="status"><span class="st s-done">settled</span></td>
+  </tr>
+
+  <tr class="done">
+    <td class="thing">Team</td>
+    <td>The workflow where an Architect settles the design, a Manager drives, and Workers build. Also the
+      sessions themselves, when they are on one mission together.</td>
+    <td class="now">the "mission" workflow &mdash; competes with Mission</td>
+    <td class="should"><span class="tag t-ren">rename</span> Team. Not Crew: that is CrewAI's signature
+      word.</td>
+    <td class="cost c-low">low</td>
+    <td class="status"><span class="st s-done">settled</span></td>
+  </tr>
+
+  <tr class="sec"><td colspan="6">Roles &mdash; what a session is for</td></tr>
+
+  <tr class="done">
+    <td class="thing">Standalone</td>
+    <td>Works alone, faces the human.</td>
+    <td class="now">Standalone</td>
+    <td class="should"><span class="tag t-keep">keep</span> Standalone</td>
+    <td class="cost c-none">none</td>
+    <td class="status"><span class="st s-done">settled</span></td>
+  </tr>
+
+  <tr class="done">
+    <td class="thing">Architect</td>
+    <td>Settles the design and writes the phases down. Must be declared; cannot be inferred.</td>
+    <td class="now">Architect</td>
+    <td class="should"><span class="tag t-keep">keep</span> Architect</td>
+    <td class="cost c-none">none</td>
+    <td class="status"><span class="st s-done">settled</span></td>
+  </tr>
+
+  <tr class="done">
+    <td class="thing">Manager</td>
+    <td>Drives the phases and supervises the workers.</td>
+    <td class="now">Manager</td>
+    <td class="should"><span class="tag t-keep">keep</span> Manager</td>
+    <td class="cost c-none">none</td>
+    <td class="status"><span class="st s-done">settled</span></td>
+  </tr>
+
+  <tr class="done">
+    <td class="thing">Worker</td>
+    <td>Builds.</td>
+    <td class="now">Worker</td>
+    <td class="should"><span class="tag t-keep">keep</span> Worker &mdash; accepted collision (Temporal and
+      Kubernetes use it for a process)</td>
+    <td class="cost c-none">none</td>
+    <td class="status"><span class="st s-done">settled</span></td>
+  </tr>
+
+  <tr class="done">
+    <td class="thing">Reviewer</td>
+    <td>A different session from the one that wrote the work, checking it before it lands.</td>
+    <td class="now">named in a workflow we ship; cannot be recorded</td>
+    <td class="should"><span class="tag t-add">add</span> Reviewer &mdash; the fifth role</td>
+    <td class="cost c-low">low</td>
+    <td class="status"><span class="st s-done">settled</span></td>
+  </tr>
+
+  <tr>
+    <td class="thing">Inspector</td>
+    <td>A Reviewer carrying one extra requirement: it must be from a <em>different agent family</em> to the
+      people who did the work.</td>
+    <td class="now">named seven times in our mission conduct; cannot be recorded</td>
+    <td class="should"><span class="tag t-keep">keep the word</span> but NOT a role. It is a Reviewer with a
+      constraint, and the constraint is already recorded &mdash; every session and every participant row
+      carries its agent kind.</td>
+    <td class="cost c-none">none</td>
+    <td class="status"><span class="st s-done">settled</span></td>
+  </tr>
+
+  <tr class="sec"><td colspan="6">How sessions relate</td></tr>
+
+  <tr class="done">
+    <td class="thing">Supervisor</td>
+    <td>The session that supervises another. Live; changes how the session is displayed.</td>
+    <td class="now">Controller, ControllerSessionId, --controlled-by</td>
+    <td class="should"><span class="tag t-ren">rename</span> Supervisor</td>
+    <td class="cost c-med">medium</td>
+    <td class="status"><span class="st s-done">settled</span></td>
+  </tr>
+
+  <tr class="done">
+    <td class="thing">Parent</td>
+    <td>The session that spawned another. Historical; no display effect.</td>
+    <td class="now">ParentSessionId</td>
+    <td class="should"><span class="tag t-keep">keep</span> Parent</td>
+    <td class="cost c-none">none</td>
+    <td class="status"><span class="st s-done">settled</span></td>
+  </tr>
+
+  <tr class="done">
+    <td class="thing">Participation</td>
+    <td>A session's membership of a run &mdash; currently active, or ended.</td>
+    <td class="now">"seat" for the live one, "participant" for the record</td>
+    <td class="should"><span class="tag t-ren">rename</span> One Participation, active or ended. Drop
+      "seat".</td>
+    <td class="cost c-low">low</td>
+    <td class="status"><span class="st s-done">settled</span></td>
+  </tr>
+
+  <tr class="done">
+    <td class="thing">Group</td>
+    <td>An older way of clustering sessions in the rail. Mission already does this.</td>
+    <td class="now">GroupId, GroupRole, GroupName</td>
+    <td class="should"><span class="tag t-drop">retire</span> Use Mission</td>
+    <td class="cost c-med">medium</td>
+    <td class="status"><span class="st s-done">settled</span></td>
+  </tr>
+
+  <tr class="sec"><td colspan="6">State</td></tr>
+
+  <tr class="done">
+    <td class="thing">Snooze</td>
+    <td>Suppressing a session's demand for attention, now or when it stops working.</td>
+    <td class="now">HoldState on the wire, Snooze in the database, "Snoozed" on screen, "parked" in our
+      prose, DeferredHold for not-yet-landed</td>
+    <td class="should"><span class="tag t-ren">rename</span> Snooze, everywhere. Not-yet-landed =
+      <strong>Snooze requested</strong></td>
+    <td class="cost c-high">high</td>
+    <td class="status"><span class="st s-done">settled</span></td>
+  </tr>
+
+  <tr class="sec"><td colspan="6">The machinery</td></tr>
+
+  <tr>
+    <td class="thing">Agent</td>
+    <td>The coding agent command line tool: Claude Code, Codex, Gemini, Grok.</td>
+    <td class="now">"Agent" &mdash; used for both the tool <em>and</em> the thing running in a session</td>
+    <td class="should"><span class="tag t-ren">split, in prose only</span> Agent = the tool. Session = the
+      running thing; never call a session an agent. <code>AgentKind</code> and <code>--agent</code> stay as
+      they are &mdash; they read correctly at the point of use.</td>
+    <td class="cost c-low">low</td>
+    <td class="status"><span class="st s-done">settled</span></td>
+  </tr>
+
+  <tr class="done">
+    <td class="thing">Director</td>
+    <td>The application on each machine that drives that machine's sessions.</td>
+    <td class="now">Director</td>
+    <td class="should"><span class="tag t-keep">keep</span> Director</td>
+    <td class="cost c-none">none</td>
+    <td class="status"><span class="st s-done">settled</span></td>
+  </tr>
+
+  <tr class="done">
+    <td class="thing">Gateway</td>
+    <td>The cloud service that aggregates every machine and owns every display ruling.</td>
+    <td class="now">Gateway</td>
+    <td class="should"><span class="tag t-keep">keep</span> Gateway &mdash; but describe it as the
+      <strong>control plane</strong>, which is what it is</td>
+    <td class="cost c-none">none</td>
+    <td class="status"><span class="st s-done">settled</span></td>
+  </tr>
+
+  </tbody>
+</table>
+</div>
+
+<div class="callout ok">
+  <p><strong>Mission and Run are two records, and that is correct.</strong> I originally wanted to collapse
+  them into one. That was wrong. A Mission is a durable statement of purpose that holds several tasks and can
+  outlive any single execution; a Run is one mechanical execution of a workflow. They link &mdash; one to one
+  in the common case &mdash; and neither is a duplicate of the other.</p>
+</div>
+
+<div class="callout warn">
+  <p><strong>Worker is a known collision we are choosing to accept.</strong> In Temporal and Kubernetes a
+  worker is a process, not a role &mdash; both researchers flagged it, proposing Builder and Implementer. It is
+  in the shipped workflow steps, the role constant, the mission conduct, the command line and the fleet
+  preamble, and unlike "controller" it is a word we say out loud. Recorded as accepted rather than silently
+  ignored. If we ever change it, Builder is the better alternative.</p>
+</div>
+
+<div class="callout ok">
+  <p><strong>Five roles, final:</strong> Standalone, Architect, Manager, Worker, Reviewer. An
+  <em>Inspector</em> is a Reviewer from a different agent family &mdash; the word stays in our conduct, the
+  constraint is proved by the recorded agent kinds, and it is not a sixth role.</p>
+</div>
+
+<h2>Two defects found on the way</h2>
+
+<p>Not names to choose &mdash; things to fix.</p>
+
+<div class="callout warn">
+  <p><strong>A mission's WHY is attached to its name, not its identity.</strong> The why lives in its own
+  table, keyed by the mission's <em>lower-cased name</em>, while everything else about a mission joins on its
+  id. Rename a mission and its why is silently orphaned; two missions sharing a name share one why and
+  overwrite each other. For a field that is a standing rule &mdash; no why, no mission &mdash; that is the
+  weakest possible attachment. One migration to fix.</p>
+</div>
+
+<div class="callout warn">
+  <p><strong>The mission workflow contradicts itself about who inspects.</strong> One record, two answers: its
+  conduct names the Inspector seven times and makes it load-bearing, while its five structured steps never
+  mention it and say the Architect reviews the Manager. The conduct is the true one &mdash; it is what agents
+  actually read at run time, and it is fidelity-tested. The steps should be fixed to match.</p>
+</div>
+
+<footer>
+  Read from origin/main at aa8a8401e &middot; researched independently by a Codex session and a Grok session,
+  neither given access to our code &middot; nothing renamed, nothing committed<br>
+  Local file: docs/new_architecture/names.html
+</footer>
+
+</div>
