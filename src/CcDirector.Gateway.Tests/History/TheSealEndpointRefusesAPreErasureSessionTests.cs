@@ -18,12 +18,22 @@ namespace CcDirector.Gateway.Tests.History;
 /// <c>CcDirector.Gateway.UnitTests</c>. This one starts a real <see cref="WebApplication"/> and binds
 /// a socket, which is what the split's rule sends to the machine-wide lock, so it stays here.
 ///
-/// WHAT THAT BUYS TODAY IS LESS THAN IT LOOKS, AND SAYING SO IS THE POINT. This comment first claimed
-/// the five siblings therefore run on every local gate. They do not: the fast project is itself parked
-/// out of the default run (scripts/test-local.ps1), on a measured runtime rather than on principle, so
-/// both projects reach a runner only under -Parked. The placement is still the right one - these five
-/// need nothing machine-global and that stays true whichever list they sit on - but the benefit is
-/// available later, not banked now.
+/// THE FIVE SIBLINGS RUN ON EVERY LOCAL GATE - and this sentence has been written three times in one
+/// night, so it is dated rather than simply asserted. A reader who finds only the current wording
+/// cannot tell a claim that was checked from one that was never revisited.
+///
+///   Written true.  <c>a084c422c</c> split the suite; the fast project was in the default run.
+///   Became false.  <c>c6b35385a</c> made the two-minute budget a hard ceiling and parked the fast
+///                  project for exceeding it, leaving three parked suites and both Gateway projects
+///                  reachable only under -Parked.
+///   True again.    <c>4e396b801</c> found the real cost - the migration set was rebuilt once per
+///                  database-backed test, not sleep - cut the suite from two minutes to under one,
+///                  and put it BACK in the default run. That is the tree this file lands in.
+///
+/// The parking was temporary and is over. What did NOT move across any of those three states is the
+/// placement itself: these five facts construct no host, bind no port, spawn no process and touch no
+/// live database, and that is a property of the tests rather than of which list a script keeps them
+/// on. The claim worth making is the durable one; the schedule around it is worth dating.
 /// </summary>
 public sealed class TheSealEndpointRefusesAPreErasureSessionTests : IDisposable
 {
