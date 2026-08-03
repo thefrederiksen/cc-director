@@ -625,6 +625,16 @@ public sealed class GatewayHost : IAsyncDisposable
     // Dictation tombstone retention (issue #1111). Distinct from the voice-turn sweep above in BOTH numbers
     // and in what it is allowed to touch: this one deletes only DELIVERED/ABANDONED records, never a PENDING
     // one, and it exists solely to bound tombstones whose client acknowledgment will never arrive.
+    /// <summary>
+    /// Remove-the-network-port phase 1b: the lapsed-session-key sweep. It changes NO authentication answer -
+    /// the expiry is enforced on every resolution, so a lapsed key is already refused - it retires the rows
+    /// so the table does not accumulate records that read as live, and an operator listing it sees the truth.
+    /// Hourly is ample against a 12-hour lifetime. Not per-tenant: session_keys is a global table and the
+    /// sweep is one statement across it.
+    /// </summary>
+    private System.Threading.Timer? _sessionKeySweepTimer;
+    private static readonly TimeSpan SessionKeySweepInterval = TimeSpan.FromHours(1);
+
     private System.Threading.Timer? _dictationTombstoneSweepTimer;
     private static readonly TimeSpan DictationTombstoneSweepInterval = TimeSpan.FromHours(6);
     // WHY THIRTY DAYS, and why so much longer than the four hours next door. These two roots hold opposite
@@ -1113,7 +1123,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // per session over the tunnel it already holds, and an agent inside that session authenticates as the
         // session rather than with its Director's account-wide key. Same database and the same stored-hash
         // shape as the device registry above, because it is the same kind of credential one hop further in.
-        SessionKeys = new Pairing.SessionKeyRegistry(_gatewayDb);
+        SessionKeys = new Pairing.SessionKeyRegistry(_gatewayDb, GatewayHostedMode.IsHosted);
         // The account-to-tenant resolver (Hosted Multi-Tenancy increment 1): owns the tenants mapping table
         // and mints/looks up a tenant from a verified account subject. Built over the EF database; wired into
         // the hosted enrollment boundary (which validates the account token and stamps the resolved tenant on
@@ -3480,6 +3490,21 @@ public sealed class GatewayHost : IAsyncDisposable
             $"{dictationTombstoneSchedule.TotalHours:0.###}h, retiring unacknowledged terminal records older " +
             $"than {DictationTombstoneMaxAge.TotalDays:0.###} days (PENDING is never swept)");
 
+        // Remove-the-network-port phase 1b: retire lapsed session keys. This is HOUSEKEEPING, and saying so
+        // matters - a lapsed key is ALREADY refused, because the expiry is checked on every resolution, so
+        // nothing about who can call the Gateway depends on this timer running. What it prevents is a table
+        // that fills with rows an operator would read as live credentials. A retention policy with no caller
+        // is not a policy, which is the only reason this is wired rather than left as a method to call later.
+        _sessionKeySweepTimer = new System.Threading.Timer(
+            _ =>
+            {
+                try { SessionKeys.SweepExpired(); }
+                catch (Exception ex) { FileLog.Write($"[GatewayHost] session key sweep error: {ex.Message}"); }
+            },
+            null, SessionKeySweepInterval, SessionKeySweepInterval);
+        FileLog.Write($"[GatewayHost] session key sweep started: every {SessionKeySweepInterval.TotalHours:0.###}h, " +
+            "retiring keys past their expiry (a lapsed key is already refused at resolution - this is housekeeping)");
+
         // Issue #640: start the Gateway-owned background token refresh. Start() returns immediately (the
         // first sweep runs after a short delay), so this never blocks startup. When the cached access
         // token has expired and a refresh endpoint is configured, the sweep exchanges the refresh token
@@ -4081,6 +4106,8 @@ public sealed class GatewayHost : IAsyncDisposable
         _voiceTurnUploadSweepTimer = null;
         try { _dictationTombstoneSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] dictation tombstone sweep timer dispose error: {ex.Message}"); }
         _dictationTombstoneSweepTimer = null;
+        try { _sessionKeySweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] session key sweep timer dispose error: {ex.Message}"); }
+        _sessionKeySweepTimer = null;
 
 
         // Issue #640: stop the background token refresh timer.

@@ -45,12 +45,15 @@ public sealed class SessionKeyRegistry
 
     private readonly GatewayDatabase _db;
     private readonly Func<DateTime> _clock;
+    private readonly bool _isHosted;
 
     /// <param name="db">The host-owned database shared by every Gateway replica.</param>
+    /// <param name="isHosted">Whether tenant-bound hosted credential rules must be enforced.</param>
     /// <param name="clock">UTC clock seam for tests; production omits it.</param>
-    public SessionKeyRegistry(GatewayDatabase db, Func<DateTime>? clock = null)
+    public SessionKeyRegistry(GatewayDatabase db, bool isHosted = false, Func<DateTime>? clock = null)
     {
         _db = db ?? throw new ArgumentNullException(nameof(db));
+        _isHosted = isHosted;
         _clock = clock ?? (() => DateTime.UtcNow);
     }
 
@@ -178,11 +181,19 @@ public sealed class SessionKeyRegistry
                 return SessionCredentialResolution.Unavailable;
             }
 
-            var tenant = new TenantId(row.TenantId);
-            if (!tenant.IsValid || tenant.IsSystem)
+            var tenant = string.IsNullOrWhiteSpace(row.TenantId) ? default(TenantId) : new TenantId(row.TenantId);
+            // A key with no usable tenant is not a caller we can scope, so it is not a caller.
+            //
+            // On HOSTED, the single-tenant Local identity is one of those: it belongs to a self-host install
+            // and would collapse an account partition if it were honoured on a multi-tenant Gateway. It
+            // cannot arise through the hub - a hosted Hello resolves a real tenant or aborts the connection -
+            // so this only ever fires on a wiring defect or an edited row. It is a DENY rather than a
+            // best-effort resolution precisely because those are the cases you cannot reason about.
+            var unusableTenant = !tenant.IsValid
+                                 || tenant.IsSystem
+                                 || (_isHosted && tenant.IsLocal);
+            if (unusableTenant)
             {
-                // A key with no usable tenant is not a caller we can scope, so it is not a caller. Deny by
-                // default rather than resolving it to anything.
                 FileLog.Write($"[SessionKeyRegistry] ResolveCredential: session={row.SessionId} has no usable tenant binding - denying");
                 return new SessionCredentialResolution(SessionCredentialResolutionKind.Revoked, null);
             }

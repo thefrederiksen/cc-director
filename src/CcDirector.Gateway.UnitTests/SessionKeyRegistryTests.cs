@@ -23,7 +23,7 @@ public sealed class SessionKeyRegistryTests : IDisposable
     public void Dispose() => _harness.Dispose();
 
     private SessionKeyRegistry Registry(Func<DateTime>? clock = null)
-        => new(_harness.Open(), clock);
+        => new(_harness.Open(), isHosted: false, clock);
 
     private static DateTime Later => DateTime.UtcNow.AddHours(12);
 
@@ -222,6 +222,26 @@ public sealed class SessionKeyRegistryTests : IDisposable
         var afterRestart = new SessionKeyRegistry(_harness.Open());
 
         Assert.Equal(SessionCredentialResolutionKind.Active, afterRestart.ResolveCredential(key).Kind);
+    }
+
+    [Fact]
+    public void On_hosted_a_local_tenant_key_is_denied_rather_than_collapsed_into_an_account()
+    {
+        // Unreachable through the hub - a hosted Hello resolves a real tenant or aborts the connection - so
+        // this fires only on a wiring defect or an edited row. Which is exactly why it must DENY: honouring
+        // the self-host single-tenant identity on a multi-tenant Gateway would put a session inside whatever
+        // partition Local resolves to, and every account would share it.
+        var selfHost = new SessionKeyRegistry(_harness.Open(), isHosted: false);
+        var key = GatewaySessionKey.Mint();
+        selfHost.Register(TenantId.Local, "director-1", Guid.NewGuid().ToString(), GatewaySessionKey.Hash(key), Later);
+
+        Assert.Equal(SessionCredentialResolutionKind.Active, selfHost.ResolveCredential(key).Kind);
+
+        var hosted = new SessionKeyRegistry(_harness.Open(), isHosted: true);
+        var resolution = hosted.ResolveCredential(key);
+
+        Assert.Equal(SessionCredentialResolutionKind.Revoked, resolution.Kind);
+        Assert.Null(resolution.Identity);
     }
 
     [Fact]
