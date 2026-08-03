@@ -4398,14 +4398,26 @@ public partial class MainWindow : Window
                 return;
             }
             FileLog.Write("[MainWindow] BtnFifo_Click: opening FIFO window");
-            await new FifoWindow(sm).ShowDialog(this);
 
-            // The FIFO window is full-screen, so attaching a session there resized that
-            // session's PTY to full-screen dimensions. Re-attach the main window's active
-            // session so it re-sends ITS dimensions and redraws cleanly, instead of leaving
-            // the session rendering at the FIFO window's size.
-            if (_activeSession is not null)
-                TerminalHost.Attach(_activeSession.Session);
+            // Hand the terminal over before FIFO opens. FIFO attaches sessions to its OWN
+            // TerminalControl, and the queue routinely contains the session this window is
+            // already showing - so without this both controls hold one session, both poll it,
+            // and both drive Session.Resize against the real ConPTY. FIFO is full-screen and
+            // modal, so there is nothing here to keep drawing anyway.
+            TerminalHost.Detach();
+            try
+            {
+                await new FifoWindow(sm).ShowDialog(this);
+            }
+            finally
+            {
+                // Always re-attach, including when FIFO threw: leaving the main window with a
+                // detached terminal is a blank pane the user cannot recover without switching
+                // sessions. Re-attaching also re-sends OUR dimensions, so a session FIFO resized
+                // to full screen redraws at this window's size.
+                if (_activeSession is not null)
+                    TerminalHost.Attach(_activeSession.Session);
+            }
         }
         catch (Exception ex)
         {

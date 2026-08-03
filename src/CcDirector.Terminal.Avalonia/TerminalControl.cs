@@ -93,6 +93,65 @@ public class TerminalControl : Control
     private AnsiParser? _parser;
     private bool _pendingLayoutAttach;
 
+    // ===== One live terminal view per session =====
+    // Attaching does not just read a session, it OWNS it: Attach() sends Session.Resize, which
+    // resizes the real ConPTY the agent writes into. Two controls attached to one session each
+    // poll it and each resize it to their own grid, so the agent's output reflows on every
+    // repaint - the FIFO window and the main window did exactly this.
+    //
+    // Ownership is therefore explicit and last-attach-wins: whoever attaches takes the session
+    // and the previous holder is detached. Self-healing rather than throwing, because a stray
+    // second view should degrade to "the other one stopped drawing", never to a crash. Every
+    // eviction is logged, so a caller that should have detached first is visible in the log
+    // instead of showing up as mysterious reflow.
+    //
+    // UI-thread only in practice (attach/detach run on the dispatcher), but locked anyway - the
+    // cost is nil and the failure it would prevent is a corrupted static map.
+    private static readonly object _ownerLock = new();
+    private static readonly Dictionary<Guid, TerminalControl> _sessionOwners = new();
+
+    /// <summary>
+    /// Take ownership of a session, detaching whichever control held it before. Returns the
+    /// evicted control, or null when the session was free.
+    /// </summary>
+    private static TerminalControl? ClaimOwnership(Guid sessionId, TerminalControl claimant)
+    {
+        TerminalControl? previous = null;
+        lock (_ownerLock)
+        {
+            if (_sessionOwners.TryGetValue(sessionId, out var held) && !ReferenceEquals(held, claimant))
+                previous = held;
+            _sessionOwners[sessionId] = claimant;
+        }
+        return previous;
+    }
+
+    /// <summary>
+    /// Give up ownership, but only if this control still holds it - a control that was already
+    /// evicted by a later attach must not clear the new owner's claim on its way out.
+    /// </summary>
+    private static void ReleaseOwnership(Guid sessionId, TerminalControl holder)
+    {
+        lock (_ownerLock)
+        {
+            if (_sessionOwners.TryGetValue(sessionId, out var held) && ReferenceEquals(held, holder))
+                _sessionOwners.Remove(sessionId);
+        }
+    }
+
+    /// <summary>Test seam: the control currently owning a session, or null.</summary>
+    internal static TerminalControl? OwnerOf(Guid sessionId)
+    {
+        lock (_ownerLock)
+            return _sessionOwners.TryGetValue(sessionId, out var held) ? held : null;
+    }
+
+    /// <summary>
+    /// Test seam: whether this control still holds a session. Distinct from ownership - an
+    /// evicted control must be genuinely detached (poll timer stopped), not merely un-owned.
+    /// </summary>
+    internal bool IsAttachedForTests => _session is not null;
+
     // Cell grid
     private TerminalCell[,] _cells;
     private int _cols = DefaultCols;
@@ -337,6 +396,17 @@ public class TerminalControl : Control
         FileLog.Write($"[TerminalControl] Attach: sessionId={session.Id}");
 
         Detach();
+
+        // Take the session off any other control still holding it. Two live views resize the
+        // same ConPTY against each other; the caller should have detached first, so say so.
+        var evicted = ClaimOwnership(session.Id, this);
+        if (evicted is not null)
+        {
+            FileLog.Write($"[TerminalControl] Attach: session {session.Id} was still attached to another " +
+                          "terminal - detaching it. The previous holder should have detached first.");
+            evicted.Detach();
+        }
+
         _session = session;
         _bufferPosition = 0;
         _scrollOffset = 0;
@@ -383,6 +453,9 @@ public class TerminalControl : Control
     public void Detach()
     {
         FileLog.Write($"[TerminalControl] Detach: sessionId={_session?.Id}, scrollback={_scrollback.Count}, offset={_scrollOffset}");
+
+        if (_session is not null)
+            ReleaseOwnership(_session.Id, this);
 
         _pollTimer?.Stop();
         _pollTimer = null;

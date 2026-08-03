@@ -11,6 +11,9 @@
     <InternalsVisibleTo Include="CcDirector.Core.Tests" />
     <InternalsVisibleTo Include="CcDirector.Avalonia.Tests" />
     <InternalsVisibleTo Include="CcDirector.Gateway.Tests" />
+    <!-- Terminal tests construct a Session to drive TerminalControl.Attach, whose whole
+         contract is about session ownership. Session's constructors are internal. -->
+    <InternalsVisibleTo Include="CcDirector.Terminal.Avalonia.Tests" />
     <InternalsVisibleTo Include="TerminalTest" />
   </ItemGroup>
 
