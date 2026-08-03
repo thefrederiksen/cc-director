@@ -7,9 +7,15 @@
     THE DEFAULT RUN IS ABOUT TWO MINUTES, AND THAT IS THE POINT. Local is the gate for ordinary changes
     (issue #1156), so the gate has to be cheap enough that nobody is tempted to skip it.
 
-    WHAT THE DEFAULT RUNS: every suite that finishes inside the two-minute budget, roughly 3400 tests,
-    PLUS the two installer test projects (478 tests, about seven seconds). They start together and the
-    wall clock is the slowest of them, not the sum.
+    WHAT THE DEFAULT RUNS: every suite that finishes inside the two-minute budget, PLUS the two installer
+    test projects. They start together and the wall clock is the slowest of them, not the sum.
+
+    COUNTS, MEASURED 2026-08-03 FROM THE TRX FILES OF A COLD RUN - not estimated, and not copied forward:
+      Gateway.UnitTests 2777    Avalonia 348    Launcher 110    HostedAgent 88    Core.UnitTests 82
+      Engine 63                 Terminal 24
+      installer: setup.Tests 25, setup-engine.Tests 453
+    3492 in the default suites, 3970 including the installer. Re-measure before changing these numbers;
+    the per-project comments below were carried forward for months after they stopped being true.
 
     The installer projects live outside cc-director.sln and are built separately here. They are in the
     default run because they are fast and because the thing they cover - the first screen a new user
@@ -84,13 +90,18 @@ if ($Gateway -and $Parked) {
 #   HostedAgent          36s                      Launcher    2s      Terminal 11s
 # They start together, so the default costs about the slowest one.
 $defaultProjects = @(
-    # The PARALLEL half of the Core tests: 2858 tests in about nine seconds. The project they came from
-    # runs sequentially (DisableTestParallelization) and takes eleven minutes for the same kind of work -
-    # that attribute is deliberately NOT in this one, and must never be added to it.
+    # The PARALLEL half of the Core tests. The project they came from runs sequentially
+    # (DisableTestParallelization) and takes eleven minutes for the same kind of work - that attribute is
+    # deliberately NOT in this one, and must never be added to it.
+    #
+    # This comment claimed 2858 tests until 2026-08-03, when a run of the TRX files put it at 82. Nobody
+    # noticed, because a count in a comment is checked by nothing. Do not restore a number here without
+    # measuring it; the header carries the measured set and the date it was taken.
     "src\CcDirector.Core.UnitTests\CcDirector.Core.UnitTests.csproj",
     # BACK IN THE DEFAULT RUN. It was parked for exceeding the ceiling at about 2 minutes quiet and 3 to 5
     # busy; it now finishes in under a minute, because the cost turned out to be the migration set being
-    # rebuilt from scratch once per database-backed test. 2762 tests.
+    # rebuilt from scratch once per database-backed test. Measured 2777 tests, about 56 seconds - the
+    # slowest suite in the default run and therefore the one that sets its wall clock.
     "src\CcDirector.Gateway.UnitTests\CcDirector.Gateway.UnitTests.csproj",
     "src\CcDirector.Avalonia.Tests\CcDirector.Avalonia.Tests.csproj",
     "src\CcDirector.Engine.Tests\CcDirector.Engine.Tests.csproj",
