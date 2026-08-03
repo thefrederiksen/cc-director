@@ -950,7 +950,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
-                    b.HasKey("SessionId");
+                    b.HasKey("TenantId", "SessionId");
 
                     b.HasIndex("ExpiresAtUtc");
 

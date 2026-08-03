@@ -722,12 +722,22 @@ public sealed class GatewayDbContext : DbContext
         modelBuilder.Entity<SessionKeyEntity>(b =>
         {
             b.ToTable("session_keys");
-            // SessionId is the natural primary key - ONE live credential per session, enforced at the
-            // DATABASE rather than only in code, so a re-registration can only ever rotate the session's own
-            // row. Two rows for one session would mean a revocation that ends one credential and leaves the
-            // other accepted. GLOBAL like device_credentials: deliberately NOT passed to ApplyTenantScope,
-            // because a presented key is resolved by hash before any tenant is known.
-            b.HasKey(e => e.SessionId);
+            // TENANT PLUS SESSION is the primary key - ONE live credential per session WITHIN A TENANT,
+            // enforced at the DATABASE rather than only in code, so a re-registration can only ever rotate
+            // that tenant's own row. Two rows for one session in one tenant would mean a revocation that
+            // ends one credential and leaves the other accepted.
+            //
+            // THE TENANT IS PART OF THE KEY BECAUSE IT WAS NOT, AND THAT WAS A DEFECT. Keyed on SessionId
+            // alone, one session id was a GLOBAL name: a Director registering a session id already held by
+            // another tenant found and overwrote that row, taking the session's identity with it. Making
+            // the tenant part of the key means two tenants naming the same session id are two rows that
+            // cannot see each other, which is what tenant isolation means at the storage layer.
+            //
+            // The table is still deliberately NOT passed to ApplyTenantScope: a presented key is resolved
+            // by hash before any tenant is known, so the READ has to be able to cross tenants to find out
+            // which one it belongs to. The KeyHash index below stays globally unique for that reason - a
+            // hash identifies exactly one row in the whole table, whichever tenant owns it.
+            b.HasKey(e => new { e.TenantId, e.SessionId });
             // The authentication read is by the stored hash, on every agent request. Indexed for that lookup,
             // and UNIQUE: unlike device_credentials - which must tolerate a hand-edited legacy devices.json
             // importing duplicates rather than bricking - nothing imports this table. Every row here is

@@ -26,7 +26,7 @@ namespace CcDirector.Gateway.Data.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_session_keys", x => x.SessionId);
+                    table.PrimaryKey("PK_session_keys", x => new { x.TenantId, x.SessionId });
                 });
 
             migrationBuilder.CreateIndex(

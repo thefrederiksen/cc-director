@@ -931,7 +931,7 @@ namespace CcDirector.Gateway.Data.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
-                    b.HasKey("SessionId");
+                    b.HasKey("TenantId", "SessionId");
 
                     b.HasIndex("ExpiresAtUtc");
 

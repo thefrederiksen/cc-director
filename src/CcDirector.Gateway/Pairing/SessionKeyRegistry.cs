@@ -43,6 +43,17 @@ public sealed class SessionKeyRegistry
     /// <summary>The reason stamped on a key revoked by the expiry sweep.</summary>
     public const string ReasonExpired = "expired";
 
+    /// <summary>
+    /// The longest a session key may live, measured on the GATEWAY'S clock.
+    ///
+    /// The Director computes an expiry and sends it, but a value a client computes is a value a client can
+    /// get wrong: the Director's clock could be set hours or years ahead, and every tunnel reseed would
+    /// refresh the key to that wrong ceiling. This is the Gateway's own ceiling, applied to whatever
+    /// arrives. It matches <c>GatewaySessionKey.Lifetime</c> deliberately - the same 12 hours, decided
+    /// twice, so agreement is the normal case and a disagreement can only ever SHORTEN the key's life.
+    /// </summary>
+    public static readonly TimeSpan MaxSessionKeyLifetime = TimeSpan.FromHours(12);
+
     private readonly GatewayDatabase _db;
     private readonly Func<DateTime> _clock;
     private readonly bool _isHosted;
@@ -83,11 +94,32 @@ public sealed class SessionKeyRegistry
         {
             using var ctx = _db.CreateUnscopedContext();
             using var transaction = ctx.Database.BeginTransaction(IsolationLevel.Serializable);
-            var row = ctx.SessionKeys.SingleOrDefault(s => s.SessionId == id);
+            // SCOPED BY TENANT, and then checked against the registering Director.
+            //
+            // This lookup used to be unscoped, and the row it found was overwritten with the caller's
+            // tenant, Director and hash without comparison. The hub derives the tenant from the
+            // authenticated tunnel correctly, but it takes the session id from the CALLER - so a Director
+            // submitting a session id belonging to another Director, or another tenant, commandeered that
+            // row: the victim's key stopped authenticating and the attacker's authenticated AS that
+            // session. Inside one tenant that is session-identity takeover; across tenants it is registry
+            // corruption.
+            var row = ctx.SessionKeys.SingleOrDefault(s => s.SessionId == id && s.TenantId == tenant.Value);
 
             if (row is not null && row.RevokedAtUtc is not null)
             {
                 FileLog.Write($"[SessionKeyRegistry] Register REFUSED: session={id} was revoked ({row.RevokedReason}) and is not revived by a re-registration");
+                return false;
+            }
+
+            // A live row for this session inside this tenant that belongs to a DIFFERENT Director is not
+            // rotated - it is refused. A session never migrates between Directors: moving one creates a new
+            // session with a new id on the target, so a Director claiming another Director's session id is
+            // always either a defect or an attempt, and neither should silently win.
+            if (row is not null
+                && !string.IsNullOrWhiteSpace(row.DirectorId)
+                && !string.Equals(row.DirectorId, directorId?.Trim() ?? "", StringComparison.OrdinalIgnoreCase))
+            {
+                FileLog.Write($"[SessionKeyRegistry] Register REFUSED: session={id} is registered to director={row.DirectorId} and director={directorId} may not take it over");
                 return false;
             }
 
@@ -106,11 +138,23 @@ public sealed class SessionKeyRegistry
                 ctx.SessionKeys.Add(row);
             }
 
+            var issued = _clock();
+
+            // THE EXPIRY IS THE GATEWAY'S TO DECIDE, NOT THE DIRECTOR'S. It arrives computed from the
+            // Director's own clock, so a machine set far ahead - by accident or otherwise - turned the
+            // stated 12-hour backstop into an arbitrarily long one, and every tunnel reseed refreshed it.
+            // The Gateway now caps it against its OWN clock. A shorter expiry is honoured, because a
+            // Director asking for less authority than the maximum is never a problem.
+            var ceiling = issued + MaxSessionKeyLifetime;
+            var effectiveExpiry = expiresAtUtc > ceiling ? ceiling : expiresAtUtc;
+            if (effectiveExpiry != expiresAtUtc)
+                FileLog.Write($"[SessionKeyRegistry] Register: session={id} asked for expiry {expiresAtUtc:O}, capped to {effectiveExpiry:O} by the Gateway's own clock");
+
             row.TenantId = tenant.Value;
             row.DirectorId = directorId?.Trim() ?? "";
             row.KeyHash = hash;
-            row.IssuedAtUtc = _clock();
-            row.ExpiresAtUtc = expiresAtUtc;
+            row.IssuedAtUtc = issued;
+            row.ExpiresAtUtc = effectiveExpiry;
             row.RevokedAtUtc = null;
             row.RevokedReason = null;
 

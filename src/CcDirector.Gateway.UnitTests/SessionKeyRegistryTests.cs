@@ -160,6 +160,103 @@ public sealed class SessionKeyRegistryTests : IDisposable
         Assert.Equal(SessionCredentialResolutionKind.Active, registry.ResolveCredential(key).Kind);
     }
 
+    // ---------- Registration is where the takeover was ----------
+    //
+    // The suite already proved another account cannot REVOKE this account's row. It never tried to
+    // REGISTER over it, and that was the hole: registration looked the row up by bare session id on an
+    // unscoped context and then overwrote its tenant, its Director and its hash without comparing any of
+    // them. Revocation was guarded; registration was the same takeover by another verb.
+
+    [Fact]
+    public void Another_account_cannot_register_over_this_accounts_session_key()
+    {
+        var registry = Registry();
+        var session = Guid.NewGuid();
+        var mine = GatewaySessionKey.Mint();
+        var theirs = GatewaySessionKey.Mint();
+        Assert.True(registry.Register(Account, "director-1", session.ToString(), GatewaySessionKey.Hash(mine), Later));
+
+        // The other tenant registering the SAME session id must not touch my row. Whether its own
+        // registration succeeds as a separate row is not the point - mine surviving intact is.
+        registry.Register(OtherAccount, "director-2", session.ToString(), GatewaySessionKey.Hash(theirs), Later);
+
+        var mineAfter = registry.ResolveCredential(mine);
+        Assert.Equal(SessionCredentialResolutionKind.Active, mineAfter.Kind);
+        Assert.Equal(Account.Value, mineAfter.Identity!.Tenant.Value);
+        Assert.Equal("director-1", mineAfter.Identity!.DirectorId);
+    }
+
+    [Fact]
+    public void Another_director_in_the_same_account_cannot_take_over_a_session_id()
+    {
+        // Inside ONE tenant the tenant check cannot help, and this is the likelier accident: a Director
+        // reseeding a session id that is not its own. A session never migrates between Directors - moving
+        // one creates a new session with a new id - so this is always a defect or an attempt.
+        var registry = Registry();
+        var session = Guid.NewGuid();
+        var mine = GatewaySessionKey.Mint();
+        var theirs = GatewaySessionKey.Mint();
+        Assert.True(registry.Register(Account, "director-1", session.ToString(), GatewaySessionKey.Hash(mine), Later));
+
+        Assert.False(registry.Register(Account, "director-2", session.ToString(), GatewaySessionKey.Hash(theirs), Later));
+
+        Assert.Equal(SessionCredentialResolutionKind.Active, registry.ResolveCredential(mine).Kind);
+        Assert.Equal(SessionCredentialResolutionKind.Unknown, registry.ResolveCredential(theirs).Kind);
+    }
+
+    [Fact]
+    public void A_directors_own_reseed_still_rotates_its_own_session_key()
+    {
+        // The guard above must not break the normal path it sits in front of: the SAME Director
+        // re-registering the SAME session on a tunnel reseed is how a live key stays live.
+        var registry = Registry();
+        var session = Guid.NewGuid();
+        var first = GatewaySessionKey.Mint();
+        var second = GatewaySessionKey.Mint();
+        Assert.True(registry.Register(Account, "director-1", session.ToString(), GatewaySessionKey.Hash(first), Later));
+
+        Assert.True(registry.Register(Account, "director-1", session.ToString(), GatewaySessionKey.Hash(second), Later));
+
+        Assert.Equal(SessionCredentialResolutionKind.Active, registry.ResolveCredential(second).Kind);
+    }
+
+    [Fact]
+    public void The_gateway_caps_an_expiry_computed_on_the_directors_clock()
+    {
+        // The expiry arrives from the Director, so it is only as trustworthy as the Director's clock. A
+        // machine set years ahead would otherwise mint a key that outlives every backstop, refreshed on
+        // every reseed. The Gateway caps it against its OWN clock.
+        var now = new DateTime(2026, 8, 3, 12, 0, 0, DateTimeKind.Utc);
+        var registry = Registry(() => now);
+        var session = Guid.NewGuid();
+        var key = GatewaySessionKey.Mint();
+
+        registry.Register(Account, "director-1", session.ToString(), GatewaySessionKey.Hash(key),
+            now.AddYears(5));
+
+        // One second past the Gateway's own ceiling, the key must be gone - not still alive on the
+        // Director's five-year claim.
+        var justPastCeiling = Registry(() => now + SessionKeyRegistry.MaxSessionKeyLifetime + TimeSpan.FromSeconds(1));
+        Assert.NotEqual(SessionCredentialResolutionKind.Active, justPastCeiling.ResolveCredential(key).Kind);
+    }
+
+    [Fact]
+    public void A_shorter_expiry_than_the_cap_is_honoured()
+    {
+        // Capping must not become "always twelve hours". A Director asking for LESS authority than the
+        // maximum is never a problem, and silently extending it would be the guard doing harm.
+        var now = new DateTime(2026, 8, 3, 12, 0, 0, DateTimeKind.Utc);
+        var registry = Registry(() => now);
+        var session = Guid.NewGuid();
+        var key = GatewaySessionKey.Mint();
+
+        registry.Register(Account, "director-1", session.ToString(), GatewaySessionKey.Hash(key),
+            now.AddMinutes(5));
+
+        var afterTenMinutes = Registry(() => now.AddMinutes(10));
+        Assert.NotEqual(SessionCredentialResolutionKind.Active, afterTenMinutes.ResolveCredential(key).Kind);
+    }
+
     [Fact]
     public void A_lapsed_key_is_refused_even_though_nobody_revoked_it()
     {
