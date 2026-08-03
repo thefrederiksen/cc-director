@@ -7,10 +7,8 @@ namespace CcDirectorClient;
 /// <summary>
 /// Sessions screen: lists the roster from the Gateway and lets the user pick one to
 /// open. Per-session view has three tabs:
-///   - Voice: inline shared <see cref="Controls.VoiceSessionView"/> - literally the
-///     same control that FIFO uses while it walks the queue. AnswerDelivered is a
-///     no-op (stay on the session); HoldRequested or ExitRequested pops back to the
-///     roster.
+///   - Voice: inline walkie-talkie. Record, submit, the reply is spoken back, and the
+///     page stays on the session ready for the next question.
 ///   - Wingman: inline. Read the clean output / wingman note, dictate-or-type-and-send.
 ///   - Terminal: inline. Read-only raw xterm.js mirror plus control buttons.
 ///
@@ -46,9 +44,9 @@ public partial class TalkPage : ContentPage
 
     private SessionInfo? _selected;
 
-    // True while the app is in the background (Waze etc.). Speech that the
-    // VoiceSessionView started must keep playing; only a real in-app navigation tears
-    // down the control. Set from the Window lifecycle.
+    // True while the app is in the background (Waze etc.). Speech that the Voice tab
+    // started must keep playing; only a real in-app navigation tears it down. Set from
+    // the Window lifecycle.
     private bool _backgrounded;
     private bool _lifecycleHooked;
 
@@ -802,14 +800,6 @@ public partial class TalkPage : ContentPage
                 VoiceStatusLabel.Text = u.Text;
                 break;
         }
-    }
-
-    // ===== FIFO launcher ===================================================
-
-    private async void OnFifoClicked(object? sender, EventArgs e)
-    {
-        _tts.Stop();
-        await Shell.Current.GoToAsync("//FifoPage");
     }
 
     // ===== New-session flow (issue #245): pick a fleet Director + a recent repo =====
@@ -1661,17 +1651,13 @@ public partial class TalkPage : ContentPage
     // Top-right burger menu: switch between pages.
     private async void OnNavMenuClicked(object? sender, TappedEventArgs e)
     {
-        var choice = await DisplayActionSheet("Go to", "Cancel", null, "Sessions", "FIFO", "FIFO Text", "Notes", "Exes", "Dictionary", "Transcripts");
+        var choice = await DisplayActionSheet("Go to", "Cancel", null, "Sessions", "Notes", "Exes", "Dictionary", "Transcripts");
         if (string.IsNullOrEmpty(choice) || choice == "Cancel") return;
         _tts.Stop();
         if (choice == "Notes")
             await Shell.Current.GoToAsync("//MainPage");
         else if (choice == "Sessions")
             await Shell.Current.GoToAsync("//TalkPage");
-        else if (choice == "FIFO")
-            await Shell.Current.GoToAsync("//FifoPage");
-        else if (choice == "FIFO Text")
-            await Shell.Current.GoToAsync("//FifoTextPage");
         else if (choice == "Exes")
             await Shell.Current.GoToAsync("//ExesPage");
         else if (choice == "Dictionary")

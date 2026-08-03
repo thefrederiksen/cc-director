@@ -49,11 +49,11 @@ public sealed class SessionInfo
     public bool VoiceMode { get; set; }
 
     /// <summary>
-    /// True when the user has parked this session in the FIFO voice queue ("deal with
-    /// this later"). Mirrors the server's authoritative <c>Session.OnHold</c>. A held
-    /// session is dropped from the FIFO rotation until it is taken off hold; its
-    /// underlying <see cref="StatusColor"/> and <see cref="ActivityState"/> are still
-    /// reported truthfully. The client renders and filters on this verbatim.
+    /// True when the user has parked this session ("deal with this later"). Mirrors the
+    /// server's authoritative <c>Session.OnHold</c>. A held session stays parked until it
+    /// is taken off hold; its underlying <see cref="StatusColor"/> and
+    /// <see cref="ActivityState"/> are still reported truthfully. The client renders and
+    /// filters on this verbatim.
     /// </summary>
     public bool OnHold { get; set; }
 
@@ -61,7 +61,7 @@ public sealed class SessionInfo
     /// Whether the Wingman experience is enabled for this session: auto-explain briefing on
     /// turn-end, Voice + Wingman tabs visible, Yellow "Wingman is reading" state available.
     /// Default OFF. When false the session behaves as a plain terminal -- the phone hides
-    /// the Voice + Wingman tabs and the FIFO conveyor skips it (no briefing to deliver).
+    /// the Voice + Wingman tabs (there is no briefing to deliver).
     /// Mirrors the server's <c>Session.WingmanEnabled</c>.
     /// </summary>
     public bool WingmanEnabled { get; set; } = false;

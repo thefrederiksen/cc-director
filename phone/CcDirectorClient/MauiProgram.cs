@@ -50,8 +50,6 @@ public static class MauiProgram
 #endif
 		builder.Services.AddSingleton<MainPage>();
 		builder.Services.AddTransient<TalkPage>();
-		builder.Services.AddTransient<FifoPage>();
-		builder.Services.AddTransient<FifoTextPage>();
 		builder.Services.AddTransient<ExesPage>();
 		builder.Services.AddTransient<DictionaryPage>();
 		builder.Services.AddTransient<TranscriptsPage>();

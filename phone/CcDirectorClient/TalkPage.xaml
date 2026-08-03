@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
-             xmlns:controls="clr-namespace:CcDirectorClient.Controls"
              x:Class="CcDirectorClient.TalkPage"
              BackgroundColor="#0B1020"
              Shell.NavBarIsVisible="False"
@@ -15,7 +14,7 @@
 
                 <Label Text="Sessions"
                        FontSize="26" FontAttributes="Bold" TextColor="#E6EAF2" />
-                <Label Text="Pick a session to talk to one-on-one, or start FIFO to go through everything that needs you."
+                <Label Text="Pick a session to talk to one-on-one."
                        FontSize="13" TextColor="#8A93A6" />
 
                 <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
@@ -29,10 +28,6 @@
                 <Button x:Name="NewSessionButton" Text="+ New session"
                         BackgroundColor="#5FD08A" TextColor="#06210F" HeightRequest="50"
                         CornerRadius="12" FontAttributes="Bold" Clicked="OnNewSessionClicked" />
-
-                <Button x:Name="FifoButton" Text="FIFO - go through everything that needs me"
-                        BackgroundColor="#6B46C1" TextColor="White" HeightRequest="50"
-                        CornerRadius="12" Clicked="OnFifoClicked" />
 
                 <CollectionView x:Name="SessionsList" SelectionMode="Single"
                                 SelectionChanged="OnSessionSelected" HeightRequest="420">
@@ -73,9 +68,8 @@
         </ScrollView>
 
         <!-- ===== Single-session detail. Grid Auto,* so the tab content area has a
-             bounded height: that lets the Voice tab's VoiceSessionView use its own
-             pinned-top driving-safety layout (Grid Auto,* inside Grid Auto,*) instead
-             of having its buttons scroll. -->
+             bounded height: that lets the Voice tab pin its record controls to the
+             bottom (Grid Auto,* inside Grid Auto,*) instead of having them scroll. -->
         <Grid x:Name="TalkPanel" IsVisible="False" RowDefinitions="Auto,*">
 
             <!-- Header: back, session card, tab switcher. Fixed at the top. -->
@@ -93,7 +87,7 @@
                 </Border>
 
                 <!-- Tab switcher: Voice / Wingman / Terminal. All three swap inline content
-                     below; Voice IS the shared FIFO voice control, just hosted in this tab.
+                     below.
                      The Voice column collapses to width 0 on wingman-off sessions (Voice is
                      hidden there), so Wingman + Terminal fill the bar with no empty gap. -->
                 <Grid x:Name="TabSwitcher" ColumnDefinitions="*,*,*" ColumnSpacing="6">
@@ -344,8 +338,8 @@
             </ScrollView>
         </Grid>
 
-        <!-- Top-right burger menu: switch between pages. The Stop-talking pill is owned
-             by the VoiceSessionView itself (only voice playback needs it). -->
+        <!-- Top-right burger menu: switch between pages. The Stop-talking button is owned
+             by the Voice tab itself (only voice playback needs it). -->
         <Border x:Name="NavMenuButton"
                 HorizontalOptions="End" VerticalOptions="Start"
                 Margin="0,14,16,0" Padding="11,9"
