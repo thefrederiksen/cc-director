@@ -1,0 +1,72 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- THE PARALLEL HALF OF THE CORE TESTS.
+       Every test in here is fast and free of wall-clock dependence: no Task.Delay or Thread.Sleep, no
+       Stopwatch, no spawned process, no git, no file-system watcher, no ConPty. That is what lets this
+       assembly run its tests IN PARALLEL, which is the entire reason it exists.
+
+       IT MUST NEVER TAKE DisableTestParallelization. CcDirector.Core.Tests carries
+       [assembly: CollectionBehavior(DisableTestParallelization = true)] - one attribute that serialises
+       four thousand tests to protect about sixteen classes with real timing assumptions. That trade was
+       sized for CI's two-to-four vCPU box and applied unchanged to a 24-core machine, and it is why the
+       suite cost eleven minutes on a quiet machine and thirty-three on a busy one for twenty-five seconds
+       of actual CPU. TestParallelization.cs is deliberately NOT part of this project and must not be
+       linked into it. The timing-sensitive classes stayed behind with it.
+
+       Parallelism is CAPPED rather than uncapped (see AssemblyParallelism.cs), for the same reason as the
+       Gateway unit tests: this assembly runs beside other working trees' suites, so it has to be a good
+       neighbour rather than assume the machine is its own. Capped is not the same as disabled - it is the
+       difference between minutes and seconds. -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Shares the namespace with CcDirector.Core.Tests so a moved file needs no edit beyond the move. -->
+    <RootNamespace>CcDirector.Core.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.*" />
+    <PackageReference Include="xunit" Version="2.*" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CcDirector.Core\CcDirector.Core.csproj" />
+    <ProjectReference Include="..\CcDirector.Terminal.Core\CcDirector.Terminal.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Test data is shared with the parked half; linked from one place so the two cannot drift. -->
+    <None Include="..\CcDirector.Core.Tests\TestData\**" Link="TestData\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- EVERY test-support file from the parked half, linked from one source rather than copied.
+         These carry no [Fact] of their own - they are stubs, fakes and builders that tests on BOTH
+         sides use. Linking keeps one definition; copying would let the two drift.
+         DELIBERATELY EXCLUDED: TestParallelization.cs, which carries
+         [assembly: CollectionBehavior(DisableTestParallelization = true)]. Linking that file would
+         serialise this assembly and destroy the only reason it exists. Any file with an
+         assembly-level attribute is excluded for the same reason. -->
+    <Compile Include="..\CcDirector.Core.Tests\ConfigEnvSerialCollection.cs" Link="ConfigEnvSerialCollection.cs" />
+    <Compile Include="..\CcDirector.Core.Tests\StubGitHubClient.cs" Link="StubGitHubClient.cs" />
+    <Compile Include="..\CcDirector.Core.Tests\StubSessionBackend.cs" Link="StubSessionBackend.cs" />
+    <Compile Include="..\CcDirector.Core.Tests\TerminalTestHelper.cs" Link="TerminalTestHelper.cs" />
+    <Compile Include="..\CcDirector.Core.Tests\TestShell.cs" Link="TestShell.cs" />
+    <Compile Include="..\CcDirector.Core.Tests\Account\Es256TestKey.cs" Link="Account/Es256TestKey.cs" />
+    <Compile Include="..\CcDirector.Core.Tests\Account\InMemoryTokenStore.cs" Link="Account/InMemoryTokenStore.cs" />
+    <Compile Include="..\CcDirector.Core.Tests\Account\StubTokenRefresher.cs" Link="Account/StubTokenRefresher.cs" />
+    <Compile Include="..\CcDirector.Core.Tests\Account\TestJwt.cs" Link="Account/TestJwt.cs" />
+    <Compile Include="..\CcDirector.Core.Tests\Drivers\EmptyTranscriptReader.cs" Link="Drivers/EmptyTranscriptReader.cs" />
+    <Compile Include="..\CcDirector.Core.Tests\Drivers\RecordingSessionBackend.cs" Link="Drivers/RecordingSessionBackend.cs" />
+    <Compile Include="..\CcDirector.Core.Tests\Voice\Mocks\MockSpeechToText.cs" Link="Voice/Mocks/MockSpeechToText.cs" />
+    <Compile Include="..\CcDirector.Core.Tests\Voice\Mocks\MockSummarizer.cs" Link="Voice/Mocks/MockSummarizer.cs" />
+    <Compile Include="..\CcDirector.Core.Tests\Voice\Mocks\MockTextToSpeech.cs" Link="Voice/Mocks/MockTextToSpeech.cs" />
+  </ItemGroup>
+
+</Project>

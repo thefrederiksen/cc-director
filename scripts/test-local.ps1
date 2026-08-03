@@ -74,6 +74,10 @@ if ($Gateway -and $Parked) {
 #   HostedAgent          36s                      Launcher    2s      Terminal 11s
 # They start together, so the default costs about the slowest one.
 $defaultProjects = @(
+    # The PARALLEL half of the Core tests: 2858 tests in about nine seconds. The project they came from
+    # runs sequentially (DisableTestParallelization) and takes eleven minutes for the same kind of work -
+    # that attribute is deliberately NOT in this one, and must never be added to it.
+    "src\CcDirector.Core.UnitTests\CcDirector.Core.UnitTests.csproj",
     # BACK IN THE DEFAULT RUN. It was parked for exceeding the ceiling at about 2 minutes quiet and 3 to 5
     # busy; it now finishes in under a minute, because the cost turned out to be the migration set being
     # rebuilt from scratch once per database-backed test. 2762 tests.
