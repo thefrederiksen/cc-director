@@ -72,7 +72,7 @@ the Gateway calling in, and can become pushes down the connection it already has
 | 1 | Gateway parity, proven with a session credential | DONE - finding below |
 | 1b | Session credentials on the Gateway (discovered in Phase 1) | DONE - see PHASE-1B-REPORT.md |
 | 2 | The command line tools talk to the Gateway | DONE - pass mark MET, see PHASE-2-REPORT.md |
-| 2b | Owner widening, the write paths, and the inspection fixes | in progress |
+| 2b | Owner widening, the write paths, and the inspection fixes | DONE - see PHASE-2B-REPORT.md |
 | I1 | Independent inspection of 1b + 2 (Codex) | DONE - 8 proved defects, 4 high |
 | 3 | Session hooks stop needing an API | not started |
 | 4 | Lifecycle off HTTP | not started |
@@ -261,3 +261,23 @@ session-key tests green - which says what those tests were worth.
 **Architect ruling:** all eight go to the Phase 2b Manager, guard widening folded into finding 1 since
 it is the same file, and **every fix must carry a test that fails without it**. No finding is closed
 by argument.
+
+## The landing criterion is COMPARATIVE, not absolute - 2026-08-03
+
+A control run demanded by the Architect settled a "pre-existing contention" claim and found something
+larger. The mission's PARENT commit, run three times unchanged, produced **0, then 4, then 2 failures
+across six different tests, none repeating**.
+
+So this repository's local gate is not a reliable pass-or-fail signal. A green run on an unchanged
+commit is luck; so is a red one. That matters to this mission directly, because "the local gate is
+green" is the criterion the whole fleet merges on - including whatever the Architect eventually lands.
+
+**Ruling: a run on a mission commit counts only against a run on its PARENT. A failure is ours only if
+it does not also appear on the parent.** Absolute greenness is not available here and pretending
+otherwise would mean either shipping on noise or chasing it forever.
+
+**This is the SECOND independent reliability defect this mission has found in the fleet's own gate.**
+The first was stale assemblies on incremental builds, which serve the previous code while reporting
+success and cost three consecutive wrong diagnoses; the fix is deleting `obj` and `bin` for any
+project whose result is to be trusted. Both belong in the QA report as findings about the tooling
+every mission depends on, not as footnotes about a flaky test.
