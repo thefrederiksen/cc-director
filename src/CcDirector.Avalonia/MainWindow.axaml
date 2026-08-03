@@ -393,11 +393,11 @@
                     </DockPanel>
                 </Button>
 
-                <!-- Pinned Browsers group (Browsers feature, slice 2): the drivable, signed-in-once
-                     automation browsers on this machine, one row each with a status dot and the single
-                     next action. Sits directly above the pinned Repositories entry. All content is the
-                     Core fold rendered verbatim; the control raises ManageRequested to open
-                     Settings > Browsers. -->
+                <!-- Pinned Browser profiles entry: ONE clickable row, exactly like the pinned
+                     Repositories entry below it - the profile count and a dot when any is running,
+                     no list and no per-profile action. All content is the Core fold rendered
+                     verbatim; the control raises ManageRequested to open Settings > Browsers, where
+                     starting, signing in and attaching live. -->
                 <controls:BrowsersRailGroup x:Name="BrowsersRail" DockPanel.Dock="Bottom" />
 
                 <!-- Session list -->

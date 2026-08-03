@@ -45,6 +45,28 @@ public sealed record AutomationBrowserView(
     DateTime? LastSignedInUtc);
 
 /// <summary>
+/// The whole content of the pinned "Browser profiles" row in the Director's left rail. The rail is a
+/// navigation strip, not a control panel: the row shows how many profiles exist and whether any are up,
+/// and clicking it opens Settings > Browsers, where starting, signing in and attaching live. Folded here
+/// with everything else so the row cannot come to disagree with the screen it opens.
+/// </summary>
+/// <param name="ShowSetup">True when browser-harness is not installed: the row wears a setup nudge
+/// instead of a count, so the feature still advertises itself rather than going silent.</param>
+/// <param name="ShowCount">True when there is a count worth showing (harness installed, at least one
+/// profile registered).</param>
+/// <param name="CountText">The number of registered profiles, as text.</param>
+/// <param name="RunningDotColor">The dot's colour NAME from the one shared palette when at least one
+/// profile is running - the single piece of live status the row carries - or null when none is, which
+/// is how a surface knows to show no dot at all.</param>
+/// <param name="ToolTip">The row's full sentence, including the running count when it is known.</param>
+public sealed record AutomationBrowsersRailView(
+    bool ShowSetup,
+    bool ShowCount,
+    string CountText,
+    string? RunningDotColor,
+    string ToolTip);
+
+/// <summary>
 /// Folds an <see cref="AutomationBrowser"/> into its <see cref="AutomationBrowserView"/>, and answers
 /// whether browser-harness (the tool that actually drives these browsers) is installed on this machine.
 /// The mapping itself is pure and unit-tested (<see cref="Fold"/>); the async entry points add the two
@@ -232,6 +254,51 @@ public static class AutomationBrowserViewFold
             AutomationBrowserStatus.Checking => $"{kind} - checking...",
             _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unknown automation browser status"),
         };
+    }
+
+    /// <summary>
+    /// Fold the whole list down to the single pinned rail row (see <see cref="AutomationBrowsersRailView"/>).
+    ///
+    /// The running count deliberately goes UNSAID while any profile is still being probed. A row that
+    /// reads "none running" for the second before the probes land, and then flips to "2 running", is
+    /// stating something false rather than stating nothing - and this row repaints on a timer, so it
+    /// would do it repeatedly. Running means the debug port answered, whether or not the browser has
+    /// been signed in yet.
+    /// </summary>
+    public static AutomationBrowsersRailView FoldRail(IReadOnlyList<AutomationBrowserView> views, bool harnessInstalled)
+    {
+        if (views is null) throw new ArgumentNullException(nameof(views));
+
+        if (!harnessInstalled)
+            return new AutomationBrowsersRailView(
+                ShowSetup: true,
+                ShowCount: false,
+                CountText: "",
+                RunningDotColor: null,
+                ToolTip: "Browser control is not set up yet. Click to install Browser Harness and set up a signed-in browser.");
+
+        if (views.Count == 0)
+            return new AutomationBrowsersRailView(
+                ShowSetup: false,
+                ShowCount: false,
+                CountText: "",
+                RunningDotColor: null,
+                ToolTip: "No browser profiles yet. Click to add one your agents can drive.");
+
+        var stillChecking = views.Any(v => v.Status == AutomationBrowserStatus.Checking);
+        var running = views.Count(v => v.Status is AutomationBrowserStatus.Ready or AutomationBrowserStatus.NeedsSignIn);
+        var profiles = views.Count == 1 ? "1 browser profile" : $"{views.Count} browser profiles";
+        var runningClause = stillChecking ? "" : running == 0 ? ", none running" : $", {running} running";
+
+        return new AutomationBrowsersRailView(
+            ShowSetup: false,
+            ShowCount: true,
+            CountText: views.Count.ToString(),
+            // Green is the palette's "up and usable"; there is no second colour here on purpose. A
+            // browser that is running but not signed in is still running, and the row has no room to
+            // say more than that - the screen it opens does.
+            RunningDotColor: running > 0 ? "green" : null,
+            ToolTip: $"{profiles}{runningClause}. Click to manage them in Settings.");
     }
 
     /// <summary>The complete attach one-liner an agent runs. Built on the slug id (never the free-text
