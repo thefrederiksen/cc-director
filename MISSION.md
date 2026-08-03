@@ -124,6 +124,27 @@ a phase, that is the point it goes to the owner.
     are correct for a phase that builds a credential before anything uses it. Both close in Phase 2.
   - `MISSION-PLAN.md` written; the dangling reference was the Architect's error, not the Manager's.
 
+- 2026-08-03: Phase 2 scoping corrected the Architect's premise. "No Gateway surface is needed" was
+  wrong in three places, found by the Manager, not by me:
+  - `fleet/send` and `fleet/ask` FRAME the message with the sender's name and machine and run the
+    message steward on the Director; `fleet/broadcast` resolves the sender's TEAM on the Director
+    before calling the Gateway's fanout, which only takes an explicit id list.
+    **Ruling: all of it moves to the GATEWAY, not into Python.** The standing law here is that the
+    client is dumb and the Gateway owns every ruling - a sender name, a steward decision and a team
+    roster are verdicts. Giving Phase 1b's stamped session id its first consumer is a bonus, not the
+    reason.
+  - `cc-devthrottle browser` has EIGHT Director-local routes and no Gateway equivalent at all.
+    **Ruling: build them as Gateway routes that push down the existing tunnel**, so the Director still
+    does the local work. New surface, no new capability, no security change. No local exception.
+  - `cc-history` and the selftest spawn already call Director routes that no longer exist, so two
+    commands are dead in production today. **Ruling: pre-existing defect, not mission scope.** Excluded
+    from the phase pass mark, recorded precisely enough to be filed separately.
+- 2026-08-03: **Security finding worth the QA report, not a footnote.** Skill, workflow, schedule and
+  mission operations ALREADY bypass the Director and present the account-wide gateway token straight to
+  the Gateway. The hole Phase 1b was chartered to prevent therefore already exists in production on
+  those paths, and the session key closes it. The mission delivers a real security fix, not only a
+  removed port.
+
 ## Carried over, not part of this mission
 
 A two-line fix to the same port-picking code exists on branch `fix/port-probe-loopback` (worktree
